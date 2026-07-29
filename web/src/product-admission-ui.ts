@@ -456,7 +456,6 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
   switch (code) {
     case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
-    case 'strict-finalization-failed': return 'Both capabilities were authorized, but the final database preflight failed. Querying and automatic retry are blocked.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';

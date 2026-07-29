@@ -1024,12 +1024,14 @@ export class HarmonyPirClientAdapter {
   }
 
   /**
-   * Download main hints for the active `dbId` and emit per-group
+   * Download the complete restart-safe hint resource for the active `dbId`
+   * (main groups plus every authenticated Merkle-sibling group) and emit main
+   * per-group
    * progress as `"Hints: N/total (X%)"` log lines so the UI progress
    * bar can fill incrementally as INDEX (75 groups) and CHUNK (80
    * groups) responses arrive — a total of 155 groups in production.
    *
-   * Uses the native `fetchHintsWithProgress` entry point rather than
+   * Uses the native `fetchCompleteHintsWithProgress` entry point rather than
    * issuing a dummy query, so no per-group query budget is consumed
    * just to warm the hint state.
    */
@@ -1042,7 +1044,7 @@ export class HarmonyPirClientAdapter {
     this.wasmClient.setDbId(this.dbId);
     const sdkCatalog = this.catalogToSdkHandle();
     try {
-      await this.wasmClient.fetchHintsWithProgress(
+      await this.wasmClient.fetchCompleteHintsWithProgress(
         sdkCatalog,
         this.dbId,
         ({ done, total }) => {
@@ -1054,7 +1056,7 @@ export class HarmonyPirClientAdapter {
       sdkCatalog.free();
     }
     this.hintsLoaded = true;
-    this.log('Hints: ready');
+    this.log('Hints: complete main+sibling bundle ready');
   }
 
   // ══ Database switching + catalog ══════════════════════════════════════
@@ -1368,16 +1370,26 @@ export class HarmonyPirClientAdapter {
   async verifyMerkleBatch(
     results: HarmonyQueryResult[],
     onProgress?: (step: string, detail: string) => void,
+    dbId: number = this.dbId,
   ): Promise<boolean[]> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (dbId !== this.dbId) {
+      throw new Error(
+        `Harmony inclusion verification db_id ${dbId} does not match active db_id ${this.dbId}`,
+      );
+    }
+    if (results.length === 0
+        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
+      throw new Error('strict Harmony inclusion verification requires an INDEX trace for every result');
+    }
     if (this.isStrictVerification() && !this.strictReady) {
       throw new Error('strict verification is not ready');
     }
     if (this.isStrictVerification()
         && this.pairPreflightDbId !== null
-        && this.authorizedQueryDbId !== this.dbId) {
+        && this.authorizedQueryDbId !== dbId) {
       throw new Error(
-        `strict Harmony Merkle verification is bound to db_id ${this.authorizedQueryDbId}, not db_id ${this.dbId}`,
+        `strict Harmony Merkle verification is bound to db_id ${this.authorizedQueryDbId}, not db_id ${dbId}`,
       );
     }
     onProgress?.('Merkle', `verifying ${results.length} items`);
@@ -1387,7 +1399,13 @@ export class HarmonyPirClientAdapter {
       if (handle) return handle.toJson();
       return harmonyResultToJson(r);
     });
-    const verdicts = await this.wasmClient.verifyMerkleBatch(jsonArr, this.dbId);
+    const verdicts = await this.wasmClient.verifyMerkleBatch(jsonArr, dbId);
+    if (verdicts.length !== results.length) {
+      for (const result of results) scrubUnverifiedHarmonyResult(result);
+      throw new Error(
+        `Harmony inclusion verifier returned ${verdicts.length} verdicts for ${results.length} results`,
+      );
+    }
     const passed = verdicts.filter(Boolean).length;
     onProgress?.('Merkle', `done (${passed}/${verdicts.length} passed)`);
 
@@ -1395,6 +1413,7 @@ export class HarmonyPirClientAdapter {
     // renderers reading `r.merkleVerified` see the decision.
     for (let i = 0; i < results.length; i++) {
       results[i].merkleVerified = !!verdicts[i];
+      if (verdicts[i] !== true) scrubUnverifiedHarmonyResult(results[i]);
     }
     return verdicts;
   }
@@ -1415,6 +1434,15 @@ export class HarmonyPirClientAdapter {
   async saveHintsToCache(binding: HarmonyHintCacheBindingV1): Promise<void> {
     if (!this.wasmClient || !this.catalog) return;
     this.assertHintCacheBinding(binding);
+    const completenessCatalog = this.catalogToSdkHandle();
+    try {
+      if (!this.wasmClient.hasCompleteHints(completenessCatalog, this.dbId)) {
+        this.log('Incomplete main-only hint state was not persisted');
+        return;
+      }
+    } finally {
+      completenessCatalog.free();
+    }
     const bytes = this.wasmClient.saveHints();
     if (!bytes) {
       this.log('No hints loaded to persist');
@@ -1483,7 +1511,7 @@ export class HarmonyPirClientAdapter {
       this.wasmClient.setPrpBackend(record.backend);
       const sdkCatalog = this.catalogToSdkHandle();
       try {
-        this.wasmClient.loadHints(record.bytes, sdkCatalog, this.dbId);
+        this.wasmClient.loadCompleteHints(record.bytes, sdkCatalog, this.dbId);
       } finally {
         sdkCatalog.free();
       }
@@ -1811,6 +1839,20 @@ export class HarmonyPirClientAdapter {
     return sdk.WasmDatabaseCatalog.fromJson(json);
   }
 
+}
+
+function scrubUnverifiedHarmonyResult(result: HarmonyQueryResult): void {
+  result.utxos = [];
+  result.rawChunkData = undefined;
+  result.scriptHashBytes = undefined;
+  result.indexPbcGroup = undefined;
+  result.indexBinIndex = undefined;
+  result.indexBinContent = undefined;
+  result.allIndexBins = undefined;
+  result.chunkPbcGroups = undefined;
+  result.chunkBinIndices = undefined;
+  result.chunkBinContents = undefined;
+  result.merkleVerified = false;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -79,6 +79,43 @@ describe('strict OnionPIR duplicate Merkle coordinates', () => {
 });
 
 describe('strict OnionPIR session lifecycle', () => {
+  it('cannot install a tree-top response after its socket was disconnected', async () => {
+    let release!: (value: Uint8Array) => void;
+    const response = new Promise<Uint8Array>((resolve) => { release = resolve; });
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(() => response),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = client as any;
+    internal.sessionGeneration = 7;
+    internal.ws = socket;
+    internal.installedOnionRoots.set(0, {
+      dbId: 0,
+      onionSuperRootHex: 'ab'.repeat(32),
+      generation: 7,
+    });
+    internal.serverInfo = {
+      onionpir_merkle: {
+        arity: 2,
+        super_root: 'ab'.repeat(32),
+        index: { k: 1, num_pt: 1 },
+        data: { k: 1, num_pt: 1 },
+      },
+    };
+
+    const preflight = client.preflightDatabase(0);
+    client.disconnect();
+    release(new Uint8Array());
+
+    await expect(preflight).rejects.toThrow('stale OnionPIR tree-top response');
+    expect((client as any).verifiedTreeTops.size).toBe(0);
+  });
+
   it('rejects a query before any network traffic when no root is installed', async () => {
     const sendRaw = vi.fn();
     const client = new OnionPirWebClient({

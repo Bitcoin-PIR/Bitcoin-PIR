@@ -30,6 +30,23 @@ export interface ProductTrustedBootstrapV1 {
   providers: ProductTrustedProviderV1[];
 }
 
+/**
+ * Reject an obvious shared network ingress before the browser opens the second
+ * PIR connection.  The later offer-pair guard still checks issuer, receipt
+ * key, and Lightning payee material learned from the authenticated policy.
+ */
+export function assertIndependentProviderDialPairV1(
+  first: Pick<ProductTrustedProviderV1, 'providerIdHex' | 'endpoint'>,
+  second: Pick<ProductTrustedProviderV1, 'providerIdHex' | 'endpoint'>,
+): void {
+  if (first.providerIdHex === second.providerIdHex) {
+    throw new Error('independent PIR roles must select distinct provider identities');
+  }
+  if (trustedWebSocketOrigin(first.endpoint) === trustedWebSocketOrigin(second.endpoint)) {
+    throw new Error('independent PIR roles must not share one WebSocket origin');
+  }
+}
+
 export function parseProductTrustedBootstrapV1(serialized: string): ProductTrustedBootstrapV1 {
   let parsed: unknown;
   try { parsed = JSON.parse(serialized); } catch {
@@ -195,6 +212,17 @@ function websocketOrigin(field: string, value: unknown): string {
   if (parsed.protocol !== 'wss:' || parsed.username || parsed.password
       || parsed.search || parsed.hash || (parsed.pathname !== '' && parsed.pathname !== '/')) {
     throw new Error(`${field} must be a credential-free wss:// origin`);
+  }
+  return parsed.origin;
+}
+
+function trustedWebSocketOrigin(endpoint: string): string {
+  let parsed: URL;
+  try { parsed = new URL(endpoint); } catch {
+    throw new Error('trusted provider endpoint is invalid');
+  }
+  if (parsed.protocol !== 'wss:' || parsed.username || parsed.password) {
+    throw new Error('trusted provider endpoint must be a credential-free wss:// URL');
   }
   return parsed.origin;
 }

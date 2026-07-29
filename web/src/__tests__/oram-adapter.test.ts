@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_ORAM_ACCESS_BUDGET,
@@ -157,6 +157,70 @@ describe('ORAM adapter', () => {
       new Uint8Array(20),
     ])).rejects.toThrow(/atomic ORAM query.*at most 2/i);
     expect(calls).toBe(0);
+  });
+
+  it('rejects strict queries before the native channel, identity, and proof gate commits', async () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      strictVerification: true,
+    });
+    const queryBatch = vi.fn().mockResolvedValue([null]);
+    const internal = adapter as any;
+    internal.wasmClient = { queryBatch, isConnected: true };
+    internal.connected = true;
+    internal.strictReady = false;
+
+    await expect(adapter.queryBatch([new Uint8Array(20)]))
+      .rejects.toThrow('live verified native session');
+    expect(queryBatch).not.toHaveBeenCalled();
+  });
+
+  it('never treats an omitted attested pin claim as a match', () => {
+    const binaryAdapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      expectedServerPin: { binarySha256Hex: '11'.repeat(32) },
+    });
+    const base = {
+      serverStaticPub: new Uint8Array(32).fill(1),
+      serverStaticPubHex: '01'.repeat(32),
+      sevStatus: 'noSevHost',
+      binarySha256Hex: '',
+      gitRev: '',
+      launchMeasurementHex: '',
+      hasVcekChain: false,
+    };
+    expect((binaryAdapter as any).summariseAttestation(base, null, {})).toMatchObject({
+      state: 'mismatch',
+      pinStatus: 'binary-mismatch',
+      pinError: expect.stringMatching(/omitted.*binary/i),
+    });
+
+    const measurementAdapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      expectedServerPin: { measurementHex: '22'.repeat(48) },
+    });
+    expect((measurementAdapter as any).summariseAttestation({
+      ...base,
+      sevStatus: 'reportDataMatch',
+      binarySha256Hex: '11'.repeat(32),
+    }, null, {})).toMatchObject({
+      state: 'mismatch',
+      pinStatus: 'measurement-mismatch',
+      pinError: expect.stringMatching(/omitted.*measurement/i),
+    });
+  });
+
+  it('owns no second clear diagnostic WebSocket and clears strict proof state', () => {
+    const adapter = new OramPirClientAdapter({ serverUrl: 'wss://oram.example' });
+    const internal = adapter as any;
+    expect(internal.ws).toBeUndefined();
+    internal.catalog = { databases: [{ dbId: 0 }] };
+    internal.databaseProofs.set(0, { state: 'verified', dbId: 0 });
+    internal.strictReady = true;
+    internal.resetSessionTrust();
+    expect(internal.catalog).toBeNull();
+    expect(internal.databaseProofs.size).toBe(0);
+    expect(internal.strictReady).toBe(false);
   });
 
   it('rejects invalid direct ORAM per-request batch sizes', () => {

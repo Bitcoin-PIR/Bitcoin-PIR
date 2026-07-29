@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-JhjSph9J1zgGx1EgSoS+EFhIaos7JvRwjqhAAYcmiEs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-bF6P3LqlO7tcVJlhM8EGMrVCEEx7APKF36V6cbASUd4=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1639,7 +1639,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
@@ -1928,6 +1928,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         backend: 'dpf-pir', workload: 'dpf-query',
                         network: productTrustedBootstrap.network,
                         expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                        providerEndpoint: provider.endpoint,
                     },
                     close: async () => {
                         if (serverIndex === 0) {
@@ -1937,9 +1938,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             dpfAdmissionProviders[1] = null;
                         }
                     },
-                    finalizeAfterAuthorization: serverIndex === 1
-                        ? () => connected.finalizeStrictPair(dbId)
-                        : undefined,
                 };
             }
 
@@ -1966,6 +1964,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
                 network: productTrustedBootstrap.network,
                 expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                providerEndpoint: provider.endpoint,
             };
             if (providerIndex === 0) {
                 const datasetIdHex = connected.getMerkleRootHex();
@@ -2005,9 +2004,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         harmonyAdmissionProviders[1] = null;
                     }
                 },
-                finalizeAfterAuthorization: providerIndex === 1
-                    ? () => connected.finalizeStrictPair(dbId)
-                    : undefined,
             };
         }
 
@@ -2091,13 +2087,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
             const snapshot = controller.snapshot();
             if ((kind === 'dpf' || kind === 'harmony') && snapshot.legs.length === 1) {
-                const firstReady = snapshot.legs[0].status === 'authorized'
-                    || snapshot.legs[0].status === 'cached-resource-ready';
-                if (!firstReady) {
-                    admissionPanels[kind].render(snapshot);
-                    log(`${kind}: authorize the first provider before selecting the second.`, 'error');
-                    return;
-                }
                 const secondRole = kind === 'dpf' ? 'server1' : 'query';
                 const vault = await admissionVault();
                 await controller.prepareLeg(
@@ -2106,7 +2095,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ),
                 );
                 admissionPanels[kind].render(controller.snapshot());
-                log(`${kind}: second provider strictly verified; authorize its independent offer.`, 'success');
+                log(`${kind}: both providers and tree-tops strictly verified; capabilities may now be acquired or authorized independently.`, 'success');
                 return;
             }
             if (!controller.canQuery()) {
@@ -2771,7 +2760,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <p style="color: #999;">This address had no UTXO changes in the delta range.</p>
                 `;
                 container.appendChild(section);
-                return;
+                return section;
             }
 
             // Decode the raw chunk data as delta
@@ -2838,6 +2827,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             container.appendChild(section);
+            return section;
         }
 
         /**
@@ -3123,9 +3113,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (serverIndex === 1) {
                 const first = dpfAdmissionProviders[0];
                 if (!first) throw new Error('DPF server 0 must finish before server 1 is selected');
-                if (first.providerIdHex === provider.providerIdHex) {
-                    throw new Error('independent PIR roles must select distinct provider identities');
-                }
+                assertIndependentProviderDialPairV1(first, provider);
                 sharedArkFingerprint(first, provider);
                 sharedDatabasePins(first, provider);
             }
@@ -3392,21 +3380,25 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // cannot silently send a query under mismatched grants.
                 const dbId = dpfAdmissionDbId
                     ?? (parseInt(document.getElementById('dbSelect')?.value ?? '0') || 0);
-                const dbEntry = client.getCatalogEntry(dbId);
+                const queryClient = client;
+                if (!queryClient || !queryClient.isConnected()) {
+                    throw new Error('strict DPF connection was replaced before query');
+                }
+                const dbEntry = queryClient.getCatalogEntry(dbId);
                 const isDelta = dbEntry?.dbType === 1;
 
                 setProgress(5, `Batching ${N} queries${isDelta ? ` (delta db ${dbId})` : ''}...`);
 
                 // One batched call — all queries packed into shared batches
                 const results = isDelta
-                    ? await client.queryDelta(scriptHashes, dbId, (step, detail) => {
+                    ? await queryClient.queryDelta(scriptHashes, dbId, (step, detail) => {
                         let pct = 5;
                         if (step === 'Level 1') pct = 15;
                         else if (step === 'Level 2') pct = 50;
                         else if (step === 'Decode') pct = 90;
                         setProgress(pct, `${step}: ${detail}`);
                     })
-                    : await client.queryBatch(scriptHashes, (step, detail) => {
+                    : await queryClient.queryBatch(scriptHashes, (step, detail) => {
                         let pct = 5;
                         if (step === 'Level 1') pct = 15;
                         else if (step === 'Level 2') pct = 50;
@@ -3414,10 +3406,34 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         setProgress(pct, `${step}: ${detail}`);
                     }, dbId);
 
-                // Render all results
+                // Freeze both the transport object and db binding across the
+                // query + verification boundary. No result reaches the DOM
+                // until every inclusion verdict is true.
+                if (client !== queryClient || !queryClient.isConnected()) {
+                    throw new Error('strict DPF connection was replaced before verification');
+                }
+                if (!queryClient.hasMerkleForDb(dbId)) {
+                    throw new Error(`strict DPF db ${dbId} has no authenticated inclusion tree`);
+                }
+                setProgress(92, `Verifying ${N} inclusion proofs...`);
+                const verifiedResults = await requireVerifiedQueryResultsV1(
+                    results,
+                    async concrete => {
+                        if (client !== queryClient || !queryClient.isConnected()) {
+                            throw new Error('live strict DPF connection lost before verification');
+                        }
+                        return queryClient.verifyMerkleBatch(concrete, (step, detail) => {
+                            setProgress(94, `${step}: ${detail}`);
+                        }, dbId);
+                    },
+                    `DPF ${isDelta ? 'delta ' : ''}db ${dbId}`,
+                );
+                if (client !== queryClient || !queryClient.isConnected()) {
+                    throw new Error('strict DPF connection changed after verification');
+                }
+
+                // Render only the verified batch.
                 let found = 0;
-                const dpfQueryResults = [];
-                const dpfResultSections = [];
 
                 if (isDelta) {
                     // Delta header
@@ -3430,35 +3446,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
-                    const result = results[qi];
+                    const result = verifiedResults[qi];
                     if (result) found++;
 
                     if (isDelta) {
-                        renderDeltaResult(resultsContainer, spkHex, hashHex, result);
+                        const section = renderDeltaResult(resultsContainer, spkHex, hashHex, result);
+                        setResultMerkleState(section, 'verified');
                     } else {
-                        dpfResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result));
-                    }
-                    dpfQueryResults.push(result);
-                }
-
-                // Automatically verify after the result cards have painted.
-                if (!isDelta) {
-                    const verifiablePairs = dpfQueryResults
-                        .map((result, index) => ({ result, section: dpfResultSections[index] }))
-                        .filter(({ result }) => result && !result.isWhale && result.indexPbcGroup !== undefined);
-                    if (verifiablePairs.length > 0 && client.hasMerkleForDb(dbId)) {
-                        let verificationRootHex = '';
-                        await addBatchMerkleButton(resultsContainer, verifiablePairs.map(pair => pair.result), 'dpf',
-                            async (results, onProg) => {
-                                if (!client || !client.isConnected()) throw new Error('live strict DPF connection lost before verification');
-                                const verdicts = await client.verifyMerkleBatch(results, onProg, dbId);
-                                verificationRootHex = client.getMerkleRootHexForDb(dbId) || '';
-                                return verdicts;
-                            },
-                            () => verificationRootHex,
-                            undefined,
-                            verifiablePairs.map(pair => pair.section),
-                            true);
+                        const section = renderResult(resultsContainer, spkHex, hashHex, result);
+                        setResultMerkleState(section, 'verified');
                     }
                 }
 
@@ -4621,9 +4617,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (providerIndex === 1) {
                 const hintProvider = harmonyAdmissionProviders[0];
                 if (!hintProvider) throw new Error('Harmony hint role must finish before query role selection');
-                if (hintProvider.providerIdHex === provider.providerIdHex) {
-                    throw new Error('independent Harmony roles must select distinct provider identities');
-                }
+                assertIndependentProviderDialPairV1(hintProvider, provider);
                 sharedArkFingerprint(hintProvider, provider);
                 sharedDatabasePins(hintProvider, provider);
             }
@@ -5282,58 +5276,63 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             try {
                 hpSetProgress(5, `Batching ${N} queries...`);
+                const queryClient = hpClient;
+                const queryDbId = queryClient?.getDbId();
+                if (!queryClient || !hpHintsLoaded || !Number.isInteger(queryDbId)) {
+                    throw new Error('strict Harmony connection or database binding changed before query');
+                }
+                if (!queryClient.hasMerkleForDb(queryDbId)) {
+                    throw new Error(`strict Harmony db ${queryDbId} has no authenticated inclusion tree`);
+                }
 
                 // Pass hex scriptPubKeys — queryBatch now accepts both hex and addresses.
                 // Goes through the hpClient queue: a sync's fire-and-forget Merkle
                 // prewarm IIFE may still be running when the user lands here, and
                 // the wasm client's `&mut self` would otherwise be contended.
-                const results = await hpExclusive(() => hpClient.queryBatch(lines, (phase, detail) => {
+                const results = await hpExclusive(() => queryClient.queryBatch(lines, (phase, detail) => {
                     let pct = 5;
                     if (phase === 'Level 1') pct = 25;
                     else if (phase === 'Level 2') pct = 55;
                     else if (phase === 'Reassemble') pct = 90;
                     hpSetProgress(pct, `${phase}: ${detail}`);
-                }));
+                }, queryDbId));
 
-                // Store inspector data for the Inspect button.
-                hpInspectorDataMap = hpClient.lastInspectorData;
+                if (hpClient !== queryClient || queryClient.getDbId() !== queryDbId) {
+                    throw new Error('strict Harmony connection or database changed before verification');
+                }
+                const pendingResults = Array.from({ length: N }, (_, index) => results.get(index));
+                hpSetProgress(92, `Verifying ${N} inclusion proofs...`);
+                const verifiedResults = await requireVerifiedQueryResultsV1(
+                    pendingResults,
+                    concrete => hpExclusive(async () => {
+                        if (hpClient !== queryClient || !hpHintsLoaded
+                            || queryClient.getDbId() !== queryDbId) {
+                            throw new Error('live strict Harmony connection lost before verification');
+                        }
+                        return queryClient.verifyMerkleBatch(concrete, (step, detail) => {
+                            hpSetProgress(94, `${step}: ${detail}`);
+                        }, queryDbId);
+                    }),
+                    `Harmony db ${queryDbId}`,
+                );
+                if (hpClient !== queryClient || !hpHintsLoaded
+                    || queryClient.getDbId() !== queryDbId) {
+                    throw new Error('strict Harmony connection changed after verification');
+                }
+
+                // Inspector and result DOM state are released only after all
+                // inclusion verdicts succeeded.
+                hpInspectorDataMap = queryClient.lastInspectorData;
 
                 let found = 0;
-                const hpAllHResults = [];
-                const hpResultSections = [];
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
-                    const hResult = results.get(qi);
+                    const hResult = verifiedResults[qi];
                     const result = harmonyResultToRenderFormat(hResult);
                     if (result && result.entries.length > 0) found++;
-                    hpResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result, qi));
-                    hpAllHResults.push(hResult);
-                }
-
-                // Automatically verify after the result cards have painted.
-                // Include NOT FOUND results (no rawChunkData) — verifyMerkleBatch
-                // proves absence using allIndexBins.
-                const hpVerifiablePairs = hpAllHResults
-                    .map((result, index) => ({ result, section: hpResultSections[index] }))
-                    .filter(({ result }) => result && !result.whale && result.indexPbcGroup !== undefined);
-                const hpActiveDbId = hpClient.getDbId();
-                if (hpVerifiablePairs.length > 0 && hpClient.hasMerkleForDb(hpActiveDbId)) {
-                    const dbLabel = hpActiveDbId === 0
-                        ? undefined
-                        : `db ${hpActiveDbId}`;
-                    let verificationRootHex = '';
-                    await addBatchMerkleButton(resultsContainer, hpVerifiablePairs.map(pair => pair.result), 'harmonypir',
-                        async (results, onProg) => {
-                            if (!hpClient || !hpHintsLoaded) throw new Error('live strict Harmony connection lost before verification');
-                            const verdicts = await hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg));
-                            verificationRootHex = hpClient.getMerkleRootHex() || '';
-                            return verdicts;
-                        },
-                        () => verificationRootHex,
-                        dbLabel,
-                        hpVerifiablePairs.map(pair => pair.section),
-                        true);
+                    const section = renderResult(resultsContainer, spkHex, hashHex, result, qi);
+                    setResultMerkleState(section, 'verified');
                 }
 
                 hpSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -5527,6 +5526,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 oramClient = new OramPirClientAdapter({
                     serverUrl,
+                    strictVerification: true,
                     expectedArkFingerprint: providerArkFingerprintV1(provider),
                     expectedServerPin: provider.serverPin,
                     expectedServerId: provider.stableServerId,

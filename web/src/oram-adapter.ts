@@ -25,11 +25,9 @@ import {
 } from './dpf-adapter.js';
 import { hexToBytes } from './hash.js';
 import {
-  fetchDatabaseCatalog,
-  fetchServerInfoJson,
+  databaseCatalogFromWasmJson,
   type DatabaseCatalog,
   type DatabaseCatalogEntry,
-  type ServerInfoJson,
 } from './server-info.js';
 import {
   requireSdkWasm,
@@ -40,11 +38,14 @@ import {
   type WasmOramClient,
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
-import { ManagedWebSocket } from './ws.js';
 import {
   assertLiveOperatorIdentityV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
+import {
+  assertStrictDatabasePinCoverage,
+  assertStrictSingleTransportReady,
+} from './strict-verification.js';
 
 export interface OramLayoutInfo {
   backend: 'oram-direct';
@@ -111,6 +112,8 @@ export interface OramPirClientConfig {
    * reject cleartext ORAM frames.
    */
   useSecureChannel?: boolean;
+  /** Production enables the complete attestation/identity/root fail-closed gate. */
+  strictVerification?: boolean;
   onAttestation?: (info: ServerAttestation) => void;
   expectedArkFingerprint?: Uint8Array | null;
   expectedServerPin?: ServerAttestPin;
@@ -139,24 +142,19 @@ export interface OramPirClientConfig {
 
 export class OramPirClientAdapter {
   private readonly config: OramPirClientConfig;
-  private readonly ws: ManagedWebSocket;
   private wasmClient: WasmOramClient | null = null;
   private catalog: DatabaseCatalog | null = null;
-  private serverInfo: ServerInfoJson | null = null;
   private connected = false;
+  private strictReady = false;
   private secureChannelEstablished = false;
   private readonly databaseProofs = new Map<number, DatabaseProofStatus>();
+  private sessionGeneration = 0;
 
   attestation: ServerAttestation = { state: 'unattested' };
   operatorIdentity: OperatorIdentity = { state: 'not-checked' };
 
   constructor(config: OramPirClientConfig) {
     this.config = config;
-    this.ws = new ManagedWebSocket({
-      url: config.serverUrl,
-      label: 'ORAM server',
-      onLog: config.onLog,
-    });
   }
 
   static layout(): OramLayoutInfo {
@@ -173,32 +171,77 @@ export class OramPirClientAdapter {
   }
 
   async connect(): Promise<void> {
+    await this.teardown().catch(() => { /* start from an empty native session */ });
+    const generation = ++this.sessionGeneration;
+    let client: WasmOramClient | null = null;
+    this.resetSessionTrust();
     this.setState('connecting');
     try {
-      this.secureChannelEstablished = false;
-      await this.ws.connect();
-      this.serverInfo = await fetchServerInfoJson(this.ws);
-      this.catalog = await fetchDatabaseCatalog(this.ws);
+      if (this.isStrictVerification() && this.config.useSecureChannel === false) {
+        throw new Error('strict ORAM requires the secure channel');
+      }
 
       const sdk = requireSdkWasm();
-      this.wasmClient = new sdk.WasmOramClient(this.config.serverUrl);
-      await this.wasmClient.connect();
+      client = new sdk.WasmOramClient(this.config.serverUrl);
+      this.wasmClient = client;
+      await client.connect();
+      this.assertCurrentSession(generation, client, 'connect');
 
       if (this.config.useSecureChannel !== false) {
         await this.attestAndUpgrade();
       }
+      this.assertCurrentSession(generation, client, 'secure-channel upgrade');
+      if (this.isStrictVerification()) {
+        assertStrictSingleTransportReady({
+          secureChannelEstablished: this.secureChannelEstablished,
+          attestation: this.attestation,
+          expectedPin: this.config.expectedServerPin,
+          expectedServerId: this.config.expectedServerId,
+          operatorIdentity: this.operatorIdentity,
+        });
+      }
 
-      const wasmCatalog = await this.wasmClient.fetchCatalog();
-      wasmCatalog.free();
-      await this.verifyConfiguredDatabaseProofs();
+      // This native catalog is fetched over the exact transport that was just
+      // upgraded. A second clear diagnostic WebSocket is deliberately absent:
+      // it cannot add, remove, or rewrite databases used by query routing.
+      const wasmCatalog = await client.fetchCatalog();
+      try {
+        this.assertCurrentSession(generation, client, 'catalog fetch');
+        this.catalog = databaseCatalogFromWasmJson(wasmCatalog.toJson());
+      } finally {
+        wasmCatalog.free();
+      }
+      if (this.isStrictVerification()) {
+        assertStrictDatabasePinCoverage(
+          this.catalog.databases.map((database) => database.dbId),
+          this.config.databaseProofPins ?? [],
+        );
+      }
+      await this.verifyConfiguredDatabaseProofs(generation, client);
+      this.assertCurrentSession(generation, client, 'database-proof verification');
+      if (this.isStrictVerification()) {
+        for (const database of this.catalog.databases) {
+          if (this.databaseProofs.get(database.dbId)?.state !== 'verified') {
+            throw new Error(
+              `strict ORAM requires a verified database proof for db ${database.dbId}`,
+            );
+          }
+        }
+      }
 
       this.connected = true;
+      this.strictReady = this.isStrictVerification();
       this.setState('connected');
       this.log('Connected to ORAM server', 'success');
     } catch (e) {
       this.log(`ORAM connect failed: ${(e as Error)?.message ?? e}`, 'error');
-      await this.teardown().catch(() => { /* preserve original error */ });
-      this.setState('disconnected', (e as Error)?.message);
+      if (
+        generation === this.sessionGeneration
+        && (client === null || this.wasmClient === client)
+      ) {
+        await this.teardown().catch(() => { /* preserve original error */ });
+        this.setState('disconnected', (e as Error)?.message);
+      }
       throw e;
     }
   }
@@ -209,7 +252,8 @@ export class OramPirClientAdapter {
   }
 
   isConnected(): boolean {
-    return this.connected && this.ws.isOpen() && !!this.wasmClient?.isConnected;
+    const nativeConnected = this.connected && !!this.wasmClient?.isConnected;
+    return this.isStrictVerification() ? nativeConnected && this.strictReady : nativeConnected;
   }
 
   getCatalog(): DatabaseCatalog | null {
@@ -228,6 +272,9 @@ export class OramPirClientAdapter {
   serviceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
     const client = (): WasmOramClient => {
       if (!this.wasmClient) throw new Error('Not connected');
+      if (!this.isStrictVerification() || !this.strictReady) {
+        throw new Error('V1 service admission requires completed strict ORAM verification');
+      }
       if (!this.secureChannelEstablished) {
         throw new Error('V1 service admission requires a verified secure channel');
       }
@@ -334,6 +381,14 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (this.isStrictVerification()) {
+      if (!this.strictReady || !this.connected || !this.wasmClient.isConnected) {
+        throw new Error('strict ORAM query requires the live verified native session');
+      }
+      if (this.databaseProofs.get(dbId)?.state !== 'verified') {
+        throw new Error(`strict ORAM query requires a verified database proof for db ${dbId}`);
+      }
+    }
     const plannerConfig = this.config.batchPlanner
       ? {
           ...this.config.batchPlanner,
@@ -379,8 +434,14 @@ export class OramPirClientAdapter {
   }
 
   private async teardown(): Promise<void> {
+    ++this.sessionGeneration;
+    this.strictReady = false;
     this.secureChannelEstablished = false;
-    this.ws.disconnect();
+    this.connected = false;
+    this.catalog = null;
+    this.databaseProofs.clear();
+    this.attestation = { state: 'unattested' };
+    this.operatorIdentity = { state: 'not-checked' };
     const client = this.wasmClient;
     if (client) {
       this.wasmClient = null;
@@ -391,34 +452,44 @@ export class OramPirClientAdapter {
       }
       client.free();
     }
-    this.connected = false;
   }
 
-  private async verifyConfiguredDatabaseProofs(): Promise<void> {
-    if (!this.wasmClient) return;
+  private async verifyConfiguredDatabaseProofs(
+    generation: number,
+    client: WasmOramClient,
+  ): Promise<void> {
+    this.assertCurrentSession(generation, client, 'database-proof start');
+    this.databaseProofs.clear();
     const pins = this.config.databaseProofPins ?? [];
     for (const pin of pins) {
       let status: DatabaseProofStatus;
       let proofHandle: Awaited<ReturnType<WasmOramClient['verifyDatabaseProof']>> | null = null;
       try {
-        proofHandle = await this.wasmClient.verifyDatabaseProof(
+        proofHandle = await client.verifyDatabaseProof(
           pin.dbId,
           pin.paramsHashHex,
           pin.builderBinarySha256Hex,
           pin.builderGitCommit,
         );
+        if (generation !== this.sessionGeneration || this.wasmClient !== client) {
+          proofHandle.free();
+          proofHandle = null;
+          throw new Error(`stale ORAM database-proof result for db ${pin.dbId}`);
+        }
         const proof = verifiedDatabaseProofFromWasm(proofHandle);
         status = verifyDatabaseProofAgainstPin(proof, pin);
         if (status.state === 'verified') {
           const moved = proofHandle;
           proofHandle = null;
-          this.wasmClient.installVerifiedDatabaseProof(moved);
+          client.installVerifiedDatabaseProof(moved);
         }
       } catch (e) {
+        if (generation !== this.sessionGeneration || this.wasmClient !== client) throw e;
         status = databaseProofUnavailable(pin, e);
       } finally {
         proofHandle?.free();
       }
+      this.assertCurrentSession(generation, client, `database-proof db ${pin.dbId}`);
       this.databaseProofs.set(pin.dbId, status);
       this.config.onDatabaseProof?.(pin.dbId, status);
       if (status.state === 'verified') {
@@ -434,6 +505,30 @@ export class OramPirClientAdapter {
           'error',
         );
       }
+    }
+  }
+
+  private isStrictVerification(): boolean {
+    return this.config.strictVerification === true;
+  }
+
+  private resetSessionTrust(): void {
+    this.connected = false;
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.catalog = null;
+    this.databaseProofs.clear();
+    this.attestation = { state: 'unattested' };
+    this.operatorIdentity = { state: 'not-checked' };
+  }
+
+  private assertCurrentSession(
+    generation: number,
+    client: WasmOramClient,
+    operation: string,
+  ): void {
+    if (generation !== this.sessionGeneration || this.wasmClient !== client) {
+      throw new Error(`stale ORAM ${operation} result`);
     }
   }
 
@@ -486,9 +581,16 @@ export class OramPirClientAdapter {
         this.log(`ORAM channel left in cleartext (${summary.state})`, 'info');
       }
 
-      if (this.config.verifyOperatorIdentity) {
+      if (this.config.verifyOperatorIdentity && this.secureChannelEstablished && att) {
         const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
         const oid = await this.verifyOperatorIdentity(att, pin);
+        this.operatorIdentity = oid;
+        this.config.onOperatorIdentity?.(oid);
+      } else if (this.config.verifyOperatorIdentity) {
+        const oid: OperatorIdentity = {
+          state: 'error',
+          error: 'secure channel unavailable; operator identity was not requested',
+        };
         this.operatorIdentity = oid;
         this.config.onOperatorIdentity?.(oid);
       }
@@ -546,24 +648,32 @@ export class OramPirClientAdapter {
     if (pin) {
       const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
       if (stateOk) {
-        if (
-          pin.measurementHex &&
-          att.launchMeasurementHex &&
-          pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
+        if (pin.measurementHex && !att.launchMeasurementHex) {
+          result.pinStatus = 'measurement-mismatch';
+          result.pinError = 'attestation omitted the configured launch measurement claim';
+          result.state = 'mismatch';
+        } else if (
+          pin.measurementHex
+          && pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
         ) {
           result.pinStatus = 'measurement-mismatch';
           result.pinError = `MEASUREMENT pin mismatch: expected ${pin.measurementHex.slice(0, 16)}..., got ${att.launchMeasurementHex.slice(0, 16)}...`;
           result.state = 'mismatch';
+        } else if (pin.binarySha256Hex && !att.binarySha256Hex) {
+          result.pinStatus = 'binary-mismatch';
+          result.pinError = 'attestation omitted the configured binary sha256 claim';
+          result.state = 'mismatch';
         } else if (
-          pin.binarySha256Hex &&
-          att.binarySha256Hex &&
-          pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+          pin.binarySha256Hex
+          && pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
         ) {
           result.pinStatus = 'binary-mismatch';
           result.pinError = `binary_sha256 pin mismatch: expected ${pin.binarySha256Hex.slice(0, 16)}..., got ${att.binarySha256Hex.slice(0, 16)}...`;
           result.state = 'mismatch';
-        } else {
+        } else if (pin.measurementHex || pin.binarySha256Hex) {
           result.pinStatus = 'match';
+        } else {
+          result.pinStatus = 'no-pin';
         }
       }
     } else {

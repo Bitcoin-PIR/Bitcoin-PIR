@@ -3020,6 +3020,42 @@ impl WasmHarmonyClient {
             .map_err(err_to_js)
     }
 
+    /// Restore only a complete paid hint resource. The native client requires
+    /// proof-verified tree tops for `dbId` and rejects main-only or malformed
+    /// sibling state, clearing the partial in-memory bundle on failure.
+    #[wasm_bindgen(js_name = loadCompleteHints)]
+    pub fn load_complete_hints(
+        &mut self,
+        bytes: &[u8],
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+    ) -> Result<(), JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
+        self.inner
+            .load_complete_hints_bytes(bytes, db_info)
+            .map_err(err_to_js)
+    }
+
+    /// True only when every main and authenticated sibling hint group for the
+    /// proof-verified database is present in memory.
+    #[wasm_bindgen(js_name = hasCompleteHints)]
+    pub fn has_complete_hints(
+        &self,
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+    ) -> Result<bool, JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
+        self.inner
+            .has_complete_hints_for_verified_database(db_info)
+            .map_err(err_to_js)
+    }
+
     /// Install a [`WasmAtomicMetrics`] recorder.
     ///
     /// See [`WasmDpfClient::set_metrics_recorder`] for the full
@@ -3119,6 +3155,30 @@ impl WasmHarmonyClient {
         };
         self.inner
             .fetch_hints_with_progress(&db_info, &prog)
+            .await
+            .map_err(err_to_js)
+    }
+
+    /// Pre-fetch every main and Merkle-sibling hint group needed to restore a
+    /// paid hint entitlement across page reloads. Requires proof-verified tree
+    /// tops to have been installed through `preflightDatabase` first.
+    #[wasm_bindgen(js_name = fetchCompleteHintsWithProgress)]
+    pub async fn fetch_complete_hints_with_progress(
+        &mut self,
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+        progress: js_sys::Function,
+    ) -> Result<(), JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?
+            .clone();
+        let prog = JsHintProgress {
+            cb: SendWrapper::new(progress),
+        };
+        self.inner
+            .fetch_complete_hints_with_progress(&db_info, &prog)
             .await
             .map_err(err_to_js)
     }

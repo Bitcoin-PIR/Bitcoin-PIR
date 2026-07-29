@@ -1281,6 +1281,11 @@ export class OnionPirWebClient {
     console.log(`[OnionPIR] ${message}`);
   }
 
+  private recordDatabaseProofStatus(dbId: number, status: DatabaseProofStatus): void {
+    this.databaseProofStatuses.set(dbId, status);
+    this.config.onDatabaseProof?.(dbId, status);
+  }
+
   private setState(state: ConnectionState, msg?: string): void {
     this.connectionState = state;
     this.config.onConnectionStateChange?.(state, msg);
@@ -1372,13 +1377,35 @@ export class OnionPirWebClient {
           catalog.databases.map((db) => db.dbId),
           proofPins,
         );
+        const proofClient = {
+          verifyDatabaseProof: async (
+            dbId: number,
+            params?: string | null,
+            binary?: string | null,
+            commit?: string | null,
+          ) => {
+            const proof = await this.verifyDatabaseProof(dbId, params, binary, commit);
+            if (this.sessionGeneration !== generation || this.ws !== socket) {
+              proof.free();
+              throw new Error(`stale OnionPIR database-proof result for db ${dbId}`);
+            }
+            return proof;
+          },
+          installVerifiedDatabaseProof: (proof: WasmDatabaseProof) => {
+            if (this.sessionGeneration !== generation || this.ws !== socket) {
+              proof.free();
+              throw new Error('stale OnionPIR database-proof installation');
+            }
+            this.installVerifiedDatabaseProof(proof);
+          },
+          preflightDatabase: (dbId: number) => this.preflightDatabase(dbId),
+        };
         await verifyInstallAndPreflightDatabaseProofs({
-          client: this,
+          client: proofClient,
           pins: proofPins,
           onStatus: (dbId, status) => {
             if (this.sessionGeneration !== generation || this.ws !== socket) return;
-            this.databaseProofStatuses.set(dbId, status);
-            this.config.onDatabaseProof?.(dbId, status);
+            this.recordDatabaseProofStatus(dbId, status);
           },
         });
         if (this.ws !== socket || this.sessionGeneration !== generation) {
@@ -1739,6 +1766,9 @@ export class OnionPirWebClient {
 
   /** Bind the consolidated Onion tree-tops to the installed proof root. */
   async preflightDatabase(dbId: number): Promise<void> {
+    const socket = this.ws;
+    const generation = this.sessionGeneration;
+    if (!socket?.isOpen()) throw new Error('OnionPIR tree-top preflight requires a live socket');
     const installed = this.installedOnionRoots.get(dbId);
     const advertised = this.getOnionPirMerkleForDb(dbId);
     if (!installed || installed.generation !== this.sessionGeneration) {
@@ -1751,7 +1781,14 @@ export class OnionPirWebClient {
     new DataView(request.buffer).setUint32(0, payloadLen, true);
     request[4] = REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP;
     if (dbId !== 0) request[5] = dbId;
-    const response = await this.sendRaw(request);
+    const response = await socket.sendRaw(request);
+    if (
+      this.ws !== socket
+      || this.sessionGeneration !== generation
+      || !socket.isOpen()
+    ) {
+      throw new Error(`stale OnionPIR tree-top response for db ${dbId}`);
+    }
     this.recordRound({
       kind: 'merkle_tree_tops',
       server_id: 0,
@@ -1776,7 +1813,7 @@ export class OnionPirWebClient {
     this.verifiedTreeTops.set(dbId, {
       dbId,
       rootHex: installed.onionSuperRootHex,
-      generation: this.sessionGeneration,
+      generation,
       allTops,
     });
   }

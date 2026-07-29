@@ -358,6 +358,7 @@ export type {
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export {
+  assertIndependentProviderDialPairV1,
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
@@ -390,3 +391,4 @@ export {
   CASHU_POINT_BYTES,
 } from './payment-client.js';
 export type { CashuKeyset, PresentResult } from './payment-client.js';
+export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';

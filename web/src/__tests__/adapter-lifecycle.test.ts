@@ -67,6 +67,83 @@ describe('adapter WASM lifecycle', () => {
     policyFree.mockClear();
   });
 
+  it('scrubs DPF result data when inclusion verification returns false', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {
+      verifyMerkleBatch: vi.fn(async () => [false]),
+    };
+    const result: any = {
+      entries: [{ txid: new Uint8Array(32).fill(1), vout: 0, amount: 9n }],
+      totalSats: 9n,
+      startChunkId: 1,
+      numChunks: 1,
+      numRounds: 1,
+      isWhale: false,
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+    await expect(adapter.verifyMerkleBatch([result])).resolves.toEqual([false]);
+    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+    expect(result.allIndexBins).toBeUndefined();
+  });
+
+  it('scrubs Harmony result data when inclusion verification returns false', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {
+      verifyMerkleBatch: vi.fn(async () => [false]),
+    };
+    const result: any = {
+      address: 'fixture',
+      scriptHash: '11'.repeat(20),
+      utxos: [{ txid: '22'.repeat(32), vout: 0, value: 9 }],
+      whale: false,
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).resolves.toEqual([false]);
+    expect(result).toMatchObject({ utxos: [], merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+    expect(result.allIndexBins).toBeUndefined();
+  });
+
+  it('never persists a main-only Harmony hint cache over a complete entitlement', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+      prpBackend: 0,
+    });
+    const saveHints = vi.fn(() => new Uint8Array([1]));
+    (adapter as any).wasmClient = {
+      hasCompleteHints: vi.fn(() => false),
+      saveHints,
+    };
+    (adapter as any).catalog = { databases: [] };
+    (adapter as any).catalogToSdkHandle = () => ({ free: vi.fn() });
+    (adapter as any).databaseProofs.set(0, {
+      state: 'verified',
+      proof: { bucketSuperRootHex: '51'.repeat(32) },
+    });
+    await adapter.saveHintsToCache({
+      providerIdHex: '11'.repeat(32),
+      policyDigestHex: '31'.repeat(32),
+      scopeIdHex: '21'.repeat(32),
+      offerId: 1,
+      datasetIdHex: '51'.repeat(32),
+      prpBackend: 0,
+    });
+    expect(saveHints).not.toHaveBeenCalled();
+  });
+
   it('frees both DPF attestation handles when a UI callback throws', async () => {
     const free0 = vi.fn();
     const free1 = vi.fn();

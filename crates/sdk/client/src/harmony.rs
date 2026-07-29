@@ -2117,6 +2117,95 @@ impl HarmonyClient {
         Ok(())
     }
 
+    /// Restore a browser-paid hint bundle only when it contains every main
+    /// and Merkle-sibling group required by the already proof-verified tree
+    /// tops for `db_info`.
+    ///
+    /// A main-only blob is useful as an unauthenticated performance cache, but
+    /// it is not a durable paid resource: after reconnecting, fetching its
+    /// missing sibling hints would require another V2Full authorization.  The
+    /// browser therefore uses this stricter entry point and treats an
+    /// incomplete blob as a cache miss before it spends a query capability.
+    pub fn load_complete_hints_bytes(
+        &mut self,
+        bytes: &[u8],
+        db_info: &DatabaseInfo,
+    ) -> PirResult<()> {
+        self.load_hints_bytes(bytes, db_info)?;
+        match self.complete_hint_shape_for_verified_database(db_info) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                self.invalidate_groups();
+                Err(PirError::InvalidState(
+                    "paid Harmony hint cache is incomplete (main and sibling groups required)"
+                        .into(),
+                ))
+            }
+            Err(error) => {
+                self.invalidate_groups();
+                Err(error)
+            }
+        }
+    }
+
+    /// Return whether the in-memory hints exactly cover the verified database
+    /// and its authenticated Merkle tree-top shape.
+    pub fn has_complete_hints_for_verified_database(
+        &self,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<bool> {
+        self.complete_hint_shape_for_verified_database(db_info)
+    }
+
+    fn complete_hint_shape_for_verified_database(&self, db_info: &DatabaseInfo) -> PirResult<bool> {
+        self.verified_roots.require_db(db_info.db_id)?;
+        let tree_tops = self.verified_tree_tops.get(&db_info.db_id).ok_or_else(|| {
+            PirError::InvalidState(format!(
+                "db_id {} has no proof-verified Harmony tree tops",
+                db_info.db_id
+            ))
+        })?;
+        let k_index = db_info.index_k as usize;
+        let k_chunk = db_info.chunk_k as usize;
+        if tree_tops.len() != k_index + k_chunk {
+            return Ok(false);
+        }
+        let index_sib_levels = tree_tops[..k_index]
+            .iter()
+            .map(|top| top.cache_from_level)
+            .max()
+            .unwrap_or(0);
+        let chunk_sib_levels = tree_tops[k_index..]
+            .iter()
+            .map(|top| top.cache_from_level)
+            .max()
+            .unwrap_or(0);
+        let expected_index_sib = index_sib_levels
+            .checked_mul(k_index)
+            .ok_or_else(|| PirError::InvalidState("Harmony INDEX sibling shape overflow".into()))?;
+        let expected_chunk_sib = chunk_sib_levels
+            .checked_mul(k_chunk)
+            .ok_or_else(|| PirError::InvalidState("Harmony CHUNK sibling shape overflow".into()))?;
+
+        let exact_main = self.loaded_db_id == Some(db_info.db_id)
+            && self.index_groups.len() == k_index
+            && self.chunk_groups.len() == k_chunk
+            && (0..k_index).all(|group| self.index_groups.contains_key(&(group as u8)))
+            && (0..k_chunk).all(|group| self.chunk_groups.contains_key(&(group as u8)));
+        let exact_index_siblings = self.index_sib_groups.len() == expected_index_sib
+            && (0..index_sib_levels).all(|level| {
+                (0..k_index).all(|group| self.index_sib_groups.contains_key(&(level, group as u8)))
+            });
+        let exact_chunk_siblings = self.chunk_sib_groups.len() == expected_chunk_sib
+            && (0..chunk_sib_levels).all(|level| {
+                (0..k_chunk).all(|group| self.chunk_sib_groups.contains_key(&(level, group as u8)))
+            });
+        let no_siblings_required = expected_index_sib == 0 && expected_chunk_sib == 0;
+        let sibling_marker_valid =
+            no_siblings_required || self.sibling_hints_loaded == Some(db_info.db_id);
+        Ok(exact_main && exact_index_siblings && exact_chunk_siblings && sibling_marker_valid)
+    }
+
     /// Re-derive per-group `HarmonyGroup` instances from a
     /// [`hint_cache::HintBundle`].
     ///
@@ -2222,7 +2311,10 @@ impl HarmonyClient {
         // caller's `db_info`, and the bundle header has already been
         // fingerprint-checked, so this length compare is a sanity
         // guard rather than a trust boundary.
-        let full_main = bundle.main_index.len() == k_index && bundle.main_chunk.len() == k_chunk;
+        let full_main = bundle.main_index.len() == k_index
+            && bundle.main_chunk.len() == k_chunk
+            && (0..k_index).all(|group| bundle.main_index.contains_key(&(group as u8)))
+            && (0..k_chunk).all(|group| bundle.main_chunk.contains_key(&(group as u8)));
         if full_main {
             self.loaded_db_id = Some(db_info.db_id);
             // Tentatively claim sibling state if any are present; the
@@ -5873,6 +5965,45 @@ impl HarmonyClient {
         self.ensure_groups_ready(db_info, Some(progress)).await
     }
 
+    /// Pre-fetch the complete paid hint resource: every main group plus every
+    /// Merkle-sibling group dictated by the proof-verified tree tops.
+    ///
+    /// This is intentionally separate from [`fetch_hints_with_progress`],
+    /// whose main-only behaviour remains useful to legacy/ungated clients.
+    /// Payment-aware browser flows call this method after both provider legs
+    /// and the database tree tops have been verified, then persist the result
+    /// as one restart-safe entitlement resource.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
+    pub async fn fetch_complete_hints_with_progress(
+        &mut self,
+        db_info: &DatabaseInfo,
+        progress: &dyn HintProgress,
+    ) -> PirResult<()> {
+        if self.hint_conn.is_none() {
+            return Err(PirError::NotConnected);
+        }
+        self.verified_roots.require_db(db_info.db_id)?;
+        let tree_tops = self
+            .verified_tree_tops
+            .get(&db_info.db_id)
+            .cloned()
+            .ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "db_id {} has no proof-verified Harmony tree tops",
+                    db_info.db_id
+                ))
+            })?;
+        self.ensure_groups_ready(db_info, Some(progress)).await?;
+        self.ensure_sibling_groups_ready(db_info, &tree_tops)
+            .await?;
+        if !self.complete_hint_shape_for_verified_database(db_info)? {
+            return Err(PirError::BackendState(
+                "Harmony complete hint fetch produced an incomplete group shape".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Invalidate any loaded hint state and pin subsequent queries to
     /// `db_id`. No network traffic yet; the next
     /// [`execute_step`](Self::execute_step) /
@@ -9381,6 +9512,74 @@ mod tests {
         client.loaded_db_id = Some(info.db_id);
     }
 
+    fn seed_verified_complete_hint_shape(
+        client: &mut HarmonyClient,
+        info: &DatabaseInfo,
+        index_sib_levels: usize,
+        chunk_sib_levels: usize,
+    ) {
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![info.clone()],
+        });
+        client
+            .install_verified_database_roots(session_roots(info))
+            .unwrap();
+        let mut tops = Vec::with_capacity(info.index_k as usize + info.chunk_k as usize);
+        tops.extend((0..info.index_k).map(|_| TreeTop {
+            cache_from_level: index_sib_levels,
+            levels: Vec::new(),
+        }));
+        tops.extend((0..info.chunk_k).map(|_| TreeTop {
+            cache_from_level: chunk_sib_levels,
+            levels: Vec::new(),
+        }));
+        client.verified_tree_tops.insert(info.db_id, tops);
+    }
+
+    fn populate_sibling_groups(
+        client: &mut HarmonyClient,
+        info: &DatabaseInfo,
+        index_sib_levels: usize,
+        chunk_sib_levels: usize,
+    ) {
+        let k_index = info.index_k as usize;
+        let k_chunk = info.chunk_k as usize;
+        let index_w = (INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE) as u32;
+        let chunk_w = (CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE) as u32;
+        for level in 0..index_sib_levels {
+            for group in 0..k_index {
+                let group_id = (k_index + k_chunk) + level * k_index + group;
+                let state = new_harmony_group(
+                    info.index_bins,
+                    index_w,
+                    0,
+                    &client.master_prp_key,
+                    group_id as u32,
+                    client.prp_backend,
+                )
+                .expect("INDEX sibling HarmonyGroup init");
+                client.index_sib_groups.insert((level, group as u8), state);
+            }
+        }
+        for level in 0..chunk_sib_levels {
+            for group in 0..k_chunk {
+                let group_id =
+                    (k_index + k_chunk) + index_sib_levels * k_index + level * k_chunk + group;
+                let state = new_harmony_group(
+                    info.chunk_bins,
+                    chunk_w,
+                    0,
+                    &client.master_prp_key,
+                    group_id as u32,
+                    client.prp_backend,
+                )
+                .expect("CHUNK sibling HarmonyGroup init");
+                client.chunk_sib_groups.insert((level, group as u8), state);
+            }
+        }
+        client.sibling_hints_loaded = Some(info.db_id);
+    }
+
     #[test]
     fn with_hint_cache_dir_sets_and_reads() {
         let client =
@@ -9448,6 +9647,86 @@ mod tests {
         assert_eq!(client2.chunk_groups.len(), info.chunk_k as usize);
         // Sibling state wasn't populated; shouldn't be claimed.
         assert!(client2.sibling_hints_loaded.is_none());
+    }
+
+    #[test]
+    fn paid_cache_rejects_main_only_bundle_and_clears_partial_state() {
+        let mut info = sample_db_info();
+        info.has_bucket_merkle = true;
+        let mut source = HarmonyClient::new("wss://h", "wss://q");
+        source.set_master_key([0x61; 16]);
+        source.catalog = Some(DatabaseCatalog {
+            databases: vec![info.clone()],
+        });
+        populate_main_groups(&mut source, &info);
+        let bytes = source.save_hints_bytes().unwrap().expect("main-only bytes");
+
+        let mut restored = HarmonyClient::new("wss://h", "wss://q");
+        restored.set_master_key([0x61; 16]);
+        seed_verified_complete_hint_shape(&mut restored, &info, 1, 2);
+        let error = restored
+            .load_complete_hints_bytes(&bytes, &info)
+            .unwrap_err();
+        assert!(matches!(error, PirError::InvalidState(message) if
+            message.contains("incomplete")));
+        assert!(restored.loaded_db_id.is_none());
+        assert!(restored.index_groups.is_empty());
+        assert!(restored.chunk_groups.is_empty());
+        assert!(restored.index_sib_groups.is_empty());
+        assert!(restored.chunk_sib_groups.is_empty());
+    }
+
+    #[test]
+    fn paid_cache_round_trips_exact_main_and_sibling_shape() {
+        let mut info = sample_db_info();
+        info.has_bucket_merkle = true;
+        let mut source = HarmonyClient::new("wss://h", "wss://q");
+        source.set_master_key([0x62; 16]);
+        seed_verified_complete_hint_shape(&mut source, &info, 1, 2);
+        populate_main_groups(&mut source, &info);
+        populate_sibling_groups(&mut source, &info, 1, 2);
+        assert!(source
+            .has_complete_hints_for_verified_database(&info)
+            .unwrap());
+        let bytes = source.save_hints_bytes().unwrap().expect("complete bytes");
+
+        let mut restored = HarmonyClient::new("wss://h", "wss://q");
+        restored.set_master_key([0x62; 16]);
+        seed_verified_complete_hint_shape(&mut restored, &info, 1, 2);
+        restored.load_complete_hints_bytes(&bytes, &info).unwrap();
+        assert!(restored
+            .has_complete_hints_for_verified_database(&info)
+            .unwrap());
+        assert_eq!(restored.index_sib_groups.len(), info.index_k as usize);
+        assert_eq!(restored.chunk_sib_groups.len(), 2 * info.chunk_k as usize);
+    }
+
+    #[test]
+    fn paid_cache_requires_verified_tree_tops_before_restore() {
+        let mut info = sample_db_info();
+        info.has_bucket_merkle = true;
+        let mut source = HarmonyClient::new("wss://h", "wss://q");
+        source.set_master_key([0x63; 16]);
+        source.catalog = Some(DatabaseCatalog {
+            databases: vec![info.clone()],
+        });
+        populate_main_groups(&mut source, &info);
+        let bytes = source.save_hints_bytes().unwrap().expect("bytes");
+
+        let mut restored = HarmonyClient::new("wss://h", "wss://q");
+        restored.set_master_key([0x63; 16]);
+        restored.catalog = Some(DatabaseCatalog {
+            databases: vec![info.clone()],
+        });
+        restored
+            .install_verified_database_roots(session_roots(&info))
+            .unwrap();
+        let error = restored
+            .load_complete_hints_bytes(&bytes, &info)
+            .unwrap_err();
+        assert!(matches!(error, PirError::InvalidState(message) if
+            message.contains("tree tops")));
+        assert!(restored.loaded_db_id.is_none());
     }
 
     #[test]

@@ -1019,6 +1019,10 @@ export class BatchPirClientAdapter {
     dbId: number = 0,
   ): Promise<boolean[]> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (results.length === 0
+        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
+      throw new Error('strict DPF inclusion verification requires an INDEX trace for every result');
+    }
     if (this.isStrictVerification()
         && this.pairPreflightDbId !== null
         && this.authorizedQueryDbId !== dbId) {
@@ -1035,6 +1039,16 @@ export class BatchPirClientAdapter {
     });
 
     const verdicts = await this.wasmClient.verifyMerkleBatch(jsonArr, dbId);
+    if (verdicts.length !== results.length) {
+      for (const result of results) scrubUnverifiedDpfResult(result);
+      throw new Error(
+        `DPF inclusion verifier returned ${verdicts.length} verdicts for ${results.length} results`,
+      );
+    }
+    for (let index = 0; index < results.length; index++) {
+      results[index].merkleVerified = verdicts[index] === true;
+      if (verdicts[index] !== true) scrubUnverifiedDpfResult(results[index]);
+    }
     const passed = verdicts.filter(Boolean).length;
     onProgress?.('Merkle', `done (${passed}/${verdicts.length} passed)`);
     return verdicts;
@@ -1726,6 +1740,21 @@ export class BatchPirClientAdapter {
       v.free();
     }
   }
+}
+
+function scrubUnverifiedDpfResult(result: QueryResult): void {
+  result.entries = [];
+  result.totalSats = 0n;
+  result.rawChunkData = undefined;
+  result.scriptHash = undefined;
+  result.indexPbcGroup = undefined;
+  result.indexBinIndex = undefined;
+  result.indexBinContent = undefined;
+  result.allIndexBins = undefined;
+  result.chunkPbcGroups = undefined;
+  result.chunkBinIndices = undefined;
+  result.chunkBinContents = undefined;
+  result.merkleVerified = false;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

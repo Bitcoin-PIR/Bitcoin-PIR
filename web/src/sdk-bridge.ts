@@ -1023,6 +1023,12 @@ export interface WasmHarmonyClient {
    *  cross-checked against `(masterKey, prpBackend, catalog.get(dbId))`;
    *  a mismatch throws rather than silently loading stale hints. */
   loadHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
+  /** Restore only a complete paid hint resource. Requires authenticated
+   *  tree-tops and rejects/clears main-only or malformed sibling state. */
+  loadCompleteHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
+  /** Whether the in-memory state exactly covers all main and authenticated
+   *  sibling groups for this proof-verified database. */
+  hasCompleteHints(catalog: WasmDatabaseCatalog, dbId: number): boolean;
   /** Minimum per-group query budget across every loaded HarmonyGroup.
    *  `undefined` when nothing is loaded. */
   minQueriesRemaining(): number | undefined;
@@ -1043,6 +1049,13 @@ export interface WasmHarmonyClient {
    *  (typically 155). On a cache hit / already-loaded state the
    *  callback fires once with `done === total`. */
   fetchHintsWithProgress(
+    catalog: WasmDatabaseCatalog,
+    dbId: number,
+    progress: (event: { done: number; total: number; phase: string }) => void,
+  ): Promise<void>;
+  /** Fetch the restart-safe paid resource: all main and Merkle-sibling hints.
+   *  Strict tree-top preflight must already have completed. */
+  fetchCompleteHintsWithProgress(
     catalog: WasmDatabaseCatalog,
     dbId: number,
     progress: (event: { done: number; total: number; phase: string }) => void,
