@@ -1346,8 +1346,8 @@ function collectStableProtectedTask(pid, tid, protectedUids, protectedGids) {
   if (cgroupAfter !== cgroupBefore) {
     fail(`thread ${pid}/${tid} changed control groups during credential collection`);
   }
-  validateNonRootEdgeCapabilitiesV1(snapshot, pid, tid);
   if (!hasProtectedCredential(snapshot, protectedUids, protectedGids)) return null;
+  validateNonRootEdgeCapabilitiesV1(snapshot, pid, tid);
   return {
     capabilities: snapshot.capabilities,
     control_group: cgroupAfter,
@@ -1399,8 +1399,12 @@ function collectProtectedCredentialProcessPass(protectedUids, protectedGids, dea
         if (isVanishedProcError(error)) continue;
         throw error;
       }
-      validateNonRootEdgeCapabilitiesV1(initial, pid, tid);
       if (!hasProtectedCredential(initial, protectedUids, protectedGids)) continue;
+      // Capability closure applies to processes which can read one of the
+      // protected service identities. Unrelated host/runner processes may
+      // legitimately carry capabilities such as CAP_NET_RAW and are outside
+      // this evidence object's authority boundary.
+      validateNonRootEdgeCapabilitiesV1(initial, pid, tid);
       let holder;
       try {
         holder = collectStableProtectedTask(pid, tid, protectedUids, protectedGids);
