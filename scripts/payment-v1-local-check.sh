@@ -259,16 +259,45 @@ cargo clippy --locked --offline -p payment-issuer \
   -- -D warnings
 cargo check --locked --offline -p runtime --bin unified_server
 
-echo "[6/9] Standard Cashu and shared-issuer signed-pin TLS process boundaries"
+echo "[6/9] Standard Cashu, complete method/backend matrix, and shared-issuer TLS boundaries"
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
   standard_cashu_real_process_tls_two_provider_e2e \
   -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_process_e2e \
+  all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_onion_process_e2e \
+  all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --test payment_v1_tee_oram_process_e2e \
+  all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart \
+  -- --exact
 cargo clippy --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --bin unified_server \
   --test payment_v1_standard_cashu_process_e2e \
+  --test payment_v1_process_e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 cashu_boundary_log="$(mktemp "${TMPDIR:-/tmp}/bpir-cashu-boundary.XXXXXX")"

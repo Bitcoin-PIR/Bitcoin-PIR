@@ -240,10 +240,15 @@ jobs:
           cargo clippy --locked --offline -p runtime --features remote-authority-process-e2e --bin unified_server --test payment_v1_process_e2e --no-deps -- -D warnings
           cargo test --locked --offline -p payment-issuer --features remote-authority-process-e2e --test remote_authority_process_e2e payment_issuer_remote_authority_real_process_tls_e2e -- --exact
           cargo clippy --locked --offline -p payment-issuer --features remote-authority-process-e2e --all-targets --no-deps -- -D warnings
-      - name: Exercise Standard Cashu TLS providers and compile the real-CDK joined topology
+      - name: Exercise Standard Cashu TLS providers and the complete non-receipt backend matrix
         run: |
           cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_standard_cashu_process_e2e standard_cashu_real_process_tls_two_provider_e2e -- --exact
-          cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server --test payment_v1_standard_cashu_process_e2e --no-deps -- -D warnings
+          cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_process_e2e all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart -- --exact
+          cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_harmony_pool_process_e2e all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch -- --exact
+          cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_onion_process_e2e all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart -- --exact
+          cargo test --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --test payment_v1_tee_oram_process_e2e all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart -- --exact
+          cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server --test payment_v1_standard_cashu_process_e2e --test payment_v1_process_e2e --test payment_v1_harmony_pool_process_e2e --test payment_v1_onion_process_e2e --no-deps -- -D warnings
+          cargo clippy --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --bin unified_server --test payment_v1_tee_oram_process_e2e --no-deps -- -D warnings
           log_file="$(mktemp "${RUNNER_TEMP}/bpir-cashu-test-root-cli.XXXXXX")"
           trap 'rm -f -- "$log_file"' EXIT
           if cargo run --locked --offline -p runtime --bin unified_server -- --test-only-service-https-root-pem /does/not/exist >"$log_file" 2>&1; then

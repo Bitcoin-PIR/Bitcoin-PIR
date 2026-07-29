@@ -16,8 +16,12 @@
 
 #![cfg(unix)]
 
+#[path = "support/payment_v1_method_matrix.rs"]
+mod payment_v1_method_matrix;
+
 use ed25519_dalek::SigningKey;
 use onionpir::{Client as OnionPirClient, Server as OnionPirServer};
+use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
@@ -90,6 +94,7 @@ struct ProviderFixture {
     policy_digest: [u8; 32],
     issued_at: u64,
     receipt_not_after: u64,
+    method_matrix: Option<MethodMatrixFixture>,
 }
 
 impl ProviderFixture {
@@ -176,40 +181,44 @@ impl ServerProcess {
         ));
         let stdout = File::create(&stdout_path).expect("create Onion server stdout log");
         let stderr = File::create(&stderr_path).expect("create Onion server stderr log");
+        let mut args = vec![
+            "--bind-address".to_owned(),
+            "127.0.0.1".to_owned(),
+            "--port".to_owned(),
+            port.to_string(),
+            "--data-dir".to_owned(),
+            db_path.display().to_string(),
+            "--role".to_owned(),
+            "primary".to_owned(),
+            "--serve-queries".to_owned(),
+            "--require-service-auth-v1".to_owned(),
+            "--service-policy".to_owned(),
+            fixture.policy_path.display().to_string(),
+            "--service-provider-id-hex".to_owned(),
+            hex::encode(fixture.provider_id),
+            "--service-policy-key-hex".to_owned(),
+            hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+            "--service-store".to_owned(),
+            fixture.store_path.display().to_string(),
+            "--service-rollback-authority".to_owned(),
+            fixture.rollback_path.display().to_string(),
+            "--allow-local-service-rollback-authority-dev".to_owned(),
+            "--max-connections".to_owned(),
+            "32".to_owned(),
+            "--service-max-concurrent-auth".to_owned(),
+            "4".to_owned(),
+            "--websocket-handshake-timeout-ms".to_owned(),
+            "1000".to_owned(),
+            "--connection-idle-timeout-ms".to_owned(),
+            "300000".to_owned(),
+            "--service-pre-auth-timeout-ms".to_owned(),
+            "120000".to_owned(),
+        ];
+        if let Some(matrix) = &fixture.method_matrix {
+            matrix.extend_server_args(&mut args);
+        }
         let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
-            .args([
-                "--bind-address",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--data-dir",
-                db_path.to_str().expect("UTF-8 Onion test path"),
-                "--role",
-                "primary",
-                "--serve-queries",
-                "--require-service-auth-v1",
-                "--service-policy",
-                fixture.policy_path.to_str().expect("UTF-8 policy path"),
-                "--service-provider-id-hex",
-                &hex::encode(fixture.provider_id),
-                "--service-policy-key-hex",
-                &hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
-                "--service-store",
-                fixture.store_path.to_str().expect("UTF-8 store path"),
-                "--service-rollback-authority",
-                fixture.rollback_path.to_str().expect("UTF-8 rollback path"),
-                "--allow-local-service-rollback-authority-dev",
-                "--max-connections",
-                "32",
-                "--service-max-concurrent-auth",
-                "4",
-                "--websocket-handshake-timeout-ms",
-                "1000",
-                "--connection-idle-timeout-ms",
-                "300000",
-                "--service-pre-auth-timeout-ms",
-                "120000",
-            ])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -281,8 +290,8 @@ async fn paid_onion_scope_reaches_real_handler_and_enforces_durable_session_dfa(
     let onion = write_real_onion_artifacts(&db_path);
     let manifest_root = write_complete_manifest(&db_path);
     let now = unix_now();
-    let provider0 = build_provider(root.path(), 0, manifest_root, now);
-    let provider1 = build_provider(root.path(), 1, manifest_root, now);
+    let provider0 = build_provider(root.path(), 0, manifest_root, now, None);
+    let provider1 = build_provider(root.path(), 1, manifest_root, now, None);
 
     assert_ne!(provider0.provider_id, provider1.provider_id);
     assert_ne!(provider0.scope_id, provider1.scope_id);
@@ -410,6 +419,115 @@ async fn paid_onion_scope_reaches_real_handler_and_enforces_durable_session_dfa(
     assert_real_onion_listener(1, port1, &stdout1, &stderr1);
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
+#[tokio::test(flavor = "current_thread")]
+async fn all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart() {
+    let root = tempfile::tempdir().expect("Onion matrix test root");
+    chmod(root.path(), 0o700);
+    let mint = TestCashuMint::spawn(root.path());
+    let db_path = write_tiny_manifest_database(root.path());
+    let onion = write_real_onion_artifacts(&db_path);
+    let manifest_root = write_complete_manifest(&db_path);
+    let provider = build_provider(root.path(), 0, manifest_root, unix_now(), Some(&mint));
+    let port = unused_loopback_port();
+    let server = ServerProcess::spawn(root.path(), &db_path, &provider, port, 0);
+    let matrix = provider.method_matrix.as_ref().unwrap();
+
+    for method in MatrixMethod::ALL {
+        let fixture = matrix.method(method);
+        let (mut secure, accepted) =
+            open_verified_session(port, &provider, manifest_root, None).await;
+        let scope = accepted
+            .policy()
+            .scopes
+            .iter()
+            .find(|entry| entry.scope.scope_id() == provider.scope_id)
+            .unwrap();
+        assert_eq!(scope.scope.backend, BackendId::OnionPirV1);
+        assert_eq!(scope.scope.workload, WorkloadId::OnionEvaluateJobV1);
+        let proof = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &provider.scope_id,
+            fixture.offer_id(),
+            fixture.proof(0),
+        )
+        .unwrap();
+        let attempts_before_wrong_scope = mint.attempt_count();
+        let wrong = raw_authorization_request(
+            &accepted,
+            provider.scope_id,
+            fixture.offer_id(),
+            OperationStartV1::DpfQuery { db_id: 0 },
+            proof.clone(),
+        );
+        let response = secure.roundtrip(&wrong).await.unwrap();
+        let error = dangerous_unpaired_accept_service_authorization_response_v1(
+            &response,
+            &accepted,
+            provider.scope_id,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("wrong-scope"),
+            "{method:?}: {error}"
+        );
+        assert_eq!(mint.attempt_count(), attempts_before_wrong_scope);
+        let grant = dangerous_unpaired_authorize_service_operation_v1(
+            &mut secure,
+            &accepted,
+            provider.scope_id,
+            fixture.offer_id(),
+            OperationStartV1::OnionSession { db_id: 0 },
+            proof,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method:?} failed exact Onion auth: {error}"));
+        assert_eq!(grant.scope_id, provider.scope_id);
+        assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
+        exercise_complete_onion_frames(&mut secure, &onion).await;
+        secure.close().await.unwrap();
+    }
+    assert_eq!(
+        mint.attempt_count(),
+        1,
+        "only Standard Cashu reaches the mint"
+    );
+
+    let (stdout_first, stderr_first) = server.stop();
+    assert_real_onion_listener(0, port, &stdout_first, &stderr_first);
+    let server = ServerProcess::spawn(root.path(), &db_path, &provider, port, 1);
+    for method in MatrixMethod::ALL {
+        let fixture = matrix.method(method);
+        let (mut secure, accepted) =
+            open_verified_session(port, &provider, manifest_root, None).await;
+        let proof = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &provider.scope_id,
+            fixture.offer_id(),
+            fixture.proof(0),
+        )
+        .unwrap();
+        let error = dangerous_unpaired_authorize_service_operation_v1(
+            &mut secure,
+            &accepted,
+            provider.scope_id,
+            fixture.offer_id(),
+            OperationStartV1::OnionSession { db_id: 0 },
+            proof,
+        )
+        .await
+        .expect_err("matrix capability replay must stay terminal after restart");
+        assert!(
+            error.to_string().contains(method.replay_rejection()),
+            "{method:?}: {error}"
+        );
+        secure.close().await.unwrap();
+    }
+    assert_eq!(mint.attempt_count(), 1, "Cashu replay reached the mint");
+    let (stdout, stderr) = server.stop();
+    assert_real_onion_listener(0, port, &stdout, &stderr);
+}
+
 async fn exercise_second_job_limit(
     port: u16,
     fixture: &ProviderFixture,
@@ -475,7 +593,15 @@ async fn exercise_complete_real_onion_job(
 ) {
     let (mut secure, accepted) = open_verified_session(port, fixture, manifest_root, None).await;
     authorize_onion(&mut secure, &accepted, fixture, receipt).await;
-    register_keys(&mut secure, &onion.register).await;
+    exercise_complete_onion_frames(&mut secure, onion).await;
+    secure.close().await.unwrap();
+}
+
+async fn exercise_complete_onion_frames(
+    secure: &mut SecureChannelTransport<WsConnection>,
+    onion: &OnionWireFixture,
+) {
+    register_keys(secure, &onion.register).await;
 
     let index = secure.roundtrip(&onion.index(0)).await.unwrap();
     assert_real_onion_result(&index, RESP_ONIONPIR_INDEX_RESULT, 0, 2, onion);
@@ -497,7 +623,6 @@ async fn exercise_complete_real_onion_job(
         1,
         onion,
     );
-    secure.close().await.unwrap();
 }
 
 async fn exercise_extra_registration_fails_closed(
@@ -673,7 +798,13 @@ async fn open_verified_session(
     (secure, accepted)
 }
 
-fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> ProviderFixture {
+fn build_provider(
+    root: &Path,
+    index: u8,
+    manifest_root: [u8; 32],
+    now: u64,
+    matrix_mint: Option<&TestCashuMint>,
+) -> ProviderFixture {
     let provider_root = root.join(format!("onion-provider-{index}"));
     let store_dir = provider_root.join("store-domain");
     let rollback_dir = provider_root.join("rollback-domain");
@@ -752,6 +883,23 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         privacy_leakage: PrivacyLeakageV1::from_bits(PrivacyLeakageV1::DIRECT_PAYMENT_TO_SPEND)
             .unwrap(),
     };
+    let method_matrix = matrix_mint.map(|mint| {
+        MethodMatrixFixture::build(
+            &provider_root,
+            provider_id,
+            scope_id,
+            ENTITLEMENT_PROFILE,
+            issued_at,
+            expires_at,
+            1,
+            0x51u8.wrapping_add(index),
+            mint,
+        )
+    });
+    let mut offers = vec![offer];
+    if let Some(matrix) = &method_matrix {
+        offers.extend(matrix.offers().iter().cloned());
+    }
     let policy = ServicePolicyV1::sign(
         provider_id,
         1,
@@ -770,7 +918,7 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
                 max_hint_groups: 0,
                 max_work_units: 16,
             },
-            offers: vec![offer],
+            offers,
         }],
         &policy_signing_key,
     )
@@ -812,6 +960,7 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         policy_digest,
         issued_at,
         receipt_not_after,
+        method_matrix,
     }
 }
 
@@ -982,6 +1131,34 @@ fn encode_onion_batch(variant: u8, round_id: u16, queries: &[Vec<u8>]) -> Vec<u8
     request.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     request.extend_from_slice(&payload);
     request
+}
+
+fn raw_authorization_request(
+    accepted: &AcceptedServicePolicyV1,
+    scope_id: [u8; 32],
+    offer_id: u32,
+    operation: OperationStartV1,
+    proof: pir_service_protocol::AuthorizationProofV1,
+) -> Vec<u8> {
+    let offer = accepted
+        .policy()
+        .scopes
+        .iter()
+        .find(|entry| entry.scope.scope_id() == scope_id)
+        .and_then(|entry| entry.offers.iter().find(|offer| offer.offer_id == offer_id))
+        .unwrap();
+    let request = AuthBeginV1 {
+        policy_digest: accepted.policy_digest(),
+        scope_id,
+        offer_id,
+        scheme: offer.authorization,
+        key_id: offer.key_id.clone(),
+        operation,
+        proof: proof
+            .encode_for(offer.authorization, offer.free_mode)
+            .unwrap(),
+    };
+    encode_service_request(REQ_AUTH_BEGIN_V1, &request.encode_padded().unwrap())
 }
 
 fn encode_service_request(opcode: u8, body: &[u8]) -> Vec<u8> {

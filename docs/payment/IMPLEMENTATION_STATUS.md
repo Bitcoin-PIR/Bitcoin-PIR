@@ -961,9 +961,12 @@ findings and must not be collapsed into that count.
    synthetic report/database proof. The complete-query extension has passed a
    dedicated local branch run with proof-bound Merkle preflight, one real
    encrypted DPF query and explicit inclusion/absence verification. The
-   feature-gated Standard-Cashu/Free process cell and the real Harmony V2Full
-   lifecycle process test also passed the final coordinated current-tree Linux
-   matrix. The isolated current-tree browser rerun passed the real-issuer case
+   feature-gated provider-process supplement now joins Free, Standard Cashu,
+   Cashu BAT and experimental ARC production committers to Harmony hint/query,
+   Onion and TEE-ORAM handlers, including wrong-operation non-burn and durable
+   restart replay. Together with the DPF method-adapter and direct-receipt
+   backend cases, this closes the 25 method/workload process cells. The
+   isolated current-tree browser rerun passed the real-issuer case
    1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
    gate. Production trust-chain remains open. The local Standard-Cashu
    browser/provider join is complete. The

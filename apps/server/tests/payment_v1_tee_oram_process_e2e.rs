@@ -14,6 +14,9 @@
 
 #![cfg(all(unix, feature = "cuckoo-oram"))]
 
+#[path = "support/payment_v1_method_matrix.rs"]
+mod payment_v1_method_matrix;
+
 use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitOram,
     CircuitStoreAuthState, DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel,
@@ -22,6 +25,7 @@ use bitcoinpir_oram::{
     DIRECT_INDEX_INPUT_RECORD_SIZE,
 };
 use ed25519_dalek::SigningKey;
+use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS, SCRIPT_HASH_SIZE};
@@ -77,6 +81,7 @@ struct ProviderFixture {
     policy_digest: [u8; 32],
     issued_at: u64,
     receipt_not_after: u64,
+    method_matrix: Option<MethodMatrixFixture>,
 }
 
 impl ProviderFixture {
@@ -232,6 +237,9 @@ impl ServerProcess {
             "--service-pre-auth-timeout-ms".to_owned(),
             "60000".to_owned(),
         ]);
+        if let Some(matrix) = &fixture.method_matrix {
+            matrix.extend_server_args(&mut args);
+        }
         let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
             .args(args)
             .stdin(Stdio::null())
@@ -332,7 +340,7 @@ async fn paid_gate_reaches_real_direct_tee_oram_handler_and_replay_survives_rest
     let root = tempfile::tempdir().expect("test root");
     chmod(root.path(), 0o700);
     let (db_path, manifest_root, oram) = build_direct_oram_fixture(root.path());
-    let provider = build_provider(root.path(), manifest_root, unix_now());
+    let provider = build_provider(root.path(), manifest_root, unix_now(), None);
     let port = unused_loopback_port();
     let server = ServerProcess::spawn(root.path(), &db_path, &oram, &provider, port, 0);
     let request =
@@ -381,6 +389,7 @@ async fn paid_gate_reaches_real_direct_tee_oram_handler_and_replay_survives_rest
     let wrong_operation = raw_authorization_request(
         &accepted,
         provider.tee_scope_id,
+        OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         proof.clone(),
     );
@@ -469,7 +478,7 @@ fn production_direct_oram_startup_rejects_unbound_or_unsafe_configurations() {
     let root = tempfile::tempdir().expect("test root");
     chmod(root.path(), 0o700);
     let (db_path, manifest_root, oram) = build_direct_oram_fixture(root.path());
-    let provider = build_provider(root.path(), manifest_root, unix_now());
+    let provider = build_provider(root.path(), manifest_root, unix_now(), None);
     let reject = |generation: u8, mode: ServerSecurityMode, needle: &str| {
         let port = unused_loopback_port();
         ServerProcess::spawn_unchecked(
@@ -726,6 +735,126 @@ fn production_manifest_generator_commits_exact_direct_sources_and_layout() {
     );
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let mint = TestCashuMint::spawn(root.path());
+    let (db_path, manifest_root, oram) = build_direct_oram_fixture(root.path());
+    let provider = build_provider(root.path(), manifest_root, unix_now(), Some(&mint));
+    let port = unused_loopback_port();
+    let server = ServerProcess::spawn(root.path(), &db_path, &oram, &provider, port, 0);
+    let request =
+        Request::OramLookup(OramLookupRequest::compact(0, vec![oram.found_script_hash])).encode();
+    let matrix = provider.method_matrix.as_ref().unwrap();
+
+    for method in MatrixMethod::ALL {
+        let fixture = matrix.method(method);
+        let (mut secure, accepted) =
+            open_verified_session(port, &provider, manifest_root, &request).await;
+        let scope = accepted
+            .policy()
+            .scopes
+            .iter()
+            .find(|entry| entry.scope.scope_id() == provider.tee_scope_id)
+            .unwrap();
+        assert_eq!(scope.scope.backend, BackendId::TeeOramV1);
+        assert_eq!(scope.scope.workload, WorkloadId::TeeOramQueryV1);
+        let proof = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &provider.tee_scope_id,
+            fixture.offer_id(),
+            fixture.proof(0),
+        )
+        .unwrap();
+        let attempts_before_wrong_scope = mint.attempt_count();
+        let wrong = raw_authorization_request(
+            &accepted,
+            provider.tee_scope_id,
+            fixture.offer_id(),
+            OperationStartV1::DpfQuery { db_id: 0 },
+            proof.clone(),
+        );
+        let response = secure.roundtrip(&wrong).await.unwrap();
+        let error = dangerous_unpaired_accept_service_authorization_response_v1(
+            &response,
+            &accepted,
+            provider.tee_scope_id,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("wrong-scope"),
+            "{method:?}: {error}"
+        );
+        assert_eq!(
+            mint.attempt_count(),
+            attempts_before_wrong_scope,
+            "wrong-scope {method:?} reached the Cashu mint"
+        );
+        let grant = dangerous_unpaired_authorize_service_operation_v1(
+            &mut secure,
+            &accepted,
+            provider.tee_scope_id,
+            fixture.offer_id(),
+            OperationStartV1::TeeOramQuery { db_id: 0 },
+            proof,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method:?} failed exact TEE-ORAM auth: {error}"));
+        assert_eq!(grant.scope_id, provider.tee_scope_id);
+        assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
+        assert_real_oram_result(
+            &secure.roundtrip(&request).await.unwrap(),
+            &oram.expected_chunk_data,
+        );
+        secure.close().await.unwrap();
+    }
+    assert_eq!(
+        mint.attempt_count(),
+        1,
+        "only Standard Cashu reaches the mint"
+    );
+
+    let (stdout_first, stderr_first) = server.stop();
+    assert_oram_listener(port, &stdout_first, &stderr_first, &oram);
+    let server = ServerProcess::spawn(root.path(), &db_path, &oram, &provider, port, 1);
+    for method in MatrixMethod::ALL {
+        let fixture = matrix.method(method);
+        let (mut secure, accepted) =
+            open_verified_session(port, &provider, manifest_root, &request).await;
+        let proof = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &provider.tee_scope_id,
+            fixture.offer_id(),
+            fixture.proof(0),
+        )
+        .unwrap();
+        let error = dangerous_unpaired_authorize_service_operation_v1(
+            &mut secure,
+            &accepted,
+            provider.tee_scope_id,
+            fixture.offer_id(),
+            OperationStartV1::TeeOramQuery { db_id: 0 },
+            proof,
+        )
+        .await
+        .expect_err("matrix capability replay must stay terminal after restart");
+        assert!(
+            error.to_string().contains(method.replay_rejection()),
+            "{method:?}: {error}"
+        );
+        secure.close().await.unwrap();
+    }
+    assert_eq!(
+        mint.attempt_count(),
+        1,
+        "durable Cashu replay rejection must not contact the mint"
+    );
+    let (stdout_second, stderr_second) = server.stop();
+    assert_oram_listener(port, &stdout_second, &stderr_second, &oram);
+}
+
 async fn reject_wrong_receipt_scope(
     port: u16,
     fixture: &ProviderFixture,
@@ -791,6 +920,7 @@ async fn exercise_fresh_oram_grant(
 fn raw_authorization_request(
     accepted: &AcceptedServicePolicyV1,
     scope_id: [u8; 32],
+    offer_id: u32,
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
 ) -> Vec<u8> {
@@ -803,12 +933,12 @@ fn raw_authorization_request(
     let offer = scope_policy
         .offers
         .iter()
-        .find(|offer| offer.offer_id == OFFER_ID)
+        .find(|offer| offer.offer_id == offer_id)
         .unwrap();
     let request = AuthBeginV1 {
         policy_digest: accepted.policy_digest(),
         scope_id,
-        offer_id: OFFER_ID,
+        offer_id,
         scheme: offer.authorization,
         key_id: offer.key_id.clone(),
         operation,
@@ -939,7 +1069,12 @@ fn assert_oram_listener(port: u16, stdout: &str, stderr: &str, oram: &DirectOram
     assert!(!stderr.contains(&hex::encode(oram.found_script_hash)));
 }
 
-fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFixture {
+fn build_provider(
+    root: &Path,
+    manifest_root: [u8; 32],
+    now: u64,
+    matrix_mint: Option<&TestCashuMint>,
+) -> ProviderFixture {
     let provider_root = root.join("tee-oram-provider");
     let store_dir = provider_root.join("store-domain");
     let rollback_dir = provider_root.join("rollback-domain");
@@ -1037,6 +1172,23 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
         privacy_leakage: PrivacyLeakageV1::from_bits(PrivacyLeakageV1::DIRECT_PAYMENT_TO_SPEND)
             .unwrap(),
     };
+    let method_matrix = matrix_mint.map(|mint| {
+        MethodMatrixFixture::build(
+            &provider_root,
+            provider_id,
+            tee_scope_id,
+            ENTITLEMENT_PROFILE,
+            issued_at,
+            expires_at,
+            1,
+            0x31,
+            mint,
+        )
+    });
+    let mut offers = vec![offer];
+    if let Some(matrix) = &method_matrix {
+        offers.extend(matrix.offers().iter().cloned());
+    }
     let policy = ServicePolicyV1::sign(
         provider_id,
         1,
@@ -1055,7 +1207,7 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
                 max_hint_groups: 0,
                 max_work_units: 1,
             },
-            offers: vec![offer],
+            offers,
         }],
         &policy_signing_key,
     )
@@ -1097,6 +1249,7 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
         policy_digest,
         issued_at,
         receipt_not_after,
+        method_matrix,
     }
 }
 
