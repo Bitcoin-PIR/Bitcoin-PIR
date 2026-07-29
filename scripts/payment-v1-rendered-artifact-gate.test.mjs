@@ -636,7 +636,7 @@ function makeRuntimeEvidence(model) {
     },
     installed_files: clone(model.request.installed_files),
     manifest_sha256: model.manifestSha256,
-    schema_version: 2,
+    schema_version: 3,
     systemd_analyze_verify: {
       argv: clone(model.request.systemd_analyze_argv),
       exit_status: 0,

@@ -28,9 +28,9 @@ import { pathToFileURL } from "node:url";
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 2;
+const EVIDENCE_SCHEMA_VERSION = 3;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v2";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v3";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;

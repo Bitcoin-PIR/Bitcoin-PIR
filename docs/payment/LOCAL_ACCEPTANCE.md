@@ -1133,9 +1133,11 @@ review.
 
 The pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
 four deployment, rendered-artifact, runtime-evidence and source-fair suites
-139/139 with no skip. This includes real Linux `getent`, `id -G`, procfs
-all-thread scanning, non-root set-ID capability rejection, locked service-
-account policy validation and the stopped-edge evidence validator.
+140/140 with no skip. This includes real Linux `getent`, `id -G`, procfs
+all-thread scanning, all active capability sets plus `CapBnd`, rejection tests
+for CHOWN/DAC_OVERRIDE/FOWNER/SETFCAP and managed-unit capability expansion,
+locked service-account policy validation, the stopped-edge evidence validator,
+pinned Caddy adapted-JSON closure, and 4xx/no-backend cross-bind probes.
 
 This is deterministic compatibility evidence, not target-host activation. The
 actual candidate must first collect an independently digest-pinned

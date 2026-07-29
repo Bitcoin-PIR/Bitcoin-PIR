@@ -369,7 +369,7 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
         "reverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock",
         "reverse_proxy attacker.example:443",
       ),
-      /reviewed loopback upstream|non-reviewed or non-loopback upstream/,
+      /reverse_proxy upstream multiset|non-reviewed upstream/,
     ],
     [
       "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -461,6 +461,50 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
     ],
     [
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        /(https:\/\/:443 \{[\s\S]*?)respond "" 404/u,
+        '$1respond "" 200',
+      ),
+      /no-host fallback site.*respond/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@\n\tbind @PUBLIC_HTTPS_BIND@",
+      ),
+      /site binds must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `(extra_public_bind) {\n\tbind @PUBLIC_HTTPS_BIND@\n}\nimport extra_public_bind\n${text}`,
+      /import\/invoke expansion|snippet or named route/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `import /etc/bitcoinpir/payment-v1/edge/optional/*.Caddyfile\n${text}`,
+      /import\/invoke expansion/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `${text}\nhttps://0.0.0.0:444 { respond "" 404 }\n`,
+      /top-level block headers must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `${text}\n&(cross_lane) {\n\treverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock {\n\t\ttransport http {\n\t\t\tproxy_protocol v1\n\t\t}\n\t}\n}\ninvoke cross_lane\n`,
+      /import\/invoke expansion|snippet or named route/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\treverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock {\n\t}",
+      ),
+      /reverse_proxy upstream multiset must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
       (text) => text.replace("header_up -*", "header_up X-Forwarded-For {http.request.remote.host}"),
       /clear all client headers|header_up -\*|source or correlation header/,
     ],
@@ -491,7 +535,7 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
           "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
           "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @PUBLIC_HTTPS_BIND@",
         ),
-      /site must contain .*bind/,
+      /site binds must equal/,
     ],
     [
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",

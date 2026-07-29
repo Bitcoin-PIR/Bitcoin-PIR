@@ -36,7 +36,7 @@ passwd: files
 group: files
 ```
 
-The v2 live collector takes stable, root-owned, one-link, non-writable snapshots
+The v3 live collector takes stable, root-owned, one-link, non-writable snapshots
 without special mode bits of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
 before and after NSS enumeration, then confirms the same snapshot again after
 the remaining live checks. It requires the identity-relevant
@@ -52,15 +52,29 @@ and generation proof.
 
 Static NSS membership is not enough because a process can retain an old UID or
 supplementary GID after the files change. The collector therefore performs two
-bounded full `/proc/<pid>/task/<tid>` credential passes. Every non-root thread
-must also lack CAP_SETUID and CAP_SETGID in its inheritable, permitted,
-effective and ambient sets. Every thread
+bounded full `/proc/<pid>/task/<tid>` credential passes and records `CapInh`,
+`CapPrm`, `CapEff`, `CapAmb`, and `CapBnd`. Every non-root thread must lack the
+reviewed dangerous active capabilities that can bypass credentials, DAC/file
+ownership, process inspection, network isolation, audit/MAC policy, or kernel
+boundaries. The exact global mask is `CAP_CHOWN`, `CAP_DAC_OVERRIDE`,
+`CAP_DAC_READ_SEARCH`, `CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETGID`,
+`CAP_SETUID`, `CAP_SETPCAP`, `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_IPC_OWNER`,
+`CAP_SYS_MODULE`, `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_ADMIN`,
+`CAP_SYS_NICE`, `CAP_SYS_RESOURCE`, `CAP_MKNOD`, `CAP_AUDIT_CONTROL`,
+`CAP_SETFCAP`, `CAP_MAC_OVERRIDE`, `CAP_MAC_ADMIN`, `CAP_SYSLOG`,
+`CAP_AUDIT_READ`, `CAP_PERFMON`, `CAP_BPF`, and `CAP_CHECKPOINT_RESTORE`.
+Every thread
 holding a protected UID or GID must have the exact reviewed UID/GID/group set
 and belong to the current exact `/system.slice/<unit>.service` cgroup. This
 admits HAProxy master/worker processes in the same unit while rejecting stale
 processes outside it. Every long-running MainPID must appear in both passes,
 whose holder records must be byte-identical; a final systemd generation check
-then rebinds MainPID, InvocationID and ControlGroup.
+then rebinds MainPID, InvocationID and ControlGroup. For each managed process,
+all five masks must also stay within its rendered systemd capability policy:
+only the public and rollback Caddy units may retain
+`CAP_NET_BIND_SERVICE`; HAProxy and the business units must retain zero. An
+unmanaged actor's bounding set alone is not treated as active authority, but
+any managed `CapBnd` expansion fails closed.
 
 This is a credential-holder closure, not proof that no process inherited an
 already-connected Unix socket file descriptor through `SCM_RIGHTS`. Activation
@@ -70,7 +84,7 @@ inactive/dead with MainPID 0, an empty ControlGroup, no drop-ins, and no
 runtime socket path; requires every manifest-bound service account to use
 `/usr/sbin/nologin` or `/bin/false` and a locked `/etc/shadow` password; and
 requires two host-wide procfs passes with no protected UID/GID holder and no
-non-root CAP_SETUID/CAP_SETGID holder. Only after that exact evidence is
+non-root dangerous active-capability holder. Only after that exact evidence is
 reviewed may HAProxy start, followed by Caddy. A stopped HAProxy closes the
 server side of every old connection; its recreated RuntimeDirectory gives the
 next generation new listener inodes. The final `collect-live` pass binds the
@@ -119,16 +133,27 @@ requires the publisher's exact RFC1918/ULA WireGuard/private-route source in
 both Caddy's direct-peer matcher and HAProxy's PROXY-v2-decoded source check.
 PROXY v2 is not itself authenticated. Source integrity here comes from the
 protected Unix-socket directory/mode, exact Caddy supplementary-group
-membership, and the stopped/live process-credential closure that permits only
-the reviewed Caddy process to originate a new preamble. The second check is
+membership, the HAProxy owner identity, and the stopped/live
+process-credential closure. Both pinned edge processes are in this trust
+boundary: Caddy can originate a preamble, while HAProxy owns the sockets and a
+compromised HAProxy could self-connect and fabricate one. The second check is
 therefore defense in depth against routing/configuration errors, not an
-independent boundary against a compromised Caddy process. Its static server
+independent boundary against a compromised Caddy or HAProxy process. Its static server
 certificate must contain a WebPKI chain valid for the publisher hostname
 because the current `bpir-admin` publisher is a credential-free canonical WSS
 client. The HAProxy table, connection budget, egress budget, application
 listener, and relay application reservation are distinct from public readers.
 Source filtering is an ingress/DoS boundary, not publication authority: every
 accepted event still requires the pinned Nostr key and exact signed profile.
+
+The source gate treats the Caddyfile as a closed world: every reviewed site has
+an exact bind array, the global reverse-proxy upstream multiset is exact,
+imports, invokes, snippets and named routes are forbidden, and every PROXY
+transport is v2. A final no-host route on both listeners returns 404 so a valid
+hostname presented on the wrong bind cannot receive Caddy's empty-route 200.
+The pinned-Caddy integration test adapts the rendered file to JSON and checks
+the exact two-listener host/upstream graph, header deletion, fallback routes,
+and absence of named routes before exercising the sockets.
 
 The public and publisher sites still share one pinned Caddy process, UID,
 memory/task/file cgroup limits, and TLS scheduler. All four lanes likewise

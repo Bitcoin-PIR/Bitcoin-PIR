@@ -756,10 +756,12 @@ refunds or unspends the already committed capability.
 - a final policy snapshot detects `/etc/nsswitch.conf`, `/etc/passwd` or
   `/etc/group` drift during later live checks;
 - two bounded full `/proc/<pid>/task/<tid>` scans must produce identical
-  protected UID/GID holder records and reject any non-root inheritable,
-  permitted, effective or ambient CAP_SETUID/CAP_SETGID; an unmanaged stale
-  holder, wrong cgroup, changed credential, omitted MainPID, pass race, set-ID
-  capability or legacy evidence fails;
+  protected UID/GID holder records, record `CapInh`, `CapPrm`, `CapEff`,
+  `CapAmb`, and `CapBnd`, and reject reviewed dangerous active capabilities on
+  non-root threads; managed masks must fit the exact rendered policy (Caddy
+  only `CAP_NET_BIND_SERVICE`, HAProxy/business services zero). An unmanaged
+  stale holder, wrong cgroup, changed credential/capability, omitted MainPID,
+  pass race, DAC/ownership/set-ID/SETFCAP bypass or legacy evidence fails;
 - an exact managed-unit cgroup may contain master/worker processes only with the
   unit's complete reviewed UID/GID/group set, and a post-scan generation check
   rebinds MainPID, InvocationID and ControlGroup;
@@ -779,6 +781,10 @@ refunds or unspends the already committed capability.
   independently proves execution in the host initial PID namespace;
 - public and publisher relay listeners reject deliberate wrong-lane EVENTs and
   prove their exact event IDs absent before a correct-lane publication.
+- Caddy source validation rejects additive binds/upstreams, imports, invokes,
+  snippets, named routes and non-v2 proxy transports; pinned adapted JSON has
+  exactly the two reviewed listener/host/socket graphs, and both cross-bind
+  HTTP probes return 4xx without changing any of the four backend counters.
 
 ## Directory tests
 

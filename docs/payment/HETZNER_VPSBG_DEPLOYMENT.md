@@ -393,9 +393,12 @@ currently visible `getent` output looks complete; such a backend needs an
 authoritative backend-specific generation/completeness proof.
 
 Because removing a user from NSS does not revoke credentials already held by a
-Linux thread, the collector also executes two bounded full `/proc` PID/TID
-passes and rejects every non-root thread with CAP_SETUID or CAP_SETGID in an
-inheritable, permitted, effective or ambient set. Any protected UID/GID holder
+Linux thread, the v3 collector also executes two bounded full `/proc` PID/TID
+passes and records `CapInh`, `CapPrm`, `CapEff`, `CapAmb`, and `CapBnd`. It
+rejects every non-root thread with a reviewed dangerous active capability; for
+managed processes, every mask must be a subset of the rendered systemd policy,
+so only Caddy may use `CAP_NET_BIND_SERVICE` and HAProxy must remain at zero.
+Any protected UID/GID holder
 must have the exact service credentials in
 the exact current systemd unit cgroup; both holder snapshots must agree, every
 long-running MainPID must be present, and MainPID/InvocationID/ControlGroup are
@@ -409,7 +412,7 @@ mandatory activation ceremony is therefore cold: stop public Caddy and
 source-fair HAProxy so every old accepted connection is dead, then run
 `collect-stopped-edge` while both units are inactive/dead and every manifest
 socket is absent. The pass must show an empty protected-credential closure,
-locked/non-login service accounts and no non-root set-ID capability holder.
+locked/non-login service accounts and no non-root dangerous active-capability holder.
 Only after that evidence and its complete digest are approved may HAProxy
 start, followed by Caddy; `collect-live` then binds the new generation.
 Evidence from a warm reload is invalid. Run both collectors directly in the
@@ -456,7 +459,7 @@ local-privilege exploit.
    HAProxy and reset failed unit state. With both units inactive/dead and every
    manifest socket absent, run `collect-stopped-edge`; transfer and approve the
    complete evidence SHA-256. It must prove exact locked/non-login service
-   accounts, an empty protected-UID/GID closure and no non-root set-ID
+   accounts, an empty protected-UID/GID closure and no non-root dangerous active
    capability holder. Only then start HAProxy before Caddy, with no warm reload,
    and start the remaining
    private/unrouted canaries. Verify identity, binary/attestation,

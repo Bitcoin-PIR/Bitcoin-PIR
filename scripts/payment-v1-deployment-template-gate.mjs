@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
-    "f6d17399d323d49cbe0343c7a4faf31f3a7504b868fd087d2a99fd757831fbc3",
+    "31b981a179fe1af292704d983ce97b3401da4c18cd64002510b22bb7f21a4adf",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
     "237162cb5d57333adf789e612fcdb4be602bf6e0c9cd99a03ecd079ab8aa257f",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
@@ -1367,7 +1367,23 @@ function validateActivationPrerequisites(text) {
   requireText(text, "Before mainnet/real value", label);
 }
 
-function validateCaddyTemplate(text, label, requiredUpstreams) {
+function topLevelCaddyBlockHeaders(text, label) {
+  const headers = [];
+  let depth = 0;
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trimStart().startsWith("#") ? "" : rawLine.trim();
+    if (line === "") continue;
+    const opens = [...line].filter((character) => character === "{").length;
+    const closes = [...line].filter((character) => character === "}").length;
+    if (depth === 0 && opens > 0) headers.push(line);
+    depth += opens - closes;
+    if (depth < 0) fail(`${label} has an unmatched top-level closing brace`);
+  }
+  if (depth !== 0) fail(`${label} has an unterminated top-level block`);
+  return headers;
+}
+
+function validateCaddyTemplate(text, label, expectedUpstreams, expectedTopLevelHeaders) {
   requireText(text, "admin off", label);
   requireText(text, "persist_config off", label);
   requireText(text, "auto_https disable_redirects", label);
@@ -1381,10 +1397,39 @@ function validateCaddyTemplate(text, label, requiredUpstreams) {
   rejectPattern(text, /\b(?:debug|trace)\b/iu, label, "debug/trace logging");
   rejectPattern(text, /(?:^|\n)\s*log\s*\{/mu, label, "site access-log directive");
   rejectPattern(text, /(?:^|\n)\s*(?:forward_auth|php_fastcgi|file_server|redir)\b/mu, label, "unreviewed handler");
-  for (const upstream of requiredUpstreams) {
-    const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    const matches = text.match(new RegExp(`reverse_proxy\\s+${escaped}`, "gu")) ?? [];
-    if (matches.length === 0) fail(`${label} must contain reviewed loopback upstream ${upstream}`);
+  rejectPattern(
+    text,
+    /\b(?:import|invoke)\b/mu,
+    label,
+    "Caddy import/invoke expansion outside the reviewed closed world",
+  );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*&?\([^\n)]+\)\s*\{/mu,
+    label,
+    "Caddy snippet or named route outside the reviewed closed world",
+  );
+  const topLevelHeaders = topLevelCaddyBlockHeaders(text, label);
+  if (JSON.stringify(topLevelHeaders) !== JSON.stringify(expectedTopLevelHeaders)) {
+    fail(
+      `${label} top-level block headers must equal ${JSON.stringify(expectedTopLevelHeaders)}`,
+    );
+  }
+
+  const active = activeTemplateLines(text, label);
+  const actualUpstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} contains a malformed reverse_proxy directive`);
+      return match[1];
+    });
+  const sortedActualUpstreams = [...actualUpstreams].sort();
+  const sortedExpectedUpstreams = [...expectedUpstreams].sort();
+  if (JSON.stringify(sortedActualUpstreams) !== JSON.stringify(sortedExpectedUpstreams)) {
+    fail(
+      `${label} reverse_proxy upstream multiset must equal ${JSON.stringify(sortedExpectedUpstreams)}`,
+    );
   }
   const approvedUpstreams = new Set([
     "127.0.0.1:5610",
@@ -1396,9 +1441,14 @@ function validateCaddyTemplate(text, label, requiredUpstreams) {
     "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
     "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
   ]);
-  for (const match of text.matchAll(/(?:^|\n)\s*reverse_proxy[ \t]+(\S+)/gu)) {
-    if (!approvedUpstreams.has(match[1])) {
-      fail(`${label} contains non-reviewed upstream ${match[1]}`);
+  for (const upstream of actualUpstreams) {
+    if (!approvedUpstreams.has(upstream)) {
+      fail(`${label} contains non-reviewed upstream ${upstream}`);
+    }
+  }
+  for (const line of active.filter((candidate) => candidate.startsWith("proxy_protocol "))) {
+    if (line !== "proxy_protocol v2") {
+      fail(`${label} may use only the reviewed proxy_protocol v2 transport`);
     }
   }
 }
@@ -1430,9 +1480,19 @@ function caddySiteBlock(text, siteAddress, label) {
   fail(`${label} has an unterminated ${siteAddress} site block`);
 }
 
-function exactCaddySiteUpstreams(text, siteAddress, expectedUpstreams, label) {
+function exactCaddySiteBindingsAndUpstreams(
+  text,
+  siteAddress,
+  expectedBinds,
+  expectedUpstreams,
+  label,
+) {
   const block = caddySiteBlock(text, siteAddress, label);
   const active = activeTemplateLines(block, `${label} ${siteAddress} site`);
+  const binds = active.filter((line) => line.startsWith("bind "));
+  if (JSON.stringify(binds) !== JSON.stringify(expectedBinds)) {
+    fail(`${label} ${siteAddress} site binds must equal ${JSON.stringify(expectedBinds)}`);
+  }
   const upstreams = active
     .filter((line) => line.startsWith("reverse_proxy "))
     .map((line) => {
@@ -1457,61 +1517,61 @@ function requireExactActiveLine(active, line, expectedCount, label) {
 
 function validateHetznerPublicCaddyLaneBindings(text) {
   const label = "Hetzner public Caddy template";
-  const provider = exactCaddySiteUpstreams(
+  exactCaddySiteBindingsAndUpstreams(
     text,
     "@PROVIDER_WSS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
     ["unix//run/bitcoinpir-source-fair-edge/provider.sock"],
     label,
   );
-  const issuer = exactCaddySiteUpstreams(
+  exactCaddySiteBindingsAndUpstreams(
     text,
     "@PAYMENT_ISSUER_HTTPS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
     Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
     label,
   );
-  const publicDirectory = exactCaddySiteUpstreams(
+  exactCaddySiteBindingsAndUpstreams(
     text,
     "@DIRECTORY_RELAY_WSS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
     ["unix//run/bitcoinpir-source-fair-edge/directory-public.sock"],
     label,
   );
-  const publisher = exactCaddySiteUpstreams(
+  const publisher = exactCaddySiteBindingsAndUpstreams(
     text,
     "@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+    ["bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@"],
     ["unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock"],
     label,
   );
-
-  for (const [name, site] of [
-    ["provider", provider],
-    ["issuer", issuer],
-    ["public directory", publicDirectory],
-  ]) {
-    requireExactActiveLine(site.active, "bind @PUBLIC_HTTPS_BIND@", 1, `${label} ${name} site`);
-    requireExactActiveLine(
-      site.active,
+  const noHostFallback = exactCaddySiteBindingsAndUpstreams(
+    text,
+    "https://:443",
+    [
+      "bind @PUBLIC_HTTPS_BIND@",
       "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
-      0,
-      `${label} ${name} site`,
-    );
-  }
-  requireExactActiveLine(
-    publisher.active,
-    "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
-    1,
-    `${label} publisher site`,
-  );
-  requireExactActiveLine(
-    publisher.active,
-    "bind @PUBLIC_HTTPS_BIND@",
-    0,
-    `${label} publisher site`,
+    ],
+    [],
+    label,
   );
   requireExactActiveLine(
     publisher.active,
     "remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@",
     1,
     `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    noHostFallback.active,
+    "tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+    1,
+    `${label} no-host fallback site`,
+  );
+  requireExactActiveLine(
+    noHostFallback.active,
+    "respond \"\" 404",
+    1,
+    `${label} no-host fallback site`,
   );
 }
 
@@ -2057,9 +2117,17 @@ export function validateDeploymentTree(rootInput) {
     "Hetzner public Caddy template",
     [
       "unix//run/bitcoinpir-source-fair-edge/provider.sock",
-      "unix//run/bitcoinpir-source-fair-edge/issuer.sock",
+      ...Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
       "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
       "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+    ],
+    [
+      "{",
+      "@PROVIDER_WSS_HOST@ {",
+      "@PAYMENT_ISSUER_HTTPS_HOST@ {",
+      "@DIRECTORY_RELAY_WSS_HOST@ {",
+      "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+      "https://:443 {",
     ],
   );
   validateHetznerPublicCaddyLaneBindings(publicEdge.text);
@@ -2120,6 +2188,7 @@ export function validateDeploymentTree(rootInput) {
     authorityEdge.text,
     "rollback-authority Caddy template",
     ["127.0.0.1:8099"],
+    ["{", "@ROLLBACK_AUTHORITY_HTTPS_HOST@ {"],
   );
   for (const required of [
     "bind @ROLLBACK_AUTHORITY_PRIVATE_BIND@",
