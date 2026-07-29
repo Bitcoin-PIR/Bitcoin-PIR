@@ -1,0 +1,85 @@
+{
+  "deployment_id": "replace-edge-rollback-authority-v1",
+  "deployment_profile": "edge-rollback-authority-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-edge/caddy",
+      "target_path": "/opt/bitcoinpir/caddy/INVALID-REPLACE-WITH-CADDY-SHA256/caddy",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-edge/caddy.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/edge/caddy.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-edge/edge-config.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/edge/edge-config.sha256",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62911,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-edge/rollback-authority-server.crt",
+      "target_path": "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62911,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-edge/rollback-authority-server.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
+      "uid": 62911
+    }
+  ],
+  "placeholders": {
+    "CADDY_SHA256": "INVALID_REPLACE_WITH_CADDY_SHA256",
+    "ROLLBACK_AUTHORITY_CLIENT_IP": "INVALID_REPLACE_WITH_PRIVATE_CLIENT_IP",
+    "ROLLBACK_AUTHORITY_HTTPS_HOST": "INVALID_REPLACE_WITH_AUTHORITY_HOST",
+    "ROLLBACK_AUTHORITY_PRIVATE_BIND": "INVALID_REPLACE_WITH_PRIVATE_BIND_IP"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 62911,
+      "mode": "0440",
+      "source_path": "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-payment-v1-edge.service",
+      "uid": 0
+    }
+  ],
+  "schema_version": 1,
+  "service_identities": [
+    {
+      "gid": 62911,
+      "group_name": "bitcoinpir-payment-edge",
+      "uid": 62911,
+      "unit_name": "bitcoinpir-payment-v1-edge.service",
+      "user_name": "bitcoinpir-payment-edge"
+    }
+  ]
+}

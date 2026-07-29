@@ -6,6 +6,27 @@ template ends in `.in`, has no `[Install]` section, and requires an explicit
 VPSBG input is only a non-executable argument fragment; it is neither a runit
 service nor a replacement for the measured Tier 3 run script.
 
+## Phase and input boundary
+
+These templates support review and rendering; they do not collapse the four
+deployment phases:
+
+| Phase | Template consequence |
+| --- | --- |
+| Source merge | run source/CI gates only; do not render or install |
+| Private no-funds | render an approved private/unrouted profile and collect target evidence after remote-host approval |
+| Public Signet | only a separately approved default-Signet profile with staging-only persistent identities/test coins and separately approved public surfaces |
+| Production mainnet | blocked; no reviewed mainnet deployment preflight/profile exists |
+
+Inventory non-secret values in
+[DEPLOYMENT_INPUT_MATRIX.md](../../docs/payment/DEPLOYMENT_INPUT_MATRIX.md) and
+copy the matching fail-closed plan shape from
+[render-plan-skeletons/](../../docs/payment/render-plan-skeletons/). Do not put
+secrets in either artifact. An approval for remote mutation, persistent Signet
+custody, faucet/test-coin handling, public Nostr/DNS publication, VPSBG UKI
+build/upload/reboot, production-key installation/use, or mainnet/real-value
+operation authorizes only that action.
+
 The templates divide responsibilities as follows:
 
 - `systemd/hetzner-provider.service.in` is the paid/provider process on Hetzner.
@@ -18,6 +39,11 @@ The templates divide responsibilities as follows:
   policy-bound DHKE scalar between its issuer and that provider; compromise of
   either copy can forge that BAT lineage. Omit this method and use online
   shared-issuer redemption when that shared-secret boundary is unacceptable.
+  A mint-dependent Standard Cashu offer must be omitted from current and
+  retained policies unless the render plan selects an approved production
+  mint origin, WebPKI/pins, unit, finite custody/exposure limits and recovery/
+  outage procedure. The local CDK fake-wallet mint is never a production
+  dependency.
 - `systemd/hetzner-cln-rpc-guard.service.in` is the only principal other than
   CLN and the dedicated one-shot preflight that may traverse the native CLN
   socket directory. It parses and reconstructs bounded JSON-RPC, permits only
@@ -84,6 +110,11 @@ authority application listeners remain on loopback behind separately reviewed,
 same-host TLS edges. ARC, fake Lightning, local rollback flags, legacy payment
 gates, test-only trust roots, and source-IP Free quotas behind a proxy are
 forbidden.
+
+The checked-in Lightning preflight is default-Signet-specific. Its successful
+result is neither mainnet evidence nor permission to render mainnet. Mainnet
+requires a new reviewed preflight/profile and negative tests before any
+production or real-funds approval can be acted on.
 
 The signed policy is the price/resource contract. DPF query, Harmony hint,
 Harmony query, Onion query and Direct ORAM require distinct scopes and may have
@@ -175,3 +206,9 @@ binary-dependent skip.
 
 See `docs/payment/HETZNER_VPSBG_DEPLOYMENT.md` for topology, rendering,
 activation, rollback, and remote-approval boundaries.
+
+The directory service is still deliberately non-activatable while
+`relay-selection.toml.example` is `UNRESOLVED`. Do not include it in a public
+render, install a publisher key, or publish a catalog merely because the rest
+of a profile passes. Relay resolution, key installation/use and public Nostr
+publication are distinct reviewed/approved steps.

@@ -4,6 +4,32 @@ Status: pre-production operating contract. No production deployment, public
 relay publication, external mint access or real Lightning operation has been
 performed under this plan.
 
+## Deployment phases and approval scope
+
+Every operator record must name one phase: **source merge**, **private no-
+funds**, **public Signet**, or **production mainnet**.
+
+- Source merge records the reviewed commit and exact-head CI; it installs or
+  activates nothing.
+- Private no-funds is an approved remote-host, private/unrouted evidence drill
+  with synthetic credentials and no persistent Lightning state or public
+  publication.
+- Public Signet uses staging-only persistent wallet/node/channel identities,
+  test coins and public staging surfaces.
+- Production mainnet is currently blocked because the repository's deployment
+  preflight is default-Signet-specific; no reviewed mainnet preflight exists.
+
+Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory every
+non-secret input and [render-plan-skeletons/](render-plan-skeletons/) as the
+only starting shapes for a closed render plan. Preserve merge/CI and activation
+evidence in an external record; do not put secret paths' contents, keys,
+invoices, payment hashes, preimages or bearer proofs in that record.
+
+Remote mutation, persistent Signet custody, faucet/test-coin use, public Nostr
+or DNS publication, VPSBG UKI build/upload/reboot, production-key installation/
+use, and mainnet/real-value operations are separate approval gates. No approval
+implies any other gate.
+
 ## 1. Choose the topology before choosing prices
 
 Pricing and commercial policy belong in signed offers. Cryptographic and
@@ -505,7 +531,15 @@ digest/epoch. Never attach an empty synthetic local-claim namespace to the old
 exact issuer replay history: that would make an old signed success deliverable
 again.
 
-For every standard-Cashu mint/unit in a current or retained policy, configure
+If no exact production Standard Cashu mint has been selected and approved,
+omit every mint-dependent Cashu offer from both current and retained policies.
+The disposable CDK fake-wallet mint is test evidence, not a production mint.
+When a production mint is selected, its canonical origin, WebPKI/leaf pin set,
+unit, manifest, finite exposure caps, recovery/custody keys and outage/
+retirement procedure become required render-plan inputs.
+
+For every standard-Cashu mint/unit that remains in a current or retained
+policy, configure
 one exact finite value/note exposure cap plus distinct recovery and custody
 keyrings. Run `bpir-admin cashu-custody inventory` before activation and
 rehearse provider-bound recipient key generation, bounded export, exact replay,
@@ -528,6 +562,13 @@ blinding scalar or query data into operator records.
 
 Run `LOCAL_ACCEPTANCE.md` first. Then require all of the following before any
 public/staging listener:
+
+The directory relay is still `UNRESOLVED`; therefore a public directory
+listener or catalog publication is not currently eligible for activation. A
+private no-funds provider/issuer drill must remain unrouted and must not invent
+a relay substitute. Likewise, the current Lightning preflight accepts only
+default Signet. Mainnet cannot proceed by changing a config value or by user
+approval alone; it needs a reviewed mainnet implementation and negative tests.
 
 1. put the loopback-only `payment-issuer serve-cln` behind a separately managed
    TLS edge; retain the built-in process-wide quote/status/mutation/
@@ -633,7 +674,12 @@ aggregate edge controls across many connections.
 
 ## 7. Activation order
 
-When separately approved, use this order:
+When the exact phase and every action it needs are separately approved, use
+this order. For private no-funds, omit publication and public routing steps and
+keep the candidate unreachable externally. For public Signet, keep
+`real_funds_authorized = false` and use staging-only keys. There is no valid
+production-mainnet execution of this sequence until its missing preflight is
+implemented and reviewed.
 
 1. freeze exact binaries, hashes, policies, directory artifacts and key IDs;
 2. restore/check database and independent rollback authority separately;
@@ -738,12 +784,25 @@ replacement event, never an older event.
 
 Obtain fresh user approval immediately before any of these actions:
 
-- production deployment or remote-server operation;
-- connecting the executable to a real Lightning node or spending/receiving
-  real Lightning funds;
+- any remote-server mutation or deployment, including a private no-funds
+  install/drill;
+- creating or using persistent Signet node identities, wallets or channels;
+- requesting, receiving or spending Signet faucet/test coins;
+- any VPSBG measured-UKI build, upload, reboot, measurement/pin change or
+  rollback selection;
+- installing, transferring, using or rotating a production key;
+- connecting the executable to a mainnet Lightning node or spending/receiving
+  real-value Lightning funds;
 - contacting an external Cashu mint with production value;
-- publishing provider catalogs to a public Nostr relay;
-- installing production keys or performing a production database migration.
+- publishing provider catalogs/events to a public Nostr relay or changing
+  public DNS/routing; and
+- performing a production database migration.
+
+These approvals are independent and non-transitive. A remote-host approval is
+not a Signet, Nostr, VPSBG-UKI, production-key or real-funds approval; a Signet
+approval is not a mainnet approval. Even with approval, mainnet remains blocked
+until the missing reviewed deployment preflight exists, and relay publication
+remains blocked while relay selection is `UNRESOLVED`.
 
 ARC additionally requires an independent cryptographic review before it can
 leave experimental status.

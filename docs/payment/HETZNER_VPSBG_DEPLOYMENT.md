@@ -4,6 +4,31 @@ Status: non-activating deployment contract. This document does not authorize a
 remote host change, public Nostr publication, a VPSBG UKI upload/reboot, or use
 of real Lightning funds.
 
+## Phase boundary and deployment inputs
+
+This contract separates four phases: **source merge**, **private no-funds**,
+**public Signet**, and **production mainnet**. Source merge changes no host.
+Private no-funds may install an unrouted candidate and collect live evidence,
+but only after a remote-host approval and with no persistent Lightning state,
+public catalog or valuable coins. Public Signet adds persistent staging-only
+wallets/channels, test coins and public staging surfaces under their own
+approvals. Production mainnet is not currently renderable: the implemented
+deployment preflight is default-Signet-specific and no reviewed mainnet
+preflight exists.
+
+Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) as the non-secret
+input inventory and begin each proposed closed render plan from
+[render-plan-skeletons/](render-plan-skeletons/). A skeleton remains inert
+until every required value and external approval record is present; do not put
+private keys, macaroon/cookie material, invoices or bearer proofs in either
+artifact.
+
+These approvals are independent: remote Hetzner mutation; persistent Signet
+identity/wallet/channel creation; Signet faucet/test-coin handling; DNS or
+public Nostr publication; VPSBG UKI build/upload/reboot; production-key
+installation/use; and mainnet/real-value activity. Approval of one never
+implies another.
+
 ## Topology
 
 The first deployment shape keeps provider selection independent. A client may
@@ -109,6 +134,13 @@ must have its complete runtime material. `validate_policy_method_coverage_v1`
 rejects startup if any method is missing; operators must remove an offer from
 the policy rather than weakening this check. Extra retained keys are permitted
 only for a documented rotation/grace window. ARC remains unavailable.
+
+No production Standard Cashu mint has been selected merely because local CDK
+interop passes. Unless the render plan names an approved exact production mint
+origin, WebPKI/leaf pins, unit, exposure caps, recovery keyrings and outage/
+retirement procedure, omit every mint-dependent Cashu offer from both current
+and retained signed policies. Do not render fake-wallet or loopback test mint
+material as a substitute.
 
 The signed policy is the commercial and resource contract. Every backend and
 operation needs its own scope. In particular, Harmony hint generation and
@@ -277,6 +309,10 @@ idempotency depend on them.
 This preparation remains unresolved until the final implementation audit and
 exact binary/config pins are recorded.
 
+Accordingly, no public relay service or catalog publication belongs in a
+rendered plan today. The locally held publisher key, if any, is not relay
+selection evidence and its installation/use requires its own approval.
+
 ## VPSBG minimal change
 
 The current Tier 3 process is runit inside a measured UKI and has no systemd or
@@ -436,7 +472,11 @@ local-privilege exploit.
 
 1. Freeze exact BitcoinPIR commit, binaries, policies, directory artifacts,
    authority metadata and key-role inventory.
-2. Run `node scripts/payment-v1-deployment-template-gate.mjs` on the unrendered
+2. Complete the selected
+   [render-plan skeleton](render-plan-skeletons/) using only values inventoried
+   in [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md), approve its
+   digest externally, then run
+   `node scripts/payment-v1-deployment-template-gate.mjs` on the unrendered
    repository inputs.
 3. Render into a new private staging directory; never render over an active
    unit or runit script. Treat the VPSBG file only as reviewed patch input for
@@ -487,8 +527,12 @@ local-privilege exploit.
 10. Provision an activation sentinel and change public routing only under the
     separately approved activation plan.
 
-Production deployment, remote server changes, public relay writes, UKI
-upload/reboot, and real Lightning funds remain separate approval gates.
+Remote server changes, persistent Signet custody and test-coin handling, public
+Nostr/DNS publication, VPSBG UKI build/upload/reboot, production-key
+installation/use, and mainnet/real Lightning funds remain separate approval
+gates. A private no-funds approval does not authorize public Signet; a Signet
+approval does not authorize mainnet. Mainnet also remains technically blocked
+until its own reviewed preflight and negative tests exist.
 
 The source-template gate is deliberately **not** rendered-artifact evidence.
 For a future `RESOLVED` relay it checks canonical metadata shape and source-unit

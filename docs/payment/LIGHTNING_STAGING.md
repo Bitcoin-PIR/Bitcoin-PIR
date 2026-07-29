@@ -1,7 +1,28 @@
 # Lightning staging strategy
 
-Status: deployment design as of 2026-07-27. This document does not authorize
-mainnet funds or remote production changes.
+Status: deployment design as of 2026-07-27. This document does not authorize a
+remote-host change, persistent Signet identity/wallet/channel, faucet/test-coin
+use, mainnet funds or production-key operation.
+
+## Deployment-phase mapping
+
+- **Source merge** keeps disposable local regtest and exact-head CI green.
+- **Private no-funds** may validate installed binaries, Unix-socket boundaries
+  and fail-closed behavior on an approved remote host without creating
+  persistent Lightning state or accepting public traffic.
+- **Public Signet** creates staging-only persistent identities, wallets and
+  channels and may acquire test coins, but only under separate approvals for
+  remote mutation, persistent custody, faucet/test-coin handling and any public
+  ingress or Nostr publication.
+- **Production mainnet** is blocked on current source. The implemented
+  deployment preflight is default-Signet-specific; no reviewed mainnet
+  preflight or render profile exists.
+
+No approval in one phase implies another. Use
+[DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) for non-secret network,
+binary, identity and custody inputs and
+[render-plan-skeletons/](render-plan-skeletons/) for fail-closed plan shapes.
+Neither file authorizes execution or may contain wallet/key material.
 
 ## Decision
 
@@ -47,6 +68,11 @@ is also the conservative operational choice: draft BIP95 (2026-06-22) proposes
 Testnet5 as a replacement after sustained Testnet4 difficulty-exception
 exploitation made that network hard to use. Testnet3 likewise must not be used
 for a new deployment.
+
+Protocol support for the `bitcoin` discriminant is not mainnet deployment
+readiness. The only implemented deployment preflight below requires default
+Signet constants and `network=signet`; it must fail on mainnet. Do not edit a
+Signet config or bypass this probe to create a mainnet profile.
 
 ## Network identity must be explicit
 
@@ -180,6 +206,11 @@ oversize, framing or JSON failure is outcome-unknown and recovery must use the
 same durable label/request rather than a new idempotency identity.
 
 ## Read-only deployment preflight
+
+This command is a **default-Signet preflight only**. A mainnet deployment needs
+a separately versioned implementation with mainnet-specific chain/network,
+peer/bootstrap, custody, amount/risk and negative-test policy, followed by
+security review. User approval alone cannot fill that missing code boundary.
 
 Run `bpir-admin lightning-staging preflight --config <absolute TOML path>
 --config-protected-parent <absolute directory> --config-expected-uid <uid>
@@ -361,8 +392,9 @@ correlation boundary: it can observe the GitHub identity, IP, node public key,
 invoice and timing. Use only disposable identities and synthetic Payment V1
 scopes.
 
-For default-signet staging, first create payer, router and issuer addresses on
-the approved staging hosts. A minimal routing smoke can start with roughly
+For default-signet staging, only after the separate persistent-Signet and
+faucet/test-coin approvals, create payer, router and issuer addresses on the
+approved staging hosts. A minimal routing smoke can start with roughly
 25,000 signet sats each for payer and router and two roughly 20,000-sat
 announced channels. This is above the pinned CLN version's 10,000-sat minimum
 effective capacity and leaves a small on-chain fee margin; keep invoices at
@@ -395,8 +427,11 @@ used in any public-test-network experiment.
    wire carries only the signed receipt, but the provider-operated payment
    service intentionally can link invoice to receipt serial; the UI and policy
    must label that method `DIRECT_PAYMENT_TO_SPEND`.
-5. A tightly capped mainnet canary remains a separate approval after staging;
-   public test networks cannot prove production wallet coverage or routing.
+5. Do not run a mainnet canary on the current source. After staging, first
+   implement and review the missing mainnet preflight/profile and its negative
+   tests; then obtain independent approvals for remote production mutation,
+   production-key installation/use and real funds. Public test networks cannot
+   prove production wallet coverage or routing.
 
 ## Primary references
 

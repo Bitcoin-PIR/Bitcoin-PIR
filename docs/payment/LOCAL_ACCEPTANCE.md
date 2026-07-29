@@ -21,6 +21,20 @@ and shared-redeem/clone-fencing results. Exact-head pushed CI remains a distinct
 merge gate; no local result is production-network, deployed-origin or real-
 funds acceptance.
 
+This document is the **source merge** acceptance boundary only. The later
+deployment phases are **private no-funds**, **public Signet**, and **production
+mainnet**. Passing any command below does not authorize a remote-host mutation,
+persistent Signet identity/wallet/channel, faucet/test-coin use, public Nostr
+publication, VPSBG UKI change, production-key installation/use, or a mainnet/
+real-value operation; each is an independent approval gate. Production mainnet
+is additionally blocked because the repository does not yet implement a
+reviewed mainnet deployment preflight.
+
+Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory the
+non-secret inputs for a later approved phase and start any proposed render plan
+from [render-plan-skeletons/](render-plan-skeletons/). Those files do not turn
+local acceptance into deployment approval.
+
 ## Prerequisites
 
 - run from the repository root;
@@ -1287,6 +1301,18 @@ Record the commit, platform/toolchain, command mode, pass/fail result and any
 skipped boundary. Do not record invoices, payment hashes, preimages, raw
 capabilities, query addresses, results, browser vault records or secret paths.
 
+Keep the record external to this dated document and begin it with the following
+fail-closed fields. Fill them from the actual post-merge artifacts; never infer
+a merge SHA or CI conclusion from a local worktree:
+
+| Field | Initial value before independent verification |
+| --- | --- |
+| `merged_source_commit` | `UNSET_AFTER_MERGE` |
+| `exact_head_ci_urls_and_conclusions` | `UNSET_AFTER_MERGE` |
+| `local_acceptance_source_commit` | exact tested commit, or `UNSET` |
+| `render_plan_digest` | `NOT_APPLICABLE_SOURCE_MERGE` |
+| `remote_runtime_evidence_digest` | `NOT_APPLICABLE_SOURCE_MERGE` |
+
 At minimum, a release candidate needs evidence for:
 
 1. all offline Rust payment packages;
@@ -1328,6 +1354,13 @@ At minimum, a release candidate needs evidence for:
   Merkle verification, but uses `NoSevHost`, synthetic proof material and an
   all-zero test database rather than production identity/attestation/data);
 - independent ARC review;
+- a resolved and hash-frozen directory-relay selection; the committed
+  `UNRESOLVED` relay state is an activation blocker, not a passing local test;
+- a production Standard Cashu mint. Until an exact mint, WebPKI/pins, unit,
+  custody limits and recovery/outage plan are approved, every mint-dependent
+  Cashu offer must be omitted from current and retained signed policies;
+- a reviewed mainnet deployment preflight. The current Lightning preflight is
+  default-Signet-specific and cannot authorize mainnet;
 - deployed-origin CSP/header enforcement, dependency closeout and manual
   testing;
 - a repository ruleset that requires the Payment/security checks and prevents
@@ -1337,5 +1370,7 @@ At minimum, a release candidate needs evidence for:
   to dispatch Actions;
 - user manual acceptance.
 
-All of the above remain explicit gates. Production deployment, remote server
-operations and real Lightning funds require fresh user approval.
+All of the above remain explicit gates. Remote server mutation, persistent
+Signet custody, faucet/test-coin use, public Nostr publication, VPSBG UKI
+build/upload/reboot, production-key installation/use and mainnet/real Lightning
+funds require separate fresh approvals; none implies another.

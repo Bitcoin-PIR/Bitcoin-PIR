@@ -1,9 +1,34 @@
 # Payment V1 deployment security review — 2026-07-29
 
-Status: pre-PR review of `codex/payment-deployment-prep`. This document is not
-production approval. It records source-level findings, closure evidence and
-the remaining live activation decisions. No remote host, public Nostr relay,
-Lightning wallet, channel or real-value payment was touched during this review.
+Status: source-review record for the current deployment-preparation tree. This
+is neither a claim that the source has merged nor production approval. It
+records source-level findings, closure evidence and the remaining live
+activation decisions. No remote host, public Nostr relay, persistent Lightning
+wallet/channel or real-value payment was touched during this review.
+
+## Deployment phases and independent approvals
+
+The deployment state must always name exactly one of these phases:
+
+| Phase | Meaning | What this review permits |
+| --- | --- | --- |
+| Source merge | reviewed source and exact-head CI only | merge and preserve exact source evidence; no service activation |
+| Private no-funds | loopback/private, unrouted target-host drill with synthetic credentials and no valuable coins | collect rendered/runtime evidence only after the separate remote-host approval |
+| Public Signet | persistent staging-only Bitcoin/CLN identities, test coins/channels and public staging ingress | only after separate approvals for remote mutation, persistent Signet custody and each public publication |
+| Production mainnet | public production service with production keys and potentially real funds | blocked: the repository has no reviewed mainnet deployment preflight |
+
+An approval for one row or action does not authorize another. In particular,
+remote-host mutation, persistent Signet wallet/channel creation, faucet/test-
+coin handling, public Nostr publication, VPSBG UKI build/upload/reboot, install
+or use of production keys, and any mainnet/real-value operation are separate
+approval gates. DNS/public routing is also an activation action, not a source-
+merge consequence.
+
+The deployment input inventory is maintained in
+[DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md). Start a render plan
+from the fail-closed examples in
+[render-plan-skeletons/](render-plan-skeletons/); neither document is an
+activation instruction and neither may contain secrets.
 
 ## Reviewed boundary
 
@@ -187,6 +212,12 @@ The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
 
+This is not a documentation-only placeholder: public directory deployment and
+catalog publication remain blocked until relay selection is resolved in
+reviewed source and its exact source/archive/lockfile/binary/config/publisher-
+key digests are frozen. A production Nostr key existing locally does not
+resolve the relay, authorize installing that key, or authorize publishing it.
+
 ### Independent rollback domains
 
 “New services run on Hetzner” applies to the relay, payment/credential issuer,
@@ -257,9 +288,15 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
    ARC proofs, capability identifiers, query addresses/results, request bodies
    or forwarded client IPs.
 8. ARC remains visibly experimental, opt-in and production-disabled.
-9. Production deployment, DNS/public relay publication, remote host mutation,
-   Lightning wallet/channel creation and real-value operations require the
-   user's separate approval.
+9. Remote host mutation, persistent Signet identity/wallet/channel creation,
+   Signet faucet/test-coin use, DNS/public Nostr publication, VPSBG UKI
+   build/upload/reboot, production-key installation/use, and mainnet/real-value
+   operations each require a separate approval. No approval implies another.
+10. A Standard Cashu offer, or any other Cashu offer that depends on an
+    external mint, must be omitted from current and retained signed policies
+    until an exact production mint, WebPKI/pin set, unit, custody limits and
+    recovery/outage procedure have been selected and approved. Local CDK fake-
+    wallet evidence is not such a mint.
 
 ## Required evidence before activation
 
@@ -281,3 +318,25 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
 - private provider/issuer/directory canaries with strict client verification;
   and
 - final manual browser acceptance by the user before public routing changes.
+
+The repository's Lightning deployment preflight is default-Signet-specific.
+It is not a mainnet preflight, and a user approval cannot convert it into one.
+Production mainnet remains blocked until a versioned mainnet preflight,
+configuration profile, negative tests and security review are implemented.
+
+### Post-merge evidence register
+
+Do not backfill this dated source review with guessed commit or CI values.
+Create an external, non-secret activation record after merge and fill each row
+from independently verified artifacts. `UNSET` means the phase must not
+advance.
+
+| Evidence field | Required value | Current source-review value |
+| --- | --- | --- |
+| merged source commit | exact 40-hex commit reachable from the approved base | `UNSET_AFTER_MERGE` |
+| exact-head CI | workflow URLs, conclusion and tested head | `UNSET_AFTER_MERGE` |
+| rendered plan | approved plan digest and selected skeleton/profile | `UNSET_BEFORE_RENDER` |
+| installed target evidence | stopped-edge and fresh-live full-file digests | `UNSET_BEFORE_REMOTE_DRILL` |
+| relay selection | resolved source/archive/lockfile/binary/config/key pins | `UNRESOLVED` |
+| Lightning network gate | approved default-Signet preflight record, or a future reviewed mainnet profile | `UNSET`; mainnet profile not implemented |
+| Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission | `UNSET`; omit mint-dependent offers |
