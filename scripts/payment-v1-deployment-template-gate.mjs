@@ -21,7 +21,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "5e1a0bc588326c0355f17a473d1c962b172f2aa4c4c0f1d9b18520964c5dc27c",
+    "4f23190c44b03b326403cb5b68633e462024018e5404a2ed91c7e408072b6799",
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({

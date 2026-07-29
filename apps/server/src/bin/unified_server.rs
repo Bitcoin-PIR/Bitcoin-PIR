@@ -403,6 +403,7 @@ struct CliArgs {
     direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)>,
     /// Development/test-only escape hatch for trusted state outside the
     /// measured `/run/bitcoinpir-oram-state` tmpfs.
+    #[cfg_attr(not(feature = "cuckoo-oram"), allow(dead_code))]
     direct_oram_allow_trusted_state_outside_run_dev: bool,
     /// Public deterministic evictions drained after each direct ORAM read.
     direct_oram_drain_per_access: u64,

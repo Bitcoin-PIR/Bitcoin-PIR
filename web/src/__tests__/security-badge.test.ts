@@ -121,6 +121,28 @@ describe('pre-verification security badge rendering', () => {
     }
   });
 
+  it('closes active admission before invalid bootstrap trust is cleared', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const handlerStart = html.indexOf(
+      "document.getElementById('admissionApplyBootstrap').addEventListener",
+    );
+    const handlerEnd = html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+      handlerStart,
+    );
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    const handler = html.slice(handlerStart, handlerEnd);
+    const rejection = handler.indexOf('} catch {');
+    const close = handler.indexOf('await closeAllAdmissionAttempts(', rejection);
+    const clearBootstrap = handler.indexOf('productTrustedBootstrap = null;', rejection);
+    const clearDirectory = handler.indexOf('verifiedDirectoryCatalog = null;', rejection);
+    expect(rejection).toBeGreaterThanOrEqual(0);
+    expect(close).toBeGreaterThan(rejection);
+    expect(clearBootstrap).toBeGreaterThan(close);
+    expect(clearDirectory).toBeGreaterThan(clearBootstrap);
+  });
+
   it('ships an OnionPIR loader that does not require unsafe-eval', () => {
     const loader = readFileSync(
       new URL('../../public/wasm/onionpir_client.mjs', import.meta.url),

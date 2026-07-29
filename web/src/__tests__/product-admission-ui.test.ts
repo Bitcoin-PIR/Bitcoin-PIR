@@ -5,6 +5,8 @@ import {
   credentialActionsReadyV1,
   pairAuthorizationReadyV1,
   privacyLabelForOfferV1,
+  retainedCapabilityLabelV1,
+  retainedRecoveryLabelV1,
 } from '../product-admission-ui.js';
 import type { ProductAdmissionSnapshotV1 } from '../product-admission-controller.js';
 import type { ServiceOfferViewV1 } from '../sdk-bridge.js';
@@ -64,6 +66,96 @@ describe('signed offer privacy wording', () => {
       deploymentStatus: 'experimental', arcVerificationKeyFingerprintHex: '91'.repeat(32),
       privacyLeakageBits: (1 << 2) | (1 << 5),
     }))).toMatch(/EXPERIMENTAL ARC.*not independently reviewed/i);
+  });
+});
+
+describe('retained capability labels', () => {
+  const binding = {
+    providerIdHex: '11'.repeat(32),
+    policyDigestHex: '22'.repeat(32),
+    scopeIdHex: '33'.repeat(32),
+    offerId: 7,
+    scheme: 'cashu-bat' as const,
+    count: 2,
+  };
+
+  it('distinguishes duplicate bindings with different BOLT11 contexts', () => {
+    const first = retainedCapabilityLabelV1({
+      ...binding,
+      acquisitionContext: {
+        kind: 'bolt11',
+        issuerIdHex: '44'.repeat(32),
+        issuerEndpoint: 'https://issuer-a.example',
+        network: 'signet',
+        expectedPayeePubkeyHex: `02${'55'.repeat(32)}`,
+      },
+    });
+    const second = retainedCapabilityLabelV1({
+      ...binding,
+      acquisitionContext: {
+        kind: 'bolt11',
+        issuerIdHex: '66'.repeat(32),
+        issuerEndpoint: 'https://issuer-b.example',
+        network: 'regtest',
+        expectedPayeePubkeyHex: `03${'77'.repeat(32)}`,
+      },
+    });
+    expect(first).toContain('BOLT11 signet');
+    expect(first).toContain('issuer 4444444444…44444444');
+    expect(first).toContain('origin https://issuer-a.example');
+    expect(first).toContain('payee 0255555555…55555555');
+    expect(second).toContain('BOLT11 regtest');
+    expect(second).toContain('issuer 6666666666…66666666');
+    expect(second).toContain('origin https://issuer-b.example');
+    expect(second).toContain('payee 0377777777…77777777');
+    expect(first).not.toBe(second);
+  });
+
+  it('distinguishes contexts that differ only by canonical issuer origin', () => {
+    const acquisitionContext = {
+      kind: 'bolt11' as const,
+      issuerIdHex: '44'.repeat(32),
+      issuerEndpoint: 'https://issuer-a.example',
+      network: 'signet' as const,
+      expectedPayeePubkeyHex: `02${'55'.repeat(32)}`,
+    };
+    const first = retainedCapabilityLabelV1({ ...binding, acquisitionContext });
+    const second = retainedCapabilityLabelV1({
+      ...binding,
+      acquisitionContext: {
+        ...acquisitionContext,
+        issuerEndpoint: 'https://issuer-b.example',
+      },
+    });
+    expect(first).not.toBe(second);
+    expect(first).toContain('origin https://issuer-a.example');
+    expect(second).toContain('origin https://issuer-b.example');
+  });
+
+  it('uses the same exact BOLT11 context suffix for encrypted recovery', () => {
+    const acquisitionContext = {
+      kind: 'bolt11' as const,
+      issuerIdHex: '44'.repeat(32),
+      issuerEndpoint: 'https://issuer-a.example',
+      network: 'signet' as const,
+      expectedPayeePubkeyHex: `02${'55'.repeat(32)}`,
+    };
+    const retained = retainedCapabilityLabelV1({ ...binding, acquisitionContext });
+    const recovery = retainedRecoveryLabelV1({
+      id: 'recovery-id',
+      binding,
+      acquisitionContext,
+    });
+    const suffix = 'BOLT11 signet · issuer 4444444444…44444444 · origin https://issuer-a.example · payee 0255555555…55555555';
+    expect(retained).toContain(suffix);
+    expect(recovery).toContain(suffix);
+  });
+
+  it('marks a contextless legacy direct BOLT11 capability unusable', () => {
+    expect(retainedCapabilityLabelV1({
+      ...binding,
+      scheme: 'bolt11-direct-receipt',
+    })).toMatch(/legacy BOLT11 context missing · unusable/);
   });
 });
 

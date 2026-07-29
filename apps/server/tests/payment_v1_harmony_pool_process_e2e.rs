@@ -19,27 +19,32 @@
 mod payment_v1_method_matrix;
 
 use ed25519_dalek::SigningKey;
-use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
+#[cfg(feature = "standard-cashu-process-e2e")]
+use payment_v1_method_matrix::MatrixMethod;
+use payment_v1_method_matrix::{MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, sha256, Hash256, ZERO_HASH};
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
 use pir_runtime_core::protocol::{HarmonyHintRequestV2, Request, Response};
 use pir_sdk_client::attest::{attest_with_eph_binding, SevStatus};
 use pir_sdk_client::channel::{establish, SecureChannelTransport};
+#[cfg(feature = "standard-cashu-process-e2e")]
+use pir_sdk_client::dangerous_unpaired_accept_service_authorization_response_v1;
 use pir_sdk_client::{
-    dangerous_unpaired_accept_service_authorization_response_v1,
     dangerous_unpaired_authorize_service_operation_v1,
     dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
     AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1, WsConnection,
 };
 use pir_service_protocol::{
-    derive_provider_id, paid_receipt_key_id, AcquisitionMethod, AuthBeginV1, AuthPaddingClassV1,
-    AuthScheme, AuthorizationProofV1, BackendId, CredentialKeyBindingClaimsV1,
-    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
-    EntitlementLimitsV1, FreeModeV1, HintTransport, OperationStartV1, PaidReceiptBindingV1,
-    PaidReceiptV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyV1,
-    ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId, REQ_AUTH_BEGIN_V1,
+    derive_provider_id, paid_receipt_key_id, AcquisitionMethod, AuthPaddingClassV1, AuthScheme,
+    BackendId, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1,
+    DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1, HintTransport,
+    OperationStartV1, PaidReceiptBindingV1, PaidReceiptV1, PriceV1, PrivacyLeakageV1,
+    ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode,
+    WorkloadId,
 };
+#[cfg(feature = "standard-cashu-process-e2e")]
+use pir_service_protocol::{AuthBeginV1, AuthorizationProofV1, REQ_AUTH_BEGIN_V1};
 use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::future::Future;
@@ -689,6 +694,7 @@ fn v2_full_request() -> Vec<u8> {
     Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id: 0 }).encode()
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
 fn raw_authorization_request(
     accepted: &AcceptedServicePolicyV1,
     scope_id: [u8; 32],
@@ -717,6 +723,7 @@ fn raw_authorization_request(
     encode_service_request(REQ_AUTH_BEGIN_V1, &request.encode_padded().unwrap())
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
 fn encode_service_request(opcode: u8, payload: &[u8]) -> Vec<u8> {
     let total_len = 1usize.checked_add(payload.len()).unwrap();
     let mut request = Vec::with_capacity(4 + total_len);
@@ -1115,6 +1122,7 @@ fn wait_for_ready_file(
     }
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
 fn wait_for_ready_pool_size(
     server: &mut ServerProcess,
     pool_dir: &Path,
@@ -1196,6 +1204,7 @@ fn wait_until_unlocked(server: &mut ServerProcess, path: &Path) {
     }
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
 fn wait_for_locked_ready(server: &mut ServerProcess, pool_dir: &Path) -> PathBuf {
     let deadline = Instant::now() + IO_TIMEOUT;
     loop {

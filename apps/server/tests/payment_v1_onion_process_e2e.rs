@@ -21,7 +21,9 @@ mod payment_v1_method_matrix;
 
 use ed25519_dalek::SigningKey;
 use onionpir::{Client as OnionPirClient, Server as OnionPirServer};
-use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
+#[cfg(feature = "standard-cashu-process-e2e")]
+use payment_v1_method_matrix::MatrixMethod;
+use payment_v1_method_matrix::{MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
@@ -1133,6 +1135,7 @@ fn encode_onion_batch(variant: u8, round_id: u16, queries: &[Vec<u8>]) -> Vec<u8
     request
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
 fn raw_authorization_request(
     accepted: &AcceptedServicePolicyV1,
     scope_id: [u8; 32],

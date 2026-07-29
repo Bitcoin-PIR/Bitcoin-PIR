@@ -7,7 +7,9 @@ import {
   type ProductAdmissionLegSnapshotV1,
   type ProductAdmissionSnapshotV1,
   type ProductOfferOptionV1,
+  type ProductRetainedCapabilityOptionV1,
   type ProductRetainedCapabilitySelectorV1,
+  type ProductRetainedRecoveryOptionV1,
 } from './product-admission-controller.js';
 import type { RetainedServiceRedemptionViewV1 } from './sdk-bridge.js';
 
@@ -269,13 +271,13 @@ export class ProductAdmissionPanelV1 {
     for (const capability of leg.retainedCapabilities) {
       row.offer.appendChild(optionElement(
         retainedChoiceValue(capability),
-        `Retained ${capability.scheme} · policy ${abbreviate(capability.policyDigestHex)} · #${capability.offerId} · ${capability.count} left`,
+        retainedCapabilityLabelV1(capability),
       ));
     }
     for (const recovery of leg.retainedRecoveries) {
       row.offer.appendChild(optionElement(
         recoveryChoiceValue(recovery.id),
-        `Recover encrypted ${recovery.binding.scheme} quote · policy ${abbreviate(recovery.binding.policyDigestHex)} · #${recovery.binding.offerId}`,
+        retainedRecoveryLabelV1(recovery),
       ));
     }
     row.offer.value = selectedValue;
@@ -642,6 +644,53 @@ function retainedChoiceValue(binding: ProductRetainedCapabilitySelectorV1): stri
     binding.scheme,
     contextSelector,
   ].join(':');
+}
+
+/**
+ * Keep otherwise identical retained bindings distinguishable by their exact
+ * BOLT11 acquisition context without exposing invoices or capability bytes.
+ */
+export function retainedCapabilityLabelV1(
+  capability: ProductRetainedCapabilityOptionV1,
+): string {
+  const prefix = `Retained ${capability.scheme} · policy ${abbreviate(capability.policyDigestHex)} · #${capability.offerId} · ${capability.count} left`;
+  const context = capability.acquisitionContext;
+  if (context) {
+    return `${prefix} · ${bolt11AcquisitionContextLabelV1(context)}`;
+  }
+  if (capability.scheme === 'bolt11-direct-receipt') {
+    return `${prefix} · legacy BOLT11 context missing · unusable`;
+  }
+  return prefix;
+}
+
+export function retainedRecoveryLabelV1(
+  recovery: ProductRetainedRecoveryOptionV1,
+): string {
+  return `Recover encrypted ${recovery.binding.scheme} quote · policy ${abbreviate(recovery.binding.policyDigestHex)} · #${recovery.binding.offerId} · ${bolt11AcquisitionContextLabelV1(recovery.acquisitionContext)}`;
+}
+
+function bolt11AcquisitionContextLabelV1(
+  context: NonNullable<ProductRetainedCapabilitySelectorV1['acquisitionContext']>,
+): string {
+  const issuerOrigin = canonicalIssuerOriginForLabelV1(context.issuerEndpoint);
+  return `BOLT11 ${context.network} · issuer ${abbreviate(context.issuerIdHex)} · origin ${issuerOrigin} · payee ${abbreviate(context.expectedPayeePubkeyHex)}`;
+}
+
+function canonicalIssuerOriginForLabelV1(value: string): string {
+  let parsed: URL;
+  try { parsed = new URL(value); } catch {
+    throw new Error('retained BOLT11 issuer endpoint is invalid');
+  }
+  const loopback = parsed.hostname === '127.0.0.1'
+    || parsed.hostname === 'localhost'
+    || parsed.hostname === '[::1]';
+  if ((parsed.protocol !== 'https:' && !(loopback && parsed.protocol === 'http:'))
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || (parsed.pathname !== '' && parsed.pathname !== '/')) {
+    throw new Error('retained BOLT11 issuer endpoint must be a credential-free origin');
+  }
+  return parsed.origin;
 }
 
 function recoveryChoiceValue(recoveryId: string): string {
