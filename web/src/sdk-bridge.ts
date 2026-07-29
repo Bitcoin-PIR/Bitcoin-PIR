@@ -852,7 +852,9 @@ export interface WasmDpfClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedService(
+  /** Low-level one-sided retained redemption. The strict DPF adapter calls
+   * this only after its two-provider readiness and product-pair checks. */
+  dangerousUnpairedAuthorizeRetainedService(
     serverIndex: number,
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
@@ -992,7 +994,8 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedHintService(
+  /** Low-level retained hint redemption without a native hint/query pair. */
+  dangerousUnpairedAuthorizeRetainedHintService(
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     proofBytes: Uint8Array,
@@ -1005,7 +1008,8 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedQueryService(
+  /** Low-level retained query redemption without a native hint/query pair. */
+  dangerousUnpairedAuthorizeRetainedQueryService(
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     proofBytes: Uint8Array,

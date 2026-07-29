@@ -1372,7 +1372,10 @@ impl HarmonyClient {
         accepted.verify_service_authorization_exporter_v1(&exporter)
     }
 
-    pub async fn authorize_retained_hint_service_v1(
+    /// Low-level retained hint redemption without a verified hint/query
+    /// payment context. Product callers must bind both selected provider legs
+    /// before retiring a one-shot capability.
+    pub async fn dangerous_unpaired_authorize_retained_hint_service_v1(
         &mut self,
         db_id: u8,
         accepted: &AcceptedRetiredServiceRedemptionV1,
@@ -1406,7 +1409,10 @@ impl HarmonyClient {
         Ok(granted)
     }
 
-    pub async fn authorize_retained_query_service_v1(
+    /// Low-level retained query redemption without a verified hint/query
+    /// payment context. Product callers must bind both selected provider legs
+    /// before retiring a one-shot capability.
+    pub async fn dangerous_unpaired_authorize_retained_query_service_v1(
         &mut self,
         db_id: u8,
         accepted: &AcceptedRetiredServiceRedemptionV1,

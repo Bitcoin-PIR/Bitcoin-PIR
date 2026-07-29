@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Renamed the one-sided DPF and Harmony retained-redemption entry points to
+  `dangerousUnpairedAuthorizeRetainedService`,
+  `dangerousUnpairedAuthorizeRetainedHintService`, and
+  `dangerousUnpairedAuthorizeRetainedQueryService`. The former ordinary names
+  were removed so application code cannot mistake a secure-channel/session
+  check for verification of the independently selected two-provider payment
+  context. The strict Web adapters call these low-level methods only after
+  their pair readiness checks. Single-provider ORAM keeps its ordinary API.
 - Replaced the browser-facing split `queryBatchRaw` + arbitrary-JSON
   `verifyMerkleBatch` flow with `queryBatchVerified`. DPF/Harmony now retain
   query results inside one native async operation, re-derive input-dependent

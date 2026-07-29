@@ -1119,7 +1119,7 @@ export class BatchPirClientAdapter {
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().authorizeRetainedService(
+        authorizedClient().dangerousUnpairedAuthorizeRetainedService(
           serverIndex, dbId, policy, proof, nowUnix,
         ),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>

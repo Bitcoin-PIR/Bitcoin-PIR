@@ -1751,8 +1751,11 @@ impl WasmDpfClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedService)]
-    pub async fn authorize_retained_service_v1(
+    /// Low-level one-sided DPF retained redemption. The JavaScript name is
+    /// intentionally explicit because this method does not verify the other
+    /// provider's payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedService)]
+    pub async fn dangerous_unpaired_authorize_retained_service_v1(
         &mut self,
         server_index: u8,
         db_id: u8,
@@ -1763,7 +1766,7 @@ impl WasmDpfClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_service_redemption_v1(
+            .dangerous_unpaired_authorize_retained_service_redemption_v1(
                 server_index,
                 db_id,
                 &accepted.inner,
@@ -2536,8 +2539,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedHintService)]
-    pub async fn authorize_retained_hint_service_v1(
+    /// Low-level retained hint redemption without a verified hint/query
+    /// payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedHintService)]
+    pub async fn dangerous_unpaired_authorize_retained_hint_service_v1(
         &mut self,
         db_id: u8,
         accepted: &WasmAcceptedRetainedServiceRedemptionV1,
@@ -2547,7 +2552,12 @@ impl WasmHarmonyClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_hint_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .dangerous_unpaired_authorize_retained_hint_service_v1(
+                db_id,
+                &accepted.inner,
+                proof,
+                now_unix,
+            )
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
@@ -2580,8 +2590,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedQueryService)]
-    pub async fn authorize_retained_query_service_v1(
+    /// Low-level retained query redemption without a verified hint/query
+    /// payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedQueryService)]
+    pub async fn dangerous_unpaired_authorize_retained_query_service_v1(
         &mut self,
         db_id: u8,
         accepted: &WasmAcceptedRetainedServiceRedemptionV1,
@@ -2591,7 +2603,12 @@ impl WasmHarmonyClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_query_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .dangerous_unpaired_authorize_retained_query_service_v1(
+                db_id,
+                &accepted.inner,
+                proof,
+                now_unix,
+            )
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))

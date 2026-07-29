@@ -1330,7 +1330,12 @@ export class HarmonyPirClientAdapter {
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeHintService(dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().authorizeRetainedHintService(dbId, policy, proof, nowUnix),
+        authorizedClient().dangerousUnpairedAuthorizeRetainedHintService(
+          dbId,
+          policy,
+          proof,
+          nowUnix,
+        ),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
         authorizedClient().requestHintPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
     };
@@ -1362,7 +1367,12 @@ export class HarmonyPirClientAdapter {
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeQueryService(dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().authorizeRetainedQueryService(dbId, policy, proof, nowUnix),
+        authorizedClient().dangerousUnpairedAuthorizeRetainedQueryService(
+          dbId,
+          policy,
+          proof,
+          nowUnix,
+        ),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
         authorizedClient().requestQueryPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
     };

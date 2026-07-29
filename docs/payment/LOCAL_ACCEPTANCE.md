@@ -497,6 +497,13 @@ focused local evidence only. The same code was subsequently covered by the
 passing final pinned-Linux aggregate; pushed CI remains a separate per-commit
 merge gate.
 
+The DPF and Harmony retained send methods are deliberately exported only as
+`dangerous_unpaired_*` in Rust and `dangerousUnpaired*` in JavaScript. Their
+ordinary one-sided names do not exist. The Web DPF/Harmony adapters call the
+low-level entry points only behind strict pair transport/readiness checks and
+the product layer must freeze the exact two-provider payment context before it
+retires either capability. Onion and TEE-ORAM remain single-provider APIs.
+
 ### 2026-07-28 final pinned-Linux Rust/process matrix
 
 A clean Rust 1.94.1 Docker target ran the final current tree offline with no

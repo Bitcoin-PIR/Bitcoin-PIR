@@ -316,6 +316,13 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     old instance and rotate either the per-provider idempotency secret or the
     clearing authorization digest/epoch before serving; an empty local-claim set
     MUST NOT be paired with that old replay history.
+70. DPF and Harmony retained-policy redemption is never exposed under an
+    ordinary one-sided SDK name. Rust and WASM low-level entry points are
+    explicitly named `dangerous_unpaired_*` / `dangerousUnpaired*`; using one
+    verifies only that provider's secure-channel, database and retained-policy
+    binding. Product code must first freeze the independently selected DPF
+    server pair or Harmony hint/query payment context. This rule does not apply
+    to the genuinely single-provider Onion and TEE-ORAM backends.
 
 ## TLS revocation residual
 

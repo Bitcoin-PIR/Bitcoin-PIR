@@ -1089,7 +1089,10 @@ impl DpfClient {
         accepted.verify_service_authorization_exporter_v1(&exporter)
     }
 
-    pub async fn authorize_retained_service_redemption_v1(
+    /// Low-level retained redemption for one DPF side without a verified
+    /// two-provider payment context. Product callers must bind both selected
+    /// provider legs before retiring a one-shot capability.
+    pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
         &mut self,
         server_index: u8,
         db_id: u8,
