@@ -543,8 +543,14 @@ looks up an exact previously committed `(idempotency digest, request digest)`:
 - same key and different digest: conflict;
 - no row: validate current authority and create a new operation.
 
-This ordering lets a client recover a committed response after key rotation or
-expiry without authorizing new debt under stale authority.
+This ordering lets the issuer replay a committed response after key rotation or
+expiry without authorizing new debt under stale authority, provided the client
+can reproduce the exact original request and idempotency key. The shipped
+provider runtime retains neither an old clearing authorization/approval nor the
+old authenticated issuer tuple, so it cannot perform that recovery after its
+single configured shared-issuer authorization has been replaced. Production V1
+must drain and reconcile every outcome-unknown redeem before that rotation; the
+issuer replay rule is not a rolling-rotation guarantee for providers.
 
 ### Atomic redeem
 
