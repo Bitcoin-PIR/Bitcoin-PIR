@@ -343,6 +343,26 @@ reviewed configuration rollout. Restarting with the same current and retained
 files is idempotent; retain the old receipt/BAT/ARC verification keys for the
 same horizon.
 
+The browser's independently distributed trusted bootstrap has a parallel
+retention obligation. For every unexpired capability acquired through
+BOLT11, keep its exact `(issuerIdHex, canonical HTTPS issuerOrigin, network,
+expectedPayeePubkeyHex)` entry in that provider's `lightningPayeeTrust` array
+through the longest credential use/grace horizon. Removing an active tuple
+does not rebind the token: strict current and retained paths intentionally
+strand it. A payee, network, issuer-origin, or issuer-root rotation therefore
+adds a new exact tuple and retains the old tuple; a payee rotation must use a
+new issuer identity rather than assigning two payees to one tuple. The Nostr
+directory is not an authority for this table.
+
+V1 permits at most 64 trust entries per provider. Before signing or deploying
+a rotation, inventory every current and retained BOLT11 offer plus its latest
+possible capability expiry. Fail the rollout if adding the new tuple would
+exceed 64 while any old tuple can still authorize an outstanding capability.
+Stop new issuance and drain, expire, or explicitly reconcile/refund that old
+cohort before removing its tuple; never evict an active entry merely to satisfy
+the bound. Record the inventory and horizon in the rollout evidence, then test
+one retained capability under every tuple scheduled to remain.
+
 V1 has one trusted service-policy verifying key per provider process. That key
 **must remain stable for every retained credential grace period**. Rotating the
 service-policy signing key while old credentials still need redemption is not

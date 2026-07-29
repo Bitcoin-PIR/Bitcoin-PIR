@@ -25,7 +25,9 @@ use bitcoinpir_oram::{
     DIRECT_INDEX_INPUT_RECORD_SIZE,
 };
 use ed25519_dalek::SigningKey;
-use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
+#[cfg(feature = "standard-cashu-process-e2e")]
+use payment_v1_method_matrix::MatrixMethod;
+use payment_v1_method_matrix::{MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS, SCRIPT_HASH_SIZE};
