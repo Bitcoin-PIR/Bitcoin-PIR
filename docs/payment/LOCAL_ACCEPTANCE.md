@@ -1133,7 +1133,7 @@ review.
 
 The pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
 four deployment, rendered-artifact, runtime-evidence and source-fair suites
-138/138 with no skip. This includes real Linux `getent`, `id -G`, procfs
+139/139 with no skip. This includes real Linux `getent`, `id -G`, procfs
 all-thread scanning, non-root set-ID capability rejection, locked service-
 account policy validation and the stopped-edge evidence validator.
 

@@ -775,7 +775,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       before HAProxy may start, followed by Caddy and a fresh live proof in the
       host initial PID namespace. The current pinned Ubuntu 24.04,
       HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete four-suite
-      deployment/rendered/live/source-fair Node gate 138/138 with no skip,
+      deployment/rendered/live/source-fair Node gate 139/139 with no skip,
       including real `getent`, per-user `id -G`, and full procfs thread scans.
       An Alpine procfs regression also passes for legal repeated `Groups:`
       entries. The first root-only target Linux collection still

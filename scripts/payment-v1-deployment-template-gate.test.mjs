@@ -473,6 +473,27 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
       /source identity header forwarding/,
     ],
     [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text
+        .replaceAll("directory-public.sock", "directory-lane-swap.sock")
+        .replaceAll("directory-publisher.sock", "directory-public.sock")
+        .replaceAll("directory-lane-swap.sock", "directory-publisher.sock"),
+      /site upstreams must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text
+        .replace(
+          "@DIRECTORY_RELAY_WSS_HOST@ {\n\tbind @PUBLIC_HTTPS_BIND@",
+          "@DIRECTORY_RELAY_WSS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        )
+        .replace(
+          "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+          "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @PUBLIC_HTTPS_BIND@",
+        ),
+      /site must contain .*bind/,
+    ],
+    [
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       (text) => text.replace("    no log\n", "    log stdout format raw local0\n"),
       /no log|logging|persistent/,
