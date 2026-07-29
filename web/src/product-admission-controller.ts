@@ -33,12 +33,21 @@ import {
   type Bolt11QuoteStatusNameV1,
 } from './service-acquisition.js';
 import type {
+  ServiceEntitlementLimitsViewV1,
   ServiceGrantViewV1,
   ServiceOfferViewV1,
   ServicePolicyViewV1,
   RetainedServiceRedemptionViewV1,
   ServiceScopeViewV1,
 } from './sdk-bridge.js';
+import {
+  assertProductQueryShapeFitsScopeV1,
+  canonicalProductQueryShapeV1,
+  intersectHomogeneousEntitlementLimitsV1,
+  sameProductQueryShapeV1,
+  type ProductQueryShapeV1,
+  type ProductQueryShapesByRoleV1,
+} from './service-entitlement.js';
 
 export type ProductAdmissionTopologyV1 = 'independent-pair' | 'single-provider';
 
@@ -89,6 +98,8 @@ export interface ProductAdmissionLegV1 {
   /** Independently trusted provider endpoint used only by the local pair guard. */
   providerEndpoint?: string;
   resource?: ProductAdmissionResourceV1;
+  /** Optional exact planner snapshot captured during strict bootstrap. */
+  queryShape?: ProductQueryShapeV1;
 }
 
 export interface ProductStrictBootstrapV1 {
@@ -152,12 +163,16 @@ export interface ProductAdmissionLegSnapshotV1 {
   quoteStatus: Bolt11QuoteStatusNameV1 | null;
   recoveryIds: string[];
   errorCode: ProductAdmissionErrorCodeV1 | null;
+  /** Frozen planner lower bounds; never sent to either provider. */
+  queryShape: ProductQueryShapeV1 | null;
 }
 
 export interface ProductAdmissionSnapshotV1 {
   phase: 'idle' | 'bootstrapping' | 'selecting' | 'ready-to-query' | 'querying' | 'failed';
   topology: ProductAdmissionTopologyV1;
   allowSharedIssuerCorrelationOnce: boolean;
+  /** Present only when both selected legs use the same workload units. */
+  homogeneousPairLimits: ServiceEntitlementLimitsViewV1 | null;
   legs: ProductAdmissionLegSnapshotV1[];
   errorCode: ProductAdmissionErrorCodeV1 | null;
 }
@@ -166,6 +181,8 @@ export type ProductAdmissionErrorCodeV1 =
   | 'commercial-admission-unconfigured'
   | 'strict-bootstrap-failed'
   | 'policy-unavailable'
+  | 'query-shape-unavailable'
+  | 'entitlement-limits-insufficient'
   | 'offer-selection-invalidated'
   | 'pair-correlation-rejected'
   | 'lightning-payee-untrusted'
@@ -198,7 +215,7 @@ export class ProductResourceFailedAfterAuthorizationErrorV1
   }
 }
 
-interface LegStateV1 extends ProductAdmissionLegV1 {
+interface LegStateV1 extends Omit<ProductAdmissionLegV1, 'queryShape'> {
   policy: ServicePolicyViewV1;
   offers: ProductOfferOptionV1[];
   selected: ProductOfferOptionV1 | null;
@@ -217,6 +234,7 @@ interface LegStateV1 extends ProductAdmissionLegV1 {
   transitionInFlight: boolean;
   /** True once this exact leg has touched credential/acquisition state. */
   credentialFlowStarted: boolean;
+  queryShape: ProductQueryShapeV1 | null;
 }
 
 type FrozenSelectionV1 =
@@ -230,6 +248,7 @@ export class ProductAdmissionControllerV1 {
   private allowSharedIssuerCorrelationOnce = false;
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
+  private queryShapesFrozen = false;
   private readonly resumeBolt11Impl: typeof resumeBolt11AcquisitionV1;
 
   constructor(private readonly options: ProductAdmissionControllerOptionsV1) {
@@ -344,6 +363,12 @@ export class ProductAdmissionControllerV1 {
   /** A live policy refresh invalidates every exact selection and grant. */
   async refreshPolicies(): Promise<ProductAdmissionSnapshotV1> {
     this.requirePrepared();
+    if (this.queryShapesFrozen) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'policy refresh after credential flow requires a new strict admission attempt',
+      );
+    }
     if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'an admission transition is in flight');
     }
@@ -385,6 +410,48 @@ export class ProductAdmissionControllerV1 {
     return this.snapshot();
   }
 
+  /**
+   * Install planner-proven demand before offer selection. Pair roles are
+   * independent: Harmony hint and query shapes are intentionally not merged.
+   * Once any credential flow begins, only an identical recomputation is
+   * accepted; changing demand requires a new strict admission attempt.
+   */
+  setQueryShape(role: string, shapeValue: ProductQueryShapeV1): ProductAdmissionSnapshotV1 {
+    const leg = this.requireLeg(role);
+    if (this.legs.some((candidate) => candidate.transitionInFlight)) {
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'cannot change planned query demand during an admission transition',
+      );
+    }
+    let shape: ProductQueryShapeV1;
+    try {
+      shape = canonicalProductQueryShapeV1(shapeValue, `${leg.label} planned query shape`);
+    } catch (cause) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'the backend planner did not provide canonical query demand',
+        { cause },
+      );
+    }
+    if (shape.backend !== leg.backend || shape.workload !== leg.workload) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'planned query demand does not match this provider role',
+      );
+    }
+    if (this.queryShapesFrozen) {
+      if (leg.queryShape && sameProductQueryShapeV1(leg.queryShape, shape)) return this.snapshot();
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'planned query demand changed after credential flow began; start a new admission',
+      );
+    }
+    if (hasAdmissionSelection(leg)) this.assertShapeFitsLeg(leg, shape);
+    leg.queryShape = cloneQueryShape(shape);
+    return this.snapshot();
+  }
+
   async selectOffer(
     role: string,
     choice: ProductOfferChoiceV1,
@@ -418,6 +485,7 @@ export class ProductAdmissionControllerV1 {
           'selected offer is not in the current verified policy',
         );
       }
+      this.assertShapeFitsScope(leg, selected.scope);
       leg.selected = cloneOfferOption(selected);
       leg.status = 'ready';
       leg.errorCode = null;
@@ -458,6 +526,7 @@ export class ProductAdmissionControllerV1 {
         );
       }
       const redemption = await leg.session.inspectRetainedCapability(binding);
+      this.assertShapeFitsScope(leg, redemption.scope);
       leg.selected = null;
       leg.retainedSelected = {
         binding,
@@ -497,6 +566,7 @@ export class ProductAdmissionControllerV1 {
         );
       }
       const redemption = await leg.session.inspectRetainedCapability(option.binding);
+      this.assertShapeFitsScope(leg, redemption.scope);
       leg.selected = null;
       leg.retainedSelected = {
         binding: { ...option.binding },
@@ -521,6 +591,7 @@ export class ProductAdmissionControllerV1 {
     const leg = this.requireAdmissionSelectionLeg(role);
     this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') {
         throw new ProductAdmissionErrorV1(
           'offer-selection-invalidated',
@@ -599,6 +670,7 @@ export class ProductAdmissionControllerV1 {
     const leg = this.requireSelectedLeg(role);
     this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       if (leg.selected!.offer.acquisition !== 'bolt11') {
         throw new ProductAdmissionErrorV1('operation-failed', 'selected offer is not BOLT11');
       }
@@ -644,6 +716,7 @@ export class ProductAdmissionControllerV1 {
     const leg = this.requireAdmissionSelectionLeg(role);
     this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       const recovery = await this.options.vault.getBolt11Recovery(recoveryId);
       if (!recovery || !recoveryMatchesLeg(recovery, leg)) {
         throw new ProductAdmissionErrorV1(
@@ -682,6 +755,7 @@ export class ProductAdmissionControllerV1 {
   async claimBolt11(role: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
     return this.withLegTransition(leg, async () => {
+      this.assertShapeFitsLeg(leg);
       if (!leg.acquisition || (leg.quoteStatus !== 'payment-settled'
           && leg.quoteStatus !== 'late-settled-reconcile')) {
         throw new ProductAdmissionErrorV1(
@@ -711,6 +785,7 @@ export class ProductAdmissionControllerV1 {
     const leg = this.requireSelectedLeg(role);
     this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       const offer = leg.selected!.offer;
       if (offer.acquisition !== 'cashu-ecash'
           || offer.authorization !== 'cashu-ecash'
@@ -741,6 +816,7 @@ export class ProductAdmissionControllerV1 {
         || leg.status === 'cached-resource-ready'))) return false;
     try {
       this.assertCompleteSelectionPrivacy();
+      this.assertEveryShapeFitsSelection();
       return true;
     } catch {
       return false;
@@ -748,7 +824,11 @@ export class ProductAdmissionControllerV1 {
   }
 
   /** Exactly one caller-supplied query attempt; no retry and no refund logic. */
-  async executeQuery<T>(query: () => Promise<T>): Promise<T> {
+  async executeQuery<T>(
+    currentShapes: ProductQueryShapesByRoleV1,
+    query: () => Promise<T>,
+  ): Promise<T> {
+    this.assertCurrentQueryShapes(currentShapes);
     if (!this.canQuery()) {
       throw new ProductAdmissionErrorV1(
         'operation-failed',
@@ -758,6 +838,7 @@ export class ProductAdmissionControllerV1 {
     // Re-run the pair/privacy guard immediately before the real query. This is
     // browser-local only and never creates a pair identifier on either wire.
     this.assertCompleteSelectionPrivacy();
+    this.assertEveryShapeFitsSelection();
     this.queryAttempted = true;
     this.phase = 'querying';
     const result = await query();
@@ -781,6 +862,7 @@ export class ProductAdmissionControllerV1 {
       phase: this.phase,
       topology: this.options.topology,
       allowSharedIssuerCorrelationOnce: this.allowSharedIssuerCorrelationOnce,
+      homogeneousPairLimits: this.homogeneousPairLimits(),
       legs: this.legs.map((leg) => ({
         role: leg.role,
         label: leg.label,
@@ -805,6 +887,7 @@ export class ProductAdmissionControllerV1 {
         quoteStatus: leg.quoteStatus,
         recoveryIds: [...leg.recoveryIds],
         errorCode: leg.errorCode,
+        queryShape: leg.queryShape ? cloneQueryShape(leg.queryShape) : null,
       })),
       errorCode: this.errorCode,
     };
@@ -828,6 +911,7 @@ export class ProductAdmissionControllerV1 {
       this.errorCode = null;
       this.allowSharedIssuerCorrelationOnce = false;
       this.queryAttempted = false;
+      this.queryShapesFrozen = false;
     }
     if (closeFailure) throw closeFailure;
   }
@@ -1030,6 +1114,104 @@ export class ProductAdmissionControllerV1 {
         );
       }
     }
+  }
+
+  private assertShapeFitsScope(
+    leg: LegStateV1,
+    scope: ServiceScopeViewV1,
+    shape = leg.queryShape,
+  ): void {
+    if (!shape) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        `the backend planner has not frozen demand for ${leg.label}`,
+      );
+    }
+    try {
+      assertProductQueryShapeFitsScopeV1(shape, scope, `${leg.label} signed scope`);
+    } catch (cause) {
+      throw new ProductAdmissionErrorV1(
+        'entitlement-limits-insufficient',
+        `the selected signed entitlement cannot cover known demand for ${leg.label}`,
+        { cause },
+      );
+    }
+  }
+
+  private assertShapeFitsLeg(leg: LegStateV1, shape = leg.queryShape): void {
+    const scope = selectedScope(leg);
+    if (!scope) {
+      if (!shape) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `the backend planner has not frozen demand for ${leg.label}`,
+        );
+      }
+      return;
+    }
+    this.assertShapeFitsScope(leg, scope, shape);
+  }
+
+  private assertEveryShapeFitsSelection(): void {
+    for (const leg of this.legs) this.assertShapeFitsLeg(leg);
+  }
+
+  private freezeQueryShapesForCredentialFlow(): void {
+    this.assertEveryShapeFitsSelection();
+    this.queryShapesFrozen = true;
+  }
+
+  private assertCurrentQueryShapes(current: ProductQueryShapesByRoleV1): void {
+    if (!current || typeof current !== 'object') {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'current backend planner demand is required immediately before query execution',
+      );
+    }
+    const expectedRoles = new Set(this.legs.map((leg) => leg.role));
+    const actualRoles = Object.keys(current);
+    if (actualRoles.length !== expectedRoles.size
+        || actualRoles.some((role) => !expectedRoles.has(role))) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'current backend planner demand does not cover the exact provider roles',
+      );
+    }
+    for (const leg of this.legs) {
+      if (!leg.queryShape) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `the backend planner has not frozen demand for ${leg.label}`,
+        );
+      }
+      let currentShape: ProductQueryShapeV1;
+      try {
+        currentShape = canonicalProductQueryShapeV1(
+          current[leg.role],
+          `${leg.label} current query shape`,
+        );
+      } catch (cause) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `current backend planner demand is malformed for ${leg.label}`,
+          { cause },
+        );
+      }
+      if (!sameProductQueryShapeV1(leg.queryShape, currentShape)) {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          `planned demand changed after authorization for ${leg.label}; start a new admission`,
+        );
+      }
+      this.assertShapeFitsScope(leg, selectedScope(leg)!, currentShape);
+    }
+  }
+
+  private homogeneousPairLimits(): ServiceEntitlementLimitsViewV1 | null {
+    if (this.options.topology !== 'independent-pair' || this.legs.length !== 2) return null;
+    const scopes = this.legs.map(selectedScope);
+    if (scopes.some((scope) => scope === null)) return null;
+    return intersectHomogeneousEntitlementLimitsV1(scopes as ServiceScopeViewV1[]);
   }
 
   private requireLeg(role: string): LegStateV1 {
@@ -1237,6 +1419,9 @@ function validateLegBootstrap(
 }
 
 function pendingLeg(leg: ProductAdmissionLegV1): LegStateV1 {
+  const queryShape = leg.queryShape === undefined
+    ? null
+    : canonicalProductQueryShapeV1(leg.queryShape, `${leg.label} bootstrap query shape`);
   return {
     ...leg,
     expectedLightningPayeePubkey: leg.expectedLightningPayeePubkey?.slice(),
@@ -1257,6 +1442,7 @@ function pendingLeg(leg: ProductAdmissionLegV1): LegStateV1 {
     errorCode: null,
     transitionInFlight: false,
     credentialFlowStarted: false,
+    queryShape,
   };
 }
 
@@ -1311,6 +1497,11 @@ function selectedOffer(leg: LegStateV1): ServiceOfferViewV1 {
     'offer-selection-invalidated',
     'no exact current or retained provider offer is selected',
   );
+}
+
+function selectedScope(leg: LegStateV1): ServiceScopeViewV1 | null {
+  if (leg.retainedSelected) return leg.retainedSelected.redemption.scope;
+  return leg.selected?.scope ?? null;
 }
 
 function canonicalCapabilityBinding(
@@ -1450,6 +1641,8 @@ function clonePolicy(policy: ServicePolicyViewV1): ServicePolicyViewV1 {
 function cloneScope(scope: ServiceScopeViewV1): ServiceScopeViewV1 {
   return {
     ...scope,
+    dataset: { ...scope.dataset },
+    limits: { ...scope.limits },
     offers: scope.offers.map(cloneOffer),
   };
 }
@@ -1479,11 +1672,20 @@ function cloneRetainedSelection(
       policyDigestHex: selection.redemption.policyDigestHex,
       scope: {
         ...selection.redemption.scope,
+        dataset: { ...selection.redemption.scope.dataset },
         limits: { ...selection.redemption.scope.limits },
         offers: [],
       },
       offer: cloneOffer(selection.redemption.offer),
     },
+  };
+}
+
+function cloneQueryShape(shape: ProductQueryShapeV1): ProductQueryShapeV1 {
+  return {
+    backend: shape.backend,
+    workload: shape.workload,
+    lowerBounds: { ...shape.lowerBounds },
   };
 }
 

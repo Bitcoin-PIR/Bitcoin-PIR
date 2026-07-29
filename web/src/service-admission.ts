@@ -34,6 +34,7 @@ import {
   Bolt11AcquisitionControllerV1,
   type Bolt11AcquisitionHandleV1,
 } from './service-acquisition.js';
+import { canonicalServiceEntitlementLimitsV1 } from './service-entitlement.js';
 
 // Unexported symbols make a verified single-provider or pair typestate the only
 // public route to authorization/acquisition transitions. No symbol, peer
@@ -112,6 +113,13 @@ type RetainedServiceAdmissionPortV1 = Required<Pick<
 export interface ServiceAdmissionTargetV1 {
   backend: ServiceScopeViewV1['backend'];
   workload: ServiceScopeViewV1['workload'];
+  /** Exact wire version supported by this already-verified adapter. */
+  protocolVersion: number;
+  /** Exact manifest root established by database proof/tree-top preflight. */
+  expectedDatasetManifestRootHex: string;
+  /** Optional independently trusted opaque profile pins. */
+  operationProfile?: number;
+  entitlementProfile?: number;
 }
 
 /** Narrow vault surface makes admission orchestration testable and auditable. */
@@ -223,6 +231,7 @@ export class ProviderAdmissionSessionV1 {
     requireFixedNonzero('providerId', trust.providerId, 32);
     requireFixedNonzero('policySigningKey', trust.policySigningKey, 32);
     validateDirectoryAssertion(trust);
+    validateAdmissionTarget(target);
   }
 
   /**
@@ -254,8 +263,7 @@ export class ProviderAdmissionSessionV1 {
           if (next.providerIdHex !== providerIdHex) {
             throw new Error('verified service policy provider ID does not match trust anchor');
           }
-          const view = next.offersJson();
-          validatePolicyView(next, view, this.target, nowUnix);
+          const view = validatePolicyView(next, next.offersJson(), this.target, nowUnix);
           validateDirectoryPolicyBinding(this.trust, view);
           const retained = next;
           return {
@@ -686,8 +694,8 @@ export class ProviderAdmissionSessionV1 {
     const canonical = canonicalHex32('scopeIdHex', scopeIdHex);
     const scope = this.view.scopes.find((candidate) => candidate.scopeIdHex === canonical);
     if (!scope) throw new Error('selected scope is not present in the verified service policy');
-    if (scope.backend !== this.target.backend || scope.workload !== this.target.workload) {
-      throw new Error('selected scope does not match this adapter backend/workload');
+    if (!scopeMatchesTargetV1(scope, this.target)) {
+      throw new Error('selected scope does not match this adapter wire/profile target');
     }
     return scope;
   }
@@ -1002,7 +1010,7 @@ function validatePolicyView(
   view: ServicePolicyViewV1,
   target: ServiceAdmissionTargetV1,
   nowUnix: bigint,
-): void {
+): ServicePolicyViewV1 {
   if (
     view.providerIdHex !== accepted.providerIdHex
     || view.policyDigestHex !== accepted.policyDigestHex
@@ -1012,12 +1020,28 @@ function validatePolicyView(
     throw new Error('service policy metadata disagrees with verified handle');
   }
   if (BigInt(view.expiresAtUnix) < nowUnix) throw new Error('verified service policy is expired');
-  const matching = view.scopes.filter(
-    (scope) => scope.backend === target.backend && scope.workload === target.workload,
-  );
-  if (matching.length === 0) throw new Error('service policy has no scope for this backend/workload');
-  for (const scope of matching) {
+  if (!Array.isArray(view.scopes)) throw new Error('service policy scopes are malformed');
+  const canonical = structuredClonePolicy(view);
+  for (const [index, scope] of canonical.scopes.entries()) {
     canonicalHex32('scopeIdHex', scope.scopeIdHex);
+    for (const [field, value] of [
+      ['protocolVersion', scope.protocolVersion],
+      ['operationProfile', scope.operationProfile],
+      ['entitlementProfile', scope.entitlementProfile],
+    ] as const) {
+      if (!Number.isSafeInteger(value) || value <= 0 || value > 0xffff) {
+        throw new Error(`service policy scope ${index} ${field} must be a non-zero u16`);
+      }
+    }
+    scope.dataset = canonicalDatasetBindingViewV1(
+      scope.dataset,
+      `service policy scope ${index} dataset`,
+    );
+    scope.limits = canonicalServiceEntitlementLimitsV1(
+      scope.limits,
+      `service policy scope ${index} entitlement limits`,
+    );
+    if (!Array.isArray(scope.offers)) throw new Error('service policy scope offers are malformed');
     const ids = new Set<number>();
     for (const offer of scope.offers) {
       if (!Number.isSafeInteger(offer.offerId) || offer.offerId <= 0 || ids.has(offer.offerId)) {
@@ -1027,6 +1051,88 @@ function validatePolicyView(
       validateOfferVerificationKeyFingerprints(offer);
     }
   }
+  const wireDatasetMatching = canonical.scopes.filter(
+    (scope) => scopeMatchesWireDatasetTargetV1(scope, target),
+  );
+  if (wireDatasetMatching.length !== 1) {
+    throw new Error('service policy must have exactly one scope for this adapter wire/dataset target');
+  }
+  const matching = wireDatasetMatching.filter((scope) => scopeMatchesTargetV1(scope, target));
+  if (matching.length !== 1) {
+    throw new Error('service policy scope does not match the independently pinned profile target');
+  }
+  // Do not expose same-workload scopes for another database/profile to the
+  // product selector. The returned scope remains committed by the full signed
+  // policy digest and retains its exact profile and entitlement limits.
+  return { ...canonical, scopes: matching };
+}
+
+function validateAdmissionTarget(target: ServiceAdmissionTargetV1): void {
+  if (!target || typeof target !== 'object') throw new Error('service admission target is missing');
+  for (const [field, value] of [
+    ['protocolVersion', target.protocolVersion],
+    ['operationProfile', target.operationProfile],
+    ['entitlementProfile', target.entitlementProfile],
+  ] as const) {
+    if (value === undefined) {
+      if (field !== 'protocolVersion') continue;
+      throw new Error('service admission target protocolVersion is required');
+    }
+    if (!Number.isSafeInteger(value) || value <= 0 || value > 0xffff) {
+      throw new Error(`service admission target ${field} must be a non-zero u16`);
+    }
+  }
+  canonicalLowerHex32(
+    'service admission target manifest root',
+    target.expectedDatasetManifestRootHex,
+  );
+}
+
+function scopeMatchesTargetV1(
+  scope: ServiceScopeViewV1,
+  target: ServiceAdmissionTargetV1,
+): boolean {
+  return scopeMatchesWireDatasetTargetV1(scope, target)
+    && (target.operationProfile === undefined
+      || scope.operationProfile === target.operationProfile)
+    && (target.entitlementProfile === undefined
+      || scope.entitlementProfile === target.entitlementProfile);
+}
+
+function scopeMatchesWireDatasetTargetV1(
+  scope: ServiceScopeViewV1,
+  target: ServiceAdmissionTargetV1,
+): boolean {
+  return scope.backend === target.backend
+    && scope.workload === target.workload
+    && scope.protocolVersion === target.protocolVersion
+    && scope.dataset?.kind === 'manifest-root'
+    && scope.dataset.rootHex === target.expectedDatasetManifestRootHex;
+}
+
+function canonicalDatasetBindingViewV1(
+  dataset: ServiceScopeViewV1['dataset'],
+  field: string,
+): ServiceScopeViewV1['dataset'] {
+  if (!dataset || typeof dataset !== 'object') throw new Error(`${field} is missing`);
+  if (dataset.kind === 'manifest-root') {
+    return { kind: 'manifest-root', rootHex: canonicalLowerHex32(field, dataset.rootHex) };
+  }
+  if (dataset.kind === 'class') {
+    if (!Number.isSafeInteger(dataset.classId) || dataset.classId < 0 || dataset.classId > 0xffff) {
+      throw new Error(`${field} class ID must be a u16`);
+    }
+    return { kind: 'class', classId: dataset.classId };
+  }
+  if (dataset.kind === 'catalog-epoch') {
+    if (!/^(0|[1-9][0-9]*)$/.test(dataset.epoch)) {
+      throw new Error(`${field} epoch must be a canonical decimal u64`);
+    }
+    const epoch = BigInt(dataset.epoch);
+    if (epoch > 0xffff_ffff_ffff_ffffn) throw new Error(`${field} epoch exceeds u64`);
+    return { kind: 'catalog-epoch', epoch: epoch.toString() };
+  }
+  throw new Error(`${field} has an unknown binding kind`);
 }
 
 function validateDirectoryAssertion(trust: ProviderTrustAnchorV1): void {
@@ -1166,8 +1272,8 @@ function validateRetainedRedemptionView(
       || view.offer.offerId !== binding.offerId) {
     throw new Error('retained policy metadata does not match the exact capability binding');
   }
-  if (view.scope.backend !== target.backend || view.scope.workload !== target.workload) {
-    throw new Error('retained capability scope does not match this adapter backend/workload');
+  if (!scopeMatchesTargetV1(view.scope, target)) {
+    throw new Error('retained capability scope does not match this adapter wire/profile target');
   }
   if (!Array.isArray(view.scope.offers) || view.scope.offers.length !== 0) {
     throw new Error('retained redemption metadata must expose only the selected offer');
@@ -1189,17 +1295,16 @@ function validateRetainedRedemptionView(
     throw new Error('retained ARC offer is not marked experimental');
   }
   validateOfferVerificationKeyFingerprints(view.offer);
-  const limits = view.scope.limits;
-  if (!limits || !Number.isSafeInteger(limits.maxFrames) || limits.maxFrames <= 0
-      || !Number.isSafeInteger(limits.maxWallTimeMs) || limits.maxWallTimeMs <= 0
-      || !Number.isSafeInteger(limits.maxConcurrentSockets)
-      || limits.maxConcurrentSockets <= 0
-      || !isCanonicalU64(limits.maxRequestBytes)
-      || !isCanonicalU64(limits.maxResponseBytes)
-      || !isCanonicalU64(limits.maxWorkUnits)) {
-    throw new Error('retained entitlement limits are malformed');
-  }
-  return view;
+  const canonical = cloneRetainedRedemptionView(view);
+  canonical.scope.dataset = canonicalDatasetBindingViewV1(
+    view.scope.dataset,
+    'retained dataset binding',
+  );
+  canonical.scope.limits = canonicalServiceEntitlementLimitsV1(
+    view.scope.limits,
+    'retained entitlement limits',
+  );
+  return canonical;
 }
 
 function retainedSchemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {
@@ -1213,15 +1318,6 @@ function retainedSchemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {
   return schemeForPaidOffer(offer.authorization);
 }
 
-function isCanonicalU64(value: string): boolean {
-  if (!/^(0|[1-9][0-9]*)$/.test(value)) return false;
-  try {
-    return BigInt(value) <= 0xffff_ffff_ffff_ffffn;
-  } catch {
-    return false;
-  }
-}
-
 function cloneRetainedRedemptionView(
   view: RetainedServiceRedemptionViewV1,
 ): RetainedServiceRedemptionViewV1 {
@@ -1230,6 +1326,7 @@ function cloneRetainedRedemptionView(
     policyDigestHex: view.policyDigestHex,
     scope: {
       ...view.scope,
+      dataset: { ...view.scope.dataset },
       limits: { ...view.scope.limits },
       offers: [],
     },
@@ -1298,6 +1395,8 @@ function structuredClonePolicy(view: ServicePolicyViewV1): ServicePolicyViewV1 {
     ...view,
     scopes: view.scopes.map((scope) => ({
       ...scope,
+      dataset: { ...scope.dataset },
+      limits: { ...scope.limits },
       offers: scope.offers.map((offer) => ({ ...offer, price: { ...offer.price } })),
     })),
   };

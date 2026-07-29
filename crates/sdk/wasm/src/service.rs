@@ -19,8 +19,8 @@ use pir_sdk_client::{
 };
 use pir_service_protocol::{
     bat_verification_key_fingerprint_v1, pow_solution_meets_difficulty_v1, AcquisitionMethod,
-    AuthGrantedV1, AuthScheme, BackendId, DeploymentStatus, EntitlementLimitsV1, FreeModeV1,
-    FreePowProofV1, OperationStartV1, PowChallengeResponseV1, PriceV1, ServiceOfferV1,
+    AuthGrantedV1, AuthScheme, BackendId, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
+    FreeModeV1, FreePowProofV1, OperationStartV1, PowChallengeResponseV1, PriceV1, ServiceOfferV1,
     VerificationMode, WorkloadId,
 };
 use serde::Serialize;
@@ -370,6 +370,7 @@ impl WasmAcceptedRetainedServiceRedemptionV1 {
                 "protocolVersion": scope.protocol_version,
                 "operationProfile": scope.operation_profile,
                 "entitlementProfile": scope.entitlement_profile,
+                "dataset": dataset_json_v1(&scope.dataset),
                 "limits": limits_json_v1(verified.limits()),
                 "offers": [],
             },
@@ -569,6 +570,8 @@ impl WasmAcceptedServicePolicyV1 {
                     "protocolVersion": scope_policy.scope.protocol_version,
                     "operationProfile": scope_policy.scope.operation_profile,
                     "entitlementProfile": scope_policy.scope.entitlement_profile,
+                    "dataset": dataset_json_v1(&scope_policy.scope.dataset),
+                    "limits": limits_json_v1(&scope_policy.limits),
                     "offers": offers,
                 })
             })
@@ -786,6 +789,23 @@ fn limits_json_v1(limits: &EntitlementLimitsV1) -> serde_json::Value {
     })
 }
 
+fn dataset_json_v1(dataset: &DatasetBindingV1) -> serde_json::Value {
+    match dataset {
+        DatasetBindingV1::Class { class_id } => serde_json::json!({
+            "kind": "class",
+            "classId": class_id,
+        }),
+        DatasetBindingV1::CatalogEpoch { epoch } => serde_json::json!({
+            "kind": "catalog-epoch",
+            "epoch": epoch.to_string(),
+        }),
+        DatasetBindingV1::ManifestRoot { root } => serde_json::json!({
+            "kind": "manifest-root",
+            "rootHex": hex::encode(root),
+        }),
+    }
+}
+
 const fn acquisition_label(value: AcquisitionMethod) -> &'static str {
     match value {
         AcquisitionMethod::FreeV1 => "free",
@@ -887,6 +907,58 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    fn entitlement_limits_json_preserves_every_signed_counter_without_number_loss() {
+        let limits = EntitlementLimitsV1 {
+            max_logical_inputs: u16::MAX,
+            max_frames: u32::MAX,
+            max_request_bytes: u64::MAX,
+            max_response_bytes: u64::MAX - 1,
+            max_wall_time_ms: u32::MAX,
+            max_concurrent_sockets: u8::MAX,
+            max_hint_groups: u16::MAX - 1,
+            max_work_units: u64::MAX - 2,
+        };
+        let value = limits_json_v1(&limits);
+        assert_eq!(
+            value["maxLogicalInputs"].as_u64(),
+            Some(u64::from(u16::MAX))
+        );
+        assert_eq!(value["maxFrames"].as_u64(), Some(u64::from(u32::MAX)));
+        assert_eq!(
+            value["maxRequestBytes"].as_str(),
+            Some("18446744073709551615")
+        );
+        assert_eq!(
+            value["maxResponseBytes"].as_str(),
+            Some("18446744073709551614")
+        );
+        assert_eq!(value["maxWallTimeMs"].as_u64(), Some(u64::from(u32::MAX)));
+        assert_eq!(
+            value["maxConcurrentSockets"].as_u64(),
+            Some(u64::from(u8::MAX))
+        );
+        assert_eq!(
+            value["maxHintGroups"].as_u64(),
+            Some(u64::from(u16::MAX - 1))
+        );
+        assert_eq!(value["maxWorkUnits"].as_str(), Some("18446744073709551613"));
+    }
+
+    #[test]
+    fn dataset_json_preserves_manifest_root_and_u64_epoch_canonically() {
+        let root = dataset_json_v1(&DatasetBindingV1::ManifestRoot { root: [0x5a; 32] });
+        assert_eq!(root["kind"].as_str(), Some("manifest-root"));
+        assert_eq!(
+            root["rootHex"].as_str(),
+            Some(hex::encode([0x5a; 32]).as_str())
+        );
+
+        let epoch = dataset_json_v1(&DatasetBindingV1::CatalogEpoch { epoch: u64::MAX });
+        assert_eq!(epoch["kind"].as_str(), Some("catalog-epoch"));
+        assert_eq!(epoch["epoch"].as_str(), Some("18446744073709551615"));
     }
 
     #[test]
