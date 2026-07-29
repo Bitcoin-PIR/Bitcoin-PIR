@@ -308,6 +308,20 @@ export class OramPirClientAdapter {
         dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
       assertSessionBinding: (policy) => client().verifyServicePolicySession(policy),
+      captureReadinessGuard: () => {
+        const expectedClient = client();
+        const expectedGeneration = this.sessionGeneration;
+        const assertReady = () => {
+          this.assertCurrentSession(
+            expectedGeneration,
+            expectedClient,
+            'service admission readiness',
+          );
+          client();
+        };
+        assertReady();
+        return assertReady;
+      },
       assertRetainedSessionBinding: (policy, nowUnix) =>
         client().verifyRetainedServiceSession(policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>

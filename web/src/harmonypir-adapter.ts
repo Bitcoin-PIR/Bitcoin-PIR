@@ -1299,6 +1299,7 @@ export class HarmonyPirClientAdapter {
         0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
       assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(0, policy),
+      captureReadinessGuard: () => this.captureServiceReadinessGuard(0, dbId),
       assertRetainedSessionBinding: (policy, nowUnix) =>
         authorizedClient().verifyRetainedServiceSession(0, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
@@ -1328,6 +1329,7 @@ export class HarmonyPirClientAdapter {
         1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
       assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(1, policy),
+      captureReadinessGuard: () => this.captureServiceReadinessGuard(1, dbId),
       assertRetainedSessionBinding: (policy, nowUnix) =>
         authorizedClient().verifyRetainedServiceSession(1, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
@@ -1360,6 +1362,24 @@ export class HarmonyPirClientAdapter {
       );
     }
     return client;
+  }
+
+  private captureServiceReadinessGuard(
+    providerIndex: 0 | 1,
+    dbId: number,
+  ): () => void {
+    const expectedClient = this.requirePreparedAdmissionClient(providerIndex, dbId);
+    const expectedGeneration = this.pairGeneration;
+    const assertReady = () => {
+      if (!expectedClient.isProviderConnected(0)
+          || !expectedClient.isProviderConnected(1)) {
+        throw new Error('Harmony strict pair transport is no longer connected');
+      }
+      this.assertCurrentStrictPair(expectedClient, expectedGeneration);
+      this.requirePreparedAdmissionClient(providerIndex, dbId);
+    };
+    assertReady();
+    return assertReady;
   }
 
   private async verifyConfiguredDatabaseProofs(): Promise<void> {

@@ -182,6 +182,7 @@ const api = {
       network: 'bitcoin',
       expectedPayeePubkey: PAYEE,
       allowInsecureLoopback: true,
+      assertReady: () => {},
     });
     await activeAcquisition.pollStatus();
     return {

@@ -249,6 +249,8 @@ export class ProductAdmissionControllerV1 {
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
   private queryShapesFrozen = false;
+  /** Invalidated synchronously when a strict admission attempt starts closing. */
+  private lifecycleGeneration = 0;
   private readonly resumeBolt11Impl: typeof resumeBolt11AcquisitionV1;
 
   constructor(private readonly options: ProductAdmissionControllerOptionsV1) {
@@ -669,6 +671,7 @@ export class ProductAdmissionControllerV1 {
   async startBolt11(role: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireSelectedLeg(role);
     this.assertCredentialFlowTopologyReady();
+    const lifecycleGeneration = this.lifecycleGeneration;
     return this.withLegTransition(leg, async () => {
       this.freezeQueryShapesForCredentialFlow();
       if (leg.selected!.offer.acquisition !== 'bolt11') {
@@ -683,20 +686,30 @@ export class ProductAdmissionControllerV1 {
         );
       }
       const frozen = this.freezeLegSelection(leg);
+      const assertReady = () => this.assertBolt11StartReady(leg, lifecycleGeneration);
+      assertReady();
       leg.status = 'acquiring';
       leg.credentialFlowStarted = true;
+      let acquisition: Bolt11AcquisitionHandleV1 | null = null;
       try {
-        const acquisition = await frozen.startBolt11Acquisition(
+        acquisition = await frozen.startBolt11Acquisition(
           {
             vault: this.options.vault,
             network: leg.network ?? 'bitcoin',
             expectedPayeePubkey: payee.slice(),
+            assertReady,
           },
         );
-        this.installAcquisition(leg, acquisition);
+        assertReady();
+        // Keep the verified invoice out of observable controller state until
+        // every remaining vault await has completed under the same pair.
         await this.refreshLegRecoveries(leg);
+        assertReady();
+        this.installAcquisition(leg, acquisition);
+        acquisition = null;
         return this.snapshot();
       } catch (cause) {
+        acquisition?.close();
         if (cause instanceof Bolt11RecoveryRequiredErrorV1) {
           leg.status = 'failed';
           leg.errorCode = 'bolt11-recovery-required';
@@ -894,6 +907,7 @@ export class ProductAdmissionControllerV1 {
   }
 
   async close(): Promise<void> {
+    this.lifecycleGeneration += 1;
     this.closeAcquisitions();
     for (const leg of this.legs) {
       if (!leg.transitionInFlight) {
@@ -1088,6 +1102,31 @@ export class ProductAdmissionControllerV1 {
         'strictly connect and preflight both providers and select both exact offers before either credential flow',
       );
     }
+  }
+
+  /**
+   * Bind first invoice exposure to this exact product attempt. The provider
+   * session adds its own transport/policy guard; this layer additionally
+   * prevents a late async acquisition from surviving controller close or
+   * replacement of either independently selected product leg.
+   */
+  private assertBolt11StartReady(leg: LegStateV1, generation: number): void {
+    const expected = this.options.topology === 'independent-pair' ? 2 : 1;
+    if (this.lifecycleGeneration !== generation
+        || this.phase === 'idle'
+        || this.phase === 'failed'
+        || this.bootstraps.length === 0
+        || this.legs.length !== expected
+        || !this.legs.includes(leg)
+        || !hasAdmissionSelection(leg)) {
+      throw new ProductAdmissionErrorV1(
+        'strict-bootstrap-failed',
+        'strict product admission was invalidated before invoice exposure',
+      );
+    }
+    this.assertCredentialFlowTopologyReady();
+    this.assertSelectionPrivacyIfComplete();
+    this.assertShapeFitsLeg(leg);
   }
 
   private pairCredentialFlowStarted(): boolean {
@@ -1291,11 +1330,16 @@ export class ProductAdmissionControllerV1 {
   }
 
   private installAcquisition(leg: LegStateV1, acquisition: Bolt11AcquisitionHandleV1): void {
+    // Read all guarded UI fields before replacing the currently installed
+    // handle, so a stale-invoice rejection cannot leave a dangling handle.
+    const invoice = acquisition.invoice();
+    const invoiceExpiresAtUnix = acquisition.invoiceExpiresAtUnix();
+    const quoteStatus = acquisition.status();
     leg.acquisition?.close();
     leg.acquisition = acquisition;
-    leg.invoice = acquisition.invoice();
-    leg.invoiceExpiresAtUnix = acquisition.invoiceExpiresAtUnix();
-    leg.quoteStatus = acquisition.status();
+    leg.invoice = invoice;
+    leg.invoiceExpiresAtUnix = invoiceExpiresAtUnix;
+    leg.quoteStatus = quoteStatus;
     leg.status = leg.quoteStatus === 'payment-settled'
       || leg.quoteStatus === 'late-settled-reconcile'
       ? 'payment-settled'
