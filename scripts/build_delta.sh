@@ -60,6 +60,10 @@ DATA_DIR="/Volumes/Bitcoin/data"
 INTERMEDIATE_DIR="$DATA_DIR/intermediate"
 DELTA_OUT_DIR="$DATA_DIR/deltas/${START_HEIGHT}_${END_HEIGHT}"
 ORAM_DIRECT_INPUT_DIR="${ORAM_DIRECT_INPUT_DIR:-$DATA_DIR/oram-inputs/deltas/${START_HEIGHT}_${END_HEIGHT}}"
+DIRECT_ORAM_INDEX_SLOTS_PER_BIN="${DIRECT_ORAM_INDEX_SLOTS_PER_BIN:-4}"
+DIRECT_ORAM_INDEX_HASH_FNS="${DIRECT_ORAM_INDEX_HASH_FNS:-2}"
+DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB="${DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB:-950000000}"
+DIRECT_ORAM_INDEX_SEED="${DIRECT_ORAM_INDEX_SEED:-8030603977422561841}"
 
 DELTA_INDEX_FILE="$INTERMEDIATE_DIR/delta_index_${START_HEIGHT}_${END_HEIGHT}.bin"
 DELTA_CHUNKS_FILE="$INTERMEDIATE_DIR/delta_chunks_${START_HEIGHT}_${END_HEIGHT}.bin"
@@ -139,6 +143,19 @@ echo ""
 echo "[5/5] gen_4_build_merkle_bucket — building per-bucket bin Merkle..."
 ./target/release/gen_4_build_merkle_bucket --data-dir "$DELTA_OUT_DIR"
 echo ""
+
+manifest_direct_args=()
+if [[ "${KEEP_ORAM_DIRECT_INPUTS:-0}" == "1" ]]; then
+    manifest_direct_args=(
+        --direct-oram-index "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin"
+        --direct-oram-chunks "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
+        --direct-index-slots-per-bin "$DIRECT_ORAM_INDEX_SLOTS_PER_BIN"
+        --direct-index-hash-fns "$DIRECT_ORAM_INDEX_HASH_FNS"
+        --direct-index-load-factor-ppb "$DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB"
+        --direct-index-seed "$DIRECT_ORAM_INDEX_SEED"
+    )
+fi
+"$SCRIPT_DIR/build_db_manifest.sh" "$DELTA_OUT_DIR" "${manifest_direct_args[@]}"
 
 echo "========================================"
 echo "Delta build complete."

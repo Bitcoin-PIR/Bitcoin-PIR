@@ -15,10 +15,11 @@
 #![cfg(all(unix, feature = "cuckoo-oram"))]
 
 use bitcoinpir_oram::{
-    circuit_meta_page_bytes, circuit_payload_page_bytes, CircuitOram, CircuitStoreAuthState,
-    DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel, DirectTableInfo,
-    DirectTableMetadata, FilePageStore, OramParams, PageStore, TieredMerklePageStore,
-    TrustedBlockSource, DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_INPUT_RECORD_SIZE,
+    circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitOram,
+    CircuitStoreAuthState, DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel,
+    DirectOramDatasetBindingV1, DirectTableInfo, DirectTableMetadata, FilePageStore, OramParams,
+    PageStore, TieredMerklePageStore, TrustedBlockSource, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
+    DIRECT_INDEX_INPUT_RECORD_SIZE,
 };
 use ed25519_dalek::SigningKey;
 use pir_core::cuckoo::write_header_with_anchor;
@@ -58,6 +59,7 @@ const ENTITLEMENT_PROFILE: u16 = 144;
 const DIRECT_ORAM_PACK: usize = 2;
 const DIRECT_ORAM_ACCESS_BUDGET: usize = 8;
 const TINY_BINS_PER_TABLE: usize = 128;
+const DIRECT_ORAM_PAGE_KEY: [u8; 32] = [0x77; 32];
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
@@ -109,6 +111,27 @@ struct ServerProcess {
     stderr_path: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct ServerSecurityMode {
+    encrypted: bool,
+    auth_store: bool,
+    trusted_state: bool,
+    no_save: bool,
+    allow_trusted_state_outside_run_dev: bool,
+}
+
+impl Default for ServerSecurityMode {
+    fn default() -> Self {
+        Self {
+            encrypted: true,
+            auth_store: true,
+            trusted_state: true,
+            no_save: false,
+            allow_trusted_state_outside_run_dev: true,
+        }
+    }
+}
+
 impl ServerProcess {
     fn spawn(
         root: &Path,
@@ -118,68 +141,109 @@ impl ServerProcess {
         port: u16,
         generation: u8,
     ) -> Self {
+        let mut server = Self::spawn_unchecked(
+            root,
+            db_path,
+            oram,
+            fixture,
+            port,
+            generation,
+            ServerSecurityMode::default(),
+        );
+        server.wait_until_listening(port);
+        server
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_unchecked(
+        root: &Path,
+        db_path: &Path,
+        oram: &DirectOramFixture,
+        fixture: &ProviderFixture,
+        port: u16,
+        generation: u8,
+        mode: ServerSecurityMode,
+    ) -> Self {
         let stdout_path = root.join(format!("tee-oram-generation-{generation}-stdout.log"));
         let stderr_path = root.join(format!("tee-oram-generation-{generation}-stderr.log"));
         let stdout = File::create(&stdout_path).expect("create server stdout log");
         let stderr = File::create(&stderr_path).expect("create server stderr log");
         let direct_oram = format!("0={}", oram.image_dir.display());
         let trusted_state = format!("0={}", oram.trusted_state_dir.display());
+        let page_key_hex = hex::encode(DIRECT_ORAM_PAGE_KEY);
+        let mut args = vec![
+            "--bind-address".to_owned(),
+            "127.0.0.1".to_owned(),
+            "--port".to_owned(),
+            port.to_string(),
+            "--data-dir".to_owned(),
+            db_path.to_string_lossy().into_owned(),
+            "--role".to_owned(),
+            "secondary".to_owned(),
+            "--disable-onion".to_owned(),
+            "--serve-queries".to_owned(),
+            "--direct-oram-db".to_owned(),
+            direct_oram,
+            "--direct-oram-drain-per-access".to_owned(),
+            "2".to_owned(),
+            "--direct-oram-access-budget".to_owned(),
+            DIRECT_ORAM_ACCESS_BUDGET.to_string(),
+        ];
+        if mode.trusted_state {
+            args.extend(["--direct-oram-trusted-state-db".to_owned(), trusted_state]);
+        }
+        if mode.encrypted {
+            args.extend([
+                "--direct-oram-encrypted".to_owned(),
+                "--direct-oram-key-hex".to_owned(),
+                page_key_hex,
+            ]);
+        }
+        if mode.auth_store {
+            args.push("--direct-oram-auth-store".to_owned());
+        }
+        if mode.no_save {
+            args.push("--direct-oram-no-save".to_owned());
+        }
+        if mode.allow_trusted_state_outside_run_dev {
+            args.push("--allow-direct-oram-trusted-state-outside-run-dev".to_owned());
+        }
+        args.extend([
+            "--require-service-auth-v1".to_owned(),
+            "--service-policy".to_owned(),
+            fixture.policy_path.to_string_lossy().into_owned(),
+            "--service-provider-id-hex".to_owned(),
+            hex::encode(fixture.provider_id),
+            "--service-policy-key-hex".to_owned(),
+            hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+            "--service-store".to_owned(),
+            fixture.store_path.to_string_lossy().into_owned(),
+            "--service-rollback-authority".to_owned(),
+            fixture.rollback_path.to_string_lossy().into_owned(),
+            "--allow-local-service-rollback-authority-dev".to_owned(),
+            "--max-connections".to_owned(),
+            "16".to_owned(),
+            "--service-max-concurrent-auth".to_owned(),
+            "4".to_owned(),
+            "--websocket-handshake-timeout-ms".to_owned(),
+            "1000".to_owned(),
+            "--connection-idle-timeout-ms".to_owned(),
+            "60000".to_owned(),
+            "--service-pre-auth-timeout-ms".to_owned(),
+            "60000".to_owned(),
+        ]);
         let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
-            .args([
-                "--bind-address",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--data-dir",
-                db_path.to_str().expect("UTF-8 test path"),
-                "--role",
-                "secondary",
-                "--disable-onion",
-                "--serve-queries",
-                "--direct-oram-db",
-                &direct_oram,
-                "--direct-oram-trusted-state-db",
-                &trusted_state,
-                "--direct-oram-drain-per-access",
-                "2",
-                "--direct-oram-access-budget",
-                &DIRECT_ORAM_ACCESS_BUDGET.to_string(),
-                "--direct-oram-auth-store",
-                "--require-service-auth-v1",
-                "--service-policy",
-                fixture.policy_path.to_str().expect("UTF-8 test path"),
-                "--service-provider-id-hex",
-                &hex::encode(fixture.provider_id),
-                "--service-policy-key-hex",
-                &hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
-                "--service-store",
-                fixture.store_path.to_str().expect("UTF-8 test path"),
-                "--service-rollback-authority",
-                fixture.rollback_path.to_str().expect("UTF-8 test path"),
-                "--allow-local-service-rollback-authority-dev",
-                "--max-connections",
-                "16",
-                "--service-max-concurrent-auth",
-                "4",
-                "--websocket-handshake-timeout-ms",
-                "1000",
-                "--connection-idle-timeout-ms",
-                "60000",
-                "--service-pre-auth-timeout-ms",
-                "60000",
-            ])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()
             .expect("spawn ORAM-enabled unified_server");
-        let mut server = Self {
+        Self {
             child,
             stdout_path,
             stderr_path,
-        };
-        server.wait_until_listening(port);
-        server
+        }
     }
 
     fn wait_until_listening(&mut self, port: u16) {
@@ -215,6 +279,38 @@ impl ServerProcess {
         let _ = self.child.wait();
         (read_log(&self.stdout_path), read_log(&self.stderr_path))
     }
+
+    fn assert_startup_rejected(mut self, port: u16, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().expect("poll rejected server") {
+                let stdout = read_log(&self.stdout_path);
+                let stderr = read_log(&self.stderr_path);
+                assert!(
+                    !status.success(),
+                    "unsafe server unexpectedly exited successfully"
+                );
+                assert!(
+                    stdout.contains(needle) || stderr.contains(needle),
+                    "startup rejection did not contain {needle:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                );
+                return;
+            }
+            assert!(
+                TcpStream::connect_timeout(
+                    &format!("127.0.0.1:{port}").parse().unwrap(),
+                    Duration::from_millis(50),
+                )
+                .is_err(),
+                "unsafe server reached its listener before rejection"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "unsafe server did not reject startup"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
 impl Drop for ServerProcess {
@@ -235,8 +331,7 @@ impl Drop for ServerProcess {
 async fn paid_gate_reaches_real_direct_tee_oram_handler_and_replay_survives_restart() {
     let root = tempfile::tempdir().expect("test root");
     chmod(root.path(), 0o700);
-    let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
-    let oram = build_direct_oram_fixture(root.path());
+    let (db_path, manifest_root, oram) = build_direct_oram_fixture(root.path());
     let provider = build_provider(root.path(), manifest_root, unix_now());
     let port = unused_loopback_port();
     let server = ServerProcess::spawn(root.path(), &db_path, &oram, &provider, port, 0);
@@ -367,6 +462,268 @@ async fn paid_gate_reaches_real_direct_tee_oram_handler_and_replay_survives_rest
 
     let (stdout_second, stderr_second) = server.stop();
     assert_oram_listener(port, &stdout_second, &stderr_second, &oram);
+}
+
+#[test]
+fn production_direct_oram_startup_rejects_unbound_or_unsafe_configurations() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root, oram) = build_direct_oram_fixture(root.path());
+    let provider = build_provider(root.path(), manifest_root, unix_now());
+    let reject = |generation: u8, mode: ServerSecurityMode, needle: &str| {
+        let port = unused_loopback_port();
+        ServerProcess::spawn_unchecked(
+            root.path(),
+            &db_path,
+            &oram,
+            &provider,
+            port,
+            generation,
+            mode,
+        )
+        .assert_startup_rejected(port, needle);
+    };
+
+    reject(
+        10,
+        ServerSecurityMode {
+            auth_store: false,
+            ..ServerSecurityMode::default()
+        },
+        "requires --direct-oram-auth-store",
+    );
+    reject(
+        11,
+        ServerSecurityMode {
+            encrypted: false,
+            ..ServerSecurityMode::default()
+        },
+        "requires --direct-oram-encrypted",
+    );
+    reject(
+        12,
+        ServerSecurityMode {
+            trusted_state: false,
+            ..ServerSecurityMode::default()
+        },
+        "requires a separate --direct-oram-trusted-state-db",
+    );
+    reject(
+        13,
+        ServerSecurityMode {
+            no_save: true,
+            ..ServerSecurityMode::default()
+        },
+        "rejects --direct-oram-no-save",
+    );
+    reject(
+        19,
+        ServerSecurityMode {
+            allow_trusted_state_outside_run_dev: false,
+            ..ServerSecurityMode::default()
+        },
+        "requires trusted state under measured /run/bitcoinpir-oram-state",
+    );
+
+    let index_metadata_path = oram.trusted_state_dir.join("direct-index.metadata");
+    let chunk_metadata_path = oram.trusted_state_dir.join("direct-chunk.metadata");
+    let original_index_metadata = fs::read(&index_metadata_path).unwrap();
+    let original_chunk_metadata = fs::read(&chunk_metadata_path).unwrap();
+    let mut tampered = DirectTableMetadata::load(&index_metadata_path).unwrap();
+    let mut binding = *tampered.require_dataset_binding().unwrap();
+    binding.index_sha256[0] ^= 0x80;
+    tampered.dataset_binding = Some(binding);
+    tampered.save(&index_metadata_path).unwrap();
+    reject(
+        14,
+        ServerSecurityMode::default(),
+        "different dataset bindings",
+    );
+    fs::write(&index_metadata_path, &original_index_metadata).unwrap();
+
+    fs::write(&chunk_metadata_path, &original_index_metadata).unwrap();
+    reject(15, ServerSecurityMode::default(), "has level index");
+    fs::write(&chunk_metadata_path, &original_chunk_metadata).unwrap();
+
+    let mut legacy = DirectTableMetadata::load(&index_metadata_path).unwrap();
+    legacy.version = 1;
+    legacy.dataset_binding = None;
+    legacy.save(&index_metadata_path).unwrap();
+    reject(16, ServerSecurityMode::default(), "legacy");
+    fs::write(&index_metadata_path, &original_index_metadata).unwrap();
+
+    let manifest_path = db_path.join("MANIFEST.toml");
+    let original_manifest = fs::read(&manifest_path).unwrap();
+    let manifest_text = std::str::from_utf8(&original_manifest).unwrap();
+    let tampered_manifest = manifest_text.replacen(
+        &hex::encode(sha256(
+            &fs::read(
+                root.path()
+                    .join("direct-oram-source/utxo_chunks_index_nodust.bin"),
+            )
+            .unwrap(),
+        )),
+        &"9".repeat(64),
+        1,
+    );
+    fs::write(&manifest_path, tampered_manifest).unwrap();
+    reject(
+        17,
+        ServerSecurityMode::default(),
+        "does not match verified DB manifest",
+    );
+    fs::write(&manifest_path, &original_manifest).unwrap();
+
+    fs::remove_file(&manifest_path).unwrap();
+    reject(
+        18,
+        ServerSecurityMode::default(),
+        "requires an exact verified server DB manifest root",
+    );
+    fs::write(&manifest_path, &original_manifest).unwrap();
+}
+
+#[test]
+fn measured_boot_copies_exact_manifest_and_sources_before_strict_build() {
+    let script = include_str!("../../../scripts/dracut/97bpir-tier3-init/unified-server-run.sh");
+    assert!(script.contains("server-db/MANIFEST.toml missing"));
+    assert!(script.contains("$trusted_input_dir/server-db-MANIFEST.toml"));
+    assert_eq!(
+        script
+            .matches("--server-db-manifest \"$db_manifest\"")
+            .count(),
+        2
+    );
+    assert!(script.contains("trusted tmpfs index copy hash mismatch"));
+    assert!(script.contains("trusted tmpfs chunks copy hash mismatch"));
+    assert!(script.contains("--strict-source-binding"));
+    assert!(script.contains("ORAM_PAGE_KEY_HEX=\"$(random_seed_hex)\""));
+    assert!(script.contains("TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state"));
+    assert!(!script.contains("--seed-hex"));
+    assert!(!script.contains("set -x"));
+    assert!(!script.contains("echo \"$ORAM_PAGE_KEY_HEX\""));
+    assert_eq!(script.matches("--encrypted").count(), 2);
+    assert!(script.contains("--direct-oram-encrypted"));
+    assert!(script.contains("--direct-oram-auth-store"));
+    assert!(!script.contains("--direct-oram-no-save"));
+    assert!(!script.contains("--allow-direct-oram-trusted-state-outside-run-dev"));
+
+    let copy = script
+        .find("$trusted_input_dir/server-db-MANIFEST.toml")
+        .unwrap();
+    let trusted_rebind = script
+        .find("db_manifest=\"$trusted_input_dir/server-db-MANIFEST.toml\"")
+        .unwrap();
+    let strict_build = script
+        .find("--server-db-manifest \"$db_manifest\"")
+        .unwrap();
+    assert!(copy < trusted_rebind && trusted_rebind < strict_build);
+}
+
+#[test]
+fn measured_builder_binds_direct_sources_before_evidence_and_quote() {
+    let script =
+        include_str!("../../../scripts/dracut/97bpir-builder-tier3-init/bpir-builder-run.sh");
+    assert!(script.contains("export ROOTS_ONLY=0"));
+    assert!(script.contains("export STAGE_SERVER_DB=1"));
+    assert!(script.contains("export WRITE_BUILD_EVIDENCE=0"));
+    assert!(script.contains("export EMIT_SEV_SNP_QUOTE=0"));
+    assert!(script
+        .contains("PIPELINE=/usr/local/lib/attested-builder/scripts/build-snapshot-database.sh"));
+    assert!(script.contains("direct_oram_eligible=no"));
+    assert!(script.contains(
+        "direct_oram_blocker=requires-new-measured-snapshot-or-delta-build-with-typed-manifest-before-evidence"
+    ));
+    assert!(script.contains("direct_oram_blocker=attested-builder-full-build-v2-required"));
+    assert!(script.contains("direct_oram_eligible=yes"));
+    assert!(script.contains("augment_server_db_manifest_with_direct_oram"));
+    assert!(script.contains("Direct ORAM INDEX source size must be a positive multiple of 25"));
+    assert!(script.contains("Direct ORAM CHUNK source size must be a positive multiple of 40"));
+
+    let pipeline = script.find("/bin/bash \"$PIPELINE\"").unwrap();
+    let bind = script
+        .rfind("augment_server_db_manifest_with_direct_oram \\")
+        .unwrap();
+    let evidence = script.rfind("\"$BIN\" write-build-evidence \\").unwrap();
+    let report_data = script.rfind("\"$BIN\" write-tee-report-data \\").unwrap();
+    let quote = script.rfind("\"$BIN\" emit-sev-snp-quote \\").unwrap();
+    let version_gate = script
+        .rfind("evidence_version=$(verified_evidence_field")
+        .unwrap();
+    let blocker = script
+        .rfind("direct_oram_blocker=attested-builder-full-build-v2-required")
+        .unwrap();
+    let publish = script
+        .rfind("ln -sfn \"$OUT_DIR\" \"$OUT_BASE/latest\"")
+        .unwrap();
+    let eligible = script.rfind("direct_oram_eligible=yes").unwrap();
+    assert!(pipeline < bind && bind < evidence && evidence < report_data && report_data < quote);
+    assert!(
+        quote < version_gate && version_gate < blocker && blocker < publish && publish < eligible
+    );
+    assert!(script.contains("\"$evidence_version\" != 2"));
+    assert!(script.contains("\"$evidence_mode\" != full_build"));
+    assert!(script.contains("\"$predecessor_evidence\" != none"));
+    assert!(script.contains("\"$predecessor_report\" != none"));
+}
+
+#[test]
+fn production_manifest_generator_commits_exact_direct_sources_and_layout() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("db");
+    fs::create_dir(&db).unwrap();
+    fs::write(db.join("batch_pir_cuckoo.bin"), b"index-db").unwrap();
+    fs::write(db.join("chunk_pir_cuckoo.bin"), b"chunk-db").unwrap();
+    let index = root.path().join("utxo_chunks_index_nodust.bin");
+    let chunks = root.path().join("utxo_chunks_nodust.bin");
+    fs::write(&index, [0x11; 50]).unwrap();
+    fs::write(&chunks, [0x22; 120]).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/build_db_manifest.sh");
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg(&db)
+        .args([
+            "--direct-oram-index",
+            index.to_str().unwrap(),
+            "--direct-oram-chunks",
+            chunks.to_str().unwrap(),
+            "--direct-index-slots-per-bin",
+            "4",
+            "--direct-index-hash-fns",
+            "2",
+            "--direct-index-load-factor-ppb",
+            "950000000",
+            "--direct-index-seed",
+            "8030603977422561841",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (manifest, _) = pir_runtime_core::manifest::DbManifest::load_and_verify(&db)
+        .unwrap()
+        .unwrap();
+    let direct = manifest.direct_oram.unwrap().validate().unwrap();
+    assert_eq!(direct.index_sha256, sha256(&[0x11; 50]));
+    assert_eq!(direct.index_bytes, 50);
+    assert_eq!(direct.index_records, 2);
+    assert_eq!(direct.chunk_sha256, sha256(&[0x22; 120]));
+    assert_eq!(direct.chunk_bytes, 120);
+    assert_eq!(direct.chunk_records, 3);
+    assert_eq!(direct.index_slots_per_bin, 4);
+    assert_eq!(direct.index_hash_fns, 2);
+    assert_eq!(direct.index_load_factor_ppb, 950_000_000);
+    assert_eq!(direct.index_seed, 8_030_603_977_422_561_841);
+
+    let partial = Command::new("bash")
+        .arg(&script)
+        .arg(&db)
+        .args(["--direct-oram-index", index.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(
+        !partial.success(),
+        "partial direct binding arguments must fail"
+    );
 }
 
 async fn reject_wrong_receipt_scope(
@@ -763,7 +1120,7 @@ fn service_scope(
     }
 }
 
-fn build_direct_oram_fixture(root: &Path) -> DirectOramFixture {
+fn build_direct_oram_fixture(root: &Path) -> (PathBuf, [u8; 32], DirectOramFixture) {
     let source_dir = root.join("direct-oram-source");
     let image_dir = root.join("direct-oram-images");
     let trusted_state_dir = root.join("direct-oram-trusted-state");
@@ -784,7 +1141,8 @@ fn build_direct_oram_fixture(root: &Path) -> DirectOramFixture {
     index.extend_from_slice(&1u32.to_le_bytes());
     index.push(0);
     assert_eq!(index.len(), 2 * DIRECT_INDEX_INPUT_RECORD_SIZE);
-    fs::write(source_dir.join("utxo_chunks_index_nodust.bin"), index).unwrap();
+    let index_sha256 = sha256(&index);
+    fs::write(source_dir.join("utxo_chunks_index_nodust.bin"), &index).unwrap();
 
     let chunks = vec![
         vec![0; DIRECT_CHUNK_RECORD_SIZE],
@@ -798,29 +1156,59 @@ fn build_direct_oram_fixture(root: &Path) -> DirectOramFixture {
     for chunk in &chunks {
         chunk_bytes.extend_from_slice(chunk);
     }
-    fs::write(source_dir.join("utxo_chunks_nodust.bin"), chunk_bytes).unwrap();
+    let chunk_sha256 = sha256(&chunk_bytes);
+    fs::write(source_dir.join("utxo_chunks_nodust.bin"), &chunk_bytes).unwrap();
+
+    let (db_path, manifest_root) = write_tiny_manifest_database(
+        root,
+        index_sha256,
+        index.len() as u64,
+        2,
+        chunk_sha256,
+        chunk_bytes.len() as u64,
+        chunks.len() as u64,
+    );
+    let binding = DirectOramDatasetBindingV1 {
+        server_db_manifest_sha256: manifest_root,
+        index_sha256,
+        index_bytes: index.len() as u64,
+        index_records: 2,
+        chunk_sha256,
+        chunk_bytes: chunk_bytes.len() as u64,
+        chunk_records: chunks.len() as u64,
+        index_slots_per_bin: 4,
+        index_hash_fns: 2,
+        index_load_factor_ppb: 200_000_000,
+        index_seed: 0x6469_7265_6374_0001,
+    };
 
     build_direct_oram_level(
         &source_dir,
         &image_dir,
         &trusted_state_dir,
         DirectLevel::Index,
+        binding,
     );
     build_direct_oram_level(
         &source_dir,
         &image_dir,
         &trusted_state_dir,
         DirectLevel::Chunk,
+        binding,
     );
 
     let mut expected_chunk_data = chunks[3].clone();
     expected_chunk_data.extend_from_slice(&chunks[4]);
-    DirectOramFixture {
-        image_dir,
-        trusted_state_dir,
-        found_script_hash,
-        expected_chunk_data,
-    }
+    (
+        db_path,
+        manifest_root,
+        DirectOramFixture {
+            image_dir,
+            trusted_state_dir,
+            found_script_hash,
+            expected_chunk_data,
+        },
+    )
 }
 
 fn direct_chunk_record(txid_byte: u8, vout: u32, amount: u64) -> Vec<u8> {
@@ -839,6 +1227,7 @@ fn build_direct_oram_level(
     image_dir: &Path,
     trusted_state_dir: &Path,
     level: DirectLevel,
+    binding: DirectOramDatasetBindingV1,
 ) {
     match level {
         DirectLevel::Index => {
@@ -851,14 +1240,14 @@ fn build_direct_oram_level(
             )
             .unwrap();
             let source = DirectIndexPackedBlockReader::build(info, DIRECT_ORAM_PACK).unwrap();
-            let metadata = source.metadata().clone();
+            let metadata = source.metadata().clone().bind_dataset(binding).unwrap();
             build_direct_oram_from_source(image_dir, trusted_state_dir, level, metadata, source);
         }
         DirectLevel::Chunk => {
             let info = DirectTableInfo::from_chunks_file(source_dir.join("utxo_chunks_nodust.bin"))
                 .unwrap();
             let source = DirectChunkPackedBlockReader::open(info, DIRECT_ORAM_PACK).unwrap();
-            let metadata = source.metadata().clone();
+            let metadata = source.metadata().clone().bind_dataset(binding).unwrap();
             build_direct_oram_from_source(image_dir, trusted_state_dir, level, metadata, source);
         }
     }
@@ -882,18 +1271,24 @@ fn build_direct_oram_from_source<S: TrustedBlockSource>(
     .with_stash_capacity(128)
     .unwrap();
     let paths = direct_oram_paths(image_dir, trusted_state_dir, level);
-    let meta_store = FilePageStore::open(
+    let meta_plaintext_bytes = circuit_meta_page_bytes(params.bucket_size);
+    let payload_plaintext_bytes = circuit_payload_page_bytes(params.bucket_size, params.block_size);
+    let meta_file = FilePageStore::open(
         &paths.meta_image,
         params.bucket_count(),
-        circuit_meta_page_bytes(params.bucket_size),
+        meta_plaintext_bytes + AEAD_OVERHEAD,
     )
     .unwrap();
-    let payload_store = FilePageStore::open(
+    let payload_file = FilePageStore::open(
         &paths.payload_image,
         params.bucket_count(),
-        circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        payload_plaintext_bytes + AEAD_OVERHEAD,
     )
     .unwrap();
+    let meta_store =
+        AeadPageStore::new(meta_file, DIRECT_ORAM_PAGE_KEY, meta_plaintext_bytes).unwrap();
+    let payload_store =
+        AeadPageStore::new(payload_file, DIRECT_ORAM_PAGE_KEY, payload_plaintext_bytes).unwrap();
     let mut oram = CircuitOram::build_trusted_from_source(
         params.clone(),
         meta_store,
@@ -912,28 +1307,55 @@ fn build_direct_oram_from_source<S: TrustedBlockSource>(
 fn build_direct_oram_auth_store(paths: &DirectOramPaths, level: DirectLevel, params: &OramParams) {
     let trusted_levels = 1usize;
     let hash_page_size = 4096usize;
-    let meta_store = FilePageStore::open(
+    let meta_plaintext_bytes = circuit_meta_page_bytes(params.bucket_size);
+    let payload_plaintext_bytes = circuit_payload_page_bytes(params.bucket_size, params.block_size);
+    let meta_file = FilePageStore::open(
         &paths.meta_image,
         params.bucket_count(),
-        circuit_meta_page_bytes(params.bucket_size),
+        meta_plaintext_bytes + AEAD_OVERHEAD,
     )
     .unwrap();
-    let payload_store = FilePageStore::open(
+    let payload_file = FilePageStore::open(
         &paths.payload_image,
         params.bucket_count(),
-        circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        payload_plaintext_bytes + AEAD_OVERHEAD,
     )
     .unwrap();
+    let meta_store =
+        AeadPageStore::new(meta_file, DIRECT_ORAM_PAGE_KEY, meta_plaintext_bytes).unwrap();
+    let payload_store =
+        AeadPageStore::new(payload_file, DIRECT_ORAM_PAGE_KEY, payload_plaintext_bytes).unwrap();
     let hash_pages = TieredMerklePageStore::<FilePageStore, FilePageStore>::required_hash_pages(
         params.bucket_count(),
         hash_page_size,
         trusted_levels,
     )
     .unwrap();
-    let meta_hash_store =
-        FilePageStore::open(&paths.meta_hash_image, hash_pages, hash_page_size).unwrap();
-    let payload_hash_store =
-        FilePageStore::open(&paths.payload_hash_image, hash_pages, hash_page_size).unwrap();
+    let meta_hash_file = FilePageStore::open(
+        &paths.meta_hash_image,
+        hash_pages,
+        hash_page_size + AEAD_OVERHEAD,
+    )
+    .unwrap();
+    let payload_hash_file = FilePageStore::open(
+        &paths.payload_hash_image,
+        hash_pages,
+        hash_page_size + AEAD_OVERHEAD,
+    )
+    .unwrap();
+    let mut meta_hash_store =
+        AeadPageStore::new(meta_hash_file, DIRECT_ORAM_PAGE_KEY, hash_page_size).unwrap();
+    let mut payload_hash_store =
+        AeadPageStore::new(payload_hash_file, DIRECT_ORAM_PAGE_KEY, hash_page_size).unwrap();
+    let zero_hash_page = vec![0u8; hash_page_size];
+    for page in 0..hash_pages {
+        meta_hash_store.write_page(page, &zero_hash_page).unwrap();
+        payload_hash_store
+            .write_page(page, &zero_hash_page)
+            .unwrap();
+    }
+    PageStore::flush(&mut meta_hash_store).unwrap();
+    PageStore::flush(&mut payload_hash_store).unwrap();
     let (meta_store_id, payload_store_id) = direct_auth_store_ids(level);
     let mut meta =
         TieredMerklePageStore::build(meta_store, meta_hash_store, meta_store_id, trusted_levels)
@@ -986,7 +1408,16 @@ fn direct_auth_store_ids(level: DirectLevel) -> ([u8; 16], [u8; 16]) {
     }
 }
 
-fn write_tiny_manifest_database(root: &Path) -> (PathBuf, [u8; 32]) {
+#[allow(clippy::too_many_arguments)]
+fn write_tiny_manifest_database(
+    root: &Path,
+    index_sha256: [u8; 32],
+    index_bytes: u64,
+    index_records: u64,
+    chunk_sha256: [u8; 32],
+    chunk_bytes: u64,
+    chunk_records: u64,
+) -> (PathBuf, [u8; 32]) {
     let db = root.join("tiny-db");
     fs::create_dir(&db).unwrap();
     write_tiny_table(
@@ -1001,7 +1432,9 @@ fn write_tiny_manifest_database(root: &Path) -> (PathBuf, [u8; 32]) {
     );
     let zero_hash = "0".repeat(64);
     let manifest = format!(
-        "[manifest]\nversion = 1\ngenerated_at = \"2026-07-29T00:00:00Z\"\n\n[files]\n\"batch_pir_cuckoo.bin\" = \"{zero_hash}\"\n\"chunk_pir_cuckoo.bin\" = \"{zero_hash}\"\n"
+        "[manifest]\nversion = 1\ngenerated_at = \"2026-07-29T00:00:00Z\"\n\n[direct_oram]\nversion = 1\nindex_sha256 = \"{}\"\nindex_bytes = {index_bytes}\nindex_records = {index_records}\nchunk_sha256 = \"{}\"\nchunk_bytes = {chunk_bytes}\nchunk_records = {chunk_records}\nindex_slots_per_bin = 4\nindex_hash_fns = 2\nindex_load_factor_ppb = 200000000\nindex_seed = 7235440056133222401\n\n[files]\n\"batch_pir_cuckoo.bin\" = \"{zero_hash}\"\n\"chunk_pir_cuckoo.bin\" = \"{zero_hash}\"\n",
+        hex::encode(index_sha256),
+        hex::encode(chunk_sha256),
     );
     fs::write(db.join("MANIFEST.toml"), manifest.as_bytes()).unwrap();
     (db, sha256(manifest.as_bytes()))

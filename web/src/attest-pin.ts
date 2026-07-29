@@ -227,7 +227,7 @@ export const MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN: DatabaseProofPin = {
     'd4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427',
   builderGitCommit: 'b692aec18b9c20ac92cb9fe22588e96ff96ad27d',
   description:
-    'mainnet_948454 ORAM source proof: roots-only snapshot inputs preserved by the SEV-SNP attested builder for strict direct ORAM rebuild',
+    'historical mainnet_948454 v1 database roots; retained for DB-proof compatibility, never sufficient for paid ORAM source verification',
 };
 
 /** The same verified snapshot database bundle, named for the DPF/Harmony

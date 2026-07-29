@@ -746,20 +746,20 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 
                 <section id="oram-source" class="tab-panel" role="tabpanel" aria-labelledby="tab-oram-source">
                     <section>
-                        <h2>ORAM source binding <span class="badge ok">snapshot 948454</span></h2>
+                        <h2>ORAM source binding <span class="badge">v2 ceremony pending</span></h2>
                         <p>
-                            The ORAM client that builds and uses the direct ORAM image
-                            runs in the TEE. The remaining public question is whether
-                            it used the right source database files. This proof binds
-                            the direct ORAM build to the preserved roots-only inputs
-                            emitted by the SEV-SNP attested builder for Bitcoin Core
-                            snapshot <code>948454</code>.
+                            Production is fail closed. The historical v1 source proof
+                            disclosed its ORAM RNG seed and has been withdrawn from public
+                            web assets; its exact bytes remain only as a forensic regression
+                            fixture. <code>/proofs/oram-source/current.json</code> is
+                            intentionally unavailable until a new measured full-build v2
+                            ceremony is complete.
                         </p>
                         <div class="panel accent">
                             <table class="pin-table">
                                 <tr>
                                     <td>manifest</td>
-                                    <td>/proofs/oram-source/mainnet_948454.json</td>
+                                    <td>/proofs/oram-source/current.json (not yet published)</td>
                                 </tr>
                                 <tr>
                                     <td>builder UKI sha256</td>
@@ -810,25 +810,23 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                     </section>
 
                     <section>
-                        <h2>What the browser verifier checks</h2>
+                        <h2>Required checks before activation</h2>
                         <ul>
-                            <li>The ORAM source manifest and every compact artifact match their pinned SHA-256 and size.</li>
-                            <li>The raw SNP report's <code>REPORT_DATA</code> and <code>MEASUREMENT</code> match the attested builder proof.</li>
-                            <li><code>oram-build-evidence.json</code> has <code>strict_source_binding=true</code> and cites the same DB evidence and root bundle payload.</li>
-                            <li><code>direct-inputs.sha256</code> matches the index and chunk source hashes embedded in the ORAM evidence.</li>
-                            <li>The exact 64-bit <code>index_seed</code> is compared as text, not as a rounded JavaScript number.</li>
-                            <li>The output image hashes in <code>SHA256SUMS</code> match the output hashes embedded in the ORAM evidence.</li>
-                            <li>The controller authentication roots for index and chunk metadata/payload match the pinned manifest roots.</li>
+                            <li>AMD ARK/ASK/VCEK verifies the builder SNP report signature, policy and pinned measurement.</li>
+                            <li>The report binds exact full-build v2 <code>BuildEvidence</code>; reattestation and predecessor hashes are rejected.</li>
+                            <li>The binary evidence binds the root payload, both manifest sidecars and exact server <code>MANIFEST.toml</code> bytes.</li>
+                            <li>The typed <code>[direct_oram]</code> table matches the direct source hashes, lengths, record counts and layout parameters.</li>
+                            <li>Strict ORAM evidence records <code>oram_rng_seed_source=os_rng</code> and never publishes a seed or page key.</li>
+                            <li>The current live verified db 0 proof has the exact attested server manifest root and matching anchors, roots and builder identity.</li>
                         </ul>
                     </section>
 
                     <section>
-                        <h2>Strict rebuild command</h2>
+                        <h2>Historical rebuild command (not production evidence)</h2>
                         <p>
                             On a host with the archived direct inputs, the strict rebuild
-                            was produced with the command below. The static web bundle
-                            publishes the compact evidence and hashes; it does not publish
-                            the 4.3&nbsp;GiB direct inputs or 15&nbsp;GiB ORAM images.
+                            was produced with the command below. It is retained as historical
+                            documentation only; the v1 output is ineligible for paid ORAM.
                         </p>
 	<pre><code>oramctl build-direct \
 	    --index-file /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin \
@@ -856,7 +854,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                     </section>
 
                     <section>
-                        <h2>Controller authentication roots</h2>
+                        <h2>Historical controller authentication roots (inactive)</h2>
                         <div class="panel">
                             <table class="pin-table">
                                 <tr>
@@ -984,11 +982,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM 948454 leaf proof JSON</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin" download>BHTM SEV-SNP report</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin" download>DB build evidence</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454.json" target="_blank" rel="noopener">ORAM source-binding manifest</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/oram/oram-build-evidence.json" target="_blank" rel="noopener">ORAM build evidence JSON</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/source/direct-inputs.sha256" target="_blank" rel="noopener">direct input hashes</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/oram/SHA256SUMS" target="_blank" rel="noopener">strict ORAM rebuild SHA256SUMS</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/db/build-evidence.sev-snp-report.bin" download>ORAM source DB SEV-SNP report</a></p>
+                            <p>ORAM v2 source artifacts are not published yet. The browser requests <code>/proofs/oram-source/current.json</code> only after receiving a matching live db 0 proof and remains fail closed on 404.</p>
                         </div>
                     </section>
                 </section>

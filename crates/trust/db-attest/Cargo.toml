@@ -12,7 +12,7 @@ documentation = "https://docs.rs/pir-db-attest"
 publish = false
 
 [dependencies]
-rootbundle = { git = "https://github.com/Bitcoin-PIR/attested-builder.git", rev = "80ad9b185760d2e36fd24baef50dd3030af8e94f" }
+rootbundle = { path = "../../../vendor/rootbundle" }
 sha2 = { version = "0.10", default-features = false }
 hex = "0.4"
 thiserror = "1.0"

@@ -1,16 +1,25 @@
 # ORAM live-image binding
 
-Status: **production rollout complete as of 2026-07-24**. BitcoinPIR PR #70
-landed the regenerate-on-boot implementation, and PR #71 fixed the final
-trusted-state path contract and published the deployed pins. The
-proof-producing and trusted-state-separation changes landed in Bitcoin-PIR/oram
-PRs #4 and #5. The selected production model discards prior mutable ORAM state
-and rebuilds from proof-bound inputs before listening. This document also
-retains the more complex persistent-lineage design for any future node that
-cannot afford regeneration; that design is not an outstanding requirement for
-the current deployment.
+Status: **production paid TEE-ORAM activation blocked as of 2026-07-29**. The
+regenerate-on-boot mechanics from BitcoinPIR PRs #70/#71 exist, but the
+historical db0/db1 manifests and evidence predate the typed dataset binding and
+cannot be upgraded after BuildEvidence/quote creation. Historical public ORAM
+evidence also disclosed a reproducible initialization seed. BitcoinPIR now has
+the strict manifest/runtime mechanics for a fresh measured build, but the
+separate attested-builder producer still hard-codes BuildEvidence v1. The
+runner therefore fails closed and cannot yet produce an eligible db0 artifact.
+db1 additionally needs a new measured delta build; the current
+`reattest-existing-v2` workflow cannot provide this commitment.
 
-## Regenerate-on-boot rollout status
+The selected target model still discards prior mutable ORAM state and rebuilds
+from proof-bound inputs before listening. This document also retains the more
+complex persistent-lineage design for any future node that cannot afford
+regeneration.
+
+## Regenerate-on-boot implementation history and remaining gates
+
+The checked items below record historical implementation/deployment work; they
+do **not** constitute a current production-activation claim.
 
 - [x] Regenerate db 0 and db 1 ORAM images from fixed-hash direct inputs before
       the server listens.
@@ -30,8 +39,20 @@ the current deployment.
 - [x] Pass AMD attestation, encrypted-channel, operator-identity, db 0/db 1
       proof, padded ORAM, and strict browser acceptance gates.
 - [x] Publish the final binary/UKI/MEASUREMENT pins and deployment record.
+- [ ] Rebuild db0 with the typed `[direct_oram]` section inserted before new
+      BuildEvidence/report data/SEV-SNP quote creation.
+- [ ] Upgrade and independently review the external attested-builder producer
+      so a fresh snapshot emits predecessor-free full-build-v2 evidence and a
+      v2 root payload. BitcoinPIR's runner rejects its current v1 output.
+- [ ] Add/run the measured delta build path and produce equivalent new db1
+      manifest/evidence/quote artifacts; re-attestation alone is insufficient.
+- [ ] Rebuild and review the runtime UKI with strict OS-generated secret seed,
+      encrypted/authenticated bulk pages, and trusted state confined to
+      `/run/bitcoinpir-oram-state`.
+- [ ] Complete negative mutation/secret-leak scans and operator/client
+      acceptance against both new proof sets before enabling paid TEE-ORAM.
 
-The final deployment record and reviewed values are in
+The historical deployment record and reviewed values are in
 [`STRICT_VERIFICATION_PROGRESS.md`](STRICT_VERIFICATION_PROGRESS.md) and
 [`PHASE3_ROADMAP.md`](PHASE3_ROADMAP.md). The archived production UKI is
 `main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi`.
@@ -229,6 +250,13 @@ those trusted files while accessing only the large authenticated
 payload/meta/hash page images on persistent disk. This closes both the source
 hash/build TOCTOU and the process-boundary whole-image substitution window.
 
+The initialization seed is trusted state too. Revealing it lets the host
+reconstruct the initial logical-block to leaf/path mapping and correlate early
+bulk-page accesses. Strict builds therefore generate it inside `oramctl` from
+OS entropy and omit it from logs and ORAM build evidence. An explicit seed is
+available only in non-strict reproducibility/benchmark mode. Historical
+evidence containing `oram_rng_seed_hex` is not eligible for production.
+
 The sidecar Merkle roots are also bound to the page bytes emitted by that same
 trusted build. While writing each metadata and payload page in order,
 `oramctl` accumulates its expected domain-separated Merkle root using only
@@ -240,7 +268,7 @@ root. Strict source-bound authenticated builds use the sidecar layout; the
 embedded-tree layout is rejected for that mode until it has an equivalent
 construction-time binding.
 
-For the production delta, the measured startup path also embeds and verifies
+For a future compliant production delta, the measured startup path also embeds and verifies
 the existing BHTM inclusion proof for height 940611. `oramctl` recomputes the
 Core MuHash from the proof's complete 384-byte MuHash, recomputes the leaf and
 Merkle path, and requires the resulting tree root, height, block hash, and
@@ -249,6 +277,41 @@ attested-builder DB evidence to name the same starting height and block hash.
 This closes the previous gap where `--expected-from-muhash` was recorded but
 not compared to certified proof material, without regenerating the expensive
 database or BHTM proof.
+
+This BHTM validation alone is insufficient for activation. The current
+reattested db1 evidence did not commit a typed `[direct_oram]` section before
+BuildEvidence/quote creation. A new measured delta build is therefore still a
+production blocker.
+
+## External producer contract
+
+BitcoinPIR intentionally does not treat post-processing a legacy evidence
+bundle as an upgrade. Before either database is production eligible, the
+separate attested-builder repository must provide and test a native producer
+with all of these properties:
+
+1. Emit canonical BuildEvidence v2 with `evidence_mode=full_build` and both
+   predecessor hashes absent. `reattest_existing` is never eligible.
+2. Construct the canonical BuildParamsV2/root-bundle payload in the measured
+   pipeline, before any manifest, evidence, report data, or quote is finalized.
+3. Stage the complete server database and insert the typed `[direct_oram]`
+   digest, byte/record counts, and lookup layout before hashing the exact
+   server manifest into BuildEvidence.
+4. Regenerate and content-verify `database.manifest.sha256` and
+   `all-artifacts.manifest.sha256` after all payload/manifest changes. Hashing
+   stale sidecar files is insufficient.
+5. Derive the v2 domain-separated `REPORT_DATA`, obtain the SNP report, and
+   publish the AMD ARK/ASK/VCEK chain required by the browser verifier.
+6. Include compatibility negatives proving v1, re-attestation, predecessor,
+   stale-sidecar, and mutated-manifest artifacts are rejected, plus a golden
+   full-build-v2 acceptance vector.
+
+The Tier 3 runner parses the producer's own verification report and refuses to
+publish `latest` or `direct_oram_eligible=yes` unless the evidence is exactly
+predecessor-free full-build v2. This is a hard integration boundary, not an
+operator override. Strict `oramctl build-direct` independently enforces the
+same version/mode/predecessor rule, so bypassing the runner cannot turn v1 or
+re-attested evidence into production metadata.
 
 ## Persistent-reuse delivery sequence
 
