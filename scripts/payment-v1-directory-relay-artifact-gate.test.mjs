@@ -39,6 +39,7 @@ import {
   validateDockerMountHostPath,
   validateSelectionBindings,
   verifyBuildArtifactSet,
+  writeExactModePrivateFile,
 } from "./payment-v1-directory-relay-artifact-gate.mjs";
 import { canonicalJson } from "./payment-v1-rendered-artifact-gate.mjs";
 
@@ -400,7 +401,10 @@ test("final publication compiles its helper before sealing and fully verifies th
 test("manifest creation performs a complete descriptor fast seal after the manifest exists", () => {
   const gate = readFileSync(ARTIFACT_GATE, "utf8");
   const createMarker = gate.indexOf('if (command === "create-manifest")');
-  const writeMarker = gate.indexOf("writeFileSync(values[\"--output\"]", createMarker);
+  const writeMarker = gate.indexOf(
+    "writeExactModePrivateFile(\n      values[\"--output\"]",
+    createMarker,
+  );
   const completeSealMarker = gate.indexOf(
     'label: "generated manifest complete fast seal"',
     writeMarker,
@@ -445,6 +449,150 @@ test("pinned Docker execution uses an uncatchable outer timeout signal", () => {
     "utf8",
   );
   assert.match(gate, /killSignal: "SIGKILL"/u);
+});
+
+test("private Docker inputs reach exact cross-UID modes under restrictive umask", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-exact-mode-")));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const previousUmask = process.umask(0o077);
+  t.after(() => process.umask(previousUmask));
+
+  const readonlyPath = join(root, "source.tar");
+  const executablePath = join(root, "bitcoinpir-directory-relay");
+  writeExactModePrivateFile(
+    readonlyPath,
+    Buffer.from("source archive"),
+    0o444,
+    "test readonly Docker input",
+    1024,
+  );
+  writeExactModePrivateFile(
+    executablePath,
+    Buffer.from("executable"),
+    0o555,
+    "test executable Docker input",
+    1024,
+  );
+
+  assert.equal(lstatSync(readonlyPath).mode & 0o7777, 0o444);
+  assert.equal(lstatSync(executablePath).mode & 0o7777, 0o555);
+  assert.equal(readFileSync(readonlyPath, "utf8"), "source archive");
+  assert.equal(readFileSync(executablePath, "utf8"), "executable");
+});
+
+test("exact-mode writer removes a partial file and permits a clean retry", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-exact-mode-cleanup-")));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const target = join(root, "source.tar");
+  const bytes = Buffer.from("complete source archive");
+  const injected = new Error("injected partial write failure");
+
+  assert.throws(
+    () => writeExactModePrivateFile(
+      target,
+      bytes,
+      0o444,
+      "partial write cleanup test",
+      1024,
+      {
+        writeBytes(fd, completeBytes) {
+          writeFileSync(fd, completeBytes.subarray(0, 4));
+          throw injected;
+        },
+      },
+    ),
+    (error) => error === injected,
+  );
+  assert.equal(existsSync(target), false);
+
+  writeExactModePrivateFile(
+    target,
+    bytes,
+    0o444,
+    "partial write retry test",
+    1024,
+  );
+  assert.equal(readFileSync(target).equals(bytes), true);
+  assert.equal(lstatSync(target).mode & 0o7777, 0o444);
+});
+
+test("exact-mode writer preserves pre-existing files and symlinks", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-exact-mode-existing-")));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const existing = join(root, "existing");
+  const symlinkSource = join(root, "symlink-source");
+  const symlinkPath = join(root, "symlink-path");
+  writeFileSync(existing, "existing bytes", { flag: "wx", mode: 0o600 });
+  writeFileSync(symlinkSource, "symlink bytes", { flag: "wx", mode: 0o600 });
+  symlinkSync(symlinkSource, symlinkPath);
+
+  for (const target of [existing, symlinkPath]) {
+    assert.throws(
+      () => writeExactModePrivateFile(
+        target,
+        Buffer.from("replacement"),
+        0o444,
+        "existing path refusal test",
+        1024,
+      ),
+      (error) => error?.code === "EEXIST",
+    );
+  }
+  assert.equal(readFileSync(existing, "utf8"), "existing bytes");
+  assert.equal(lstatSync(symlinkPath).isSymbolicLink(), true);
+  assert.equal(readFileSync(symlinkPath, "utf8"), "symlink bytes");
+});
+
+test("exact-mode writer rejects a non-owner-only parent without creating output", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-exact-mode-parent-")));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  chmodSync(root, 0o755);
+  const target = join(root, "forbidden");
+  assert.throws(
+    () => writeExactModePrivateFile(
+      target,
+      Buffer.from("forbidden"),
+      0o444,
+      "untrusted parent test",
+      1024,
+    ),
+    /exact mode 0700/u,
+  );
+  assert.equal(existsSync(target), false);
+});
+
+test("exact-mode writer detects pathname replacement and does not delete the replacement", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-exact-mode-race-")));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const target = join(root, "source.tar");
+  const movedOriginal = join(root, "moved-original");
+  const bytes = Buffer.from("same bytes on a different inode");
+
+  assert.throws(
+    () => writeExactModePrivateFile(
+      target,
+      bytes,
+      0o444,
+      "pathname replacement test",
+      1024,
+      {
+        writeBytes(fd, completeBytes) {
+          writeFileSync(fd, completeBytes);
+          renameSync(target, movedOriginal);
+          writeFileSync(target, completeBytes, { flag: "wx", mode: 0o600 });
+          chmodSync(target, 0o444);
+        },
+      },
+    ),
+    /verification descriptor did not bind the created inode/u,
+  );
+  assert.equal(readFileSync(target).equals(bytes), true);
+  assert.equal(lstatSync(target).mode & 0o7777, 0o444);
+  assert.notEqual(lstatSync(target).ino, lstatSync(movedOriginal).ino);
 });
 
 test("artifact directory-chain snapshots reject leaf metadata ABA and parent replacement", (t) => {

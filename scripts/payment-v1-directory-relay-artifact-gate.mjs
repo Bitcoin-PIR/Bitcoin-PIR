@@ -6,7 +6,9 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdtempSync,
   openSync,
@@ -14,6 +16,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -604,6 +607,228 @@ function readOneLinkFile(path, label, maximumBytes) {
   }
 }
 
+export function writeExactModePrivateFile(
+  path,
+  bytes,
+  finalMode,
+  label,
+  maximumBytes,
+  { writeBytes = writeFileSync } = {},
+) {
+  if (
+    typeof label !== "string" ||
+    label.length < 1 ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < 1 ||
+    bytes.length > maximumBytes ||
+    (finalMode !== 0o444 && finalMode !== 0o555) ||
+    typeof writeBytes !== "function"
+  ) {
+    fail(`${label} must be bounded bytes with an allowlisted exact final mode`);
+  }
+  const absolute = resolve(path);
+  const parent = requireCanonicalDirectory(dirname(absolute), `${label} parent`, {
+    ownerOnly: true,
+  });
+  if (dirname(absolute) !== parent) {
+    fail(`${label} must have one canonical owner-only parent`);
+  }
+
+  let parentFd;
+  let writeFd;
+  let verifyFd;
+  let createdIdentity;
+  let createdByThisCall = false;
+
+  const closeDescriptors = ({ includeWriter = true } = {}) => {
+    const errors = [];
+    for (const [name, fd] of [
+      ["verification", verifyFd],
+      ["writer", writeFd],
+      ["parent", parentFd],
+    ]) {
+      if (fd === undefined) continue;
+      if (name === "writer" && !includeWriter) continue;
+      try {
+        closeSync(fd);
+      } catch (error) {
+        errors.push(new Error(`${label} ${name} descriptor close failed`, { cause: error }));
+      }
+      if (name === "verification") verifyFd = undefined;
+      if (name === "writer") writeFd = undefined;
+      if (name === "parent") parentFd = undefined;
+    }
+    return errors;
+  };
+
+  const cleanupCreatedPath = () => {
+    if (createdIdentity === undefined) return;
+    let stat;
+    try {
+      stat = lstatSync(absolute, { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (
+      stat.dev === createdIdentity.dev &&
+      stat.ino === createdIdentity.ino
+    ) {
+      unlinkSync(absolute);
+    }
+  };
+
+  try {
+    parentFd = openSync(
+      parent,
+      constants.O_RDONLY |
+        constants.O_DIRECTORY |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+    );
+    const parentBeforeCreate = preciseDirectorySnapshot(
+      parent,
+      parentFd,
+      `${label} parent before create`,
+    );
+    if (
+      Number.parseInt(parentBeforeCreate.uid, 10) !== currentEuid() ||
+      Number.parseInt(parentBeforeCreate.mode, 8) !== 0o700
+    ) {
+      fail(`${label} descriptor-bound parent must remain current-euid owned mode 0700`);
+    }
+
+    writeFd = openSync(
+      absolute,
+      constants.O_RDWR |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+      0o600,
+    );
+    createdByThisCall = true;
+    const createdStat = fstatSync(writeFd, { bigint: true });
+    createdIdentity = { dev: createdStat.dev, ino: createdStat.ino };
+    if (
+      !createdStat.isFile() ||
+      createdStat.isSymbolicLink() ||
+      createdStat.nlink !== 1n ||
+      createdStat.uid !== BigInt(currentEuid()) ||
+      createdStat.size !== 0n
+    ) {
+      fail(`${label} did not create one empty current-euid-owned regular file`);
+    }
+    const parentAfterCreate = preciseDirectorySnapshot(
+      parent,
+      parentFd,
+      `${label} parent after create`,
+    );
+    if (
+      canonicalJson(stableDirectoryIdentity(parentAfterCreate)) !==
+      canonicalJson(stableDirectoryIdentity(parentBeforeCreate))
+    ) {
+      fail(`${label} parent identity changed during exclusive creation`);
+    }
+
+    writeBytes(writeFd, bytes);
+    fchmodSync(writeFd, finalMode);
+    fsyncSync(writeFd);
+    const writtenStat = fstatSync(writeFd, { bigint: true });
+    if (
+      !writtenStat.isFile() ||
+      writtenStat.isSymbolicLink() ||
+      writtenStat.nlink !== 1n ||
+      writtenStat.uid !== BigInt(currentEuid()) ||
+      writtenStat.size !== BigInt(bytes.length) ||
+      (writtenStat.mode & 0o7777n) !== BigInt(finalMode)
+    ) {
+      fail(`${label} did not reach its descriptor-bound exact final mode`);
+    }
+    const descriptorFingerprint = preciseRegularFileFingerprint(writtenStat);
+
+    verifyFd = openSync(
+      absolute,
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+    );
+    const verifyBefore = fstatSync(verifyFd, { bigint: true });
+    if (
+      canonicalJson(preciseRegularFileFingerprint(verifyBefore)) !==
+      canonicalJson(descriptorFingerprint)
+    ) {
+      fail(`${label} verification descriptor did not bind the created inode`);
+    }
+    const observedBytes = readFileSync(verifyFd);
+    const verifyAfter = fstatSync(verifyFd, { bigint: true });
+    const pathAfter = lstatSync(absolute, { bigint: true });
+    const parentAfterVerification = preciseDirectorySnapshot(
+      parent,
+      parentFd,
+      `${label} parent after verification`,
+    );
+    if (
+      !observedBytes.equals(bytes) ||
+      canonicalJson(preciseRegularFileFingerprint(verifyAfter)) !==
+        canonicalJson(descriptorFingerprint) ||
+      canonicalJson(preciseRegularFileFingerprint(pathAfter)) !==
+        canonicalJson(descriptorFingerprint) ||
+      canonicalJson(parentAfterVerification) !== canonicalJson(parentAfterCreate) ||
+      realpathSync(absolute) !== absolute
+    ) {
+      fail(`${label} path did not reseal to the exact-mode descriptor`);
+    }
+  } catch (error) {
+    const secondaryErrors = [];
+    if (createdByThisCall && createdIdentity === undefined && writeFd !== undefined) {
+      try {
+        const createdStat = fstatSync(writeFd, { bigint: true });
+        createdIdentity = { dev: createdStat.dev, ino: createdStat.ino };
+      } catch (identityError) {
+        secondaryErrors.push(new Error(`${label} created inode identity recovery failed`, {
+          cause: identityError,
+        }));
+      }
+    }
+    secondaryErrors.push(...closeDescriptors({ includeWriter: false }));
+    try {
+      cleanupCreatedPath();
+    } catch (cleanupError) {
+      secondaryErrors.push(new Error(`${label} exact created path cleanup failed`, {
+        cause: cleanupError,
+      }));
+    }
+    secondaryErrors.push(...closeDescriptors());
+    if (secondaryErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...secondaryErrors],
+        `${label} failed and one or more cleanup operations also failed`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
+  const closeErrors = closeDescriptors();
+  if (closeErrors.length > 0) {
+    try {
+      cleanupCreatedPath();
+    } catch (cleanupError) {
+      closeErrors.push(new Error(`${label} exact created path cleanup failed`, {
+        cause: cleanupError,
+      }));
+    }
+    throw new AggregateError(
+      closeErrors,
+      `${label} completed verification but descriptor close or cleanup failed`,
+    );
+  }
+  return absolute;
+}
+
 function validateDockerPath(dockerPath) {
   if (typeof dockerPath !== "string" || !dockerPath.startsWith("/") || basename(dockerPath) !== "docker") {
     fail("Docker executable must be supplied as one absolute path ending in docker");
@@ -810,10 +1035,13 @@ function defaultRebuildRunner({ artifactRoot, dockerPath, sourceArchive, sourceC
   const snapshotRoot = privateTemporaryDirectory(dirname(artifactRoot), ".relay-rebuild.");
   try {
     const snapshotPath = join(snapshotRoot, "source.tar");
-    writeFileSync(snapshotPath, sourceArchive, { flag: "wx", mode: 0o444 });
-    if (!readOneLinkFile(snapshotPath, "private source archive snapshot", MAX_ARCHIVE_BYTES).equals(sourceArchive)) {
-      fail("private source archive snapshot does not equal verified bytes");
-    }
+    writeExactModePrivateFile(
+      snapshotPath,
+      sourceArchive,
+      0o444,
+      "private source archive snapshot",
+      MAX_ARCHIVE_BYTES,
+    );
     validateDockerMountHostPath(snapshotPath, "private source archive mount path");
     const sourceMount = `type=bind,src=${snapshotPath},dst=/input/source.tar,readonly`;
     const builds = [];
@@ -893,10 +1121,13 @@ function defaultVersionRunner({ artifactRoot, dockerPath, selectedBinary }) {
   const snapshotRoot = privateTemporaryDirectory(dirname(artifactRoot), ".relay-version.");
   try {
     const snapshotPath = join(snapshotRoot, "bitcoinpir-directory-relay");
-    writeFileSync(snapshotPath, selectedBinary, { flag: "wx", mode: 0o555 });
-    if (!readOneLinkFile(snapshotPath, "private selected binary snapshot", MAX_BINARY_BYTES).equals(selectedBinary)) {
-      fail("private selected binary snapshot does not equal verified bytes");
-    }
+    writeExactModePrivateFile(
+      snapshotPath,
+      selectedBinary,
+      0o555,
+      "private selected binary snapshot",
+      MAX_BINARY_BYTES,
+    );
     validateDockerMountHostPath(snapshotPath, "private selected binary mount path");
     return pinnedDockerRun(
       dockerPath,
@@ -1493,7 +1724,13 @@ function runCli(argv) {
       requireFinalModes: false,
     });
     const bytes = Buffer.from(canonicalJson(buildManifestFromFacts(details.facts)), "utf8");
-    writeFileSync(values["--output"], bytes, { flag: "wx", mode: 0o444 });
+    writeExactModePrivateFile(
+      values["--output"],
+      bytes,
+      0o444,
+      "generated build manifest",
+      MAX_TEXT_BYTES,
+    );
     const complete = collectBuildArtifactFastSealWithBytesV1(common.artifactRoot, {
       label: "generated manifest complete fast seal",
       requireFinalModes: false,
