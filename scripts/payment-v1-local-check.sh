@@ -92,7 +92,13 @@ node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+bash -n scripts/payment-v1-publisher-netns-privileged-e2e.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
+node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
   scripts/payment-v1-linux-runtime-evidence.test.mjs \
   scripts/payment-v1-source-fair-edge.test.mjs

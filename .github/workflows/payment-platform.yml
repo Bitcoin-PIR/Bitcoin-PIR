@@ -45,6 +45,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-netns-*'
       - 'web/**'
       - '.github/workflows/**'
   pull_request:
@@ -91,6 +92,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-netns-*'
       - 'web/**'
       - '.github/workflows/**'
   workflow_dispatch:
@@ -459,6 +461,39 @@ jobs:
           node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
           node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
           node --check scripts/payment-v1-source-fair-edge.test.mjs
+          node --check scripts/payment-v1-publisher-netns-gate.mjs
+          node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            scripts/payment-v1-publisher-netns.c \
+            -o "$RUNNER_TEMP/payment-v1-publisher-netns"
+          BPIR_PUBLISHER_NETNS_HELPER_BIN="$RUNNER_TEMP/payment-v1-publisher-netns" \
+            node --test scripts/payment-v1-publisher-netns-gate.test.mjs
+          sudo install --directory --owner=root --group=root --mode=0755 \
+            /opt/bitcoinpir/publisher-netns-sandbox-test
+          sudo install --owner=root --group=root --mode=0555 \
+            "$RUNNER_TEMP/payment-v1-publisher-netns" \
+            /opt/bitcoinpir/publisher-netns-sandbox-test/payment-v1-publisher-netns
+          sudo install --owner=root --group=root --mode=0000 /dev/null \
+            /run/bitcoinpir-payment-v1-publisher-host-visibility-probe
+          trap 'sudo rm -f -- /run/bitcoinpir-payment-v1-publisher-host-visibility-probe' EXIT HUP INT TERM
+          sudo systemd-run --quiet --wait --pipe --collect \
+            --unit="bitcoinpir-payment-v1-publisher-sandbox-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --uid=nobody \
+            --property=NoNewPrivileges=true \
+            --property=PrivateMounts=true \
+            --property=PrivateDevices=true \
+            --property=PrivateTmp=true \
+            --property=ProtectSystem=strict \
+            --property=ProtectHome=true \
+            --property=RestrictAddressFamilies=AF_INET \
+            --property=TemporaryFileSystem=/run:ro \
+            --property=CapabilityBoundingSet= \
+            --property=AmbientCapabilities= \
+            /opt/bitcoinpir/publisher-netns-sandbox-test/payment-v1-publisher-netns \
+            publisher-sandbox-self-test
+          sudo rm -f -- /run/bitcoinpir-payment-v1-publisher-host-visibility-probe
+          trap - EXIT HUP INT TERM
+          node scripts/payment-v1-publisher-netns-gate.mjs
           node --test \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
             scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
@@ -468,6 +503,21 @@ jobs:
             scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
           sudo "$(command -v node)" --test \
             scripts/payment-v1-integrated-caddy-lock.test.mjs
+          sudo env \
+            BPIR_PUBLISHER_NETNS_PRIVILEGED_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
+            BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
+            scripts/payment-v1-publisher-netns-privileged-e2e.sh
+          docker run --rm --privileged \
+            --volume "$PWD:/src:ro" \
+            --workdir /src \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            bash -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update >/dev/null
+              apt-get install --yes --no-install-recommends iproute2 nftables nodejs ufw >/dev/null
+              BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
+                scripts/payment-v1-publisher-firewall-privileged-e2e.sh
+            '
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

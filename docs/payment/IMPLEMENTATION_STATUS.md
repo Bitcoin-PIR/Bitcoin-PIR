@@ -456,10 +456,14 @@ operator has activated the path with real money or public infrastructure.
 - [x] Offline `bpir-admin service-keygen`, `service-policy`, directory assertion,
       entry and checkpoint builders, plus an explicit native
       `directory-artifact publish` transport. Publishing accepts no signing key,
-      requires a pinned directory public key, two through eight credential-free
-      public `wss://` relay hostnames, exact per-event positive OK and bounded
-      per-relay time/bytes. It attempts every relay and fails the command on any
-      partial result; exact immutable artifacts can be rerun manually.
+      requires a pinned directory public key, and defaults to two through eight
+      credential-free public `wss://` relay hostnames. Exactly one relay requires
+      `--centralized-single-relay`; its receipts are explicitly
+      `centralized=true degraded=true`, while zero relays and mismatched
+      flag/count combinations fail before network I/O. Publishing requires exact
+      per-event positive OK and bounded per-relay time/bytes. It attempts every
+      relay and fails the command on any partial result; exact immutable artifacts
+      can be rerun manually.
 - [x] The staging-only Nostr readback tool accepts no key or publish operation,
       mirrors the Rust canonical public-`wss://` grammar on the raw input, and
       requires the Rust publisher's domain-separated event-set digest, valid
@@ -824,6 +828,23 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       failure behavior. Its `--validate-only` preflight applies the exact
       artifact/key/time/relay checks without invoking transport. Distinct
       hostnames do not prove independent operators.
+- [x] The directory-publisher namespace slice now closes an explicitly degraded
+      single-relay transport without weakening the strict default 2..8-relay
+      CLI. Its native no-exec helper durably journals exact namespace/veth
+      identities, sends systemd READY only after both capability-free,
+      seccomp-confined monitors pass their first topology checks, and fails the
+      unit if either monitor exits. The publisher itself is AF_INET-only,
+      replaces host `/run` with a private read-only tmpfs, and runs in-sandbox
+      host-runtime-visibility and AF_UNIX-denial probes before the
+      content-addressed `bpir-admin`. Firewall evidence closes the UFW base,
+      before-logging, before, logging-deny and user chains for IPv4 and IPv6 so
+      an earlier global allow cannot bypass the publisher-interface prefix.
+- [ ] Publisher activation remains deliberately blocked by the unavailable
+      `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED` sentinel. Current live
+      evidence supplies two stable point-in-time snapshots around a UFW dry-run,
+      not a proof covering the one-shot publication interval. A separately
+      reviewed pre/post wrapper or continuous generation monitor is required
+      before that sentinel may exist.
 - [x] `bitcoinpir-directory-relay` implements the intentionally narrow
       directory-only Nostr surface: canonical signed EVENT validation for one
       pinned publisher/kind, bounded ID-filtered REQ/EOSE readback, immutable

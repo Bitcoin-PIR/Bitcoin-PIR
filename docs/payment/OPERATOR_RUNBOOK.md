@@ -478,14 +478,21 @@ cargo run --offline -p bpir-admin -- directory-artifact publish --help
 Only `directory-artifact publish` opens a relay connection. It reads no signing
 key: freeze and review the already-signed entry/checkpoint files, pin the
 expected directory public key, and select two through eight credential-free
-public `wss://` relay hostnames. Distinct hostnames are not evidence of distinct
-operators or infrastructure; audit that independently.
+public `wss://` relay hostnames for the strict default. Exactly one relay is
+allowed only with `--centralized-single-relay`; that explicit degraded mode is
+the current central-directory topology and supplies no relay redundancy or
+operator/failure independence. Zero relays, one without the flag, and the flag
+with multiple relays fail before network I/O. Distinct hostnames in strict mode
+are not evidence of distinct operators or infrastructure; audit that
+independently.
 
 Before the approved publication window, run the intended `publish` invocation
 with `--validate-only`. A successful validation performs no DNS or network I/O
 and reports `result=validated` for the frozen artifact set and relay hostnames.
-Record its event-set digest, then remove only `--validate-only` when publication
-is explicitly authorized; any other input change requires a fresh review.
+The receipt also records the publication mode and explicit
+`centralized`/`degraded` booleans. Record its event-set digest, then remove only
+`--validate-only` when publication is explicitly authorized; any other input
+change requires a fresh review.
 
 The publisher sends every exact EVENT to every relay, requires one positive
 matching NIP-01 OK per event, and uses a bounded total timeout for each relay.
@@ -493,7 +500,8 @@ It attempts all relays but exits nonzero on partial success. Preserve the exact
 artifacts and rerun them manually after resolving the failed relay; never
 advance the external per-`d` timestamp/sequence ledger based on a partial run.
 There is no automatic retry, proxy, redirect, relay AUTH, or signing fallback.
-Normal output contains only relay hostname, event count and result code.
+Normal output contains only relay hostname, event count, event-set digest,
+publication-mode fields and result code.
 
 ## 5. Bootstrap stores
 
@@ -586,6 +594,13 @@ The directory relay is still `UNRESOLVED`; therefore a public directory
 listener or catalog publication is not currently eligible for activation. The
 current private no-funds live drill is edge-only and must remain unrouted; it
 must not start CLN, the issuer or a provider, or invent a relay substitute.
+The `directory-publisher-netns-v1` one-shot is independently blocked by its
+intentionally unavailable
+`PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED` sentinel. Two matching
+before/after firewall snapshots prove only the collector's observation points;
+they do not prove that the firewall remained closed throughout an earlier or
+concurrent publication. Do not create that sentinel until a separately
+reviewed wrapper or continuous monitor binds the exact publication interval.
 Likewise, the current Lightning preflight accepts only default Signet. Mainnet
 cannot proceed by changing a config value or by user approval alone; it needs a
 reviewed mainnet implementation and negative tests.

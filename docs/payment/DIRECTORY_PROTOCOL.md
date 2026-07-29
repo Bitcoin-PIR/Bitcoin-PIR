@@ -500,7 +500,7 @@ The explicit `publish` command is the only directory-artifact command that
 opens the network. It accepts one or more already-signed canonical entry EVENT
 files and/or exact 16-message checkpoint arrays; it never accepts or reads a
 signing key. Pin the expected directory public key and publish the same frozen
-artifacts to between two and eight relay hostnames:
+artifacts to between two and eight relay hostnames by default:
 
 ```sh
 bpir-admin directory-artifact publish \
@@ -513,11 +513,18 @@ bpir-admin directory-artifact publish \
   --relay-timeout-seconds 60
 ```
 
+Exactly one relay is accepted only when the invocation also carries
+`--centralized-single-relay`. This explicit degraded mode is intended for the
+current centrally operated directory: it does not claim relay redundancy,
+operator independence, or failure independence. Zero relays, one relay without
+the flag, and the flag with multiple relays all fail before DNS or network I/O.
+
 Run that exact command with `--validate-only` first. It performs the complete
 artifact, key-pin, time and relay-set validation and prints the same bounded
-relay-host/event-count/event-set-digest fields with `result=validated`, but it
-does not resolve, connect to or write to a relay. Removing only that flag is the
-explicit network-publication boundary for the reviewed frozen inputs.
+relay-host/event-count/event-set-digest fields with `result=validated`, plus the
+publication mode and explicit `centralized`/`degraded` booleans, but it does not
+resolve, connect to or write to a relay. Removing only that flag is the explicit
+network-publication boundary for the reviewed frozen inputs.
 
 Before dialing, every EVENT is verified through the production entry or
 checkpoint parser against that key and time. Duplicate IDs, noncanonical bytes,
@@ -538,8 +545,8 @@ testing; a relay that injects Ping/Pong during the short publish exchange is not
 compatible with this V1 publisher.
 
 Publishing to multiple relays is not atomic. The command attempts every relay,
-prints only relay hostname, event count and a bounded result code, and exits
-nonzero if any relay fails. Each line also includes one domain-separated
+prints only relay hostname, event count, publication-mode fields and a bounded
+result code, and exits nonzero if any relay fails. Each line also includes one domain-separated
 digest of the sorted event-ID/signature set, never an event ID. It never logs
 event content, signature or ID. An
 operator may safely rerun the exact immutable artifact: positive OK for an

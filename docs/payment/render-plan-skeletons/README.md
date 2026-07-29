@@ -69,15 +69,18 @@ initializing a blank store and calling it a switch.
 | --- | --- | --- |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
+| `directory-publisher-netns-v1.plan.json.example` | `directory-publisher-netns-v1` | One no-key publisher, one centralized relay, and a sealed route-less network namespace. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
 | `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Direct receipt, provider-local BAT and shared issuer, without Standard Cashu. |
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 
-There is intentionally no directory-relay plan. The gate's deployment profile
-catalog does not contain one. A source template existing in the repository does
-not authorize inventing a profile or bypassing dependency closure.
+There is intentionally no directory-relay server plan. The publisher profile
+contains only a no-key transport client and its network boundary; it neither
+installs nor authorizes the relay server. A relay source template existing in
+the repository does not authorize inventing that separate profile or bypassing
+dependency closure.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.
