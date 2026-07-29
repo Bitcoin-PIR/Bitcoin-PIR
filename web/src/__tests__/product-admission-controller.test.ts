@@ -365,6 +365,50 @@ describe('product admission lifecycle', () => {
     expect(state.takes).toBe(1);
   });
 
+  it('does not start a free peer grant while the paid peer still needs acquisition', async () => {
+    const { vault, state } = fakeVault();
+    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const free = freeOffer(61);
+    const bat = paidOffer(62, 'cashu-bat');
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [free])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [bat])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        { role: 'server0', label: 'Server 0', session: first.session, ...target },
+        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: free.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: bat.offerId });
+    await expect(controller.authorize('server0')).rejects.toMatchObject({
+      code: 'capability-inventory-empty',
+    });
+    expect(first.authorize).not.toHaveBeenCalled();
+
+    state.inventory.set(inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat), 1);
+    await controller.authorize('server0');
+    await controller.authorize('server1');
+    expect(controller.canQuery()).toBe(true);
+    await controller.close();
+  });
+
   it('stages providers sequentially but blocks payment until both exact offers are selected', async () => {
     const { vault } = fakeVault();
     const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
@@ -392,6 +436,14 @@ describe('product admission lifecycle', () => {
       },
       close: vi.fn(),
     }));
+    const prematureSecondBootstrap = vi.fn(async () => ({
+      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      close: vi.fn(),
+    }));
+    await expect(controller.prepareLeg(prematureSecondBootstrap)).rejects.toMatchObject({
+      code: 'offer-selection-invalidated',
+    });
+    expect(prematureSecondBootstrap).not.toHaveBeenCalled();
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 21 });
     await expect(controller.startBolt11('server0')).rejects.toMatchObject({
       code: 'operation-failed',
@@ -718,6 +770,7 @@ describe('product admission lifecycle', () => {
       leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
       close: firstClose,
     }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 31 });
     await controller.prepareLeg(async () => ({
       leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
       close: secondClose,
@@ -758,6 +811,73 @@ describe('product admission lifecycle', () => {
       expect(controller.canQuery()).toBe(true);
       await controller.close();
     }
+  });
+
+  it('freezes the exact offer and correlation consent while a resource restore is in flight', async () => {
+    const { vault } = fakeVault();
+    const target = { backend: 'harmony-pir', workload: 'harmony-hint' } as const;
+    const firstOffer = freeOffer(51);
+    const secondOffer = freeOffer(52);
+    const current = session(
+      vault,
+      [policy(
+        HEX.provider0,
+        HEX.policy0,
+        HEX.scope0,
+        target,
+        [firstOffer, secondOffer],
+      )],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    let releaseRestore!: () => void;
+    let markRestoreEntered!: () => void;
+    const restoreGate = new Promise<void>((resolve) => { releaseRestore = resolve; });
+    const restoreEntered = new Promise<void>((resolve) => { markRestoreEntered = resolve; });
+    const restore = vi.fn(async () => {
+      markRestoreEntered();
+      await restoreGate;
+      return true;
+    });
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'single-provider',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'hint',
+        label: 'Hint',
+        session: current.session,
+        ...target,
+        resource: {
+          restore,
+          acquireAfterAuthorization: vi.fn(),
+          datasetIdHex: HEX.dataset,
+          variant: 1,
+        },
+      }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('hint', {
+      scopeIdHex: HEX.scope0,
+      offerId: firstOffer.offerId,
+    });
+
+    const authorization = controller.authorize('hint');
+    await restoreEntered;
+    await expect(controller.selectOffer('hint', {
+      scopeIdHex: HEX.scope0,
+      offerId: secondOffer.offerId,
+    })).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(() => controller.setAllowSharedIssuerCorrelationOnce(true)).toThrow(
+      /during an admission transition/,
+    );
+    releaseRestore();
+    await expect(authorization).resolves.toMatchObject({ phase: 'ready-to-query' });
+    expect(controller.snapshot().legs[0].selected?.offerId).toBe(firstOffer.offerId);
+    expect(current.authorize).not.toHaveBeenCalled();
+    await controller.close();
   });
 
   it('prevents policy, quote, authorization, and query after strict bootstrap failure', async () => {

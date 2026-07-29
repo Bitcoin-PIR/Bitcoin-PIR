@@ -41,6 +41,40 @@ interface RoleElementsV1 {
   actions: HTMLElement;
 }
 
+/** The second network dial is available after the first exact offer is
+ * selected, but before any credential/payment action is allowed. */
+export function canBootstrapNextProviderV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  return snapshot.topology === 'independent-pair'
+    && snapshot.legs.length > 0
+    && snapshot.legs.every((leg) => leg.status === 'ready'
+      || leg.status === 'authorized'
+      || leg.status === 'cached-resource-ready');
+}
+
+/** Pair credential controls stay hidden until both exact selections exist. */
+export function credentialActionsReadyV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  const everyLegSelected = snapshot.legs.length > 0
+    && snapshot.legs.every((leg) => leg.selected !== null || leg.retainedSelected !== null);
+  return everyLegSelected && (snapshot.topology === 'single-provider' || snapshot.legs.length === 2);
+}
+
+/** Provider grants can begin only after every exact capability-requiring leg
+ * has local inventory. Free/open/PoW legs do not need inventory. */
+export function pairAuthorizationReadyV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  if (snapshot.topology === 'single-provider') return true;
+  if (!credentialActionsReadyV1(snapshot)) return false;
+  return snapshot.legs.every((leg) => {
+    if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') return true;
+    if (leg.retainedSelected) return (leg.inventory ?? 0) > 0;
+    const selected = leg.offers.find((candidate) => candidate.scopeIdHex === leg.selected?.scopeIdHex
+      && candidate.offerId === leg.selected?.offerId);
+    if (!selected) return false;
+    const needsInventory = selected.offer.authorization !== 'free'
+      || selected.offer.freeMode === 'anonymous-ticket';
+    return !needsInventory || (leg.inventory ?? 0) > 0;
+  });
+}
+
 /**
  * Keeps provider selection visible before connection, then renders one dense
  * exact-offer row per role. It never logs or persists secret-bearing values.
@@ -132,7 +166,7 @@ export class ProductAdmissionPanelV1 {
     this.renderUnavailable(
       options.length === 0
         ? 'Commercial admission 未配置；导入完整 trusted bootstrap 后才能查询。'
-        : '先选择并授权第一个 provider；完成后才会启用第二个角色。',
+        : '先严格验证第一个 provider 并选择其精确 offer；随后启用第二个角色，付款仍保持禁用。',
     );
   }
 
@@ -184,20 +218,17 @@ export class ProductAdmissionPanelV1 {
           ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
-            : snapshot?.legs.length === 1
-              && (snapshot.legs[0].status === 'authorized'
-                || snapshot.legs[0].status === 'cached-resource-ready')
-              ? 'First provider is authorized. Select and strictly verify the independent second provider.'
+            : snapshot?.legs.length === 1 && canBootstrapNextProviderV1(snapshot)
+              ? 'First exact offer is locked. Strictly verify the independent second provider before any payment.'
               : snapshot?.legs.length === 1
-                ? 'Authorize the first provider before selecting or connecting the second.'
+                ? 'Select the first provider exact signed offer before connecting the second.'
                 : 'Strictly verify and authorize the first independent provider.');
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
     const preparedRoles = new Set(snapshot.legs.map((leg) => leg.role));
-    const previousLegsReady = snapshot.legs.every(
-      (leg) => leg.status === 'authorized' || leg.status === 'cached-resource-ready',
-    );
+    const previousLegsReady = snapshot.legs.length === 0
+      || canBootstrapNextProviderV1(snapshot);
     const nextRole = this.options.roles[snapshot.legs.length]?.role;
     for (const [role, row] of this.rows) {
       if (preparedRoles.has(role)) {
@@ -265,7 +296,14 @@ export class ProductAdmissionPanelV1 {
     );
     row.status.textContent = statusLabel(leg, selected);
     row.status.className = `admission-provider-status status-${leg.status}`;
-    this.renderActions(row.actions, leg, selected, leg.retainedSelected !== null);
+    this.renderActions(
+      row.actions,
+      leg,
+      selected,
+      leg.retainedSelected !== null,
+      this.snapshot !== null && credentialActionsReadyV1(this.snapshot),
+      this.snapshot !== null && pairAuthorizationReadyV1(this.snapshot),
+    );
   }
 
   private renderActions(
@@ -273,9 +311,11 @@ export class ProductAdmissionPanelV1 {
     leg: ProductAdmissionLegSnapshotV1,
     selected: ProductOfferOptionV1 | undefined,
     retained: boolean,
+    credentialActionsReady: boolean,
+    authorizationReady: boolean,
   ): void {
     container.replaceChildren();
-    if (!selected) return;
+    if (!selected || !credentialActionsReady) return;
 
     if (leg.invoice) {
       const invoice = document.createElement('textarea');
@@ -327,7 +367,8 @@ export class ProductAdmissionPanelV1 {
 
     if (leg.status !== 'authorized' && leg.status !== 'cached-resource-ready'
         && leg.status !== 'ambiguous-spend'
-        && (!retained || (leg.inventory ?? 0) > 0)) {
+        && (!retained || (leg.inventory ?? 0) > 0)
+        && (authorizationReady || selected.scope.workload === 'harmony-hint')) {
       container.appendChild(actionButton(
         selected.scope.workload === 'harmony-hint' ? 'Use cache or authorize hint' : 'Authorize once',
         () => this.runAction(() => this.controller!.authorize(leg.role)),

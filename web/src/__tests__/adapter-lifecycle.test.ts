@@ -62,6 +62,21 @@ function fakeInstalledProof(dbId = 0): any {
   };
 }
 
+function decodedButUnverifiedWasmResult(): any {
+  return {
+    entryCount: 0,
+    totalBalance: 0n,
+    isWhale: false,
+    // Deliberately malicious/stale transport default. The adapter must not
+    // expose it as an inclusion verdict before verifyMerkleBatch.
+    merkleVerified: true,
+    indexBins: () => [{ pbcGroup: 0, binIndex: 0, binContent: '00' }],
+    chunkBins: () => [],
+    matchedIndexIdx: () => undefined,
+    rawChunkData: () => undefined,
+  };
+}
+
 const OPERATOR_PIN_0 = new Uint8Array(32).fill(0x41);
 const OPERATOR_PIN_1 = new Uint8Array(32).fill(0x42);
 const BINARY_0 = '51'.repeat(32);
@@ -164,6 +179,31 @@ function strictHarmonyPair(client: any): HarmonyPirClientAdapter {
 describe('adapter WASM lifecycle', () => {
   beforeEach(() => {
     policyFree.mockClear();
+  });
+
+  it('never inherits a native merkleVerified default before explicit verification', async () => {
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (dpf as any).wasmClient = {
+      queryBatchRaw: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+    };
+    const dpfResults = await dpf.queryBatch([new Uint8Array(20)]);
+    expect(dpfResults[0]?.merkleVerified).toBe(false);
+
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (harmony as any).hintsLoaded = true;
+    (harmony as any).wasmClient = {
+      queryBatchRaw: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+    };
+    const harmonyResults = await harmony.queryBatch(['00']);
+    expect(harmonyResults.get(0)?.merkleVerified).toBe(false);
   });
 
   it('scrubs DPF result data when inclusion verification returns false', async () => {

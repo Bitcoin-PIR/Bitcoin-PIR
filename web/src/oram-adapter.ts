@@ -381,14 +381,9 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     if (!this.wasmClient) throw new Error('Not connected');
-    if (this.isStrictVerification()) {
-      if (!this.strictReady || !this.connected || !this.wasmClient.isConnected) {
-        throw new Error('strict ORAM query requires the live verified native session');
-      }
-      if (this.databaseProofs.get(dbId)?.state !== 'verified') {
-        throw new Error(`strict ORAM query requires a verified database proof for db ${dbId}`);
-      }
-    }
+    const client = this.wasmClient;
+    const generation = this.sessionGeneration;
+    this.assertLiveQuerySession(generation, client, dbId, 'start');
     const plannerConfig = this.config.batchPlanner
       ? {
           ...this.config.batchPlanner,
@@ -415,8 +410,9 @@ export class OramPirClientAdapter {
     );
     const packed = packScriptHashes(batch);
     const raw = plan
-      ? await this.wasmClient.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
-      : await this.wasmClient.queryBatch(packed, dbId);
+      ? await client.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
+      : await client.queryBatch(packed, dbId);
+    this.assertLiveQuerySession(generation, client, dbId, 'response');
     if (raw.length !== batch.length) {
       throw new Error(
         `ORAM response length ${raw.length} does not match request length ${batch.length}`,
@@ -529,6 +525,22 @@ export class OramPirClientAdapter {
   ): void {
     if (generation !== this.sessionGeneration || this.wasmClient !== client) {
       throw new Error(`stale ORAM ${operation} result`);
+    }
+  }
+
+  private assertLiveQuerySession(
+    generation: number,
+    client: WasmOramClient,
+    dbId: number,
+    operation: string,
+  ): void {
+    this.assertCurrentSession(generation, client, `query ${operation}`);
+    if (!this.isStrictVerification()) return;
+    if (!this.strictReady || !this.connected || !client.isConnected) {
+      throw new Error('strict ORAM query requires the live verified native session');
+    }
+    if (this.databaseProofs.get(dbId)?.state !== 'verified') {
+      throw new Error(`strict ORAM query requires a verified database proof for db ${dbId}`);
     }
   }
 

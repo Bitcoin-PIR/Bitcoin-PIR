@@ -175,6 +175,33 @@ describe('ORAM adapter', () => {
     expect(queryBatch).not.toHaveBeenCalled();
   });
 
+  it('rejects a late native result after disconnect invalidates its session generation', async () => {
+    let releaseQuery!: (value: Array<null>) => void;
+    const delayed = new Promise<Array<null>>((resolve) => { releaseQuery = resolve; });
+    const native = {
+      isConnected: true,
+      queryBatch: vi.fn(() => delayed),
+      disconnect: vi.fn(async () => {}),
+      free: vi.fn(),
+    };
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      strictVerification: true,
+    });
+    const internal = adapter as any;
+    internal.wasmClient = native;
+    internal.connected = true;
+    internal.strictReady = true;
+    internal.sessionGeneration = 7;
+    internal.databaseProofs.set(0, { state: 'verified' });
+
+    const query = adapter.queryBatch([new Uint8Array(20)]);
+    expect(native.queryBatch).toHaveBeenCalledOnce();
+    adapter.disconnect();
+    releaseQuery([null]);
+    await expect(query).rejects.toThrow(/stale ORAM query response result/);
+  });
+
   it('never treats an omitted attested pin claim as a match', () => {
     const binaryAdapter = new OramPirClientAdapter({
       serverUrl: 'wss://oram.example',

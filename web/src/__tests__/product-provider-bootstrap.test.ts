@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { assertIndependentProviderDialPairV1 } from '../product-provider-bootstrap.js';
 
-const provider = (providerIdHex: string, endpoint: string) => ({ providerIdHex, endpoint });
+const provider = (providerIdHex: string, endpoint: string) => ({
+  providerIdHex,
+  endpoint,
+  policySigningKeyHex: `policy-${providerIdHex}`,
+  operatorSigningKeyHex: `operator-${providerIdHex}`,
+  stableServerId: `server-${providerIdHex}`,
+});
 
 describe('pre-dial provider independence', () => {
   it('accepts distinct provider identities at distinct WebSocket origins', () => {
@@ -31,5 +37,16 @@ describe('pre-dial provider independence', () => {
       provider('01', 'wss://pir0.example'),
       provider('02', 'https://pir1.example'),
     )).toThrow(/wss/);
+  });
+
+  it.each([
+    ['operatorSigningKeyHex', 'operator signing key'],
+    ['policySigningKeyHex', 'policy signing key'],
+    ['stableServerId', 'stable server identity'],
+  ] as const)('rejects a shared trusted %s before the second dial', (field, reason) => {
+    const first = provider('01', 'wss://pir0.example');
+    const second = provider('02', 'wss://pir1.example');
+    second[field] = first[field];
+    expect(() => assertIndependentProviderDialPairV1(first, second)).toThrow(reason);
   });
 });

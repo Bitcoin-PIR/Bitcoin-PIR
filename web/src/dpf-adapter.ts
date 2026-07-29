@@ -2060,7 +2060,9 @@ function translateWasmResult(wqr: WasmQueryResult): QueryResult {
     numChunks: chunkBinsRaw.length,
     numRounds: 0,
     isWhale: wqr.isWhale,
-    merkleVerified: wqr.merkleVerified,
+    // Native query decoding has not yet run the inclusion verifier. Never
+    // inherit a transport/fixture default as a release verdict.
+    merkleVerified: false,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
     indexPbcGroup: primary?.pbcGroup,
     indexBinIndex: primary?.binIndex,
@@ -2091,7 +2093,7 @@ function queryResultToJson(r: QueryResult): any {
   const obj: any = {
     entries,
     isWhale: r.isWhale,
-    merkleVerified: r.merkleVerified ?? true,
+    merkleVerified: false,
   };
   if (r.allIndexBins && r.allIndexBins.length > 0) {
     obj.indexBins = r.allIndexBins.map((b) => ({

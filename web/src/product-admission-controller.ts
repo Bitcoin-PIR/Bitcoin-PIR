@@ -294,6 +294,12 @@ export class ProductAdmissionControllerV1 {
     if (this.legs.length >= 2 || this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'cannot add another provider leg now');
     }
+    if (this.legs.length === 1 && !hasAdmissionSelection(this.legs[0])) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'select the first provider exact offer before connecting the second provider',
+      );
+    }
     this.phase = 'bootstrapping';
     this.errorCode = null;
     let staged: ProductStrictLegBootstrapV1 | null = null;
@@ -362,10 +368,16 @@ export class ProductAdmissionControllerV1 {
   /** Advanced, in-memory-only confirmation. It resets on close/prepare. */
   setAllowSharedIssuerCorrelationOnce(allowed: boolean): ProductAdmissionSnapshotV1 {
     this.requirePrepared();
-    if (this.legs.filter((leg) => leg.credentialFlowStarted).length > 1) {
+    if (this.legs.some((leg) => leg.transitionInFlight)) {
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'cannot change correlation consent during an admission transition',
+      );
+    }
+    if (this.legs.some((leg) => leg.credentialFlowStarted)) {
       throw new ProductAdmissionErrorV1(
         'offer-selection-invalidated',
-        'shared-issuer confirmation must happen before a second credential flow starts',
+        'shared-issuer confirmation must happen before either credential flow starts',
       );
     }
     this.allowSharedIssuerCorrelationOnce = allowed === true;
@@ -378,40 +390,43 @@ export class ProductAdmissionControllerV1 {
     choice: ProductOfferChoiceV1,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted
-        || leg.status === 'authorized'
-        || leg.status === 'cached-resource-ready'
-        || leg.status === 'ambiguous-spend') {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'this provider offer is frozen after its credential flow starts',
+    return this.withLegExclusiveMutation(leg, async () => {
+      if (this.pairCredentialFlowStarted()
+          || leg.credentialFlowStarted
+          || leg.status === 'authorized'
+          || leg.status === 'cached-resource-ready'
+          || leg.status === 'ambiguous-spend') {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          'this provider offer is frozen after its credential flow starts',
+        );
+      }
+      leg.acquisition?.close();
+      leg.acquisition = null;
+      leg.invoice = null;
+      leg.invoiceExpiresAtUnix = null;
+      leg.quoteStatus = null;
+      leg.recoveryIds = [];
+      leg.retainedSelected = null;
+      const selected = leg.offers.find(
+        (candidate) => candidate.scopeIdHex === canonicalHex32(choice.scopeIdHex)
+          && candidate.offerId === choice.offerId,
       );
-    }
-    leg.acquisition?.close();
-    leg.acquisition = null;
-    leg.invoice = null;
-    leg.invoiceExpiresAtUnix = null;
-    leg.quoteStatus = null;
-    leg.recoveryIds = [];
-    leg.retainedSelected = null;
-    const selected = leg.offers.find(
-      (candidate) => candidate.scopeIdHex === canonicalHex32(choice.scopeIdHex)
-        && candidate.offerId === choice.offerId,
-    );
-    if (!selected) {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'selected offer is not in the current verified policy',
-      );
-    }
-    leg.selected = cloneOfferOption(selected);
-    leg.status = 'ready';
-    leg.errorCode = null;
-    this.phase = 'selecting';
-    this.validateFrozenSelectionIfComplete();
-    await this.refreshLegInventory(leg);
-    await this.refreshLegRecoveries(leg);
-    return this.snapshot();
+      if (!selected) {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          'selected offer is not in the current verified policy',
+        );
+      }
+      leg.selected = cloneOfferOption(selected);
+      leg.status = 'ready';
+      leg.errorCode = null;
+      this.phase = 'selecting';
+      this.validateFrozenSelectionIfComplete();
+      await this.refreshLegInventory(leg);
+      await this.refreshLegRecoveries(leg);
+      return this.snapshot();
+    });
   }
 
   /** Select an already-purchased proof bound to an exact historical policy. */
@@ -420,7 +435,8 @@ export class ProductAdmissionControllerV1 {
     requested: AdmissionCapabilityBindingV1,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted
+    if (this.pairCredentialFlowStarted()
+        || leg.credentialFlowStarted
         || leg.status === 'authorized'
         || leg.status === 'cached-resource-ready'
         || leg.status === 'ambiguous-spend') {
@@ -465,7 +481,7 @@ export class ProductAdmissionControllerV1 {
     recoveryId: string,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted) {
+    if (this.pairCredentialFlowStarted() || leg.credentialFlowStarted) {
       throw new ProductAdmissionErrorV1(
         'offer-selection-invalidated',
         'this provider selection is frozen after its credential flow starts',
@@ -524,9 +540,11 @@ export class ProductAdmissionControllerV1 {
           this.updateReadyPhase();
           return this.snapshot();
         }
+        leg.status = 'ready';
       }
 
       const chosenOffer = selectedOffer(leg);
+      await this.assertPairAcquisitionBarrier();
       if (leg.retainedSelected || requiresVaultCapability(chosenOffer)) {
         await this.refreshLegInventory(leg);
         if ((leg.inventory ?? 0) <= 0) {
@@ -988,6 +1006,32 @@ export class ProductAdmissionControllerV1 {
     }
   }
 
+  private pairCredentialFlowStarted(): boolean {
+    return this.options.topology === 'independent-pair'
+      && this.legs.some((candidate) => candidate.credentialFlowStarted);
+  }
+
+  /** Do not start either connection-bound grant while the peer still needs a
+   * wallet/mint round trip. This is a local acquisition barrier, not a
+   * cross-provider transaction or shared identifier. */
+  private async assertPairAcquisitionBarrier(): Promise<void> {
+    if (this.options.topology !== 'independent-pair') return;
+    for (const candidate of this.legs) {
+      if (candidate.status === 'authorized' || candidate.status === 'cached-resource-ready') {
+        continue;
+      }
+      const offer = selectedOffer(candidate);
+      if (!candidate.retainedSelected && !requiresVaultCapability(offer)) continue;
+      await this.refreshLegInventory(candidate);
+      if ((candidate.inventory ?? 0) <= 0) {
+        throw new ProductAdmissionErrorV1(
+          'capability-inventory-empty',
+          `prepare the exact capability for ${candidate.label} before authorizing either provider`,
+        );
+      }
+    }
+  }
+
   private requireLeg(role: string): LegStateV1 {
     this.requirePrepared();
     const leg = this.legs.find((candidate) => candidate.role === role);
@@ -1018,7 +1062,9 @@ export class ProductAdmissionControllerV1 {
   }
 
   private async withLegTransition<T>(leg: LegStateV1, operation: () => Promise<T>): Promise<T> {
-    if (leg.transitionInFlight) {
+    if (leg.transitionInFlight
+        || (this.options.topology === 'independent-pair'
+          && this.legs.some((candidate) => candidate.transitionInFlight))) {
       throw new ProductAdmissionErrorV1('operation-failed', 'this provider action is in flight');
     }
     leg.transitionInFlight = true;
@@ -1038,6 +1084,25 @@ export class ProductAdmissionControllerV1 {
           : 'operation-failed';
       }
       throw cause;
+    } finally {
+      leg.transitionInFlight = false;
+    }
+  }
+
+  /** Serialize selection mutations without translating an expected selection
+   * rejection into a transport/admission failure state. */
+  private async withLegExclusiveMutation<T>(
+    leg: LegStateV1,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (leg.transitionInFlight
+        || (this.options.topology === 'independent-pair'
+          && this.legs.some((candidate) => candidate.transitionInFlight))) {
+      throw new ProductAdmissionErrorV1('operation-failed', 'this provider action is in flight');
+    }
+    leg.transitionInFlight = true;
+    try {
+      return await operation();
     } finally {
       leg.transitionInFlight = false;
     }

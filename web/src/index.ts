@@ -346,6 +346,9 @@ export type {
   ProductStrictLegBootstrapV1,
 } from './product-admission-controller.js';
 export {
+  canBootstrapNextProviderV1,
+  credentialActionsReadyV1,
+  pairAuthorizationReadyV1,
   ProductAdmissionPanelV1,
   privacyLabelForOfferV1,
   publicAdmissionError,

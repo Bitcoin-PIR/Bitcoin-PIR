@@ -39,7 +39,7 @@ describe('strict PIR result release', () => {
     )).rejects.toThrow('transport closed');
   });
 
-  it('keeps production DPF and Harmony rendering after the strict release gate', () => {
+  it('keeps production DPF, Harmony, and Onion rendering after the strict release gate', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const dpf = html.slice(
       html.indexOf('async function queryUtxos()'),
@@ -48,6 +48,10 @@ describe('strict PIR result release', () => {
     const harmony = html.slice(
       html.indexOf('async function hpQueryUtxos()'),
       html.indexOf('async function runHarmonyQueryOnce()'),
+    );
+    const onion = html.slice(
+      html.indexOf('async function opQueryUtxos()'),
+      html.indexOf("document.getElementById('op-queryBtn').addEventListener"),
     );
     expect(dpf.indexOf('requireVerifiedQueryResultsV1(')).toBeGreaterThan(0);
     expect(dpf.indexOf('renderDeltaResult(')).toBeGreaterThan(
@@ -62,5 +66,57 @@ describe('strict PIR result release', () => {
       harmony.indexOf('requireVerifiedQueryResultsV1('),
     );
     expect(harmony).not.toContain('addBatchMerkleButton(');
+    expect(onion.indexOf('requireVerifiedQueryResultsV1(')).toBeGreaterThan(0);
+    expect(onion.indexOf('renderResult(')).toBeGreaterThan(
+      onion.indexOf('requireVerifiedQueryResultsV1('),
+    );
+  });
+
+  it('preflights the selected DPF/Harmony database before constructing the second admission leg', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const staged = html.slice(
+      html.indexOf('async function prepareIndependentProductLeg'),
+      html.indexOf('async function prepareCurrentIndependentProductLeg'),
+    );
+    const dpf = staged.slice(0, staged.indexOf("const providerIndex = role === 'hint'"));
+    const harmony = staged.slice(staged.indexOf("const providerIndex = role === 'hint'"));
+    expect(dpf.indexOf('await connected.prepareStrictAdmission(dbId)')).toBeGreaterThan(0);
+    expect(dpf.indexOf('new ProviderAdmissionSessionV1(')).toBeGreaterThan(
+      dpf.indexOf('await connected.prepareStrictAdmission(dbId)'),
+    );
+    expect(harmony.indexOf('await connected.prepareStrictAdmission(dbId)')).toBeGreaterThan(0);
+    expect(harmony.indexOf('new ProviderAdmissionSessionV1(')).toBeGreaterThan(
+      harmony.indexOf('await connected.prepareStrictAdmission(dbId)'),
+    );
+  });
+
+  it('rejects Onion/ORAM database selector drift before a paid operation starts', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const onion = html.slice(
+      html.indexOf('async function opQueryUtxos()'),
+      html.indexOf("document.getElementById('op-queryBtn').addEventListener"),
+    );
+    const oram = html.slice(
+      html.indexOf('async function oramQueryUtxos()'),
+      html.indexOf('async function runOramQueryOnce()'),
+    );
+    expect(onion.indexOf('opClient.getDbId() !== onionAdmissionDbId')).toBeGreaterThan(0);
+    expect(onion.indexOf('queryClient.queryBatch(')).toBeGreaterThan(
+      onion.indexOf('opClient.getDbId() !== onionAdmissionDbId'),
+    );
+    expect(oram.indexOf('selectedDbId !== oramAdmissionDbId')).toBeGreaterThan(0);
+    expect(oram.indexOf('queryClient.queryDelta(')).toBeGreaterThan(
+      oram.indexOf('selectedDbId !== oramAdmissionDbId'),
+    );
+    const onionChange = html.slice(
+      html.indexOf("document.getElementById('op-dbSelect').addEventListener"),
+      html.indexOf('// ═══════════════════════════════════════════════════════════════\n        // HarmonyPIR'),
+    );
+    expect(onionChange).toContain("closeAdmissionAttempt(\n                    'onion'");
+    const oramChange = html.slice(
+      html.indexOf("document.getElementById('oram-dbSelect').addEventListener"),
+      html.indexOf('</script>', html.indexOf("document.getElementById('oram-dbSelect')")),
+    );
+    expect(oramChange).toContain("closeAdmissionAttempt(\n                    'oram'");
   });
 });

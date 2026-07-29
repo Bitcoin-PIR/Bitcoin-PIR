@@ -108,7 +108,10 @@ describe('pre-verification security badge rendering', () => {
     expect(scriptPolicy).not.toContain("'unsafe-inline'");
     expect(scriptPolicy).not.toContain("'unsafe-eval'");
     expect(scriptPolicy).toContain("'wasm-unsafe-eval'");
-    expect(html).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
+    const markupWithoutExecutableBlocks = html
+      .replace(/<script(?:\s[^>]*)?>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style(?:\s[^>]*)?>[\s\S]*?<\/style>/gi, '');
+    expect(markupWithoutExecutableBlocks).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
 
     const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
     expect(inlineScripts).toHaveLength(3);

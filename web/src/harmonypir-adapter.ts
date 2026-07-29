@@ -2166,7 +2166,9 @@ function translateWasmResult(
     scriptHash: scriptHashHex,
     utxos,
     whale: wqr.isWhale,
-    merkleVerified: wqr.merkleVerified,
+    // Native query decoding has not yet run the inclusion verifier. Never
+    // inherit a transport/fixture default as a release verdict.
+    merkleVerified: false,
     merkleRootHex,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
     scriptHashBytes,
@@ -2209,7 +2211,7 @@ function harmonyResultToJson(r: HarmonyQueryResult): any {
   const obj: any = {
     entries,
     isWhale: r.whale,
-    merkleVerified: r.merkleVerified ?? true,
+    merkleVerified: false,
   };
   if (r.allIndexBins && r.allIndexBins.length > 0) {
     obj.indexBins = r.allIndexBins.map((b) => ({

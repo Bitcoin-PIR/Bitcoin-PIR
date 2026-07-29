@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-bF6P3LqlO7tcVJlhM8EGMrVCEEx7APKF36V6cbASUd4=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-+BIMxb/fETvGjcwKoAE2QWr21wygLctjeQUNWhHwygc=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1917,6 +1917,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (serverIndex === 0) dpfAdmissionDbId = selectedDbId;
                 const dbId = dpfAdmissionDbId;
                 if (dbId === null) throw new Error('DPF server 0 database binding is unavailable');
+                if (serverIndex === 1) {
+                    await connected.prepareStrictAdmission(dbId);
+                }
                 return {
                     leg: {
                         role,
@@ -1944,6 +1947,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const providerIndex = role === 'hint' ? 0 : 1;
             const connected = await hpConnectLeg(provider, providerIndex);
             const dbId = connected.getDbId();
+            if (providerIndex === 1) {
+                await connected.prepareStrictAdmission(dbId);
+            }
             const leg = {
                 role,
                 label: providerIndex === 0
@@ -2039,6 +2045,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         const provider = selected.onion;
                         const connected = await opConnect(provider);
                         const dbId = connected.getDbId();
+                        onionAdmissionDbId = dbId;
                         return {
                             legs: [{
                                 role: 'onion', label: 'Onion provider',
@@ -2056,6 +2063,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const provider = selected.oram;
                     const connected = await oramConnect(provider);
                     const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
+                    oramAdmissionDbId = dbId;
                     return {
                         legs: [{
                             role: 'oram', label: 'ORAM provider',
@@ -3843,6 +3851,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // OnionPIR tab logic
         // ═══════════════════════════════════════════════════════════════
         let opClient = null;
+        let onionAdmissionDbId = null;
         const opDatabaseProofs = new Map();
 
         function opSetDataIntegrity(state, title = '') {
@@ -4043,6 +4052,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         function opDisconnect(preserveResults = false) {
             if (opClient) { opClient.disconnect(); opClient = null; }
+            onionAdmissionDbId = null;
             if (!preserveResults) {
                 document.getElementById('op-resultsContainer').innerHTML = '';
             }
@@ -4268,6 +4278,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!opClient || !opClient.isConnected()) {
                 throw new Error('OnionPIR query requires the live strictly verified admission connection');
             }
+            if (onionAdmissionDbId === null || opClient.getDbId() !== onionAdmissionDbId) {
+                throw new Error('OnionPIR database selection changed after exact admission; start a new attempt');
+            }
 
             const textarea = document.getElementById('op-scriptPubkeys');
             const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -4303,7 +4316,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
                 opSetProgress(5, `Batching ${N} queries...`);
 
-                const results = await opClient.queryBatch(scriptHashes, (step, detail) => {
+                const queryClient = opClient;
+                const results = await queryClient.queryBatch(scriptHashes, (step, detail) => {
                     let pct = 5;
                     if (step === 'Setup') pct = 10;
                     else if (step === 'Level 1') pct = 25;
@@ -4312,45 +4326,28 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     opSetProgress(pct, `${step}: ${detail}`);
                 });
 
+                if (opClient !== queryClient || !queryClient.isConnected()) {
+                    throw new Error('OnionPIR connection changed before inclusion verification');
+                }
+                const concrete = await requireVerifiedQueryResultsV1(
+                    results,
+                    items => queryClient.verifyMerkleBatch(items, (step, detail) => {
+                        opSetProgress(94, `${step}: ${detail}`);
+                    }),
+                    `OnionPIR db ${onionAdmissionDbId}`,
+                );
+                if (opClient !== queryClient || !queryClient.isConnected()) {
+                    throw new Error('OnionPIR connection changed during inclusion verification');
+                }
+
                 let found = 0;
-                const opQueryResults = [];
-                const opResultSections = [];
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
-                    const result = results[qi];
-                    if (result && !result.isWhale && result.entries.length > 0) found++;
-                    opResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result));
-                    opQueryResults.push(result);
-                }
-
-                // Verify every found, absent, and whale result in the same
-                // connection/FHE session. Only then turn the per-result state
-                // into the compact checkmark.
-                opResultSections.forEach(section => setResultMerkleState(section, 'verifying'));
-                await waitForResultPaint();
-                if (opQueryResults.some(result => result === null)) {
-                    opResultSections.forEach(section => setResultMerkleState(section, 'failed'));
-                    throw new Error('OnionPIR returned an unverifiable result');
-                }
-                try {
-                    const verdicts = await opClient.verifyMerkleBatch(opQueryResults, (step, detail) => {
-                        opSetProgress(94, `${step}: ${detail}`);
-                    });
-                    if (verdicts.length !== opQueryResults.length || verdicts.some(ok => !ok)) {
-                        opResultSections.forEach((section, index) =>
-                            setResultMerkleState(section, verdicts[index] ? 'verified' : 'failed'));
-                        throw new Error('OnionPIR Merkle verification failed');
-                    }
-                    opResultSections.forEach(section => setResultMerkleState(section, 'verified'));
-                } catch (error) {
-                    opResultSections.forEach(section => {
-                        const badge = section?.querySelector('.merkle-result-badge');
-                        if (!badge || badge.classList.contains('verifying')) {
-                            setResultMerkleState(section, 'error');
-                        }
-                    });
-                    throw error;
+                    const result = concrete[qi];
+                    if (!result.isWhale && result.entries.length > 0) found++;
+                    const section = renderResult(resultsContainer, spkHex, hashHex, result);
+                    setResultMerkleState(section, 'verified');
                 }
 
                 opSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -4420,8 +4417,16 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('op-syncConfirmBtn').addEventListener('click', opExecuteSync);
         document.getElementById('op-syncCancelBtn').addEventListener('click', opCancelSync);
         document.getElementById('op-resetSyncBtn').addEventListener('click', opResetSyncState);
-        document.getElementById('op-dbSelect').addEventListener('change', (e) => {
+        document.getElementById('op-dbSelect').addEventListener('change', async (e) => {
             const newDbId = parseInt(e.target.value);
+            if (admissionControllers.onion) {
+                await closeAdmissionAttempt(
+                    'onion',
+                    'Database selection changed; start a new strict admission attempt.',
+                );
+                log('OnionPIR: database change closed the exact admission before any query spend', 'info');
+                return;
+            }
             if (!opClient) return;
             opSwitchDb(newDbId);
         });
@@ -5447,6 +5452,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ═══════════════════════════════════════════════════════════════
 
         let oramClient = null;
+        let oramAdmissionDbId = null;
 
         function oramSetButtons(connected) {
             document.getElementById('oram-connectBtn').disabled = connected;
@@ -5605,6 +5611,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 oramClient = null;
                 log('ORAM: Disconnected', 'info');
             }
+            oramAdmissionDbId = null;
             if (!preserveResults) {
                 document.getElementById('oram-resultsContainer').innerHTML = '';
             }
@@ -5616,6 +5623,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!oramClient || !oramClient.isConnected()) {
                 throw new Error('ORAM query requires the live strictly verified admission connection');
             }
+            const queryClient = oramClient;
 
             const textarea = document.getElementById('oram-scriptPubkeys');
             const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -5657,21 +5665,28 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const N = lines.length;
             const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
-            const dbId = parseInt(document.getElementById('oram-dbSelect')?.value ?? '0') || 0;
-            const dbEntry = oramClient.getCatalogEntry(dbId);
+            const selectedDbId = parseInt(document.getElementById('oram-dbSelect')?.value ?? '0') || 0;
+            if (oramAdmissionDbId === null || selectedDbId !== oramAdmissionDbId) {
+                throw new Error('ORAM database selection changed after exact admission; start a new attempt');
+            }
+            const dbId = oramAdmissionDbId;
+            const dbEntry = queryClient.getCatalogEntry(dbId);
             const isDelta = dbEntry?.dbType === 1;
 
             try {
                 oramSetProgress(5, `Preparing ${N} ORAM lookup${N === 1 ? '' : 's'}${isDelta ? ` (delta db ${dbId})` : ''}...`);
                 const results = isDelta
-                    ? await oramClient.queryDelta(scriptHashes, dbId, (step, detail) => {
+                    ? await queryClient.queryDelta(scriptHashes, dbId, (step, detail) => {
                         const pct = step === 'Decode' ? 90 : 45;
                         oramSetProgress(pct, `${step}: ${detail}`);
                     })
-                    : await oramClient.queryBatch(scriptHashes, (step, detail) => {
+                    : await queryClient.queryBatch(scriptHashes, (step, detail) => {
                         const pct = step === 'Decode' ? 90 : 45;
                         oramSetProgress(pct, `${step}: ${detail}`);
                     }, dbId);
+                if (oramClient !== queryClient || !queryClient.isConnected()) {
+                    throw new Error('ORAM connection changed before result release');
+                }
 
                 let found = 0;
                 if (isDelta) {
@@ -5748,7 +5763,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('oram-connectBtn').addEventListener('click', runOramQueryOnce);
         document.getElementById('oram-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('oram'));
         document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
-        document.getElementById('oram-dbSelect').addEventListener('change', () => {
+        document.getElementById('oram-dbSelect').addEventListener('change', async () => {
+            if (admissionControllers.oram) {
+                await closeAdmissionAttempt(
+                    'oram',
+                    'Database selection changed; start a new strict admission attempt.',
+                );
+                log('ORAM: database change closed the exact admission before any query spend', 'info');
+                return;
+            }
             const catalog = oramClient?.getCatalog();
             const select = document.getElementById('oram-dbSelect');
             const infoSpan = document.getElementById('oram-dbInfo');

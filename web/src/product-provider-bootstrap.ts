@@ -36,14 +36,27 @@ export interface ProductTrustedBootstrapV1 {
  * key, and Lightning payee material learned from the authenticated policy.
  */
 export function assertIndependentProviderDialPairV1(
-  first: Pick<ProductTrustedProviderV1, 'providerIdHex' | 'endpoint'>,
-  second: Pick<ProductTrustedProviderV1, 'providerIdHex' | 'endpoint'>,
+  first: Pick<ProductTrustedProviderV1,
+    'providerIdHex' | 'endpoint' | 'policySigningKeyHex'
+    | 'operatorSigningKeyHex' | 'stableServerId'>,
+  second: Pick<ProductTrustedProviderV1,
+    'providerIdHex' | 'endpoint' | 'policySigningKeyHex'
+    | 'operatorSigningKeyHex' | 'stableServerId'>,
 ): void {
   if (first.providerIdHex === second.providerIdHex) {
     throw new Error('independent PIR roles must select distinct provider identities');
   }
   if (trustedWebSocketOrigin(first.endpoint) === trustedWebSocketOrigin(second.endpoint)) {
     throw new Error('independent PIR roles must not share one WebSocket origin');
+  }
+  if (first.operatorSigningKeyHex === second.operatorSigningKeyHex) {
+    throw new Error('independent PIR roles must not share one operator signing key');
+  }
+  if (first.policySigningKeyHex === second.policySigningKeyHex) {
+    throw new Error('independent PIR roles must not share one policy signing key');
+  }
+  if (first.stableServerId === second.stableServerId) {
+    throw new Error('independent PIR roles must not share one stable server identity');
   }
 }
 
