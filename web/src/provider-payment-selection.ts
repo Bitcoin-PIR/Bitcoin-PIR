@@ -56,21 +56,20 @@ export function assertIndependentProviderOfferPairV1(
     throw new Error('the two providers reuse one raw ARC verification key');
   }
 
-  if (options.allowSharedIssuerCorrelation === true) {
-    return;
+  if (options.allowSharedIssuerCorrelation !== true) {
+    const firstIssuer = optionalIssuerId('first issuer ID', first.offer.issuerIdHex);
+    const secondIssuer = optionalIssuerId('second issuer ID', second.offer.issuerIdHex);
+    if (firstIssuer !== null && secondIssuer !== null && firstIssuer === secondIssuer) {
+      throw new Error('strict pair privacy rejects one issuer observing both credential flows');
+    }
+    const firstOrigin = issuerOrigin(first.offer.endpoint);
+    const secondOrigin = issuerOrigin(second.offer.endpoint);
+    if (firstOrigin !== null && secondOrigin !== null && firstOrigin === secondOrigin) {
+      throw new Error('strict pair privacy rejects one issuer origin serving both providers');
+    }
   }
-  const firstIssuer = optionalIssuerId('first issuer ID', first.offer.issuerIdHex);
-  const secondIssuer = optionalIssuerId('second issuer ID', second.offer.issuerIdHex);
-  if (firstIssuer !== null && secondIssuer !== null && firstIssuer === secondIssuer) {
-    throw new Error('strict pair privacy rejects one issuer observing both credential flows');
-  }
-  const firstOrigin = issuerOrigin(first.offer.endpoint);
-  const secondOrigin = issuerOrigin(second.offer.endpoint);
-  if (firstOrigin !== null && secondOrigin !== null && firstOrigin === secondOrigin) {
-    throw new Error('strict pair privacy rejects one issuer origin serving both providers');
-  }
-  const firstKeyId = optionalKeyId('first receipt key ID', first.offer.keyIdHex);
-  const secondKeyId = optionalKeyId('second receipt key ID', second.offer.keyIdHex);
+  const firstKeyId = directReceiptKeyId('first receipt key ID', first.offer);
+  const secondKeyId = directReceiptKeyId('second receipt key ID', second.offer);
   if (firstKeyId !== null && secondKeyId !== null && firstKeyId === secondKeyId) {
     throw new Error('strict pair privacy rejects one receipt verification key serving both providers');
   }
@@ -122,11 +121,14 @@ function optionalIssuerId(field: string, value: string): string | null {
   return canonicalNonzeroHex32(field, value);
 }
 
-function optionalKeyId(field: string, value: string): string | null {
-  if (value === '') return null;
-  // The authenticated protocol permits 1..64 bytes here. In particular,
-  // direct-receipt and ARC identifiers are 16 bytes while BAT identifiers are
-  // 32 bytes. Preserve the exact byte string for correlation comparison.
+function directReceiptKeyId(field: string, offer: ServiceOfferViewV1): string | null {
+  if (offer.authorization !== 'bolt11-direct-receipt') return null;
+  const value = offer.keyIdHex;
+  // The authenticated protocol permits 1..64 bytes. Preserve the exact byte
+  // string for correlation comparison. Direct-receipt key IDs are derived
+  // from the raw verification key, so equality also catches raw-key reuse;
+  // BAT and ARC use their raw-key fingerprints above and free tickets remain
+  // covered by the issuer guard.
   if (!/^(?:[0-9a-f]{2}){1,64}$/.test(value)) {
     throw new Error(`${field} must be 1..64 bytes of lowercase hex`);
   }

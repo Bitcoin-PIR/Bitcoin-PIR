@@ -286,6 +286,7 @@ export type {
 export type {
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
+  IndependentProviderAdmissionSelectionV1,
   ProviderPairBolt11AcquisitionOptionsV1,
   ProviderPairSideV1,
   ServiceAdmissionPortV1,

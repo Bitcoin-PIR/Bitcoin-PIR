@@ -122,7 +122,8 @@ pub use service::{
 pub use strict_pair::{
     select_strict_provider_offer_v1, verify_strict_two_provider_offer_pair_v1,
     StrictProviderOfferSelectionV1, StrictProviderPairOptionsV1,
-    VerifiedStrictTwoProviderOfferPairV1,
+    StrictProviderPaymentContextInputV1,
+    VerifiedStrictTwoProviderOfferPairV1, VerifiedStrictTwoProviderPaymentContextV1,
 };
 pub use transport::PirTransport;
 pub use verified_roots::RootPolicy;
