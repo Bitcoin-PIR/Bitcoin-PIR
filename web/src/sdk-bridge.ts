@@ -716,6 +716,12 @@ export interface WasmServicePowChallengeV1 {
 export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
+  /** Configure one provider before that leg is connected. */
+  setServerUrl(serverIndex: number, url: string): void;
+  /** Connect or disconnect exactly one independently selected provider. */
+  connectServer(serverIndex: number): Promise<void>;
+  disconnectServer(serverIndex: number): Promise<void>;
+  isServerConnected(serverIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Send REQ_ATTEST to one of the connected servers (`serverIndex`
@@ -741,14 +747,27 @@ export interface WasmDpfClient {
    *  otherwise). On handshake failure both connections are dropped —
    *  call `connect` again to retry. */
   upgradeToSecureChannel(pub0: Uint8Array, pub1: Uint8Array): Promise<void>;
+  /** Upgrade one staged provider without touching the peer leg. */
+  upgradeServerToSecureChannel(serverIndex: number, serverStaticPub: Uint8Array): Promise<void>;
   /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
    * (which go through `query_batch_with_inspector`) can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  /** Fetch the catalog from one staged provider. The second catalog must be
+   *  query-compatible with the first before the native client accepts it;
+   *  display names, ordering, and peer-only entries do not affect matching. */
+  fetchCatalogFromServer(serverIndex: number): Promise<WasmDatabaseCatalog>;
   /** Fetch and verify an attested-builder database proof against the
    * native catalog. Optional string policy pins may be `undefined` or empty.
    * Mainnet network magic is always enforced by the WASM method. */
   verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
+  verifyDatabaseProofFromServer(
+    serverIndex: number,
     dbId: number,
     expectedParamsHashHex?: string | null,
     allowedBuilderBinarySha256Hex?: string | null,
@@ -860,6 +879,13 @@ interface WasmSyncPlan {
 export interface WasmHarmonyClient {
   free(): void;
   readonly isConnected: boolean;
+  /** Provider 0 is the independently priced hint workload; provider 1 is
+   *  the per-query workload. Either role may be configured/connected first
+   *  without disclosing the peer selection. */
+  setProviderUrl(providerIndex: number, url: string): void;
+  connectProvider(providerIndex: number): Promise<void>;
+  disconnectProvider(providerIndex: number): Promise<void>;
+  isProviderConnected(providerIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Same as `WasmDpfClient.attest`. `serverIndex` 0 = hint server,
@@ -872,13 +898,22 @@ export interface WasmHarmonyClient {
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
+  upgradeProviderToSecureChannel(providerIndex: number, serverStaticPub: Uint8Array): Promise<void>;
   /** Fetch + cache the database catalog over the WASM client's
    *  internal connection. Returns a `WasmDatabaseCatalog` handle the
    *  caller can pass back into `fetchHintsWithProgress` / `loadHints`
    *  / `fingerprint`. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  fetchCatalogFromProvider(providerIndex: number): Promise<WasmDatabaseCatalog>;
   /** Same as `WasmDpfClient.verifyDatabaseProof`. */
   verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
+  verifyDatabaseProofFromProvider(
+    providerIndex: number,
     dbId: number,
     expectedParamsHashHex?: string | null,
     allowedBuilderBinarySha256Hex?: string | null,

@@ -53,6 +53,15 @@ function fakeAnnouncement(
   } as unknown as WasmAnnounceVerification;
 }
 
+function fakeInstalledProof(dbId = 0): any {
+  const proof = { dbId, muhashHex: 'aa'.repeat(32), bucketSuperRootHex: 'bb'.repeat(32) };
+  return {
+    pin: { dbId },
+    proof,
+    status: { state: 'verified', proof },
+  };
+}
+
 describe('adapter WASM lifecycle', () => {
   beforeEach(() => {
     policyFree.mockClear();
@@ -225,5 +234,251 @@ describe('adapter WASM lifecycle', () => {
 
     await expect((adapter as any).attestAndUpgrade()).resolves.toBeUndefined();
     expect(seen).toEqual([hintPin, queryPin]);
+  });
+
+  it('preserves an admitted DPF first leg when the second transport fails', async () => {
+    const disconnectServer = vi.fn(async () => {});
+    const diagnosticDisconnect = vi.fn();
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).ws1 = {
+      connect: vi.fn(async () => {}),
+      disconnect: diagnosticDisconnect,
+    };
+    (adapter as any).wasmClient = {
+      connectServer: vi.fn(async (idx: number) => {
+        if (idx === 1) throw new Error('second transport unavailable');
+      }),
+      disconnectServer,
+      isServerConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('second transport unavailable');
+
+    expect(adapter.isLegReady(0)).toBe(true);
+    expect(adapter.isLegReady(1)).toBe(false);
+    expect(disconnectServer).toHaveBeenCalledOnce();
+    expect(disconnectServer).toHaveBeenCalledWith(1);
+    expect(diagnosticDisconnect).toHaveBeenCalledOnce();
+  });
+
+  it('recognizes two staged DPF secure legs before committing aggregate readiness', () => {
+    const binary0 = '41'.repeat(32);
+    const binary1 = '42'.repeat(32);
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      expectedServer0Pin: { binarySha256Hex: binary0 },
+      expectedServer1Pin: { binarySha256Hex: binary1 },
+      expectedServer0Id: 'pir1',
+      expectedServer1Id: 'pir2',
+    });
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).secureChannelEstablished = false;
+    adapter.attestation = {
+      server0: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+      server1: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+    };
+    adapter.operatorIdentity = {
+      server0: { state: 'verified', serverId: 'pir1', binarySha256Hex: binary0 },
+      server1: { state: 'verified', serverId: 'pir2', binarySha256Hex: binary1 },
+    };
+
+    expect(() => (adapter as any).assertStrictTransportReady()).not.toThrow();
+  });
+
+  it('preserves Harmony hints and hint admission when the query leg fails', async () => {
+    const disconnectProvider = vi.fn(async () => {});
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).strictLegReady = [true, false];
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      connectProvider: vi.fn(async (idx: number) => {
+        if (idx === 1) throw new Error('query transport unavailable');
+      }),
+      disconnectProvider,
+      isProviderConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('query transport unavailable');
+
+    expect(adapter.isLegReady(0)).toBe(true);
+    expect(adapter.isLegReady(1)).toBe(false);
+    expect(adapter.hintsLoaded).toBe(true);
+    expect(disconnectProvider).toHaveBeenCalledOnce();
+    expect(disconnectProvider).toHaveBeenCalledWith(1);
+  });
+
+  it('clears the DPF adapter session mirror when the final staged leg closes', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+    });
+    (adapter as any).catalog = { databases: [{ dbId: 0 }] };
+    (adapter as any).databaseProofs.set(0, { state: 'verified' });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).wasmClient = {
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+    };
+
+    await adapter.disconnectLeg(0);
+
+    expect(adapter.getCatalog()).toBeNull();
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+    expect(adapter.isLegReady(0)).toBe(false);
+  });
+
+  it('clears in-memory Harmony hints and catalog when the final role closes', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+      strictVerification: true,
+    });
+    (adapter as any).catalog = { databases: [{ dbId: 0 }] };
+    (adapter as any).databaseProofs.set(0, { state: 'verified' });
+    (adapter as any).strictLegReady = [true, false];
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+    };
+
+    await adapter.disconnectLeg(0);
+
+    expect(adapter.getCatalog()).toBeNull();
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+    expect(adapter.hintsLoaded).toBe(false);
+    expect(adapter.isLegReady(0)).toBe(false);
+  });
+
+  it('keeps DPF queries blocked until one shared post-authorization preflight completes', async () => {
+    const preflightDatabase = vi.fn(async () => {});
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).pairConsistencyReady = true;
+    (adapter as any).pairPreflightState = 'pending';
+    (adapter as any).strictLegReady = [true, true];
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).installedProofsByLeg = [
+      [fakeInstalledProof()],
+      [fakeInstalledProof()],
+    ];
+    (adapter as any).wasmClient = { preflightDatabase };
+
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    await Promise.all([adapter.finalizeStrictPair(0), adapter.finalizeStrictPair(0)]);
+
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await expect(adapter.queryBatch([], undefined, 1)).rejects.toThrow(
+      'strict DPF admission is bound to db_id 0, not db_id 1',
+    );
+  });
+
+  it('makes a failed Harmony post-authorization preflight fail closed and one-shot', async () => {
+    const preflightDatabase = vi.fn(async () => {
+      throw new Error('tree-top mismatch');
+    });
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).pairConsistencyReady = true;
+    (adapter as any).pairPreflightState = 'pending';
+    (adapter as any).strictLegReady = [true, true];
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).installedProofsByLeg = [
+      [fakeInstalledProof()],
+      [fakeInstalledProof()],
+    ];
+    (adapter as any).wasmClient = { preflightDatabase };
+
+    await expect(adapter.finalizeStrictPair(0)).rejects.toThrow('tree-tops preflight failed');
+    await expect(adapter.finalizeStrictPair(0)).rejects.toThrow('retry is disabled');
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+  });
+
+  it('does not let an obsolete DPF preflight completion revive a disconnected pair', async () => {
+    let releasePreflight!: () => void;
+    const preflightDatabase = vi.fn(() => new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    }));
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).pairConsistencyReady = true;
+    (adapter as any).pairPreflightState = 'pending';
+    (adapter as any).strictLegReady = [true, true];
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).installedProofsByLeg = [
+      [fakeInstalledProof()],
+      [fakeInstalledProof()],
+    ];
+    (adapter as any).wasmClient = {
+      preflightDatabase,
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+    };
+
+    const finalization = adapter.finalizeStrictPair(0);
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    releasePreflight();
+
+    await expect(finalization).rejects.toThrow('invalidated while in flight');
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+  });
+
+  it('does not let an obsolete Harmony preflight completion revive a disconnected pair', async () => {
+    let releasePreflight!: () => void;
+    const preflightDatabase = vi.fn(() => new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    }));
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).pairConsistencyReady = true;
+    (adapter as any).pairPreflightState = 'pending';
+    (adapter as any).strictLegReady = [true, true];
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).installedProofsByLeg = [
+      [fakeInstalledProof()],
+      [fakeInstalledProof()],
+    ];
+    (adapter as any).wasmClient = {
+      preflightDatabase,
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+    };
+
+    const finalization = adapter.finalizeStrictPair(0);
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(1);
+    releasePreflight();
+
+    await expect(finalization).rejects.toThrow('invalidated while in flight');
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
   });
 });

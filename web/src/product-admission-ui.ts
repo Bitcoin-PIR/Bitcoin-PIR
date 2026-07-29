@@ -82,7 +82,7 @@ export class ProductAdmissionPanelV1 {
       const provider = document.createElement('select');
       provider.className = 'select admission-provider-select';
       provider.setAttribute('aria-label', `${role.label} trusted provider`);
-      provider.addEventListener('change', () => this.invalidatePreparedAttempt());
+      provider.addEventListener('change', () => this.handleProviderSelection(role.role));
       heading.append(title, provider);
 
       const identity = textLine('admission-provider-identity', 'Provider identity: not selected');
@@ -132,7 +132,7 @@ export class ProductAdmissionPanelV1 {
     this.renderUnavailable(
       options.length === 0
         ? 'Commercial admission 未配置；导入完整 trusted bootstrap 后才能查询。'
-        : '选择每个角色的独立 provider，然后开始严格验证。',
+        : '先选择并授权第一个 provider；完成后才会启用第二个角色。',
     );
   }
 
@@ -143,6 +143,21 @@ export class ProductAdmissionPanelV1 {
       out[role] = row.provider.value;
     }
     return out;
+  }
+
+  selectedProviderId(role: string): string {
+    const row = this.rows.get(role);
+    if (!row) throw new Error(`unknown provider role ${role}`);
+    if (!row.provider.value) throw new Error(`select a trusted provider for ${role}`);
+    return row.provider.value;
+  }
+
+  /** Capture and lock the exact staged provider before any asynchronous
+   * bootstrap work starts. A failed bootstrap render re-enables this row. */
+  freezeProviderSelection(role: string): string {
+    const providerId = this.selectedProviderId(role);
+    this.rows.get(role)!.provider.disabled = true;
+    return providerId;
   }
 
   attach(controller: ProductAdmissionControllerV1): void {
@@ -169,11 +184,30 @@ export class ProductAdmissionPanelV1 {
           ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
-            : 'Strict server verification passed. Select and authorize each exact signed offer.');
+            : snapshot?.legs.length === 1
+              && (snapshot.legs[0].status === 'authorized'
+                || snapshot.legs[0].status === 'cached-resource-ready')
+              ? 'First provider is authorized. Select and strictly verify the independent second provider.'
+              : snapshot?.legs.length === 1
+                ? 'Authorize the first provider before selecting or connecting the second.'
+                : 'Strictly verify and authorize the first independent provider.');
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
-    for (const row of this.rows.values()) row.provider.disabled = true;
+    const preparedRoles = new Set(snapshot.legs.map((leg) => leg.role));
+    const previousLegsReady = snapshot.legs.every(
+      (leg) => leg.status === 'authorized' || leg.status === 'cached-resource-ready',
+    );
+    const nextRole = this.options.roles[snapshot.legs.length]?.role;
+    for (const [role, row] of this.rows) {
+      if (preparedRoles.has(role)) {
+        row.provider.disabled = true;
+      } else {
+        const available = role === nextRole && previousLegsReady;
+        row.provider.disabled = this.busy || !available;
+        this.renderPendingLeg(row, available);
+      }
+    }
     for (const leg of snapshot.legs) this.renderLeg(leg);
     const shared = this.options.root.querySelector<HTMLInputElement>(
       '[data-action="allow-shared-issuer"]',
@@ -360,13 +394,46 @@ export class ProductAdmissionPanelV1 {
     this.render();
   }
 
+  private handleProviderSelection(role: string): void {
+    if (this.snapshot?.legs.some((leg) => leg.role === role)) {
+      this.invalidatePreparedAttempt();
+      return;
+    }
+    const row = this.rows.get(role);
+    if (!row) return;
+    row.identity.textContent = row.provider.value
+      ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
+      : 'Provider identity: not selected';
+  }
+
+  private renderPendingLeg(row: RoleElementsV1, available: boolean): void {
+    row.identity.textContent = row.provider.value
+      ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
+      : 'Provider identity: not selected';
+    row.offer.replaceChildren(optionElement('', available
+      ? 'Connect provider to load signed offers'
+      : 'Complete previous provider first'));
+    row.offer.disabled = true;
+    row.terms.textContent = available
+      ? 'Scope/offer: connect this provider next'
+      : 'Scope/offer: waiting for previous provider';
+    row.warning.textContent = 'Privacy: this provider has not been contacted';
+    row.warning.classList.remove('experimental');
+    row.status.textContent = available ? 'Admission: ready for strict bootstrap' : 'Admission: waiting';
+    row.status.className = 'admission-provider-status status-strict-bootstrap-pending';
+    row.actions.replaceChildren();
+  }
+
   private renderUnavailable(message: string): void {
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = message;
       notice.classList.add('error');
     }
+    let roleIndex = 0;
     for (const row of this.rows.values()) {
+      row.provider.disabled = roleIndex > 0;
+      roleIndex += 1;
       row.identity.textContent = row.provider.value
         ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
         : 'Provider identity: not selected';
@@ -389,6 +456,7 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
   switch (code) {
     case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
+    case 'strict-finalization-failed': return 'Both capabilities were authorized, but the final database preflight failed. Querying and automatic retry are blocked.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';

@@ -118,6 +118,22 @@ fn validate_master_key_len(len: usize) -> Result<(), String> {
     Ok(())
 }
 
+type AttestSeedSlots = [Option<[u8; 32]>; 2];
+
+/// Invalidate the previous attestation/handshake binding before any fallible
+/// part of a new attestation attempt. If the request fails, no stale seed can
+/// be reused by a later secure-channel upgrade.
+fn begin_attest_attempt(slots: &mut AttestSeedSlots, server_index: usize) {
+    slots[server_index] = None;
+}
+
+/// Consume the binding before the fallible handshake starts. A failed
+/// handshake therefore requires a fresh attestation instead of permitting a
+/// replay with the same ephemeral key.
+fn take_attest_seed(slots: &mut AttestSeedSlots, server_index: usize) -> Option<[u8; 32]> {
+    slots[server_index].take()
+}
+
 /// Pretty-print a `PirError` for the JS side. We stringify via
 /// `Display` (the `thiserror` output) — callers can still distinguish
 /// kinds downstream by inspecting the message prefix, matching the
@@ -1368,11 +1384,47 @@ impl WasmDpfClient {
         self.inner.connect().await.map_err(err_to_js)
     }
 
+    /// Set one staged provider URL before that leg is connected.
+    #[wasm_bindgen(js_name = setServerUrl)]
+    pub fn set_server_url(&mut self, server_index: u8, url: &str) -> Result<(), JsError> {
+        self.inner
+            .set_server_url(server_index, url)
+            .map_err(err_to_js)
+    }
+
+    /// Connect one provider without selecting or dialing its peer.
+    #[wasm_bindgen(js_name = connectServer)]
+    pub async fn connect_server(&mut self, server_index: u8) -> Result<(), JsError> {
+        self.inner
+            .connect_server(server_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = disconnectServer)]
+    pub async fn disconnect_server(&mut self, server_index: u8) -> Result<(), JsError> {
+        if server_index < 2 {
+            self.attest_eph_seeds[server_index as usize] = None;
+        }
+        self.inner
+            .disconnect_server(server_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = isServerConnected)]
+    pub fn is_server_connected(&self, server_index: u8) -> Result<bool, JsError> {
+        self.inner
+            .is_server_connected(server_index)
+            .map_err(err_to_js)
+    }
+
     /// Close both WebSocket connections. After this the client returns
     /// `isConnected === false` and `connect` must be called before the
     /// next query.
     #[wasm_bindgen(js_name = disconnect)]
     pub async fn disconnect(&mut self) -> Result<(), JsError> {
+        self.attest_eph_seeds = [None, None];
         self.inner.disconnect().await.map_err(err_to_js)
     }
 
@@ -1420,6 +1472,43 @@ impl WasmDpfClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Verify the proof returned by one exact staged provider.
+    #[wasm_bindgen(js_name = verifyDatabaseProofFromServer)]
+    pub async fn verify_database_proof_from_server(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof_from_server(server_index, db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Fetch and install-or-compare one staged provider's catalog.
+    #[wasm_bindgen(js_name = fetchCatalogFromServer)]
+    pub async fn fetch_catalog_from_server(
+        &mut self,
+        server_index: u8,
+    ) -> Result<WasmDatabaseCatalog, JsError> {
+        let catalog = self
+            .inner
+            .fetch_catalog_from_server(server_index)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseCatalog::from_native(catalog))
     }
 
     /// Select whether every query must be bound to proof-verified database
@@ -1746,6 +1835,7 @@ impl WasmDpfClient {
                 server_index
             )));
         }
+        begin_attest_attempt(&mut self.attest_eph_seeds, server_index as usize);
         let mut eph_seed = [0u8; 32];
         let mut random_32 = [0u8; 32];
         getrandom::getrandom(&mut eph_seed)
@@ -1821,12 +1911,12 @@ impl WasmDpfClient {
         let pub1: [u8; 32] = server_static_pub_1
             .try_into()
             .map_err(|_| JsError::new("serverStaticPub1 must be exactly 32 bytes"))?;
-        let eph_seed_0 = self.attest_eph_seeds[0].ok_or_else(|| {
+        let eph_seed_0 = take_attest_seed(&mut self.attest_eph_seeds, 0).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(0) first (eph_seed binding required)",
             )
         })?;
-        let eph_seed_1 = self.attest_eph_seeds[1].ok_or_else(|| {
+        let eph_seed_1 = take_attest_seed(&mut self.attest_eph_seeds, 1).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(1) first (eph_seed binding required)",
             )
@@ -1845,7 +1935,39 @@ impl WasmDpfClient {
             .map_err(err_to_js)?;
         // One-shot: consume the cached seeds so a follow-up reconnect
         // is forced to re-attest before another upgrade.
-        self.attest_eph_seeds = [None, None];
+        Ok(())
+    }
+
+    /// Upgrade one staged provider using only that leg's attestation-bound
+    /// ephemeral seed. No peer transport is inspected or modified.
+    #[wasm_bindgen(js_name = upgradeServerToSecureChannel)]
+    pub async fn upgrade_server_to_secure_channel(
+        &mut self,
+        server_index: u8,
+        server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new("serverIndex must be 0 or 1"));
+        }
+        let server_static_pub: [u8; 32] = server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub must be exactly 32 bytes"))?;
+        let eph_seed = take_attest_seed(&mut self.attest_eph_seeds, server_index as usize)
+            .ok_or_else(|| {
+                JsError::new("upgradeServerToSecureChannel requires attest(serverIndex) first")
+            })?;
+        let mut hs_nonce = [0u8; 32];
+        getrandom::getrandom(&mut hs_nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        self.inner
+            .upgrade_server_to_secure_channel_with_seed(
+                server_index,
+                server_static_pub,
+                eph_seed,
+                hs_nonce,
+            )
+            .await
+            .map_err(err_to_js)?;
         Ok(())
     }
 
@@ -2138,9 +2260,43 @@ impl WasmHarmonyClient {
         self.inner.connect().await.map_err(err_to_js)
     }
 
+    #[wasm_bindgen(js_name = setProviderUrl)]
+    pub fn set_provider_url(&mut self, provider_index: u8, url: &str) -> Result<(), JsError> {
+        self.inner
+            .set_provider_url(provider_index, url)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = connectProvider)]
+    pub async fn connect_provider(&mut self, provider_index: u8) -> Result<(), JsError> {
+        self.inner
+            .connect_provider(provider_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = disconnectProvider)]
+    pub async fn disconnect_provider(&mut self, provider_index: u8) -> Result<(), JsError> {
+        if provider_index < 2 {
+            self.attest_eph_seeds[provider_index as usize] = None;
+        }
+        self.inner
+            .disconnect_provider(provider_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = isProviderConnected)]
+    pub fn is_provider_connected(&self, provider_index: u8) -> Result<bool, JsError> {
+        self.inner
+            .is_provider_connected(provider_index)
+            .map_err(err_to_js)
+    }
+
     /// Close both WebSocket connections.
     #[wasm_bindgen(js_name = disconnect)]
     pub async fn disconnect(&mut self) -> Result<(), JsError> {
+        self.attest_eph_seeds = [None, None];
         self.inner.disconnect().await.map_err(err_to_js)
     }
 
@@ -2180,6 +2336,41 @@ impl WasmHarmonyClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    #[wasm_bindgen(js_name = verifyDatabaseProofFromProvider)]
+    pub async fn verify_database_proof_from_provider(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof_from_provider(provider_index, db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    #[wasm_bindgen(js_name = fetchCatalogFromProvider)]
+    pub async fn fetch_catalog_from_provider(
+        &mut self,
+        provider_index: u8,
+    ) -> Result<WasmDatabaseCatalog, JsError> {
+        let catalog = self
+            .inner
+            .fetch_catalog_from_provider(provider_index)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseCatalog::from_native(catalog))
     }
 
     /// Select whether every query must be bound to proof-verified database
@@ -2523,6 +2714,7 @@ impl WasmHarmonyClient {
                 server_index
             )));
         }
+        begin_attest_attempt(&mut self.attest_eph_seeds, server_index as usize);
         let mut eph_seed = [0u8; 32];
         let mut random_32 = [0u8; 32];
         getrandom::getrandom(&mut eph_seed)
@@ -2574,13 +2766,13 @@ impl WasmHarmonyClient {
         let query_pub: [u8; 32] = query_server_static_pub
             .try_into()
             .map_err(|_| JsError::new("queryServerStaticPub must be exactly 32 bytes"))?;
-        let eph_seed_hint = self.attest_eph_seeds[0].ok_or_else(|| {
+        let eph_seed_hint = take_attest_seed(&mut self.attest_eph_seeds, 0).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(0) on the hint server first \
                  (eph_seed binding required)",
             )
         })?;
-        let eph_seed_query = self.attest_eph_seeds[1].ok_or_else(|| {
+        let eph_seed_query = take_attest_seed(&mut self.attest_eph_seeds, 1).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(1) on the query server first \
                  (eph_seed binding required)",
@@ -2603,7 +2795,37 @@ impl WasmHarmonyClient {
             )
             .await
             .map_err(err_to_js)?;
-        self.attest_eph_seeds = [None, None];
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = upgradeProviderToSecureChannel)]
+    pub async fn upgrade_provider_to_secure_channel(
+        &mut self,
+        provider_index: u8,
+        server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        if provider_index >= 2 {
+            return Err(JsError::new("providerIndex must be 0 or 1"));
+        }
+        let server_static_pub: [u8; 32] = server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub must be exactly 32 bytes"))?;
+        let eph_seed = take_attest_seed(&mut self.attest_eph_seeds, provider_index as usize)
+            .ok_or_else(|| {
+                JsError::new("upgradeProviderToSecureChannel requires attest(providerIndex) first")
+            })?;
+        let mut hs_nonce = [0u8; 32];
+        getrandom::getrandom(&mut hs_nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        self.inner
+            .upgrade_provider_to_secure_channel_with_seed(
+                provider_index,
+                server_static_pub,
+                eph_seed,
+                hs_nonce,
+            )
+            .await
+            .map_err(err_to_js)?;
         Ok(())
     }
 
@@ -3278,6 +3500,30 @@ pub fn prp_fastprp() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_reattest_clears_the_previous_handshake_seed() {
+        let mut slots: AttestSeedSlots = [Some([0x11; 32]), Some([0x22; 32])];
+
+        // `begin_attest_attempt` runs before randomness or network I/O. A
+        // failure after this point leaves no older binding available.
+        begin_attest_attempt(&mut slots, 0);
+
+        assert_eq!(slots[0], None);
+        assert_eq!(slots[1], Some([0x22; 32]));
+    }
+
+    #[test]
+    fn failed_handshake_cannot_reuse_a_consumed_attestation_seed() {
+        let mut slots: AttestSeedSlots = [Some([0x31; 32]), Some([0x32; 32])];
+
+        // The real handshake starts only after this one-shot take. Simulate a
+        // later transport failure by deliberately not putting it back.
+        assert_eq!(take_attest_seed(&mut slots, 1), Some([0x32; 32]));
+
+        assert_eq!(take_attest_seed(&mut slots, 1), None);
+        assert_eq!(slots[0], Some([0x31; 32]));
+    }
 
     #[test]
     fn database_proof_frame_requires_exact_length_prefix() {

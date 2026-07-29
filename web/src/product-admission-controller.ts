@@ -2,7 +2,7 @@
  * Product-level V1 admission state machine.
  *
  * The controller owns ordering, not pricing policy: a caller supplies a
- * strict, already verified transport bootstrap and the user explicitly
+ * strict transport/database-root bootstrap and the user explicitly
  * chooses one exact signed scope/offer per independent provider. No peer
  * provider, pair identifier, invoice, token, address, or query result is ever
  * passed to another leg or persisted by this module.
@@ -91,6 +91,9 @@ export interface ProductAdmissionLegV1 {
 
 export interface ProductStrictBootstrapV1 {
   legs: ProductAdmissionLegV1[];
+  /** Run the final expensive-query trust gate only after every exact leg is
+   * authorized. It must be one-shot and fail closed on an ambiguous result. */
+  finalizeAfterAuthorization?(): Promise<void>;
   /** Close every transport and dispose any backend-local state. */
   close(): void | Promise<void>;
 }
@@ -98,6 +101,8 @@ export interface ProductStrictBootstrapV1 {
 /** One independently discovered/verified provider leg for staged products. */
 export interface ProductStrictLegBootstrapV1 {
   leg: ProductAdmissionLegV1;
+  /** Optional pair finalizer, normally supplied by the second staged leg. */
+  finalizeAfterAuthorization?(): Promise<void>;
   close(): void | Promise<void>;
 }
 
@@ -163,6 +168,7 @@ export interface ProductAdmissionSnapshotV1 {
 export type ProductAdmissionErrorCodeV1 =
   | 'commercial-admission-unconfigured'
   | 'strict-bootstrap-failed'
+  | 'strict-finalization-failed'
   | 'policy-unavailable'
   | 'offer-selection-invalidated'
   | 'pair-correlation-rejected'
@@ -228,6 +234,14 @@ export class ProductAdmissionControllerV1 {
   private allowSharedIssuerCorrelationOnce = false;
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
+  private postAuthorizationFinalizer: (() => Promise<void>) | null = null;
+  private postAuthorizationFinalization:
+    | 'not-required'
+    | 'pending'
+    | 'in-flight'
+    | 'complete'
+    | 'failed' = 'not-required';
+  private postAuthorizationFinalizationPromise: Promise<void> | null = null;
   private readonly resumeBolt11Impl: typeof resumeBolt11AcquisitionV1;
 
   constructor(private readonly options: ProductAdmissionControllerOptionsV1) {
@@ -236,7 +250,8 @@ export class ProductAdmissionControllerV1 {
 
   /**
    * Execute the strict transport/proof bootstrap before any service-policy,
-   * quote, capability, or query operation is reachable.
+   * quote or capability operation is reachable. An optional tree-top
+   * finalizer remains deferred until every exact capability authorizes.
    */
   async prepare(
     strictBootstrap: () => Promise<ProductStrictBootstrapV1>,
@@ -248,6 +263,7 @@ export class ProductAdmissionControllerV1 {
     try {
       bootstrapped = await strictBootstrap();
       validateBootstrap(this.options.topology, bootstrapped);
+      this.installPostAuthorizationFinalizer(bootstrapped.finalizeAfterAuthorization);
       this.bootstraps = [bootstrapped];
       this.legs = bootstrapped.legs.map((leg) => pendingLeg(leg));
       await this.refreshPoliciesInternal();
@@ -264,6 +280,7 @@ export class ProductAdmissionControllerV1 {
         await bootstrapped.close();
       }
       await this.closeBootstrapOnly();
+      this.resetPostAuthorizationFinalizer();
       throw new ProductAdmissionErrorV1(
         this.errorCode,
         this.errorCode === 'strict-bootstrap-failed'
@@ -297,9 +314,14 @@ export class ProductAdmissionControllerV1 {
     let staged: ProductStrictLegBootstrapV1 | null = null;
     let wrapper: ProductStrictBootstrapV1 | null = null;
     let addedLeg: LegStateV1 | null = null;
+    let registeredFinalizer: (() => Promise<void>) | null = null;
     try {
       staged = await strictBootstrap();
       validateLegBootstrap(staged, new Set(this.legs.map((leg) => leg.role)));
+      if (staged.finalizeAfterAuthorization) {
+        registeredFinalizer = staged.finalizeAfterAuthorization;
+        this.installPostAuthorizationFinalizer(registeredFinalizer);
+      }
       wrapper = {
         legs: [staged.leg],
         close: staged.close,
@@ -321,6 +343,7 @@ export class ProductAdmissionControllerV1 {
       } else if (staged) {
         await staged.close();
       }
+      if (registeredFinalizer) this.removePostAuthorizationFinalizer(registeredFinalizer);
       this.errorCode = classifyPrepareError(cause);
       this.phase = this.legs.length > 0 ? 'selecting' : 'failed';
       throw new ProductAdmissionErrorV1(
@@ -336,6 +359,13 @@ export class ProductAdmissionControllerV1 {
   /** A live policy refresh invalidates every exact selection and grant. */
   async refreshPolicies(): Promise<ProductAdmissionSnapshotV1> {
     this.requirePrepared();
+    if (this.postAuthorizationFinalization === 'complete'
+        || this.postAuthorizationFinalization === 'in-flight') {
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'post-authorization preflight is already committed; start a fresh one-query attempt',
+      );
+    }
     if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'an admission transition is in flight');
     }
@@ -518,6 +548,12 @@ export class ProductAdmissionControllerV1 {
         if (await leg.resource.restore(resourceBinding)) {
           leg.status = 'cached-resource-ready';
           leg.errorCode = null;
+          try {
+            await this.finalizeAfterAuthorizationIfReady();
+          } catch (cause) {
+            leg.errorCode = 'strict-finalization-failed';
+            throw cause;
+          }
           this.updateReadyPhase();
           return this.snapshot();
         }
@@ -569,6 +605,12 @@ export class ProductAdmissionControllerV1 {
       leg.status = 'authorized';
       leg.errorCode = null;
       await this.refreshLegInventory(leg);
+      try {
+        await this.finalizeAfterAuthorizationIfReady();
+      } catch (cause) {
+        leg.errorCode = 'strict-finalization-failed';
+        throw cause;
+      }
       this.updateReadyPhase();
       return this.snapshot();
     });
@@ -712,6 +754,7 @@ export class ProductAdmissionControllerV1 {
   canQuery(): boolean {
     if (!(this.phase === 'ready-to-query'
       && !this.queryAttempted
+      && this.postAuthorizationFinalizationReady()
       && this.legs.length > 0
       && this.legs.every((leg) => leg.status === 'authorized'
         || leg.status === 'cached-resource-ready'))) return false;
@@ -787,6 +830,9 @@ export class ProductAdmissionControllerV1 {
   }
 
   async close(): Promise<void> {
+    if (this.postAuthorizationFinalizationPromise) {
+      await this.postAuthorizationFinalizationPromise.catch(() => {});
+    }
     this.closeAcquisitions();
     for (const leg of this.legs) {
       if (!leg.transitionInFlight) {
@@ -799,6 +845,7 @@ export class ProductAdmissionControllerV1 {
     this.errorCode = null;
     this.allowSharedIssuerCorrelationOnce = false;
     this.queryAttempted = false;
+    this.resetPostAuthorizationFinalizer();
   }
 
   private async refreshPoliciesInternal(): Promise<void> {
@@ -995,6 +1042,7 @@ export class ProductAdmissionControllerV1 {
       if (leg.status !== 'ambiguous-spend'
           && leg.errorCode !== 'bolt11-recovery-required'
           && leg.errorCode !== 'resource-failed-after-authorization'
+          && leg.errorCode !== 'strict-finalization-failed'
           && leg.errorCode !== 'capability-inventory-empty'
           && leg.errorCode !== 'lightning-payee-untrusted'
           && !(cause instanceof ProductAdmissionErrorV1
@@ -1082,8 +1130,79 @@ export class ProductAdmissionControllerV1 {
     this.phase = this.legs.length === expected
       && this.legs.every((leg) => leg.status === 'authorized'
       || leg.status === 'cached-resource-ready')
+      && this.postAuthorizationFinalizationReady()
       ? 'ready-to-query'
       : 'selecting';
+  }
+
+  private installPostAuthorizationFinalizer(
+    finalizer: (() => Promise<void>) | undefined,
+  ): void {
+    if (!finalizer) return;
+    if (this.postAuthorizationFinalizer && this.postAuthorizationFinalizer !== finalizer) {
+      throw new Error('strict bootstrap supplied more than one pair finalizer');
+    }
+    this.postAuthorizationFinalizer = finalizer;
+    this.postAuthorizationFinalization = 'pending';
+    this.postAuthorizationFinalizationPromise = null;
+  }
+
+  private removePostAuthorizationFinalizer(finalizer: () => Promise<void>): void {
+    if (this.postAuthorizationFinalizer !== finalizer) return;
+    this.resetPostAuthorizationFinalizer();
+  }
+
+  private resetPostAuthorizationFinalizer(): void {
+    this.postAuthorizationFinalizer = null;
+    this.postAuthorizationFinalization = 'not-required';
+    this.postAuthorizationFinalizationPromise = null;
+  }
+
+  private postAuthorizationFinalizationReady(): boolean {
+    return this.postAuthorizationFinalizer === null
+      || this.postAuthorizationFinalization === 'complete';
+  }
+
+  private async finalizeAfterAuthorizationIfReady(): Promise<void> {
+    const expected = this.options.topology === 'independent-pair' ? 2 : 1;
+    const allAuthorized = this.legs.length === expected
+      && this.legs.every((leg) => leg.status === 'authorized'
+        || leg.status === 'cached-resource-ready');
+    if (!allAuthorized || !this.postAuthorizationFinalizer) return;
+    if (this.postAuthorizationFinalization === 'complete') return;
+    if (this.postAuthorizationFinalization === 'failed') {
+      throw new ProductAdmissionErrorV1(
+        'strict-finalization-failed',
+        'post-authorization database preflight already failed; automatic retry is disabled',
+      );
+    }
+    if (this.postAuthorizationFinalization === 'in-flight') {
+      await this.postAuthorizationFinalizationPromise;
+      return;
+    }
+
+    this.assertCompleteSelectionPrivacy();
+    this.postAuthorizationFinalization = 'in-flight';
+    const finalizer = this.postAuthorizationFinalizer;
+    this.postAuthorizationFinalizationPromise = Promise.resolve()
+      .then(() => finalizer())
+      .then(
+        () => {
+          this.postAuthorizationFinalization = 'complete';
+          this.errorCode = null;
+        },
+        (cause) => {
+          this.postAuthorizationFinalization = 'failed';
+          this.phase = 'failed';
+          this.errorCode = 'strict-finalization-failed';
+          throw new ProductAdmissionErrorV1(
+            'strict-finalization-failed',
+            'capabilities were authorized but the final database preflight failed; do not retry automatically',
+            { cause },
+          );
+        },
+      );
+    await this.postAuthorizationFinalizationPromise;
   }
 
   private closeAcquisitions(): void {

@@ -405,6 +405,190 @@ describe('product admission lifecycle', () => {
     await controller.close();
   });
 
+  it('keeps the authorized first leg when strict bootstrap of the second leg fails', async () => {
+    const { vault } = fakeVault();
+    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const firstOffer = freeOffer(27);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const closeFirst = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      close: closeFirst,
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 27 });
+    await controller.authorize('server0');
+
+    await expect(controller.prepareLeg(async () => {
+      throw new Error('second provider attestation failed');
+    })).rejects.toMatchObject({ code: 'strict-bootstrap-failed' });
+
+    const snapshot = controller.snapshot();
+    expect(snapshot.phase).toBe('selecting');
+    expect(snapshot.legs).toHaveLength(1);
+    expect(snapshot.legs[0].status).toBe('authorized');
+    expect(first.authorize).toHaveBeenCalledOnce();
+    expect(closeFirst).not.toHaveBeenCalled();
+    expect(controller.canQuery()).toBe(false);
+    await controller.close();
+  });
+
+  it('runs the staged pair finalizer exactly once after both legs authorize', async () => {
+    const { vault } = fakeVault();
+    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const offer0 = freeOffer(41);
+    const offer1 = freeOffer(42);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const finalizeAfterAuthorization = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      close: async () => {},
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await controller.authorize('server0');
+    expect(finalizeAfterAuthorization).not.toHaveBeenCalled();
+    expect(controller.canQuery()).toBe(false);
+
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      finalizeAfterAuthorization,
+      close: async () => {},
+    }));
+    expect(finalizeAfterAuthorization).not.toHaveBeenCalled();
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: offer1.offerId });
+    expect(finalizeAfterAuthorization).not.toHaveBeenCalled();
+
+    const ready = await controller.authorize('server1');
+
+    expect(finalizeAfterAuthorization).toHaveBeenCalledOnce();
+    expect(ready.phase).toBe('ready-to-query');
+    expect(controller.canQuery()).toBe(true);
+    const query = vi.fn(async () => 'verified');
+    await expect(controller.executeQuery(query)).resolves.toBe('verified');
+    expect(query).toHaveBeenCalledOnce();
+    expect(finalizeAfterAuthorization).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
+  it('does not preflight or query when either provider authorization fails', async () => {
+    const { vault } = fakeVault();
+    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const offer0 = freeOffer(43);
+    const offer1 = freeOffer(44);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+      async () => { throw new Error('capability rejected'); },
+    );
+    const finalizeAfterAuthorization = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      close: async () => {},
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await controller.authorize('server0');
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      finalizeAfterAuthorization,
+      close: async () => {},
+    }));
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: offer1.offerId });
+
+    await expect(controller.authorize('server1')).rejects.toThrow('capability rejected');
+
+    expect(finalizeAfterAuthorization).not.toHaveBeenCalled();
+    expect(controller.canQuery()).toBe(false);
+    const query = vi.fn(async () => 'must not run');
+    await expect(controller.executeQuery(query)).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(query).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
+  it('fails closed without retry when post-authorization preflight fails', async () => {
+    const { vault } = fakeVault();
+    const target = { backend: 'harmony-pir', workload: 'harmony-query' } as const;
+    const offer0 = freeOffer(45);
+    const offer1 = freeOffer(46);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const finalizeAfterAuthorization = vi.fn(async () => {
+      throw new Error('tree-top root mismatch');
+    });
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'hint', label: 'Hint', session: first.session, ...target },
+      close: async () => {},
+    }));
+    await controller.selectOffer('hint', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await controller.authorize('hint');
+    await controller.prepareLeg(async () => ({
+      leg: { role: 'query', label: 'Query', session: second.session, ...target },
+      finalizeAfterAuthorization,
+      close: async () => {},
+    }));
+    await controller.selectOffer('query', { scopeIdHex: HEX.scope1, offerId: offer1.offerId });
+
+    await expect(controller.authorize('query'))
+      .rejects.toMatchObject({ code: 'strict-finalization-failed' });
+
+    expect(finalizeAfterAuthorization).toHaveBeenCalledOnce();
+    expect(controller.snapshot().phase).toBe('failed');
+    expect(controller.snapshot().legs[1].status).toBe('authorized');
+    expect(controller.canQuery()).toBe(false);
+    const query = vi.fn(async () => 'must not run');
+    await expect(controller.executeQuery(query)).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(query).not.toHaveBeenCalled();
+    await expect(controller.authorize('query')).rejects.toMatchObject({
+      code: 'offer-selection-invalidated',
+    });
+    expect(finalizeAfterAuthorization).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
   it('does not roll back a first-leg invoice when the later offer reveals a shared issuer', async () => {
     const { vault } = fakeVault();
     const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;

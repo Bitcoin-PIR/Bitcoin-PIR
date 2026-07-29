@@ -54,6 +54,22 @@ explicit correlation and availability trade-off; strict clients reject one
 issuer/origin observing both credential flows unless the user gives an
 in-memory, one-attempt acknowledgement.
 
+The product Web flow performs that independence sequentially for DPF and
+Harmony: it strictly verifies and authorizes the first role before enabling the
+second provider selector. Failure of the second connection does not reconnect
+or spend the first role again, and no PIR query is sent until both roles pass
+the identity/catalog/root consistency gate, both exact capabilities authorize,
+and one post-authorization tree-top preflight succeeds. That preflight is
+one-shot: failure blocks the query without automatically retrying either
+capability. Harmony's large hint acquisition and per-query execution remain
+visibly separate roles, scopes and prices; an exact verified hint cache can be
+filled before choosing the query provider.
+
+Each staged one-query authorization is also bound to one exact `db_id`.
+Multi-database Harmony synchronization remains fail closed until the product
+defines and implements a separate per-step or multi-database entitlement
+contract; cached hints do not widen the purchased query scope.
+
 ## Authoritative documentation
 
 - architecture and trust boundaries:

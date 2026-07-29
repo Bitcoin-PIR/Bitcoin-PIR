@@ -76,7 +76,7 @@ import {
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
-import { getAmdTurinArkFingerprint } from './attest-pin.js';
+import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
 import {
   gateOperatorIdentity,
   resolveIndependentOperatorPinsV1,
@@ -85,8 +85,12 @@ import {
 } from './dpf-adapter.js';
 import {
   assertStrictDatabasePinCoverage,
+  assertStrictServerLegReady,
   assertStrictTransportReady,
+  preflightInstalledDatabaseProofs,
+  verifyAndInstallDatabaseProofs,
   verifyInstallAndPreflightDatabaseProofs,
+  type InstalledDatabaseProof,
 } from './strict-verification.js';
 import type {
   HarmonyQueryResult,
@@ -190,6 +194,13 @@ export interface HarmonyPirClientConfig {
   onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
 }
 
+export interface HarmonyProviderLegConfig {
+  url: string;
+  expectedPin?: import('./attest-pin.js').ServerAttestPin;
+  expectedServerId?: string;
+  pinnedOperatorPubkey?: Uint8Array;
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 /**
@@ -206,7 +217,16 @@ export class HarmonyPirClientAdapter {
   private catalog: DatabaseCatalog | null = null;
   private dbId = 0;
   private secureChannelEstablished = false;
+  private secureChannelLegs: [boolean, boolean] = [false, false];
   private strictReady = false;
+  private strictLegReady: [boolean, boolean] = [false, false];
+  private installedProofsByLeg: [InstalledDatabaseProof[] | null, InstalledDatabaseProof[] | null] = [null, null];
+  private pairConsistencyReady = false;
+  private pairPreflightState: 'not-ready' | 'pending' | 'in-flight' | 'complete' | 'failed' = 'not-ready';
+  private pairPreflightPromise: Promise<void> | null = null;
+  private pairGeneration = 0;
+  private pairPreflightDbId: number | null = null;
+  private authorizedQueryDbId: number | null = null;
   /** Whether any hints are loaded (main or restored from cache). */
   hintsLoaded = false;
   /**
@@ -257,8 +277,399 @@ export class HarmonyPirClientAdapter {
     this.config = config;
   }
 
+  /** Configure one role without selecting or disclosing its peer provider. */
+  configureProviderLeg(providerIndex: 0 | 1, leg: HarmonyProviderLegConfig): void {
+    if (!leg.url.trim()) throw new Error(`Harmony provider ${providerIndex} URL is required`);
+    if (this.strictLegReady[providerIndex] || this.wasmClient?.isProviderConnected(providerIndex)) {
+      throw new Error(`Harmony provider ${providerIndex} is already connected`);
+    }
+    if (providerIndex === 0) {
+      this.config.hintServerUrl = leg.url;
+      this.config.expectedServer0Pin = leg.expectedPin;
+      this.config.expectedServer0Id = leg.expectedServerId;
+      this.config.pinnedHintOperatorPubkey = leg.pinnedOperatorPubkey;
+    } else {
+      this.config.queryServerUrl = leg.url;
+      this.config.expectedServer1Pin = leg.expectedPin;
+      this.config.expectedServer1Id = leg.expectedServerId;
+      this.config.pinnedQueryOperatorPubkey = leg.pinnedOperatorPubkey;
+      this.queryWs?.disconnect();
+      this.queryWs = null;
+    }
+    this.wasmClient?.setProviderUrl(providerIndex, leg.url);
+  }
+
+  /**
+   * Strictly verify one independently priced role. Hint admission and hint
+   * acquisition may finish before a query provider is selected; real PIR
+   * queries remain blocked until both roles pass the final pair gate.
+   */
+  async connectLeg(providerIndex: 0 | 1): Promise<void> {
+    if (this.strictLegReady[providerIndex]) return;
+    try {
+      if (!this.isStrictVerification()) {
+        throw new Error('staged Harmony provider admission requires strict verification');
+      }
+      if (this.isStrictVerification() && this.config.useSecureChannel === false) {
+        throw new Error('strict verification requires the secure channel');
+      }
+      const url = providerIndex === 0
+        ? this.config.hintServerUrl
+        : this.config.queryServerUrl;
+      if (!url.trim()) throw new Error(`Harmony provider ${providerIndex} is not configured`);
+      await this.loadWasm();
+      const client = this.wasmClient!;
+      await client.connectProvider(providerIndex);
+      if (this.config.useSecureChannel !== false) {
+        await this.attestAndUpgradeLeg(providerIndex);
+      }
+      if (this.isStrictVerification()) this.assertStrictLegReady(providerIndex);
+
+      const catalogHandle = await client.fetchCatalogFromProvider(providerIndex);
+      let stagedCatalog: DatabaseCatalog;
+      try {
+        // Rust has already enforced query-compatible db_id/kind/height,
+        // geometry, seed, anchor and Merkle fields against the first role.
+        stagedCatalog = databaseCatalogFromWasmJson(catalogHandle.toJson());
+      } finally {
+        catalogHandle.free();
+      }
+      this.catalog ??= stagedCatalog;
+      if (this.isStrictVerification()) this.assertPinsCoverCatalog();
+      this.installedProofsByLeg[providerIndex] =
+        await this.verifyConfiguredDatabaseProofsForLeg(providerIndex);
+      if (providerIndex === 0) {
+        for (const installed of this.installedProofsByLeg[0] ?? []) {
+          // The hint cache is independently bound to the hint provider's
+          // verified dataset. Query execution still waits for the peer proof.
+          this.recordDatabaseProofStatus(installed.pin.dbId, installed.status);
+        }
+      }
+      this.strictLegReady[providerIndex] = this.isStrictVerification();
+
+      if (this.strictLegReady[0] && this.strictLegReady[1]) {
+        assertStrictTransportReady({
+          secureChannelEstablished: this.secureChannelLegs.every(Boolean),
+          attestations: [this.attestation.hint, this.attestation.query],
+          expectedPins: [this.config.expectedServer0Pin, this.config.expectedServer1Pin],
+          expectedServerIds: [this.config.expectedServer0Id, this.config.expectedServer1Id],
+          requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
+          operatorIdentities: [this.operatorIdentity.hint, this.operatorIdentity.query],
+        });
+        this.assertLegProofsMatch();
+        this.secureChannelEstablished = true;
+        this.pairGeneration += 1;
+        this.pairConsistencyReady = true;
+        this.pairPreflightState = 'pending';
+        this.pairPreflightPromise = null;
+        this.pairPreflightDbId = null;
+        this.authorizedQueryDbId = null;
+        await this.connectDiagnosticSocket();
+        this.log('HarmonyPIR: pair consistency verified; awaiting both capability grants');
+      } else {
+        this.log(
+          providerIndex === 0
+            ? 'HarmonyPIR hint role strictly ready; query provider not selected'
+            : 'HarmonyPIR query role strictly ready; hint provider not selected',
+        );
+      }
+    } catch (error) {
+      this.log(
+        `HarmonyPIR ${providerIndex === 0 ? 'hint' : 'query'} connect failed: `
+        + `${(error as Error)?.message ?? error}`,
+      );
+      await this.disconnectLeg(providerIndex).catch(() => { /* preserve primary failure */ });
+      throw error;
+    }
+  }
+
+  /** Close one role only. A paid/authorized peer transport is not retried or
+   * re-authorized, and loaded hint state survives a query-leg failure. */
+  async disconnectLeg(providerIndex: 0 | 1): Promise<void> {
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.pairGeneration += 1;
+    this.pairConsistencyReady = false;
+    this.pairPreflightState = 'not-ready';
+    this.pairPreflightPromise = null;
+    this.pairPreflightDbId = null;
+    this.authorizedQueryDbId = null;
+    this.secureChannelLegs[providerIndex] = false;
+    this.strictLegReady[providerIndex] = false;
+    this.installedProofsByLeg[providerIndex] = null;
+    if (providerIndex === 0) {
+      this.attestation.hint = { state: 'unattested' };
+      this.operatorIdentity.hint = { state: 'not-checked' };
+    } else {
+      this.queryWs?.disconnect();
+      this.queryWs = null;
+      this.attestation.query = { state: 'unattested' };
+      this.operatorIdentity.query = { state: 'not-checked' };
+    }
+    let hasSurvivingLeg = false;
+    if (this.wasmClient) {
+      await this.wasmClient.disconnectProvider(providerIndex);
+      hasSurvivingLeg = this.wasmClient.isProviderConnected(providerIndex === 0 ? 1 : 0);
+    }
+    if (!hasSurvivingLeg) {
+      // The final native transport invalidates session-bound catalog, roots,
+      // tree tops and in-memory hints. Keep the browser mirror in lock-step;
+      // persisted hint bytes may still be restored through the normal bind.
+      this.catalog = null;
+      this.serverInfo = null;
+      this.databaseProofs.clear();
+      this.hintsLoaded = false;
+      this.secureChannelLegs = [false, false];
+      this.strictLegReady = [false, false];
+      this.installedProofsByLeg = [null, null];
+    }
+  }
+
+  isLegReady(providerIndex: 0 | 1): boolean {
+    return this.strictLegReady[providerIndex];
+  }
+
+  /** Complete the query-server tree-top gate after both independently priced
+   * Harmony workloads are authorized. No query method is usable beforehand. */
+  async finalizeStrictPair(dbId: number): Promise<void> {
+    if (!Number.isInteger(dbId) || dbId < 0 || dbId > 255) {
+      throw new Error('Harmony post-authorization preflight requires an exact u8 db_id');
+    }
+    if (!this.pairConsistencyReady
+        || !this.strictLegReady.every(Boolean)
+        || !this.secureChannelLegs.every(Boolean)
+        || !this.wasmClient) {
+      throw new Error('Harmony pair consistency is not ready for post-authorization preflight');
+    }
+    if (this.pairPreflightState === 'complete') {
+      if (this.authorizedQueryDbId !== dbId) {
+        throw new Error(`Harmony pair is already finalized for db_id ${this.authorizedQueryDbId}`);
+      }
+      return;
+    }
+    if (this.pairPreflightState === 'failed') {
+      throw new Error('Harmony post-authorization preflight already failed; retry is disabled');
+    }
+    if (this.pairPreflightState === 'in-flight') {
+      if (this.pairPreflightDbId !== dbId) {
+        throw new Error(`Harmony preflight is already in flight for db_id ${this.pairPreflightDbId}`);
+      }
+      const generation = this.pairGeneration;
+      await this.pairPreflightPromise;
+      if (this.pairGeneration !== generation || !this.isPairPreflightComplete()) {
+        throw new Error('Harmony post-authorization preflight was invalidated while in flight');
+      }
+      return;
+    }
+
+    const client = this.wasmClient;
+    const generation = this.pairGeneration;
+    const installed = this.installedProofsByLeg[0]?.find((item) => item.pin.dbId === dbId);
+    if (!installed || !this.installedProofsByLeg[1]?.some((item) => item.pin.dbId === dbId)) {
+      throw new Error(`Harmony pair has no matching installed proof for db_id ${dbId}`);
+    }
+    this.pairPreflightState = 'in-flight';
+    this.pairPreflightDbId = dbId;
+    const attempt = preflightInstalledDatabaseProofs(
+      client,
+      [installed],
+      (dbId, status) => {
+        if (this.pairGeneration === generation && this.wasmClient === client) {
+          this.recordDatabaseProofStatus(dbId, status);
+        }
+      },
+    ).then(() => undefined);
+    this.pairPreflightPromise = attempt;
+    try {
+      await attempt;
+      if (this.pairGeneration !== generation
+          || this.wasmClient !== client
+          || !this.pairConsistencyReady
+          || !this.strictLegReady.every(Boolean)
+          || !this.secureChannelLegs.every(Boolean)
+          || this.pairPreflightState !== 'in-flight') {
+        throw new Error('Harmony post-authorization preflight was invalidated while in flight');
+      }
+      this.pairPreflightState = 'complete';
+      this.authorizedQueryDbId = dbId;
+      this.strictReady = true;
+      this.log('HarmonyPIR: post-authorization tree-top preflight complete');
+    } catch (error) {
+      if (this.pairGeneration === generation && this.wasmClient === client) {
+        this.pairPreflightState = 'failed';
+        this.strictReady = false;
+      }
+      throw error;
+    }
+  }
+
   private log(msg: string): void {
     this.config.onProgress?.(msg);
+  }
+
+  private expectedArkFingerprint(): Uint8Array | null {
+    if (this.config.expectedArkFingerprint === null) return null;
+    if (this.config.expectedArkFingerprint !== undefined) {
+      return this.config.expectedArkFingerprint;
+    }
+    try {
+      return getAmdTurinArkFingerprint();
+    } catch (error) {
+      this.log(`HarmonyPIR default ARK fingerprint unavailable: ${(error as Error)?.message ?? error}`);
+      return null;
+    }
+  }
+
+  private operatorPinForLeg(providerIndex: 0 | 1): Uint8Array {
+    const configured = providerIndex === 0
+      ? this.config.pinnedHintOperatorPubkey
+      : this.config.pinnedQueryOperatorPubkey;
+    const value = configured ?? (this.isStrictVerification()
+      ? undefined
+      : this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY);
+    if (!(value instanceof Uint8Array) || value.length !== 32) {
+      throw new Error(`Harmony provider ${providerIndex} operator pin must be exactly 32 bytes`);
+    }
+    if (value.every((byte) => byte === 0)) {
+      throw new Error(`Harmony provider ${providerIndex} operator pin must be non-zero`);
+    }
+    return value.slice();
+  }
+
+  private summariseAttestationLeg(
+    providerIndex: 0 | 1,
+    attestation: WasmAttestVerification,
+  ): ServerAttestation {
+    const matched = attestation.sevStatus === 'reportDataMatch';
+    const noSev = attestation.sevStatus === 'noSevHost';
+    const allZero = attestation.serverStaticPub.every((byte) => byte === 0);
+    const result: ServerAttestation = {
+      state: allZero ? 'plaintext' : (matched || noSev ? 'verified' : 'mismatch'),
+      sevStatus: attestation.sevStatus,
+      serverStaticPubHex: attestation.serverStaticPubHex,
+      binarySha256Hex: attestation.binarySha256Hex,
+      gitRev: attestation.gitRev,
+      launchMeasurementHex: attestation.launchMeasurementHex,
+    };
+    const policyRequirements = new (requireSdkWasm().WasmPolicyRequirements)();
+    try {
+      const arkFingerprint = this.expectedArkFingerprint();
+      if (result.state === 'verified' && matched && attestation.hasVcekChain) {
+        if (arkFingerprint) {
+          try {
+            attestation.verifyFull(arkFingerprint, policyRequirements);
+            result.state = 'verified-vcek';
+            result.vcekChain = 'pass';
+          } catch (error) {
+            result.state = 'mismatch';
+            result.vcekChain = 'fail';
+            result.vcekChainError = (error as Error)?.message ?? String(error);
+            this.log(`HarmonyPIR verifyFull failed: ${result.vcekChainError}`);
+          }
+        } else {
+          result.vcekChain = 'skipped';
+        }
+      } else if (result.state === 'verified' && matched && !attestation.hasVcekChain) {
+        result.vcekChain = 'skipped';
+      }
+
+      const pin = providerIndex === 0
+        ? this.config.expectedServer0Pin
+        : this.config.expectedServer1Pin;
+      if (!pin) {
+        result.pinStatus = 'no-pin';
+        return result;
+      }
+      if (result.state !== 'verified' && result.state !== 'verified-vcek') return result;
+      if (pin.measurementHex && !attestation.launchMeasurementHex) {
+        result.pinStatus = 'measurement-mismatch';
+        result.pinError = 'MEASUREMENT pin required but server report omitted launch MEASUREMENT';
+      } else if (
+        pin.measurementHex
+        && pin.measurementHex.toLowerCase() !== attestation.launchMeasurementHex!.toLowerCase()
+      ) {
+        result.pinStatus = 'measurement-mismatch';
+        result.pinError = 'MEASUREMENT pin mismatch';
+      } else if (pin.binarySha256Hex && !attestation.binarySha256Hex) {
+        result.pinStatus = 'binary-mismatch';
+        result.pinError = 'binary_sha256 pin required but server report omitted binary_sha256';
+      } else if (
+        pin.binarySha256Hex
+        && pin.binarySha256Hex.toLowerCase() !== attestation.binarySha256Hex.toLowerCase()
+      ) {
+        result.pinStatus = 'binary-mismatch';
+        result.pinError = 'binary_sha256 pin mismatch';
+      } else {
+        result.pinStatus = 'match';
+      }
+      if (result.pinStatus !== 'match') {
+        result.state = 'mismatch';
+        this.log(
+          `HarmonyPIR ${providerIndex === 0 ? 'hint' : 'query'}: ${result.pinError}`,
+        );
+      }
+      return result;
+    } finally {
+      policyRequirements.free();
+    }
+  }
+
+  private async attestAndUpgradeLeg(providerIndex: 0 | 1): Promise<void> {
+    if (!this.wasmClient) throw new Error('WASM client not initialised');
+    this.secureChannelLegs[providerIndex] = false;
+    let attestation: WasmAttestVerification | null = null;
+    try {
+      try {
+        attestation = await this.wasmClient.attest(providerIndex);
+      } catch (error) {
+        const failed: ServerAttestation = { state: 'mismatch' };
+        if (providerIndex === 0) this.attestation.hint = failed;
+        else this.attestation.query = failed;
+        this.config.onAttestation?.(providerIndex, failed);
+        throw new Error(
+          `HarmonyPIR attest(${providerIndex === 0 ? 'hint' : 'query'}) failed: `
+          + `${(error as Error)?.message ?? error}`,
+          { cause: error },
+        );
+      }
+
+      let summary = this.summariseAttestationLeg(providerIndex, attestation);
+      if (providerIndex === 0) this.attestation.hint = summary;
+      else this.attestation.query = summary;
+      this.config.onAttestation?.(providerIndex, summary);
+      if (summary.state !== 'verified' && summary.state !== 'verified-vcek') {
+        throw new Error('HarmonyPIR attestation did not satisfy the secure-channel gate');
+      }
+      try {
+        await this.wasmClient.upgradeProviderToSecureChannel(
+          providerIndex,
+          attestation.serverStaticPub,
+        );
+        this.secureChannelLegs[providerIndex] = true;
+      } catch (error) {
+        summary = { ...summary, state: 'mismatch' };
+        if (providerIndex === 0) this.attestation.hint = summary;
+        else this.attestation.query = summary;
+        this.config.onAttestation?.(providerIndex, summary);
+        throw new Error(
+          `HarmonyPIR secure-channel upgrade failed: ${(error as Error)?.message ?? error}`,
+          { cause: error },
+        );
+      }
+
+      if (this.config.verifyOperatorIdentity) {
+        const identity = await this.verifyOperatorIdentityOne(
+          providerIndex,
+          attestation,
+          this.operatorPinForLeg(providerIndex),
+        );
+        if (providerIndex === 0) this.operatorIdentity.hint = identity;
+        else this.operatorIdentity.query = identity;
+        this.config.onOperatorIdentity?.(providerIndex, identity);
+      }
+    } finally {
+      attestation?.free();
+    }
   }
 
   /**
@@ -271,6 +682,7 @@ export class HarmonyPirClientAdapter {
   private async attestAndUpgrade(): Promise<void> {
     if (!this.wasmClient) return;
     this.secureChannelEstablished = false;
+    this.secureChannelLegs = [false, false];
     const operatorPins = this.config.verifyOperatorIdentity
       ? resolveIndependentOperatorPinsV1({
         strictVerification: this.isStrictVerification(),
@@ -430,6 +842,7 @@ export class HarmonyPirClientAdapter {
               queryAtt.serverStaticPub,
             );
             this.secureChannelEstablished = true;
+            this.secureChannelLegs = [true, true];
             this.log('HarmonyPIR: upgraded to encrypted channel (cloudflared blind)');
           } catch (e) {
             this.log(`HarmonyPIR upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`);
@@ -622,8 +1035,8 @@ export class HarmonyPirClientAdapter {
    */
   async fetchHints(): Promise<void> {
     if (!this.wasmClient) throw new Error('loadWasm() must be called first');
-    if (this.isStrictVerification() && !this.strictReady) {
-      throw new Error('strict verification is not ready');
+    if (this.isStrictVerification() && !this.strictLegReady[0]) {
+      throw new Error('strict hint-provider verification is not ready');
     }
     this.log('Hints: downloading…');
     this.wasmClient.setDbId(this.dbId);
@@ -671,7 +1084,7 @@ export class HarmonyPirClientAdapter {
 
   /** Independent, separately priced admission for the expensive hint phase. */
   hintServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient();
+    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient(0);
     return {
       assertTrustAnchor: (trust) => {
         client();
@@ -698,7 +1111,7 @@ export class HarmonyPirClientAdapter {
 
   /** Independent admission for the lower-cost Harmony query phase. */
   queryServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient();
+    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient(1);
     return {
       assertTrustAnchor: (trust) => {
         client();
@@ -723,10 +1136,12 @@ export class HarmonyPirClientAdapter {
     };
   }
 
-  private requireStrictAdmissionClient(): WasmHarmonyClient {
+  private requireStrictAdmissionClient(providerIndex: 0 | 1): WasmHarmonyClient {
     if (!this.wasmClient) throw new Error('Not connected');
-    if (!this.isStrictVerification() || !this.strictReady) {
-      throw new Error('V1 service admission requires completed strict verification');
+    if (!this.isStrictVerification() || !this.strictLegReady[providerIndex]) {
+      throw new Error(
+        `V1 service admission requires strict verification of Harmony provider ${providerIndex}`,
+      );
     }
     return this.wasmClient;
   }
@@ -763,6 +1178,75 @@ export class HarmonyPirClientAdapter {
     }
   }
 
+  private async verifyConfiguredDatabaseProofsForLeg(
+    providerIndex: 0 | 1,
+  ): Promise<InstalledDatabaseProof[]> {
+    if (!this.wasmClient) throw new Error('Not connected');
+    const client = this.wasmClient;
+    return verifyAndInstallDatabaseProofs({
+      client: {
+        verifyDatabaseProof: (dbId, params, binary, commit) =>
+          client.verifyDatabaseProofFromProvider(
+            providerIndex,
+            dbId,
+            params,
+            binary,
+            commit,
+          ),
+        installVerifiedDatabaseProof: (proof) => client.installVerifiedDatabaseProof(proof),
+        preflightDatabase: (dbId) => client.preflightDatabase(dbId),
+      },
+      pins: this.config.databaseProofPins ?? [],
+      onStatus: (dbId, status) => this.recordDatabaseProofStatus(dbId, status),
+    });
+  }
+
+  private recordDatabaseProofStatus(dbId: number, status: DatabaseProofStatus): void {
+    this.databaseProofs.set(dbId, status);
+    this.config.onDatabaseProof?.(dbId, status);
+    if (status.state === 'verified') {
+      this.log(
+        `DB proof db ${dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
+      );
+    } else if (status.state === 'unavailable') {
+      this.log(`DB proof db ${dbId}: unavailable (${status.error})`);
+    } else {
+      this.log(
+        `DB proof db ${dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
+      );
+    }
+  }
+
+  private assertLegProofsMatch(): void {
+    const hint = this.installedProofsByLeg[0];
+    const query = this.installedProofsByLeg[1];
+    if (!hint || !query || hint.length !== query.length) {
+      throw new Error('Harmony roles did not authenticate the same database proof set');
+    }
+    for (let index = 0; index < hint.length; index += 1) {
+      if (JSON.stringify(hint[index].proof) !== JSON.stringify(query[index].proof)) {
+        throw new Error(
+          `Harmony role database proof mismatch for db ${hint[index].pin.dbId}`,
+        );
+      }
+    }
+  }
+
+  private assertStrictLegReady(providerIndex: 0 | 1): void {
+    assertStrictServerLegReady({
+      serverIndex: providerIndex,
+      secureChannelEstablished: this.secureChannelLegs[providerIndex],
+      attestation: providerIndex === 0 ? this.attestation.hint : this.attestation.query,
+      expectedPin:
+        providerIndex === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin,
+      expectedServerId:
+        providerIndex === 0 ? this.config.expectedServer0Id : this.config.expectedServer1Id,
+      requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
+      operatorIdentity:
+        providerIndex === 0 ? this.operatorIdentity.hint : this.operatorIdentity.query,
+    });
+  }
+
   // ══ Query path ═══════════════════════════════════════════════════════
 
   /**
@@ -780,6 +1264,13 @@ export class HarmonyPirClientAdapter {
     if (!this.wasmClient) throw new Error('Not connected');
     if (this.isStrictVerification() && !this.strictReady) {
       throw new Error('strict verification is not ready');
+    }
+    if (this.isStrictVerification()
+        && this.pairPreflightDbId !== null
+        && this.authorizedQueryDbId !== this.dbId) {
+      throw new Error(
+        `strict Harmony admission is bound to db_id ${this.authorizedQueryDbId}, not db_id ${this.dbId}`,
+      );
     }
     if (dbId !== undefined && dbId !== this.dbId) {
       throw new Error(
@@ -881,6 +1372,13 @@ export class HarmonyPirClientAdapter {
     if (!this.wasmClient) throw new Error('Not connected');
     if (this.isStrictVerification() && !this.strictReady) {
       throw new Error('strict verification is not ready');
+    }
+    if (this.isStrictVerification()
+        && this.pairPreflightDbId !== null
+        && this.authorizedQueryDbId !== this.dbId) {
+      throw new Error(
+        `strict Harmony Merkle verification is bound to db_id ${this.authorizedQueryDbId}, not db_id ${this.dbId}`,
+      );
     }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
@@ -1121,6 +1619,15 @@ export class HarmonyPirClientAdapter {
   private async freeWasmClient(): Promise<void> {
     this.strictReady = false;
     this.secureChannelEstablished = false;
+    this.pairGeneration += 1;
+    this.secureChannelLegs = [false, false];
+    this.strictLegReady = [false, false];
+    this.installedProofsByLeg = [null, null];
+    this.pairConsistencyReady = false;
+    this.pairPreflightState = 'not-ready';
+    this.pairPreflightPromise = null;
+    this.pairPreflightDbId = null;
+    this.authorizedQueryDbId = null;
     this.catalog = null;
     this.serverInfo = null;
     this.databaseProofs.clear();
@@ -1182,9 +1689,22 @@ export class HarmonyPirClientAdapter {
     return this.config.strictVerification === true;
   }
 
+  private isPairPreflightComplete(): boolean {
+    return this.pairPreflightState === 'complete';
+  }
+
   private resetVerificationState(): void {
     this.strictReady = false;
     this.secureChannelEstablished = false;
+    this.pairGeneration += 1;
+    this.secureChannelLegs = [false, false];
+    this.strictLegReady = [false, false];
+    this.installedProofsByLeg = [null, null];
+    this.pairConsistencyReady = false;
+    this.pairPreflightState = 'not-ready';
+    this.pairPreflightPromise = null;
+    this.pairPreflightDbId = null;
+    this.authorizedQueryDbId = null;
     this.catalog = null;
     this.serverInfo = null;
     this.databaseProofs.clear();
@@ -1224,6 +1744,12 @@ export class HarmonyPirClientAdapter {
     if (this.isStrictVerification()) this.assertPinsCoverCatalog();
     await this.verifyConfiguredDatabaseProofs();
     this.strictReady = this.isStrictVerification();
+    this.strictLegReady = [this.strictReady, this.strictReady];
+    this.pairGeneration += 1;
+    this.pairConsistencyReady = this.strictReady;
+    this.pairPreflightState = this.strictReady ? 'complete' : 'not-ready';
+    this.pairPreflightDbId = null;
+    this.authorizedQueryDbId = null;
   }
 
   private assertPinsCoverCatalog(): void {

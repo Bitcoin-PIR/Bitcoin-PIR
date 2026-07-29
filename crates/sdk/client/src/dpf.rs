@@ -13,7 +13,8 @@ use crate::merkle_verify::{
     TreeTop,
 };
 use crate::protocol::{
-    decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
+    decode_catalog, encode_request, ensure_catalog_query_compatible, REQ_GET_DB_CATALOG,
+    RESP_DB_CATALOG, RESP_ERROR,
 };
 use crate::service::{
     dangerous_unpaired_authorize_retained_service_redemption_v1,
@@ -485,6 +486,140 @@ impl DpfClient {
             leakage_recorder: None,
             verified_roots: VerifiedRootState::default(),
             verified_tree_tops: HashMap::new(),
+        }
+    }
+
+    /// Configure one independently selected provider before its transport is
+    /// opened. A live leg is immutable: replacing its URL would silently move
+    /// an already-fetched policy or grant onto another transport session.
+    pub fn set_server_url(&mut self, server_index: u8, url: &str) -> PirResult<()> {
+        if url.trim().is_empty() {
+            return Err(PirError::InvalidState(
+                "DPF staged provider URL must not be empty".into(),
+            ));
+        }
+        let (slot, configured) = match server_index {
+            0 => (&self.conn0, &mut self.server0_url),
+            1 => (&self.conn1, &mut self.server1_url),
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        if slot.is_some() {
+            return Err(PirError::InvalidState(format!(
+                "DPF server {server_index} URL is frozen after connect"
+            )));
+        }
+        *configured = url.to_string();
+        Ok(())
+    }
+
+    /// Open exactly one provider transport without touching the peer leg.
+    /// This is the transport primitive behind browser-local staged admission:
+    /// a failed second dial cannot close, re-authorize, or consume anything on
+    /// the already-authorized first connection.
+    pub async fn connect_server(&mut self, server_index: u8) -> PirResult<()> {
+        let already_connected = match server_index {
+            0 => self.conn0.is_some(),
+            1 => self.conn1.is_some(),
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        if already_connected {
+            return Ok(());
+        }
+        let url = match server_index {
+            0 => self.server0_url.clone(),
+            1 => self.server1_url.clone(),
+            _ => unreachable!(),
+        };
+        if url.trim().is_empty() {
+            return Err(PirError::InvalidState(format!(
+                "DPF server {server_index} URL is not configured"
+            )));
+        }
+        self.notify_state(ConnectionState::Connecting);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let transport_result: PirResult<Box<dyn PirTransport>> = WsConnection::connect(&url)
+            .await
+            .map(|connection| Box::new(connection) as Box<dyn PirTransport>);
+        #[cfg(target_arch = "wasm32")]
+        let transport_result: PirResult<Box<dyn PirTransport>> = {
+            use crate::wasm_transport::WasmWebSocketTransport;
+            WasmWebSocketTransport::connect(&url)
+                .await
+                .map(|connection| Box::new(connection) as Box<dyn PirTransport>)
+        };
+        let transport = match transport_result {
+            Ok(transport) => transport,
+            Err(error) => {
+                if self.conn0.is_none() && self.conn1.is_none() {
+                    self.notify_state(ConnectionState::Disconnected);
+                }
+                return Err(error);
+            }
+        };
+
+        match server_index {
+            0 => self.conn0 = Some(transport),
+            1 => self.conn1 = Some(transport),
+            _ => unreachable!(),
+        }
+        if let Some(recorder) = self.metrics_recorder.clone() {
+            let slot = if server_index == 0 {
+                self.conn0.as_mut()
+            } else {
+                self.conn1.as_mut()
+            };
+            if let Some(connection) = slot {
+                connection.set_metrics_recorder(Some(recorder), "dpf");
+            }
+        }
+        self.fire_connect(&url);
+        if self.is_connected() {
+            self.notify_state(ConnectionState::Connected);
+        }
+        Ok(())
+    }
+
+    /// Close only one staged provider leg. Session-bound catalog/root state is
+    /// retained for the surviving leg; no query is possible until both legs
+    /// are connected and the caller completes the final pair gate again.
+    pub async fn disconnect_server(&mut self, server_index: u8) -> PirResult<()> {
+        let slot = match server_index {
+            0 => &mut self.conn0,
+            1 => &mut self.conn1,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        if let Some(mut connection) = slot.take() {
+            let _ = connection.close().await;
+        }
+        if self.conn0.is_none() && self.conn1.is_none() {
+            self.invalidate_session_bindings();
+        }
+        if !self.is_connected() {
+            self.notify_state(ConnectionState::Disconnected);
+        }
+        Ok(())
+    }
+
+    pub fn is_server_connected(&self, server_index: u8) -> PirResult<bool> {
+        match server_index {
+            0 => Ok(self.conn0.is_some()),
+            1 => Ok(self.conn1.is_some()),
+            _ => Err(PirError::InvalidState(format!(
+                "DPF server index must be 0 or 1, got {server_index}"
+            ))),
         }
     }
 
@@ -2290,6 +2425,75 @@ impl DpfClient {
         (&self.server0_url, &self.server1_url)
     }
 
+    /// Fetch the authenticated catalog from exactly one connected provider.
+    /// The first leg installs it; every later leg must return a
+    /// query-compatible catalog before its database proof or commercial policy
+    /// is accepted. Display names, ordering, and peer-only entries are ignored.
+    pub async fn fetch_catalog_from_server(
+        &mut self,
+        server_index: u8,
+    ) -> PirResult<DatabaseCatalog> {
+        let connection = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        let response = connection
+            .roundtrip(&encode_request(REQ_GET_DB_CATALOG, &[]))
+            .await?;
+        if response.first().copied() != Some(RESP_DB_CATALOG) {
+            return Err(PirError::Protocol(format!(
+                "DPF server {server_index} did not return a V1 database catalog"
+            )));
+        }
+        let catalog = decode_catalog(&response[1..])?;
+        if let Some(existing) = &self.catalog {
+            ensure_catalog_query_compatible(existing, &catalog).map_err(|error| {
+                PirError::VerificationFailed(format!(
+                    "DPF server {server_index} catalog differs from the first verified provider: {error}"
+                ))
+            })?;
+        } else {
+            self.verified_roots.reconcile_catalog(&catalog);
+            self.catalog = Some(catalog.clone());
+        }
+        Ok(catalog)
+    }
+
+    /// Verify the selected provider's own database proof against the common
+    /// catalog. Callers still perform their independent production-pin check
+    /// before installing the returned roots.
+    pub async fn verify_database_proof_from_server(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?;
+        let db_info = catalog
+            .get(db_id)
+            .cloned()
+            .ok_or(PirError::DatabaseNotFound(db_id))?;
+        let connection = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        let bundle = fetch_database_proof(connection.as_mut(), db_id).await?;
+        verify_database_proof(&db_info, &bundle, policy)
+    }
+
     /// Send REQ_ATTEST to one of the connected servers (`server_index ∈
     /// {0, 1}`) and return the verification result. The caller picks
     /// the nonce — typically 32 bytes from a CSPRNG.
@@ -2350,6 +2554,34 @@ impl DpfClient {
             }
         };
         crate::announce::announce(conn.as_mut()).await
+    }
+
+    /// Upgrade exactly one staged provider transport using the ephemeral seed
+    /// already committed to by that leg's attestation request.
+    pub async fn upgrade_server_to_secure_channel_with_seed(
+        &mut self,
+        server_index: u8,
+        server_static_pub: [u8; 32],
+        eph_seed: [u8; 32],
+        hs_nonce: [u8; 32],
+    ) -> PirResult<()> {
+        let slot = match server_index {
+            0 => &mut self.conn0,
+            1 => &mut self.conn1,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF server index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        let raw = slot.take().ok_or(PirError::NotConnected)?;
+        match crate::channel::establish(raw, server_static_pub, eph_seed, hs_nonce).await {
+            Ok(secured) => {
+                *slot = Some(Box::new(secured));
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Replace both server connections with secure-channel-wrapped
@@ -4038,6 +4270,30 @@ mod tests {
         assert!(client.catalog.is_some());
         assert!(client.verified_database_roots(db_id).is_some());
         assert!(client.verified_tree_tops.contains_key(&db_id));
+    }
+
+    #[tokio::test]
+    async fn staged_disconnect_preserves_bindings_until_the_last_leg_closes() {
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+        let db_id = seed_verified_session(&mut client);
+
+        client.disconnect_server(1).await.unwrap();
+
+        assert!(client.is_server_connected(0).unwrap());
+        assert!(!client.is_server_connected(1).unwrap());
+        assert!(client.catalog.is_some());
+        assert!(client.verified_database_roots(db_id).is_some());
+        assert!(client.verified_tree_tops.contains_key(&db_id));
+
+        client.disconnect_server(0).await.unwrap();
+
+        assert!(client.catalog.is_none());
+        assert!(client.verified_database_roots(db_id).is_none());
+        assert!(!client.verified_tree_tops.contains_key(&db_id));
     }
 
     /// Recorder impl of [`StateListener`] — records every transition in a

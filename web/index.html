@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-dj3WY3MqnuVHN9acKyQ3QPFmAoSN3zVe0feN2B8pUAw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-JhjSph9J1zgGx1EgSoS+EFhIaos7JvRwjqhAAYcmiEs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1714,8 +1714,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         const admissionPanels = {
             dpf: new ProductAdmissionPanelV1({
                 root: document.getElementById('dpfAdmissionPanel'),
-                roles: [{ role: 'server0', label: 'Server 0' }, { role: 'server1', label: 'Server 1' }],
-                transportCompatibilityNotice: 'Current browser DPF transport opens both selected endpoints together for strict verification. Provider/offer/payment decisions remain independent; a future transport split can expose the controller’s already-supported one-leg-at-a-time flow.',
+                roles: [
+                    { role: 'server0', label: 'Server 0 · DPF query' },
+                    { role: 'server1', label: 'Server 1 · DPF query' },
+                ],
                 onStateChange: snapshot => updateAdmissionQueryButton('queryBtn', snapshot),
             }),
             onion: new ProductAdmissionPanelV1({
@@ -1725,8 +1727,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }),
             harmony: new ProductAdmissionPanelV1({
                 root: document.getElementById('hpAdmissionPanel'),
-                roles: [{ role: 'hint', label: 'Hint provider' }, { role: 'query', label: 'Query provider' }],
-                transportCompatibilityNotice: 'Current browser Harmony transport opens the hint and query endpoints together for strict verification. Their scopes, prices, credentials and issuer checks remain independent; no peer identifier is sent on either admission wire.',
+                roles: [
+                    { role: 'hint', label: 'Hint provider · large one-time hint workload' },
+                    { role: 'query', label: 'Query provider · per-query workload' },
+                ],
                 onStateChange: snapshot => updateAdmissionQueryButton('hp-queryBtn', snapshot),
             }),
             oram: new ProductAdmissionPanelV1({
@@ -1739,10 +1743,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         function updateAdmissionQueryButton(id, snapshot) {
             const button = document.getElementById(id);
             if (!button || button.disabled) return;
+            const firstReady = snapshot?.legs.length === 1
+                && (snapshot.legs[0].status === 'authorized'
+                    || snapshot.legs[0].status === 'cached-resource-ready');
             button.textContent = snapshot?.phase === 'ready-to-query'
                 ? 'Run one verified query'
+                : firstReady
+                    ? 'Verify independent second provider'
                 : snapshot?.phase === 'selecting'
-                    ? 'Query blocked · authorize providers above'
+                    ? 'Query blocked · authorize current provider'
                     : 'Start strict admission';
         }
 
@@ -1790,6 +1799,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 throw new Error('independent PIR roles must select distinct provider identities');
             }
             return selected;
+        }
+
+        function selectedAdmissionProvider(kind, role) {
+            if (!productTrustedBootstrap) throw new Error('commercial admission is unconfigured');
+            return providerById(admissionPanels[kind].freezeProviderSelection(role));
         }
 
         function canonicalJson(value) {
@@ -1894,8 +1908,119 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
+        async function prepareIndependentProductLeg(kind, role, vault) {
+            const provider = selectedAdmissionProvider(kind, role);
+            if (kind === 'dpf') {
+                const serverIndex = role === 'server0' ? 0 : 1;
+                const connected = await connectDpfLeg(provider, serverIndex);
+                const selectedDbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
+                if (serverIndex === 0) dpfAdmissionDbId = selectedDbId;
+                const dbId = dpfAdmissionDbId;
+                if (dbId === null) throw new Error('DPF server 0 database binding is unavailable');
+                return {
+                    leg: {
+                        role,
+                        label: `Server ${serverIndex} · DPF query workload`,
+                        session: new ProviderAdmissionSessionV1(
+                            vault, connected.serviceAdmissionPort(serverIndex, dbId), trustForProvider(provider),
+                            { backend: 'dpf-pir', workload: 'dpf-query' },
+                        ),
+                        backend: 'dpf-pir', workload: 'dpf-query',
+                        network: productTrustedBootstrap.network,
+                        expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                    },
+                    close: async () => {
+                        if (serverIndex === 0) {
+                            if (client === connected) disconnect(true); else connected.disconnect();
+                        } else {
+                            await connected.disconnectLeg(1);
+                            dpfAdmissionProviders[1] = null;
+                        }
+                    },
+                    finalizeAfterAuthorization: serverIndex === 1
+                        ? () => connected.finalizeStrictPair(dbId)
+                        : undefined,
+                };
+            }
+
+            const providerIndex = role === 'hint' ? 0 : 1;
+            const connected = await hpConnectLeg(provider, providerIndex);
+            const dbId = connected.getDbId();
+            const leg = {
+                role,
+                label: providerIndex === 0
+                    ? 'Hint provider · large one-time harmony-hint workload'
+                    : 'Query provider · per-query harmony-query workload',
+                session: new ProviderAdmissionSessionV1(
+                    vault,
+                    providerIndex === 0
+                        ? connected.hintServiceAdmissionPort(dbId)
+                        : connected.queryServiceAdmissionPort(dbId),
+                    trustForProvider(provider),
+                    {
+                        backend: 'harmony-pir',
+                        workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
+                    },
+                ),
+                backend: 'harmony-pir',
+                workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
+                network: productTrustedBootstrap.network,
+                expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+            };
+            if (providerIndex === 0) {
+                const datasetIdHex = connected.getMerkleRootHex();
+                if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
+                    throw new Error('verified Harmony hint dataset root is unavailable');
+                }
+                leg.resource = {
+                    datasetIdHex,
+                    variant: hpCurrentPrp,
+                    restore: async binding => {
+                        const restored = await connected.restoreHintsFromCache(binding);
+                        hpHintsLoaded = restored;
+                        if (restored) {
+                            document.getElementById('hp-offlineContainer').style.display = 'block';
+                            document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
+                            document.getElementById('hp-offlineFill').style.width = '100%';
+                            document.getElementById('hp-offlineLabel').textContent = 'Provider, policy, scope, offer, dataset and PRP binding verified.';
+                        }
+                        return restored;
+                    },
+                    acquireAfterAuthorization: async binding => {
+                        document.getElementById('hp-offlineContainer').style.display = 'block';
+                        if (!await hpFetchHints(connected)) throw new Error('authorized hint download failed');
+                        hpHintsLoaded = true;
+                        await connected.saveHintsToCache(binding);
+                    },
+                    persistAfterQuery: binding => connected.saveHintsToCache(binding),
+                };
+            }
+            return {
+                leg,
+                close: async () => {
+                    if (providerIndex === 0) {
+                        if (hpClient === connected) hpDisconnect(true, true); else connected.disconnect();
+                    } else {
+                        await connected.disconnectLeg(1);
+                        harmonyAdmissionProviders[1] = null;
+                    }
+                },
+                finalizeAfterAuthorization: providerIndex === 1
+                    ? () => connected.finalizeStrictPair(dbId)
+                    : undefined,
+            };
+        }
+
+        async function prepareCurrentIndependentProductLeg(kind, role, vault, controller) {
+            const staged = await prepareIndependentProductLeg(kind, role, vault);
+            if (admissionControllers[kind] !== controller) {
+                await staged.close();
+                throw new Error('strict admission was invalidated while provider bootstrap was in flight');
+            }
+            return staged;
+        }
+
         async function prepareProductAdmission(kind) {
-            const selected = selectedAdmissionProviders(kind);
             const vault = await admissionVault();
             const topology = kind === 'dpf' || kind === 'harmony'
                 ? 'independent-pair'
@@ -1903,131 +2028,53 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const controller = new ProductAdmissionControllerV1({ topology, vault });
             admissionControllers[kind] = controller;
             admissionPanels[kind].attach(controller);
-            await controller.prepare(async () => {
-                if (kind === 'dpf') {
-                    const first = selected.server0;
-                    const second = selected.server1;
-                    const connected = await connect(first, second);
-                    const dbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
-                    return {
-                        legs: [
-                            {
-                                role: 'server0', label: 'Server 0',
+
+            if (topology === 'independent-pair') {
+                const firstRole = kind === 'dpf' ? 'server0' : 'hint';
+                await controller.prepareLeg(
+                    () => prepareCurrentIndependentProductLeg(
+                        kind, firstRole, vault, controller,
+                    ),
+                );
+            } else {
+                const selected = selectedAdmissionProviders(kind);
+                await controller.prepare(async () => {
+                    if (kind === 'onion') {
+                        const provider = selected.onion;
+                        const connected = await opConnect(provider);
+                        const dbId = connected.getDbId();
+                        return {
+                            legs: [{
+                                role: 'onion', label: 'Onion provider',
                                 session: new ProviderAdmissionSessionV1(
-                                    vault, connected.serviceAdmissionPort(0, dbId), trustForProvider(first),
-                                    { backend: 'dpf-pir', workload: 'dpf-query' },
+                                    vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
+                                    { backend: 'onion-pir', workload: 'onion-session' },
                                 ),
-                                backend: 'dpf-pir', workload: 'dpf-query',
+                                backend: 'onion-pir', workload: 'onion-session',
                                 network: productTrustedBootstrap.network,
-                                expectedLightningPayeePubkey: providerExpectedPayeeV1(first),
-                            },
-                            {
-                                role: 'server1', label: 'Server 1',
-                                session: new ProviderAdmissionSessionV1(
-                                    vault, connected.serviceAdmissionPort(1, dbId), trustForProvider(second),
-                                    { backend: 'dpf-pir', workload: 'dpf-query' },
-                                ),
-                                backend: 'dpf-pir', workload: 'dpf-query',
-                                network: productTrustedBootstrap.network,
-                                expectedLightningPayeePubkey: providerExpectedPayeeV1(second),
-                            },
-                        ],
-                        close: () => { if (client === connected) disconnect(true); else connected.disconnect(); },
-                    };
-                }
-                if (kind === 'onion') {
-                    const provider = selected.onion;
-                    const connected = await opConnect(provider);
-                    const dbId = connected.getDbId();
+                                expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                            }],
+                            close: () => { if (opClient === connected) opDisconnect(true); else connected.disconnect(); },
+                        };
+                    }
+                    const provider = selected.oram;
+                    const connected = await oramConnect(provider);
+                    const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
                     return {
                         legs: [{
-                            role: 'onion', label: 'Onion provider',
+                            role: 'oram', label: 'ORAM provider',
                             session: new ProviderAdmissionSessionV1(
                                 vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                                { backend: 'onion-pir', workload: 'onion-session' },
+                                { backend: 'tee-oram', workload: 'tee-oram-query' },
                             ),
-                            backend: 'onion-pir', workload: 'onion-session',
+                            backend: 'tee-oram', workload: 'tee-oram-query',
                             network: productTrustedBootstrap.network,
                             expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
                         }],
-                        close: () => { if (opClient === connected) opDisconnect(true); else connected.disconnect(); },
+                        close: () => { if (oramClient === connected) oramDisconnect(true); else connected.disconnect(); },
                     };
-                }
-                if (kind === 'harmony') {
-                    const hintProvider = selected.hint;
-                    const queryProvider = selected.query;
-                    const connected = await hpConnect(hintProvider, queryProvider);
-                    const dbId = connected.getDbId();
-                    const datasetIdHex = connected.getMerkleRootHex();
-                    if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
-                        throw new Error('verified Harmony dataset root is unavailable');
-                    }
-                    const resource = {
-                        datasetIdHex,
-                        variant: hpCurrentPrp,
-                        restore: async binding => {
-                            const restored = await connected.restoreHintsFromCache(binding);
-                            hpHintsLoaded = restored;
-                            if (restored) {
-                                document.getElementById('hp-offlineContainer').style.display = 'block';
-                                document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
-                                document.getElementById('hp-offlineFill').style.width = '100%';
-                                document.getElementById('hp-offlineLabel').textContent = 'Provider, policy, scope, offer, dataset and PRP binding verified.';
-                            }
-                            return restored;
-                        },
-                        acquireAfterAuthorization: async binding => {
-                            document.getElementById('hp-offlineContainer').style.display = 'block';
-                            if (!await hpFetchHints(connected)) throw new Error('authorized hint download failed');
-                            hpHintsLoaded = true;
-                            await connected.saveHintsToCache(binding);
-                        },
-                        persistAfterQuery: binding => connected.saveHintsToCache(binding),
-                    };
-                    return {
-                        legs: [
-                            {
-                                role: 'hint', label: 'Hint provider',
-                                session: new ProviderAdmissionSessionV1(
-                                    vault, connected.hintServiceAdmissionPort(dbId), trustForProvider(hintProvider),
-                                    { backend: 'harmony-pir', workload: 'harmony-hint' },
-                                ),
-                                backend: 'harmony-pir', workload: 'harmony-hint',
-                                network: productTrustedBootstrap.network,
-                                expectedLightningPayeePubkey: providerExpectedPayeeV1(hintProvider),
-                                resource,
-                            },
-                            {
-                                role: 'query', label: 'Query provider',
-                                session: new ProviderAdmissionSessionV1(
-                                    vault, connected.queryServiceAdmissionPort(dbId), trustForProvider(queryProvider),
-                                    { backend: 'harmony-pir', workload: 'harmony-query' },
-                                ),
-                                backend: 'harmony-pir', workload: 'harmony-query',
-                                network: productTrustedBootstrap.network,
-                                expectedLightningPayeePubkey: providerExpectedPayeeV1(queryProvider),
-                            },
-                        ],
-                        close: () => { if (hpClient === connected) hpDisconnect(true, true); else connected.disconnect(); },
-                    };
-                }
-                const provider = selected.oram;
-                const connected = await oramConnect(provider);
-                const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
-                return {
-                    legs: [{
-                        role: 'oram', label: 'ORAM provider',
-                        session: new ProviderAdmissionSessionV1(
-                            vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                            { backend: 'tee-oram', workload: 'tee-oram-query' },
-                        ),
-                        backend: 'tee-oram', workload: 'tee-oram-query',
-                        network: productTrustedBootstrap.network,
-                        expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
-                    }],
-                    close: () => { if (oramClient === connected) oramDisconnect(true); else connected.disconnect(); },
-                };
-            });
+                });
+            }
             admissionPanels[kind].render(controller.snapshot());
             return controller;
         }
@@ -2040,6 +2087,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (controller) await closeAdmissionAttempt(kind);
                 controller = await prepareProductAdmission(kind);
                 log(`${kind}: strict verification and signed policy complete; select and authorize each exact offer.`, 'success');
+                return;
+            }
+            const snapshot = controller.snapshot();
+            if ((kind === 'dpf' || kind === 'harmony') && snapshot.legs.length === 1) {
+                const firstReady = snapshot.legs[0].status === 'authorized'
+                    || snapshot.legs[0].status === 'cached-resource-ready';
+                if (!firstReady) {
+                    admissionPanels[kind].render(snapshot);
+                    log(`${kind}: authorize the first provider before selecting the second.`, 'error');
+                    return;
+                }
+                const secondRole = kind === 'dpf' ? 'server1' : 'query';
+                const vault = await admissionVault();
+                await controller.prepareLeg(
+                    () => prepareCurrentIndependentProductLeg(
+                        kind, secondRole, vault, controller,
+                    ),
+                );
+                admissionPanels[kind].render(controller.snapshot());
+                log(`${kind}: second provider strictly verified; authorize its independent offer.`, 'success');
                 return;
             }
             if (!controller.canQuery()) {
@@ -3042,38 +3109,47 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return Promise.resolve(null);
         }
 
-        async function connect(provider0, provider1) {
-            if (!provider0?.endpoint || !provider1?.endpoint) {
-                throw new Error('DPF commercial admission requires two complete trusted provider bootstraps');
-            }
-            const server0Url = provider0.endpoint;
-            const server1Url = provider1.endpoint;
-            document.getElementById('server0Url').value = server0Url;
-            document.getElementById('server1Url').value = server1Url;
+        const dpfAdmissionProviders = [null, null];
+        let dpfAdmissionDbId = null;
 
-            resetBasicVerification(['dpf0', 'dpf1']);
-            renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
-                state: 'unavailable',
-                checks: [],
-                mismatches: [],
-                error: 'waiting for latest delta trust-chain proof',
-            });
+        async function connectDpfLeg(provider, serverIndex) {
+            if (!provider?.endpoint || (serverIndex !== 0 && serverIndex !== 1)) {
+                throw new Error('DPF commercial admission requires one complete trusted provider bootstrap per leg');
+            }
+            const previous = dpfAdmissionProviders[serverIndex];
+            if (previous && previous.providerIdHex !== provider.providerIdHex) {
+                throw new Error(`DPF server ${serverIndex} is already bound to another provider`);
+            }
+            if (serverIndex === 1) {
+                const first = dpfAdmissionProviders[0];
+                if (!first) throw new Error('DPF server 0 must finish before server 1 is selected');
+                if (first.providerIdHex === provider.providerIdHex) {
+                    throw new Error('independent PIR roles must select distinct provider identities');
+                }
+                sharedArkFingerprint(first, provider);
+                sharedDatabasePins(first, provider);
+            }
+            document.getElementById(serverIndex === 0 ? 'server0Url' : 'server1Url').value = provider.endpoint;
+
+            if (serverIndex === 0) {
+                resetBasicVerification(['dpf0', 'dpf1']);
+                renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
+                    state: 'unavailable',
+                    checks: [],
+                    mismatches: [],
+                    error: 'waiting for latest delta trust-chain proof',
+                });
+            }
 
             try {
-                log(`Connecting to servers...`);
+                log(`Connecting to DPF server ${serverIndex} only...`);
 
-                client = new BatchPirClientAdapter({
-                    server0Url,
-                    server1Url,
+                if (!client) client = new BatchPirClientAdapter({
+                    server0Url: '',
+                    server1Url: '',
                     strictVerification: true,
-                    expectedArkFingerprint: sharedArkFingerprint(provider0, provider1),
-                    expectedServer0Pin: provider0.serverPin,
-                    expectedServer1Pin: provider1.serverPin,
-                    expectedServer0Id: provider0.stableServerId,
-                    expectedServer1Id: provider1.stableServerId,
-                    pinnedOperatorPubkey0: providerOperatorKeyV1(provider0),
-                    pinnedOperatorPubkey1: providerOperatorKeyV1(provider1),
-                    databaseProofPins: sharedDatabasePins(provider0, provider1),
+                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    databaseProofPins: provider.databaseProofPins,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -3131,7 +3207,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     onLog: (msg, level) => log(msg, level),
                 });
 
-                await client.connect();
+                client.configureServerLeg(serverIndex, {
+                    url: provider.endpoint,
+                    expectedPin: provider.serverPin,
+                    expectedServerId: provider.stableServerId,
+                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                });
+                await client.connectLeg(serverIndex);
+                dpfAdmissionProviders[serverIndex] = provider;
                 // Post-connect state refresh: enable sync button, reveal the
                 // sync state row IFF a persisted height exists (i.e. user
                 // already synced in a prior session). Advanced DB selector
@@ -3139,9 +3222,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // successful sync — see executeSync() for their reveal.
                 refreshSyncStateUI();
             } catch (error) {
-                log(`Connection failed: ${error.message}`, 'error');
-                client?.disconnect();
-                client = null;
+                log(`DPF server ${serverIndex} connection failed: ${error.message}`, 'error');
+                if (serverIndex === 0) {
+                    client?.disconnect();
+                    client = null;
+                    dpfAdmissionProviders[0] = null;
+                }
+                dpfAdmissionProviders[serverIndex] = null;
                 throw error;
             }
             return client;
@@ -3226,6 +3313,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log('Disconnected', 'info');
                 setButtons(false);
             }
+            dpfAdmissionProviders[0] = null;
+            dpfAdmissionProviders[1] = null;
+            dpfAdmissionDbId = null;
             // Keep the SyncController cache alive across disconnect/reconnect:
             // the controller's page-refresh safety rule (computePlan) will
             // force a fresh full sync anyway if the cache ends up stale.
@@ -3297,7 +3387,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
 
                 // Get selected database
-                const dbId = parseInt(document.getElementById('dbSelect')?.value ?? '0') || 0;
+                // Both independently authorized legs are bound to the database
+                // captured before the first policy fetch. A later UI change
+                // cannot silently send a query under mismatched grants.
+                const dbId = dpfAdmissionDbId
+                    ?? (parseInt(document.getElementById('dbSelect')?.value ?? '0') || 0);
                 const dbEntry = client.getCatalogEntry(dbId);
                 const isDelta = dbEntry?.dbType === 1;
 
@@ -3318,7 +3412,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         else if (step === 'Level 2') pct = 50;
                         else if (step === 'Decode') pct = 90;
                         setProgress(pct, `${step}: ${detail}`);
-                    });
+                    }, dbId);
 
                 // Render all results
                 let found = 0;
@@ -3352,13 +3446,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const verifiablePairs = dpfQueryResults
                         .map((result, index) => ({ result, section: dpfResultSections[index] }))
                         .filter(({ result }) => result && !result.isWhale && result.indexPbcGroup !== undefined);
-                    if (verifiablePairs.length > 0 && client.hasMerkle()) {
+                    if (verifiablePairs.length > 0 && client.hasMerkleForDb(dbId)) {
                         let verificationRootHex = '';
                         await addBatchMerkleButton(resultsContainer, verifiablePairs.map(pair => pair.result), 'dpf',
                             async (results, onProg) => {
                                 if (!client || !client.isConnected()) throw new Error('live strict DPF connection lost before verification');
-                                const verdicts = await client.verifyMerkleBatch(results, onProg);
-                                verificationRootHex = client.getMerkleRootHex() || '';
+                                const verdicts = await client.verifyMerkleBatch(results, onProg, dbId);
+                                verificationRootHex = client.getMerkleRootHexForDb(dbId) || '';
                                 return verdicts;
                             },
                             () => verificationRootHex,
@@ -4516,54 +4610,63 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         let hpConnecting = false;
         let hpSwitchingPrp = false;
-        async function hpConnect(hintProvider, queryProvider) {
-            if (hpConnecting || hpSwitchingPrp) return; // prevent double-click or race with PRP switch
-            if (!hintProvider?.endpoint || !queryProvider?.endpoint) {
-                throw new Error('HarmonyPIR commercial admission requires independent hint/query bootstraps');
+        const harmonyAdmissionProviders = [null, null];
+        async function hpConnectLeg(provider, providerIndex) {
+            if (hpConnecting || hpSwitchingPrp) {
+                throw new Error('HarmonyPIR provider bootstrap is already in progress');
             }
-            const hintServerUrl = hintProvider.endpoint;
-            const queryServerUrl = queryProvider.endpoint;
-            document.getElementById('hp-hintServerUrl').value = hintServerUrl;
-            document.getElementById('hp-queryServerUrl').value = queryServerUrl;
+            if (!provider?.endpoint || (providerIndex !== 0 && providerIndex !== 1)) {
+                throw new Error('HarmonyPIR requires one complete trusted bootstrap per role');
+            }
+            if (providerIndex === 1) {
+                const hintProvider = harmonyAdmissionProviders[0];
+                if (!hintProvider) throw new Error('Harmony hint role must finish before query role selection');
+                if (hintProvider.providerIdHex === provider.providerIdHex) {
+                    throw new Error('independent Harmony roles must select distinct provider identities');
+                }
+                sharedArkFingerprint(hintProvider, provider);
+                sharedDatabasePins(hintProvider, provider);
+            }
+            document.getElementById(
+                providerIndex === 0 ? 'hp-hintServerUrl' : 'hp-queryServerUrl',
+            ).value = provider.endpoint;
 
-            resetBasicVerification(['hpHint', 'hpQuery']);
-            renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
-                state: 'unavailable',
-                checks: [],
-                mismatches: [],
-                error: 'waiting for latest delta trust-chain proof',
-            });
+            if (providerIndex === 0) {
+                resetBasicVerification(['hpHint', 'hpQuery']);
+                renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
+                    state: 'unavailable',
+                    checks: [],
+                    mismatches: [],
+                    error: 'waiting for latest delta trust-chain proof',
+                });
+            }
 
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
-            let candidate = null;
+            let candidate = hpClient;
             try {
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Connecting...';
                 statusDiv.className = 'status connecting';
-                log('HarmonyPIR: Loading WASM + connecting...');
+                log(`HarmonyPIR: connecting ${providerIndex === 0 ? 'hint' : 'query'} provider only...`);
 
                 // A prior wrapper without usable hints is not a reconnect
                 // candidate. Tear it down before constructing a replacement.
-                if (hpClient) {
+                if (providerIndex === 0 && hpClient) {
                     hpClient.disconnect();
                     hpClient = null;
                     hpHintsLoaded = false;
+                    harmonyAdmissionProviders[0] = null;
+                    harmonyAdmissionProviders[1] = null;
                 }
 
-                candidate = new HarmonyPirClientAdapter({
-                    hintServerUrl,
-                    queryServerUrl,
+                if (providerIndex === 0) candidate = new HarmonyPirClientAdapter({
+                    hintServerUrl: '',
+                    queryServerUrl: '',
                     prpBackend: hpCurrentPrp,
                     strictVerification: true,
-                    expectedArkFingerprint: sharedArkFingerprint(hintProvider, queryProvider),
-                    expectedServer0Pin: hintProvider.serverPin,
-                    expectedServer1Pin: queryProvider.serverPin,
-                    expectedServer0Id: hintProvider.stableServerId,
-                    expectedServer1Id: queryProvider.stableServerId,
-                    pinnedHintOperatorPubkey: providerOperatorKeyV1(hintProvider),
-                    pinnedQueryOperatorPubkey: providerOperatorKeyV1(queryProvider),
-                    databaseProofPins: sharedDatabasePins(hintProvider, queryProvider),
+                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    databaseProofPins: provider.databaseProofPins,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -4639,47 +4742,55 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     },
                 });
 
+                if (!candidate) throw new Error('Harmony hint transport is not available');
+                candidate.configureProviderLeg(providerIndex, {
+                    url: provider.endpoint,
+                    expectedPin: provider.serverPin,
+                    expectedServerId: provider.stableServerId,
+                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                });
                 await candidate.loadWasm();
                 log('HarmonyPIR: WASM loaded', 'success');
 
-                await candidate.connectQueryServer();
-                await candidate.fetchServerInfo();
-                const candidateHintsLoaded = false;
-                statusDiv.textContent = 'Status: Strictly verified; hint admission required';
+                await candidate.connectLeg(providerIndex);
+                harmonyAdmissionProviders[providerIndex] = provider;
+                if (providerIndex === 1) await candidate.fetchServerInfo();
+                statusDiv.textContent = providerIndex === 0
+                    ? 'Status: Hint provider verified; hint admission required'
+                    : 'Status: Pair verified; capability admission required before preflight';
                 statusDiv.className = 'status connected';
-                document.getElementById('hp-offlineContainer').style.display = 'none';
+                if (providerIndex === 0) {
+                    document.getElementById('hp-offlineContainer').style.display = 'none';
+                } else {
+                    const connectedCandidate = candidate;
+                    connectedCandidate.onQueryServerClose(() => {
+                        if (hpClient !== connectedCandidate) return;
+                        statusDiv.textContent = 'Status: Query provider disconnected (hints preserved)';
+                        statusDiv.className = 'status disconnected';
+                    });
+                }
 
-                // Update UI when query server disconnects (e.g. idle timeout).
-                const connectedCandidate = candidate;
-                connectedCandidate.onQueryServerClose(() => {
-                    if (hpClient !== connectedCandidate) return;
-                    statusDiv.textContent = 'Status: Disconnected (hints preserved)';
-                    statusDiv.className = 'status disconnected';
-                    document.getElementById('hp-connectBtn').disabled = false;
-                });
-
-                // Transfer ownership only after the complete strict bootstrap
-                // and hint restore/download succeeded. Until this point every
-                // failure is cleaned up through the local candidate below.
                 hpSetButtons(true);
-
-                // Post-connect: just refresh the sync state UI. The Advanced
-                // DB selector and delta example buttons reveal after the
-                // first successful sync (see hpExecuteSync).
-                hpRefreshSyncStateUI(connectedCandidate, candidateHintsLoaded);
-
-                hpClient = connectedCandidate;
-                hpHintsLoaded = candidateHintsLoaded;
-                candidate = null;
+                hpRefreshSyncStateUI(candidate, hpHintsLoaded);
+                hpClient = candidate;
             } catch (error) {
-                candidate?.disconnect();
-                log(`HarmonyPIR connection failed: ${error.message}`, 'error');
+                if (providerIndex === 0) {
+                    candidate?.disconnect();
+                    hpClient = null;
+                    hpHintsLoaded = false;
+                    harmonyAdmissionProviders[0] = null;
+                }
+                harmonyAdmissionProviders[providerIndex] = null;
+                log(`HarmonyPIR ${providerIndex === 0 ? 'hint' : 'query'} connection failed: ${error.message}`, 'error');
                 const statusDiv = document.getElementById('hp-status');
-                statusDiv.textContent = 'Status: Disconnected';
+                statusDiv.textContent = providerIndex === 0
+                    ? 'Status: Disconnected'
+                    : 'Status: Hint provider remains authorized; query provider failed';
                 statusDiv.className = 'status disconnected';
-                hpHintsLoaded = false;
-                hpSetButtons(false);
-                document.getElementById('hp-offlineContainer').style.display = 'none';
+                if (providerIndex === 0) {
+                    hpSetButtons(false);
+                    document.getElementById('hp-offlineContainer').style.display = 'none';
+                }
                 throw error;
             } finally {
                 hpConnecting = false;
@@ -4698,6 +4809,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpClient.disconnect();
                 hpClient = null;
                 hpHintsLoaded = false;
+                harmonyAdmissionProviders[0] = null;
+                harmonyAdmissionProviders[1] = null;
                 document.getElementById('hp-offlineContainer').style.display = 'none';
                 document.getElementById('hp-advancedDbDetails').style.display = 'none';
             } else {
@@ -4761,7 +4874,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please wait.', 'error'); return; }
             if (!hpClient || !hpHintsLoaded) {
                 log('HarmonyPIR: Auto-connecting...', 'info');
-                await hpConnect();
+                throw new Error('automatic Harmony reconnect is disabled for commercial admission');
                 if (!hpClient || !hpHintsLoaded) {
                     log('HarmonyPIR: Connection or hint download failed.', 'error');
                     return;
@@ -5256,6 +5369,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-prpSelect').addEventListener('change', async (e) => {
             const newPrp = parseInt(e.target.value);
             if (newPrp === hpCurrentPrp) return;
+            if (hpConnecting) {
+                e.target.value = String(hpCurrentPrp);
+                log('HarmonyPIR: finish the current provider bootstrap before changing PRP.', 'error');
+                return;
+            }
             hpCurrentPrp = newPrp;
             const names = ['HMR12', 'FastPRP'];
             await closeAdmissionAttempt('harmony', 'PRP backend changed; start a new strict admission attempt.');

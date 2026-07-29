@@ -5,7 +5,10 @@ import type { WasmDatabaseProof } from '../sdk-bridge.js';
 import {
   assertStrictDatabasePinCoverage,
   assertStrictTransportReady,
+  collectStrictServerLegFailures,
   collectStrictTransportFailures,
+  preflightInstalledDatabaseProofs,
+  verifyAndInstallDatabaseProofs,
   verifyInstallAndPreflightDatabaseProofs,
   type StrictDatabaseProofClient,
   type StrictTransportOptions,
@@ -137,6 +140,25 @@ describe('strict database proof flow', () => {
       PIN.builderBinarySha256Hex,
       PIN.builderGitCommit,
     );
+  });
+
+  it('can install one provider proof before deferring preflight to the final pair gate', async () => {
+    const handle = proofHandle(PIN);
+    const client: StrictDatabaseProofClient = {
+      verifyDatabaseProof: vi.fn(async () => handle),
+      installVerifiedDatabaseProof: vi.fn(),
+      preflightDatabase: vi.fn(async () => {}),
+    };
+
+    const installed = await verifyAndInstallDatabaseProofs({ client, pins: [PIN] });
+
+    expect(client.installVerifiedDatabaseProof).toHaveBeenCalledWith(handle);
+    expect(client.preflightDatabase).not.toHaveBeenCalled();
+
+    await preflightInstalledDatabaseProofs(client, installed);
+
+    expect(client.preflightDatabase).toHaveBeenCalledOnce();
+    expect(client.preflightDatabase).toHaveBeenCalledWith(PIN.dbId);
   });
 
   it('rejects an empty strict pin set', async () => {
@@ -316,6 +338,18 @@ const STRICT_TRANSPORT_OK: StrictTransportOptions = {
 };
 
 describe('strict transport gate', () => {
+  it('strictly admits one provider without naming or inspecting its future peer', () => {
+    expect(collectStrictServerLegFailures({
+      serverIndex: 0,
+      secureChannelEstablished: true,
+      attestation: STRICT_TRANSPORT_OK.attestations[0],
+      expectedPin: STRICT_TRANSPORT_OK.expectedPins[0],
+      expectedServerId: STRICT_TRANSPORT_OK.expectedServerIds[0],
+      requireOperatorIdentity: true,
+      operatorIdentity: STRICT_TRANSPORT_OK.operatorIdentities![0],
+    })).toEqual([]);
+  });
+
   it('accepts a binary-pinned Hetzner no-SEV server plus VCEK-verified VPSBG SEV-SNP', () => {
     expect(collectStrictTransportFailures(STRICT_TRANSPORT_OK)).toEqual([]);
     expect(() => assertStrictTransportReady(STRICT_TRANSPORT_OK)).not.toThrow();

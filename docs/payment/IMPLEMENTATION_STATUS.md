@@ -361,9 +361,30 @@ operator has activated the path with real money or public infrastructure.
 - [x] Browser capabilities and BOLT11 recovery bind the exact policy digest in
       authenticated storage and lock selection. The IndexedDB v3 migration
       deletes legacy capability/recovery records that cannot prove that bind.
-- [x] DPF and Harmony adapters accept independent per-leg operator pins;
-      strict identity verification rejects missing or reused pins and never
-      treats the deprecated shared-pin field as two independent anchors.
+- [x] DPF and Harmony native/WASM/Web adapters expose a true staged provider
+      lifecycle. The browser connects, attests, upgrades, pins, installs the
+      database proof, loads the signed policy and authorizes role 0 before it
+      enables role 1 selection; neither transport receives the peer choice or
+      a pair identifier. A role-1 bootstrap failure closes only role 1 and does
+      not reconnect or re-authorize/reconsume role 0. The complete pair still
+      has to pass distinct-identity, compatible-catalog and exact-root gates
+      during bootstrap. Merkle tree-top preflight is deferred until both exact
+      role capabilities authorize, runs once for the capability-bound `db_id`,
+      and only then makes that database's PIR query method reachable; failure
+      cannot revive query readiness or auto-retry a consumed capability.
+      Per-leg operator pins remain independent; strict identity verification
+      rejects missing or reused pins and never treats the deprecated shared-pin
+      field as two independent anchors.
+- [x] The DPF browser freezes the selected `db_id` after role 0 bootstrap and
+      reuses that exact value for role 1 policy admission, the real query and
+      its Merkle verification; later selector changes cannot move a paid grant
+      onto a different database.
+- [x] Harmony hint and query roles use separate workload scopes and independent
+      prices. A strictly admitted hint provider may fill or restore the exact
+      dataset/PRP-bound browser cache before a query provider is selected. A
+      hint transport close invalidates its session-bound V2Full grant; cached
+      hint bytes may remain, while query execution remains blocked until an
+      independently admitted query role and the final pair gate complete.
 
 ### Directory and operator tooling
 

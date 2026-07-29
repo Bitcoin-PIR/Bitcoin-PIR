@@ -88,6 +88,64 @@ pub(crate) fn encode_request(variant: u8, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Require every database selected from the first provider to have exactly one
+/// query-compatible counterpart on the independently selected peer. Display
+/// names, catalog ordering, and peer-only extra databases are intentionally
+/// ignored: none is part of a PIR query or a database-proof trust anchor.
+pub(crate) fn ensure_catalog_query_compatible(
+    reference: &DatabaseCatalog,
+    peer: &DatabaseCatalog,
+) -> PirResult<()> {
+    for (reference_index, expected) in reference.databases.iter().enumerate() {
+        if reference.databases[..reference_index]
+            .iter()
+            .any(|candidate| candidate.db_id == expected.db_id)
+        {
+            return Err(PirError::VerificationFailed(format!(
+                "reference catalog contains duplicate db_id {}",
+                expected.db_id
+            )));
+        }
+        let mut matches = peer
+            .databases
+            .iter()
+            .filter(|candidate| candidate.db_id == expected.db_id);
+        let Some(candidate) = matches.next() else {
+            return Err(PirError::VerificationFailed(format!(
+                "peer catalog is missing db_id {}",
+                expected.db_id
+            )));
+        };
+        if matches.next().is_some() {
+            return Err(PirError::VerificationFailed(format!(
+                "peer catalog contains duplicate db_id {}",
+                expected.db_id
+            )));
+        }
+        let compatible = candidate.kind == expected.kind
+            && candidate.height == expected.height
+            && candidate.index_bins == expected.index_bins
+            && candidate.chunk_bins == expected.chunk_bins
+            && candidate.index_k == expected.index_k
+            && candidate.chunk_k == expected.chunk_k
+            && candidate.tag_seed == expected.tag_seed
+            && candidate.dpf_n_index == expected.dpf_n_index
+            && candidate.dpf_n_chunk == expected.dpf_n_chunk
+            && candidate.has_bucket_merkle == expected.has_bucket_merkle
+            && candidate.index_master_seed == expected.index_master_seed
+            && candidate.chunk_master_seed == expected.chunk_master_seed
+            && candidate.anchor_kind == expected.anchor_kind
+            && candidate.anchor_bytes == expected.anchor_bytes;
+        if !compatible {
+            return Err(PirError::VerificationFailed(format!(
+                "peer catalog query parameters differ for db_id {}",
+                expected.db_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Parse the v2 trailing fields (index/chunk cuckoo master seed + chain
 /// anchor) from a `RESP_INFO` / `RESP_HARMONY_INFO` response body.
 ///
@@ -412,6 +470,70 @@ mod tests {
         assert_eq!(&r[..4], &3u32.to_le_bytes());
         assert_eq!(r[4], 0x02);
         assert_eq!(&r[5..], b"hi");
+    }
+
+    fn compatible_db(db_id: u8, name: &str) -> DatabaseInfo {
+        DatabaseInfo {
+            db_id,
+            kind: DatabaseKind::Full,
+            name: name.into(),
+            height: 900_000 + u32::from(db_id),
+            index_bins: 100,
+            chunk_bins: 200,
+            index_k: 75,
+            chunk_k: 80,
+            tag_seed: 7,
+            dpf_n_index: 8,
+            dpf_n_chunk: 9,
+            has_bucket_merkle: true,
+            index_master_seed: 10,
+            chunk_master_seed: 11,
+            anchor_kind: 0,
+            anchor_bytes: vec![],
+        }
+    }
+
+    #[test]
+    fn staged_catalog_compatibility_ignores_names_order_and_peer_extras() {
+        let reference = DatabaseCatalog {
+            databases: vec![compatible_db(0, "main-a"), compatible_db(1, "delta-a")],
+        };
+        let peer = DatabaseCatalog {
+            databases: vec![
+                compatible_db(9, "peer-only"),
+                compatible_db(1, "renamed-delta"),
+                compatible_db(0, "renamed-main"),
+            ],
+        };
+        ensure_catalog_query_compatible(&reference, &peer).expect("compatible query catalog");
+    }
+
+    #[test]
+    fn staged_catalog_compatibility_rejects_missing_mismatch_and_duplicates() {
+        let reference = DatabaseCatalog {
+            databases: vec![compatible_db(0, "main")],
+        };
+        assert!(ensure_catalog_query_compatible(&reference, &DatabaseCatalog::new()).is_err());
+
+        let mut changed = compatible_db(0, "main");
+        changed.index_bins += 1;
+        assert!(ensure_catalog_query_compatible(
+            &reference,
+            &DatabaseCatalog {
+                databases: vec![changed],
+            },
+        )
+        .is_err());
+
+        let duplicate_reference = DatabaseCatalog {
+            databases: vec![compatible_db(0, "a"), compatible_db(0, "b")],
+        };
+        assert!(ensure_catalog_query_compatible(&duplicate_reference, &reference).is_err());
+
+        let duplicate_peer = DatabaseCatalog {
+            databases: vec![compatible_db(0, "a"), compatible_db(0, "b")],
+        };
+        assert!(ensure_catalog_query_compatible(&reference, &duplicate_peer).is_err());
     }
 
     #[test]

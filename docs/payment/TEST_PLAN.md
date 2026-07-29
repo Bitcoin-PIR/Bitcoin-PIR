@@ -856,6 +856,20 @@ A local lease is not an external exactly-once primitive.
 - provider legs are prepared, frozen, acquired and authorized independently;
   the pair correlation guard runs once both exact verified selections exist and
   again immediately before the query.
+- staged DPF/Harmony adapter tests require a role-1 transport failure to leave
+  role 0 admitted (and Harmony hints intact), without a role-0 disconnect or
+  authorization retry; native lifecycle tests retain proof/tree-top bindings
+  until the final leg closes, clear a session-bound hint grant with its hint
+  transport, close same-role Harmony secondary transports on secure upgrade,
+  and consume attestation seeds before a fallible handshake.
+- staged product tests require zero tree-top requests before both exact roles
+  authorize, exactly one shared post-authorization preflight on success, no
+  preflight/query after either authorization failure, and fail-closed one-shot
+  behavior after a preflight mismatch. Final readiness is bound to the exact
+  paid `db_id`; attempts to query or verify another database are rejected.
+  Disconnecting either pair while that
+  preflight is in flight must invalidate its generation so late completion
+  cannot restore query readiness or stale proof UI state.
 - credential-issuance claim recovery may retain and replay its exact blind
   transcript, but shared-redeem presentation does not: official Web burns/deletes
   before send, performs no automatic retry and never restores a lost post-claim

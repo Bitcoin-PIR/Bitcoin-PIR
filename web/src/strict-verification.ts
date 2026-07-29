@@ -35,6 +35,16 @@ export interface StrictDatabaseProofOptions {
   onStatus?: DatabaseProofStatusCallback;
 }
 
+/** Proof material that has passed the Rust verifier, matched the browser's
+ * production pin, and transferred into the native root store. Tree-top
+ * preflight is deliberately separate so two independently connected PIR legs
+ * can both prove the same root before either leg is admitted for a real query. */
+export interface InstalledDatabaseProof {
+  pin: DatabaseProofPin;
+  proof: VerifiedDatabaseProof;
+  status: DatabaseProofStatus;
+}
+
 /** Require a one-to-one production pin for every database advertised by the
  * authenticated catalog. Duplicate or unexpected IDs are rejected so the
  * install/preflight sequence has one unambiguous trust anchor per DB. */
@@ -87,31 +97,25 @@ function operationFailureStatus(
 }
 
 /**
- * Establish trusted database roots before a query is allowed:
+ * Verify and install trusted database roots for one authenticated transport:
  *
  * 1. Rust/WASM verifies the signed database proof.
  * 2. TypeScript compares every proof field with the production pin.
  * 3. The same live proof handle is transferred into the native client.
- * 4. After all roots are installed, every database's tree-tops are fetched and
- *    checked against the installed root.
  *
  * `installVerifiedDatabaseProof` is an ownership boundary.  Once invoked, the
  * handle is considered consumed even if the binding reports an error; freeing
  * it in JS afterwards could double-free a wasm-bindgen by-value argument.
  */
-export async function verifyInstallAndPreflightDatabaseProofs(
+export async function verifyAndInstallDatabaseProofs(
   options: StrictDatabaseProofOptions,
-): Promise<DatabaseProofStatus[]> {
+): Promise<InstalledDatabaseProof[]> {
   const { client, pins, onStatus } = options;
   if (pins.length === 0) {
     throw new Error('strict database verification requires at least one pinned database proof');
   }
 
-  const installed: Array<{
-    pin: DatabaseProofPin;
-    proof: VerifiedDatabaseProof;
-    status: DatabaseProofStatus;
-  }> = [];
+  const installed: InstalledDatabaseProof[] = [];
 
   for (const pin of pins) {
     let proofHandle: WasmDatabaseProof | null = null;
@@ -164,6 +168,16 @@ export async function verifyInstallAndPreflightDatabaseProofs(
     }
   }
 
+  return installed;
+}
+
+/** Complete the expensive-query gate after every independently selected leg
+ * has authenticated the same catalog/root set. */
+export async function preflightInstalledDatabaseProofs(
+  client: Pick<StrictDatabaseProofClient, 'preflightDatabase'>,
+  installed: readonly InstalledDatabaseProof[],
+  onStatus?: DatabaseProofStatusCallback,
+): Promise<DatabaseProofStatus[]> {
   const verified: DatabaseProofStatus[] = [];
   for (const item of installed) {
     try {
@@ -181,6 +195,13 @@ export async function verifyInstallAndPreflightDatabaseProofs(
   }
 
   return verified;
+}
+
+export async function verifyInstallAndPreflightDatabaseProofs(
+  options: StrictDatabaseProofOptions,
+): Promise<DatabaseProofStatus[]> {
+  const installed = await verifyAndInstallDatabaseProofs(options);
+  return preflightInstalledDatabaseProofs(options.client, installed, options.onStatus);
 }
 
 export interface StrictAttestationSummary {
@@ -335,6 +356,99 @@ export function collectStrictTransportFailures(options: StrictTransportOptions):
 /** Throw unless the complete two-server transport trust gate is satisfied. */
 export function assertStrictTransportReady(options: StrictTransportOptions): void {
   const failures = collectStrictTransportFailures(options);
+  if (failures.length > 0) {
+    throw new Error(`strict transport verification failed: ${failures.join('; ')}`);
+  }
+}
+
+export interface StrictServerLegOptions {
+  serverIndex: 0 | 1;
+  secureChannelEstablished: boolean;
+  attestation: StrictAttestationSummary;
+  expectedPin?: StrictServerPin;
+  expectedServerId?: string;
+  requireOperatorIdentity?: boolean;
+  operatorIdentity?: StrictOperatorIdentitySummary;
+}
+
+/** Validate one provider before its policy or capability is requested. This
+ * intentionally does not inspect, name, or require the peer provider. */
+export function collectStrictServerLegFailures(options: StrictServerLegOptions): string[] {
+  const failures: string[] = [];
+  const prefix = `server ${options.serverIndex}`;
+  if (!options.secureChannelEstablished) {
+    failures.push(`${prefix}: secure-channel upgrade did not complete`);
+  }
+  if (!configured(options.expectedServerId)) {
+    failures.push(`${prefix}: no expected server id is configured`);
+  }
+
+  const hasMeasurementPin = configured(options.expectedPin?.measurementHex);
+  const hasBinaryPin = configured(options.expectedPin?.binarySha256Hex);
+  if (!options.expectedPin || (!hasMeasurementPin && !hasBinaryPin)) {
+    failures.push(`${prefix}: no attestation pin is configured`);
+  }
+  if (options.attestation.pinStatus !== 'match') {
+    failures.push(
+      `${prefix}: attestation pin status is ${options.attestation.pinStatus ?? 'missing'}, expected match`,
+    );
+  }
+  if (
+    options.attestation.state !== 'verified'
+    && options.attestation.state !== 'verified-vcek'
+  ) {
+    failures.push(
+      `${prefix}: attestation state is ${options.attestation.state}, expected verified or verified-vcek`,
+    );
+  }
+
+  if (hasMeasurementPin) {
+    if (options.attestation.state !== 'verified-vcek') {
+      failures.push(`${prefix}: a measurement pin requires verified-vcek attestation`);
+    }
+    if (options.attestation.sevStatus !== 'reportDataMatch') {
+      failures.push(`${prefix}: a measurement pin requires SEV-SNP reportDataMatch`);
+    }
+  } else if (options.attestation.sevStatus === 'noSevHost') {
+    if (!hasBinaryPin) failures.push(`${prefix}: a no-SEV host requires a binary pin`);
+  } else if (options.attestation.sevStatus !== 'reportDataMatch') {
+    failures.push(
+      `${prefix}: SEV status is ${options.attestation.sevStatus ?? 'missing'}, expected reportDataMatch or noSevHost`,
+    );
+  }
+
+  const identity = options.operatorIdentity;
+  const operatorRequired =
+    options.requireOperatorIdentity === true || options.attestation.sevStatus === 'noSevHost';
+  if (operatorRequired && identity?.state !== 'verified') {
+    failures.push(
+      `${prefix}: operator identity is ${identity?.state ?? 'missing'}, expected verified`,
+    );
+  } else if (identity?.state === 'verified') {
+    if (!configured(identity.serverId)) {
+      failures.push(`${prefix}: verified operator identity has no server id`);
+    } else if (configured(options.expectedServerId) && identity.serverId !== options.expectedServerId) {
+      failures.push(
+        `${prefix}: operator server id is ${identity.serverId}, expected ${options.expectedServerId}`,
+      );
+    }
+    if (options.attestation.sevStatus === 'noSevHost') {
+      const expectedBinary = options.expectedPin?.binarySha256Hex;
+      if (!configured(identity.binarySha256Hex)) {
+        failures.push(`${prefix}: verified operator identity has no binary sha256`);
+      } else if (
+        configured(expectedBinary)
+        && identity.binarySha256Hex!.toLowerCase() !== expectedBinary!.toLowerCase()
+      ) {
+        failures.push(`${prefix}: operator binary sha256 does not match the configured binary pin`);
+      }
+    }
+  }
+  return failures;
+}
+
+export function assertStrictServerLegReady(options: StrictServerLegOptions): void {
+  const failures = collectStrictServerLegFailures(options);
   if (failures.length > 0) {
     throw new Error(`strict transport verification failed: ${failures.join('; ')}`);
   }
