@@ -55,15 +55,17 @@ issuer/origin observing both credential flows unless the user gives an
 in-memory, one-attempt acknowledgement.
 
 The product Web flow performs that independence sequentially for DPF and
-Harmony: it strictly verifies and authorizes the first role before enabling the
-second provider selector. Failure of the second connection does not reconnect
-or spend the first role again, and no PIR query is sent until both roles pass
-the identity/catalog/root consistency gate, both exact capabilities authorize,
-and one post-authorization tree-top preflight succeeds. That preflight is
-one-shot: failure blocks the query without automatically retrying either
-capability. Harmony's large hint acquisition and per-query execution remain
-visibly separate roles, scopes and prices; an exact verified hint cache can be
-filled before choosing the query provider.
+Harmony: it may strictly verify the first role and display that role's signed
+policy before the second provider is known. It does **not** acquire or consume a
+capability yet. Before dialing the second role it locally verifies that both
+pinned operator keys are non-zero and distinct, without sending either peer
+choice or key to a server. Once both roles pass identity/catalog/root
+consistency, a one-shot tree-top preflight binds the selected `db_id`; only
+then may either role acquire or authorize a capability. A second connection or
+preflight failure therefore spends neither role and never falls back to an
+unverified query. Harmony's large hint acquisition and per-query execution
+remain visibly separate roles, scopes and prices; an already persisted exact
+hint cache remains inert until the same pre-authorization gate succeeds.
 
 Each staged one-query authorization is also bound to one exact `db_id`.
 Multi-database Harmony synchronization remains fail closed until the product

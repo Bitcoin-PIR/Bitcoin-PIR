@@ -53,10 +53,13 @@ import {
 } from './db-proof.js';
 import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
 import {
+  assertIndependentOperatorPinsV1,
   assertStrictDatabasePinCoverage,
   assertStrictServerLegReady,
   assertStrictTransportReady,
+  exactOperatorPinV1,
   preflightInstalledDatabaseProofs,
+  resolveIndependentOperatorPinsV1 as resolveIndependentOperatorPinsV1StrictHelper,
   verifyAndInstallDatabaseProofs,
   verifyInstallAndPreflightDatabaseProofs,
   type InstalledDatabaseProof,
@@ -225,36 +228,10 @@ export function resolveIndependentOperatorPinsV1(options: {
   second?: Uint8Array;
   legacyShared?: Uint8Array;
 }): readonly [Uint8Array, Uint8Array] {
-  if (options.strictVerification) {
-    const first = exactOperatorPin('first operator pin', options.first);
-    const second = exactOperatorPin('second operator pin', options.second);
-    if (equalBytes(first, second)) {
-      throw new Error('strict two-provider verification requires distinct operator pins');
-    }
-    return [first, second];
-  }
-  const fallback = options.legacyShared ?? PIR_OPERATOR_PUBKEY;
-  return [
-    exactOperatorPin('first operator pin', options.first ?? fallback),
-    exactOperatorPin('second operator pin', options.second ?? fallback),
-  ];
-}
-
-function exactOperatorPin(field: string, value: Uint8Array | undefined): Uint8Array {
-  if (!(value instanceof Uint8Array) || value.length !== 32) {
-    throw new Error(`${field} must be exactly 32 bytes`);
-  }
-  if (value.every((byte) => byte === 0)) throw new Error(`${field} must be non-zero`);
-  return value.slice();
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left[index] ^ right[index];
-  }
-  return difference === 0;
+  return resolveIndependentOperatorPinsV1StrictHelper({
+    ...options,
+    legacyShared: options.legacyShared ?? PIR_OPERATOR_PUBKEY,
+  });
 }
 
 export interface BatchPirClientConfig {
@@ -376,6 +353,14 @@ export interface BatchPirServerLegConfig {
   pinnedOperatorPubkey?: Uint8Array;
 }
 
+interface DpfLegOwnerV1 {
+  generation: number;
+  client: WasmDpfClient;
+  diagnostic: ManagedWebSocket;
+  url: string;
+  configSignature: string;
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 /**
@@ -410,9 +395,14 @@ export class BatchPirClientAdapter {
   private pairPreflightPromise: Promise<void> | null = null;
   private pairGeneration = 0;
   private pairPreflightDbId: number | null = null;
-  private authorizedQueryDbId: number | null = null;
+  private admissionDbId: number | null = null;
   /** Invalidates native state callbacks from a client being torn down. */
   private sessionGeneration = 0;
+  /** Per-leg async ownership. A disconnect/reconfiguration invalidates every
+   * late continuation before it may publish catalog/proof/readiness state. */
+  private legGenerations: [number, number] = [0, 0];
+  private legOwners: [DpfLegOwnerV1 | null, DpfLegOwnerV1 | null] = [null, null];
+  private legDisconnects: [Promise<void> | null, Promise<void> | null] = [null, null];
   /**
    * Per-server attestation snapshot. Filled in by `connect()` if
    * `useSecureChannel` is enabled (default). Default `'unattested'`
@@ -441,7 +431,16 @@ export class BatchPirClientAdapter {
   databaseProofs: Map<number, DatabaseProofStatus> = new Map();
 
   constructor(config: BatchPirClientConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      expectedArkFingerprint: config.expectedArkFingerprint?.slice() ?? config.expectedArkFingerprint,
+      expectedServer0Pin: config.expectedServer0Pin ? { ...config.expectedServer0Pin } : undefined,
+      expectedServer1Pin: config.expectedServer1Pin ? { ...config.expectedServer1Pin } : undefined,
+      pinnedOperatorPubkey: config.pinnedOperatorPubkey?.slice(),
+      pinnedOperatorPubkey0: config.pinnedOperatorPubkey0?.slice(),
+      pinnedOperatorPubkey1: config.pinnedOperatorPubkey1?.slice(),
+      databaseProofPins: config.databaseProofPins?.map((pin) => ({ ...pin })),
+    };
     this.ws0 = config.server0Url.trim() ? this.newDiagnosticSocket(0) : null;
     this.ws1 = config.server1Url.trim() ? this.newDiagnosticSocket(1) : null;
   }
@@ -449,21 +448,40 @@ export class BatchPirClientAdapter {
   /** Configure one provider without requiring or revealing the peer choice. */
   configureServerLeg(serverIndex: 0 | 1, leg: BatchPirServerLegConfig): void {
     if (!leg.url.trim()) throw new Error(`DPF server ${serverIndex} URL is required`);
-    if (this.strictLegReady[serverIndex] || this.wasmClient?.isServerConnected(serverIndex)) {
+    if (this.legDisconnects[serverIndex]) {
+      throw new Error(`DPF server ${serverIndex} disconnect is still in flight`);
+    }
+    if (this.legOwners[serverIndex]
+        || this.strictLegReady[serverIndex]
+        || this.wasmClient?.isServerConnected(serverIndex)) {
       throw new Error(`DPF server ${serverIndex} is already connected`);
     }
+    const configuredOperatorPin = serverIndex === 0
+      ? this.config.pinnedOperatorPubkey0
+      : this.config.pinnedOperatorPubkey1;
+    const operatorPin = this.isStrictVerification()
+      ? exactOperatorPinV1(
+        `DPF server ${serverIndex} operator pin`,
+        leg.pinnedOperatorPubkey ?? configuredOperatorPin,
+      )
+      : (leg.pinnedOperatorPubkey ?? configuredOperatorPin)?.slice();
+    ++this.legGenerations[serverIndex];
     if (serverIndex === 0) {
       this.config.server0Url = leg.url;
-      this.config.expectedServer0Pin = leg.expectedPin;
-      this.config.expectedServer0Id = leg.expectedServerId;
-      this.config.pinnedOperatorPubkey0 = leg.pinnedOperatorPubkey;
+      this.config.expectedServer0Pin = leg.expectedPin
+        ? { ...leg.expectedPin }
+        : this.config.expectedServer0Pin;
+      this.config.expectedServer0Id = leg.expectedServerId ?? this.config.expectedServer0Id;
+      this.config.pinnedOperatorPubkey0 = operatorPin;
       this.ws0?.disconnect();
       this.ws0 = this.newDiagnosticSocket(0);
     } else {
       this.config.server1Url = leg.url;
-      this.config.expectedServer1Pin = leg.expectedPin;
-      this.config.expectedServer1Id = leg.expectedServerId;
-      this.config.pinnedOperatorPubkey1 = leg.pinnedOperatorPubkey;
+      this.config.expectedServer1Pin = leg.expectedPin
+        ? { ...leg.expectedPin }
+        : this.config.expectedServer1Pin;
+      this.config.expectedServer1Id = leg.expectedServerId ?? this.config.expectedServer1Id;
+      this.config.pinnedOperatorPubkey1 = operatorPin;
       this.ws1?.disconnect();
       this.ws1 = this.newDiagnosticSocket(1);
     }
@@ -472,12 +490,20 @@ export class BatchPirClientAdapter {
 
   /**
    * Establish and strictly verify one provider transport. The first leg may
-   * immediately run its own admission session; no query method becomes usable
-   * until the independently selected second leg completes the same gate.
+   * expose its signed policy and other read-only session metadata; capability
+   * use and queries wait for the independently selected second leg and pair
+   * preflight.
    */
   async connectLeg(serverIndex: 0 | 1): Promise<void> {
     if (this.strictLegReady[serverIndex]) return;
+    if (this.legDisconnects[serverIndex]) {
+      throw new Error(`DPF server ${serverIndex} disconnect is still in flight`);
+    }
+    if (this.legOwners[serverIndex]) {
+      throw new Error(`DPF server ${serverIndex} connect is already in flight`);
+    }
     this.setState('connecting');
+    let owner: DpfLegOwnerV1 | null = null;
     try {
       if (!this.isStrictVerification()) {
         throw new Error('staged DPF provider admission requires strict verification');
@@ -487,18 +513,50 @@ export class BatchPirClientAdapter {
       }
       const url = serverIndex === 0 ? this.config.server0Url : this.config.server1Url;
       if (!url.trim()) throw new Error(`DPF server ${serverIndex} is not configured`);
+      this.operatorPinForLeg(serverIndex);
+      const peerIndex = serverIndex === 0 ? 1 : 0;
+      if (this.legDisconnects[peerIndex]) {
+        throw new Error(`DPF server ${peerIndex} disconnect is still in flight`);
+      }
+      if (this.legOwners[peerIndex] && !this.strictLegReady[peerIndex]) {
+        throw new Error(`DPF server ${peerIndex} connect is still in flight`);
+      }
+      if (this.strictLegReady[peerIndex] || this.wasmClient?.isServerConnected(peerIndex)) {
+        this.assertIndependentOperatorPins();
+      }
       const diagnostic = this.diagnosticSocket(serverIndex);
-      await diagnostic.connect();
       const client = this.ensureStagedWasmClient();
+      owner = {
+        generation: ++this.legGenerations[serverIndex],
+        client,
+        diagnostic,
+        url,
+        configSignature: this.legConfigSignature(serverIndex),
+      };
+      this.legOwners[serverIndex] = owner;
+      await diagnostic.connect();
+      try {
+        this.assertLegOwner(serverIndex, owner);
+      } catch (error) {
+        // ManagedWebSocket cannot cancel a socket whose `open` event has not
+        // fired yet. Close a late-opened socket before propagating the stale
+        // owner failure; disconnectLeg() replaces this leg's diagnostic
+        // object, so this cannot close a newer attempt.
+        diagnostic.disconnect();
+        throw error;
+      }
       await client.connectServer(serverIndex);
+      this.assertLegOwner(serverIndex, owner);
       if (this.config.useSecureChannel !== false) {
-        await this.attestAndUpgradeLeg(serverIndex);
+        await this.attestAndUpgradeLeg(serverIndex, owner);
+        this.assertLegOwner(serverIndex, owner);
       }
       if (this.isStrictVerification()) this.assertStrictLegReady(serverIndex);
 
       const catalogHandle = await client.fetchCatalogFromServer(serverIndex);
       let stagedCatalog: DatabaseCatalog;
       try {
+        this.assertLegOwner(serverIndex, owner);
         // The native call rejects before returning this handle unless every
         // first-leg db_id has matching kind/height/query geometry/seeds,
         // anchor and Merkle capability on this independently selected leg.
@@ -506,14 +564,19 @@ export class BatchPirClientAdapter {
       } finally {
         catalogHandle.free();
       }
+      this.assertLegOwner(serverIndex, owner);
       this.catalog ??= stagedCatalog;
       if (this.isStrictVerification()) this.assertPinsCoverCatalog();
-      this.installedProofsByLeg[serverIndex] = await this.verifyConfiguredDatabaseProofsForLeg(
+      const installedProofs = await this.verifyConfiguredDatabaseProofsForLeg(
         serverIndex,
+        () => this.assertLegOwner(serverIndex, owner!),
       );
+      this.assertLegOwner(serverIndex, owner);
+      this.installedProofsByLeg[serverIndex] = installedProofs;
       this.strictLegReady[serverIndex] = this.isStrictVerification();
 
       if (this.strictLegReady[0] && this.strictLegReady[1]) {
+        this.assertIndependentOperatorPins();
         this.assertStrictTransportReady();
         this.assertLegProofsMatch();
         this.secureChannelEstablished = this.secureChannelLegs.every(Boolean);
@@ -522,10 +585,16 @@ export class BatchPirClientAdapter {
         this.pairPreflightState = 'pending';
         this.pairPreflightPromise = null;
         this.pairPreflightDbId = null;
-        this.authorizedQueryDbId = null;
+        this.admissionDbId = null;
+        const pairGeneration = this.pairGeneration;
         try {
-          this.serverInfo = await fetchServerInfoJson(this.ws0 ?? diagnostic);
+          const serverInfo = await fetchServerInfoJson(this.ws0 ?? diagnostic);
+          this.assertCurrentStrictPair(client, pairGeneration);
+          this.serverInfo = serverInfo;
         } catch (error) {
+          // Diagnostics remain optional, but a peer disconnect/replacement
+          // during the await must invalidate this pair completion.
+          this.assertCurrentStrictPair(client, pairGeneration);
           this.log(`Server diagnostics unavailable: ${(error as Error)?.message ?? error}`, 'info');
         }
       }
@@ -534,13 +603,32 @@ export class BatchPirClientAdapter {
         `DPF server ${serverIndex} connect failed: ${(error as Error)?.message ?? error}`,
         'error',
       );
-      await this.disconnectLeg(serverIndex).catch(() => { /* preserve primary failure */ });
+      if (owner && this.legOwners[serverIndex] === owner) {
+        await this.disconnectLeg(serverIndex).catch(() => { /* preserve primary failure */ });
+      }
       throw error;
     }
   }
 
   /** Close one provider only; an authorized peer leg remains untouched. */
   async disconnectLeg(serverIndex: 0 | 1): Promise<void> {
+    const existing = this.legDisconnects[serverIndex];
+    if (existing) return existing;
+    const operation = this.disconnectLegOwned(serverIndex);
+    this.legDisconnects[serverIndex] = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.legDisconnects[serverIndex] === operation) {
+        this.legDisconnects[serverIndex] = null;
+      }
+    }
+  }
+
+  private async disconnectLegOwned(serverIndex: 0 | 1): Promise<void> {
+    const generation = ++this.legGenerations[serverIndex];
+    const configSignature = this.legConfigSignature(serverIndex);
+    this.legOwners[serverIndex] = null;
     this.connected = false;
     this.strictReady = false;
     this.secureChannelEstablished = false;
@@ -549,23 +637,29 @@ export class BatchPirClientAdapter {
     this.pairPreflightState = 'not-ready';
     this.pairPreflightPromise = null;
     this.pairPreflightDbId = null;
-    this.authorizedQueryDbId = null;
+    this.admissionDbId = null;
     this.secureChannelLegs[serverIndex] = false;
     this.strictLegReady[serverIndex] = false;
     this.installedProofsByLeg[serverIndex] = null;
     if (serverIndex === 0) {
-      this.ws0?.disconnect();
+      const diagnostic = this.ws0;
+      this.ws0 = null;
+      diagnostic?.disconnect();
       this.attestation.server0 = { state: 'unattested' };
       this.operatorIdentity.server0 = { state: 'not-checked' };
     } else {
-      this.ws1?.disconnect();
+      const diagnostic = this.ws1;
+      this.ws1 = null;
+      diagnostic?.disconnect();
       this.attestation.server1 = { state: 'unattested' };
       this.operatorIdentity.server1 = { state: 'not-checked' };
     }
     let hasSurvivingLeg = false;
-    if (this.wasmClient) {
-      await this.wasmClient.disconnectServer(serverIndex);
-      hasSurvivingLeg = this.wasmClient.isServerConnected(serverIndex === 0 ? 1 : 0);
+    const client = this.wasmClient;
+    if (client) {
+      await client.disconnectServer(serverIndex);
+      this.assertLegDisconnectedOwner(serverIndex, generation, client, configSignature);
+      hasSurvivingLeg = client.isServerConnected(serverIndex === 0 ? 1 : 0);
     }
     if (!hasSurvivingLeg) {
       // The native client invalidates these bindings when its final transport
@@ -584,41 +678,48 @@ export class BatchPirClientAdapter {
     return this.strictLegReady[serverIndex];
   }
 
-  /** Run the Merkle tree-top gate after both provider-local capabilities have
-   * been authorized. Query methods remain fail-closed until this succeeds. */
-  async finalizeStrictPair(dbId: number): Promise<void> {
+  /**
+   * Authenticate the selected database tree-tops after both independently
+   * pinned provider legs agree on the proof, but before capability acquisition
+   * or authorization. Query and authorization methods remain fail closed until
+   * this one-shot gate succeeds.
+   */
+  async prepareStrictAdmission(dbId: number): Promise<void> {
     if (!Number.isInteger(dbId) || dbId < 0 || dbId > 255) {
-      throw new Error('DPF post-authorization preflight requires an exact u8 db_id');
+      throw new Error('DPF pre-authorization preflight requires an exact u8 db_id');
     }
     if (!this.pairConsistencyReady
         || !this.strictLegReady.every(Boolean)
         || !this.secureChannelLegs.every(Boolean)
         || !this.wasmClient) {
-      throw new Error('DPF pair consistency is not ready for post-authorization preflight');
+      throw new Error('DPF pair consistency is not ready for pre-authorization preflight');
     }
     if (this.pairPreflightState === 'complete') {
-      if (this.authorizedQueryDbId !== dbId) {
-        throw new Error(`DPF pair is already finalized for db_id ${this.authorizedQueryDbId}`);
+      if (this.admissionDbId !== dbId) {
+        throw new Error(`DPF admission is already prepared for db_id ${this.admissionDbId}`);
       }
       return;
     }
     if (this.pairPreflightState === 'failed') {
-      throw new Error('DPF post-authorization preflight already failed; retry is disabled');
+      throw new Error('DPF pre-authorization preflight already failed; retry is disabled');
     }
     if (this.pairPreflightState === 'in-flight') {
       if (this.pairPreflightDbId !== dbId) {
         throw new Error(`DPF preflight is already in flight for db_id ${this.pairPreflightDbId}`);
       }
+      const client = this.wasmClient;
       const generation = this.pairGeneration;
       await this.pairPreflightPromise;
-      if (this.pairGeneration !== generation || !this.isPairPreflightComplete()) {
-        throw new Error('DPF post-authorization preflight was invalidated while in flight');
+      this.assertCurrentStrictPair(client, generation);
+      if (!this.isPairPreflightComplete()) {
+        throw new Error('DPF pre-authorization preflight was invalidated while in flight');
       }
       return;
     }
 
     const client = this.wasmClient;
     const generation = this.pairGeneration;
+    this.assertCurrentStrictPair(client, generation);
     const installed = this.installedProofsByLeg[0]?.find((item) => item.pin.dbId === dbId);
     if (!installed || !this.installedProofsByLeg[1]?.some((item) => item.pin.dbId === dbId)) {
       throw new Error(`DPF pair has no matching installed proof for db_id ${dbId}`);
@@ -629,24 +730,19 @@ export class BatchPirClientAdapter {
       client,
       [installed],
       (dbId, status) => {
-        if (this.pairGeneration === generation && this.wasmClient === client) {
-          this.recordDatabaseProofStatus(dbId, status);
-        }
+        this.recordDatabaseProofStatus(dbId, status);
       },
+      () => this.assertCurrentStrictPair(client, generation),
     ).then(() => undefined);
     this.pairPreflightPromise = attempt;
     try {
       await attempt;
-      if (this.pairGeneration !== generation
-          || this.wasmClient !== client
-          || !this.pairConsistencyReady
-          || !this.strictLegReady.every(Boolean)
-          || !this.secureChannelLegs.every(Boolean)
-          || this.pairPreflightState !== 'in-flight') {
-        throw new Error('DPF post-authorization preflight was invalidated while in flight');
+      this.assertCurrentStrictPair(client, generation);
+      if (this.pairPreflightState !== 'in-flight') {
+        throw new Error('DPF pre-authorization preflight was invalidated while in flight');
       }
       this.pairPreflightState = 'complete';
-      this.authorizedQueryDbId = dbId;
+      this.admissionDbId = dbId;
       this.strictReady = true;
       this.connected = true;
       this.setState('connected');
@@ -674,6 +770,86 @@ export class BatchPirClientAdapter {
       }
     });
     return client;
+  }
+
+  private operatorPinForLeg(serverIndex: 0 | 1): Uint8Array {
+    const configured = serverIndex === 0
+      ? this.config.pinnedOperatorPubkey0
+      : this.config.pinnedOperatorPubkey1;
+    return exactOperatorPinV1(
+      `DPF server ${serverIndex} operator pin`,
+      configured ?? (this.isStrictVerification()
+        ? undefined
+        : this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY),
+    );
+  }
+
+  private assertIndependentOperatorPins(): readonly [Uint8Array, Uint8Array] {
+    return assertIndependentOperatorPinsV1({
+      first: this.config.pinnedOperatorPubkey0,
+      second: this.config.pinnedOperatorPubkey1,
+    });
+  }
+
+  private legConfigSignature(serverIndex: 0 | 1): string {
+    const pin = serverIndex === 0
+      ? this.config.pinnedOperatorPubkey0
+      : this.config.pinnedOperatorPubkey1;
+    return JSON.stringify({
+      url: serverIndex === 0 ? this.config.server0Url : this.config.server1Url,
+      expectedPin: serverIndex === 0
+        ? this.config.expectedServer0Pin
+        : this.config.expectedServer1Pin,
+      expectedServerId: serverIndex === 0
+        ? this.config.expectedServer0Id
+        : this.config.expectedServer1Id,
+      operatorPin: pin instanceof Uint8Array ? bytesToHex(pin) : null,
+      databaseProofPins: this.config.databaseProofPins ?? [],
+    });
+  }
+
+  private assertLegOwner(serverIndex: 0 | 1, owner: DpfLegOwnerV1): void {
+    const currentDiagnostic = serverIndex === 0 ? this.ws0 : this.ws1;
+    if (this.legGenerations[serverIndex] !== owner.generation
+        || this.legOwners[serverIndex] !== owner
+        || this.wasmClient !== owner.client
+        || currentDiagnostic !== owner.diagnostic
+        || (serverIndex === 0 ? this.config.server0Url : this.config.server1Url) !== owner.url
+        || this.legConfigSignature(serverIndex) !== owner.configSignature) {
+      throw new Error(`DPF server ${serverIndex} connection attempt was invalidated`);
+    }
+  }
+
+  private assertLegDisconnectedOwner(
+    serverIndex: 0 | 1,
+    generation: number,
+    client: WasmDpfClient,
+    configSignature: string,
+  ): void {
+    if (this.legGenerations[serverIndex] !== generation
+        || this.legOwners[serverIndex] !== null
+        || this.wasmClient !== client
+        || this.legConfigSignature(serverIndex) !== configSignature) {
+      throw new Error(`DPF server ${serverIndex} disconnect was invalidated`);
+    }
+  }
+
+  private assertCurrentStrictPair(client: WasmDpfClient, generation: number): void {
+    if (this.pairGeneration !== generation
+        || this.wasmClient !== client
+        || !this.pairConsistencyReady
+        || !this.strictLegReady.every(Boolean)
+        || !this.secureChannelLegs.every(Boolean)) {
+      throw new Error('DPF strict pair attempt was invalidated');
+    }
+    const first = this.legOwners[0];
+    const second = this.legOwners[1];
+    if (!first || !second) throw new Error('DPF strict pair has no current leg owners');
+    this.assertLegOwner(0, first);
+    this.assertLegOwner(1, second);
+    this.assertIndependentOperatorPins();
+    this.assertStrictTransportReady();
+    this.assertLegProofsMatch();
   }
 
   private newDiagnosticSocket(serverIndex: 0 | 1): ManagedWebSocket {
@@ -767,7 +943,7 @@ export class BatchPirClientAdapter {
       this.pairConsistencyReady = this.strictReady;
       this.pairPreflightState = this.strictReady ? 'complete' : 'not-ready';
       this.pairPreflightDbId = null;
-      this.authorizedQueryDbId = null;
+      this.admissionDbId = null;
       // Best-effort diagnostics only. Failure here cannot replace or weaken
       // the post-channel catalog/proof/tree-top trust gate above.
       try {
@@ -845,6 +1021,15 @@ export class BatchPirClientAdapter {
       }
       return this.wasmClient;
     };
+    const authorizedClient = (): WasmDpfClient => {
+      const current = client();
+      if (!this.isPreparedAdmissionDb(dbId)) {
+        throw new Error(
+          `DPF capability use requires prepared strict admission for db_id ${dbId}`,
+        );
+      }
+      return current;
+    };
     return {
       assertTrustAnchor: (trust) => {
         client();
@@ -879,11 +1064,13 @@ export class BatchPirClientAdapter {
       assertRetainedSessionBinding: (policy, nowUnix) =>
         client().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
-        client().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
+        authorizedClient().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
-        client().authorizeRetainedService(serverIndex, dbId, policy, proof, nowUnix),
+        authorizedClient().authorizeRetainedService(
+          serverIndex, dbId, policy, proof, nowUnix,
+        ),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        client().requestServicePowChallenge(
+        authorizedClient().requestServicePowChallenge(
           serverIndex,
           dbId,
           policy,
@@ -972,9 +1159,9 @@ export class BatchPirClientAdapter {
     }
     if (this.isStrictVerification()
         && this.pairPreflightDbId !== null
-        && this.authorizedQueryDbId !== dbId) {
+        && this.admissionDbId !== dbId) {
       throw new Error(
-        `strict DPF admission is bound to db_id ${this.authorizedQueryDbId}, not db_id ${dbId}`,
+        `strict DPF admission is bound to db_id ${this.admissionDbId}, not db_id ${dbId}`,
       );
     }
     onProgress?.('Level 1', 'sending batched INDEX queries');
@@ -1021,9 +1208,9 @@ export class BatchPirClientAdapter {
     if (!this.wasmClient) throw new Error('Not connected');
     if (this.isStrictVerification()
         && this.pairPreflightDbId !== null
-        && this.authorizedQueryDbId !== dbId) {
+        && this.admissionDbId !== dbId) {
       throw new Error(
-        `strict DPF Merkle verification is bound to db_id ${this.authorizedQueryDbId}, not db_id ${dbId}`,
+        `strict DPF Merkle verification is bound to db_id ${this.admissionDbId}, not db_id ${dbId}`,
       );
     }
     onProgress?.('Merkle', `verifying ${results.length} items`);
@@ -1044,6 +1231,8 @@ export class BatchPirClientAdapter {
 
   private async teardown(): Promise<void> {
     ++this.sessionGeneration;
+    this.legGenerations = [this.legGenerations[0] + 1, this.legGenerations[1] + 1];
+    this.legOwners = [null, null];
     this.strictReady = false;
     this.secureChannelEstablished = false;
     this.pairGeneration += 1;
@@ -1054,13 +1243,17 @@ export class BatchPirClientAdapter {
     this.pairPreflightState = 'not-ready';
     this.pairPreflightPromise = null;
     this.pairPreflightDbId = null;
-    this.authorizedQueryDbId = null;
+    this.admissionDbId = null;
     this.connected = false;
     this.catalog = null;
     this.serverInfo = null;
     this.databaseProofs.clear();
-    this.ws0?.disconnect();
-    this.ws1?.disconnect();
+    const ws0 = this.ws0;
+    const ws1 = this.ws1;
+    this.ws0 = null;
+    this.ws1 = null;
+    ws0?.disconnect();
+    ws1?.disconnect();
     const client = this.wasmClient;
     if (client) {
       // Null the handle first so a concurrent teardown can't double-free.
@@ -1117,6 +1310,7 @@ export class BatchPirClientAdapter {
 
   private async verifyConfiguredDatabaseProofsForLeg(
     serverIndex: 0 | 1,
+    assertCurrent: () => void,
   ): Promise<InstalledDatabaseProof[]> {
     if (!this.wasmClient) throw new Error('Not connected');
     const client = this.wasmClient;
@@ -1130,6 +1324,7 @@ export class BatchPirClientAdapter {
       },
       pins,
       onStatus: (dbId, status) => this.recordDatabaseProofStatus(dbId, status),
+      assertCurrent,
     });
   }
 
@@ -1174,7 +1369,19 @@ export class BatchPirClientAdapter {
     return this.pairPreflightState === 'complete';
   }
 
+  /** Staged admission binds one exact database. The legacy all-at-once path
+   * preflights every pinned database, so retain compatibility only for roots
+   * whose verified status was actually published by that completed gate. */
+  private isPreparedAdmissionDb(dbId: number): boolean {
+    if (!this.strictReady || !this.isPairPreflightComplete()) return false;
+    if (this.admissionDbId !== null) return this.admissionDbId === dbId;
+    return this.pairPreflightDbId === null
+      && this.databaseProofs.get(dbId)?.state === 'verified';
+  }
+
   private resetVerificationState(): void {
+    this.legGenerations = [this.legGenerations[0] + 1, this.legGenerations[1] + 1];
+    this.legOwners = [null, null];
     this.connected = false;
     this.strictReady = false;
     this.secureChannelEstablished = false;
@@ -1186,7 +1393,7 @@ export class BatchPirClientAdapter {
     this.pairPreflightState = 'not-ready';
     this.pairPreflightPromise = null;
     this.pairPreflightDbId = null;
-    this.authorizedQueryDbId = null;
+    this.admissionDbId = null;
     this.catalog = null;
     this.serverInfo = null;
     this.databaseProofs.clear();
@@ -1218,6 +1425,7 @@ export class BatchPirClientAdapter {
       expectedServerIds: [this.config.expectedServer0Id, this.config.expectedServer1Id],
       requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
       operatorIdentities: [this.operatorIdentity.server0, this.operatorIdentity.server1],
+      operatorPins: [this.config.pinnedOperatorPubkey0, this.config.pinnedOperatorPubkey1],
     });
   }
 
@@ -1233,6 +1441,9 @@ export class BatchPirClientAdapter {
       requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
       operatorIdentity:
         serverIndex === 0 ? this.operatorIdentity.server0 : this.operatorIdentity.server1,
+      operatorPin: serverIndex === 0
+        ? this.config.pinnedOperatorPubkey0
+        : this.config.pinnedOperatorPubkey1,
     });
   }
 
@@ -1340,14 +1551,21 @@ export class BatchPirClientAdapter {
     }
   }
 
-  private async attestAndUpgradeLeg(serverIndex: 0 | 1): Promise<void> {
-    if (!this.wasmClient) throw new Error('WASM client not initialised');
+  private async attestAndUpgradeLeg(
+    serverIndex: 0 | 1,
+    owner: DpfLegOwnerV1,
+  ): Promise<void> {
+    const client = this.wasmClient;
+    if (!client) throw new Error('WASM client not initialised');
+    this.assertLegOwner(serverIndex, owner);
     this.secureChannelLegs[serverIndex] = false;
     let attestation: WasmAttestVerification | null = null;
     try {
       try {
-        attestation = await this.wasmClient.attest(serverIndex);
+        attestation = await client.attest(serverIndex);
+        this.assertLegOwner(serverIndex, owner);
       } catch (error) {
+        this.assertLegOwner(serverIndex, owner);
         const failed: ServerAttestation = { state: 'mismatch' };
         if (serverIndex === 0) this.attestation.server0 = failed;
         else this.attestation.server1 = failed;
@@ -1367,12 +1585,15 @@ export class BatchPirClientAdapter {
       }
 
       try {
-        await this.wasmClient.upgradeServerToSecureChannel(
+        this.assertLegOwner(serverIndex, owner);
+        await client.upgradeServerToSecureChannel(
           serverIndex,
           attestation.serverStaticPub,
         );
+        this.assertLegOwner(serverIndex, owner);
         this.secureChannelLegs[serverIndex] = true;
       } catch (error) {
+        this.assertLegOwner(serverIndex, owner);
         summary = { ...summary, state: 'mismatch' };
         if (serverIndex === 0) this.attestation.server0 = summary;
         else this.attestation.server1 = summary;
@@ -1387,13 +1608,20 @@ export class BatchPirClientAdapter {
         const configuredPin = serverIndex === 0
           ? this.config.pinnedOperatorPubkey0
           : this.config.pinnedOperatorPubkey1;
-        const pin = exactOperatorPin(
+        const pin = exactOperatorPinV1(
           `server ${serverIndex} operator pin`,
           configuredPin ?? (this.isStrictVerification()
             ? undefined
             : this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY),
         );
-        const identity = await this.verifyOperatorIdentityOne(serverIndex, attestation, pin);
+        this.assertLegOwner(serverIndex, owner);
+        const identity = await this.verifyOperatorIdentityOne(
+          serverIndex,
+          attestation,
+          pin,
+          () => this.assertLegOwner(serverIndex, owner),
+        );
+        this.assertLegOwner(serverIndex, owner);
         if (serverIndex === 0) this.operatorIdentity.server0 = identity;
         else this.operatorIdentity.server1 = identity;
         this.config.onOperatorIdentity?.(serverIndex, identity);
@@ -1691,8 +1919,10 @@ export class BatchPirClientAdapter {
     idx: 0 | 1,
     att: WasmAttestVerification | null,
     pin: Uint8Array,
+    assertCurrent?: () => void,
   ): Promise<OperatorIdentity> {
-    if (!this.wasmClient) {
+    const client = this.wasmClient;
+    if (!client) {
       return { state: 'error', error: 'wasm client not initialised' };
     }
     if (!att) {
@@ -1700,8 +1930,10 @@ export class BatchPirClientAdapter {
     }
     let v: WasmAnnounceVerification;
     try {
-      v = await this.wasmClient.announce(idx);
+      v = await client.announce(idx);
+      assertCurrent?.();
     } catch (e) {
+      assertCurrent?.();
       const msg = (e as Error)?.message ?? String(e);
       // A server started without --identity-* answers RESP_ERROR
       // "announce not configured" — an expected, benign state.

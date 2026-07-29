@@ -161,6 +161,55 @@ describe('strict database proof flow', () => {
     expect(client.preflightDatabase).toHaveBeenCalledWith(PIN.dbId);
   });
 
+  it('frees a late proof handle instead of installing it after owner invalidation', async () => {
+    let release!: (handle: WasmDatabaseProof) => void;
+    const handle = proofHandle(PIN);
+    let current = true;
+    const client: StrictDatabaseProofClient = {
+      verifyDatabaseProof: vi.fn(() => new Promise<WasmDatabaseProof>((resolve) => {
+        release = resolve;
+      })),
+      installVerifiedDatabaseProof: vi.fn(),
+      preflightDatabase: vi.fn(),
+    };
+    const verification = verifyAndInstallDatabaseProofs({
+      client,
+      pins: [PIN],
+      assertCurrent: () => {
+        if (!current) throw new Error('leg owner invalidated');
+      },
+    });
+
+    current = false;
+    release(handle);
+
+    await expect(verification).rejects.toThrow('leg owner invalidated');
+    expect(handle.freeMock).toHaveBeenCalledOnce();
+    expect(client.installVerifiedDatabaseProof).not.toHaveBeenCalled();
+  });
+
+  it('retains proof ownership when the leg is invalidated immediately before install', async () => {
+    const handle = proofHandle(PIN);
+    let checks = 0;
+    const client: StrictDatabaseProofClient = {
+      verifyDatabaseProof: vi.fn(async () => handle),
+      installVerifiedDatabaseProof: vi.fn(),
+      preflightDatabase: vi.fn(),
+    };
+
+    await expect(verifyAndInstallDatabaseProofs({
+      client,
+      pins: [PIN],
+      assertCurrent: () => {
+        checks += 1;
+        if (checks === 4) throw new Error('leg owner invalidated before install');
+      },
+    })).rejects.toThrow('leg owner invalidated before install');
+
+    expect(handle.freeMock).toHaveBeenCalledOnce();
+    expect(client.installVerifiedDatabaseProof).not.toHaveBeenCalled();
+  });
+
   it('rejects an empty strict pin set', async () => {
     const client = {
       verifyDatabaseProof: vi.fn(),
@@ -335,6 +384,7 @@ const STRICT_TRANSPORT_OK: StrictTransportOptions = {
     { state: 'verified', serverId: 'pir1', binarySha256Hex: '11'.repeat(32) },
     { state: 'verified', serverId: 'pir2', binarySha256Hex: '33'.repeat(32) },
   ],
+  operatorPins: [new Uint8Array(32).fill(0x41), new Uint8Array(32).fill(0x42)],
 };
 
 describe('strict transport gate', () => {
@@ -347,7 +397,26 @@ describe('strict transport gate', () => {
       expectedServerId: STRICT_TRANSPORT_OK.expectedServerIds[0],
       requireOperatorIdentity: true,
       operatorIdentity: STRICT_TRANSPORT_OK.operatorIdentities![0],
+      operatorPin: STRICT_TRANSPORT_OK.operatorPins![0],
     })).toEqual([]);
+  });
+
+  it('rejects missing, zero, or duplicate browser-local operator pins', () => {
+    expect(collectStrictTransportFailures({
+      ...STRICT_TRANSPORT_OK,
+      operatorPins: [undefined, STRICT_TRANSPORT_OK.operatorPins![1]],
+    })).toContain('first operator pin must be exactly 32 bytes');
+    expect(collectStrictTransportFailures({
+      ...STRICT_TRANSPORT_OK,
+      operatorPins: [new Uint8Array(32), STRICT_TRANSPORT_OK.operatorPins![1]],
+    })).toContain('first operator pin must be non-zero');
+    expect(collectStrictTransportFailures({
+      ...STRICT_TRANSPORT_OK,
+      operatorPins: [
+        STRICT_TRANSPORT_OK.operatorPins![0],
+        STRICT_TRANSPORT_OK.operatorPins![0]?.slice(),
+      ],
+    })).toContain('strict two-provider verification requires distinct operator pins');
   });
 
   it('accepts a binary-pinned Hetzner no-SEV server plus VCEK-verified VPSBG SEV-SNP', () => {
