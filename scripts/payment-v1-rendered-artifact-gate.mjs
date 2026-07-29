@@ -691,6 +691,9 @@ function safeRelativePath(value, label) {
   ) {
     fail(`${label} must be a bounded portable relative path`);
   }
+  if (/INVALID(?:_|-)REPLACE/u.test(value)) {
+    fail(`${label} retains an invalid replacement marker`);
+  }
   const components = value.split("/");
   if (components.some((component) => component === "" || component === "." || component === "..")) {
     fail(`${label} contains an empty, dot, or parent component`);
@@ -1059,6 +1062,9 @@ function validatePlan(plan) {
   ) {
     fail("render plan deployment_id must be a bounded lowercase slug");
   }
+  if (plan.deployment_id.startsWith("replace-")) {
+    fail("render plan deployment_id retains the repository example marker");
+  }
   if (typeof plan.deployment_profile !== "string" || !PROFILE_CATALOG[plan.deployment_profile]) {
     fail(
       `render plan deployment_profile must be one of ${JSON.stringify(Object.keys(PROFILE_CATALOG).sort(asciiCompare))}`,
@@ -1323,7 +1329,78 @@ function parseSystemdUnit(text, label) {
   };
 }
 
-function validateProfileUnitPolicy(deploymentProfile, fragmentPath, hardening, label) {
+const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "edge-hetzner-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
+  "edge-rollback-authority-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "issuer-lightning-signet-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-core-lightning.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-lightning-preflight.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-issuer.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "provider-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "rollback-authority-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-rollback-authority.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
+    ]),
+  }),
+});
+
+function validateProfileUnitPolicy(deploymentProfile, fragmentPath, conditions, hardening, label) {
+  const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
+  if (!expectedConditions) {
+    fail(`${label} has no closed profile-specific activation-condition policy`);
+  }
+  if (canonicalize(conditions) !== canonicalize([...expectedConditions].sort(asciiCompare))) {
+    fail(`${label} must retain the exact global and profile-specific activation conditions`);
+  }
   const privateRequestEdge =
     (deploymentProfile === "edge-hetzner-v1" &&
       new Set([
@@ -1782,6 +1859,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       validateProfileUnitPolicy(
         plan.deployment_profile,
         specification.target_path,
+        parsed.conditions,
         parsed.hardening,
         `rendered unit ${specification.target_path}`,
       );
@@ -2054,6 +2132,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     validateProfileUnitPolicy(
       manifest.deployment_profile,
       unit.fragment_path,
+      unit.conditions,
       unit.hardening,
       label,
     );

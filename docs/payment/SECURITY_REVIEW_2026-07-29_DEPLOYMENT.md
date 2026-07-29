@@ -1,10 +1,10 @@
 # Payment V1 deployment security review — 2026-07-29
 
-Status: source-review record for the current deployment-preparation tree. This
-is neither a claim that the source has merged nor production approval. It
-records source-level findings, closure evidence and the remaining live
-activation decisions. No remote host, public Nostr relay, persistent Lightning
-wallet/channel or real-value payment was touched during this review.
+Status: source-review record for the deployment-preparation tree built on the
+merged Payment V1 source. It is not production approval. It records source-level
+findings, closure evidence and the remaining live activation decisions. No
+remote host, public Nostr relay, persistent Lightning wallet/channel or
+real-value payment was touched during this review.
 
 ## Deployment phases and independent approvals
 
@@ -13,16 +13,17 @@ The deployment state must always name exactly one of these phases:
 | Phase | Meaning | What this review permits |
 | --- | --- | --- |
 | Source merge | reviewed source and exact-head CI only | merge and preserve exact source evidence; no service activation |
-| Private no-funds | loopback/private, unrouted target-host drill with synthetic credentials and no valuable coins | collect rendered/runtime evidence only after the separate remote-host approval |
+| Private no-funds | loopback/private, unrouted target-host drill with synthetic credentials and no valuable coins | offline-render any approved closed plan; remotely install/start only the edge profile after separate remote-host and bounded activation approvals, then stop it and revoke its role sentinel |
 | Public Signet | persistent staging-only Bitcoin/CLN identities, test coins/channels and public staging ingress | only after separate approvals for remote mutation, persistent Signet custody and each public publication |
 | Production mainnet | public production service with production keys and potentially real funds | blocked: the repository has no reviewed mainnet deployment preflight |
 
 An approval for one row or action does not authorize another. In particular,
-remote-host mutation, persistent Signet wallet/channel creation, faucet/test-
-coin handling, public Nostr publication, VPSBG UKI build/upload/reboot, install
-or use of production keys, and any mainnet/real-value operation are separate
-approval gates. DNS/public routing is also an activation action, not a source-
-merge consequence.
+remote-host mutation, bounded private service activation, persistent Signet
+wallet/channel creation, faucet/test-coin handling, external Cashu-mint access,
+public Nostr publication, VPSBG UKI build/upload/reboot, install or use of
+production keys, and any mainnet/real-value operation are separate approval
+gates. DNS/public routing is also an activation action, not a source-merge
+consequence.
 
 The deployment input inventory is maintained in
 [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md). Start a render plan
@@ -92,6 +93,21 @@ hardlink, reset, drop-in, environment-file, credential or cross-profile path.
 Secret ownership is bound to the exact consuming service identity rather than
 an arbitrary non-root UID/GID.
 
+A post-merge independent deployment-plan review found one P1 ambiguity and six
+P2 documentation/gate drifts before activation. The current `provider-v1`
+profile was incorrectly described as renderable after omitting Standard-Cashu
+offers even though its closed unit requires Cashu custody/recovery/exposure
+material; it is now explicitly blocked until a production mint is selected, and
+a mint-free provider requires a separate reviewed profile. Private no-funds is
+now edge-only for remote installation/live evidence, service start has its own
+bounded approval, and every closed service unit requires its exact
+profile-specific activation-sentinel set in addition to the global sentinel. The
+edge sentinel is revoked after the private drill. Both independent relay views
+are shown, source commit binding is correctly assigned to the external approval
+tuple, and external mint access has one consistent approval boundary. The
+render gate now rejects both invalid replacement-marker forms in payload paths
+and repository example deployment IDs, with dedicated negative tests.
+
 The Linux collector is deliberately root-only and live-only. It binds the
 approved plan/manifest to machine ID, boot ID, uptime, a fresh internal
 challenge, installed bytes, owner/mode/link state, ACLs, xattrs, file
@@ -133,8 +149,9 @@ The scan does not prove ownership of an already-connected Unix socket FD after
 connection reset. Stop Caddy and HAProxy, then run `collect-stopped-edge` while
 all units are inactive/dead and every manifest socket is absent. It requires
 locked/non-login service accounts plus an empty protected-credential closure;
-only then start HAProxy before Caddy and collect new-generation live evidence,
-without a warm reload. The collector also binds its namespace to a
+only then, under the separate bounded service-activation approval, start
+HAProxy before Caddy and collect new-generation live evidence, without a warm
+reload. The collector also binds its namespace to a
 visible systemd PID 1, while the operator must independently attest that this
 is the target host's initial PID namespace rather than a private namespace.
 This is a trusted-root/authentication-policy argument, not proof against a
@@ -252,10 +269,13 @@ service and measured UKI remain unchanged.
 
 No source test proves the installed Linux filesystem, systemd serialization,
 supplementary groups, mount namespace, cgroup limits, CLN/Bitcoin socket shape
-or restart behavior. A private no-funds staging drill must run the live
-collector and access probes. Memory/task/file-descriptor/OOM budgets also need
-workload measurements before co-locating relay, issuer, CLN and provider on one
-Hetzner host; arbitrary unmeasured limits are not safe defaults.
+or restart behavior. The private no-funds staging drill must run the edge
+stopped/fresh collector and access probes. Provider/authority live evidence
+belongs to their later activation gates, and issuer live evidence starts only
+after the persistent-Signet-custody approval because CLN startup creates
+persistent identity/wallet state. Memory/task/file-descriptor/OOM budgets also
+need workload measurements before co-locating relay, issuer, CLN and provider
+on one Hetzner host; arbitrary unmeasured limits are not safe defaults.
 
 ## P2 follow-up boundaries
 
@@ -298,15 +318,18 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
    ARC proofs, capability identifiers, query addresses/results, request bodies
    or forwarded client IPs.
 8. ARC remains visibly experimental, opt-in and production-disabled.
-9. Remote host mutation, persistent Signet identity/wallet/channel creation,
-   Signet faucet/test-coin use, DNS/public Nostr publication, VPSBG UKI
+9. Remote host mutation, bounded service activation, persistent Signet
+   identity/wallet/channel creation, Signet faucet/test-coin use, external
+   Cashu-mint access, DNS/public Nostr publication, VPSBG UKI
    build/upload/reboot, production-key installation/use, and mainnet/real-value
    operations each require a separate approval. No approval implies another.
 10. A Standard Cashu offer, or any other Cashu offer that depends on an
     external mint, must be omitted from current and retained signed policies
     until an exact production mint, WebPKI/pin set, unit, custody limits and
     recovery/outage procedure have been selected and approved. Local CDK fake-
-    wallet evidence is not such a mint.
+    wallet evidence is not such a mint. Because the current closed
+    `provider-v1` profile always carries those inputs, omitting the offers also
+    blocks that profile rather than authorizing a mint-free render.
 
 ## Required evidence before activation
 
@@ -325,7 +348,8 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
   host-initial-PID-namespace evidence, with no warm reload or surviving
   connection graph;
 - target-host no-core/no-swap evidence, including the host core pattern;
-- private provider/issuer/directory canaries with strict client verification;
+- separately approved private provider/issuer canaries with strict client
+  verification, and a directory canary only after relay selection is resolved;
   and
 - final manual browser acceptance by the user before public routing changes.
 
@@ -336,17 +360,16 @@ configuration profile, negative tests and security review are implemented.
 
 ### Post-merge evidence register
 
-Do not backfill this dated source review with guessed commit or CI values.
-Create an external, non-secret activation record after merge and fill each row
-from independently verified artifacts. `UNSET` means the phase must not
-advance.
+Do not backfill this dated source review with guessed CI or deployment values.
+Create an external, non-secret activation record and fill each row from
+independently verified artifacts. `UNSET` means the phase must not advance.
 
 | Evidence field | Required value | Current source-review value |
 | --- | --- | --- |
-| merged source commit | exact 40-hex commit reachable from the approved base | `UNSET_AFTER_MERGE` |
-| exact-head CI | workflow URLs, conclusion and tested head | `UNSET_AFTER_MERGE` |
+| merged source commit | exact 40-hex commit reachable from the approved base | `49dc56bb735a6df6a1665c91f0636188d65a66b5` (source parent `4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4`) |
+| exact-head CI | workflow URLs, conclusion and tested head | `UNSET_FOR_FINAL_DEPLOYMENT_CLOSEOUT_HEAD` |
 | rendered plan | approved plan digest and selected skeleton/profile | `UNSET_BEFORE_RENDER` |
 | installed target evidence | stopped-edge and fresh-live full-file digests | `UNSET_BEFORE_REMOTE_DRILL` |
 | relay selection | resolved source/archive/lockfile/binary/config/key pins | `UNRESOLVED` |
 | Lightning network gate | approved default-Signet preflight record, or a future reviewed mainnet profile | `UNSET`; mainnet profile not implemented |
-| Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission | `UNSET`; omit mint-dependent offers |
+| Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission | `UNSET`; omit mint-dependent offers and keep `provider-v1` blocked |

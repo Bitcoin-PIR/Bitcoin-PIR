@@ -45,7 +45,9 @@ non-secret input, failure-domain, approval and evidence register.
 2. Copy exactly one skeleton into that directory as `plan.json`. Do not edit the
    repository example. Create a separate mode-`0700` private input root for the
    payload bytes.
-3. Replace every `INVALID_REPLACE_...` value and every example UID/GID. Replace
+3. Replace every `INVALID_REPLACE_...` or `INVALID-REPLACE-...` value and every
+   example UID/GID. The render gate rejects either marker form in a payload
+   `source_path`. Replace
    `deployment_id` with a unique, approved lowercase slug that is not reused by
    another plan, host generation or failure domain. Keep the exact top-level,
    service-identity, rendered-artifact and payload-artifact key sets. Keep the
@@ -106,6 +108,11 @@ Use this as a two-party ceremony:
    argument. A digest computed and immediately trusted by the same render
    invocation is not external approval.
 
+Schema-v1 `plan.json` deliberately has no `source_commit` field. The external
+approval tuple above binds the exact commit and gate-script digest, while the
+plan binds every selected template source hash and payload byte. Do not describe
+the plan alone as proof of its source commit.
+
 Example render/verify shape, shown only after the above ceremony:
 
 ```sh
@@ -132,8 +139,8 @@ wallet/channel operations or real Lightning funds.
 
 ## Reviewer checklist
 
-- No `INVALID_REPLACE_` marker or example UID/GID remains; `deployment_id` is a
-  newly approved unique slug, not the repository example.
+- No `INVALID_REPLACE_` or `INVALID-REPLACE-` marker or example UID/GID remains;
+  `deployment_id` is a newly approved unique slug, not the repository example.
 - Strict JSON has no duplicate keys, unknown keys, BOM or trailing data.
 - The profile, rendered template set and installation targets equal the gate
   catalog byte-for-byte.

@@ -89,6 +89,64 @@ test("a copied positive fixture passes", () => {
   withFixture((root) => assert.equal(validateDeploymentTree(root), true));
 });
 
+test("global activation never substitutes for a role-specific approval", () => {
+  for (const [relativePath, roleSentinel] of [
+    [
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      "PROVIDER-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/rollback-authority.service.in",
+      "ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+      "RELAY-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      "SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      "SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      "SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      "SIGNET-ISSUER-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      "EDGE-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "EDGE-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      "ROLLBACK-EDGE-ACTIVATION-APPROVED",
+    ],
+  ]) {
+    withFixture((root) => {
+      mutate(root, relativePath, (text) =>
+        text.replace(
+          `ConditionPathExists=/etc/bitcoinpir/payment-v1/${roleSentinel}\n`,
+          "",
+        ),
+      );
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /Unit\.ConditionPathExists must equal/,
+      );
+    });
+  }
+});
+
 test("provider enforcement, ledger-only issuer and remote rollback are mandatory", () => {
   withFixture((root) => {
     mutate(

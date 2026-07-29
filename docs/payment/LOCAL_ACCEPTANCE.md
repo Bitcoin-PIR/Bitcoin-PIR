@@ -24,11 +24,12 @@ funds acceptance.
 This document is the **source merge** acceptance boundary only. The later
 deployment phases are **private no-funds**, **public Signet**, and **production
 mainnet**. Passing any command below does not authorize a remote-host mutation,
-persistent Signet identity/wallet/channel, faucet/test-coin use, public Nostr
-publication, VPSBG UKI change, production-key installation/use, or a mainnet/
-real-value operation; each is an independent approval gate. Production mainnet
-is additionally blocked because the repository does not yet implement a
-reviewed mainnet deployment preflight.
+bounded service activation, persistent Signet identity/wallet/channel,
+faucet/test-coin use, external Cashu-mint access, public Nostr publication,
+VPSBG UKI change, production-key installation/use, or a mainnet/real-value
+operation; each is an independent approval gate. Production mainnet is
+additionally blocked because the repository does not yet implement a reviewed
+mainnet deployment preflight.
 
 Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory the
 non-secret inputs for a later approved phase and start any proposed render plan
@@ -1279,8 +1280,8 @@ review.
 ## Source-fair cold-activation evidence
 
 The pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
-four deployment, rendered-artifact, runtime-evidence and source-fair suites
-140/140 with no skip. This includes real Linux `getent`, `id -G`, procfs
+five deployment, rendered-artifact, runtime-evidence, source-fair and Nostr
+readback suites 154/154 with no skip. This includes real Linux `getent`, `id -G`, procfs
 all-thread scanning, all active capability sets plus `CapBnd`, rejection tests
 for CHOWN/DAC_OVERRIDE/FOWNER/SETFCAP and managed-unit capability expansion,
 locked service-account policy validation, the stopped-edge evidence validator,
@@ -1289,11 +1290,14 @@ pinned Caddy adapted-JSON closure, and 4xx/no-backend cross-bind probes.
 This is deterministic compatibility evidence, not target-host activation. The
 actual candidate must first collect an independently digest-pinned
 `collect-stopped-edge` record while Caddy and HAProxy are fully stopped and all
-Unix listeners are absent. Only after approval may it start HAProxy then Caddy
-and collect a separate digest-pinned `collect-live` record. Both must run from
-the target host's independently confirmed initial PID namespace; a warm reload,
-container-only record or evidence without its complete transferred SHA-256 is
-not accepted.
+Unix listeners are absent. Only after a bounded edge activation is approved and
+both `ACTIVATION-APPROVED` and `EDGE-ACTIVATION-APPROVED` are provisioned may it
+start HAProxy then Caddy and collect a separate digest-pinned `collect-live`
+record. Both must run from the target host's independently confirmed initial
+PID namespace; a warm reload, container-only record or evidence without its
+complete transferred SHA-256 is not accepted. At the end of a private no-funds
+drill, stop Caddy and then HAProxy, confirm the listener set is empty, and revoke
+`EDGE-ACTIVATION-APPROVED`.
 
 ## Expected acceptance record
 
@@ -1358,7 +1362,10 @@ At minimum, a release candidate needs evidence for:
   `UNRESOLVED` relay state is an activation blocker, not a passing local test;
 - a production Standard Cashu mint. Until an exact mint, WebPKI/pins, unit,
   custody limits and recovery/outage plan are approved, every mint-dependent
-  Cashu offer must be omitted from current and retained signed policies;
+  Cashu offer must be omitted from current and retained signed policies. The
+  current closed `provider-v1` profile still has fixed Standard-Cashu inputs, so
+  it must remain unmaterialized and inactive; a mint-free provider requires a
+  separately reviewed profile and negative tests;
 - a reviewed mainnet deployment preflight. The current Lightning preflight is
   default-Signet-specific and cannot authorize mainnet;
 - deployed-origin CSP/header enforcement, dependency closeout and manual
@@ -1370,7 +1377,8 @@ At minimum, a release candidate needs evidence for:
   to dispatch Actions;
 - user manual acceptance.
 
-All of the above remain explicit gates. Remote server mutation, persistent
-Signet custody, faucet/test-coin use, public Nostr publication, VPSBG UKI
-build/upload/reboot, production-key installation/use and mainnet/real Lightning
-funds require separate fresh approvals; none implies another.
+All of the above remain explicit gates. Remote server mutation, bounded service
+activation, persistent Signet custody, faucet/test-coin use, external Cashu-mint
+access, public Nostr publication, VPSBG UKI build/upload/reboot, production-key
+installation/use and mainnet/real Lightning funds require separate fresh
+approvals; none implies another.

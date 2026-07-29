@@ -7,9 +7,12 @@ use, mainnet funds or production-key operation.
 ## Deployment-phase mapping
 
 - **Source merge** keeps disposable local regtest and exact-head CI green.
-- **Private no-funds** may validate installed binaries, Unix-socket boundaries
-  and fail-closed behavior on an approved remote host without creating
-  persistent Lightning state or accepting public traffic.
+- **Private no-funds** may validate any approved issuer plan and payload
+  entirely offline, but remote installation/start in this phase is edge-only.
+  It must not install/start CLN or collect issuer fresh-live evidence: CLN
+  startup creates persistent identity/wallet state under `/srv/lightning/signet`,
+  which requires the separate Public-Signet custody approval. No public traffic
+  is accepted.
 - **Public Signet** creates staging-only persistent identities, wallets and
   channels and may acquire test coins, but only under separate approvals for
   remote mutation, persistent custody, faucet/test-coin handling and any public

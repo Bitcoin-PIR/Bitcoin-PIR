@@ -100,8 +100,8 @@ work. A generated node ID or test liquidity is not that approval.
 
 ## Backup and activation prerequisites
 
-Before the global activation sentinel is provisioned, all of the following
-must be true and independently recorded:
+Before the global and `SIGNET-ISSUER-ACTIVATION-APPROVED` sentinels are
+provisioned, all of the following must be true and independently recorded:
 
 1. the node identity secret or approved signer seed has an offline,
    restore-tested backup in a separate custody domain;
@@ -128,9 +128,10 @@ Granting directory read permission merely to rerun `find` would violate the
 cross-UID privacy boundary.
 
 `staticbackup` is not a live database backup. Never copy a running SQLite CLN
-database. The two approval sentinels in the CLN unit are operator gates, not
-cryptographic proof; the issuer additionally requires both the live preflight
-oneshot and RPC guard, which are bound to the CLN unit lifecycle.
+database. The global, Signet-issuer, Lightning-custody, and backup/restore
+approval sentinels in the CLN unit are operator gates, not cryptographic proof;
+the issuer additionally requires both the live preflight oneshot and RPC guard,
+which are bound to the CLN unit lifecycle.
 
 Start from `docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example` and render
 the exact Hetzner paths/hashes/UIDs into

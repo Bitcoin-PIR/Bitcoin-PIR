@@ -26,6 +26,7 @@ import {
   computeApprovedPlanSha256,
   parseStrictJson,
   renderBundle,
+  runtimeRequestFromManifest,
   validateRuntimeEvidence,
   verifyBundle,
 } from "./payment-v1-rendered-artifact-gate.mjs";
@@ -1030,7 +1031,70 @@ test("systemd rejects duplicate single-valued directives even without an empty r
   assert.throws(() => renderFixture(fixture), /repeats single-valued directive Service.User/);
 });
 
+test("rendered profiles require exact profile-specific activation sentinels", (t) => {
+  const fixture = makeEdgeFixture(t);
+  updateTemplate(fixture, EDGE_UNIT, (text) =>
+    text.replace(
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+    ),
+  );
+  assert.throws(() => renderFixture(fixture), /profile-specific activation conditions/);
+
+  for (const sourcePath of ISSUER_TEMPLATES.filter((path) => path.endsWith(".service.in"))) {
+    const issuer = makeIssuerFixture(t);
+    updateTemplate(issuer, sourcePath, (text) =>
+      text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED\n",
+        "",
+      ),
+    );
+    assert.throws(
+      () => renderFixture(issuer),
+      /profile-specific activation conditions/,
+      sourcePath,
+    );
+  }
+});
+
+test("offline manifest verification rechecks profile-specific activation sentinels", (t) => {
+  const fixture = makeEdgeFixture(t);
+  const model = renderFixture(fixture);
+  const manifest = structuredClone(model.manifest);
+  manifest.runtime_units[0].conditions = manifest.runtime_units[0].conditions.filter(
+    (condition) => !condition.endsWith("/EDGE-ACTIVATION-APPROVED"),
+  );
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      manifest,
+      hashBytes(Buffer.from(canonicalJson(manifest))),
+    ),
+    /profile-specific activation conditions/,
+  );
+
+  const issuer = renderFixture(makeIssuerFixture(t));
+  for (let index = 0; index < issuer.manifest.runtime_units.length; index += 1) {
+    const issuerManifest = structuredClone(issuer.manifest);
+    issuerManifest.runtime_units[index].conditions =
+      issuerManifest.runtime_units[index].conditions.filter(
+        (condition) => !condition.endsWith("/SIGNET-ISSUER-ACTIVATION-APPROVED"),
+      );
+    assert.throws(
+      () => runtimeRequestFromManifest(
+        issuerManifest,
+        hashBytes(Buffer.from(canonicalJson(issuerManifest))),
+      ),
+      /profile-specific activation conditions/,
+      issuerManifest.runtime_units[index].unit_name,
+    );
+  }
+});
+
 test("size, depth, ASCII path, source symlink, and hardlink limits fail closed", (t) => {
+  const marker = makeEdgeFixture(t);
+  marker.plan.payload_artifacts[0].source_path = "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/edge/caddy";
+  assert.throws(() => renderFixture(marker), /invalid replacement marker/);
+
   const deep = makeEdgeFixture(t);
   deep.plan.payload_artifacts[0].source_path = `${"a/".repeat(25)}caddy`;
   assert.throws(() => renderFixture(deep), /depth limit/);
@@ -1053,6 +1117,12 @@ test("size, depth, ASCII path, source symlink, and hardlink limits fail closed",
   const hardlink = makeEdgeFixture(t);
   linkSync(join(hardlink.inputRoot, hardlink.plan.payload_artifacts[0].source_path), join(hardlink.root, "alias"));
   assert.throws(() => renderFixture(hardlink), /exactly one hard link/);
+});
+
+test("repository example deployment ids fail closed", (t) => {
+  const fixture = makeEdgeFixture(t);
+  fixture.plan.deployment_id = "replace-edge-hetzner-v1";
+  assert.throws(() => renderFixture(fixture), /repository example marker/);
 });
 
 test("bundle tree rejects tamper, extra file, extra directory, symlink, hardlink, and deep tree", (t) => {

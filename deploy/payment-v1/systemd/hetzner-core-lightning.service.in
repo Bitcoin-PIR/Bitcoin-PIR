@@ -5,6 +5,7 @@ After=network-online.target @BITCOIND_SYSTEMD_UNIT@
 Wants=network-online.target
 Requires=@BITCOIND_SYSTEMD_UNIT@
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
 

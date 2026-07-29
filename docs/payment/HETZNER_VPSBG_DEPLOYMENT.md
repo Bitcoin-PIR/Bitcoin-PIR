@@ -8,13 +8,15 @@ of real Lightning funds.
 
 This contract separates four phases: **source merge**, **private no-funds**,
 **public Signet**, and **production mainnet**. Source merge changes no host.
-Private no-funds may install an unrouted candidate and collect live evidence,
-but only after a remote-host approval and with no persistent Lightning state,
-public catalog or valuable coins. Public Signet adds persistent staging-only
-wallets/channels, test coins and public staging surfaces under their own
-approvals. Production mainnet is not currently renderable: the implemented
-deployment preflight is default-Signet-specific and no reviewed mainnet
-preflight exists.
+Private no-funds may render any approved closed plan for offline review. Remote
+installation and start in that phase are limited to `edge-hetzner-v1`, require
+separate remote-host and bounded private-service-activation approvals, and end
+by stopping the edge and revoking its profile sentinel. Starting the issuer's
+CLN would create persistent Lightning state and therefore belongs to Public
+Signet. Public Signet adds persistent staging-only wallets/channels, test coins
+and public staging surfaces under their own approvals. Production mainnet is
+not currently renderable: the implemented deployment preflight is default-
+Signet-specific and no reviewed mainnet preflight exists.
 
 Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) as the non-secret
 input inventory and begin each proposed closed render plan from
@@ -23,11 +25,11 @@ until every required value and external approval record is present; do not put
 private keys, macaroon/cookie material, invoices or bearer proofs in either
 artifact.
 
-These approvals are independent: remote Hetzner mutation; persistent Signet
-identity/wallet/channel creation; Signet faucet/test-coin handling; DNS or
-public Nostr publication; VPSBG UKI build/upload/reboot; production-key
-installation/use; and mainnet/real-value activity. Approval of one never
-implies another.
+These approvals are independent: remote Hetzner mutation; bounded private
+service activation; persistent Signet identity/wallet/channel creation; Signet
+faucet/test-coin handling; external Cashu-mint access; DNS or public Nostr
+publication; VPSBG UKI build/upload/reboot; production-key installation/use;
+and mainnet/real-value activity. Approval of one never implies another.
 
 ## Topology
 
@@ -36,21 +38,20 @@ select one Hetzner provider and later select the VPSBG provider; neither server
 needs to know the other's identity or payment method.
 
 ```text
-                         separately administered hosts
-                       +-------------------------------+
-                       | provider-0 rollback authority |
-                       | provider-1 rollback authority |
-                       | issuer rollback authority     |
-                       +-------------------------------+
-                              ^ pinned HTTPS/CAS
-                              |
-  Hetzner                     |                    VPSBG Tier 3
-  +----------------------+    |                    +----------------------+
-  | Payment V1 provider  |----+                    | existing PIR process |
-  | payment-issuer + CLN |----+                    | + enforced V1        |
-  | directory-only relay|                         | + Free/PoW only      |
-  | same-host TLS edges |                         | no issuer/relay/mint |
-  +----------------------+                         +----------------------+
+  Hetzner Payment V1 provider -- pinned HTTPS/CAS --> provider-0 authority host
+  Hetzner payment issuer + CLN -- pinned HTTPS/CAS --> issuer authority host
+  Hetzner directory Relay A + same-host TLS edges
+
+  VPSBG Tier 3 provider       -- pinned HTTPS/CAS --> provider-1 authority host
+    existing PIR process + enforced V1 + Free/PoW only
+    no issuer, relay or mint
+
+  The three authority hosts above are separately administered failure domains.
+
+  independent Relay B failure domain
+  +----------------------+
+  | second complete view |  Browser requires complete Relay A + Relay B
+  +----------------------+
 ```
 
 The rollback authorities are not extra processes on the Hetzner provider or
@@ -58,6 +59,12 @@ VPSBG detailed-store hosts. Provider 0, Provider 1, and the issuer require
 separate authority hosts, service accounts, TLS keys, Ed25519 keys, namespaces,
 administrators, logs, and backup/restore domains. Co-location is permitted only
 for an explicitly non-production exercise.
+
+Relay A and Relay B likewise require genuinely independent host, network,
+administrator, log and backup/restore domains; a second hostname on the Hetzner
+host is not an independent view. Relay B may be a separately reviewed external
+relay, but the current relay selection remains `UNRESOLVED` and no generic
+third-party-relay deployment profile is approved yet.
 
 Each `edge-rollback-authority-v1` instance is also network-specific. Its Caddy
 listener binds one reviewed RFC1918/ULA address, systemd denies every address
@@ -87,9 +94,11 @@ This makes the preparation PR unable to activate charging by changing an old
 unit in place.
 
 All files below `deploy/payment-v1/` are inputs. Systemd templates use the
-`.service.in` suffix, omit `[Install]`, and require an activation sentinel. The
-VPSBG `.args.in` is a non-executable argument fragment with no shebang or exec;
-it cannot start a process by itself.
+`.service.in` suffix, omit `[Install]`, and require both the global activation
+sentinel and the exact profile-specific activation-sentinel set. The global
+sentinel alone cannot start any closed profile. The VPSBG `.args.in` is a
+non-executable argument fragment with no shebang or exec; it cannot start a
+process by itself.
 
 ## Hetzner provider
 
@@ -142,6 +151,13 @@ retirement procedure, omit every mint-dependent Cashu offer from both current
 and retained signed policies. Do not render fake-wallet or loopback test mint
 material as a substitute.
 
+Omitting those offers does not make the current closed `provider-v1` render
+mint-free: its unit and skeleton always require the exact Standard-Cashu
+custody, recovery and exposure inputs above. Until a production mint is selected,
+that profile remains unrenderable and must not be activated. Supporting a paid
+provider without Standard Cashu requires a separate profile, template closure
+and negative-test review; do not delete fields from this profile ad hoc.
+
 The signed policy is the commercial and resource contract. Every backend and
 operation needs its own scope. In particular, Harmony hint generation and
 Harmony query execution are distinct scopes with separately selected limits,
@@ -164,9 +180,10 @@ RPC Unix socket has exact expected UID/GID and a bounded call timeout.
 
 This is the only renderable issuer unit. It has `Requires`, `After`, and
 `BindsTo` dependencies on the exact CLN service, method-allowlist guard, and
-successful live preflight, plus separate global, Lightning-custody, and
-backup/restore sentinels. There is no generic alternate unit that can use the
-global activation sentinel while bypassing either boundary.
+successful live preflight, plus separate global, Signet-issuer,
+Lightning-custody, and backup/restore sentinels. There is no generic alternate
+unit that can use the global activation sentinel while bypassing any of those
+boundaries.
 
 The issuer detailed store uses its own remote rollback authority. Quote,
 credential-derivation, direct-receipt, Cashu BAT, issuer-settlement, clearing,
@@ -520,27 +537,37 @@ local-privilege exploit.
    manifest socket absent, run `collect-stopped-edge`; transfer and approve the
    complete evidence SHA-256. It must prove exact locked/non-login service
    accounts, an empty protected-UID/GID closure and no non-root dangerous active
-   capability holder. Only then start HAProxy before Caddy, with no warm reload,
-   and start the remaining
-   private/unrouted canaries. Verify identity, binary/attestation,
-   database proof/root, signed policy, remote rollback failure behavior and
-   exact method/scope matching from a strict client.
+   capability holder. Only after the separate bounded private-service-activation
+   approval and provisioning both `ACTIVATION-APPROVED` and
+   `EDGE-ACTIVATION-APPROVED` may HAProxy start before Caddy, with no warm
+   reload. In private no-funds, do not install or start the issuer, CLN,
+   provider or authority profiles merely because the edge approval passed. In a
+   later separately approved phase, start only the explicitly approved
+   private/unrouted canaries and verify identity, binary/attestation, database
+   proof/root, signed policy, remote rollback failure behavior and exact
+   method/scope matching from a strict client.
 9. Collect `collect-live` root Linux evidence immediately after both fresh edge
    units are active; require
    PID-namespace/systemd-PID1 binding, identical all-thread holder passes, and the
    exact runtime directory/socket type, owner, group and mode records plus
    effective `MemoryMax`/`TasksMax`, zero current/max swap, zero hard/soft core
-   limits, and `kernel.core_pattern=|/usr/bin/false`. Publish directory artifacts only after
+   limits, and `kernel.core_pattern=|/usr/bin/false`. In private no-funds,
+   preserve the evidence digest, stop Caddy and then HAProxy, confirm both units
+   are inactive/dead with every listener absent, and revoke
+   `EDGE-ACTIVATION-APPROVED` (and the global sentinel unless another separately
+   approved profile still needs it). Publish directory artifacts only after
    every advertised live value matches.
-10. Provision an activation sentinel and change public routing only under the
-    separately approved activation plan.
+10. For a later public phase, re-provision the exact global and profile-specific
+    sentinels and change public routing only under that separately approved
+    activation plan.
 
-Remote server changes, persistent Signet custody and test-coin handling, public
-Nostr/DNS publication, VPSBG UKI build/upload/reboot, production-key
-installation/use, and mainnet/real Lightning funds remain separate approval
-gates. A private no-funds approval does not authorize public Signet; a Signet
-approval does not authorize mainnet. Mainnet also remains technically blocked
-until its own reviewed preflight and negative tests exist.
+Remote server changes, bounded service activation, persistent Signet custody
+and test-coin handling, external Cashu-mint access, public Nostr/DNS
+publication, VPSBG UKI build/upload/reboot, production-key installation/use,
+and mainnet/real Lightning funds remain separate approval gates. A private
+no-funds approval does not authorize public Signet; a Signet approval does not
+authorize mainnet. Mainnet also remains technically blocked until its own
+reviewed preflight and negative tests exist.
 
 The source-template gate is deliberately **not** rendered-artifact evidence.
 For a future `RESOLVED` relay it checks canonical metadata shape and source-unit

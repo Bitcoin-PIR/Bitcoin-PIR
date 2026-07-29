@@ -1,10 +1,12 @@
 # Payment V1 deployment templates
 
 These files are review inputs, not installed service definitions. Every service
-template ends in `.in`, has no `[Install]` section, and requires an explicit
-`/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED` sentinel after rendering. The
-VPSBG input is only a non-executable argument fragment; it is neither a runit
-service nor a replacement for the measured Tier 3 run script.
+template ends in `.in`, has no `[Install]` section, and requires both the global
+`/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED` sentinel and the exact
+profile-specific activation-sentinel set after rendering. The global sentinel
+alone cannot satisfy any closed profile. The VPSBG input is only a
+non-executable argument fragment; it is neither a runit service nor a
+replacement for the measured Tier 3 run script.
 
 ## Phase and input boundary
 
@@ -14,18 +16,34 @@ deployment phases:
 | Phase | Template consequence |
 | --- | --- |
 | Source merge | run source/CI gates only; do not render or install |
-| Private no-funds | render an approved private/unrouted profile and collect target evidence after remote-host approval |
+| Private no-funds | any approved closed plan may be rendered offline; remote install/start is edge-only, requires separate remote-host and bounded activation approvals, and ends by stopping the edge and revoking `EDGE-ACTIVATION-APPROVED` |
 | Public Signet | only a separately approved default-Signet profile with staging-only persistent identities/test coins and separately approved public surfaces |
 | Production mainnet | blocked; no reviewed mainnet deployment preflight/profile exists |
+
+The role gate is machine-enforced per unit:
+
+| Render profile or blocked role | Required role-specific activation sentinel(s) |
+| --- | --- |
+| `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` |
+| `issuer-lightning-signet-v1` | `SIGNET-ISSUER-ACTIVATION-APPROVED` |
+| `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` |
+| `rollback-authority-v1` | `ROLLBACK-AUTHORITY-ACTIVATION-APPROVED` |
+| `edge-rollback-authority-v1` | `ROLLBACK-EDGE-ACTIVATION-APPROVED` |
+| unresolved directory relay unit | `RELAY-ACTIVATION-APPROVED` in addition to the still-blocking relay-selection gate |
+
+Provisioning one row's sentinel never authorizes another row. The rendered
+artifact gate validates the complete exact `ConditionPathExists=` set for every
+closed profile.
 
 Inventory non-secret values in
 [DEPLOYMENT_INPUT_MATRIX.md](../../docs/payment/DEPLOYMENT_INPUT_MATRIX.md) and
 copy the matching fail-closed plan shape from
 [render-plan-skeletons/](../../docs/payment/render-plan-skeletons/). Do not put
-secrets in either artifact. An approval for remote mutation, persistent Signet
-custody, faucet/test-coin handling, public Nostr/DNS publication, VPSBG UKI
-build/upload/reboot, production-key installation/use, or mainnet/real-value
-operation authorizes only that action.
+secrets in either artifact. An approval for remote mutation, bounded service
+activation, persistent Signet custody, faucet/test-coin handling, external
+Cashu-mint access, public Nostr/DNS publication, VPSBG UKI build/upload/reboot,
+production-key installation/use, or mainnet/real-value operation authorizes
+only that action.
 
 The templates divide responsibilities as follows:
 
@@ -43,7 +61,10 @@ The templates divide responsibilities as follows:
   retained policies unless the render plan selects an approved production
   mint origin, WebPKI/pins, unit, finite custody/exposure limits and recovery/
   outage procedure. The local CDK fake-wallet mint is never a production
-  dependency.
+  dependency. The current closed `provider-v1` unit nevertheless always loads
+  those Standard-Cashu inputs, so omission leaves that whole profile blocked;
+  a provider without Standard Cashu needs a separately reviewed profile rather
+  than deleting arguments from this one.
 - `systemd/hetzner-cln-rpc-guard.service.in` is the only principal other than
   CLN and the dedicated one-shot preflight that may traverse the native CLN
   socket directory. It parses and reconstructs bounded JSON-RPC, permits only

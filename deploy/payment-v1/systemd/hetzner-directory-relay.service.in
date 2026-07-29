@@ -4,6 +4,7 @@ Description=BitcoinPIR Hetzner directory-only relay (blocked template)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED
 
 [Service]

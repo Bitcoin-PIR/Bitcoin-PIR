@@ -4,6 +4,7 @@ Description=BitcoinPIR independent rollback authority (template only)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED
 
 [Service]
 Type=simple

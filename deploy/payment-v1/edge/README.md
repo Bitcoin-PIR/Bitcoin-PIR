@@ -2,8 +2,9 @@
 
 These files are non-activating review inputs. They do not authorize listeners,
 DNS, certificates, deployment, remote-host changes, or funds. A rendered edge
-still requires the activation, edge-preflight, and source-fair-preflight
-sentinels plus exact binary/configuration hash manifests.
+still requires the global `ACTIVATION-APPROVED`, profile-specific
+`EDGE-ACTIVATION-APPROVED`, edge-preflight, and source-fair-preflight sentinels
+plus exact binary/configuration hash manifests.
 
 ## Public-edge trust boundary
 
@@ -85,11 +86,15 @@ runtime socket path; requires every manifest-bound service account to use
 `/usr/sbin/nologin` or `/bin/false` and a locked `/etc/shadow` password; and
 requires two host-wide procfs passes with no protected UID/GID holder and no
 non-root dangerous active-capability holder. Only after that exact evidence is
-reviewed may HAProxy start, followed by Caddy. A stopped HAProxy closes the
+reviewed, a separate bounded activation is approved, and both global and
+edge-profile activation sentinels are present may HAProxy start, followed by
+Caddy. A stopped HAProxy closes the
 server side of every old connection; its recreated RuntimeDirectory gives the
 next generation new listener inodes. The final `collect-live` pass binds the
 new listener/process generation. Do not approve evidence collected across an
-in-place reload or a warm edge handoff.
+in-place reload or a warm edge handoff. At the end of a private no-funds drill,
+stop Caddy and then HAProxy, verify both are inactive with every listener gone,
+and revoke `EDGE-ACTIVATION-APPROVED`.
 
 The stopped pass closes ordinary credential reacquisition under the declared
 trusted-root boundary; it is not a proof against a compromised root, a new
@@ -265,8 +270,8 @@ an `[Install]` section. Both units additionally require
 private route, anti-spoofing firewall, WebPKI hostname, and exact client IP were
 reviewed, not merely that a placeholder was rendered.
 
-Before an activation sentinel may be approved, run all of the following with
-the exact pinned Linux binaries:
+Before the global and edge-profile activation sentinels may be approved, run
+all of the following with the exact pinned Linux binaries:
 
 ```sh
 node scripts/payment-v1-deployment-template-gate.mjs

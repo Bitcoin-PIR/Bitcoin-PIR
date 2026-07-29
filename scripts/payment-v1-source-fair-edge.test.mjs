@@ -165,6 +165,10 @@ test("source-fair templates close persistence, bypass, and source-header channel
     publicUnit,
     /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED$/mu,
   );
+  assert.match(
+    publicUnit,
+    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/EDGE-ACTIVATION-APPROVED$/mu,
+  );
   assert.match(publicUnit, /^LimitCORE=0$/mu);
   assert.match(publicUnit, /^MemoryMax=536870912$/mu);
   assert.match(publicUnit, /^MemorySwapMax=0$/mu);
@@ -175,6 +179,10 @@ test("source-fair templates close persistence, bypass, and source-header channel
   assert.match(
     sourceFairUnit,
     /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED$/mu,
+  );
+  assert.match(
+    sourceFairUnit,
+    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/EDGE-ACTIVATION-APPROVED$/mu,
   );
   assert.doesNotMatch(sourceFairUnit, /^StateDirectory=/mu);
   assert.match(sourceFairUnit, /^LimitCORE=0$/mu);
@@ -193,6 +201,10 @@ test("source-fair templates close persistence, bypass, and source-header channel
   assert.match(
     rollbackUnit,
     /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED$/mu,
+  );
+  assert.match(
+    rollbackUnit,
+    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/ROLLBACK-EDGE-ACTIVATION-APPROVED$/mu,
   );
   assert.match(rollbackUnit, /^RuntimeDirectory=bitcoinpir-rollback-authority-edge$/mu);
   assert.doesNotMatch(rollbackUnit, /^StateDirectory=/mu);

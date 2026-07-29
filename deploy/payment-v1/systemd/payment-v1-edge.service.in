@@ -4,6 +4,7 @@ Description=BitcoinPIR Payment V1 pinned private rollback-authority TLS edge (te
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED
 
