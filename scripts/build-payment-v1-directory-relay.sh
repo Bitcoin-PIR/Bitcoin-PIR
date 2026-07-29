@@ -6,8 +6,7 @@ readonly build_image='docker.io/library/rust@sha256:4ec71e955e6c08aeb23888508322
 readonly rust_toolchain='1.94.1-x86_64-unknown-linux-gnu'
 readonly unprivileged_uid='65532'
 readonly unprivileged_gid='65532'
-readonly script_root
-script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 usage() {
   cat <<'EOF'
@@ -74,10 +73,8 @@ if [[ ! -d "$repository/.git" || -L "$repository/.git" || \
   exit 1
 fi
 
-readonly host_uid
-readonly host_gid
-host_uid="$(id -u)"
-host_gid="$(id -g)"
+readonly host_uid="$(id -u)"
+readonly host_gid="$(id -g)"
 if [[ "$host_uid" == '0' || "$host_gid" == '0' ]]; then
   echo 'directory-relay-build: writable bind mounts require a non-root host UID/GID' >&2
   exit 1
@@ -327,10 +324,9 @@ node -e '
 
 staging_name="$(basename "$staging")"
 output_name="$(basename "$output")"
-readonly staging_identity
 # The template literal is evaluated by Node, not the host shell.
 # shellcheck disable=SC2016
-staging_identity="$(node -e '
+readonly staging_identity="$(node -e '
   const stat = require("node:fs").lstatSync(process.argv[1], { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) process.exit(1);
   process.stdout.write(`${stat.dev}:${stat.ino}`);

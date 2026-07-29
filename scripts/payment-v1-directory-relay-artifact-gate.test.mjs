@@ -186,6 +186,11 @@ for (const [label, mutate] of [
 
 test("build recipe is pinned, offline, canonical, and invokes exactly two clean builds", () => {
   const recipe = readFileSync(join(SCRIPT_DIRECTORY, "build-payment-v1-directory-relay.sh"), "utf8");
+  assert.doesNotMatch(
+    recipe,
+    /^readonly [A-Za-z_][A-Za-z0-9_]*(?: [A-Za-z_][A-Za-z0-9_]*)*$/gmu,
+    "readonly variables must be initialized before or within their declaration",
+  );
   assert.match(recipe, new RegExp(DIRECTORY_RELAY_BUILD_IMAGE.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
   assert.match(recipe, /--platform linux\/amd64/gu);
   assert.match(recipe, /--network none/gu);
@@ -246,7 +251,7 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.match(recipe, /verify-directory-chain \\/gu);
   assert.match(recipe, /verify-directory-chain-identity \\/gu);
   assert.match(recipe, /\/publisher\/payment-v1-renameat2-noreplace \\\n+  "\/publish\/\$staging_name" "\/publish\/\$output_name"/gu);
-  assert.match(recipe, /readonly staging_identity[\s\S]{0,160}staging_identity=/gu);
+  assert.match(recipe, /readonly staging_identity="\$\(node -e /gu);
   assert.match(recipe, /"\$output_identity" != "\$staging_identity"/gu);
   assert.match(recipe, /if \[\[ -e "\$staging" \|\| ! -d "\$output" \|\| -L "\$output" \|\| \\/gu);
   assert.doesNotMatch(recipe, /^mv "\$staging" "\$output"$/gmu);
@@ -262,6 +267,18 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.equal(recipe.match(/^build_once [12]$/gmu)?.length, 2);
   assert.match(recipe, /cmp -s/gu);
   assert.doesNotMatch(recipe, /cargo (?:build|run|test).*(?:^|\s)--manifest-path/gu);
+});
+
+test("build recipe help executes before any environment or artifact preflight", () => {
+  const recipePath = join(SCRIPT_DIRECTORY, "build-payment-v1-directory-relay.sh");
+  const result = spawnSync("bash", [recipePath, "--help"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage: scripts\/build-payment-v1-directory-relay\.sh/gu);
+  assert.equal(result.stderr, "");
 });
 
 test("default verifier isolates Git metadata and rebuilds only private byte snapshots", () => {
