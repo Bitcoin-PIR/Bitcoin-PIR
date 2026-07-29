@@ -4105,6 +4105,12 @@ impl HarmonyClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
+        // Root verification and trusted tree-top preflight are owned by the
+        // sync orchestrator. Empty input has no hint, Payment-V1, or PIR work.
+        if script_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let bench = std::env::var("HARMONY_BENCH").is_ok();
         let t_step_start = Instant::now();
         let (mut results, traces) = self
@@ -8884,6 +8890,45 @@ mod tests {
         Arc, Mutex,
     };
 
+    #[derive(Default)]
+    struct RecordingSyncProgress {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl pir_sdk::SyncProgress for RecordingSyncProgress {
+        fn on_step_start(&self, step_index: usize, total_steps: usize, _description: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("start:{step_index}/{total_steps}"));
+        }
+
+        fn on_step_progress(&self, step_index: usize, progress: f32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("progress:{step_index}:{progress}"));
+        }
+
+        fn on_step_complete(&self, step_index: usize) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("step-complete:{step_index}"));
+        }
+
+        fn on_complete(&self, synced_height: u32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("complete:{synced_height}"));
+        }
+
+        fn on_error(&self, error: &PirError) {
+            self.events.lock().unwrap().push(format!("error:{error}"));
+        }
+    }
+
     /// Test-only query server for an all-zero Harmony database. It derives a
     /// canonical zero response from each client request, preserving level,
     /// round id, group order, and exact response width while sharing the sent
@@ -9330,6 +9375,61 @@ mod tests {
             builder_git_commit: "session-test".into(),
             onion_layout_v2: None,
         }
+    }
+
+    #[tokio::test]
+    async fn empty_sync_requires_verified_roots_and_preflight_before_skipping_query_work() {
+        let db = session_db_info();
+        let mut client = HarmonyClient::new("mock://hint", "mock://query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("mock://hint")),
+            Box::new(MockTransport::new("mock://query")),
+        );
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db.clone()],
+        });
+        client.set_root_policy(RootPolicy::RequireVerified);
+
+        let error = client.sync(&[], None).await.unwrap_err();
+        assert!(matches!(error, PirError::VerificationFailed(_)));
+
+        client
+            .install_verified_database_roots(session_roots(&db))
+            .unwrap();
+        let preflight_error = client.sync(&[], None).await.unwrap_err();
+        assert!(
+            preflight_error
+                .to_string()
+                .contains("mock: no enqueued response"),
+            "installed roots must not let empty sync bypass tree-top preflight: {preflight_error}"
+        );
+
+        // Verified roots/tree-tops satisfy strict preflight. With no hint
+        // state or queued responses, success proves execute_step skips hint
+        // acquisition, Payment-V1 planning, and query traffic for empty input.
+        seed_verified_session(&mut client);
+        let sync = client.sync(&[], None).await.unwrap();
+        let recorder = RecordingSyncProgress::default();
+        let progress = client
+            .sync_with_progress(&[], None, &recorder)
+            .await
+            .unwrap();
+
+        for result in [sync, progress] {
+            assert!(result.results.is_empty());
+            assert_eq!(result.synced_height, db.height);
+            assert!(result.was_fresh_sync);
+        }
+        assert_eq!(
+            recorder.events.lock().unwrap().as_slice(),
+            [
+                "start:0/1",
+                "progress:0:1",
+                "step-complete:0",
+                "complete:100"
+            ]
+        );
+        assert!(client.is_connected());
     }
 
     fn seed_verified_session(client: &mut HarmonyClient) -> u8 {

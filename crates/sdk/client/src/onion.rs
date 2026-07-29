@@ -1081,6 +1081,12 @@ impl OnionClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
+        // Strict sync has already required verified roots and preflighted the
+        // Onion tree-tops. Empty input must not initialise FHE or register keys.
+        if script_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let params = self
             .onion_params
             .get(&db_info.db_id)
@@ -3514,6 +3520,81 @@ mod tests {
         assert_eq!(c.backend_type(), PirBackendType::Onion);
         assert!(!c.is_connected());
         assert!(c.cached_catalog().is_none());
+    }
+
+    #[cfg(feature = "onion")]
+    #[tokio::test]
+    async fn empty_execute_step_skips_onion_backend_work() {
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let step = SyncStep::from_db_info(&db);
+        let mut client = OnionClient::new("wss://mock-onion");
+
+        // No transport, query parameters, FHE state, or registered keys are
+        // present. The outer empty-input guard must avoid every Onion backend
+        // side effect after strict sync preflight has succeeded.
+        let results = client.execute_step(&[], &step, &db).await.unwrap();
+        assert!(results.is_empty());
+        assert!(!client.is_connected());
+    }
+
+    #[cfg(not(feature = "onion"))]
+    #[tokio::test]
+    async fn empty_execute_step_fails_closed_without_onion_feature() {
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let step = SyncStep::from_db_info(&db);
+        let mut client = OnionClient::new("wss://mock-onion");
+
+        let error = client.execute_step(&[], &step, &db).await.unwrap_err();
+        assert!(matches!(error, PirError::BackendState(_)));
+        assert!(error.to_string().contains("not compiled in"));
+    }
+
+    #[tokio::test]
+    async fn empty_onion_sync_still_requires_verified_roots() {
+        use crate::transport::mock::MockTransport;
+
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db],
+        });
+        client.set_root_policy(RootPolicy::RequireVerified);
+
+        let error = client.sync(&[], None).await.unwrap_err();
+        assert!(matches!(error, PirError::VerificationFailed(_)));
+    }
+
+    #[cfg(feature = "onion")]
+    #[tokio::test]
+    async fn empty_onion_sync_succeeds_after_verified_preflight_without_fhe_or_network() {
+        use crate::transport::mock::MockTransport;
+
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
+        seed_test_session_bindings(&mut client, &db);
+        client.fhe = None;
+        client.verified_tree_tops.remove(&db.db_id);
+
+        let preflight_error = client.sync(&[], None).await.unwrap_err();
+        assert!(
+            preflight_error
+                .to_string()
+                .contains("mock: no enqueued response"),
+            "installed roots must not let empty Onion sync bypass tree-top preflight: \
+             {preflight_error}"
+        );
+        client.verified_tree_tops.insert(db.db_id);
+
+        // The trusted tree-top marker is already bound to the verified roots,
+        // so no response is queued. Success proves empty sync reaches strict
+        // preflight but does not initialise FHE, register keys, or query.
+        let result = client.sync(&[], None).await.unwrap();
+        assert!(result.results.is_empty());
+        assert_eq!(result.synced_height, db.height);
+        assert!(result.was_fresh_sync);
+        assert!(client.fhe.is_none());
     }
 
     #[cfg(not(feature = "onion"))]

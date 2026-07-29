@@ -1719,6 +1719,13 @@ impl DpfClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
+        // The sync orchestrator has already required verified database roots
+        // and preflighted trusted tree-tops before reaching this boundary.
+        // An empty wallet has no Payment-V1 job or PIR work to execute.
+        if script_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let (mut results, traces) = self
             .execute_step_unverified(script_hashes, _step, db_info)
             .await?;
@@ -4594,6 +4601,45 @@ mod tests {
     use pir_db_attest::BuildKind;
     use std::sync::Mutex;
 
+    #[derive(Default)]
+    struct RecordingSyncProgress {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl pir_sdk::SyncProgress for RecordingSyncProgress {
+        fn on_step_start(&self, step_index: usize, total_steps: usize, _description: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("start:{step_index}/{total_steps}"));
+        }
+
+        fn on_step_progress(&self, step_index: usize, progress: f32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("progress:{step_index}:{progress}"));
+        }
+
+        fn on_step_complete(&self, step_index: usize) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("step-complete:{step_index}"));
+        }
+
+        fn on_complete(&self, synced_height: u32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("complete:{synced_height}"));
+        }
+
+        fn on_error(&self, error: &PirError) {
+            self.events.lock().unwrap().push(format!("error:{error}"));
+        }
+    }
+
     #[test]
     fn split_inspector_quarantines_found_and_absent_results() {
         let mut found = QueryResult::empty();
@@ -4863,6 +4909,61 @@ mod tests {
             builder_git_commit: "session-test".into(),
             onion_layout_v2: None,
         }
+    }
+
+    #[tokio::test]
+    async fn empty_sync_requires_verified_roots_and_preflight_before_skipping_query_work() {
+        let db = session_db_info();
+        let mut client = DpfClient::new("mock://dpf-0", "mock://dpf-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("mock://dpf-0")),
+            Box::new(MockTransport::new("mock://dpf-1")),
+        );
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db.clone()],
+        });
+        client.set_root_policy(RootPolicy::RequireVerified);
+
+        let error = client.sync(&[], None).await.unwrap_err();
+        assert!(matches!(error, PirError::VerificationFailed(_)));
+
+        client
+            .install_verified_database_roots(session_roots(&db))
+            .unwrap();
+        let preflight_error = client.sync(&[], None).await.unwrap_err();
+        assert!(
+            preflight_error
+                .to_string()
+                .contains("mock: no enqueued response"),
+            "installed roots must not let empty sync bypass tree-top preflight: {preflight_error}"
+        );
+
+        // Once the proof root and tree-tops are verified, no queued transport
+        // responses are needed: execute_step must skip the empty-rejecting PBC
+        // planner and all query network traffic while preserving sync metadata.
+        seed_verified_session(&mut client);
+        let sync = client.sync(&[], None).await.unwrap();
+        let recorder = RecordingSyncProgress::default();
+        let progress = client
+            .sync_with_progress(&[], None, &recorder)
+            .await
+            .unwrap();
+
+        for result in [sync, progress] {
+            assert!(result.results.is_empty());
+            assert_eq!(result.synced_height, db.height);
+            assert!(result.was_fresh_sync);
+        }
+        assert_eq!(
+            recorder.events.lock().unwrap().as_slice(),
+            [
+                "start:0/1",
+                "progress:0:1",
+                "step-complete:0",
+                "complete:100"
+            ]
+        );
+        assert!(client.is_connected());
     }
 
     fn seed_verified_session(client: &mut DpfClient) -> u8 {
