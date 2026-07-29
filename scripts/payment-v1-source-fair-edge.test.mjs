@@ -1313,9 +1313,9 @@ function renderedCaddyLaneHarnessConfig(
   return rendered;
 }
 
-function websocketDirectoryRequest(host, extraHeaders = []) {
+function websocketDirectoryRequest(host, extraHeaders = [], requestTarget = "/") {
   return [
-    "GET / HTTP/1.1",
+    `GET ${requestTarget} HTTP/1.1`,
     `Host: ${host}`,
     "Connection: Upgrade",
     "Upgrade: websocket",
@@ -1404,22 +1404,24 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     provider: 0,
   });
 
-  const legacyPathPublicRequest = publicRequest.replace(
-    "GET / HTTP/1.1",
-    "GET /v1/directory HTTP/1.1",
-  );
   let before = laneRecordCounts(harness);
-  const legacyPathPublicStatus = statusOf(
-    await tlsHttpResponseHeaders(
-      edgePort,
-      publicClientIp,
-      legacyPathPublicRequest,
-      "127.0.0.1",
-      "directory.example.net",
-    ),
-  );
-  assert.equal(legacyPathPublicStatus >= 400 && legacyPathPublicStatus < 500, true);
-  assert.deepEqual(laneRecordCounts(harness), before);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublicStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publicClientIp,
+        websocketDirectoryRequest("directory.example.net", [], rejectedTarget),
+        "127.0.0.1",
+        "directory.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublicStatus >= 300 && rejectedPublicStatus < 500,
+      true,
+      `unexpected public status ${rejectedPublicStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
 
   const publisherRequest = websocketDirectoryRequest("publisher.example.net");
   before = laneRecordCounts(harness);
@@ -1465,25 +1467,24 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
   assert.equal(spoofedPublisherStatus >= 400 && spoofedPublisherStatus < 500, true);
   assert.deepEqual(laneRecordCounts(harness), before);
 
-  const legacyPathPublisherRequest = publisherRequest.replace(
-    "GET / HTTP/1.1",
-    "GET /v1/directory HTTP/1.1",
-  );
   before = laneRecordCounts(harness);
-  const legacyPathPublisherStatus = statusOf(
-    await tlsHttpResponseHeaders(
-      edgePort,
-      publisherClientIp,
-      legacyPathPublisherRequest,
-      "127.0.0.2",
-      "publisher.example.net",
-    ),
-  );
-  assert.equal(
-    legacyPathPublisherStatus >= 400 && legacyPathPublisherStatus < 500,
-    true,
-  );
-  assert.deepEqual(laneRecordCounts(harness), before);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublisherStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publisherClientIp,
+        websocketDirectoryRequest("publisher.example.net", [], rejectedTarget),
+        "127.0.0.2",
+        "publisher.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublisherStatus >= 300 && rejectedPublisherStatus < 500,
+      true,
+      `unexpected publisher status ${rejectedPublisherStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
 
   assert.equal(
     statusOf(
