@@ -116,6 +116,14 @@ If a user deliberately selects two offers backed by the same shared issuer,
 surface that common-infrastructure risk before acquisition. Never claim that
 blind issuance makes the shared issuer invisible.
 
+The client models a shared Lightning payee as a second, independent correlation
+boundary. Native callers must acknowledge issuer and payee sharing separately.
+The Web product's advanced, in-memory-only confirmation explicitly acknowledges
+both for that one attempt so a pooled Cashu/BAT/ARC service can use one
+settlement node. The default rejects either form of sharing. No acknowledgement
+ever permits one provider WebSocket origin, policy/operator key, raw BAT/ARC
+key, or direct-receipt verification key to serve both PIR roles.
+
 Different provider IDs, keys, issuer IDs and domains are necessary hygiene,
 not proof of different owners. Until independently sourced operator diversity
 or a reviewed signed operator-group/governance assertion is available, the UI

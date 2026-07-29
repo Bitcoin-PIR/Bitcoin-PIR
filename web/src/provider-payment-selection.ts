@@ -21,6 +21,8 @@ export interface SelectedProviderOfferV1 {
 export interface IndependentProviderSelectionOptionsV1 {
   /** Explicitly allow one issuer/origin to observe both credential flows. */
   allowSharedIssuerCorrelation?: boolean;
+  /** Explicitly allow one Lightning payee to observe both purchases. */
+  allowSharedLightningPayeeCorrelation?: boolean;
 }
 
 export function assertIndependentProviderOfferPairV1(
@@ -79,7 +81,8 @@ export function assertIndependentProviderOfferPairV1(
   const secondPayee = optionalCompressedKey(
     'second Lightning payee', second.expectedLightningPayeePubkey,
   );
-  if (firstPayee !== null && secondPayee !== null && firstPayee === secondPayee) {
+  if (options.allowSharedLightningPayeeCorrelation !== true
+      && firstPayee !== null && secondPayee !== null && firstPayee === secondPayee) {
     throw new Error('strict pair privacy rejects one Lightning payee observing both purchases');
   }
   const firstProviderOrigin = providerOrigin(first.providerEndpoint);

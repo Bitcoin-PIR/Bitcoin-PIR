@@ -41,11 +41,15 @@ where
 /// use correlation-capable credential infrastructure. This includes free
 /// anonymous tickets and online verification, not only paid acquisition.
 /// Setting `allow_shared_issuer_correlation` acknowledges that the common
-/// issuer can observe both credential flows; it never relaxes provider,
-/// policy-key, operator-key, raw-BAT-key, or raw-ARC-key independence.
+/// issuer can observe both credential flows. Sharing a Lightning settlement
+/// node is a separate correlation boundary and requires
+/// `allow_shared_lightning_payee_correlation`. Neither acknowledgement relaxes
+/// provider, policy-key, operator-key, raw-BAT-key, raw-ARC-key, or
+/// direct-receipt-key independence.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StrictProviderPairOptionsV1 {
     pub allow_shared_issuer_correlation: bool,
+    pub allow_shared_lightning_payee_correlation: bool,
 }
 
 /// One exact offer selected from an already accepted provider policy.
@@ -103,6 +107,7 @@ pub struct VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
     first: StrictProviderOfferSelectionV1<'first>,
     second: StrictProviderOfferSelectionV1<'second>,
     shared_issuer_correlation: bool,
+    allow_shared_lightning_payee_correlation: bool,
 }
 
 impl<'first, 'second> VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
@@ -119,6 +124,13 @@ impl<'first, 'second> VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
     /// acknowledged that correlation boundary.
     pub const fn shared_issuer_correlation(&self) -> bool {
         self.shared_issuer_correlation
+    }
+
+    /// Whether the caller explicitly acknowledged one Lightning settlement
+    /// node observing both provider purchases. The acknowledgement is local,
+    /// is never serialized, and does not relax any provider-origin/key check.
+    pub const fn allows_shared_lightning_payee_correlation(&self) -> bool {
+        self.allow_shared_lightning_payee_correlation
     }
 
     /// Revalidate the first selected policy and exact offer against a trusted
@@ -268,7 +280,8 @@ pub(crate) fn verify_strict_two_provider_payment_context_v1<'first, 'second>(
             "strict pair privacy rejects one WebSocket origin serving both PIR roles",
         ));
     }
-    if first.expected_lightning_payee_pubkey.is_some()
+    if !pair.allows_shared_lightning_payee_correlation()
+        && first.expected_lightning_payee_pubkey.is_some()
         && first.expected_lightning_payee_pubkey == second.expected_lightning_payee_pubkey
     {
         return Err(pair_error(
@@ -551,6 +564,8 @@ pub fn verify_strict_two_provider_offer_pair_v1<'first, 'second>(
         first,
         second,
         shared_issuer_correlation,
+        allow_shared_lightning_payee_correlation: options
+            .allow_shared_lightning_payee_correlation,
     })
 }
 
@@ -1329,6 +1344,7 @@ mod tests {
             select(&same_issuer),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .unwrap();
@@ -1353,6 +1369,7 @@ mod tests {
             select(&same_origin),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .is_ok());
@@ -1466,6 +1483,7 @@ mod tests {
             select(&second),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .contains("raw Cashu BAT verification key"));
@@ -1496,13 +1514,14 @@ mod tests {
             select(&second),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .contains("direct-receipt verification key ID"));
     }
 
     #[test]
-    fn payment_context_rejects_shared_payee_and_provider_origin_even_with_issuer_opt_in() {
+    fn payment_context_requires_separate_payee_consent_and_never_allows_one_provider_origin() {
         let first = fixture(
             [1; 32],
             11,
@@ -1527,6 +1546,7 @@ mod tests {
             select(&second),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .unwrap();
@@ -1542,6 +1562,26 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("Lightning payee"));
+
+        let shared_payee_allowed = verify_strict_two_provider_offer_pair_v1(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: true,
+            },
+        )
+        .unwrap();
+        assert!(bolt_payment_context(
+            shared_payee_allowed,
+            31,
+            generator,
+            "wss://provider-a.example/v1",
+            32,
+            generator,
+            "wss://provider-b.example/v1",
+        )
+        .is_ok());
 
         assert!(bolt_payment_context(
             pair,
@@ -1698,6 +1738,7 @@ mod tests {
             ),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .contains("raw ARC verification key"));
@@ -1730,6 +1771,7 @@ mod tests {
             select(&second),
             StrictProviderPairOptionsV1 {
                 allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
             },
         )
         .contains("raw ARC verification key"));

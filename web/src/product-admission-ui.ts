@@ -139,13 +139,13 @@ export class ProductAdmissionPanelV1 {
     }
 
     const advanced = document.createElement('label');
-    advanced.className = 'admission-shared-issuer';
+    advanced.className = 'admission-shared-infrastructure';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.dataset.action = 'allow-shared-issuer';
-    checkbox.addEventListener('change', () => void this.handleSharedIssuer(checkbox.checked));
+    checkbox.dataset.action = 'allow-shared-infrastructure';
+    checkbox.addEventListener('change', () => void this.handleSharedInfrastructure(checkbox.checked));
     const advancedText = document.createElement('span');
-    advancedText.textContent = 'Advanced: allow both credential flows (including free tickets) to expose provider/timing to one issuer for this attempt only';
+    advancedText.textContent = 'Advanced: for this attempt only, allow one issuer and/or Lightning payee to correlate both provider purchases, identities and timing';
     advanced.append(checkbox, advancedText);
     if (options.roles.length < 2) advanced.hidden = true;
     options.root.appendChild(advanced);
@@ -241,9 +241,9 @@ export class ProductAdmissionPanelV1 {
     }
     for (const leg of snapshot.legs) this.renderLeg(leg);
     const shared = this.options.root.querySelector<HTMLInputElement>(
-      '[data-action="allow-shared-issuer"]',
+      '[data-action="allow-shared-infrastructure"]',
     );
-    if (shared) shared.checked = snapshot.allowSharedIssuerCorrelationOnce;
+    if (shared) shared.checked = snapshot.allowSharedInfrastructureCorrelationOnce;
     this.options.onStateChange?.(snapshot);
   }
 
@@ -405,9 +405,9 @@ export class ProductAdmissionPanelV1 {
     }));
   }
 
-  private async handleSharedIssuer(allowed: boolean): Promise<void> {
+  private async handleSharedInfrastructure(allowed: boolean): Promise<void> {
     if (!this.controller) return;
-    await this.runAction(async () => this.controller!.setAllowSharedIssuerCorrelationOnce(allowed));
+    await this.runAction(async () => this.controller!.setAllowSharedInfrastructureCorrelationOnce(allowed));
   }
 
   private async runAction(

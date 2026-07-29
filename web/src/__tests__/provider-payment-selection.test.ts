@@ -190,7 +190,7 @@ describe('local independent-provider payment selection', () => {
     )).toThrow(/receipt verification key/);
   });
 
-  it('rejects one Lightning payee observing both purchases', () => {
+  it('requires a separate explicit acknowledgement for one Lightning payee', () => {
     const payee = new Uint8Array([2, ...new Uint8Array(32).fill(9)]);
     const first = {
       trust: trust(1, 11, 21), offer: offer(),
@@ -211,6 +211,14 @@ describe('local independent-provider payment selection', () => {
       { allowSharedIssuerCorrelation: true },
     ))
       .toThrow(/Lightning payee/);
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      {
+        allowSharedIssuerCorrelation: true,
+        allowSharedLightningPayeeCorrelation: true,
+      },
+    )).not.toThrow();
   });
 
   it('rejects two PIR roles on one WebSocket origin even with different paths', () => {

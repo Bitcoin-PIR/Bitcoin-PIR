@@ -862,7 +862,7 @@ describe('product admission lifecycle', () => {
     await controller.close();
   });
 
-  it('allows a one-shot shared-issuer override only before either credential flow', async () => {
+  it('allows one-shot shared issuer and payee correlation only before either flow', async () => {
     const { vault, state } = fakeVault();
     const target = testTarget('dpf-pir', 'dpf-query');
     const firstOffer = paidOffer(25, 'bolt11-direct-receipt');
@@ -910,7 +910,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server1', label: 'Server 1', session: second.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.second,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
       },
       close: vi.fn(),
     }));
@@ -920,7 +920,7 @@ describe('product admission lifecycle', () => {
     })).rejects.toMatchObject({ code: 'pair-correlation-rejected' });
     expect(second.authorize).not.toHaveBeenCalled();
 
-    controller.setAllowSharedIssuerCorrelationOnce(true);
+    controller.setAllowSharedInfrastructureCorrelationOnce(true);
     await controller.authorize('server0');
     await expect(controller.selectOffer('server0', {
       scopeIdHex: HEX.scope0,
@@ -1068,7 +1068,7 @@ describe('product admission lifecycle', () => {
       scopeIdHex: HEX.scope0,
       offerId: secondOffer.offerId,
     })).rejects.toMatchObject({ code: 'operation-failed' });
-    expect(() => controller.setAllowSharedIssuerCorrelationOnce(true)).toThrow(
+    expect(() => controller.setAllowSharedInfrastructureCorrelationOnce(true)).toThrow(
       /during an admission transition/,
     );
     releaseRestore();

@@ -170,7 +170,7 @@ export interface ProductAdmissionLegSnapshotV1 {
 export interface ProductAdmissionSnapshotV1 {
   phase: 'idle' | 'bootstrapping' | 'selecting' | 'ready-to-query' | 'querying' | 'failed';
   topology: ProductAdmissionTopologyV1;
-  allowSharedIssuerCorrelationOnce: boolean;
+  allowSharedInfrastructureCorrelationOnce: boolean;
   /** Present only when both selected legs use the same workload units. */
   homogeneousPairLimits: ServiceEntitlementLimitsViewV1 | null;
   legs: ProductAdmissionLegSnapshotV1[];
@@ -245,7 +245,7 @@ export class ProductAdmissionControllerV1 {
   private phase: ProductAdmissionSnapshotV1['phase'] = 'idle';
   private bootstraps: ProductStrictBootstrapV1[] = [];
   private legs: LegStateV1[] = [];
-  private allowSharedIssuerCorrelationOnce = false;
+  private allowSharedInfrastructureCorrelationOnce = false;
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
   private queryShapesFrozen = false;
@@ -392,8 +392,12 @@ export class ProductAdmissionControllerV1 {
     }
   }
 
-  /** Advanced, in-memory-only confirmation. It resets on close/prepare. */
-  setAllowSharedIssuerCorrelationOnce(allowed: boolean): ProductAdmissionSnapshotV1 {
+  /**
+   * Advanced, in-memory-only confirmation for both shared issuer/origin and
+   * shared Lightning-payee correlation. It resets on close/prepare and must
+   * be set before either credential flow starts.
+   */
+  setAllowSharedInfrastructureCorrelationOnce(allowed: boolean): ProductAdmissionSnapshotV1 {
     this.requirePrepared();
     if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1(
@@ -404,10 +408,10 @@ export class ProductAdmissionControllerV1 {
     if (this.legs.some((leg) => leg.credentialFlowStarted)) {
       throw new ProductAdmissionErrorV1(
         'offer-selection-invalidated',
-        'shared-issuer confirmation must happen before either credential flow starts',
+        'shared-infrastructure confirmation must happen before either credential flow starts',
       );
     }
-    this.allowSharedIssuerCorrelationOnce = allowed === true;
+    this.allowSharedInfrastructureCorrelationOnce = allowed === true;
     this.validateFrozenSelectionIfComplete();
     return this.snapshot();
   }
@@ -878,7 +882,7 @@ export class ProductAdmissionControllerV1 {
     return {
       phase: this.phase,
       topology: this.options.topology,
-      allowSharedIssuerCorrelationOnce: this.allowSharedIssuerCorrelationOnce,
+      allowSharedInfrastructureCorrelationOnce: this.allowSharedInfrastructureCorrelationOnce,
       homogeneousPairLimits: this.homogeneousPairLimits(),
       legs: this.legs.map((leg) => ({
         role: leg.role,
@@ -927,7 +931,7 @@ export class ProductAdmissionControllerV1 {
       this.legs = [];
       this.phase = 'idle';
       this.errorCode = null;
-      this.allowSharedIssuerCorrelationOnce = false;
+      this.allowSharedInfrastructureCorrelationOnce = false;
       this.queryAttempted = false;
       this.queryShapesFrozen = false;
     }
@@ -1003,7 +1007,10 @@ export class ProductAdmissionControllerV1 {
           providerEndpoint: second.providerEndpoint,
           expectedLightningPayeePubkey: second.expectedLightningPayeePubkey,
         },
-        { allowSharedIssuerCorrelation: this.allowSharedIssuerCorrelationOnce },
+        {
+          allowSharedIssuerCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+          allowSharedLightningPayeeCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+        },
       );
     }
   }
@@ -1054,7 +1061,10 @@ export class ProductAdmissionControllerV1 {
           providerEndpoint: second.providerEndpoint ?? '',
           expectedLightningPayeePubkey: second.expectedLightningPayeePubkey?.slice(),
         },
-        { allowSharedIssuerCorrelation: this.allowSharedIssuerCorrelationOnce },
+        {
+          allowSharedIssuerCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+          allowSharedLightningPayeeCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+        },
       ),
     };
   }

@@ -639,6 +639,13 @@ override is considered. The comparison stays entirely in the client; neither
 provider, issuer, nor directory receives the selected peer or a pair
 identifier.
 
+The same local check rejects a shared issuer/origin and a shared Lightning
+payee by default. These are separate explicit acknowledgements in the native
+API. The Web product combines them into one clearly labelled, in-memory-only,
+single-attempt consent for users who deliberately select a pooled issuer. Even
+then, provider origins and provider-specific policy, operator, receipt, BAT and
+ARC keys must remain distinct.
+
 If the client reaches only one provider, any capability already durably spent
 there remains spent. The product deliberately provides no automatic recovery
 or refund. The UI should acquire/present as late as possible and explain this

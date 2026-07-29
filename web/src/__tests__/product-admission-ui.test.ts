@@ -74,7 +74,7 @@ function stagedSnapshot(
   return {
     phase: 'selecting',
     topology: 'independent-pair',
-    allowSharedIssuerCorrelationOnce: false,
+    allowSharedInfrastructureCorrelationOnce: false,
     homogeneousPairLimits: null,
     errorCode: null,
     legs: statuses.map((status, index) => ({
