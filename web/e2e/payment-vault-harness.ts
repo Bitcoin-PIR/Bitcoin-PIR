@@ -208,7 +208,12 @@ const api = {
       const acquisition = await Bolt11AcquisitionControllerV1.resume({
         vault: await vault(),
         recoveryId,
+        issuerEndpoint: offer.endpoint,
+        issuerIdHex: offer.issuerIdHex,
+        network: 'bitcoin',
+        expectedPayeePubkey: PAYEE,
         allowInsecureLoopback: true,
+        assertReady: () => {},
       });
       try {
         return { ok: true, count: await acquisition.claim() };

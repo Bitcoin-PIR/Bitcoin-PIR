@@ -368,6 +368,16 @@ operator has activated the path with real money or public infrastructure.
 - [x] Browser capabilities and BOLT11 recovery bind the exact policy digest in
       authenticated storage and lock selection. The IndexedDB v3 migration
       deletes legacy capability/recovery records that cannot prove that bind.
+      The v4 migration additionally deletes only V3 in-flight BOLT11 recovery
+      rows, because they did not authenticate issuer ID, network, or expected
+      payee; capabilities plus policy/quote anti-rollback checkpoints remain.
+      Contextless V3 capabilities acquired through BOLT11 remain physically
+      encrypted but strict current/retained paths deliberately cannot spend
+      them; they are stranded rather than unsafely rebound. Contextless
+      capabilities from non-BOLT acquisition remain usable. Production must
+      not activate V4 over funded V3 BOLT11 inventory without an explicit
+      migration/refund decision; the first pre-production activation has no
+      such user inventory.
 - [x] DPF and Harmony native/WASM/Web adapters expose a true staged provider
       lifecycle. The browser connects, attests, upgrades, pins, installs the
       database proof and may load role 0's signed policy before it enables role

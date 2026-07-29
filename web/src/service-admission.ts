@@ -219,6 +219,18 @@ export interface IndependentRetainedProviderAdmissionSelectionV1 {
   acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
 }
 
+/** One genuine single-provider selection with independently trusted payment context. */
+export type SingleProviderAdmissionSelectionV1 = Omit<
+  IndependentProviderAdmissionSelectionV1,
+  'providerEndpoint'
+>;
+
+/** Historical single-provider selection with authenticated acquisition context. */
+export type SingleRetainedProviderAdmissionSelectionV1 = Omit<
+  IndependentRetainedProviderAdmissionSelectionV1,
+  'providerEndpoint'
+>;
+
 /** Current and historical legs may be mixed without weakening pair checks. */
 export type IndependentProviderPairAdmissionSelectionV1 =
   | { kind: 'current'; value: IndependentProviderAdmissionSelectionV1 }
@@ -976,9 +988,19 @@ interface RetainedPairLegV1 extends IndependentRetainedProviderAdmissionSelectio
 
 type PairLegV1 = CurrentPairLegV1 | RetainedPairLegV1;
 
-interface SingleLegV1 extends ProviderAdmissionSelectionV1 {
-  verified: SessionPairSelectionV1;
+interface FrozenPaymentContextV1 {
+  expectedLightningPayeePubkey?: Uint8Array;
+  expectedAcquisitionContext: Bolt11CapabilityAcquisitionContextV1 | null;
 }
+
+type SingleLegV1 = SingleProviderAdmissionSelectionV1 & FrozenPaymentContextV1 & {
+  verified: SessionPairSelectionV1;
+};
+
+type SingleRetainedLegV1 = SingleRetainedProviderAdmissionSelectionV1
+  & FrozenPaymentContextV1 & {
+    verified: SessionRetainedPairSelectionV1;
+  };
 
 /**
  * Browser-local typestate for a backend that genuinely uses one provider
@@ -988,16 +1010,25 @@ interface SingleLegV1 extends ProviderAdmissionSelectionV1 {
 export class VerifiedSingleProviderOfferV1 {
   private constructor(private readonly leg: SingleLegV1) {}
 
-  static create(selection: ProviderAdmissionSelectionV1): VerifiedSingleProviderOfferV1 {
+  static create(
+    selection: SingleProviderAdmissionSelectionV1,
+  ): VerifiedSingleProviderOfferV1 {
     validateAdmissionSelection('single provider', selection);
     const verified = selection.session[PAIR_SELECTION_V1](
       selection.scopeIdHex,
       selection.offerId,
     );
+    const paymentContext = freezePaymentContextV1(
+      'single provider',
+      selection,
+      verified.offer,
+      false,
+    );
     return new VerifiedSingleProviderOfferV1({
       ...selection,
       scopeIdHex: canonicalHex32('single provider scopeIdHex', selection.scopeIdHex),
       verified,
+      ...paymentContext,
     });
   }
 
@@ -1015,17 +1046,28 @@ export class VerifiedSingleProviderOfferV1 {
       this.leg.scopeIdHex,
       this.leg.offerId,
       options,
+      this.leg.expectedAcquisitionContext,
     );
   }
 
   startBolt11Acquisition(
     options: ProviderPairBolt11AcquisitionOptionsV1,
   ): Promise<Bolt11AcquisitionHandleV1> {
+    const frozenPayee = this.leg.expectedLightningPayeePubkey;
+    if (this.leg.verified.offer.acquisition !== 'bolt11' || frozenPayee === undefined) {
+      throw new Error('single-provider payment context is not a frozen BOLT11 offer');
+    }
+    if (!equalBytes(frozenPayee, options.expectedPayeePubkey)) {
+      throw new Error('BOLT11 payee differs from the frozen single-provider context');
+    }
+    if (this.leg.lightningNetwork !== options.network) {
+      throw new Error('BOLT11 network differs from the frozen single-provider context');
+    }
     return this.leg.session[PAIR_ACQUISITION_V1](
       this.leg.verified,
       this.leg.scopeIdHex,
       this.leg.offerId,
-      options,
+      { ...options, expectedPayeePubkey: frozenPayee.slice() },
     );
   }
 
@@ -1041,39 +1083,44 @@ export class VerifiedSingleProviderOfferV1 {
 
 /** Historical single-provider typestate with exact signed-view revalidation. */
 export class VerifiedSingleProviderRetainedOfferV1 {
-  private constructor(
-    private readonly session: ProviderAdmissionSessionV1,
-    private readonly verified: SessionRetainedPairSelectionV1,
-  ) {}
+  private constructor(private readonly leg: SingleRetainedLegV1) {}
 
   static create(
-    selection: Omit<IndependentRetainedProviderAdmissionSelectionV1,
-      'providerEndpoint' | 'expectedLightningPayeePubkey'>,
+    selection: SingleRetainedProviderAdmissionSelectionV1,
   ): VerifiedSingleProviderRetainedOfferV1 {
     if (!(selection.session instanceof ProviderAdmissionSessionV1)) {
       throw new Error('single retained selection has an invalid admission session');
     }
-    return new VerifiedSingleProviderRetainedOfferV1(
-      selection.session,
-      selection.session[PAIR_RETAINED_SELECTION_V1](
-        selection.binding,
-        selection.redemption,
-      ),
+    const verified = selection.session[PAIR_RETAINED_SELECTION_V1](
+      selection.binding,
+      selection.redemption,
     );
+    const paymentContext = freezePaymentContextV1(
+      'single retained provider',
+      selection,
+      verified.offer,
+      true,
+    );
+    return new VerifiedSingleProviderRetainedOfferV1({
+      ...selection,
+      verified,
+      ...paymentContext,
+    });
   }
 
   offer(): ServiceOfferViewV1 {
-    return cloneOffer(this.verified.offer);
+    return cloneOffer(this.leg.verified.offer);
   }
 
   trust(): ProviderTrustAnchorV1 {
-    return cloneTrustAnchor(this.verified.trust);
+    return cloneTrustAnchor(this.leg.verified.trust);
   }
 
   authorize(_options: ServiceAuthorizationOptionsV1 = {}): Promise<ServiceGrantViewV1> {
-    return this.session[PAIR_RETAINED_AUTHORIZATION_V1](
-      this.verified.binding,
-      this.verified.redemption,
+    return this.leg.session[PAIR_RETAINED_AUTHORIZATION_V1](
+      this.leg.verified.binding,
+      this.leg.verified.redemption,
+      this.leg.expectedAcquisitionContext,
     );
   }
 }
@@ -1817,6 +1864,21 @@ function freezeProviderPaymentContextV1(
     throw new Error(`${label} provider endpoint must be a credential-free WebSocket URL`);
   }
 
+  return {
+    providerEndpoint: endpoint.origin,
+    ...freezePaymentContextV1(label, selection, offer, requireHistoricalContext),
+  };
+}
+
+function freezePaymentContextV1(
+  label: string,
+  selection: Pick<
+    IndependentRetainedProviderAdmissionSelectionV1,
+    'lightningNetwork' | 'expectedLightningPayeePubkey' | 'acquisitionContext'
+  >,
+  offer: ServiceOfferViewV1,
+  requireHistoricalContext: boolean,
+): FrozenPaymentContextV1 {
   const payee = selection.expectedLightningPayeePubkey;
   if (offer.acquisition === 'bolt11') {
     if (!(payee instanceof Uint8Array) || payee.length !== 33
@@ -1846,7 +1908,6 @@ function freezeProviderPaymentContextV1(
       throw new Error(`${label} retained BOLT11 capability lacks authenticated historical payment context`);
     }
     return {
-      providerEndpoint: endpoint.origin,
       expectedLightningPayeePubkey: payee.slice(),
       expectedAcquisitionContext,
     };
@@ -1857,7 +1918,7 @@ function freezeProviderPaymentContextV1(
   if (selection.acquisitionContext !== undefined) {
     throw new Error(`${label} non-BOLT11 capability must not carry a BOLT11 payment context`);
   }
-  return { providerEndpoint: endpoint.origin, expectedAcquisitionContext: null };
+  return { expectedAcquisitionContext: null };
 }
 
 function canonicalBolt11AcquisitionContextV1(

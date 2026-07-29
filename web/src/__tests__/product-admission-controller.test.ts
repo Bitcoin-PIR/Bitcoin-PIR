@@ -45,7 +45,10 @@ vi.mock('../service-acquisition.js', () => {
   };
 });
 
-import { AdmissionCredentialVaultV1 } from '../admission-vault.js';
+import {
+  AdmissionCredentialVaultV1,
+  type Bolt11CapabilityAcquisitionContextV1,
+} from '../admission-vault.js';
 import {
   ProductAdmissionControllerV1,
   ProductAdmissionErrorV1,
@@ -120,6 +123,7 @@ function testTarget<
 
 interface FakeVaultState {
   inventory: Map<string, number>;
+  inventoryContexts: Map<string, Bolt11CapabilityAcquisitionContextV1 | undefined>;
   takes: number;
   recoveries: any[];
 }
@@ -171,6 +175,34 @@ function paidOffer(
     credentialCount: 1,
     credentialPresentationLimit: authorization === 'arc-experimental' ? 10 : 1,
     privacyLeakageBits: 1,
+  };
+}
+
+function lightningTrust(
+  offer: ServiceOfferViewV1,
+  payee: Uint8Array,
+) {
+  return [{
+    issuerIdHex: offer.issuerIdHex,
+    issuerOrigin: new URL(offer.endpoint).origin,
+    network: 'bitcoin' as const,
+    expectedPayeePubkeyHex: Array.from(
+      payee,
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join(''),
+  }];
+}
+
+function boltContext(
+  offer: ServiceOfferViewV1,
+  payee: Uint8Array,
+): Bolt11CapabilityAcquisitionContextV1 {
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: offer.endpoint,
+    issuerIdHex: offer.issuerIdHex,
+    network: 'bitcoin',
+    expectedPayeePubkeyHex: lightningTrust(offer, payee)[0].expectedPayeePubkeyHex,
   };
 }
 
@@ -257,7 +289,12 @@ function accepted(view: ServicePolicyViewV1): WasmAcceptedServicePolicyV1 {
 }
 
 function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState } {
-  const state: FakeVaultState = { inventory: new Map(), takes: 0, recoveries: [] };
+  const state: FakeVaultState = {
+    inventory: new Map(),
+    inventoryContexts: new Map(),
+    takes: 0,
+    recoveries: [],
+  };
   const key = (binding: any) => [
     binding.providerIdHex,
     binding.policyDigestHex,
@@ -294,6 +331,7 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
           offerId: Number(offerId),
           scheme,
           count,
+          acquisitionContext: state.inventoryContexts.get(serialized),
         };
       }),
     putCapability: async (capability: any) => {
@@ -422,7 +460,7 @@ describe('product admission lifecycle', () => {
         {
           role: 'server1', label: 'Server 1', session: second.session, ...target,
           providerEndpoint: PROVIDER_ENDPOINT.second,
-          expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+          lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.second),
         },
       ],
       close: vi.fn(),
@@ -471,7 +509,7 @@ describe('product admission lifecycle', () => {
         {
           role: 'server1', label: 'Server 1', session: second.session, ...target,
           providerEndpoint: PROVIDER_ENDPOINT.second,
-          expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+          lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.second),
         },
       ],
       close: vi.fn(),
@@ -514,7 +552,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.first,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
       },
       close: vi.fn(),
     }));
@@ -593,7 +631,7 @@ describe('product admission lifecycle', () => {
         {
           role: 'server0', label: 'Server 0', session: first.session, ...target,
           providerEndpoint: PROVIDER_ENDPOINT.first,
-          expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+          lightningPayeeTrust: lightningTrust(paid, LIGHTNING_PAYEE.first),
         },
         {
           role: 'server1', label: 'Server 1', session: second.session, ...target,
@@ -841,7 +879,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.first,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
       }, close: vi.fn(),
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 23 });
@@ -852,7 +890,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server1', label: 'Server 1', session: second.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.second,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+        lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.second),
       },
       close: vi.fn(),
     }));
@@ -901,7 +939,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.first,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
       },
       close: vi.fn(),
     }));
@@ -913,7 +951,7 @@ describe('product admission lifecycle', () => {
       leg: {
         role: 'server1', label: 'Server 1', session: second.session, ...target,
         providerEndpoint: PROVIDER_ENDPOINT.second,
-        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+        lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.first),
       },
       close: vi.fn(),
     }));
@@ -1121,7 +1159,10 @@ describe('product admission lifecycle', () => {
     await controller.prepare(async () => ({
       legs: [{
         role: 'oram', label: 'ORAM', session: leg.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        lightningPayeeTrust: lightningTrust(
+          bolt,
+          new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        ),
       }],
       close: vi.fn(),
     }));
@@ -1131,6 +1172,66 @@ describe('product admission lifecycle', () => {
       code: 'bolt11-recovery-required',
     });
     expect(controller.snapshot().legs[0].recoveryIds).toEqual(['88'.repeat(32)]);
+  });
+
+  it('fails closed before issuer I/O when BOLT11 trust belongs to another issuer', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const selected = paidOffer(71, 'bolt11-direct-receipt');
+    const trustedOther = paidOffer(72, 'bolt11-direct-receipt');
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [selected])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(trustedOther, LIGHTNING_PAYEE.first),
+      }],
+      close: vi.fn(),
+    }));
+
+    await expect(controller.selectOffer('oram', {
+      scopeIdHex: HEX.scope0,
+      offerId: selected.offerId,
+    })).rejects.toMatchObject({ code: 'lightning-payee-untrusted' });
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
+  });
+
+  it('owns the exact BOLT11 trust snapshot after strict bootstrap', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const bolt = paidOffer(73, 'bolt11-direct-receipt');
+    const trust = lightningTrust(bolt, LIGHTNING_PAYEE.first);
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bolt])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: trust,
+      }],
+      close: vi.fn(),
+    }));
+    trust[0].issuerIdHex = 'ff'.repeat(32);
+    trust[0].expectedPayeePubkeyHex = '03'.concat('ee'.repeat(32));
+
+    await expect(controller.selectOffer('oram', {
+      scopeIdHex: HEX.scope0,
+      offerId: bolt.offerId,
+    })).resolves.toMatchObject({ errorCode: null });
+    await controller.startBolt11('oram');
+    expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
+    await controller.close();
   });
 
   it('imports standard Cashu and reports BAT/ARC missing inventory honestly', async () => {
@@ -1154,7 +1255,10 @@ describe('product admission lifecycle', () => {
       const current = session(local.vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer])], HEX.provider0, HEX.key0, target);
       const missing = new ProductAdmissionControllerV1({ topology: 'single-provider', vault: local.vault });
       await missing.prepare(async () => ({
-        legs: [{ role: 'onion', label: 'Onion', session: current.session, ...target }], close: vi.fn(),
+        legs: [{
+          role: 'onion', label: 'Onion', session: current.session, ...target,
+          lightningPayeeTrust: lightningTrust(offer, LIGHTNING_PAYEE.first),
+        }], close: vi.fn(),
       }));
       await missing.selectOffer('onion', { scopeIdHex: HEX.scope0, offerId: offer.offerId });
       await expect(missing.authorize('onion')).rejects.toMatchObject({
@@ -1170,6 +1274,10 @@ describe('product admission lifecycle', () => {
     const target = testTarget('tee-oram', 'tee-oram-query');
     const bat = paidOffer(11, 'cashu-bat');
     state.inventory.set(inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat), 1);
+    state.inventoryContexts.set(
+      inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat),
+      boltContext(bat, LIGHTNING_PAYEE.first),
+    );
     const leg = session(
       vault,
       [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bat])],
@@ -1180,7 +1288,10 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'oram', label: 'ORAM', session: leg.session, ...target }], close: vi.fn(),
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.first),
+      }], close: vi.fn(),
     }));
     await controller.selectOffer('oram', { scopeIdHex: HEX.scope0, offerId: 11 });
     await expect(controller.authorize('oram')).rejects.toMatchObject({
@@ -1289,7 +1400,10 @@ describe('product admission lifecycle', () => {
         label: 'Server 0',
         session: current.session,
         ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(7)]),
+        lightningPayeeTrust: lightningTrust(
+          bolt,
+          new Uint8Array([2, ...new Uint8Array(32).fill(7)]),
+        ),
       }],
       close: vi.fn(),
     }));
@@ -1366,6 +1480,11 @@ describe('product admission lifecycle', () => {
       inventoryKey(HEX.provider0, oldDigest, HEX.scope0, historicalOffer),
       1,
     );
+    const historicalPayee = new Uint8Array([2, ...new Uint8Array(32).fill(8)]);
+    state.inventoryContexts.set(
+      inventoryKey(HEX.provider0, oldDigest, HEX.scope0, historicalOffer),
+      boltContext(historicalOffer, historicalPayee),
+    );
     const current = session(
       vault,
       [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [currentOffer])],
@@ -1377,7 +1496,10 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'oram', label: 'ORAM', session: current.session, ...target }],
+      legs: [{
+        role: 'oram', label: 'ORAM', session: current.session, ...target,
+        lightningPayeeTrust: lightningTrust(historicalOffer, historicalPayee),
+      }],
       close: vi.fn(),
     }));
     const retained = controller.snapshot().legs[0].retainedCapabilities[0];
@@ -1437,7 +1559,7 @@ describe('product admission lifecycle', () => {
     await controller.prepare(async () => ({
       legs: [{
         role: 'onion', label: 'Onion', session: current.session, ...target,
-        expectedLightningPayeePubkey: historicalPayee,
+        lightningPayeeTrust: lightningTrust(historicalOffer, historicalPayee),
       }],
       close: vi.fn(),
     }));

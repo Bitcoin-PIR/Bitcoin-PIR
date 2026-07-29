@@ -193,10 +193,25 @@ async function resumeAndClaim(
   recoveryId: string,
 ): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
   try {
+    const offer = requireOffer();
+    const payee = requirePayee();
+    const assertReady = () => {
+      const current = requireOffer();
+      if (current.offerId !== offer.offerId
+          || current.issuerIdHex !== offer.issuerIdHex
+          || current.endpoint !== offer.endpoint) {
+        throw new Error('verified issuer offer changed during recovery');
+      }
+    };
     const acquisition = await Bolt11AcquisitionControllerV1.resume({
       vault: await vault(),
       recoveryId,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'regtest',
+      expectedPayeePubkey: payee,
       fetchImpl: issuerFetch,
+      assertReady,
     });
     try {
       return { ok: true, count: await acquisition.claim() };

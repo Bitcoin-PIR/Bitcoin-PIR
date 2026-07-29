@@ -50,6 +50,10 @@ import {
   type ProductQueryShapeV1,
   type ProductQueryShapesByRoleV1,
 } from './service-entitlement.js';
+import {
+  expectedLightningPayeeForOfferV1,
+  type ProductLightningPayeeTrustV1,
+} from './product-provider-bootstrap.js';
 
 export type ProductAdmissionTopologyV1 = 'independent-pair' | 'single-provider';
 
@@ -95,8 +99,12 @@ export interface ProductAdmissionLegV1 {
   backend: ServiceScopeViewV1['backend'];
   workload: ServiceScopeViewV1['workload'];
   network?: LightningNetworkNameV1;
-  /** Independent trusted bootstrap only; never directory self-reported data. */
-  expectedLightningPayeePubkey?: Uint8Array;
+  /**
+   * Independent exact-issuer trust only; never directory self-reported data.
+   * Optional for non-BOLT11 legs. A selected BOLT11 offer fails closed unless
+   * exactly one `(issuer ID, canonical HTTPS origin, network)` entry matches.
+   */
+  lightningPayeeTrust?: readonly ProductLightningPayeeTrustV1[];
   /** Required at runtime for every independent-pair leg; unused by true single-provider products. */
   providerEndpoint?: string;
   resource?: ProductAdmissionResourceV1;
@@ -1025,6 +1033,11 @@ export class ProductAdmissionControllerV1 {
       this.assertCompleteSelectionPrivacy();
       this.errorCode = null;
     } catch (cause) {
+      if (cause instanceof ProductAdmissionErrorV1
+          && cause.code === 'lightning-payee-untrusted') {
+        this.errorCode = cause.code;
+        throw cause;
+      }
       this.errorCode = 'pair-correlation-rejected';
       throw new ProductAdmissionErrorV1(
         'pair-correlation-rejected',
@@ -1068,11 +1081,17 @@ export class ProductAdmissionControllerV1 {
     }
     if (this.options.topology === 'single-provider') {
       const leg = this.legs[0];
+      const expectedLightningPayeePubkey = projectedLightningPayee(leg);
+      const paymentContext = {
+        lightningNetwork: leg.network ?? 'bitcoin',
+        expectedLightningPayeePubkey,
+      };
       if (leg.retainedSelected) {
         return {
           kind: 'single',
           value: VerifiedSingleProviderRetainedOfferV1.create({
             session: leg.session,
+            ...paymentContext,
             binding: { ...leg.retainedSelected.binding },
             redemption: cloneRetainedSelection(leg.retainedSelected).redemption,
             acquisitionContext: cloneAcquisitionContext(
@@ -1085,6 +1104,7 @@ export class ProductAdmissionControllerV1 {
         kind: 'single',
         value: VerifiedSingleProviderOfferV1.create({
           session: leg.session,
+          ...paymentContext,
           scopeIdHex: leg.selected!.scopeIdHex,
           offerId: leg.selected!.offerId,
         }),
@@ -1509,7 +1529,7 @@ function pendingLeg(leg: ProductAdmissionLegV1): LegStateV1 {
     : canonicalProductQueryShapeV1(leg.queryShape, `${leg.label} bootstrap query shape`);
   return {
     ...leg,
-    expectedLightningPayeePubkey: leg.expectedLightningPayeePubkey?.slice(),
+    lightningPayeeTrust: leg.lightningPayeeTrust?.map((entry) => ({ ...entry })),
     policy: emptyPolicy(),
     offers: [],
     selected: null,
@@ -1585,23 +1605,33 @@ function selectedOffer(leg: LegStateV1): ServiceOfferViewV1 {
 }
 
 function selectedExpectedLightningPayee(leg: LegStateV1): Uint8Array {
-  if (selectedOffer(leg).acquisition !== 'bolt11') {
+  const offer = selectedOffer(leg);
+  if (offer.acquisition !== 'bolt11') {
     throw new ProductAdmissionErrorV1(
       'operation-failed',
       'the selected offer does not use BOLT11 acquisition',
     );
   }
-  const payee = leg.expectedLightningPayeePubkey;
-  if (!(payee instanceof Uint8Array) || payee.length !== 33
-      || (payee[0] !== 0x02 && payee[0] !== 0x03)
-      || payee.subarray(1).every((byte) => byte === 0)) {
+  try {
+    const payee = expectedLightningPayeeForOfferV1(
+      leg.lightningPayeeTrust ?? [],
+      offer,
+      leg.network ?? 'bitcoin',
+    );
+    if (payee) return payee.slice();
+  } catch (cause) {
     leg.errorCode = 'lightning-payee-untrusted';
     throw new ProductAdmissionErrorV1(
       'lightning-payee-untrusted',
-      'BOLT11 is disabled without an independently trusted expected payee key',
+      'BOLT11 is disabled without one exact independently trusted issuer payee',
+      { cause },
     );
   }
-  return payee.slice();
+  leg.errorCode = 'lightning-payee-untrusted';
+  throw new ProductAdmissionErrorV1(
+    'lightning-payee-untrusted',
+    'BOLT11 is disabled without one exact independently trusted issuer payee',
+  );
 }
 
 function projectedLightningPayee(leg: LegStateV1): Uint8Array | undefined {

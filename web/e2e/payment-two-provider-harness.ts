@@ -183,10 +183,28 @@ async function finishPaidLeg(
   if (offer.authorization === 'free' || offer.acquisition !== 'bolt11') {
     throw new Error(`provider ${index} selected an offer without paid BOLT11 acquisition`);
   }
+  const payee = exactHexBytes(
+    'expectedPayeePubkeyHex',
+    leg.fixture.expectedPayeePubkeyHex,
+    33,
+  );
+  const assertReady = () => {
+    const current = requireSelectedOffer(index);
+    if (current.offerId !== offer.offerId
+        || current.issuerIdHex !== offer.issuerIdHex
+        || current.endpoint !== offer.endpoint) {
+      throw new Error(`provider ${index} verified offer changed during recovery`);
+    }
+  };
   const acquisition = await Bolt11AcquisitionControllerV1.resume({
     vault: await vault(),
     recoveryId,
+    issuerEndpoint: offer.endpoint,
+    issuerIdHex: offer.issuerIdHex,
+    network: 'regtest',
+    expectedPayeePubkey: payee,
     fetchImpl: (input, init) => issuerFetch(index, input, init),
+    assertReady,
   });
   try {
     await pollUntilSettled(acquisition);

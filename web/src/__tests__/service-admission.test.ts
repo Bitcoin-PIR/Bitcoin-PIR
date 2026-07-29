@@ -418,6 +418,80 @@ describe('provider admission orchestration', () => {
     expect(authorize).toHaveBeenCalledTimes(1);
   });
 
+  it('binds a single-provider BOLT11 capability retirement to its frozen context', async () => {
+    const offer: ServiceOfferViewV1 = {
+      offerId: 18,
+      acquisition: 'bolt11',
+      authorization: 'cashu-bat',
+      freeMode: 'not-free',
+      verification: 'provider-local',
+      deploymentStatus: 'stable',
+      priorityClass: 1,
+      price: { kind: 'msat', amount: '1000' },
+      issuerIdHex: '58'.repeat(32),
+      keyIdHex: '69'.repeat(32),
+      batVerificationKeyFingerprintHex: '79'.repeat(32),
+      arcVerificationKeyFingerprintHex: '',
+      endpoint: 'https://issuer-single.invalid',
+      credentialCount: 1,
+      credentialPresentationLimit: 1,
+      privacyLeakageBits: 1,
+    };
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(6)]);
+    const expectedContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: Array.from(
+        payee,
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    };
+    vault.takeSingleUseCapability = async (binding, validate, context) => {
+      expect(context).toEqual(expectedContext);
+      const payload = new Uint8Array([1, 2, 3]);
+      validate?.(payload);
+      return { ...binding, payload };
+    };
+    const authorize = vi.fn(async () => ({
+      scopeIdHex: scopeHex,
+      enforcedProfile: 3,
+      expiresInMs: 1000,
+      hasHarmonyAttach: false,
+    }));
+    const port: ServiceAdmissionPortV1 = {
+      assertTrustAnchor: vi.fn(),
+      assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
+      fetchPolicy: async () => accepted(policy(offer)),
+      authorize,
+      requestPowChallenge: async () => { throw new Error('unused'); },
+    };
+    const session = new ProviderAdmissionSessionV1(
+      vault,
+      port,
+      { providerId, policySigningKey: policyKey },
+      DPF_TARGET,
+    );
+    await session.refreshPolicy();
+    expect(() => VerifiedSingleProviderOfferV1.create({
+      session,
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+    })).toThrow(/trusted compressed Lightning payee/);
+    const selected = VerifiedSingleProviderOfferV1.create({
+      session,
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+    });
+
+    await expect(selected.authorize()).resolves.toMatchObject({ enforcedProfile: 3 });
+    expect(authorize).toHaveBeenCalledOnce();
+  });
+
   it('rejects a stale single-provider channel before starting invoice acquisition', async () => {
     const view = policy({
       offerId: 3,
@@ -455,16 +529,19 @@ describe('provider admission orchestration', () => {
       DPF_TARGET,
     );
     await session.refreshPolicy();
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(2)]);
     const selected = VerifiedSingleProviderOfferV1.create({
       session,
       scopeIdHex: scopeHex,
       offerId: 3,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
     });
 
     await expect(selected.startBolt11Acquisition({
       vault: {} as never,
       network: 'bitcoin',
-      expectedPayeePubkey: new Uint8Array(33).fill(2),
+      expectedPayeePubkey: payee,
     })).rejects.toThrow(/different secure-channel session/);
     expect(assertSessionBinding).toHaveBeenCalledTimes(1);
   });
@@ -932,10 +1009,38 @@ describe('provider admission orchestration', () => {
       policyDigestHex: binding.policyDigestHex,
       offer: { authorization: 'cashu-bat' },
     });
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(7)]);
+    const acquisitionContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: Array.from(
+        payee,
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    };
+    vault.takeSingleUseCapability = async (selectedBinding, validate, expectedContext) => {
+      retiredBinding = selectedBinding;
+      expect(expectedContext).toEqual(acquisitionContext);
+      const payload = new Uint8Array([1, 2, 3]);
+      validate?.(payload);
+      return { ...selectedBinding, payload };
+    };
+    expect(() => VerifiedSingleProviderRetainedOfferV1.create({
+      session,
+      binding,
+      redemption: inspected,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+    })).toThrow(/lacks authenticated historical payment context/);
     const selected = VerifiedSingleProviderRetainedOfferV1.create({
       session,
       binding,
       redemption: inspected,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+      acquisitionContext,
     });
     await expect(selected.authorize()).resolves.toMatchObject({
       scopeIdHex: scopeHex,

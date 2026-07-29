@@ -267,6 +267,7 @@ export {
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
+  VerifiedSingleProviderRetainedOfferV1,
 } from './service-admission.js';
 export {
   assertProductQueryShapeFitsScopeV1,
@@ -287,6 +288,10 @@ export type {
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
   IndependentProviderAdmissionSelectionV1,
+  IndependentRetainedProviderAdmissionSelectionV1,
+  IndependentProviderPairAdmissionSelectionV1,
+  SingleProviderAdmissionSelectionV1,
+  SingleRetainedProviderAdmissionSelectionV1,
   ProviderPairBolt11AcquisitionOptionsV1,
   ProviderPairSideV1,
   ServiceAdmissionPortV1,

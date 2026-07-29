@@ -65,11 +65,19 @@ explicitly enabled loopback integration tests.
 ## Browser persistence boundary
 
 The IndexedDB schema exposes only random record IDs and AES-GCM ciphertexts.
-The encrypted recovery plaintext contains the issuer endpoint, provider/scope/
-offer binding, and opaque WASM state. It contains no Bitcoin address, PIR
-query, query result, peer-provider ID, or server-pair identifier. The invoice
-is present only inside the encrypted WASM state and is deleted after atomic
-credential installation.
+The encrypted recovery plaintext contains the exact issuer endpoint, issuer
+ID, Lightning network, expected compressed payee key, provider/scope/offer
+binding, and opaque WASM state. These fields are authenticated so a recovery
+cannot be resumed under a different issuer or payee. It contains no Bitcoin
+address, PIR query, query result, peer-provider ID, or server-pair identifier.
+The invoice is present only inside the encrypted WASM state and is deleted
+after atomic credential installation. Upgrading IndexedDB from V3 to V4
+discards contextless in-flight recovery rows while retaining capabilities and
+anti-rollback checkpoints; such old quotes must not be resumed. Physically
+retained V3 capabilities acquired via BOLT11 also lack this context and are
+therefore intentionally unspendable on strict current or retained paths.
+Non-BOLT contextless capabilities remain usable. A funded production V3
+deployment would require an explicit migration/refund policy before V4 rollout.
 
 The non-extractable WebCrypto key protects against accidental plaintext
 persistence, not XSS or a copied/unlocked browser profile. Production must
