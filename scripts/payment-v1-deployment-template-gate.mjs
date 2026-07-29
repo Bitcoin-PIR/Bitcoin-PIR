@@ -46,7 +46,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
     "e0fa6b1213ae660f74a541d086a16f0c20b8b8eac91f7afe780ffb4ff67ed2ee",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "c9557f8d547bc4b800593452f5308d91d65419603e5a5f046f5d06af9033b4e9",
+    "a5edd86ad88d5ecd792d11f4bcbd1bb4eccdc80c1da73477ca7eafb211f30ade",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "49edab939937c98d420e6a6bef6ad3a834effa502630deb666229272993ca841",
 });
@@ -654,6 +654,7 @@ function validateHetznerIssuer(text) {
       ["--bat-key", "/etc/bitcoinpir/payment-v1/issuer/cashu-bat.key"],
       ["--clearing-authorization", "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin"],
       ["--clearing-approval", "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin"],
+      ["--clearing-provider-request-verifying-key", "/etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key"],
       ["--issuer-settlement-signing-key", "/etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key"],
       ["--redeem-response-derivation-key", "/etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key"],
       ["--cln-rpc-socket", "/run/bitcoinpir-cln-rpc-guard/issuer/issuer-rpc"],

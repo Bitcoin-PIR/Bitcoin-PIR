@@ -260,6 +260,7 @@ function makeIssuerFixture(t) {
     "/etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key": "settlement-key\n",
     "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin": "approval\n",
     "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin": "authorization\n",
+    "/etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key": "provider-request-key\n",
     "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin": "delegation\n",
     "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key": "quote-key\n",
     "/etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key": "redeem-key\n",

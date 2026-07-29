@@ -29,6 +29,17 @@ rotation also needs them; they are not payout-only keys. Production TLS, node
 custody, payout execution, real-funds activation and remote deployment remain
 separate approval gates.
 
+Each `--clearing-authorization` and `--clearing-approval` pair must have one
+same-position `--clearing-provider-request-verifying-key` file containing a raw
+32-byte Ed25519 public key. Startup rejects a missing/invalid key and rejects
+reuse among the provider request, provider clearing, provider operator and
+current/retained issuer settlement roles. Ledger-only balance requests continue to use the
+authorized clearing key; the request key is registered separately for future
+payout recovery/status compatibility and is never replaced by a schema filler.
+Generate the signed artifacts with the two independent, self-verifying
+`bpir-admin payment-artifact clearing-*` ceremonies documented in
+`docs/payment/OFFLINE_OPERATOR_TOOLING.md`.
+
 `init-store`, `check-store`, and every available serving mode require exactly
 one floor boundary:
 

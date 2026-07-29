@@ -663,7 +663,12 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
@@ -679,12 +684,21 @@ digests. The provider fails closed without a local claim. Restarting both issuer
 and provider against their original stores/floors and replaying the exact proof
 must reproduce all three digests, recover exactly one provider-local grant and
 leave exactly one issuer ledger credit/sequence; a later replay cannot create a
-second grant. Wrong-CA, wrong-pin and offline dependencies fail closed without
-invoice creation or real funds. It does not prove public source-fair ingress,
-independent production rollback domains, real Lightning, automated payout, or
-target-host systemd state. The source is wired into CI, but this preparation
-branch must not record a pass until the Linux cell has run on the exact candidate
-commit.
+second grant. The same run invokes the production `bpir-admin` builders for
+both clearing artifacts, provisions a distinct provider-request public key,
+verifies freshly signed balances before and after an issuer restart, then—only
+after the lost-response operation reaches a known local-delivery result—rotates
+the authorization epoch and issuer settlement key with explicit old-key
+retention. The restarted provider keeps the credential at-most-once. This does
+not claim that V1 recovers an outcome-unknown redeem across authorization
+rotation; operators must drain and reconcile before rotating. Wrong-CA,
+wrong-pin and offline issuer
+dependencies fail before the issuer HTTP application without invoice creation
+or real funds. It does not prove public
+source-fair ingress, independent production rollback domains, real Lightning,
+automated payout, or target-host systemd state. The source is wired into CI,
+but this preparation branch must not record a pass until the Linux cell has run
+on the exact candidate commit.
 
 ## Standard Cashu custody boundary
 
