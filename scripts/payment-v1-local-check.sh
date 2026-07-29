@@ -140,6 +140,7 @@ cargo test --locked --offline -p runtime \
 cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p runtime --test payment_v1_onion_process_e2e
 cargo test --locked --offline -p runtime --features cuckoo-oram \
   --test payment_v1_tee_oram_process_e2e
 cargo test --locked --offline -p bitcoinpir-directory-relay \
@@ -367,6 +368,7 @@ cargo clippy --locked --offline -p runtime \
   --test payment_v1_process_e2e \
   --test payment_v1_methods_process_e2e \
   --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
   --no-deps \
   -- -D warnings
 cargo clippy --locked --offline -p runtime \

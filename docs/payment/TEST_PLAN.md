@@ -83,6 +83,25 @@ closeout repeated its one test three times successfully; the final pinned-
 Linux matrix subsequently passed the current case 1/1, hint pool 56/56 and
 `unified_server` 64/64. Pushed CI remains separate per candidate commit.
 
+The dedicated no-funds OnionPIR process boundary is:
+
+```sh
+cargo test --locked --offline -p runtime \
+  --test payment_v1_onion_process_e2e
+```
+
+It launches two independent real `unified_server` providers and builds a
+one-row Onion fixture through the public `onionpir` API. It covers cleartext
+and encrypted pre-authorization rejection, wrong-provider non-consumption,
+same-provider wrong-backend/workload non-consumption, one real chunked key
+registration, and successful decryption of production INDEX, CHUNK, Merkle
+INDEX-sibling and Merkle DATA-sibling worker responses. It also terminalizes
+extra registration, phase skip, wrong round and a second logical job after
+the capability has been atomically consumed, then rejects receipt replay after
+ProviderStore/process restart. The generated Merkle sibling ciphertexts are
+real handler/decryption evidence; the tiny fixture does not claim an end-user
+inclusion proof against a production Bitcoin database.
+
 A separate non-default process test exercises the production provider remote
 rollback-authority selection and client path:
 
@@ -549,6 +568,9 @@ Cashu-specific:
 
 ### Onion
 
+- the real-process `payment_v1_onion_process_e2e` boundary reaches and decrypts
+  production INDEX, CHUNK and both Merkle-sibling workers with a public-API
+  fixture and a real chunked key registration;
 - one grant covers exactly one key registration followed by bounded INDEX,
   CHUNK, Merkle INDEX and Merkle DATA phases;
 - INDEX/CHUNK round IDs are exact and monotonic; Merkle pass round is exactly
@@ -1106,11 +1128,13 @@ cargo test --locked --offline -p pir-service-store
 cargo test --locked --offline -p pir-provider-clearing-client shared_grant_tests
 cargo test --locked --offline -p runtime --lib hint_pool
 cargo test --locked --offline -p runtime --bin unified_server
+cargo test --locked --offline -p runtime --test payment_v1_onion_process_e2e
 cargo clippy --locked --offline -p runtime \
   --bin unified_server \
   --test payment_v1_process_e2e \
   --test payment_v1_methods_process_e2e \
   --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
   --no-deps -- -D warnings
 cargo clippy --locked --offline -p runtime \
   --features remote-authority-process-e2e \

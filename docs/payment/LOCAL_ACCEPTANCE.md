@@ -604,6 +604,7 @@ Full mode and payment-platform CI run:
 cargo test --offline -p runtime --test payment_v1_process_e2e
 cargo test --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --offline -p runtime --test payment_v1_onion_process_e2e
 cargo test --locked --offline -p runtime --features cuckoo-oram \
   --test payment_v1_tee_oram_process_e2e
 ```
@@ -637,7 +638,17 @@ provider-0 BAT/ARC presentation at provider 1, proves provider-local quota
 independence, and rejects quota/BAT/ARC replay after both providers restart
 against their own stores.
 
-This test intentionally observes `NoSevHost` and uses SDK
+The Onion process test launches two independently keyed providers and reaches
+the production OnionPIR workers with a one-row fixture generated through the
+public `onionpir` API. It proves wrong-provider and structurally wrong-scope
+failures do not consume the receipt, then performs one real chunked key
+registration and decrypts INDEX, CHUNK and both Merkle-sibling response
+ciphertexts. Extra registration, phase skip, wrong round and a second logical
+job fail closed after the atomic spend, and replay stays rejected across a
+ProviderStore/process restart. Its tiny Merkle fixture exercises sibling
+ciphertext generation/decryption, not full production inclusion verification.
+
+These loopback process tests intentionally observe `NoSevHost` and use SDK
 `dangerous_unpaired_*` helpers. It validates the local secure wire and Payment
 V1 gate, not production server identity, binary pinning, hardware attestation,
 production database proof/trusted-root pinning, Merkle tree-top/inclusion
@@ -645,10 +656,11 @@ verification, or an attested build. Its receipt is constructed from public
 deterministic fixture keys: no issuer process, browser, wallet, Lightning node,
 external Cashu mint, Nostr relay or real funds participate. The direct-receipt
 test executes both DPF and Harmony query backends; the method-adapter test
-executes DPF. The five-method x five-workload in-process matrix remains the
-process-independent coverage for Standard Cashu and Onion. The third process test
-launches one real Harmony V2Full hint provider with a private disk pool and
-checks invalid-proof non-consumption, pre-dispatch disconnect restoration,
+executes DPF, and the dedicated Onion test executes the real Onion handler.
+The five-method x five-workload in-process matrix remains the cross-product
+coverage independent of those process cells. The Harmony process test launches
+one real Harmony V2Full hint provider with a private disk pool and checks
+invalid-proof non-consumption, pre-dispatch disconnect restoration,
 first-dispatch durable consumption, matching-marker restart and replaced-inode
 fail-closed behavior.
 
@@ -1197,9 +1209,9 @@ At minimum, a release candidate needs evidence for:
   connection/auth limits, or tree-top bandwidth overload at the edge;
 - production identity/binary pins, remote servers, hardware attestation,
   production database proofs/trusted roots, or production databases;
-- process-level Onion execution (its canonical gate state is covered
-  in-process; Harmony query, Harmony V2Full hint lifecycle and direct TEE-ORAM
-  execution now have dedicated local real-provider-process boundaries);
+- production-grade process fixtures for Harmony, Onion or TEE-ORAM (their
+  local real-provider-process boundaries use deterministic/no-SEV fixtures and
+  do not establish production attestation, data or inclusion-proof evidence);
 - a deployed browser-to-issuer-to-provider main-page network E2E (the visible
   main-page controller is covered by unit tests; the local Chromium harness
   reaches two real issuers and two real providers and executes a DPF query with
