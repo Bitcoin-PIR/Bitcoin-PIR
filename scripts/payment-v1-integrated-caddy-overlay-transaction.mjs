@@ -14,6 +14,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmdirSync,
   unlinkSync,
   writeFileSync,
@@ -42,6 +43,7 @@ const RENAME_EXCHANGE_HELPER =
 const RENAME_EXCHANGE_MANIFEST =
   "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256";
 const LOCK_OWNER = "owner.json";
+const LOCK_OWNER_PENDING = `${LOCK_OWNER}.pending`;
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 export const OVERLAY_STATE_FILES = Object.freeze({
@@ -253,40 +255,175 @@ function stateRecord(plan, approvedPlanSha256, phase, previousPhase, extra = {})
   };
 }
 
-async function writeState(ops, plan, record) {
+function ownerOnlyRecordShape(snapshot, path, label) {
+  if (
+    snapshot.path !== path ||
+    snapshot.uid !== 0 ||
+    snapshot.gid !== 0 ||
+    snapshot.mode !== "0400" ||
+    snapshot.nlink !== 1
+  ) {
+    fail(`${label} is not one root-owned owner-only single-link record`);
+  }
+}
+
+async function settleAtomicPublication({
+  bytes,
+  finalPath,
+  helperPin,
+  label,
+  ops,
+  parentSeal,
+  pendingPath,
+  publish,
+}) {
+  const verify = (observed, path, recordLabel) => {
+    ownerOnlyRecordShape(observed.snapshot, path, recordLabel);
+    if (!observed.bytes.equals(bytes)) fail(`${recordLabel} bytes disagree with this transaction`);
+  };
+  let final = await ops.readOptionalRegular(finalPath);
+  let pending = await ops.readOptionalRegular(pendingPath);
+  if (final !== null) {
+    verify(final, finalPath, `${label} final record`);
+    await ops.fsyncParent(finalPath, parentSeal);
+    const confirmed = await ops.readRegular(finalPath);
+    verify(confirmed, finalPath, `${label} confirmed final record`);
+    if (!same(final.snapshot, confirmed.snapshot)) {
+      fail(`${label} final record changed across its first durability confirmation`);
+    }
+    if (pending !== null) {
+      ownerOnlyRecordShape(pending.snapshot, pendingPath, `${label} leftover pending record`);
+      if (!pending.bytes.equals(bytes)) fail(`${label} final and pending records disagree`);
+      await ops.removeIfExact(pendingPath, pending.snapshot, parentSeal);
+    }
+    await ops.fsyncParent(finalPath, parentSeal);
+    const terminal = await ops.readRegular(finalPath);
+    verify(terminal, finalPath, `${label} terminal final record`);
+    if (!same(confirmed.snapshot, terminal.snapshot)) {
+      fail(`${label} final record changed during pending cleanup confirmation`);
+    }
+    return terminal;
+  }
+  if (pending !== null) {
+    ownerOnlyRecordShape(pending.snapshot, pendingPath, `${label} pending record`);
+    if (!pending.bytes.equals(bytes)) {
+      await ops.removeIfExact(pendingPath, pending.snapshot, parentSeal);
+    } else {
+      await ops.fsyncRegular(pendingPath, pending.snapshot, parentSeal);
+      await publish(pendingPath, finalPath, helperPin, parentSeal);
+    }
+  }
+  await ops.fsyncParent(finalPath, parentSeal);
+  final = await ops.readOptionalRegular(finalPath);
+  pending = await ops.readOptionalRegular(pendingPath);
+  await ops.fsyncParent(finalPath, parentSeal);
+  const finalConfirmation = await ops.readOptionalRegular(finalPath);
+  const pendingConfirmation = await ops.readOptionalRegular(pendingPath);
+  if (final === null && pending === null && finalConfirmation === null && pendingConfirmation === null) {
+    return null;
+  }
+  if (final !== null && finalConfirmation !== null) {
+    verify(final, finalPath, `${label} recovered final record`);
+    verify(finalConfirmation, finalPath, `${label} recovered final confirmation`);
+    if (!same(final.snapshot, finalConfirmation.snapshot)) {
+      fail(`${label} final record changed across durability confirmation`);
+    }
+    if (pending !== null || pendingConfirmation !== null) {
+      fail(`${label} pending record remained after final publication`);
+    }
+    return finalConfirmation;
+  }
+  fail(`${label} publication could not be classified exactly`);
+}
+
+async function writeState(ops, plan, record, stateDirectorySeal) {
   const filename = PHASE_TO_FILE[record.phase];
   if (filename === undefined) fail(`unknown transaction phase ${record.phase}`);
-  await ops.writeState(
-    plan.transaction.state_directory,
-    filename,
-    Buffer.from(canonicalJson(record), "utf8"),
-  );
+  const bytes = Buffer.from(canonicalJson(record), "utf8");
+  const finalPath = `${plan.transaction.state_directory}/${filename}`;
+  const pendingPath = `${finalPath}.pending`;
+  let primary;
+  try {
+    await ops.writeState(
+      plan.transaction.state_directory,
+      filename,
+      bytes,
+      plan.runtime.exchange_helper,
+      stateDirectorySeal,
+    );
+  } catch (error) {
+    primary = error;
+  }
+  let observed;
+  try {
+    observed = await settleAtomicPublication({
+      bytes,
+      finalPath,
+      helperPin: plan.runtime.exchange_helper,
+      label: `phase ${record.phase}`,
+      ops,
+      parentSeal: stateDirectorySeal,
+      pendingPath,
+      publish: (...args) => ops.publishPendingState(...args),
+    });
+  } catch (error) {
+    throw outcomeUnknown(
+      `phase ${record.phase} publication outcome is unknown; explicit recovery is required: ${error.message}`,
+      primary ?? error,
+    );
+  }
+  if (observed === null) {
+    if (primary !== undefined) throw primary;
+    throw outcomeUnknown(`phase ${record.phase} reported success without a durable record`);
+  }
 }
 
 function receiptDigest(receipt) {
   return sha256(Buffer.from(canonicalJson(receipt), "utf8"));
 }
 
-async function writeReceipt(ops, plan, approvedPlanSha256, receipt) {
+async function writeReceipt(
+  ops,
+  plan,
+  approvedPlanSha256,
+  receipt,
+  receiptParentSeal,
+) {
   validateOverlayReceipt({ approvedPlanSha256, plan, receipt });
   const bytes = Buffer.from(canonicalJson(receipt), "utf8");
+  let primary;
   try {
     await ops.writeReceipt(
       plan.transaction.receipt_pending_path,
       plan.transaction.receipt_path,
       bytes,
       plan.runtime.exchange_helper,
+      receiptParentSeal,
     );
   } catch (error) {
-    // An fsync/close error can be reported after the exact receipt reached
-    // durable storage. Re-read the no-follow entry before deciding whether a
-    // rollback is still permitted.
-    const observed = await ops.readOptionalRegular(plan.transaction.receipt_path);
-    if (observed === null || !observed.bytes.equals(bytes)) throw error;
-    const pending = await ops.readOptionalRegular(plan.transaction.receipt_pending_path);
-    if (pending !== null && pending.bytes.equals(bytes)) {
-      await ops.removeIfExact(plan.transaction.receipt_pending_path, pending.snapshot);
-    }
+    primary = error;
+  }
+  let observed;
+  try {
+    observed = await settleAtomicPublication({
+      bytes,
+      finalPath: plan.transaction.receipt_path,
+      helperPin: plan.runtime.exchange_helper,
+      label: "terminal receipt",
+      ops,
+      parentSeal: receiptParentSeal,
+      pendingPath: plan.transaction.receipt_pending_path,
+      publish: (...args) => ops.publishPendingReceipt(...args),
+    });
+  } catch (error) {
+    throw outcomeUnknown(
+      `terminal receipt publication outcome is unknown; explicit recovery is required: ${error.message}`,
+      primary ?? error,
+    );
+  }
+  if (observed === null) {
+    if (primary !== undefined) throw primary;
+    throw outcomeUnknown("terminal receipt reported success without a durable record");
   }
   return sha256(bytes);
 }
@@ -298,6 +435,17 @@ export class OverlayTransactionError extends Error {
     this.phase = phase;
     this.receipt = receipt;
   }
+}
+
+export class OverlayOutcomeUnknownError extends OverlayTransactionError {
+  constructor(message, { cause, phase = "outcome-unknown" } = {}) {
+    super(message, { cause, phase });
+    this.name = "OverlayOutcomeUnknownError";
+  }
+}
+
+function outcomeUnknown(message, cause) {
+  return new OverlayOutcomeUnknownError(message, { cause });
 }
 
 async function releasePreservingPrimary(release, operation) {
@@ -336,6 +484,69 @@ function installationRecord(plan) {
   };
 }
 
+function mutableParentPaths(plan) {
+  return [...new Set([
+    dirname(plan.transaction.adapted_json_path),
+    dirname(plan.transaction.backup_path),
+    dirname(plan.transaction.receipt_path),
+    dirname(plan.transaction.state_directory),
+  ])].sort();
+}
+
+function requireOwnerOnlyDirectory(snapshot, path, label) {
+  if (
+    snapshot.path !== path ||
+    snapshot.uid !== 0 ||
+    snapshot.gid !== 0 ||
+    snapshot.mode !== "0700" ||
+    typeof snapshot.device !== "string" ||
+    !/^(?:0|[1-9][0-9]{0,19})$/u.test(snapshot.device) ||
+    typeof snapshot.inode !== "string" ||
+    !/^[1-9][0-9]{0,19}$/u.test(snapshot.inode)
+  ) {
+    fail(`${label} is not one sealed root-owned mode-0700 directory`);
+  }
+}
+
+async function sealMutableParents(plan, ops) {
+  const seals = new Map();
+  for (const path of mutableParentPaths(plan)) {
+    const snapshot = await ops.readDirectory(path);
+    requireOwnerOnlyDirectory(snapshot, path, `mutable transaction parent ${path}`);
+    seals.set(path, snapshot);
+  }
+  return seals;
+}
+
+function sealRecord(parentSeals, stateDirectorySeal) {
+  return [...parentSeals.values(), stateDirectorySeal]
+    .map((snapshot) => structuredClone(snapshot))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function sealFor(parentSeals, path) {
+  const seal = parentSeals.get(dirname(path));
+  if (seal === undefined) fail(`missing mutable parent seal for ${path}`);
+  return seal;
+}
+
+function validateRecordedDirectorySeals(recorded, plan) {
+  if (!Array.isArray(recorded)) fail("prepared directory seals must be an array");
+  const expectedPaths = [...mutableParentPaths(plan), plan.transaction.state_directory].sort();
+  if (recorded.length !== expectedPaths.length) fail("prepared directory seal count drifted");
+  const byPath = new Map();
+  for (const snapshot of recorded) {
+    exactKeys(snapshot, ["device", "gid", "inode", "mode", "path", "uid"], "prepared directory seal");
+    if (byPath.has(snapshot.path)) fail("prepared directory seals contain a duplicate path");
+    requireOwnerOnlyDirectory(snapshot, snapshot.path, `prepared directory seal ${snapshot.path}`);
+    byPath.set(snapshot.path, snapshot);
+  }
+  if (expectedPaths.some((path) => !byPath.has(path))) {
+    fail("prepared directory seal paths drifted from the transaction plan");
+  }
+  return byPath;
+}
+
 async function verifyInstalledPair(plan, ops, candidateSnapshot) {
   const live = await ops.readRegular(TARGET_CONFIG);
   const swapped = await ops.readRegular(plan.transaction.candidate_path);
@@ -349,24 +560,30 @@ async function verifyInstalledPair(plan, ops, candidateSnapshot) {
   return { live, swapped };
 }
 
-async function readExchangePair(plan, ops) {
+function stablePairIdentity(pair) {
   return {
-    live: await ops.readRegular(TARGET_CONFIG),
-    swapped: await ops.readRegular(plan.transaction.candidate_path),
+    candidate: pair.candidate?.snapshot ?? null,
+    kind: pair.kind,
+    live: pair.live.snapshot,
   };
 }
 
-async function verifyRolledBackPair(plan, ops, candidateSnapshot) {
-  const live = await ops.readRegular(TARGET_CONFIG);
-  const swapped = await ops.readRegular(plan.transaction.candidate_path);
-  assertExchangeIdentity(live.snapshot, plan.target.config_preimage, TARGET_CONFIG, "restored Caddyfile preimage");
-  assertExchangeIdentity(
-    swapped.snapshot,
-    candidateSnapshot,
-    plan.transaction.candidate_path,
-    "swapped-out managed candidate",
-  );
-  return { live, swapped };
+async function classifyDurablePair(plan, ops, candidateSnapshot, label) {
+  try {
+    await ops.fsyncParent(TARGET_CONFIG, plan.target.config_parent);
+    const first = await classifyPair(plan, ops, candidateSnapshot);
+    await ops.fsyncParent(TARGET_CONFIG, plan.target.config_parent);
+    const second = await classifyPair(plan, ops, candidateSnapshot);
+    if (!same(stablePairIdentity(first), stablePairIdentity(second))) {
+      fail(`${label} target/candidate pair changed across its durability confirmation`);
+    }
+    return second;
+  } catch (error) {
+    throw outcomeUnknown(
+      `${label} outcome is unknown; refusing rollback, terminal receipt and cleanup: ${error.message}`,
+      error,
+    );
+  }
 }
 
 async function exchange(ops, plan) {
@@ -374,53 +591,49 @@ async function exchange(ops, plan) {
     plan.transaction.candidate_path,
     TARGET_CONFIG,
     plan.runtime.exchange_helper,
+    plan.target.config_parent,
+  );
+}
+
+async function exchangeAndClassify({
+  candidateSnapshot,
+  expectedAfter,
+  label,
+  ops,
+  plan,
+}) {
+  let helperError;
+  try {
+    await exchange(ops, plan);
+  } catch (error) {
+    helperError = error;
+  }
+  const pair = await classifyDurablePair(plan, ops, candidateSnapshot, label);
+  if (pair.kind === expectedAfter) return pair;
+  const expectedBefore = expectedAfter === "installed" ? "rolled-back" : "installed";
+  if (pair.kind === expectedBefore) {
+    const suffix = helperError === undefined ? "reported success without applying the exchange" :
+      `did not apply the exchange: ${helperError.message}`;
+    throw new OverlayTransactionError(`${label} ${suffix}`, {
+      cause: helperError,
+      phase: `${label}-not-applied`,
+    });
+  }
+  throw outcomeUnknown(
+    `${label} reached unsupported exact pair ${pair.kind}; refusing any compensating mutation`,
+    helperError,
   );
 }
 
 async function exchangeInstalledPairForRollback(plan, ops, candidateSnapshot) {
   await verifyInstalledPair(plan, ops, candidateSnapshot);
-  await exchange(ops, plan);
-  const observedExchange = await readExchangePair(plan, ops);
-  try {
-    assertExchangeIdentity(
-      observedExchange.live.snapshot,
-      plan.target.config_preimage,
-      TARGET_CONFIG,
-      "rollback restored Caddyfile preimage",
-    );
-    assertExchangeIdentity(
-      observedExchange.swapped.snapshot,
-      candidateSnapshot,
-      plan.transaction.candidate_path,
-      "rollback swapped-out managed candidate",
-    );
-  } catch (verificationError) {
-    try {
-      await exchange(ops, plan);
-      const restored = await readExchangePair(plan, ops);
-      assertExchangeIdentity(
-        restored.live.snapshot,
-        observedExchange.swapped.snapshot,
-        TARGET_CONFIG,
-        "rollback-rejected restored live entry",
-      );
-      assertExchangeIdentity(
-        restored.swapped.snapshot,
-        observedExchange.live.snapshot,
-        plan.transaction.candidate_path,
-        "rollback-rejected restored candidate entry",
-      );
-    } catch (restoreError) {
-      throw new OverlayTransactionError(
-        `rollback exchange verification failed and exact restoration is not proven: ${restoreError.message}`,
-        { cause: restoreError, phase: "rollback-exchange-restore-failed" },
-      );
-    }
-    throw new OverlayTransactionError(
-      `rollback exchange verification failed; exact pre-exchange entries were restored without reload: ${verificationError.message}`,
-      { cause: verificationError, phase: "rollback-exchange-rejected" },
-    );
-  }
+  await exchangeAndClassify({
+    candidateSnapshot,
+    expectedAfter: "rolled-back",
+    label: "rollback-exchange",
+    ops,
+    plan,
+  });
 }
 
 async function rollbackInstalled({
@@ -430,13 +643,16 @@ async function rollbackInstalled({
   ops,
   plan,
   previousPhase,
+  receiptParentSeal,
   reload,
+  stateDirectorySeal,
 }) {
   await exchangeInstalledPairForRollback(plan, ops, candidateSnapshot);
   await writeState(
     ops,
     plan,
     stateRecord(plan, approvedPlanSha256, "rollback-exchanged", previousPhase),
+    stateDirectorySeal,
   );
   const rollbackReload = await ops.run(plan.transaction.reload_argv, {
     captureStdout: false,
@@ -465,6 +681,7 @@ async function rollbackInstalled({
       after,
       rollback,
     }),
+    stateDirectorySeal,
   );
   const receipt = baseReceipt({
     after,
@@ -480,7 +697,13 @@ async function rollbackInstalled({
     reload,
     rollback,
   });
-  const digest = await writeReceipt(ops, plan, approvedPlanSha256, receipt);
+  const digest = await writeReceipt(
+    ops,
+    plan,
+    approvedPlanSha256,
+    receipt,
+    receiptParentSeal,
+  );
   try {
     await writeState(
       ops,
@@ -488,8 +711,13 @@ async function rollbackInstalled({
       stateRecord(plan, approvedPlanSha256, "rolled-back", "rollback-reloaded", {
         receipt_sha256: digest,
       }),
+      stateDirectorySeal,
     );
-    await ops.removeIfExact(plan.transaction.candidate_path, candidateSnapshot);
+    await ops.removeIfExact(
+      plan.transaction.candidate_path,
+      candidateSnapshot,
+      plan.target.config_parent,
+    );
   } catch (error) {
     throw new OverlayTransactionError(
       `rolled-back receipt is durable; explicit recovery must finalize cleanup: ${error.message}`,
@@ -500,7 +728,11 @@ async function rollbackInstalled({
 }
 
 async function executeLocked({ approvedPlanSha256, ops, plan }) {
-  await ops.initializeStateDirectory(plan.transaction.state_directory);
+  const parentSeals = await sealMutableParents(plan, ops);
+  const stateDirectorySeal = await ops.initializeStateDirectory(
+    plan.transaction.state_directory,
+    sealFor(parentSeals, plan.transaction.state_directory),
+  );
   let candidateSnapshot;
   let prepared = false;
   let exchanged = false;
@@ -526,6 +758,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       plan.transaction.candidate_path,
       candidate.candidate,
       "0644",
+      plan.target.config_parent,
     );
     candidateSnapshot = candidateWrite.snapshot;
 
@@ -539,7 +772,12 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     }
     const adapted = parseStrictJson(Buffer.from(adapt.stdout).toString("utf8"), "Caddy adapted JSON");
     const adaptedBytes = Buffer.from(canonicalJson(adapted), "utf8");
-    await ops.writeExclusive(plan.transaction.adapted_json_path, adaptedBytes, "0400");
+    await ops.writeExclusive(
+      plan.transaction.adapted_json_path,
+      adaptedBytes,
+      "0400",
+      sealFor(parentSeals, plan.transaction.adapted_json_path),
+    );
     const validate = await ops.run(plan.transaction.validate_argv, {
       captureStdout: false,
       maxBytes: MAX_COMMAND_BYTES,
@@ -562,7 +800,12 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     exactRegularSnapshot(validatedCandidate.snapshot, candidateSnapshot, "validated candidate");
     await collectPinnedState(plan, ops, "post-validation");
 
-    const backupWrite = await ops.writeExclusive(plan.transaction.backup_path, preimage, "0400");
+    const backupWrite = await ops.writeExclusive(
+      plan.transaction.backup_path,
+      preimage,
+      "0400",
+      sealFor(parentSeals, plan.transaction.backup_path),
+    );
     const backup = {
       directory_fsync: backupWrite.directoryFsync,
       exclusive_create: backupWrite.exclusiveCreate,
@@ -589,7 +832,13 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     }
     const finalPreinstall = await ops.readRegular(TARGET_CONFIG);
     exactRegularSnapshot(finalPreinstall.snapshot, plan.target.config_preimage, "final pre-install Caddyfile");
-    context = { backup, before, host: await ops.hostIdentity(), preparation };
+    context = {
+      backup,
+      before,
+      directory_seals: sealRecord(parentSeals, stateDirectorySeal),
+      host: await ops.hostIdentity(),
+      preparation,
+    };
     await writeState(
       ops,
       plan,
@@ -597,51 +846,17 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
         candidate_snapshot: candidateSnapshot,
         context,
       }),
+      stateDirectorySeal,
     );
     prepared = true;
 
-    await exchange(ops, plan);
-    const observedExchange = await readExchangePair(plan, ops);
-    try {
-      assertExchangeIdentity(
-        observedExchange.live.snapshot,
-        candidateSnapshot,
-        TARGET_CONFIG,
-        "live exchanged candidate",
-      );
-      assertExchangeIdentity(
-        observedExchange.swapped.snapshot,
-        plan.target.config_preimage,
-        plan.transaction.candidate_path,
-        "swapped-out Caddyfile preimage",
-      );
-    } catch (verificationError) {
-      try {
-        await exchange(ops, plan);
-        const restored = await readExchangePair(plan, ops);
-        assertExchangeIdentity(
-          restored.live.snapshot,
-          observedExchange.swapped.snapshot,
-          TARGET_CONFIG,
-          "exchange-rejected restored live entry",
-        );
-        assertExchangeIdentity(
-          restored.swapped.snapshot,
-          observedExchange.live.snapshot,
-          plan.transaction.candidate_path,
-          "exchange-rejected restored candidate entry",
-        );
-      } catch (restoreError) {
-        throw new OverlayTransactionError(
-          `exchange verification failed and exact restoration is not proven: ${restoreError.message}`,
-          { cause: restoreError, phase: "exchange-restore-failed" },
-        );
-      }
-      throw new OverlayTransactionError(
-        `exchange verification failed; exact pre-exchange entries were restored without reload: ${verificationError.message}`,
-        { cause: verificationError, phase: "exchange-rejected" },
-      );
-    }
+    await exchangeAndClassify({
+      candidateSnapshot,
+      expectedAfter: "installed",
+      label: "install-exchange",
+      ops,
+      plan,
+    });
     exchanged = true;
     previousPhase = "exchanged";
     const installation = installationRecord(plan);
@@ -650,6 +865,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       ops,
       plan,
       stateRecord(plan, approvedPlanSha256, "exchanged", "prepared", { installation }),
+      stateDirectorySeal,
     );
 
     const reloadResult = await ops.run(plan.transaction.reload_argv, {
@@ -663,6 +879,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       ops,
       plan,
       stateRecord(plan, approvedPlanSha256, "reloaded", "exchanged", { reload }),
+      stateDirectorySeal,
     );
     previousPhase = "reloaded";
 
@@ -718,7 +935,13 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       reload,
       rollback: noRollback(),
     });
-    const digest = await writeReceipt(ops, plan, approvedPlanSha256, receipt);
+    const digest = await writeReceipt(
+      ops,
+      plan,
+      approvedPlanSha256,
+      receipt,
+      sealFor(parentSeals, plan.transaction.receipt_path),
+    );
     durableCommitReceipt = receipt;
     await writeState(
       ops,
@@ -726,13 +949,19 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       stateRecord(plan, approvedPlanSha256, "committed", "reloaded", {
         receipt_sha256: digest,
       }),
+      stateDirectorySeal,
     );
-    await ops.removeIfExact(plan.transaction.candidate_path, {
-      ...plan.target.config_preimage,
-      path: plan.transaction.candidate_path,
-    });
+    await ops.removeIfExact(
+      plan.transaction.candidate_path,
+      {
+        ...plan.target.config_preimage,
+        path: plan.transaction.candidate_path,
+      },
+      plan.target.config_parent,
+    );
     return receipt;
   } catch (error) {
+    if (error instanceof OverlayOutcomeUnknownError) throw error;
     if (durableCommitReceipt !== undefined) {
       throw new OverlayTransactionError(
         `committed receipt is durable; explicit recovery must finalize cleanup: ${error.message}`,
@@ -750,14 +979,27 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
             ops,
             plan,
             stateRecord(plan, approvedPlanSha256, "aborted-before-install", "prepared"),
+            stateDirectorySeal,
           );
-        } catch {
-          // Durable prepared state plus the exact file pair remains recoverable.
+        } catch (abortFinalizationError) {
+          // Never remove the candidate when the abort record's publication
+          // cannot be classified. Preserve the initiating failure as primary
+          // and attach the recovery requirement as secondary evidence.
+          if (abortFinalizationError instanceof OverlayOutcomeUnknownError) {
+            error.abortFinalizationError = abortFinalizationError;
+            throw error;
+          }
+          // A proven-not-published abort record does not change the exact
+          // pre-install file pair, so candidate cleanup remains safe below.
         }
       }
       if (candidateSnapshot !== undefined) {
         try {
-          await ops.removeIfExact(plan.transaction.candidate_path, candidateSnapshot);
+          await ops.removeIfExact(
+            plan.transaction.candidate_path,
+            candidateSnapshot,
+            plan.target.config_parent,
+          );
         } catch {
           // Never mask the primary failure or remove an entry that is no longer ours.
         }
@@ -778,19 +1020,28 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
         plan,
         previousPhase,
         reload,
+        receiptParentSeal: sealFor(parentSeals, plan.transaction.receipt_path),
+        stateDirectorySeal,
       });
       throw new OverlayTransactionError(
         `Caddy overlay failed and exact preimage was restored: ${error.message}`,
         { cause: error, phase: "rolled-back", receipt },
       );
     } catch (rollbackError) {
-      if (rollbackError instanceof OverlayTransactionError && rollbackError.receipt !== undefined) {
+      if (rollbackError instanceof OverlayOutcomeUnknownError) {
+        rollbackError.primaryError = error;
         throw rollbackError;
       }
-      throw new OverlayTransactionError(
-        `Caddy overlay failed and rollback is not proven: ${rollbackError.message}`,
-        { cause: rollbackError, phase: "rollback-failed" },
+      if (rollbackError instanceof OverlayTransactionError && rollbackError.receipt !== undefined) {
+        rollbackError.primaryError ??= error;
+        throw rollbackError;
+      }
+      const combined = new OverlayTransactionError(
+        `Caddy overlay failed (${error.message}) and rollback is not proven: ${rollbackError.message}`,
+        { cause: error, phase: "rollback-failed" },
       );
+      combined.rollbackError = rollbackError;
+      throw combined;
     }
   }
 }
@@ -801,6 +1052,7 @@ export async function executeOverlayTransaction({ approvedPlanSha256, ops, plan 
     fail("transaction plan does not match its externally approved SHA-256");
   }
   const release = await ops.acquireLock(plan.transaction.lock_path, {
+    helperPin: plan.runtime.exchange_helper,
     recoverStale: false,
     transactionId: plan.transaction_id,
   });
@@ -923,9 +1175,10 @@ function loadRecoveryModel(records, plan, approvedPlanSha256) {
     validateRecoveryCandidateSnapshot(prepared.candidate_snapshot, plan);
     exactKeys(
       prepared.context,
-      ["backup", "before", "host", "preparation"],
+      ["backup", "before", "directory_seals", "host", "preparation"],
       "prepared recovery context",
     );
+    validateRecordedDirectorySeals(prepared.context.directory_seals, plan);
     validateRecoveryReceiptComponents({
       after: prepared.context.before,
       approvedPlanSha256,
@@ -1020,6 +1273,131 @@ function loadRecoveryModel(records, plan, approvedPlanSha256) {
   return { byPhase, prepared };
 }
 
+async function reconcileStateJournal({
+  approvedPlanSha256,
+  currentDirectorySeals,
+  ops,
+  plan,
+  stateDirectorySeal,
+}) {
+  let entries;
+  try {
+    const first = await ops.readStateRecords(
+      plan.transaction.state_directory,
+      stateDirectorySeal,
+    );
+    // A process can die after renameat2 made a final phase name visible but
+    // before either helper or executor fsynced the directory. Establish that
+    // durability before any record influences target/candidate mutation, then
+    // require a stable exact byte-for-byte journal reread.
+    await ops.fsyncParent(
+      `${plan.transaction.state_directory}/.journal-durability`,
+      stateDirectorySeal,
+    );
+    const second = await ops.readStateRecords(
+      plan.transaction.state_directory,
+      stateDirectorySeal,
+    );
+    if (
+      first.size !== second.size ||
+      [...first].some(([name, bytes]) => !second.get(name)?.equals(bytes))
+    ) {
+      fail("phase journal changed across its durability confirmation");
+    }
+    entries = second;
+  } catch (error) {
+    throw outcomeUnknown(
+      `phase journal durability is unknown; refusing recovery mutation: ${error.message}`,
+      error,
+    );
+  }
+  const finalNames = new Set(Object.values(OVERLAY_STATE_FILES));
+  const proposed = new Map();
+  const pendingToRemove = [];
+  const pendingToPublish = [];
+  for (const [name, bytes] of entries) {
+    if (finalNames.has(name)) proposed.set(name, Buffer.from(bytes));
+  }
+  for (const [name, bytes] of entries) {
+    if (!name.endsWith(".pending")) continue;
+    const finalName = name.slice(0, -".pending".length);
+    if (!finalNames.has(finalName)) fail(`unknown pending phase journal entry ${name}`);
+    const pendingPath = `${plan.transaction.state_directory}/${name}`;
+    const pending = await ops.readRegular(pendingPath);
+    ownerOnlyRecordShape(pending.snapshot, pendingPath, `pending phase ${finalName}`);
+    if (!pending.bytes.equals(bytes)) fail(`pending phase ${finalName} changed during recovery read`);
+    const finalBytes = proposed.get(finalName);
+    if (finalBytes !== undefined) {
+      if (!Buffer.from(finalBytes).equals(bytes)) {
+        fail(`final and pending phase ${finalName} records disagree`);
+      }
+      pendingToRemove.push({ path: pendingPath, snapshot: pending.snapshot });
+      continue;
+    }
+    try {
+      parseStrictJson(Buffer.from(bytes).toString("utf8"), `pending state ${name}`);
+    } catch {
+      // A process death can expose an exclusively-created pending inode before
+      // its write or file fsync completed. It is never authoritative by name.
+      pendingToRemove.push({ path: pendingPath, snapshot: pending.snapshot });
+      continue;
+    }
+    proposed.set(finalName, Buffer.from(bytes));
+    pendingToPublish.push({ bytes: Buffer.from(bytes), finalName, pendingPath });
+  }
+  // Validate the complete proposed append-only chain before publishing any
+  // pending member. This prevents a well-formed but contradictory suffix from
+  // becoming authoritative merely because its JSON parses.
+  const proposedModel = loadRecoveryModel(proposed, plan, approvedPlanSha256);
+  if (pendingToPublish.length > 1) {
+    fail("more than one unpublished phase exists; refusing a non-sequential journal suffix");
+  }
+  if (proposedModel.prepared !== undefined) {
+    const recorded = validateRecordedDirectorySeals(
+      proposedModel.prepared.context.directory_seals,
+      plan,
+    );
+    for (const [path, seal] of recorded) {
+      if (!same(currentDirectorySeals.get(path), seal)) {
+        fail(`mutable transaction directory ${path} changed across crash recovery`);
+      }
+    }
+  }
+  for (const pending of pendingToRemove) {
+    await ops.removeIfExact(pending.path, pending.snapshot, stateDirectorySeal);
+  }
+  for (const pending of pendingToPublish) {
+    const finalPath = `${plan.transaction.state_directory}/${pending.finalName}`;
+    let observed;
+    try {
+      observed = await settleAtomicPublication({
+        bytes: pending.bytes,
+        finalPath,
+        helperPin: plan.runtime.exchange_helper,
+        label: `recovery phase ${pending.finalName}`,
+        ops,
+        parentSeal: stateDirectorySeal,
+        pendingPath: pending.pendingPath,
+        publish: (...args) => ops.publishPendingState(...args),
+      });
+    } catch (error) {
+      throw outcomeUnknown(
+        `recovery phase ${pending.finalName} publication outcome is unknown: ${error.message}`,
+        error,
+      );
+    }
+    if (observed === null) fail(`valid pending phase ${pending.finalName} vanished`);
+  }
+  const confirmed = await ops.readStateRecords(
+    plan.transaction.state_directory,
+    stateDirectorySeal,
+  );
+  for (const name of confirmed.keys()) {
+    if (name.endsWith(".pending")) fail(`pending phase journal entry survived reconciliation: ${name}`);
+  }
+  return confirmed;
+}
+
 async function classifyPair(plan, ops, candidateSnapshot) {
   const live = await ops.readRegular(TARGET_CONFIG);
   const candidate = await ops.readOptionalRegular(plan.transaction.candidate_path);
@@ -1059,18 +1437,24 @@ async function classifyPair(plan, ops, candidateSnapshot) {
 }
 
 function pendingReceiptShape(snapshot, plan) {
-  if (
-    snapshot.path !== plan.transaction.receipt_pending_path ||
-    snapshot.uid !== 0 ||
-    snapshot.gid !== 0 ||
-    snapshot.mode !== "0400" ||
-    snapshot.nlink !== 1
-  ) {
-    fail("pending receipt is not one root-owned owner-only transaction file");
-  }
+  ownerOnlyRecordShape(
+    snapshot,
+    plan.transaction.receipt_pending_path,
+    "pending receipt",
+  );
 }
 
-async function readAndValidateReceipt(ops, plan, approvedPlanSha256, pairKind) {
+function finalReceiptShape(snapshot, plan) {
+  ownerOnlyRecordShape(snapshot, plan.transaction.receipt_path, "final receipt");
+}
+
+async function readAndValidateReceipt(
+  ops,
+  plan,
+  approvedPlanSha256,
+  pairKind,
+  receiptParentSeal,
+) {
   let observed = await ops.readOptionalRegular(plan.transaction.receipt_path);
   const pending = await ops.readOptionalRegular(plan.transaction.receipt_pending_path);
   if (observed === null && pending !== null) {
@@ -1088,7 +1472,11 @@ async function readAndValidateReceipt(ops, plan, approvedPlanSha256, pairKind) {
       // A crash can leave the exclusively-created pending entry before its
       // bytes or fsync complete. Its exact owner-only transaction name is not
       // authoritative until strict receipt validation succeeds.
-      await ops.removeIfExact(plan.transaction.receipt_pending_path, pending.snapshot);
+      await ops.removeIfExact(
+        plan.transaction.receipt_pending_path,
+        pending.snapshot,
+        receiptParentSeal,
+      );
       return null;
     }
     const expectedPairs = pendingReceipt.outcome === "committed"
@@ -1097,20 +1485,64 @@ async function readAndValidateReceipt(ops, plan, approvedPlanSha256, pairKind) {
     if (!expectedPairs.includes(pairKind)) {
       fail("valid pending receipt contradicts the exact target/candidate file pair");
     }
-    await ops.publishPendingReceipt(
-      plan.transaction.receipt_pending_path,
-      plan.transaction.receipt_path,
-      plan.runtime.exchange_helper,
-    );
-    observed = await ops.readRegular(plan.transaction.receipt_path);
+    try {
+      observed = await settleAtomicPublication({
+        bytes: pending.bytes,
+        finalPath: plan.transaction.receipt_path,
+        helperPin: plan.runtime.exchange_helper,
+        label: "recovery terminal receipt",
+        ops,
+        parentSeal: receiptParentSeal,
+        pendingPath: plan.transaction.receipt_pending_path,
+        publish: (...args) => ops.publishPendingReceipt(...args),
+      });
+    } catch (error) {
+      throw outcomeUnknown(
+        `recovery receipt publication outcome is unknown: ${error.message}`,
+        error,
+      );
+    }
+    if (observed === null) fail("valid pending receipt vanished before publication");
   } else if (observed !== null && pending !== null) {
     pendingReceiptShape(pending.snapshot, plan);
     if (!pending.bytes.equals(observed.bytes)) {
       fail("final and pending receipt entries disagree");
     }
-    await ops.removeIfExact(plan.transaction.receipt_pending_path, pending.snapshot);
+    try {
+      observed = await settleAtomicPublication({
+        bytes: observed.bytes,
+        finalPath: plan.transaction.receipt_path,
+        helperPin: plan.runtime.exchange_helper,
+        label: "recovery duplicate terminal receipt",
+        ops,
+        parentSeal: receiptParentSeal,
+        pendingPath: plan.transaction.receipt_pending_path,
+        publish: (...args) => ops.publishPendingReceipt(...args),
+      });
+    } catch (error) {
+      throw outcomeUnknown(
+        `recovery duplicate receipt cleanup outcome is unknown: ${error.message}`,
+        error,
+      );
+    }
   }
   if (observed === null) return null;
+  finalReceiptShape(observed.snapshot, plan);
+  let confirmed;
+  try {
+    await ops.fsyncParent(plan.transaction.receipt_path, receiptParentSeal);
+    confirmed = await ops.readRegular(plan.transaction.receipt_path);
+    finalReceiptShape(confirmed.snapshot, plan);
+    if (!same(observed.snapshot, confirmed.snapshot) || !observed.bytes.equals(confirmed.bytes)) {
+      fail("final receipt changed across its durability confirmation");
+    }
+  } catch (error) {
+    throw outcomeUnknown(
+      `final receipt durability is unknown; refusing recovery mutation: ${error.message}`,
+      error,
+    );
+  }
+  observed = confirmed;
   const receipt = parseStrictJson(observed.bytes.toString("utf8"), "durable overlay receipt");
   validateOverlayReceipt({
     approvedPlanSha256,
@@ -1122,15 +1554,44 @@ async function readAndValidateReceipt(ops, plan, approvedPlanSha256, pairKind) {
 }
 
 async function recoverLocked({ approvedPlanSha256, ops, plan }) {
-  const records = await ops.readStateRecords(plan.transaction.state_directory);
+  const parentSeals = await sealMutableParents(plan, ops);
+  const stateDirectorySeal = await ops.sealStateDirectory(plan.transaction.state_directory);
+  const currentDirectorySeals = new Map([
+    ...parentSeals,
+    [plan.transaction.state_directory, stateDirectorySeal],
+  ]);
+  const records = await reconcileStateJournal({
+    approvedPlanSha256,
+    currentDirectorySeals,
+    ops,
+    plan,
+    stateDirectorySeal,
+  });
   const model = loadRecoveryModel(records, plan, approvedPlanSha256);
+  if (model.prepared !== undefined) {
+    const recorded = validateRecordedDirectorySeals(
+      model.prepared.context.directory_seals,
+      plan,
+    );
+    for (const [path, seal] of recorded) {
+      if (!same(currentDirectorySeals.get(path), seal)) {
+        fail(`mutable transaction directory ${path} changed across crash recovery`);
+      }
+    }
+  }
   const candidateSnapshot = model.prepared?.candidate_snapshot;
-  const pair = await classifyPair(plan, ops, candidateSnapshot);
+  const pair = await classifyDurablePair(
+    plan,
+    ops,
+    candidateSnapshot,
+    "crash recovery initial classification",
+  );
   const durableReceipt = await readAndValidateReceipt(
     ops,
     plan,
     approvedPlanSha256,
     pair.kind,
+    sealFor(parentSeals, plan.transaction.receipt_path),
   );
   if (durableReceipt !== null) {
     const expectedPair = durableReceipt.receipt.outcome === "committed"
@@ -1140,6 +1601,10 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
       fail("durable receipt outcome contradicts the exact recovery file pair");
     }
     const terminalPhase = durableReceipt.receipt.outcome === "committed" ? "committed" : "rolled-back";
+    const terminalPredecessor = terminalPhase === "committed" ? "reloaded" : "rollback-reloaded";
+    if (!model.byPhase.has(terminalPredecessor)) {
+      fail(`durable ${terminalPhase} receipt is missing predecessor ${terminalPredecessor}`);
+    }
     const terminalRecord = model.byPhase.get(terminalPhase);
     if (
       terminalRecord !== undefined &&
@@ -1155,9 +1620,10 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
           plan,
           approvedPlanSha256,
           terminalPhase,
-          terminalPhase === "committed" ? "reloaded" : "rollback-reloaded",
+          terminalPredecessor,
           { receipt_sha256: durableReceipt.observed.snapshot.sha256 },
         ),
+        stateDirectorySeal,
       );
     }
     if (pair.candidate !== null) {
@@ -1166,6 +1632,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
         terminalPhase === "committed"
           ? { ...plan.target.config_preimage, path: plan.transaction.candidate_path }
           : candidateSnapshot,
+        plan.target.config_parent,
       );
     }
     return durableReceipt.receipt;
@@ -1181,7 +1648,11 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
   }
   if (pair.kind === "rolled-back" && !model.byPhase.has("exchanged")) {
     if (model.byPhase.size === 0) {
-      await ops.removeIfExact(plan.transaction.candidate_path, pair.candidate.snapshot);
+      await ops.removeIfExact(
+        plan.transaction.candidate_path,
+        pair.candidate.snapshot,
+        plan.target.config_parent,
+      );
       return { outcome: "aborted-before-install", transaction_id: plan.transaction_id };
     }
     if (!model.byPhase.has("aborted-before-install")) {
@@ -1189,9 +1660,14 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
         ops,
         plan,
         stateRecord(plan, approvedPlanSha256, "aborted-before-install", "prepared"),
+        stateDirectorySeal,
       );
     }
-    await ops.removeIfExact(plan.transaction.candidate_path, candidateSnapshot);
+    await ops.removeIfExact(
+      plan.transaction.candidate_path,
+      candidateSnapshot,
+      plan.target.config_parent,
+    );
     return { outcome: "aborted-before-install", transaction_id: plan.transaction_id };
   }
   if (pair.kind === "installed") {
@@ -1201,6 +1677,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
         ops,
         plan,
         stateRecord(plan, approvedPlanSha256, "exchanged", "prepared", { installation }),
+        stateDirectorySeal,
       );
       model.byPhase.set("exchanged", { installation });
     }
@@ -1215,6 +1692,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
           "rollback-exchanged",
           model.byPhase.has("reloaded") ? "reloaded" : "exchanged",
         ),
+        stateDirectorySeal,
       );
       model.byPhase.set("rollback-exchanged", {});
     }
@@ -1231,6 +1709,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
         "rollback-exchanged",
         model.byPhase.has("reloaded") ? "reloaded" : "exchanged",
       ),
+      stateDirectorySeal,
     );
     model.byPhase.set("rollback-exchanged", {});
   }
@@ -1272,6 +1751,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
         after,
         rollback,
       }),
+      stateDirectorySeal,
     );
   }
   const context = prepared.context;
@@ -1289,15 +1769,26 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
     reload,
     rollback,
   });
-  const digest = await writeReceipt(ops, plan, approvedPlanSha256, receipt);
+  const digest = await writeReceipt(
+    ops,
+    plan,
+    approvedPlanSha256,
+    receipt,
+    sealFor(parentSeals, plan.transaction.receipt_path),
+  );
   await writeState(
     ops,
     plan,
     stateRecord(plan, approvedPlanSha256, "rolled-back", "rollback-reloaded", {
       receipt_sha256: digest,
     }),
+    stateDirectorySeal,
   );
-  await ops.removeIfExact(plan.transaction.candidate_path, candidateSnapshot);
+  await ops.removeIfExact(
+    plan.transaction.candidate_path,
+    candidateSnapshot,
+    plan.target.config_parent,
+  );
   return receipt;
 }
 
@@ -1307,6 +1798,7 @@ export async function recoverOverlayTransaction({ approvedPlanSha256, ops, plan 
     fail("recovery plan does not match its externally approved SHA-256");
   }
   const release = await ops.acquireLock(plan.transaction.lock_path, {
+    helperPin: plan.runtime.exchange_helper,
     recoverStale: true,
     transactionId: plan.transaction_id,
   });
@@ -1343,6 +1835,37 @@ function canonicalAbsolute(path) {
 
 function sameInode(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function attachCleanupError(primary, cleanupError) {
+  if (primary === cleanupError || primary === null || typeof primary !== "object") return;
+  try {
+    if (!Array.isArray(primary.cleanupErrors)) primary.cleanupErrors = [];
+    primary.cleanupErrors.push(cleanupError);
+  } catch {
+    // The initiating failure remains authoritative even if a foreign Error
+    // object is non-extensible. Cleanup failures must never replace it.
+  }
+}
+
+function runWithSyncCleanups(operation, cleanups) {
+  let primary;
+  let value;
+  try {
+    value = operation();
+  } catch (error) {
+    primary = error;
+  }
+  for (const cleanup of cleanups) {
+    try {
+      cleanup();
+    } catch (cleanupError) {
+      if (primary === undefined) primary = cleanupError;
+      else attachCleanupError(primary, cleanupError);
+    }
+  }
+  if (primary !== undefined) throw primary;
+  return value;
 }
 
 function openSealedParent(path) {
@@ -1388,7 +1911,10 @@ function openSealedParent(path) {
     close() {
       if (closed) return;
       closed = true;
-      for (const descriptor of [...descriptors].reverse()) closeSync(descriptor.fd);
+      runWithSyncCleanups(
+        () => undefined,
+        [...descriptors].reverse().map((descriptor) => () => closeSync(descriptor.fd)),
+      );
     },
     confirm() {
       for (const descriptor of descriptors) {
@@ -1406,36 +1932,39 @@ function openSealedParent(path) {
 function realReadRegular(path, maxBytes = MAX_FILE_BYTES) {
   const parent = openSealedParent(path);
   let fd;
-  try {
-    fd = openSync(
-      parent.procPath,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-    );
-    const stat = fstatSync(fd, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes)) {
-      fail(`regular-file boundary failed for ${path}`);
-    }
-    const bytes = readFileSync(fd);
-    if (bytes.length > maxBytes) fail(`regular file exceeded its bounded read: ${path}`);
-    const confirmation = fstatSync(fd, { bigint: true });
-    if (
-      !sameInode(confirmation, stat) ||
-      confirmation.size !== stat.size ||
-      confirmation.ctimeNs !== stat.ctimeNs ||
-      confirmation.mtimeNs !== stat.mtimeNs
-    ) {
-      fail(`regular file changed during descriptor read: ${path}`);
-    }
-    const pathStat = lstatSync(path, { bigint: true, throwIfNoEntry: true });
-    if (!pathStat.isFile() || !sameInode(pathStat, stat)) {
-      fail(`regular file path changed or became a symlink during descriptor read: ${path}`);
-    }
-    parent.confirm();
-    return { bytes, snapshot: snapshotFromStat(path, stat, bytes) };
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    parent.close();
-  }
+  return runWithSyncCleanups(
+    () => {
+      fd = openSync(
+        parent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      const stat = fstatSync(fd, { bigint: true });
+      if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes)) {
+        fail(`regular-file boundary failed for ${path}`);
+      }
+      const bytes = readFileSync(fd);
+      if (bytes.length > maxBytes) fail(`regular file exceeded its bounded read: ${path}`);
+      const confirmation = fstatSync(fd, { bigint: true });
+      if (
+        !sameInode(confirmation, stat) ||
+        confirmation.size !== stat.size ||
+        confirmation.ctimeNs !== stat.ctimeNs ||
+        confirmation.mtimeNs !== stat.mtimeNs
+      ) {
+        fail(`regular file changed during descriptor read: ${path}`);
+      }
+      const pathStat = lstatSync(path, { bigint: true, throwIfNoEntry: true });
+      if (!pathStat.isFile() || !sameInode(pathStat, stat)) {
+        fail(`regular file path changed or became a symlink during descriptor read: ${path}`);
+      }
+      parent.confirm();
+      return { bytes, snapshot: snapshotFromStat(path, stat, bytes) };
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
 }
 
 function realReadOptionalRegular(path) {
@@ -1449,66 +1978,206 @@ function realReadOptionalRegular(path) {
 
 function realReadDirectory(path) {
   const parent = openSealedParent(`${path}/.directory-pin`);
-  try {
-    const stat = fstatSync(parent.fd, { bigint: true });
-    parent.confirm();
-    return {
-      device: stat.dev.toString(),
-      gid: Number(stat.gid),
-      inode: stat.ino.toString(),
-      mode: modeString(stat),
-      path,
-      uid: Number(stat.uid),
-    };
-  } finally {
-    parent.close();
-  }
+  return runWithSyncCleanups(
+    () => {
+      const stat = fstatSync(parent.fd, { bigint: true });
+      parent.confirm();
+      return {
+        device: stat.dev.toString(),
+        gid: Number(stat.gid),
+        inode: stat.ino.toString(),
+        mode: modeString(stat),
+        path,
+        uid: Number(stat.uid),
+      };
+    },
+    [() => parent.close()],
+  );
 }
 
-function fsyncParent(path) {
+function assertDirectorySeal(parent, path, expected, label) {
+  if (expected === undefined) return;
+  const stat = fstatSync(parent.fd, { bigint: true });
+  const actual = {
+    device: stat.dev.toString(),
+    gid: Number(stat.gid),
+    inode: stat.ino.toString(),
+    mode: modeString(stat),
+    path: dirname(path),
+    uid: Number(stat.uid),
+  };
+  if (!same(actual, expected)) fail(`${label} parent directory drifted from its invocation seal`);
+}
+
+function fsyncParent(path, expectedParent) {
   const parent = openSealedParent(path);
-  try {
-    fsyncSync(parent.fd);
-    parent.confirm();
-  } finally {
-    parent.close();
-  }
+  runWithSyncCleanups(
+    () => {
+      assertDirectorySeal(parent, path, expectedParent, "fsync");
+      fsyncSync(parent.fd);
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "confirmed fsync");
+    },
+    [() => parent.close()],
+  );
 }
 
-function realWriteExclusive(path, bytes, mode) {
+function fsyncRegularExact(path, expectedSnapshot, expectedParent) {
+  const parent = openSealedParent(path);
+  let fd;
+  runWithSyncCleanups(
+    () => {
+      assertDirectorySeal(parent, path, expectedParent, "regular fsync");
+      fd = openSync(
+        parent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      const stat = fstatSync(fd, { bigint: true });
+      if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_FILE_BYTES)) {
+        fail(`regular fsync boundary failed for ${path}`);
+      }
+      const bytes = readFileSync(fd);
+      const snapshot = snapshotFromStat(path, stat, bytes);
+      if (!same(snapshot, expectedSnapshot)) fail(`regular fsync target drifted: ${path}`);
+      fsyncSync(fd);
+      const confirmation = fstatSync(fd, { bigint: true });
+      if (!sameInode(confirmation, stat) || confirmation.ctimeNs !== stat.ctimeNs ||
+          confirmation.mtimeNs !== stat.mtimeNs || confirmation.size !== stat.size) {
+        fail(`regular fsync target changed during sync: ${path}`);
+      }
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "confirmed regular fsync");
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
+}
+
+function injectFault(faultInjector, point) {
+  if (faultInjector !== undefined) faultInjector(point);
+}
+
+function realWriteExclusive(path, bytes, mode, expectedParent, faultInjector) {
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_FILE_BYTES) {
     fail(`exclusive write is not one bounded byte buffer: ${path}`);
   }
   const parent = openSealedParent(path);
   const numericMode = Number.parseInt(mode, 8);
   let fd;
-  try {
-    fd = openSync(
-      parent.procPath,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW |
-        constants.O_CLOEXEC,
-      numericMode,
-    );
-    fchmodSync(fd, numericMode);
-    fchownSync(fd, 0, 0);
-    writeFileSync(fd, bytes);
-    fsyncSync(fd);
-    parent.confirm();
-    fsyncSync(parent.fd);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    parent.close();
+  runWithSyncCleanups(
+    () => {
+      assertDirectorySeal(parent, path, expectedParent, "exclusive write");
+      injectFault(faultInjector, "before-open");
+      fd = openSync(
+        parent.procPath,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW |
+          constants.O_CLOEXEC,
+        numericMode,
+      );
+      injectFault(faultInjector, "after-open");
+      fchmodSync(fd, numericMode);
+      fchownSync(fd, 0, 0);
+      if (faultInjector === undefined || bytes.length < 2) {
+        writeFileSync(fd, bytes);
+      } else {
+        const split = Math.floor(bytes.length / 2);
+        writeFileSync(fd, bytes.subarray(0, split));
+        injectFault(faultInjector, "after-partial-write");
+        writeFileSync(fd, bytes.subarray(split));
+      }
+      injectFault(faultInjector, "after-write");
+      fsyncSync(fd);
+      injectFault(faultInjector, "after-file-fsync");
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "exclusive write confirmation");
+      injectFault(faultInjector, "before-pending-dir-fsync");
+      fsyncSync(parent.fd);
+      injectFault(faultInjector, "after-pending-dir-fsync");
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "exclusive write durable confirmation");
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
+  if (expectedParent !== undefined) {
+    const parentConfirmation = realReadDirectory(dirname(path));
+    if (!same(parentConfirmation, expectedParent)) {
+      fail(`exclusive write parent changed before final readback: ${path}`);
+    }
   }
   const observed = realReadRegular(path);
+  if (expectedParent !== undefined) {
+    const parentConfirmation = realReadDirectory(dirname(path));
+    if (!same(parentConfirmation, expectedParent)) {
+      fail(`exclusive write parent changed after final readback: ${path}`);
+    }
+  }
   return {
     directoryFsync: true,
     exclusiveCreate: true,
     fileFsync: true,
     snapshot: observed.snapshot,
   };
+}
+
+function realRemoveIfExact(path, expectedSnapshot, expectedParent) {
+  const parent = openSealedParent(path);
+  let fd;
+  runWithSyncCleanups(
+    () => {
+      assertDirectorySeal(parent, path, expectedParent, "exact removal");
+      try {
+        fd = openSync(
+          parent.procPath,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+        );
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          // Absence can itself be the visible but not-yet-durable result of a
+          // prior crashed unlink. Commit and reconfirm the directory before
+          // reporting the idempotent removal complete.
+          fsyncSync(parent.fd);
+          parent.confirm();
+          assertDirectorySeal(parent, path, expectedParent, "durable exact absence");
+          const confirmation = lstatSync(parent.procPath, {
+            bigint: true,
+            throwIfNoEntry: false,
+          });
+          if (confirmation !== undefined) fail(`exact removal entry reappeared: ${path}`);
+          return;
+        }
+        throw error;
+      }
+      const stat = fstatSync(fd, { bigint: true });
+      if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_FILE_BYTES)) {
+        fail(`exact removal boundary failed for ${path}`);
+      }
+      const bytes = readFileSync(fd);
+      const snapshot = snapshotFromStat(path, stat, bytes);
+      assertExchangeIdentity(snapshot, expectedSnapshot, path, "exact removal entry");
+      const pathStat = lstatSync(parent.procPath, { bigint: true, throwIfNoEntry: true });
+      if (!pathStat.isFile() || !sameInode(pathStat, stat)) {
+        fail(`exact removal pathname drifted: ${path}`);
+      }
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "confirmed exact removal");
+      unlinkSync(parent.procPath);
+      fsyncSync(parent.fd);
+      parent.confirm();
+      assertDirectorySeal(parent, path, expectedParent, "durable exact removal");
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
 }
 
 function commandResult(argv, { captureStdout, maxBytes, timeoutMs, extraFd } = {}) {
@@ -1810,14 +2479,64 @@ function ownerIsLive(owner) {
   }
 }
 
-export function acquireFilesystemLock(path, { recoverStale, transactionId }) {
+export function acquireFilesystemLock(
+  path,
+  { allowUnpinnedTestHelper = false, helperPin, recoverStale, transactionId },
+) {
+  if (helperPin === undefined && allowUnpinnedTestHelper !== true) {
+    fail("transaction lock owner publication requires the pinned no-replace helper");
+  }
   const create = () => {
     mkdirSync(path, { mode: 0o700 });
     fsyncParent(path);
+    const lockDirectorySeal = realReadDirectory(path);
+    if (
+      lockDirectorySeal.uid !== 0 ||
+      lockDirectorySeal.gid !== 0 ||
+      lockDirectorySeal.mode !== "0700"
+    ) {
+      fail("transaction lock directory is not root:root mode 0700");
+    }
     const owner = lockOwner(transactionId);
     const ownerBytes = Buffer.from(canonicalJson(owner), "utf8");
-    realWriteExclusive(`${path}/${LOCK_OWNER}`, ownerBytes, "0400");
-    return { owner, ownerBytes };
+    const pendingPath = `${path}/${LOCK_OWNER_PENDING}`;
+    const ownerPath = `${path}/${LOCK_OWNER}`;
+    const pending = realWriteExclusive(pendingPath, ownerBytes, "0400", lockDirectorySeal);
+    try {
+      if (allowUnpinnedTestHelper) {
+        // Test-only direct callers may not have a rendered helper pin. The
+        // newly-created lock directory still makes this rename atomic; the
+        // production adapter always supplies the no-replace helper below.
+        renameSync(pendingPath, ownerPath);
+        fsyncParent(ownerPath, lockDirectorySeal);
+      } else {
+        invokePinnedHelper(
+          "--publish",
+          pendingPath,
+          ownerPath,
+          helperPin,
+          lockDirectorySeal,
+        );
+      }
+    } catch (error) {
+      const observed = realReadOptionalRegular(ownerPath);
+      if (observed === null || !observed.bytes.equals(ownerBytes)) throw error;
+      ownerOnlyRecordShape(observed.snapshot, ownerPath, "lock owner");
+      fsyncParent(ownerPath, lockDirectorySeal);
+    }
+    const published = realReadRegular(ownerPath, 64 * 1024);
+    ownerOnlyRecordShape(published.snapshot, ownerPath, "published lock owner");
+    if (!published.bytes.equals(ownerBytes)) fail("published lock owner bytes drifted");
+    assertExchangeIdentity(
+      published.snapshot,
+      pending.snapshot,
+      ownerPath,
+      "published lock owner generation",
+    );
+    if (realReadOptionalRegular(pendingPath) !== null) {
+      fail("lock owner pending entry remained after atomic publication");
+    }
+    return { lockDirectorySeal, owner, ownerBytes, pendingSnapshot: pending.snapshot };
   };
   let held;
   try {
@@ -1825,38 +2544,75 @@ export function acquireFilesystemLock(path, { recoverStale, transactionId }) {
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
     if (!recoverStale) fail("transaction lock already exists; use the explicit recover command");
+    const lockDirectorySeal = realReadDirectory(path);
+    if (
+      lockDirectorySeal.uid !== 0 ||
+      lockDirectorySeal.gid !== 0 ||
+      lockDirectorySeal.mode !== "0700"
+    ) {
+      fail("stale lock directory is not root:root mode 0700");
+    }
     const entries = readdirSync(path, { withFileTypes: true });
     if (entries.length === 0) {
       rmdirSync(path);
       fsyncParent(path);
       held = create();
     } else {
-      if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
+      if (
+        entries.length !== 1 ||
+        ![LOCK_OWNER, LOCK_OWNER_PENDING].includes(entries[0].name) ||
+        !entries[0].isFile()
+      ) {
         fail("stale lock directory has an unknown shape; refusing to guess ownership");
       }
-      const existing = realReadRegular(`${path}/${LOCK_OWNER}`, 64 * 1024);
+      const existing = realReadRegular(`${path}/${entries[0].name}`, 64 * 1024);
+      ownerOnlyRecordShape(
+        existing.snapshot,
+        `${path}/${entries[0].name}`,
+        "stale lock owner",
+      );
       const owner = parseStrictJson(existing.bytes.toString("utf8"), "lock owner");
       if (ownerIsLive(owner)) fail("transaction lock is held by a live process generation");
-      unlinkSync(`${path}/${LOCK_OWNER}`);
+      realRemoveIfExact(
+        `${path}/${entries[0].name}`,
+        existing.snapshot,
+        lockDirectorySeal,
+      );
       rmdirSync(path);
       fsyncParent(path);
       held = create();
     }
   }
   return async () => {
+    const lockDirectory = realReadDirectory(path);
+    if (!same(lockDirectory, held.lockDirectorySeal)) {
+      fail("transaction lock directory identity changed before release");
+    }
     const observed = realReadRegular(`${path}/${LOCK_OWNER}`, 64 * 1024);
+    ownerOnlyRecordShape(observed.snapshot, `${path}/${LOCK_OWNER}`, "released lock owner");
     if (!observed.bytes.equals(held.ownerBytes)) fail("transaction lock ownership changed before release");
     const entries = readdirSync(path, { withFileTypes: true });
     if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
       fail("transaction lock directory changed before release");
     }
-    unlinkSync(`${path}/${LOCK_OWNER}`);
+    realRemoveIfExact(
+      `${path}/${LOCK_OWNER}`,
+      observed.snapshot,
+      held.lockDirectorySeal,
+    );
     rmdirSync(path);
     fsyncParent(path);
   };
 }
 
-function invokePinnedHelper(action, left, right, helperPin) {
+function invokePinnedHelper(
+  action,
+  left,
+  right,
+  helperPin,
+  expectedParent,
+  faultInjector,
+) {
   if (!["--exchange", "--publish"].includes(action)) fail("unreviewed rename helper action");
   const helper = realReadRegular(helperPin.path);
   exactRegularSnapshot(helper.snapshot, helperPin, "rename-exchange helper before invocation");
@@ -1864,27 +2620,32 @@ function invokePinnedHelper(action, left, right, helperPin) {
     helperPin.path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
   );
-  try {
-    const stat = fstatSync(fd, { bigint: true });
-    if (stat.dev.toString() !== helperPin.device || stat.ino.toString() !== helperPin.inode) {
-      fail("rename-exchange helper path raced after verification");
-    }
-    const result = commandResult(
-      ["/proc/self/fd/3", action, left, right],
-      {
-        captureStdout: false,
-        extraFd: fd,
-        maxBytes: 64 * 1024,
-        timeoutMs: 10_000,
-      },
-    );
-    if (result.status !== 0) {
-      fail(`renameat2 helper ${action} failed: ${result.stderr.toString("utf8").trim()}`);
-    }
-  } finally {
-    closeSync(fd);
-  }
-  fsyncParent(left);
+  runWithSyncCleanups(
+    () => {
+      const stat = fstatSync(fd, { bigint: true });
+      if (stat.dev.toString() !== helperPin.device || stat.ino.toString() !== helperPin.inode) {
+        fail("rename-exchange helper path raced after verification");
+      }
+      injectFault(faultInjector, "before-rename");
+      const result = commandResult(
+        ["/proc/self/fd/3", action, left, right],
+        {
+          captureStdout: false,
+          extraFd: fd,
+          maxBytes: 64 * 1024,
+          timeoutMs: 10_000,
+        },
+      );
+      if (result.status !== 0) {
+        fail(`renameat2 helper ${action} failed: ${result.stderr.toString("utf8").trim()}`);
+      }
+      injectFault(faultInjector, "after-rename");
+    },
+    [() => closeSync(fd)],
+  );
+  injectFault(faultInjector, "before-final-dir-fsync");
+  fsyncParent(left, expectedParent);
+  injectFault(faultInjector, "after-final-dir-fsync");
 }
 
 export function linuxOverlayOps() {
@@ -1894,11 +2655,18 @@ export function linuxOverlayOps() {
   }
   return {
     async acquireLock(path, options) {
+      if (options.helperPin === undefined) fail("transaction lock requires the pinned rename helper");
       return acquireFilesystemLock(path, options);
     },
-    async exchange(left, right, helperPin) {
+    async exchange(left, right, helperPin, expectedParent) {
       if (dirname(left) !== dirname(right)) fail("exchange entries must share one exact parent");
-      invokePinnedHelper("--exchange", left, right, helperPin);
+      invokePinnedHelper("--exchange", left, right, helperPin, expectedParent);
+    },
+    async fsyncParent(path, expectedParent) {
+      fsyncParent(path, expectedParent);
+    },
+    async fsyncRegular(path, expectedSnapshot, expectedParent) {
+      fsyncRegularExact(path, expectedSnapshot, expectedParent);
     },
     async health(check) {
       return healthCheck(check);
@@ -1909,13 +2677,29 @@ export function linuxOverlayOps() {
         machine_id_sha256: sha256(readFileSync("/etc/machine-id")),
       };
     },
-    async initializeStateDirectory(path) {
+    async initializeStateDirectory(path, expectedParent) {
+      const before = realReadDirectory(dirname(path));
+      if (expectedParent !== undefined && !same(before, expectedParent)) {
+        fail("transactions parent directory drifted before state-directory creation");
+      }
       mkdirSync(path, { mode: 0o700 });
-      fsyncParent(path);
+      fsyncParent(path, expectedParent);
       const observed = realReadDirectory(path);
       if (observed.uid !== 0 || observed.gid !== 0 || observed.mode !== "0700") {
         fail("transaction state directory is not root:root mode 0700");
       }
+      const after = realReadDirectory(dirname(path));
+      if (expectedParent !== undefined && !same(after, expectedParent)) {
+        fail("transactions parent directory drifted after state-directory creation");
+      }
+      return observed;
+    },
+    async sealStateDirectory(path) {
+      const observed = realReadDirectory(path);
+      if (observed.uid !== 0 || observed.gid !== 0 || observed.mode !== "0700") {
+        fail("transaction state directory is not root:root mode 0700");
+      }
+      return observed;
     },
     async readDirectory(path) {
       return realReadDirectory(path);
@@ -1929,67 +2713,132 @@ export function linuxOverlayOps() {
     async readRuntimePath(path) {
       return runtimePath(path);
     },
-    async readStateRecords(path) {
-      const allowed = new Set(Object.values(OVERLAY_STATE_FILES));
+    async readStateRecords(path, expectedParent) {
+      const observedParent = realReadDirectory(path);
+      if (expectedParent !== undefined && !same(observedParent, expectedParent)) {
+        fail("transaction state directory drifted before journal read");
+      }
+      const finalNames = Object.values(OVERLAY_STATE_FILES);
+      const allowed = new Set([
+        ...finalNames,
+        ...finalNames.map((name) => `${name}.pending`),
+      ]);
       const entries = readdirSync(path, { withFileTypes: true });
       const records = new Map();
       for (const entry of entries) {
         if (!entry.isFile() || !allowed.has(entry.name)) {
           fail(`unknown entry in durable transaction state: ${entry.name}`);
         }
-        records.set(entry.name, realReadRegular(`${path}/${entry.name}`).bytes);
+        const entryPath = `${path}/${entry.name}`;
+        const observed = realReadRegular(entryPath);
+        ownerOnlyRecordShape(observed.snapshot, entryPath, `phase journal ${entry.name}`);
+        records.set(entry.name, observed.bytes);
+      }
+      const confirmedParent = realReadDirectory(path);
+      if (expectedParent !== undefined && !same(confirmedParent, expectedParent)) {
+        fail("transaction state directory drifted after journal read");
       }
       return records;
     },
     async readUnitGeneration(unitName) {
       return unitGeneration(unitName);
     },
-    async removeIfExact(path, expectedSnapshot) {
-      const observed = realReadOptionalRegular(path);
-      if (observed === null) return;
-      assertExchangeIdentity(observed.snapshot, expectedSnapshot, path, "temporary cleanup entry");
-      unlinkSync(path);
-      fsyncParent(path);
+    async removeIfExact(path, expectedSnapshot, expectedParent) {
+      realRemoveIfExact(path, expectedSnapshot, expectedParent);
     },
     async run(argv, options) {
       return commandResult(argv, options);
     },
-    async writeExclusive(path, bytes, mode) {
-      return realWriteExclusive(path, bytes, mode);
+    async writeExclusive(path, bytes, mode, expectedParent) {
+      return realWriteExclusive(path, bytes, mode, expectedParent);
     },
-    async publishPendingReceipt(pendingPath, finalPath, helperPin) {
+    async publishPendingReceipt(pendingPath, finalPath, helperPin, expectedParent) {
       if (dirname(pendingPath) !== dirname(finalPath)) {
         fail("pending and final receipt entries must share one exact parent");
       }
-      invokePinnedHelper("--publish", pendingPath, finalPath, helperPin);
+      invokePinnedHelper("--publish", pendingPath, finalPath, helperPin, expectedParent);
     },
-    async writeReceipt(pendingPath, finalPath, bytes, helperPin) {
-      const pending = realWriteExclusive(pendingPath, bytes, "0400");
-      try {
-        invokePinnedHelper("--publish", pendingPath, finalPath, helperPin);
-      } catch (error) {
-        if (realReadOptionalRegular(finalPath) === null) {
-          const stillPending = realReadOptionalRegular(pendingPath);
-          if (stillPending !== null) {
-            assertExchangeIdentity(
-              stillPending.snapshot,
-              pending.snapshot,
-              pendingPath,
-              "failed receipt publication cleanup",
-            );
-            unlinkSync(pendingPath);
-            fsyncParent(pendingPath);
-          }
-        }
-        throw error;
+    async publishPendingState(pendingPath, finalPath, helperPin, expectedParent) {
+      if (dirname(pendingPath) !== dirname(finalPath)) {
+        fail("pending and final state entries must share one exact parent");
       }
+      invokePinnedHelper("--publish", pendingPath, finalPath, helperPin, expectedParent);
+    },
+    async writeReceipt(pendingPath, finalPath, bytes, helperPin, expectedParent) {
+      realWriteExclusive(pendingPath, bytes, "0400", expectedParent);
+      invokePinnedHelper("--publish", pendingPath, finalPath, helperPin, expectedParent);
       const published = realReadRegular(finalPath);
+      ownerOnlyRecordShape(published.snapshot, finalPath, "published receipt");
       if (!published.bytes.equals(bytes)) fail("published receipt bytes drifted");
       return published;
     },
-    async writeState(directory, filename, bytes) {
-      return realWriteExclusive(`${directory}/${filename}`, bytes, "0400");
+    async writeState(directory, filename, bytes, helperPin, expectedParent) {
+      const finalPath = `${directory}/${filename}`;
+      const pendingPath = `${finalPath}.pending`;
+      realWriteExclusive(pendingPath, bytes, "0400", expectedParent);
+      invokePinnedHelper("--publish", pendingPath, finalPath, helperPin, expectedParent);
+      const published = realReadRegular(finalPath);
+      ownerOnlyRecordShape(published.snapshot, finalPath, "published phase state");
+      if (!published.bytes.equals(bytes)) fail("published phase state bytes drifted");
+      return published;
     },
+  };
+}
+
+export async function testOnlyAtomicPublicationFaultHarness({
+  bytes,
+  directory,
+  faultAt,
+  helperPath,
+}) {
+  if (process.platform !== "linux" || process.geteuid?.() !== 0) {
+    fail("atomic publication fault harness requires root Linux");
+  }
+  canonicalAbsolute(directory);
+  canonicalAbsolute(helperPath);
+  const payload = Buffer.from(bytes);
+  const parentSeal = realReadDirectory(directory);
+  requireOwnerOnlyDirectory(parentSeal, directory, "fault-harness directory");
+  const helperPin = realReadRegular(helperPath).snapshot;
+  const pendingPath = `${directory}/record.json.pending`;
+  const finalPath = `${directory}/record.json`;
+  let fired = false;
+  const faultInjector = (point) => {
+    if (!fired && point === faultAt) {
+      fired = true;
+      throw new Error(`injected atomic-publication fault at ${point}`);
+    }
+  };
+  let initialError = null;
+  try {
+    realWriteExclusive(pendingPath, payload, "0400", parentSeal, faultInjector);
+    invokePinnedHelper(
+      "--publish",
+      pendingPath,
+      finalPath,
+      helperPin,
+      parentSeal,
+      faultInjector,
+    );
+  } catch (error) {
+    initialError = error.message;
+  }
+  const ops = linuxOverlayOps();
+  const observed = await settleAtomicPublication({
+    bytes: payload,
+    finalPath,
+    helperPin,
+    label: "fault-harness record",
+    ops,
+    parentSeal,
+    pendingPath,
+    publish: (...args) => ops.publishPendingState(...args),
+  });
+  return {
+    final: await ops.readOptionalRegular(finalPath),
+    initial_error: initialError,
+    pending: await ops.readOptionalRegular(pendingPath),
+    settled: observed,
   };
 }
 
@@ -2058,6 +2907,18 @@ if (isMain) {
     }
     if (error?.lockReleaseError !== undefined) {
       process.stderr.write(`lock_release_error=${error.lockReleaseError.message}\n`);
+    }
+    if (error?.abortFinalizationError !== undefined) {
+      process.stderr.write(`abort_finalization_error=${error.abortFinalizationError.message}\n`);
+    }
+    if (error?.primaryError !== undefined) {
+      process.stderr.write(`primary_error=${error.primaryError.message}\n`);
+    }
+    if (error?.rollbackError !== undefined) {
+      process.stderr.write(`rollback_error=${error.rollbackError.message}\n`);
+    }
+    for (const cleanupError of error?.cleanupErrors ?? []) {
+      process.stderr.write(`cleanup_error=${cleanupError.message}\n`);
     }
     process.exitCode = 1;
   });

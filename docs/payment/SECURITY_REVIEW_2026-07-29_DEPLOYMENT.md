@@ -286,6 +286,24 @@ It also retains the exact RFC1918/ULA private-publisher prerequisite; the
 currently inspected Hetzner host has no such route, so the profile is not yet
 deployable there.
 
+The transaction's crash boundary additionally treats a helper error as an
+unknown return value rather than evidence that no rename occurred. It
+supplementally fsyncs and twice classifies the exact pair; any unclassified pair
+forbids rollback, terminalization and cleanup. Phase journals and the lock owner
+publish through owner-only pending files, file fsync, no-replace rename and
+parent fsync. Recovery supplementally fsyncs and stably rereads the complete
+visible phase journal before it can authorize a file-pair mutation. A visible
+final receipt is not durable evidence until its parent
+fsync and root:root/mode-0400/single-link metadata are reconfirmed. Prepared
+state binds every mutable transaction directory identity across recovery. The
+rename helper installs a parent-death signal before mutation; the tested delayed
+child cannot rename after its supervisor dies, while an already in-flight atomic
+rename remains subject to the exact-pair classification above. Real Linux fault
+tests cover open, partial/complete write,
+file fsync, rename, parent fsync, applied-then-error, parent death and repeated
+recovery boundaries. These are source/test properties, not host activation
+evidence.
+
 After source merge, an independent read-only audit of merge
 `49dc56bb735a6df6a1665c91f0636188d65a66b5` and exact Payment V1 source parent
 `4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4` found no P0/P1/P2 in the repository

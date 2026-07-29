@@ -85,9 +85,31 @@ class MockOverlayOps {
     this.releaseCalls = 0;
     this.failHealthLane = null;
     this.failRelease = false;
+    this.failExchangeAfterApplyNumber = null;
+    this.failExchangeBeforeApplyNumber = null;
+    this.failReceiptAfterPublish = false;
+    this.failFsyncParentAlways = false;
+    this.failFsyncParentPathSuffix = null;
+    this.failStateAfterPublishPhase = null;
     this.raceTargetBeforeFirstExchange = false;
     this.raceTargetBeforeExchangeNumber = null;
     this.racedTargetSnapshot = null;
+    this.mutableDirectories = new Map();
+    for (const [index, path] of [...new Set([
+      this.plan.transaction.adapted_json_path.slice(0, this.plan.transaction.adapted_json_path.lastIndexOf("/")),
+      this.plan.transaction.backup_path.slice(0, this.plan.transaction.backup_path.lastIndexOf("/")),
+      this.plan.transaction.receipt_path.slice(0, this.plan.transaction.receipt_path.lastIndexOf("/")),
+      this.plan.transaction.state_directory.slice(0, this.plan.transaction.state_directory.lastIndexOf("/")),
+    ])].sort().entries()) {
+      this.mutableDirectories.set(path, {
+        device: "2049",
+        gid: 0,
+        inode: String(71000 + index),
+        mode: "0700",
+        path,
+        uid: 0,
+      });
+    }
     this.#seedPins();
   }
 
@@ -154,6 +176,9 @@ class MockOverlayOps {
   }
 
   async exchange(left, right) {
+    if (this.failExchangeBeforeApplyNumber === this.exchangeHistory.length + 1) {
+      throw new Error("mock helper failed before applying exchange");
+    }
     if (
       (this.raceTargetBeforeFirstExchange && this.exchangeHistory.length === 0) ||
       this.raceTargetBeforeExchangeNumber === this.exchangeHistory.length + 1
@@ -180,6 +205,24 @@ class MockOverlayOps {
       after: { left: fileClone(newLeft), right: fileClone(newRight) },
       before,
     });
+    if (this.failExchangeAfterApplyNumber === this.exchangeHistory.length) {
+      throw new Error("mock helper failed after applying exchange");
+    }
+  }
+
+  async fsyncParent(path) {
+    // The in-memory adapter has no volatile directory cache.
+    if (this.failFsyncParentAlways) throw new Error("mock parent fsync failed");
+    if (this.failFsyncParentPathSuffix !== null && path.endsWith(this.failFsyncParentPathSuffix)) {
+      throw new Error("mock selected parent fsync failed");
+    }
+  }
+
+  async fsyncRegular(path, expected) {
+    const observed = this.files.get(path);
+    if (observed === undefined || !sameSnapshot(observed.snapshot, expected)) {
+      throw new Error(`mock fsync target drifted: ${path}`);
+    }
   }
 
   async health(check) {
@@ -206,10 +249,31 @@ class MockOverlayOps {
       throw error;
     }
     this.stateInitialized = true;
+    return {
+      device: "2049",
+      gid: 0,
+      inode: "70001",
+      mode: "0700",
+      path: this.plan.transaction.state_directory,
+      uid: 0,
+    };
+  }
+
+  async sealStateDirectory() {
+    if (!this.stateInitialized) throw new Error("state directory missing");
+    return {
+      device: "2049",
+      gid: 0,
+      inode: "70001",
+      mode: "0700",
+      path: this.plan.transaction.state_directory,
+      uid: 0,
+    };
   }
 
   async readDirectory(path) {
     if (path === this.plan.target.config_parent.path) return clone(this.plan.target.config_parent);
+    if (this.mutableDirectories.has(path)) return clone(this.mutableDirectories.get(path));
     const dependency = this.plan.tls_dependencies.find((entry) => entry.parent.path === path);
     if (dependency) return clone(dependency.parent);
     throw new Error(`unknown directory ${path}`);
@@ -255,6 +319,9 @@ class MockOverlayOps {
       assert.equal(file.snapshot[key], expected[key], `cleanup pin ${key}`);
     }
     this.files.delete(path);
+    if (path.startsWith(`${this.plan.transaction.state_directory}/`)) {
+      this.state.delete(path.slice(path.lastIndexOf("/") + 1));
+    }
   }
 
   async run(argv) {
@@ -295,9 +362,20 @@ class MockOverlayOps {
     this.files.set(finalPath, published);
   }
 
+  async publishPendingState(pendingPath, finalPath) {
+    await this.publishPendingReceipt(pendingPath, finalPath);
+    const filename = finalPath.slice(finalPath.lastIndexOf("/") + 1);
+    this.state.set(filename, Buffer.from(this.files.get(finalPath).bytes));
+    this.state.delete(`${filename}.pending`);
+  }
+
   async writeReceipt(pendingPath, finalPath, bytes) {
     const pending = this.#store(pendingPath, bytes, "0400");
     await this.publishPendingReceipt(pendingPath, finalPath);
+    if (this.failReceiptAfterPublish) {
+      this.failReceiptAfterPublish = false;
+      throw new Error("mock receipt helper failed after publish");
+    }
     const published = this.files.get(finalPath);
     return {
       directoryFsync: true,
@@ -308,14 +386,27 @@ class MockOverlayOps {
     };
   }
 
-  async writeState(_directory, filename, bytes) {
-    if (this.state.has(filename)) {
+  async writeState(directory, filename, bytes) {
+    const pendingName = `${filename}.pending`;
+    if (this.state.has(filename) || this.state.has(pendingName)) {
       const error = new Error(`state exists: ${filename}`);
       error.code = "EEXIST";
       throw error;
     }
-    this.state.set(filename, Buffer.from(bytes));
+    this.state.set(pendingName, Buffer.from(bytes));
+    const pendingPath = `${directory}/${pendingName}`;
+    const finalPath = `${directory}/${filename}`;
+    this.#store(pendingPath, bytes, "0400");
+    await this.publishPendingState(pendingPath, finalPath);
+    const phase = JSON.parse(Buffer.from(bytes).toString("utf8")).phase;
+    if (phase === this.failStateAfterPublishPhase) {
+      throw new Error(`mock phase ${phase} helper failed after publish`);
+    }
   }
+}
+
+function sameSnapshot(left, right) {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 async function successfulBaseline() {
@@ -378,6 +469,13 @@ function seedReceiptEntry(ops, path, bytes) {
   });
 }
 
+function seedStatePending(ops, plan, filename, bytes) {
+  const name = `${filename}.pending`;
+  const path = `${plan.transaction.state_directory}/${name}`;
+  ops.state.set(name, Buffer.from(bytes));
+  seedReceiptEntry(ops, path, bytes);
+}
+
 test("transaction commits only after verified exchange, health and durable receipt", async () => {
   const { ops, plan, receipt } = await successfulBaseline();
   assert.equal(receipt.outcome, "committed");
@@ -386,6 +484,125 @@ test("transaction commits only after verified exchange, health and durable recei
   assert.equal(ops.state.has(OVERLAY_STATE_FILES.committed), true);
   assert.equal(ops.reloadCalls, 1);
   assert.equal(ops.releaseCalls, 1);
+});
+
+test("an install exchange applied before helper error is re-synced and committed", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failExchangeAfterApplyNumber = 1;
+  const receipt = await executeOverlayTransaction({
+    approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+    ops,
+    plan,
+  });
+  assert.equal(receipt.outcome, "committed");
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 1);
+});
+
+test("a rollback exchange applied before helper error is re-synced and finalized", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failHealthLane = "provider";
+  ops.failExchangeAfterApplyNumber = 2;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    (error) => {
+      assert.equal(error.phase, "rolled-back");
+      assert.equal(error.receipt.outcome, "rolled-back");
+      return true;
+    },
+  );
+  assert.equal(ops.exchangeHistory.length, 2);
+  assert.equal(ops.reloadCalls, 2);
+});
+
+test("a receipt published before helper error is re-synced and remains committed", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failReceiptAfterPublish = true;
+  const receipt = await executeOverlayTransaction({
+    approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+    ops,
+    plan,
+  });
+  assert.equal(receipt.outcome, "committed");
+  assert.equal(ops.files.has(plan.transaction.receipt_pending_path), false);
+  assert.equal(ops.files.has(plan.transaction.receipt_path), true);
+});
+
+test("a visible receipt with unprovable parent fsync is not treated as durable", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failReceiptAfterPublish = true;
+  ops.failFsyncParentPathSuffix = plan.transaction.receipt_path;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /terminal receipt publication outcome is unknown/);
+      return true;
+    },
+  );
+  assert.equal(ops.files.has(plan.transaction.receipt_path), true);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.committed), false);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rolledBack), false);
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 1);
+});
+
+test("prepared publication with unprovable parent durability preserves its candidate", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failFsyncParentAlways = true;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /phase prepared publication outcome is unknown/);
+      return true;
+    },
+  );
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), false);
+});
+
+test("abort-finalization uncertainty preserves the initiating error and candidate", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failExchangeBeforeApplyNumber = 1;
+  ops.failStateAfterPublishPhase = "aborted-before-install";
+  ops.failFsyncParentPathSuffix = OVERLAY_STATE_FILES.aborted;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    (error) => {
+      assert.equal(error.phase, "install-exchange-not-applied");
+      assert.match(error.message, /did not apply the exchange/);
+      assert.equal(error.abortFinalizationError?.name, "OverlayOutcomeUnknownError");
+      return true;
+    },
+  );
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
 });
 
 test("post-install health failure exchanges back, reloads and writes rolled-back receipt", async () => {
@@ -399,6 +616,7 @@ test("post-install health failure exchanges back, reloads and writes rolled-back
       assert(error instanceof OverlayTransactionError);
       assert.equal(error.phase, "rolled-back");
       assert.equal(error.receipt.outcome, "rolled-back");
+      assert.match(error.primaryError.message, /mock health failed/);
       return true;
     },
   );
@@ -407,23 +625,26 @@ test("post-install health failure exchanges back, reloads and writes rolled-back
   assert.equal(ops.reloadCalls, 2);
 });
 
-test("a final target race is exchanged back without reload or overwrite", async () => {
+test("an unknown install pair stops without compensating exchange, cleanup or reload", async () => {
   const plan = makeIntegratedOverlayTestPlan();
   const ops = new MockOverlayOps(plan);
   ops.raceTargetBeforeFirstExchange = true;
   const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
   await assert.rejects(
     executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
-    /exchange verification failed; exact pre-exchange entries were restored without reload/,
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /refusing rollback, terminal receipt and cleanup/);
+      return true;
+    },
   );
-  assert.equal(
-    ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256,
-    ops.racedTargetSnapshot.sha256,
-  );
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), false);
   assert.equal(ops.reloadCalls, 0);
 });
 
-test("a rollback target race is exchanged back without a second reload or overwrite", async () => {
+test("an unknown rollback pair stops without compensation, receipt or cleanup", async () => {
   const plan = makeIntegratedOverlayTestPlan();
   const ops = new MockOverlayOps(plan);
   ops.failHealthLane = "provider";
@@ -431,12 +652,15 @@ test("a rollback target race is exchanged back without a second reload or overwr
   const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
   await assert.rejects(
     executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
-    /rollback exchange verification failed; exact pre-exchange entries were restored without reload/,
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /refusing rollback, terminal receipt and cleanup/);
+      return true;
+    },
   );
-  assert.equal(
-    ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256,
-    ops.racedTargetSnapshot.sha256,
-  );
+  assert.equal(ops.exchangeHistory.length, 2);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.files.has(plan.transaction.receipt_path), false);
   assert.equal(ops.reloadCalls, 1);
 });
 
@@ -651,6 +875,178 @@ test("recovery discards a truncated pending receipt before rolling back", async 
     ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256,
     baseline.plan.target.config_preimage.sha256,
   );
+});
+
+test("valid pending prepared state publishes once and second/third recovery stay idempotent", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [],
+  });
+  seedStatePending(
+    ops,
+    baseline.plan,
+    OVERLAY_STATE_FILES.prepared,
+    baseline.ops.state.get(OVERLAY_STATE_FILES.prepared),
+  );
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    });
+    assert.equal(result.outcome, "aborted-before-install", `attempt ${attempt}`);
+  }
+  assert.equal(ops.state.has(`${OVERLAY_STATE_FILES.prepared}.pending`), false);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.prepared), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), true);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("truncated pending prepared state is non-authoritative across three recoveries", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [],
+  });
+  seedStatePending(
+    ops,
+    baseline.plan,
+    OVERLAY_STATE_FILES.prepared,
+    Buffer.from('{"schema_version":'),
+  );
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    });
+    assert.equal(result.outcome, "aborted-before-install", `attempt ${attempt}`);
+  }
+  assert.equal(ops.state.size, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("rolled-back terminal recovery is stable on second and third invocation", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [OVERLAY_STATE_FILES.prepared],
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const receipt = await recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    });
+    assert.equal(receipt.outcome, "rolled-back", `attempt ${attempt}`);
+  }
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 1);
+});
+
+test("recovery rejects mutable transaction parent identity drift before file-pair mutation", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [OVERLAY_STATE_FILES.prepared],
+  });
+  const receiptParent = baseline.plan.transaction.receipt_path.slice(
+    0,
+    baseline.plan.transaction.receipt_path.lastIndexOf("/"),
+  );
+  ops.mutableDirectories.get(receiptParent).inode = "999999";
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /changed across crash recovery/,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("recovery rejects a final receipt with wrong owner metadata", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+    ],
+    receipt: baseline.receipt,
+  });
+  ops.files.get(baseline.plan.transaction.receipt_path).snapshot.uid = 1000;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /final receipt is not one root-owned owner-only single-link record/,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("recovery treats a visible final receipt with failed parent fsync as outcome-unknown", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+    ],
+    receipt: baseline.receipt,
+  });
+  ops.failFsyncParentPathSuffix = baseline.plan.transaction.receipt_path;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /final receipt durability is unknown/);
+      return true;
+    },
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), true);
+});
+
+test("recovery makes visible phase records durable before they can authorize mutation", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+    ],
+  });
+  ops.failFsyncParentPathSuffix = "/.journal-durability";
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /phase journal durability is unknown/);
+      return true;
+    },
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), true);
 });
 
 test("recovery rejects nested state extensions before mutating the file pair", async () => {

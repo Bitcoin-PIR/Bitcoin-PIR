@@ -892,8 +892,15 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
       until an atomically published durable receipt, and includes deterministic
       stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
-      health checks.
-      Mock failure-window tests and a real Linux helper test pass. This does
+      health checks. Phase state and lock ownership use atomic pending-file
+      publication; helper return ambiguity is resolved only by supplemental
+      fsync and stable exact-pair classification; unknown outcomes prohibit
+      rollback, receipt terminalization and cleanup. Mutable transaction
+      directory identities and final receipt ownership metadata are sealed
+      across recovery, and the helper is parent-death bound.
+      Mock failure-window tests and real Linux open/write/fsync/rename,
+      applied-then-error, SIGKILL/late-helper and repeated-recovery tests pass.
+      This does
       not harden the existing root Caddy global/admin/ACME/journal domain, does
       not replace cold edge evidence, and is not deployable on the currently
       inspected Hetzner network until a distinct RFC1918/ULA publisher route is

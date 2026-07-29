@@ -3,11 +3,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #ifndef RENAME_EXCHANGE
@@ -25,6 +27,19 @@ static void fail_errno(const char *message) {
 static void fail(const char *message) {
     fprintf(stderr, "payment-v1 rename-exchange: %s\n", message);
     exit(2);
+}
+
+static void bind_to_parent_lifetime(void) {
+    pid_t parent = getppid();
+    if (parent <= 1) {
+        fail("refusing to mutate without one live supervising parent");
+    }
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+        fail_errno("install parent-death signal");
+    }
+    if (getppid() != parent) {
+        fail("supervising parent changed before parent-death seal completed");
+    }
 }
 
 static void split_path(const char *path, char parent[PATH_MAX], char base[NAME_MAX + 1]) {
@@ -65,13 +80,15 @@ static void require_regular_at(int directory_fd, const char *base, const char *l
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        puts("bitcoinpir-payment-v1-rename-exchange 2");
+        puts("bitcoinpir-payment-v1-rename-exchange 3");
         return 0;
     }
     if (argc != 4 ||
         (strcmp(argv[1], "--exchange") != 0 && strcmp(argv[1], "--publish") != 0)) {
         fail("usage: helper --exchange existing-a existing-b | --publish pending absent-final");
     }
+
+    bind_to_parent_lifetime();
 
     char left_parent[PATH_MAX];
     char right_parent[PATH_MAX];
@@ -88,6 +105,9 @@ int main(int argc, char **argv) {
     require_regular_at(directory_fd, left_base, "inspect left exchange entry");
     if (strcmp(argv[1], "--exchange") == 0) {
         require_regular_at(directory_fd, right_base, "inspect right exchange entry");
+#ifdef PAYMENT_V1_TEST_DELAY_BEFORE_RENAME_MS
+        usleep((useconds_t)PAYMENT_V1_TEST_DELAY_BEFORE_RENAME_MS * 1000U);
+#endif
         if (syscall(
                 SYS_renameat2,
                 directory_fd,
@@ -113,6 +133,10 @@ int main(int argc, char **argv) {
             fail_errno("renameat2(RENAME_NOREPLACE)");
         }
     }
+#ifdef PAYMENT_V1_TEST_FAIL_AFTER_RENAME
+    errno = EIO;
+    fail_errno("injected failure after renameat2");
+#endif
     if (fsync(directory_fd) != 0) fail_errno("fsync exchange parent");
     if (close(directory_fd) != 0) fail_errno("close exchange parent");
     return 0;

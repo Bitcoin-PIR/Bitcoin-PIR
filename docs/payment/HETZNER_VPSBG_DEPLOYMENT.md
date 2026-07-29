@@ -614,6 +614,32 @@ the pinned helper then publishes that entry with `RENAME_NOREPLACE` and fsyncs
 the parent directory, so a crash cannot make a truncated final receipt
 authoritative.
 
+Every phase-journal member uses the same fixed per-phase `.pending` protocol:
+exclusive create, complete write, file fsync, `RENAME_NOREPLACE`, then parent
+fsync. Recovery treats a truncated pending inode as non-authoritative, validates
+the complete proposed predecessor chain before publishing a valid pending
+record, and first fsyncs and stably rereads all visible phase names before any
+of them can authorize a recovery mutation. Recovery is idempotent on later
+invocations. The lock owner is also
+published atomically from `owner.json.pending`; a live pending owner blocks
+recovery, while an exact dead process generation can be reclaimed. Mutable
+`adapted`, `backups`, `receipts`, `transactions` and per-transaction directory
+device/inode/owner/mode seals are recorded in the prepared state and must remain
+identical throughout execution and crash recovery. Final receipts are trusted
+only as root-owned, mode-0400, single-link files whose parent fsync has succeeded.
+
+The helper binds itself to the executor lifetime with Linux
+`PR_SET_PDEATHSIG(SIGKILL)` and verifies that its parent did not change before
+it can rename. A live executor waits for the direct helper to exit. If the
+helper applies `renameat2` but reports an error, or the executor dies around the
+helper call, the next step fsyncs the exact parent and performs two stable
+target/candidate classifications. An exact installed pair may continue and an
+exact not-installed pair may abort; any fsync failure, directory drift or
+unknown pair is `outcome-unknown`. That state forbids automatic rollback,
+terminal receipt creation and candidate cleanup and requires explicit recovery.
+Likewise, a final receipt that is merely visible after a reported publication
+error is not durable until a supplemental parent fsync and exact reread succeed.
+
 On any post-install failure, rollback uses the same exchange helper and verifies
 both restored preimage and swapped-out candidate before the second reload. The
 explicit `recover` command holds a boot-ID/PID/start-time lock and classifies
