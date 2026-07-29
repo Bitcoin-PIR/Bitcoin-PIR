@@ -68,10 +68,11 @@ function resolvedRelaySelection(text, overrides = {}) {
     source_commit: "1".repeat(40),
     source_archive_sha256: "2".repeat(64),
     cargo_lock_sha256: "3".repeat(64),
+    build_manifest_sha256: "7".repeat(64),
     binary_sha256: "4".repeat(64),
     binary_version_output: "bitcoinpir-directory-relay 0.1.0",
     config_sha256: "5".repeat(64),
-    publisher_pubkey_hex: "6".repeat(64),
+    publisher_pubkey_hex: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
     ...overrides,
   };
   let output = text;
@@ -976,6 +977,11 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
   );
   assert.deepEqual(validateRelaySelection(unresolved), { status: "UNRESOLVED" });
 
+  assert.throws(
+    () => validateRelaySelection(`${unresolved}\nunreviewed_field = true\n`),
+    /fields must equal/,
+  );
+
   const thirdParty = replaceRelayField(
     unresolved,
     "implementation",
@@ -995,6 +1001,20 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
     publisher_pubkey_hex: "0".repeat(64),
   });
   assert.throws(() => validateRelaySelection(zeroPublisher), /must be non-zero/);
+
+  for (const invalidPublisher of ["06".repeat(32), "ff".repeat(32)]) {
+    assert.throws(
+      () => validateRelaySelection(resolvedRelaySelection(unresolved, {
+        publisher_pubkey_hex: invalidPublisher,
+      })),
+      /must be a valid secp256k1 x-only key/,
+    );
+  }
+
+  const zeroArtifactHash = resolvedRelaySelection(unresolved, {
+    build_manifest_sha256: "0".repeat(64),
+  });
+  assert.throws(() => validateRelaySelection(zeroArtifactHash), /non-zero lowercase SHA-256/);
 });
 
 test("a future directory-only exact-hash relay selection is accepted", () => {
@@ -1004,8 +1024,14 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
   );
   assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
     status: "RESOLVED",
+    sourceCommit: "1".repeat(40),
+    sourceArchiveSha256: "2".repeat(64),
+    cargoLockSha256: "3".repeat(64),
+    buildManifestSha256: "7".repeat(64),
     binarySha256: "4".repeat(64),
-    publisherPubkey: "6".repeat(64),
+    binaryVersionOutput: "bitcoinpir-directory-relay 0.1.0",
+    configSha256: "5".repeat(64),
+    publisherPubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   });
 
   withFixture((root) => {
@@ -1020,7 +1046,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(
@@ -1030,7 +1056,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
         text
           .replace(
             "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml`,
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`,
           )
           .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
     );
@@ -1049,7 +1075,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(
@@ -1059,7 +1085,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
         text
           .replace(
             "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml --listen 0.0.0.0:8080`,
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml --listen 0.0.0.0:8080`,
           )
           .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
     );

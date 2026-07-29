@@ -33,6 +33,10 @@ on:
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
       - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
@@ -78,6 +82,10 @@ on:
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
       - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
@@ -393,6 +401,34 @@ jobs:
       - name: Check WASM without native provider storage
         run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
 
+  directory-relay-artifact:
+    name: Reproduce stopped directory-relay artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.18.0'
+      - name: Pull the exact reviewed build image
+        run: >-
+          docker pull
+          docker.io/library/rust@sha256:4ec71e955e6c08aeb238885083222ddff79d82eb87654a96c76e38e94da1a53b
+      - name: Build, atomically publish, and fully reverify the preparation artifact
+        run: |
+          bpir_source_commit="$(git rev-parse HEAD)"
+          bpir_artifact_parent="$(mktemp -d "${RUNNER_TEMP}/bpir-directory-relay-build.XXXXXX")"
+          bash scripts/build-payment-v1-directory-relay.sh \
+            --repository "$GITHUB_WORKSPACE" \
+            --source-commit "$bpir_source_commit" \
+            --output "$bpir_artifact_parent/artifact"
+          test -f "$bpir_artifact_parent/artifact/build-manifest.json"
+          test -x "$bpir_artifact_parent/artifact/bitcoinpir-directory-relay"
+
   browser-storage-boundary:
     name: Chromium vault and real no-funds issuer boundaries
     runs-on: ubuntu-24.04
@@ -447,12 +483,17 @@ jobs:
           node --check scripts/payment-v1-deployment-template-gate.mjs
           node --test scripts/payment-v1-deployment-template-gate.test.mjs
           node scripts/payment-v1-deployment-template-gate.mjs
+          bash -n scripts/build-payment-v1-directory-relay.sh
+          bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+          node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+          node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+          node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
           node --check scripts/payment-v1-rendered-artifact-gate.mjs
           node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
           node --check scripts/payment-v1-source-fair-edge.test.mjs
-          node --test \
+          node --test --test-concurrency=1 \
             scripts/payment-v1-rendered-artifact-gate.test.mjs \
             scripts/payment-v1-linux-runtime-evidence.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs

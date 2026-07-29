@@ -109,6 +109,12 @@ const SYSTEMD_SERVICE_KEYS = Object.freeze([
 ]);
 
 const PROFILE_CATALOG = Object.freeze({
+  "directory-relay-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/directory-relay.toml.example",
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
@@ -205,6 +211,8 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "InvocationID",
   "LimitCORE",
   "LimitCORESoft",
+  "LimitNOFILE",
+  "LimitNOFILESoft",
   "LoadCredential",
   "LoadState",
   "LockPersonality",
@@ -371,7 +379,7 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/directory-relay.toml.example": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-    modes: ["0400", "0440", "0600"],
+    modes: ["0400"],
     rootOwned: false,
   },
 });
@@ -1040,6 +1048,10 @@ function validateRenderedMetadata(artifact, catalog, label) {
 
 function secretConsumerUnit(deploymentProfile, targetPath) {
   const mappings = {
+    "directory-relay-v1": [[
+      "/etc/bitcoinpir/payment-v1/directory-relay/",
+      "bitcoinpir-directory-relay.service",
+    ]],
     "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-public-edge.service"]],
     "edge-rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
     "issuer-lightning-signet-v1": [
@@ -1058,6 +1070,21 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
     "rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/rollback-authority/", "bitcoinpir-rollback-authority.service"]],
   };
   return mappings[deploymentProfile]?.find(([prefix]) => targetPath.startsWith(prefix))?.[1];
+}
+
+function privateLoaderConsumerUnit(deploymentProfile, artifact) {
+  if (artifact.artifact_class === "secret") {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  if (
+    deploymentProfile === "directory-relay-v1" &&
+    artifact.artifact_class === "config" &&
+    artifact.target_path ===
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml"
+  ) {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  return undefined;
 }
 
 function validateSecretOwnerBindings(plan) {
@@ -1164,6 +1191,26 @@ function validateProviderPayloadClosure(plan) {
     Object.keys(plan.placeholders).some((name) => name.startsWith("CASHU_"))
   ) {
     fail(`${profile} must not declare Standard Cashu placeholders`);
+  }
+}
+
+function validateDirectoryRelayConfigOwnerBinding(document) {
+  if (document.deployment_profile !== "directory-relay-v1") return;
+  const identities = document.service_identities ?? [];
+  if (
+    identities.length !== 1 ||
+    identities[0].unit_name !== "bitcoinpir-directory-relay.service" ||
+    identities[0].uid !== 62951 ||
+    identities[0].gid !== 62952
+  ) {
+    fail("directory-relay-v1 must bind the reviewed relay UID 62951 and GID 62952");
+  }
+  const artifacts = document.rendered_artifacts ?? document.artifacts ?? [];
+  const config = artifacts.find(
+    (artifact) => artifact.target_path === "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+  );
+  if (!config || config.uid !== 62951 || config.gid !== 62952 || config.mode !== "0400") {
+    fail("directory-relay-v1 config must be relay-owned UID 62951 GID 62952 mode 0400");
   }
 }
 
@@ -1293,6 +1340,7 @@ function validatePlan(plan) {
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
   validateProviderPayloadClosure(plan);
   validateRemoteRollbackPayloadMetadata(plan);
+  validateDirectoryRelayConfigOwnerBinding(plan);
   validateSecretOwnerBindings(plan);
 }
 
@@ -1485,6 +1533,13 @@ function parseSystemdUnit(text, label) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "directory-relay-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -1572,6 +1627,7 @@ function validateProfileUnitPolicy(
   conditions,
   hardening,
   execStart,
+  execStartPre,
   label,
 ) {
   const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
@@ -1580,6 +1636,30 @@ function validateProfileUnitPolicy(
   }
   if (canonicalize(conditions) !== canonicalize([...expectedConditions].sort(asciiCompare))) {
     fail(`${label} must retain the exact global and profile-specific activation conditions`);
+  }
+  if (deploymentProfile === "directory-relay-v1") {
+    if (
+      canonicalize(execStart) !== canonicalize(["/usr/bin/false"]) ||
+      canonicalize(execStartPre) !== canonicalize([])
+    ) {
+      fail(`${label} directory-relay-v1 must remain stopped-only with ExecStart=/usr/bin/false`);
+    }
+    for (const [key, expected] of [
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "4096"],
+      ["MemoryMax", "536870912"],
+      ["MemorySwapMax", "0"],
+      ["TasksMax", "128"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["Restart", "no"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep directory-relay-v1 ${key}=${expected}`);
+      }
+    }
   }
   const privateRequestEdge =
     (deploymentProfile === "edge-hetzner-v1" &&
@@ -2091,6 +2171,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         parsed.conditions,
         parsed.hardening,
         parsed.exec_start,
+        parsed.exec_start_pre,
         `rendered unit ${specification.target_path}`,
       );
       for (const reference of parsed.managed_references) initialReferences.add(reference);
@@ -2305,6 +2386,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       fail("rendered manifest artifacts must be unique bytewise ASCII sorted targets");
     }
   }
+  validateDirectoryRelayConfigOwnerBinding(manifest);
   const expectedHashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
   for (const artifact of manifest.artifacts) {
     expectedHashBindings[hashBindingClass(artifact.artifact_class)].push({
@@ -2372,6 +2454,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       unit.conditions,
       unit.hardening,
       unit.exec_start,
+      unit.exec_start_pre,
       label,
     );
   }
@@ -2419,9 +2502,16 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     ...manifest.runtime_units.map((unit) => unit.fragment_path),
   ];
   const secretFiles = manifest.artifacts
-    .filter((artifact) => artifact.artifact_class === "secret")
     .map((artifact) => ({
-      consumer_unit_name: secretConsumerUnit(manifest.deployment_profile, artifact.target_path),
+      artifact,
+      consumerUnitName: privateLoaderConsumerUnit(
+        manifest.deployment_profile,
+        artifact,
+      ),
+    }))
+    .filter(({ consumerUnitName }) => consumerUnitName !== undefined)
+    .map(({ artifact, consumerUnitName }) => ({
+      consumer_unit_name: consumerUnitName,
       gid: artifact.gid,
       mode: artifact.mode,
       target_path: artifact.target_path,
@@ -2644,6 +2734,9 @@ function canonicalEqual(actual, expected, label) {
 }
 
 export function validateRuntimeEvidence({ model, evidence }) {
+  if (model.manifest.deployment_profile === "directory-relay-v1") {
+    fail("directory-relay-v1 is stopped-only and requires the Linux stopped-relay evidence gate");
+  }
   exactKeys(
     evidence,
     [

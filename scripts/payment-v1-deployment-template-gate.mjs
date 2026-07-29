@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
@@ -97,6 +97,7 @@ const UNSAFE_RELAY_COMMITS = new Set([
 const HASH_FIELDS = Object.freeze([
   "source_archive_sha256",
   "cargo_lock_sha256",
+  "build_manifest_sha256",
   "binary_sha256",
   "config_sha256",
 ]);
@@ -107,6 +108,26 @@ const UNRESOLVED_FIELDS = Object.freeze([
   ...HASH_FIELDS,
   "binary_version_output",
   "publisher_pubkey_hex",
+]);
+const RELAY_SELECTION_FIELDS = Object.freeze([
+  "version",
+  "status",
+  "implementation",
+  "source_repository",
+  "source_commit",
+  ...HASH_FIELDS,
+  "binary_version_output",
+  "publisher_pubkey_hex",
+  "listen_host",
+  "allowed_kind",
+  "max_event_message_bytes",
+  "max_content_bytes",
+  "config_max_bytes",
+  "config_profile",
+  "publisher_private_key_installed",
+  "nip42_auth",
+  "access_logging",
+  "mutable_source_ref",
 ]);
 
 function fail(message) {
@@ -1860,6 +1881,16 @@ function stringField(selection, name) {
 
 export function validateRelaySelection(text) {
   const selection = parseRelaySelection(text);
+  const actualFields = [...selection.keys()].sort();
+  const expectedFields = [...RELAY_SELECTION_FIELDS].sort();
+  if (
+    actualFields.length !== expectedFields.length ||
+    actualFields.some((field, index) => field !== expectedFields[index])
+  ) {
+    fail(
+      `relay selection fields must equal ${JSON.stringify(expectedFields)}, got ${JSON.stringify(actualFields)}`,
+    );
+  }
   exactField(selection, "version", 1);
   exactField(selection, "listen_host", "127.0.0.1");
   exactField(selection, "allowed_kind", 30078);
@@ -1906,8 +1937,9 @@ export function validateRelaySelection(text) {
     fail(`relay selection refuses audited unsafe commit ${sourceCommit}`);
   }
   for (const field of HASH_FIELDS) {
-    if (!/^[0-9a-f]{64}$/.test(stringField(selection, field))) {
-      fail(`resolved relay ${field} must be a lowercase SHA-256`);
+    const digest = stringField(selection, field);
+    if (!/^[0-9a-f]{64}$/.test(digest) || /^0{64}$/.test(digest)) {
+      fail(`resolved relay ${field} must be a non-zero lowercase SHA-256`);
     }
   }
   if (!/^bitcoinpir-directory-relay [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(
@@ -1922,14 +1954,26 @@ export function validateRelaySelection(text) {
   if (/^0{64}$/.test(publisherPubkey)) {
     fail("resolved relay publisher_pubkey_hex must be non-zero");
   }
+  try {
+    const key = createECDH("secp256k1");
+    key.setPublicKey(Buffer.from(`02${publisherPubkey}`, "hex"));
+  } catch {
+    fail("resolved relay publisher_pubkey_hex must be a valid secp256k1 x-only key");
+  }
   return {
     status,
+    sourceCommit,
+    sourceArchiveSha256: stringField(selection, "source_archive_sha256"),
+    cargoLockSha256: stringField(selection, "cargo_lock_sha256"),
+    buildManifestSha256: stringField(selection, "build_manifest_sha256"),
     binarySha256: stringField(selection, "binary_sha256"),
+    binaryVersionOutput: stringField(selection, "binary_version_output"),
+    configSha256: stringField(selection, "config_sha256"),
     publisherPubkey,
   };
 }
 
-function validateRelayConfigExample(text, selection) {
+export function validateRelayConfigExample(text, selection) {
   const label = "directory relay configuration example";
   if (Buffer.byteLength(text, "utf8") > 16 * 1024) {
     fail(`${label} exceeds the application 16 KiB input bound`);
@@ -2334,9 +2378,11 @@ export function validateDeploymentTree(rootInput) {
     [
       "Type", "User", "Group", "UMask", "StateDirectory", "StateDirectoryMode",
       "WorkingDirectory", "Environment", "ExecStart", "Restart", "TimeoutStopSec",
+      "LimitCORE", "LimitNOFILE", "MemoryMax", "MemorySwapMax", "TasksMax",
+      "StandardOutput", "StandardError",
       "NoNewPrivileges", "PrivateTmp", "PrivateDevices", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
-      "ProtectControlGroups", "LockPersonality", "MemoryDenyWriteExecute",
+      "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality", "MemoryDenyWriteExecute",
       "RestrictSUIDSGID", "RestrictNamespaces", "RestrictRealtime",
       "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
       "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths",
@@ -2355,6 +2401,15 @@ export function validateDeploymentTree(rootInput) {
   exactDirectiveValues(relayParsed, "Service", "StateDirectory", ["bitcoinpir-directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "Environment", ["RUST_LOG=error"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "LimitCORE", ["0"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "LimitNOFILE", ["4096"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "MemoryMax", ["536870912"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "MemorySwapMax", ["0"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "TasksMax", ["128"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "StandardOutput", ["null"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "StandardError", ["null"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProtectClock", ["true"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProtectHostname", ["true"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressDeny", ["any"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressAllow", ["localhost"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/directory-relay"], relayLabel);
@@ -2377,7 +2432,7 @@ export function validateDeploymentTree(rootInput) {
     const expectedExecStart =
       `/opt/bitcoinpir/directory-relay/${selection.binarySha256}/` +
       "bitcoinpir-directory-relay --config " +
-      "/etc/bitcoinpir/payment-v1/directory-relay/relay.toml";
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
     if (relayCommand !== expectedExecStart) {
       fail("resolved relay template must use only the pinned binary and one absolute --config path");
     }
