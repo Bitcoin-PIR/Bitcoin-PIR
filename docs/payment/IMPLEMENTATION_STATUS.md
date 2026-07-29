@@ -480,6 +480,11 @@ operator has activated the path with real money or public infrastructure.
 - [x] Direct receipt and BAT production ProviderStore adapters persist/reject
       replay across restart; Free, Cashu and experimental ARC have focused
       persistence and concurrency suites.
+- [x] A dedicated two-provider OnionPIR process test performs real chunked key
+      registration and decrypts production INDEX, CHUNK and both Merkle-sibling
+      worker responses. It proves wrong-provider and structural wrong-scope
+      failures are non-consuming, post-spend DFA failures are terminal, and
+      receipt replay remains rejected after ProviderStore/process restart.
 - [x] The GitHub-closeout run exposed a conservative same-database
       rollback-floor acknowledgement race: a later writer could anchor a
       successor before an earlier caller received its CAS result, consuming
@@ -902,9 +907,10 @@ findings and must not be collapsed into that count.
    lifecycle process test also passed the final coordinated current-tree Linux
    matrix. The isolated current-tree browser rerun passed the real-issuer case
    1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
-   gate. Production trust-chain, a
-   browser-to-Standard-Cashu-provider join,
-   Harmony query, Onion and TEE-ORAM process boundaries remain open.
+   gate. Production trust-chain, a browser-to-Standard-Cashu-provider join and
+   Harmony-query/TEE-ORAM process boundaries remain open. OnionPIR now has a
+   no-funds real-process handler boundary; its tiny sibling fixture is not
+   production inclusion-proof evidence.
 6. **External dependency canaries.** Recorded runs exist for the earlier
    two-node local CLN runner, the disposable CDK runner, and one short-lived
    public Nostr transport/readback smoke. The extended CDK lifecycle and forced
