@@ -24,6 +24,7 @@ use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, sha256, Hash256, ZERO_HASH};
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
 use pir_db_attest::BuildKind;
+use pir_sdk::{BufferingLeakageRecorder, RoundKind};
 use pir_sdk_client::attest::{bound_nonce_for, SevStatus};
 use pir_sdk_client::{
     AcceptedServicePolicyV1, DpfClient, PirClient, RootPolicy, ServicePolicyCheckpointV1,
@@ -350,18 +351,53 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
         .preflight_verified_database(0)
         .await
         .expect("proof-bound bucket-Merkle tree-top preflight");
-    let results = client
-        .query_batch_with_inspector(&[[0x39; 20]], 0)
+    let leakage = Arc::new(BufferingLeakageRecorder::new());
+    client.set_leakage_recorder(Some(leakage.clone()));
+    let mut results = client
+        .query_batch_with_inspector(&[[0x39; 20], [0x3a; 20]], 0)
         .await
-        .expect("real two-server DPF query");
+        .expect("one paid two-address DPF inspector batch");
+
+    // Payment V1 grants one logical job per INDEX frame, not per address.
+    // The N=2 inspector call must therefore use one packed PBC INDEX round
+    // (one transcript entry per server).  The old sequential implementation
+    // emitted two INDEX rounds and the second was rejected by the strict
+    // max_logical_inputs=1 grant below.
+    let raw_profile = leakage.take_profile("dpf");
+    assert_eq!(raw_profile.count_of_kind(&RoundKind::Index), 2);
+    assert_eq!(raw_profile.count_of_kind(&RoundKind::Chunk), 4);
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| result
+        .as_ref()
+        .is_some_and(|result| !result.merkle_verified)));
+    assert_ne!(
+        results[0].as_ref().unwrap().index_bins[0].pbc_group,
+        results[1].as_ref().unwrap().index_bins[0].pbc_group,
+        "fixed N=2 vectors must occupy independent PBC groups",
+    );
+
+    // Exercise one real standalone batch verifier call with a deliberately
+    // bad first proof.  Per-query folding must preserve the independent
+    // positive verdict for query 1; it must never promote either raw result's
+    // embedded flag (the immutable return value remains quarantined).
+    results[0]
+        .as_mut()
+        .and_then(|result| result.index_bins.first_mut())
+        .and_then(|bin| bin.bin_content.first_mut())
+        .map(|byte| *byte ^= 1)
+        .expect("first inspector result has a Merkle-covered INDEX bin");
     let verdicts = client
         .verify_merkle_batch_for_results(&results, 0)
         .await
-        .expect("real bucket-Merkle absence verification");
-    assert_eq!(verdicts, vec![true]);
-    assert!(results[0]
-        .as_ref()
-        .is_some_and(|result| { result.entries.is_empty() && result.matched_index_idx.is_none() }));
+        .expect("single real bucket-Merkle batch verification");
+    assert_eq!(verdicts, vec![false, true]);
+    assert!(results
+        .iter()
+        .all(|result| result.as_ref().is_some_and(|result| {
+            result.entries.is_empty()
+                && result.matched_index_idx.is_none()
+                && !result.merkle_verified
+        })));
     client.disconnect().await.unwrap();
 
     let (stdout0_first, stderr0_first) = server0.stop();
@@ -1076,13 +1112,17 @@ fn build_provider(
             scope,
             limits: EntitlementLimitsV1 {
                 max_logical_inputs: 1,
-                max_frames: 64,
+                // This fixed all-not-found N=2 fixture emits exactly one
+                // K=75x2 INDEX frame and two K_CHUNK=80x2 presence frames per
+                // provider.  Merkle paths are served from the authenticated
+                // full tree-top cache, so no sibling frame is needed.
+                max_frames: 3,
                 max_request_bytes: 2 * 1024 * 1024,
                 max_response_bytes: 2 * 1024 * 1024,
                 max_wall_time_ms: 20_000,
                 max_concurrent_sockets: 1,
                 max_hint_groups: 0,
-                max_work_units: 10_000,
+                max_work_units: (INDEX_PARAMS.k * 2 + CHUNK_PARAMS.k * 2 * 2) as u64,
             },
             offers: vec![offer],
         }],

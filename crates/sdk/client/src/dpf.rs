@@ -387,6 +387,109 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
     }
 }
 
+/// Move internal query traces onto public results for the split inspector
+/// flow.  Genuine absence is represented by a synthesised result so its INDEX
+/// bins survive, but every output remains explicitly unverified until the
+/// caller completes `verify_merkle_batch_for_results`.
+fn attach_inspector_traces(
+    mut results: Vec<Option<QueryResult>>,
+    traces: Vec<QueryTraces>,
+) -> PirResult<Vec<Option<QueryResult>>> {
+    if results.len() != traces.len() {
+        return Err(PirError::InvalidState(format!(
+            "DPF query result/trace length mismatch: {} != {}",
+            results.len(),
+            traces.len(),
+        )));
+    }
+
+    for (result, trace) in results.iter_mut().zip(traces) {
+        let result = result.get_or_insert_with(QueryResult::empty);
+        result.merkle_verified = false;
+        result.index_bins = trace
+            .index_bins
+            .iter()
+            .map(index_trace_to_bucket_ref)
+            .collect();
+        result.chunk_bins = trace
+            .chunk_bins
+            .iter()
+            .map(chunk_trace_to_bucket_ref)
+            .collect();
+        result.matched_index_idx = trace.matched_index_idx;
+    }
+
+    Ok(results)
+}
+
+/// Validate the complete public proof shape before the split verifier can
+/// produce any release verdict. The public Rust/WASM surface accepts decoded
+/// or persisted values, so `None` and empty/default `QueryResult`s are hostile
+/// input here rather than "nothing to falsify".
+fn validate_inspector_results(
+    results: &[Option<QueryResult>],
+    db_info: &DatabaseInfo,
+) -> PirResult<()> {
+    if results.is_empty() {
+        return Err(PirError::MerkleVerificationFailed(
+            "DPF split verifier requires at least one result".into(),
+        ));
+    }
+
+    let expected_index_bin_size = INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN;
+    let expected_chunk_bin_size = CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN;
+    for (query_index, result) in results.iter().enumerate() {
+        let result = result.as_ref().ok_or_else(|| {
+            PirError::MerkleVerificationFailed(format!(
+                "DPF split verifier result {query_index} is missing"
+            ))
+        })?;
+        if result.index_bins.len() != INDEX_CUCKOO_NUM_HASHES {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF split verifier result {query_index} has {} INDEX traces; expected {INDEX_CUCKOO_NUM_HASHES}",
+                result.index_bins.len(),
+            )));
+        }
+        let expected_group = result.index_bins[0].pbc_group;
+        for (trace_index, bin) in result.index_bins.iter().enumerate() {
+            if bin.pbc_group != expected_group
+                || bin.pbc_group >= u32::from(db_info.index_k)
+                || bin.bin_index >= db_info.index_bins
+                || bin.bin_content.len() != expected_index_bin_size
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF split verifier result {query_index} has invalid INDEX trace {trace_index}"
+                )));
+            }
+        }
+        if result
+            .matched_index_idx
+            .is_some_and(|index| index >= INDEX_CUCKOO_NUM_HASHES)
+        {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF split verifier result {query_index} has an invalid matched INDEX position"
+            )));
+        }
+        if result.matched_index_idx.is_none() && !result.chunk_bins.is_empty() {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF split verifier result {query_index} has CHUNK traces without an INDEX match"
+            )));
+        }
+        for (trace_index, bin) in result.chunk_bins.iter().enumerate() {
+            if bin.pbc_group >= u32::from(db_info.chunk_k)
+                || bin.bin_index >= db_info.chunk_bins
+                || bin.bin_content.len() != expected_chunk_bin_size
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF split verifier result {query_index} has invalid CHUNK trace {trace_index}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ─── DPF Client ─────────────────────────────────────────────────────────────
 
 /// DPF-PIR client for two-server PIR queries.
@@ -1343,6 +1446,38 @@ impl DpfClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
+        let (mut results, traces) = self
+            .execute_step_unverified(script_hashes, _step, db_info)
+            .await?;
+
+        if db_info.has_bucket_merkle {
+            self.run_merkle_verification(&mut results, &traces, db_info)
+                .await?;
+        } else {
+            // The ordinary (non-split) API preserves its historical "Merkle
+            // not applicable" success value.  The inspector API returns
+            // before this point and therefore remains explicitly unverified.
+            for result in results.iter_mut().flatten() {
+                result.merkle_verified = true;
+            }
+            log::info!(
+                "[PIR-AUDIT] Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
+                db_info.db_id
+            );
+        }
+
+        Ok(results)
+    }
+
+    /// Execute the shared batched INDEX/CHUNK query plan without performing
+    /// Merkle verification.  Both the hot path and the split inspector path
+    /// use this function so Payment V1 sees the same PBC job/DFA shape.
+    async fn execute_step_unverified(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        _step: &SyncStep,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<(Vec<Option<QueryResult>>, Vec<QueryTraces>)> {
         let mut results: Vec<Option<QueryResult>> = Vec::with_capacity(script_hashes.len());
         let mut traces: Vec<QueryTraces> = Vec::with_capacity(script_hashes.len());
 
@@ -1462,7 +1597,11 @@ impl DpfClient {
             results.push(Some(QueryResult {
                 entries,
                 is_whale,
-                merkle_verified: true,
+                // This helper deliberately stops before Merkle.  The hot path
+                // promotes this to true only after verification (or the
+                // explicit no-Merkle case); the split inspector path exposes
+                // the false value to prevent premature result release.
+                merkle_verified: false,
                 raw_chunk_data: if db_info.kind.is_delta() && real_count > 0 {
                     Some(real_data)
                 } else {
@@ -1475,17 +1614,7 @@ impl DpfClient {
             traces.push(q_traces);
         }
 
-        if db_info.has_bucket_merkle {
-            self.run_merkle_verification(&mut results, &traces, db_info)
-                .await?;
-        } else {
-            log::info!(
-                "[PIR-AUDIT] Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
-                db_info.db_id
-            );
-        }
-
-        Ok(results)
+        Ok((results, traces))
     }
 
     /// Build `BucketMerkleItem`s from collected query traces and verify them
@@ -1550,7 +1679,9 @@ impl DpfClient {
                 None => continue, // not touched (no items attached to this query)
                 Some(true) => {
                     log::info!("[PIR-AUDIT] Merkle PASSED for query #{}", qi);
-                    // merkle_verified is already `true` by construction in query_single.
+                    if let Some(result) = results[qi].as_mut() {
+                        result.merkle_verified = true;
+                    }
                 }
                 Some(false) => {
                     log::warn!(
@@ -1646,6 +1777,9 @@ impl DpfClient {
     /// Also returns `QueryTraces` describing every INDEX/CHUNK cuckoo bin we
     /// inspected, so the caller (`execute_step`) can run per-bucket Merkle
     /// verification if `DatabaseInfo::has_bucket_merkle` is set.
+    // Retained as the reference single-input implementation for protocol-shape
+    // cross-checks; production and inspector batches share the PBC executor.
+    #[allow(dead_code)]
     async fn query_single(
         &mut self,
         script_hash: &ScriptHash,
@@ -2711,17 +2845,21 @@ impl DpfClient {
     ///   `INDEX_CUCKOO_NUM_HASHES` padding in `index_bins` for a valid
     ///   absence proof — that invariant is preserved end-to-end by
     ///   `query_index_level`).
-    /// * `merkle_verified` is `true` — Merkle was **not** attempted.
-    ///   Callers that care MUST pass the results to
+    /// * `merkle_verified` is always `false` because Merkle was **not**
+    ///   attempted. Callers MUST keep entries quarantined and pass the results to
     ///   `verify_merkle_batch_for_results`, which returns the real
     ///   verdicts.
+    /// * Empty input and databases without a bucket-Merkle commitment are
+    ///   rejected before an address-dependent PIR frame is sent.
     ///
     /// # 🔒 Padding invariant
     ///
-    /// The underlying PIR batch is unchanged — K=75 INDEX / K_CHUNK=80
-    /// CHUNK groups per round, random dummy DPF keys fill empty slots.
-    /// This method only changes whether the client further requests
-    /// Merkle siblings, not what the server sees at the query layer.
+    /// This method uses the exact same batched PBC INDEX/CHUNK executor as the
+    /// trait-level hot path — it does not loop `query_single`. K=75 INDEX /
+    /// K_CHUNK=80 CHUNK groups per round and random dummy DPF keys are
+    /// unchanged. This is required by Payment V1: one packed PBC INDEX round is
+    /// one logical job, whereas sequential per-address INDEX frames would spend
+    /// additional grant units.
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -2747,51 +2885,24 @@ impl DpfClient {
             .clone();
 
         self.verified_roots.require_db(db_id)?;
+        if script_hashes.is_empty() {
+            return Err(PirError::MerkleVerificationFailed(
+                "DPF split inspector requires at least one query".into(),
+            ));
+        }
+        if !db_info.has_bucket_merkle {
+            return Err(PirError::MerkleVerificationFailed(
+                "DPF split inspector requires a bucket-Merkle commitment".into(),
+            ));
+        }
         self.preflight_bucket_tree_tops(&db_info).await?;
 
-        let mut results: Vec<Option<QueryResult>> = Vec::with_capacity(script_hashes.len());
-        for script_hash in script_hashes {
-            let (qr, trace) = self.query_single(script_hash, &db_info).await?;
-
-            // Translate the trace into public `BucketRef`s. For not-found
-            // we synthesise an empty `QueryResult` so the inspector state
-            // isn't lost to the `None` return convention.
-            let with_inspector = match qr {
-                Some(mut r) => {
-                    r.index_bins = trace
-                        .index_bins
-                        .iter()
-                        .map(index_trace_to_bucket_ref)
-                        .collect();
-                    r.chunk_bins = trace
-                        .chunk_bins
-                        .iter()
-                        .map(chunk_trace_to_bucket_ref)
-                        .collect();
-                    r.matched_index_idx = trace.matched_index_idx;
-                    Some(r)
-                }
-                None => {
-                    // NOT FOUND — emit an empty, inspector-populated
-                    // QueryResult so callers can verify absence via
-                    // `verify_merkle_batch_for_results`. Sentinel values:
-                    // `entries.is_empty()`, `!is_whale`,
-                    // `matched_index_idx.is_none()`, and (by the symmetry
-                    // invariant) `index_bins.len() == INDEX_CUCKOO_NUM_HASHES`.
-                    let mut r = QueryResult::empty();
-                    r.index_bins = trace
-                        .index_bins
-                        .iter()
-                        .map(index_trace_to_bucket_ref)
-                        .collect();
-                    // chunk_bins empty by construction for not-found.
-                    r.matched_index_idx = trace.matched_index_idx;
-                    Some(r)
-                }
-            };
-            results.push(with_inspector);
-        }
-
+        let step = SyncStep::from_db_info(&db_info);
+        let (results, traces) = self
+            .execute_step_unverified(script_hashes, &step, &db_info)
+            .await?;
+        let results = attach_inspector_traces(results, traces)?;
+        validate_inspector_results(&results, &db_info)?;
         Ok(results)
     }
 
@@ -2807,12 +2918,14 @@ impl DpfClient {
     /// [`verify_merkle_items`](Self::verify_merkle_items) helper.
     ///
     /// Returns one `bool` per input query:
-    /// * `true`  — all items verified, or no items attached (e.g. the
-    ///   caller passed a `None` for that index, so there is nothing to
-    ///   contradict).
+    /// * `true`  — every required item for that query verified.
     /// * `false` — at least one attached item failed the proof; the
     ///   corresponding result must be treated as untrusted and should
     ///   be discarded or surfaced as `QueryResult::merkle_failed()`.
+    ///
+    /// Empty batches, `None` slots, default/empty inspector results, malformed
+    /// trace geometry, and databases without bucket-Merkle commitments return
+    /// `Err`; none can be interpreted as a successful absence proof.
     ///
     /// # 🔒 Padding invariant
     ///
@@ -2845,31 +2958,30 @@ impl DpfClient {
             .clone();
 
         self.verified_roots.require_db(db_id)?;
-        self.preflight_bucket_tree_tops(&db_info).await?;
-
-        // If the database doesn't publish bucket Merkle, "verify" is a
-        // no-op — mirrors `execute_step`'s skip branch so callers can
-        // always call `verify_merkle_batch_for_results` without needing
-        // to pre-check `has_bucket_merkle` first. Matches the
-        // `QueryResult::merkle_verified` semantics ("no failure
-        // detected").
         if !db_info.has_bucket_merkle {
-            log::info!(
-                "[PIR-AUDIT] verify_merkle_batch_for_results SKIPPED: db_id={} has no bucket Merkle",
-                db_id
-            );
-            return Ok(vec![true; results.len()]);
+            return Err(PirError::MerkleVerificationFailed(
+                "DPF split verifier requires a bucket-Merkle commitment".into(),
+            ));
         }
+        validate_inspector_results(results, &db_info)?;
+        self.preflight_bucket_tree_tops(&db_info).await?;
 
         let (items, item_to_query) = collect_merkle_items_from_results(results);
         let verdicts = self
             .verify_merkle_items(&items, &item_to_query, results.len(), &db_info)
             .await?;
 
-        // Translate `Option<bool>` to `bool` for the public surface:
-        // `None` (no items attached) maps to `true` — consistent with
-        // the "nothing to falsify" reading above.
-        Ok(verdicts.into_iter().map(|v| v.unwrap_or(true)).collect())
+        verdicts
+            .into_iter()
+            .enumerate()
+            .map(|(query_index, verdict)| {
+                verdict.ok_or_else(|| {
+                    PirError::MerkleVerificationFailed(format!(
+                        "DPF split verifier produced no verdict for result {query_index}"
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// Like [`PirClient::sync`], but drives a [`SyncProgress`] observer
@@ -4149,6 +4261,127 @@ mod tests {
     use crate::transport::mock::MockTransport;
     use pir_db_attest::BuildKind;
     use std::sync::Mutex;
+
+    #[test]
+    fn split_inspector_quarantines_found_and_absent_results() {
+        let mut found = QueryResult::empty();
+        found.is_whale = true;
+        found.merkle_verified = true;
+        let results = vec![Some(found), None];
+        let traces = vec![
+            QueryTraces {
+                index_bins: vec![IndexBinTrace {
+                    pbc_group: 3,
+                    bin_index: 7,
+                    bin_content: vec![0x31],
+                }],
+                matched_index_idx: Some(0),
+                chunk_bins: vec![ChunkBinTrace {
+                    pbc_group: 4,
+                    bin_index: 8,
+                    bin_content: vec![0x41],
+                }],
+            },
+            QueryTraces {
+                index_bins: vec![IndexBinTrace {
+                    pbc_group: 5,
+                    bin_index: 9,
+                    bin_content: vec![0x51],
+                }],
+                matched_index_idx: None,
+                chunk_bins: Vec::new(),
+            },
+        ];
+
+        let attached = attach_inspector_traces(results, traces).unwrap();
+        assert_eq!(attached.len(), 2);
+        assert!(attached.iter().all(|result| result.is_some()));
+        assert!(attached
+            .iter()
+            .flatten()
+            .all(|result| !result.merkle_verified));
+        assert_eq!(attached[0].as_ref().unwrap().matched_index_idx, Some(0));
+        assert_eq!(attached[0].as_ref().unwrap().chunk_bins.len(), 1);
+        assert!(attached[1].as_ref().unwrap().entries.is_empty());
+        assert_eq!(attached[1].as_ref().unwrap().index_bins.len(), 1);
+    }
+
+    #[test]
+    fn split_inspector_rejects_result_trace_length_skew() {
+        let error = attach_inspector_traces(vec![Some(QueryResult::empty())], Vec::new())
+            .expect_err("length skew must fail closed");
+        assert!(error.to_string().contains("length mismatch"), "{error}");
+    }
+
+    #[test]
+    fn split_verifier_shape_rejects_missing_or_empty_results() {
+        let db_info = tiny_db_info();
+        for results in [
+            Vec::<Option<QueryResult>>::new(),
+            vec![None],
+            vec![Some(QueryResult::empty())],
+        ] {
+            let error = validate_inspector_results(&results, &db_info)
+                .expect_err("incomplete inspector proof must fail closed");
+            assert!(error.is_verification_failure(), "{error}");
+        }
+    }
+
+    #[test]
+    fn split_verifier_shape_accepts_exact_two_index_traces() {
+        let db_info = tiny_db_info();
+        let result = QueryResult {
+            entries: Vec::new(),
+            is_whale: false,
+            merkle_verified: false,
+            raw_chunk_data: None,
+            index_bins: vec![
+                BucketRef {
+                    pbc_group: 1,
+                    bin_index: 2,
+                    bin_content: vec![0; INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN],
+                },
+                BucketRef {
+                    pbc_group: 1,
+                    bin_index: 3,
+                    bin_content: vec![0; INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN],
+                },
+            ],
+            chunk_bins: Vec::new(),
+            matched_index_idx: None,
+        };
+        validate_inspector_results(&[Some(result)], &db_info).unwrap();
+    }
+
+    #[tokio::test]
+    async fn split_verifier_rejects_database_without_merkle_commitment() {
+        let db_info = tiny_db_info();
+        let mut client = DpfClient::new("mock://dpf-0", "mock://dpf-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("mock://dpf-0")),
+            Box::new(MockTransport::new("mock://dpf-1")),
+        );
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db_info.clone()],
+        });
+        client
+            .install_verified_database_roots(session_roots(&db_info))
+            .unwrap();
+        let error = client
+            .verify_merkle_batch_for_results(&[None], db_info.db_id)
+            .await
+            .expect_err("Merkle-unavailable split verification must fail closed");
+        assert!(error.is_verification_failure(), "{error}");
+    }
+
+    #[test]
+    fn two_address_index_plan_is_one_payment_logical_job_when_it_fits_one_pbc_round() {
+        let candidates = vec![[0, 1, 2], [1, 2, 3]];
+        let (rounds, placements) = plan_index_pbc_rounds(&candidates, 4);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(placements.len(), 2);
+        assert_ne!(placements[0].pbc_group, placements[1].pbc_group);
+    }
 
     fn session_db_info() -> DatabaseInfo {
         DatabaseInfo {

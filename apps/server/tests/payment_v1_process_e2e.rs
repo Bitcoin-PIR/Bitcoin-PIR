@@ -296,8 +296,10 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
     )
     .await;
 
-    // Provider 0 independently accepts only its own capability, then lets
-    // exactly one bounded backend frame reach the real DPF handler.
+    // Provider 0 independently accepts only its own capability, then lets one
+    // bounded PBC frame carrying two address placements reach the real DPF
+    // handler. Payment V1 charges the packed INDEX frame as one logical job,
+    // not two raw user inputs or the public padding width.
     let receipt0 = provider0.receipt(provider0.dpf_scope_id, DPF_OFFER_ID, 0x80);
     exercise_paid_grant(port0, &provider0, manifest_root, &request, &receipt0).await;
 
@@ -501,9 +503,9 @@ async fn exercise_paid_grant(
     let response = secure.roundtrip(request).await.unwrap();
     match Response::decode(&response).unwrap() {
         Response::IndexBatch(result) => {
-            assert_eq!(result.results.len(), 1);
-            assert_eq!(result.results[0].len(), 2);
-            assert!(result.results[0].iter().all(|item| item.len() == 52));
+            assert_eq!(result.results.len(), 2);
+            assert!(result.results.iter().all(|group| group.len() == 2));
+            assert!(result.results.iter().flatten().all(|item| item.len() == 52));
         }
         other => panic!("authorized DPF frame did not reach handler: {other:?}"),
     }
@@ -798,7 +800,7 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
                     max_wall_time_ms: 10_000,
                     max_concurrent_sockets: 1,
                     max_hint_groups: 0,
-                    max_work_units: 2,
+                    max_work_units: 4,
                 },
                 offers: vec![make_offer(DPF_OFFER_ID, dpf_receipt_key_id, dpf_binding)],
             },
@@ -899,12 +901,18 @@ fn write_tiny_table(path: &Path, params: &pir_core::params::TableParams, tag_see
 
 fn valid_tiny_dpf_request() -> Vec<u8> {
     let dpf = Dpf::with_default_key();
-    let (key0, key1) = dpf.gen(0, 7);
+    // Two real PBC groups model N=2 addresses that fit one packed INDEX
+    // round. Each group still carries the two cuckoo-position DPF keys.
+    let (first0, first1) = dpf.gen(0, 7);
+    let (second0, second1) = dpf.gen(1, 7);
     Request::IndexBatch(BatchQuery {
         level: 0,
         round_id: 0,
         db_id: 0,
-        keys: vec![vec![key0.to_bytes(), key1.to_bytes()]],
+        keys: vec![
+            vec![first0.to_bytes(), first1.to_bytes()],
+            vec![second0.to_bytes(), second1.to_bytes()],
+        ],
     })
     .encode()
 }

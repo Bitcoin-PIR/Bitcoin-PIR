@@ -1980,7 +1980,11 @@ impl WasmDpfClient {
     /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
     /// but returns opaque [`WasmQueryResult`] handles whose
     /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**.
+    /// and whose per-query Merkle verification has been **skipped**. Every
+    /// returned raw handle reports `merkleVerified === false`; the separate
+    /// batch verifier's returned boolean is the release verdict and does not
+    /// mutate the original handle. Raw server/result defaults are never
+    /// treated as verification evidence.
     ///
     /// This is the pair-wise half of the split-verify flow: call this,
     /// persist or inspect the results, then later call
@@ -1991,6 +1995,8 @@ impl WasmDpfClient {
     /// Every slot is a non-null [`WasmQueryResult`] — not-found queries
     /// are synthesised as empty inspector-populated results so the
     /// absence-proof bins are preserved for verification.
+    /// Empty input or a database without bucket-Merkle commitments fails
+    /// before the private query phase.
     ///
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups), including when most queries are not-found — the
@@ -2032,21 +2038,20 @@ impl WasmDpfClient {
     /// persistent storage) and returns one `bool` per input.
     ///
     /// # Arguments
-    /// * `results_json` — JS `Array` where each element is either `null`
-    ///   (caller had nothing to verify for that slot — always returns
-    ///   `true`) or a `QueryResult` JSON object including `indexBins` /
-    ///   `chunkBins` / `matchedIndexIdx`.
+    /// * `results_json` — non-empty JS `Array` where every element is a
+    ///   complete `QueryResult` JSON object including exact `indexBins` /
+    ///   `chunkBins` / `matchedIndexIdx` proof state. `null`, an empty/default
+    ///   result, or malformed trace geometry fails closed with an error.
     /// * `db_id` — database to verify against.
     ///
     /// # Returns
     /// JS `Array` of `bool`:
-    /// * `true`  — all attached Merkle items verified, or nothing to
-    ///   verify at this slot.
+    /// * `true`  — every required Merkle item verified.
     /// * `false` — at least one Merkle proof failed; callers should
     ///   treat the slot as untrusted.
     ///
-    /// Databases that don't publish a bucket-Merkle tree are accepted
-    /// trivially (every slot returns `true`).
+    /// Databases that don't publish a bucket-Merkle tree fail closed; the
+    /// split API never turns "Merkle not available" into a release verdict.
     #[wasm_bindgen(js_name = verifyMerkleBatch)]
     pub async fn verify_merkle_batch(
         &mut self,
@@ -2838,11 +2843,15 @@ impl WasmHarmonyClient {
     /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
     /// but returns opaque [`WasmQueryResult`] handles whose
     /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**.
+    /// and whose per-query Merkle verification has been **skipped**. Every
+    /// returned raw handle reports `merkleVerified === false`; the separate
+    /// batch verifier returns the release verdict without mutating that handle.
     ///
     /// See [`WasmDpfClient::query_batch_raw`] for the full split-verify
     /// flow description. The Harmony wrapper exposes the same JS-facing
     /// contract despite the different wire protocol underneath.
+    /// Empty input or a database without bucket-Merkle commitments fails
+    /// before the private query phase.
     ///
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups) — padding lives in the native `HarmonyClient` query

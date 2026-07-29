@@ -113,6 +113,7 @@ bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c
 
 [dev-dependencies]
 tempfile = "3"
+pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-issuer-store = { path = "../../crates/payment/issuer-store" }

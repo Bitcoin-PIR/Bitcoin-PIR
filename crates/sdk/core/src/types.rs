@@ -298,15 +298,17 @@ impl DatabaseCatalog {
 /// `merkle_verified` signals whether per-bucket Merkle proofs for this
 /// query passed:
 /// - `true`  — either proofs verified against the server-published root,
-///             or the database does not publish Merkle commitments
-///             (`DatabaseInfo::has_bucket_merkle == false`). "No failure
-///             detected." Callers that *require* Merkle must also check
-///             `has_bucket_merkle` on the source database.
-/// - `false` — Merkle verification was attempted and FAILED. `entries`
-///             is emptied and `is_whale` cleared; the result should be
-///             treated as untrusted. This is the ONLY way a failed proof
-///             is surfaced to callers (previously failures were coerced
-///             to `None`, indistinguishable from genuine absence).
+///             or the ordinary (non-split) query path established that the
+///             database does not publish Merkle commitments
+///             (`DatabaseInfo::has_bucket_merkle == false`). Callers that
+///             *require* Merkle must also check `has_bucket_merkle`.
+/// - `false` — no release verdict has been established. This covers both a
+///             split inspector result whose independent verifier has not run
+///             yet and a proof that was attempted and FAILED. Failed inline
+///             verification also empties `entries` and clears `is_whale`;
+///             deferred inspector results retain data only so the caller can
+///             verify it and MUST remain quarantined. A split verifier returns
+///             its verdict separately and does not mutate a persisted result.
 ///
 /// A `None` in `SyncResult::results` still means "not found" — if the
 /// database has Merkle commitments, absence is proved by the symmetric
@@ -319,8 +321,9 @@ pub struct QueryResult {
     pub entries: Vec<UtxoEntry>,
     /// Whether this address is a "whale" (too many UTXOs to fit in chunks).
     pub is_whale: bool,
-    /// Whether the per-bucket Merkle proof verified (or N/A for databases
-    /// without Merkle). See struct-level docs for full semantics.
+    /// Whether a positive per-bucket Merkle release verdict was established
+    /// (or N/A was established by the ordinary non-split path). See the
+    /// struct-level docs for deferred inspector semantics.
     pub merkle_verified: bool,
     /// Raw chunk data for delta merging (only populated for delta queries).
     #[cfg_attr(feature = "serde", serde(skip))]

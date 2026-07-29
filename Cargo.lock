@@ -2729,6 +2729,7 @@ dependencies = [
  "pir-provider-clearing-client",
  "pir-rollback-authority-client",
  "pir-runtime-core",
+ "pir-sdk",
  "pir-sdk-client",
  "pir-service-protocol",
  "pir-service-store",

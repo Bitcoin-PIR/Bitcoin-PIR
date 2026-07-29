@@ -549,6 +549,108 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
     }
 }
 
+/// Move internal batched-query traces onto public results for the split
+/// inspector flow. Absence gets a synthetic result so its proof trace survives;
+/// every slot stays explicitly unverified until the standalone verifier
+/// returns a positive verdict.
+fn attach_inspector_traces(
+    mut results: Vec<Option<QueryResult>>,
+    traces: Vec<QueryTraces>,
+) -> PirResult<Vec<Option<QueryResult>>> {
+    if results.len() != traces.len() {
+        return Err(PirError::InvalidState(format!(
+            "Harmony query result/trace length mismatch: {} != {}",
+            results.len(),
+            traces.len(),
+        )));
+    }
+
+    for (result, trace) in results.iter_mut().zip(traces) {
+        let result = result.get_or_insert_with(QueryResult::empty);
+        result.merkle_verified = false;
+        result.index_bins = trace
+            .index_bins
+            .iter()
+            .map(index_trace_to_bucket_ref)
+            .collect();
+        result.chunk_bins = trace
+            .chunk_bins
+            .iter()
+            .map(chunk_trace_to_bucket_ref)
+            .collect();
+        result.matched_index_idx = trace.matched_index_idx;
+    }
+
+    Ok(results)
+}
+
+/// Reject incomplete/default public proof values before the split verifier can
+/// produce a release verdict. Persisted Rust/WASM values are untrusted input;
+/// a missing slot or missing INDEX trace must never become `true` by default.
+fn validate_inspector_results(
+    results: &[Option<QueryResult>],
+    db_info: &DatabaseInfo,
+) -> PirResult<()> {
+    if results.is_empty() {
+        return Err(PirError::MerkleVerificationFailed(
+            "Harmony split verifier requires at least one result".into(),
+        ));
+    }
+
+    let expected_index_bin_size = INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN;
+    let expected_chunk_bin_size = CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN;
+    for (query_index, result) in results.iter().enumerate() {
+        let result = result.as_ref().ok_or_else(|| {
+            PirError::MerkleVerificationFailed(format!(
+                "Harmony split verifier result {query_index} is missing"
+            ))
+        })?;
+        if result.index_bins.len() != INDEX_CUCKOO_NUM_HASHES {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "Harmony split verifier result {query_index} has {} INDEX traces; expected {INDEX_CUCKOO_NUM_HASHES}",
+                result.index_bins.len(),
+            )));
+        }
+        let expected_group = result.index_bins[0].pbc_group;
+        for (trace_index, bin) in result.index_bins.iter().enumerate() {
+            if bin.pbc_group != expected_group
+                || bin.pbc_group >= u32::from(db_info.index_k)
+                || bin.bin_index >= db_info.index_bins
+                || bin.bin_content.len() != expected_index_bin_size
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "Harmony split verifier result {query_index} has invalid INDEX trace {trace_index}"
+                )));
+            }
+        }
+        if result
+            .matched_index_idx
+            .is_some_and(|index| index >= INDEX_CUCKOO_NUM_HASHES)
+        {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "Harmony split verifier result {query_index} has an invalid matched INDEX position"
+            )));
+        }
+        if result.matched_index_idx.is_none() && !result.chunk_bins.is_empty() {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "Harmony split verifier result {query_index} has CHUNK traces without an INDEX match"
+            )));
+        }
+        for (trace_index, bin) in result.chunk_bins.iter().enumerate() {
+            if bin.pbc_group >= u32::from(db_info.chunk_k)
+                || bin.bin_index >= db_info.chunk_bins
+                || bin.bin_content.len() != expected_chunk_bin_size
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "Harmony split verifier result {query_index} has invalid CHUNK trace {trace_index}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ─── HarmonyPIR Client ──────────────────────────────────────────────────────
 
 /// HarmonyPIR client for two-server PIR queries.
@@ -3740,6 +3842,53 @@ impl HarmonyClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
+        let bench = std::env::var("HARMONY_BENCH").is_ok();
+        let t_step_start = Instant::now();
+        let (mut results, traces) = self
+            .execute_step_unverified(script_hashes, _step, db_info)
+            .await?;
+
+        let t_merkle_start = Instant::now();
+        if db_info.has_bucket_merkle {
+            self.run_merkle_verification(&mut results, &traces, db_info)
+                .await?;
+        } else {
+            // Preserve the ordinary API's historical N/A-success semantics.
+            // The split inspector API returns before this promotion.
+            for result in results.iter_mut().flatten() {
+                result.merkle_verified = true;
+            }
+            log::info!(
+                "[PIR-AUDIT] HarmonyPIR Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
+                db_info.db_id
+            );
+        }
+        if bench {
+            eprintln!(
+                "[HARMONY_BENCH] db={} Merkle verification: {:?}",
+                db_info.db_id,
+                t_merkle_start.elapsed()
+            );
+            eprintln!(
+                "[HARMONY_BENCH] db={} TOTAL execute_step: {:?}",
+                db_info.db_id,
+                t_step_start.elapsed()
+            );
+        }
+
+        Ok(results)
+    }
+
+    /// Execute the shared batched INDEX/CHUNK plan while retaining the
+    /// per-query traces and deliberately stopping before Merkle verification.
+    /// The hot path and split inspector path therefore have one Payment V1 DFA
+    /// shape instead of the inspector issuing one job per address.
+    async fn execute_step_unverified(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        _step: &SyncStep,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<(Vec<Option<QueryResult>>, Vec<QueryTraces>)> {
         // Phase-level timing for diagnostics. Guarded by env var so it
         // only fires when the operator explicitly opts in.
         let _bench = std::env::var("HARMONY_BENCH").is_ok();
@@ -3899,7 +4048,9 @@ impl HarmonyClient {
             results.push(Some(QueryResult {
                 entries,
                 is_whale,
-                merkle_verified: true,
+                // Results from this shared phase are quarantined until the
+                // caller completes the inline or standalone Merkle verifier.
+                merkle_verified: false,
                 raw_chunk_data: if db_info.kind.is_delta() && real_count > 0 {
                     Some(real_data)
                 } else {
@@ -3920,29 +4071,17 @@ impl HarmonyClient {
                 script_hashes.len(),
                 t_chunk
             );
-        }
-
-        let t_merkle_start = Instant::now();
-        if db_info.has_bucket_merkle {
-            self.run_merkle_verification(&mut results, &traces, db_info)
-                .await?;
-        } else {
-            log::info!(
-                "[PIR-AUDIT] HarmonyPIR Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
-                db_info.db_id
-            );
-        }
-        let t_merkle = t_merkle_start.elapsed();
-        if _bench {
             eprintln!(
-                "[HARMONY_BENCH] db={} Merkle verification: {:?}",
-                db_info.db_id, t_merkle
+                "[HARMONY_BENCH] db={} TOTAL execute_step_unverified: {:?}  (hint {:?} / index {:?} / chunk {:?})",
+                db_info.db_id,
+                t_step_start.elapsed(),
+                t_hint,
+                t_index,
+                t_chunk,
             );
-            eprintln!("[HARMONY_BENCH] db={} TOTAL execute_step: {:?}  (hint {:?} / index {:?} / chunk {:?} / merkle {:?})",
-                db_info.db_id, t_step_start.elapsed(), t_hint, t_index, t_chunk, t_merkle);
         }
 
-        Ok(results)
+        Ok((results, traces))
     }
 
     /// Batched INDEX phase for the Option-B
@@ -4130,6 +4269,9 @@ impl HarmonyClient {
     /// Also returns `QueryTraces` describing every INDEX/CHUNK cuckoo bin we
     /// inspected, so the caller (`execute_step`) can run per-bucket Merkle
     /// verification if `DatabaseInfo::has_bucket_merkle` is set.
+    // Retained as the reference single-input implementation for pair-mode
+    // equivalence tests; production and inspector batches use the PBC executor.
+    #[allow(dead_code)]
     #[tracing::instrument(level = "trace", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn query_single(
         &mut self,
@@ -4325,6 +4467,7 @@ impl HarmonyClient {
     /// `max_items_per_group_per_level = 2` regardless of input collision
     /// pattern. Wire format unchanged — the server still processes K
     /// BatchItems × (T-1) indices each indistinguishably.
+    #[allow(dead_code)]
     async fn run_index_round(
         &mut self,
         db_id: u8,
@@ -4672,6 +4815,7 @@ impl HarmonyClient {
     /// exactly one complete K_CHUNK-padded CHUNK pair (both cuckoo positions,
     /// all groups synthesised via `build_synthetic_dummy`) so the server cannot infer
     /// found-vs-not-found from absence of CHUNK traffic.
+    #[allow(dead_code)]
     async fn query_chunk_level(
         &mut self,
         chunk_ids: &[u32],
@@ -5430,7 +5574,9 @@ impl HarmonyClient {
                 None => continue, // not touched (no items attached to this query)
                 Some(true) => {
                     log::info!("[PIR-AUDIT] HarmonyPIR Merkle PASSED for query #{}", qi);
-                    // merkle_verified is already true by construction in query_single.
+                    if let Some(result) = results[qi].as_mut() {
+                        result.merkle_verified = true;
+                    }
                 }
                 Some(false) => {
                     log::warn!(
@@ -5643,16 +5789,19 @@ impl HarmonyClient {
     ///   from the query's internal `QueryTraces`.
     /// * `matched_index_idx == None && entries.is_empty()` encodes
     ///   "not found".
-    /// * `merkle_verified` is `true` — Merkle was **not** attempted.
-    ///   Callers that care MUST pass the results to
+    /// * `merkle_verified` is always `false` because Merkle was **not**
+    ///   attempted. Callers MUST keep entries quarantined and pass the results to
     ///   `verify_merkle_batch_for_results` to get real verdicts.
+    /// * Empty input and databases without a bucket-Merkle commitment are
+    ///   rejected before an address-dependent query frame is sent.
     ///
     /// # 🔒 Padding invariant
     ///
-    /// Same as the hot path — K=75 INDEX / K_CHUNK=80 CHUNK groups per
-    /// round, synthetic HarmonyGroup dummies fill empty slots. This
-    /// method only changes whether the client further requests Merkle
-    /// siblings, not what the server sees at the query layer.
+    /// This method uses the same batched PBC INDEX/CHUNK executor as the hot
+    /// path rather than looping `query_single`. K=75 INDEX / K_CHUNK=80 CHUNK
+    /// padding and the paired round-id sequence are unchanged. Payment V1
+    /// therefore observes one logical job per PBC batch instead of one job per
+    /// address.
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -5678,52 +5827,24 @@ impl HarmonyClient {
             .clone();
 
         self.verified_roots.require_db(db_id)?;
+        if script_hashes.is_empty() {
+            return Err(PirError::MerkleVerificationFailed(
+                "Harmony split inspector requires at least one query".into(),
+            ));
+        }
+        if !db_info.has_bucket_merkle {
+            return Err(PirError::MerkleVerificationFailed(
+                "Harmony split inspector requires a bucket-Merkle commitment".into(),
+            ));
+        }
         self.preflight_bucket_tree_tops(&db_info).await?;
 
-        // Ensure groups are loaded for this db before firing queries;
-        // `query_single` would do this per-call, but front-loading it
-        // makes the inspector-path failure mode (hint-fetch errors)
-        // cleaner — they surface as `Err` before any query runs.
-        self.ensure_groups_ready(&db_info, None).await?;
-
-        let mut results: Vec<Option<QueryResult>> = Vec::with_capacity(script_hashes.len());
-        for script_hash in script_hashes {
-            let (qr, trace) = self.query_single(script_hash, &db_info).await?;
-
-            // Translate the trace into public `BucketRef`s. For
-            // not-found we synthesise an empty `QueryResult` so the
-            // inspector state isn't lost to the `None` return
-            // convention.
-            let with_inspector = match qr {
-                Some(mut r) => {
-                    r.index_bins = trace
-                        .index_bins
-                        .iter()
-                        .map(index_trace_to_bucket_ref)
-                        .collect();
-                    r.chunk_bins = trace
-                        .chunk_bins
-                        .iter()
-                        .map(chunk_trace_to_bucket_ref)
-                        .collect();
-                    r.matched_index_idx = trace.matched_index_idx;
-                    Some(r)
-                }
-                None => {
-                    let mut r = QueryResult::empty();
-                    r.index_bins = trace
-                        .index_bins
-                        .iter()
-                        .map(index_trace_to_bucket_ref)
-                        .collect();
-                    // chunk_bins empty by construction for not-found.
-                    r.matched_index_idx = trace.matched_index_idx;
-                    Some(r)
-                }
-            };
-            results.push(with_inspector);
-        }
-
+        let step = SyncStep::from_db_info(&db_info);
+        let (results, traces) = self
+            .execute_step_unverified(script_hashes, &step, &db_info)
+            .await?;
+        let results = attach_inspector_traces(results, traces)?;
+        validate_inspector_results(&results, &db_info)?;
         Ok(results)
     }
 
@@ -5740,12 +5861,14 @@ impl HarmonyClient {
     /// [`verify_merkle_items`](Self::verify_merkle_items) helper.
     ///
     /// Returns one `bool` per input query:
-    /// * `true`  — all items verified, or no items attached (e.g. the
-    ///   caller passed a `None` for that index, so there is nothing to
-    ///   contradict).
+    /// * `true`  — every required item for that query verified.
     /// * `false` — at least one attached item failed the proof; the
     ///   corresponding result must be treated as untrusted and should
     ///   be discarded or surfaced as `QueryResult::merkle_failed()`.
+    ///
+    /// Empty batches, `None` slots, default/empty inspector results, malformed
+    /// trace geometry, and databases without bucket-Merkle commitments return
+    /// `Err`; none can be interpreted as a successful absence proof.
     ///
     /// # 🔒 Padding invariant
     ///
@@ -5779,22 +5902,13 @@ impl HarmonyClient {
             .clone();
 
         self.verified_roots.require_db(db_id)?;
-        self.preflight_bucket_tree_tops(&db_info).await?;
-
-        // If the database doesn't publish bucket Merkle, "verify" is a
-        // no-op — mirrors `execute_step`'s skip branch so callers can
-        // always call `verify_merkle_batch_for_results` without
-        // pre-checking `has_bucket_merkle` first. Matches the
-        // `QueryResult::merkle_verified` semantics ("no failure
-        // detected").
         if !db_info.has_bucket_merkle {
-            log::info!(
-                "[PIR-AUDIT] HarmonyPIR verify_merkle_batch_for_results SKIPPED: \
-                 db_id={} has no bucket Merkle",
-                db_id
-            );
-            return Ok(vec![true; results.len()]);
+            return Err(PirError::MerkleVerificationFailed(
+                "Harmony split verifier requires a bucket-Merkle commitment".into(),
+            ));
         }
+        validate_inspector_results(results, &db_info)?;
+        self.preflight_bucket_tree_tops(&db_info).await?;
 
         // ensure_groups_ready + ensure_sibling_groups_ready need the
         // main groups to exist before sibling hints are fetched —
@@ -5807,10 +5921,20 @@ impl HarmonyClient {
             .verify_merkle_items(&items, &item_to_query, results.len(), &db_info)
             .await?;
 
-        // Translate `Option<bool>` to `bool` for the public surface:
-        // `None` (no items attached) maps to `true` — consistent with
-        // the "nothing to falsify" reading above.
-        Ok(verdicts.into_iter().map(|v| v.unwrap_or(true)).collect())
+        // Defense in depth: validated inputs contribute exactly two INDEX
+        // items, so a missing aggregate verdict is an internal verification
+        // failure rather than a vacuous success.
+        verdicts
+            .into_iter()
+            .enumerate()
+            .map(|(query_index, verdict)| {
+                verdict.ok_or_else(|| {
+                    PirError::MerkleVerificationFailed(format!(
+                        "Harmony split verifier produced no verdict for result {query_index}"
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// Like [`PirClient::sync`], but drives a [`SyncProgress`] observer
@@ -7347,6 +7471,7 @@ fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
 /// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
 /// Avoids pulling in the `hex` crate for one audit-log string; mirrors the
 /// helper in `dpf.rs` so both clients log query traces identically.
+#[allow(dead_code)]
 fn format_hash_short(h: &[u8]) -> String {
     if h.len() <= 8 {
         let mut s = String::with_capacity(h.len() * 2);
@@ -8417,12 +8542,318 @@ mod kani_harnesses {
 mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
+    use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, sha256, Hash256, ZERO_HASH};
     use pir_db_attest::BuildKind;
+    use pir_sdk::BufferingLeakageRecorder;
     use std::collections::VecDeque;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     };
+
+    /// Test-only query server for an all-zero Harmony database. It derives a
+    /// canonical zero response from each client request, preserving level,
+    /// round id, group order, and exact response width while sharing the sent
+    /// transcript with the assertion side of the test.
+    struct ZeroHarmonyQueryTransport {
+        pending: VecDeque<Vec<u8>>,
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl ZeroHarmonyQueryTransport {
+        fn new(sent: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
+            Self {
+                pending: VecDeque::new(),
+                sent,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PirTransport for ZeroHarmonyQueryTransport {
+        async fn send(&mut self, data: Vec<u8>) -> PirResult<()> {
+            self.sent.lock().unwrap().push(data.clone());
+            self.pending.push_back(data);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            let request = self.pending.pop_front().ok_or_else(|| {
+                PirError::Protocol("zero Harmony transport has no request".into())
+            })?;
+            Ok(zero_harmony_response(&request))
+        }
+
+        async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
+            self.sent.lock().unwrap().push(request.to_vec());
+            let frame = zero_harmony_response(request);
+            Ok(frame[4..].to_vec())
+        }
+
+        async fn close(&mut self) -> PirResult<()> {
+            Ok(())
+        }
+
+        fn url(&self) -> &str {
+            "mock://zero-harmony-query"
+        }
+    }
+
+    fn harmony_request_header(request: &[u8]) -> (u8, u16, usize) {
+        assert!(request.len() >= 11);
+        assert_eq!(request[4], REQ_HARMONY_BATCH_QUERY);
+        (
+            request[5],
+            u16::from_le_bytes(request[6..8].try_into().unwrap()),
+            u16::from_le_bytes(request[8..10].try_into().unwrap()) as usize,
+        )
+    }
+
+    fn zero_harmony_response(request: &[u8]) -> Vec<u8> {
+        let (level, round_id, num_groups) = harmony_request_header(request);
+        assert_eq!(request[10], 1);
+        let row_width = match level {
+            0 => INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN,
+            1 => CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN,
+            _ => panic!("unexpected Harmony level {level}"),
+        };
+        let mut pos = 11;
+        let mut groups = Vec::with_capacity(num_groups);
+        for _ in 0..num_groups {
+            let group_id = request[pos];
+            let count = u32::from_le_bytes(request[pos + 1..pos + 5].try_into().unwrap()) as usize;
+            pos += 5 + count * 4;
+            groups.push((group_id, vec![0; count * row_width]));
+        }
+        let group_refs: Vec<(u8, &[u8])> = groups
+            .iter()
+            .map(|(group_id, data)| (*group_id, data.as_slice()))
+            .collect();
+        response_frame(harmony_batch_body(level, round_id, &group_refs))
+    }
+
+    fn zero_tree_top(bins: u32, row_width: usize) -> TreeTop {
+        let zero_row = vec![0; row_width];
+        let mut levels: Vec<Vec<Hash256>> = vec![(0..bins)
+            .map(|bin_index| compute_bin_leaf_hash(bin_index, &zero_row))
+            .collect()];
+        while levels.last().unwrap().len() > 1 {
+            let previous = levels.last().unwrap();
+            let mut next = Vec::with_capacity(previous.len().div_ceil(BUCKET_MERKLE_ARITY));
+            for offset in (0..previous.len()).step_by(BUCKET_MERKLE_ARITY) {
+                let mut children = [ZERO_HASH; BUCKET_MERKLE_ARITY];
+                let available = (previous.len() - offset).min(BUCKET_MERKLE_ARITY);
+                children[..available].copy_from_slice(&previous[offset..offset + available]);
+                next.push(compute_parent_n(&children));
+            }
+            levels.push(next);
+        }
+        TreeTop {
+            cache_from_level: 0,
+            levels,
+        }
+    }
+
+    #[test]
+    fn split_inspector_quarantines_found_and_absent_results() {
+        let mut found = QueryResult::empty();
+        found.is_whale = true;
+        found.merkle_verified = true;
+        let results = vec![Some(found), None];
+        let traces = vec![
+            QueryTraces {
+                index_bins: vec![IndexBinTrace {
+                    pbc_group: 3,
+                    bin_index: 7,
+                    bin_content: vec![0x31],
+                }],
+                matched_index_idx: Some(0),
+                chunk_bins: vec![ChunkBinTrace {
+                    pbc_group: 4,
+                    bin_index: 8,
+                    bin_content: vec![0x41],
+                }],
+            },
+            QueryTraces {
+                index_bins: vec![IndexBinTrace {
+                    pbc_group: 5,
+                    bin_index: 9,
+                    bin_content: vec![0x51],
+                }],
+                matched_index_idx: None,
+                chunk_bins: Vec::new(),
+            },
+        ];
+
+        let attached = attach_inspector_traces(results, traces).unwrap();
+        assert_eq!(attached.len(), 2);
+        assert!(attached.iter().all(|result| result.is_some()));
+        assert!(attached
+            .iter()
+            .flatten()
+            .all(|result| !result.merkle_verified));
+        assert_eq!(attached[0].as_ref().unwrap().matched_index_idx, Some(0));
+        assert_eq!(attached[0].as_ref().unwrap().chunk_bins.len(), 1);
+        assert!(attached[1].as_ref().unwrap().entries.is_empty());
+        assert_eq!(attached[1].as_ref().unwrap().index_bins.len(), 1);
+    }
+
+    #[test]
+    fn split_inspector_rejects_result_trace_length_skew() {
+        let error = attach_inspector_traces(vec![Some(QueryResult::empty())], Vec::new())
+            .expect_err("length skew must fail closed");
+        assert!(error.to_string().contains("length mismatch"), "{error}");
+    }
+
+    #[test]
+    fn split_verifier_shape_rejects_missing_or_empty_results() {
+        let db_info = session_db_info();
+        for results in [
+            Vec::<Option<QueryResult>>::new(),
+            vec![None],
+            vec![Some(QueryResult::empty())],
+        ] {
+            let error = validate_inspector_results(&results, &db_info)
+                .expect_err("incomplete inspector proof must fail closed");
+            assert!(error.is_verification_failure(), "{error}");
+        }
+    }
+
+    #[test]
+    fn split_verifier_shape_accepts_exact_two_index_traces() {
+        let db_info = session_db_info();
+        let result = QueryResult {
+            entries: Vec::new(),
+            is_whale: false,
+            merkle_verified: false,
+            raw_chunk_data: None,
+            index_bins: vec![
+                BucketRef {
+                    pbc_group: 0,
+                    bin_index: 2,
+                    bin_content: vec![0; INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN],
+                },
+                BucketRef {
+                    pbc_group: 0,
+                    bin_index: 3,
+                    bin_content: vec![0; INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN],
+                },
+            ],
+            chunk_bins: Vec::new(),
+            matched_index_idx: None,
+        };
+        validate_inspector_results(&[Some(result)], &db_info).unwrap();
+    }
+
+    #[tokio::test]
+    async fn split_verifier_rejects_database_without_merkle_commitment() {
+        let db_info = sample_db_info();
+        let mut client = HarmonyClient::new("mock://hint", "mock://query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("mock://hint")),
+            Box::new(MockTransport::new("mock://query")),
+        );
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db_info.clone()],
+        });
+        client
+            .install_verified_database_roots(session_roots(&db_info))
+            .unwrap();
+        let error = client
+            .verify_merkle_batch_for_results(&[None], db_info.db_id)
+            .await
+            .expect_err("Merkle-unavailable split verification must fail closed");
+        assert!(error.is_verification_failure(), "{error}");
+    }
+
+    #[test]
+    fn two_address_index_plan_is_one_payment_logical_job_when_it_fits_one_pbc_round() {
+        let candidates = vec![[0, 1, 2], [1, 2, 3]];
+        let rounds = pir_core::pbc::pbc_plan_rounds(&candidates, 4, NUM_HASHES, 500);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].len(), 2);
+    }
+
+    #[tokio::test]
+    async fn two_address_split_inspector_uses_one_index_pair_and_one_batch_verdict() {
+        let mut db_info = sample_db_info();
+        db_info.has_bucket_merkle = true;
+        let script_hashes = [[0x39; 20], [0x3a; 20]];
+        let candidates: Vec<[usize; NUM_HASHES]> = script_hashes
+            .iter()
+            .map(|hash| pir_core::hash::derive_groups_3(hash, db_info.index_k as usize))
+            .collect();
+        let rounds =
+            pir_core::pbc::pbc_plan_rounds(&candidates, db_info.index_k as usize, NUM_HASHES, 500);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].len(), 2);
+        assert_ne!(rounds[0][0].1, rounds[0][1].1);
+
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut client = HarmonyClient::new("mock://hint", "mock://query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("mock://hint")),
+            Box::new(ZeroHarmonyQueryTransport::new(sent.clone())),
+        );
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db_info.clone()],
+        });
+
+        let index_top = zero_tree_top(db_info.index_bins, INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN);
+        let chunk_top = zero_tree_top(db_info.chunk_bins, CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN);
+        let mut tree_tops = Vec::new();
+        tree_tops.extend((0..db_info.index_k).map(|_| index_top.clone()));
+        tree_tops.extend((0..db_info.chunk_k).map(|_| chunk_top.clone()));
+        let mut ordered_roots = Vec::with_capacity(tree_tops.len() * 32);
+        for top in &tree_tops {
+            ordered_roots.extend_from_slice(&top.root().unwrap());
+        }
+        let mut roots = session_roots(&db_info);
+        roots.bucket_super_root = sha256(&ordered_roots);
+        client.install_verified_database_roots(roots).unwrap();
+        client.verified_tree_tops.insert(db_info.db_id, tree_tops);
+        populate_main_groups(&mut client, &db_info);
+
+        let leakage = Arc::new(BufferingLeakageRecorder::new());
+        client.set_leakage_recorder(Some(leakage.clone()));
+        let mut results = client
+            .query_batch_with_inspector(&script_hashes, db_info.db_id)
+            .await
+            .unwrap();
+        let raw_profile = leakage.take_profile("harmony");
+        assert_eq!(raw_profile.count_of_kind(&RoundKind::Index), 2);
+        assert_eq!(raw_profile.count_of_kind(&RoundKind::Chunk), 2);
+        assert!(results
+            .iter()
+            .flatten()
+            .all(|result| !result.merkle_verified));
+
+        let headers: Vec<(u8, u16, usize)> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| harmony_request_header(request))
+            .collect();
+        assert_eq!(headers, vec![(0, 0, 4), (0, 1, 4), (1, 0, 4), (1, 1, 4)]);
+
+        results[0]
+            .as_mut()
+            .unwrap()
+            .index_bins
+            .first_mut()
+            .unwrap()
+            .bin_content[0] ^= 1;
+        let verdicts = client
+            .verify_merkle_batch_for_results(&results, db_info.db_id)
+            .await
+            .unwrap();
+        assert_eq!(verdicts, vec![false, true]);
+        assert!(results
+            .iter()
+            .flatten()
+            .all(|result| !result.merkle_verified));
+        assert_eq!(sent.lock().unwrap().len(), 4);
+    }
 
     fn session_db_info() -> DatabaseInfo {
         DatabaseInfo {
