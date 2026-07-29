@@ -1403,6 +1403,118 @@ function validateCaddyTemplate(text, label, requiredUpstreams) {
   }
 }
 
+function caddySiteBlock(text, siteAddress, label) {
+  const lines = text.split("\n");
+  const header = `${siteAddress} {`;
+  const starts = lines
+    .map((line, index) => line.trim() === header ? index : -1)
+    .filter((index) => index >= 0);
+  if (starts.length !== 1) {
+    fail(`${label} must contain exactly one ${header} site block`);
+  }
+
+  let depth = 0;
+  const block = [];
+  for (let index = starts[0]; index < lines.length; index += 1) {
+    const line = lines[index];
+    block.push(line);
+    if (!line.trimStart().startsWith("#")) {
+      for (const character of line) {
+        if (character === "{") depth += 1;
+        if (character === "}") depth -= 1;
+        if (depth < 0) fail(`${label} has an unbalanced ${siteAddress} site block`);
+      }
+    }
+    if (depth === 0) return block.join("\n");
+  }
+  fail(`${label} has an unterminated ${siteAddress} site block`);
+}
+
+function exactCaddySiteUpstreams(text, siteAddress, expectedUpstreams, label) {
+  const block = caddySiteBlock(text, siteAddress, label);
+  const active = activeTemplateLines(block, `${label} ${siteAddress} site`);
+  const upstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} has a malformed reverse_proxy in ${siteAddress}`);
+      return match[1];
+    });
+  if (JSON.stringify(upstreams) !== JSON.stringify(expectedUpstreams)) {
+    fail(
+      `${label} ${siteAddress} site upstreams must equal ${JSON.stringify(expectedUpstreams)}`,
+    );
+  }
+  return { active, block };
+}
+
+function requireExactActiveLine(active, line, expectedCount, label) {
+  const actualCount = active.filter((candidate) => candidate === line).length;
+  if (actualCount !== expectedCount) {
+    fail(`${label} must contain ${JSON.stringify(line)} exactly ${expectedCount} time(s)`);
+  }
+}
+
+function validateHetznerPublicCaddyLaneBindings(text) {
+  const label = "Hetzner public Caddy template";
+  const provider = exactCaddySiteUpstreams(
+    text,
+    "@PROVIDER_WSS_HOST@",
+    ["unix//run/bitcoinpir-source-fair-edge/provider.sock"],
+    label,
+  );
+  const issuer = exactCaddySiteUpstreams(
+    text,
+    "@PAYMENT_ISSUER_HTTPS_HOST@",
+    Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
+    label,
+  );
+  const publicDirectory = exactCaddySiteUpstreams(
+    text,
+    "@DIRECTORY_RELAY_WSS_HOST@",
+    ["unix//run/bitcoinpir-source-fair-edge/directory-public.sock"],
+    label,
+  );
+  const publisher = exactCaddySiteUpstreams(
+    text,
+    "@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+    ["unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock"],
+    label,
+  );
+
+  for (const [name, site] of [
+    ["provider", provider],
+    ["issuer", issuer],
+    ["public directory", publicDirectory],
+  ]) {
+    requireExactActiveLine(site.active, "bind @PUBLIC_HTTPS_BIND@", 1, `${label} ${name} site`);
+    requireExactActiveLine(
+      site.active,
+      "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+      0,
+      `${label} ${name} site`,
+    );
+  }
+  requireExactActiveLine(
+    publisher.active,
+    "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+    1,
+    `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    "bind @PUBLIC_HTTPS_BIND@",
+    0,
+    `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    "remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@",
+    1,
+    `${label} publisher site`,
+  );
+}
+
 function validateSourceFairHaproxy(text) {
   const label = "Payment V1 HAProxy source-fair configuration";
   const active = activeTemplateLines(text, label);
@@ -1950,6 +2062,7 @@ export function validateDeploymentTree(rootInput) {
       "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
     ],
   );
+  validateHetznerPublicCaddyLaneBindings(publicEdge.text);
   for (const required of [
     "read_header 5s",
     "read_body 15s",

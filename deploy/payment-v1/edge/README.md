@@ -116,14 +116,19 @@ independent lanes:
 
 The publisher listener binds a distinct RFC1918/ULA address and hostname and
 requires the publisher's exact RFC1918/ULA WireGuard/private-route source in
-both Caddy's direct-peer matcher and HAProxy's authenticated PROXY-v2 source
-check. Its static server certificate must contain a WebPKI chain valid for the
-publisher hostname because the current `bpir-admin` publisher is a
-credential-free canonical WSS client. The HAProxy table, connection budget,
-egress budget, application listener, and relay application reservation are
-distinct from public readers. Source filtering is an ingress/DoS boundary,
-not publication authority: every accepted event still requires the pinned
-Nostr key and exact signed profile.
+both Caddy's direct-peer matcher and HAProxy's PROXY-v2-decoded source check.
+PROXY v2 is not itself authenticated. Source integrity here comes from the
+protected Unix-socket directory/mode, exact Caddy supplementary-group
+membership, and the stopped/live process-credential closure that permits only
+the reviewed Caddy process to originate a new preamble. The second check is
+therefore defense in depth against routing/configuration errors, not an
+independent boundary against a compromised Caddy process. Its static server
+certificate must contain a WebPKI chain valid for the publisher hostname
+because the current `bpir-admin` publisher is a credential-free canonical WSS
+client. The HAProxy table, connection budget, egress budget, application
+listener, and relay application reservation are distinct from public readers.
+Source filtering is an ingress/DoS boundary, not publication authority: every
+accepted event still requires the pinned Nostr key and exact signed profile.
 
 The public and publisher sites still share one pinned Caddy process, UID,
 memory/task/file cgroup limits, and TLS scheduler. All four lanes likewise
@@ -249,10 +254,15 @@ BPIR_CADDY_BIN=/absolute/pinned/caddy \
 The behavior suite validates the complete rendered Caddy template, starts real
 HAProxy, proves same-source slot rejection without cross-source starvation,
 checks per-source/global quote limits, verifies forbidden headers and source
-addresses do not reach a mock business service, rejects an unauthorized
-publisher source at both Caddy and HAProxy, and exercises the selected Caddy
-binary's Unix+PROXY-v2 transport. A skipped binary-dependent test is not
-production evidence.
+addresses do not reach a mock business service, and exercises the selected
+Caddy binary's Unix+PROXY-v2 transport. Its full rendered-Caddy-to-HAProxy relay
+matrix verifies that public and publisher requests reach only their assigned
+mock backend, that cross-bind/host requests do not dispatch to either backend,
+and that a spoofed publisher source is rejected while the exact source passes.
+This is loopback compatibility/routing evidence; it does not prove the target
+host's WebPKI chain, private route, anti-spoofing firewall, systemd identities,
+socket metadata, or cold activation history. A skipped binary-dependent test is
+not production evidence.
 CI fixes this compatibility baseline to stock Caddy 2.11.3 (required for the
 explicit `0rtt off` server directive) and HAProxy 2.8.x with `+SYSTEMD` support.
 The production HAProxy must be a currently maintained 2.8.x release, show

@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import net from "node:net";
+import tls from "node:tls";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -820,14 +821,20 @@ test("HAProxy strips source, auth, and correlation material before business serv
   }
 });
 
-async function unusedTcpPort() {
+async function unusedTcpPort(host = "127.0.0.1") {
   const server = net.createServer();
-  const address = await listen(server);
+  const address = await listen(server, host);
   await closeServer(server);
   return address.port;
 }
 
-function waitForTcpListener(port, child, output, timeoutMs = 5_000) {
+function waitForTcpListener(
+  port,
+  child,
+  output,
+  timeoutMs = 5_000,
+  host = "127.0.0.1",
+) {
   const started = Date.now();
   return new Promise((resolvePromise, rejectPromise) => {
     const attempt = () => {
@@ -835,7 +842,7 @@ function waitForTcpListener(port, child, output, timeoutMs = 5_000) {
         rejectPromise(new Error(`Caddy exited before listener readiness: ${output()}`));
         return;
       }
-      const probe = net.createConnection({ host: "127.0.0.1", port });
+      const probe = net.createConnection({ host, port });
       probe.once("connect", () => {
         probe.destroy();
         resolvePromise();
@@ -869,6 +876,53 @@ function plainHttpRequest(
     socket.on("end", () => resolvePromise(bytes));
     socket.on("error", rejectPromise);
   });
+}
+
+function httpResponseHeaders(socket, readyEvent, request, label, timeoutMs = 5_000) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let bytes = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      rejectPromise(new Error(`timed out reading HTTP response headers from ${label}`));
+    }, timeoutMs);
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      rejectPromise(error);
+    };
+    socket.once(readyEvent, () => socket.write(request));
+    socket.on("data", (chunk) => {
+      bytes += chunk.toString("latin1");
+      if (!bytes.includes("\r\n\r\n") || settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolvePromise(bytes);
+    });
+    socket.once("end", () => fail(new Error(`HTTP response ended before complete headers from ${label}`)));
+    socket.once("error", fail);
+  });
+}
+
+function tlsHttpResponseHeaders(port, localAddress, request, host, servername) {
+  const socket = tls.connect({
+    host,
+    port,
+    localAddress,
+    rejectUnauthorized: false,
+    servername,
+  });
+  return httpResponseHeaders(
+    socket,
+    "secureConnect",
+    request,
+    `${localAddress}->${host}:${port} SNI=${servername}`,
+  );
 }
 
 function nonLoopbackIpv4Address() {
@@ -1108,4 +1162,193 @@ http://:${port} {
   ]) {
     assert.equal(observed.raw.toLowerCase().includes(forbidden), false, forbidden);
   }
+});
+
+function renderedCaddyLaneHarnessConfig(
+  harness,
+  { certificate, edgePort, key, publisherClientIp },
+) {
+  const publicHosts = [
+    ["@PROVIDER_WSS_HOST@", "pir.example.net"],
+    ["@PAYMENT_ISSUER_HTTPS_HOST@", "pay.example.net"],
+    ["@DIRECTORY_RELAY_WSS_HOST@", "directory.example.net"],
+  ];
+  const publisherHost = "publisher.example.net";
+  let rendered = readFileSync(CADDY_TEMPLATE, "utf8")
+    .replace("servers :443", `servers :${edgePort}`)
+    .replaceAll("@PUBLIC_HTTPS_BIND@", "127.0.0.1")
+    .replaceAll("@DIRECTORY_PUBLISHER_PRIVATE_BIND@", "127.0.0.2")
+    .replaceAll("@DIRECTORY_PUBLISHER_CLIENT_IP@", publisherClientIp)
+    .replaceAll("@DIRECTORY_PUBLISHER_HTTPS_HOST@", publisherHost)
+    .replaceAll("/run/bitcoinpir-source-fair-edge", harness.directory)
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+      certificate,
+    )
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+      key,
+    )
+    .replaceAll("\tbind 127.0.0.1\n", `\tbind 127.0.0.1\n\ttls ${certificate} ${key}\n`);
+  for (const [placeholder, host] of publicHosts) {
+    rendered = rendered
+      .replaceAll(placeholder, host)
+      .replace(`${host} {`, `https://${host}:${edgePort} {`);
+  }
+  rendered = rendered.replace(
+    `${publisherHost} {`,
+    `https://${publisherHost}:${edgePort} {`,
+  );
+  assert.doesNotMatch(rendered, /@[A-Z][A-Z0-9_]+@/u);
+  return rendered;
+}
+
+function websocketDirectoryRequest(host, extraHeaders = []) {
+  return [
+    "GET /v1/directory HTTP/1.1",
+    `Host: ${host}`,
+    "Connection: Upgrade",
+    "Upgrade: websocket",
+    "Sec-WebSocket-Version: 13",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    ...extraHeaders,
+    "",
+    "",
+  ].join("\r\n");
+}
+
+test("complete rendered Caddy and HAProxy keep public and publisher relay lanes non-interchangeable", {
+  skip: HAPROXY === undefined || CADDY === undefined || OPENSSL === undefined,
+}, async (t) => {
+  const publisherClientIp = "127.0.0.3";
+  const unauthorizedPublisherIp = "127.0.0.4";
+  const publicClientIp = "127.0.0.5";
+  const harness = await createHarness(t, { publisherClientIp });
+  const edgePort = await unusedTcpPort("127.0.0.1");
+  const privatePortProbe = net.createServer();
+  await listen(privatePortProbe, "127.0.0.2", edgePort);
+  await closeServer(privatePortProbe);
+  const certificate = join(harness.directory, "rendered-edge.crt");
+  const key = join(harness.directory, "rendered-edge.key");
+  const generated = spawnSync(OPENSSL, [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", key,
+    "-out", certificate,
+    "-days", "1",
+    "-subj", "/CN=publisher.example.net",
+    "-addext", "subjectAltName=DNS:pir.example.net,DNS:pay.example.net,DNS:directory.example.net,DNS:publisher.example.net",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(generated.status, 0, generated.stderr);
+  const caddyfile = join(harness.directory, "rendered-public.Caddyfile");
+  writeFileSync(
+    caddyfile,
+    renderedCaddyLaneHarnessConfig(harness, {
+      certificate,
+      edgePort,
+      key,
+      publisherClientIp,
+    }),
+    { mode: 0o600 },
+  );
+  const validation = spawnSync(CADDY, [
+    "validate", "--config", caddyfile, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    validation.status,
+    0,
+    `complete rendered Caddy lane config failed validation:\n${validation.stdout}\n${validation.stderr}`,
+  );
+
+  const caddy = spawn(CADDY, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  caddy.stdout.on("data", (chunk) => { output += chunk; });
+  caddy.stderr.on("data", (chunk) => { output += chunk; });
+  t.after(() => stopProcess(caddy));
+  await waitForTcpListener(edgePort, caddy, () => output);
+  await waitForTcpListener(edgePort, caddy, () => output, 5_000, "127.0.0.2");
+
+  const publicRequest = websocketDirectoryRequest("directory.example.net");
+  assert.equal(
+    statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publicClientIp,
+        publicRequest,
+        "127.0.0.1",
+        "directory.example.net",
+      ),
+    ),
+    200,
+  );
+  await waitFor(
+    () => harness.lanes.directoryPublic.records.length === 1,
+    "rendered public-directory backend request",
+  );
+  assert.equal(harness.lanes.directoryPublic.records.length, 1);
+  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+
+  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
+  statusOf(
+    await tlsHttpResponseHeaders(
+      edgePort,
+      publicClientIp,
+      publisherRequest,
+      "127.0.0.1",
+      "publisher.example.net",
+    ),
+  );
+  assert.equal(harness.lanes.directoryPublic.records.length, 1);
+  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+
+  statusOf(
+    await tlsHttpResponseHeaders(
+      edgePort,
+      publisherClientIp,
+      publicRequest,
+      "127.0.0.2",
+      "directory.example.net",
+    ),
+  );
+  assert.equal(harness.lanes.directoryPublic.records.length, 1);
+  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+
+  const spoofedPublisherRequest = websocketDirectoryRequest("publisher.example.net", [
+    `Forwarded: for=${publisherClientIp}`,
+    `X-Forwarded-For: ${publisherClientIp}`,
+  ]);
+  assert.equal(
+    statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        unauthorizedPublisherIp,
+        spoofedPublisherRequest,
+        "127.0.0.2",
+        "publisher.example.net",
+      ),
+    ),
+    404,
+  );
+  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+
+  assert.equal(
+    statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publisherClientIp,
+        publisherRequest,
+        "127.0.0.2",
+        "publisher.example.net",
+      ),
+    ),
+    200,
+  );
+  await waitFor(
+    () => harness.lanes.directoryPublisher.records.length === 1,
+    "rendered publisher backend request",
+  );
+  assert.equal(harness.lanes.directoryPublic.records.length, 1);
+  assert.equal(harness.lanes.directoryPublisher.records.length, 1);
+  await stopProcess(caddy);
 });
