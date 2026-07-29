@@ -205,7 +205,7 @@ async fn remote_authority_real_process_tls_provider_e2e() {
     let root = tempfile::tempdir().expect("remote authority process test root");
     chmod(root.path(), 0o700);
     let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
-    let provider = build_provider(root.path(), 7, manifest_root, unix_now());
+    let provider = build_provider(root.path(), 7, manifest_root, unix_now(), None);
     remove_local_provider_store_fixture(&provider);
 
     let authority_port = distinct_unused_port(&[]);
@@ -249,7 +249,7 @@ async fn remote_authority_real_process_tls_provider_e2e() {
         0,
     );
     let request = valid_tiny_dpf_request();
-    let receipt = provider.receipt(0xd7);
+    let receipt = provider.receipt(provider.dpf_scope_id, DPF_OFFER_ID, 0xd7);
     exercise_remote_paid_grant(provider_port, &provider, manifest_root, &request, &receipt).await;
 
     let (server_stdout, server_stderr) = server.stop();
@@ -273,16 +273,16 @@ async fn remote_authority_real_process_tls_provider_e2e() {
         open_remote_verified_session(provider_port, &provider, manifest_root, &request).await;
     let replay_proof = dangerous_unpaired_build_authorization_proof_v1(
         &replay_policy,
-        &provider.scope_id,
-        OFFER_ID,
+        &provider.dpf_scope_id,
+        DPF_OFFER_ID,
         &receipt.encode().unwrap(),
     )
     .unwrap();
     let replay = dangerous_unpaired_authorize_service_operation_v1(
         &mut replay_session,
         &replay_policy,
-        provider.scope_id,
-        OFFER_ID,
+        provider.dpf_scope_id,
+        DPF_OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         replay_proof,
     )
@@ -326,30 +326,30 @@ async fn exercise_remote_paid_grant(
         open_remote_verified_session(port, fixture, manifest_root, request).await;
     let proof = dangerous_unpaired_build_authorization_proof_v1(
         &accepted,
-        &fixture.scope_id,
-        OFFER_ID,
+        &fixture.dpf_scope_id,
+        DPF_OFFER_ID,
         &receipt.encode().unwrap(),
     )
     .unwrap();
     let grant = dangerous_unpaired_authorize_service_operation_v1(
         &mut secure,
         &accepted,
-        fixture.scope_id,
-        OFFER_ID,
+        fixture.dpf_scope_id,
+        DPF_OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         proof,
     )
     .await
     .expect("remote-authority paid receipt must authorize");
-    assert_eq!(grant.scope_id, fixture.scope_id);
+    assert_eq!(grant.scope_id, fixture.dpf_scope_id);
     assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
 
     let response = secure.roundtrip(request).await.unwrap();
     match Response::decode(&response).unwrap() {
         Response::IndexBatch(result) => {
-            assert_eq!(result.results.len(), 1);
-            assert_eq!(result.results[0].len(), 2);
-            assert!(result.results[0].iter().all(|item| item.len() == 52));
+            assert_eq!(result.results.len(), 2);
+            assert!(result.results.iter().all(|group| group.len() == 2));
+            assert!(result.results.iter().flatten().all(|item| item.len() == 52));
         }
         other => panic!("authorized DPF frame did not reach handler: {other:?}"),
     }
