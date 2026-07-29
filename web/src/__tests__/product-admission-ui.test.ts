@@ -75,6 +75,7 @@ function stagedSnapshot(
     phase: 'selecting',
     topology: 'independent-pair',
     allowSharedIssuerCorrelationOnce: false,
+    homogeneousPairLimits: null,
     errorCode: null,
     legs: statuses.map((status, index) => ({
       role: `server${index}`,
@@ -93,6 +94,7 @@ function stagedSnapshot(
       quoteStatus: null,
       recoveryIds: [],
       errorCode: null,
+      queryShape: null,
     })),
   };
 }
@@ -128,6 +130,17 @@ describe('staged provider UI ordering', () => {
         protocolVersion: 1,
         operationProfile: 1,
         entitlementProfile: 1,
+        dataset: { kind: 'manifest-root', rootHex: '5a'.repeat(32) },
+        limits: {
+          maxLogicalInputs: 1,
+          maxFrames: 64,
+          maxRequestBytes: '1048576',
+          maxResponseBytes: '2097152',
+          maxWallTimeMs: 30_000,
+          maxConcurrentSockets: 1,
+          maxHintGroups: 0,
+          maxWorkUnits: '10000',
+        },
         offers: [],
       },
       offer: offer({}),

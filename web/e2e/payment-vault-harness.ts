@@ -57,6 +57,17 @@ const scope: ServiceScopeViewV1 = {
   protocolVersion: 1,
   operationProfile: 1,
   entitlementProfile: 1,
+  dataset: { kind: 'manifest-root', rootHex: '5a'.repeat(32) },
+  limits: {
+    maxLogicalInputs: 1,
+    maxFrames: 64,
+    maxRequestBytes: '1048576',
+    maxResponseBytes: '2097152',
+    maxWallTimeMs: 30_000,
+    maxConcurrentSockets: 1,
+    maxHintGroups: 0,
+    maxWorkUnits: '10000',
+  },
   offers: [offer],
 };
 

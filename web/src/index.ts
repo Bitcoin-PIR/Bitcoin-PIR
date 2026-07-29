@@ -268,6 +268,16 @@ export {
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
 } from './service-admission.js';
+export {
+  assertProductQueryShapeFitsScopeV1,
+  canonicalProductQueryShapeV1,
+  canonicalServiceEntitlementLimitsV1,
+  intersectHomogeneousEntitlementLimitsV1,
+} from './service-entitlement.js';
+export type {
+  ProductQueryShapeV1,
+  ProductQueryShapesByRoleV1,
+} from './service-entitlement.js';
 export { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
 export type {
   IndependentProviderSelectionOptionsV1,

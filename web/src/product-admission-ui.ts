@@ -285,7 +285,7 @@ export class ProductAdmissionPanelV1 {
       (option) => choiceValue(option.scopeIdHex, option.offerId) === selectedValue,
       );
     row.terms.textContent = selected
-      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${priceLabel(selected)}`
+      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${priceLabel(selected)} · ${limitsLabel(selected)}`
       : 'Scope/offer: selection required';
     row.warning.textContent = selected
       ? privacyLabelForOfferV1(selected.offer)
@@ -498,6 +498,8 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
     case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
+    case 'query-shape-unavailable': return 'The exact backend planner demand is unavailable; no offer or capability may be used.';
+    case 'entitlement-limits-insufficient': return 'The signed entitlement is below the backend planner’s known demand; no payment or capability was used.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';
     case 'lightning-payee-untrusted': return 'BOLT11 is blocked because no independent expected-payee key is trusted.';
@@ -525,6 +527,20 @@ function priceLabel(option: ProductOfferOptionV1): string {
   return price.kind === 'msat'
     ? `${price.amount} msat`
     : `${price.amount} ${price.unit ?? 'cashu units'}`;
+}
+
+function limitsLabel(option: ProductOfferOptionV1): string {
+  const limits = option.scope.limits;
+  return [
+    `caps inputs=${limits.maxLogicalInputs}`,
+    `frames=${limits.maxFrames}`,
+    `request=${limits.maxRequestBytes}B`,
+    `response=${limits.maxResponseBytes}B`,
+    `wall=${limits.maxWallTimeMs}ms`,
+    `sockets=${limits.maxConcurrentSockets}`,
+    `hints=${limits.maxHintGroups}`,
+    `work=${limits.maxWorkUnits}`,
+  ].join(', ');
 }
 
 export function privacyLabelForOfferV1(offer: ProductOfferOptionV1['offer']): string {
@@ -634,6 +650,8 @@ function retainedAsOfferOption(
     offerId: redemption.offer.offerId,
     scope: {
       ...redemption.scope,
+      dataset: { ...redemption.scope.dataset },
+      limits: { ...redemption.scope.limits },
       offers: [],
     },
     offer: { ...redemption.offer, price: { ...redemption.offer.price } },

@@ -572,6 +572,12 @@ export interface ServiceScopeViewV1 {
   protocolVersion: number;
   operationProfile: number;
   entitlementProfile: number;
+  dataset:
+    | { kind: 'class'; classId: number }
+    | { kind: 'catalog-epoch'; epoch: string }
+    | { kind: 'manifest-root'; rootHex: string };
+  /** Immutable counters committed by the live signed policy digest. */
+  limits: ServiceEntitlementLimitsViewV1;
   offers: ServiceOfferViewV1[];
 }
 
@@ -589,7 +595,7 @@ export interface ServiceEntitlementLimitsViewV1 {
 export interface RetainedServiceRedemptionViewV1 {
   providerIdHex: string;
   policyDigestHex: string;
-  scope: ServiceScopeViewV1 & { limits: ServiceEntitlementLimitsViewV1 };
+  scope: ServiceScopeViewV1;
   offer: ServiceOfferViewV1;
 }
 

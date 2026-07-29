@@ -34,6 +34,23 @@ const secondProviderHex = '12'.repeat(32);
 const secondScopeHex = '23'.repeat(32);
 const secondProviderId = new Uint8Array(32).fill(0x12);
 const secondPolicyKey = new Uint8Array(32).fill(0x34);
+const manifestRootHex = '5a'.repeat(32);
+const limits = {
+  maxLogicalInputs: 4,
+  maxFrames: 64,
+  maxRequestBytes: '1048576',
+  maxResponseBytes: '2097152',
+  maxWallTimeMs: 30_000,
+  maxConcurrentSockets: 1,
+  maxHintGroups: 0,
+  maxWorkUnits: '10000',
+};
+const DPF_TARGET = {
+  backend: 'dpf-pir',
+  workload: 'dpf-query',
+  protocolVersion: 1,
+  expectedDatasetManifestRootHex: manifestRootHex,
+} as const;
 
 function policy(
   offer: ServiceOfferViewV1,
@@ -52,6 +69,8 @@ function policy(
       protocolVersion: 1,
       operationProfile: 2,
       entitlementProfile: 3,
+      dataset: { kind: 'manifest-root', rootHex: manifestRootHex },
+      limits: { ...limits },
       offers: [offer],
     }],
   };
@@ -92,6 +111,7 @@ function retainedAccepted(
       protocolVersion: 1,
       operationProfile: 2,
       entitlementProfile: 3,
+      dataset: { kind: 'manifest-root', rootHex: manifestRootHex },
       limits: {
         maxLogicalInputs: 1,
         maxFrames: 1,
@@ -177,14 +197,20 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId: secondProviderId, policySigningKey: secondPolicyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     return session;
   }
 
   function sessionForOffer(offer: ServiceOfferViewV1): ProviderAdmissionSessionV1 {
-    const view = policy(offer);
+    return sessionForPolicyView(policy(offer));
+  }
+
+  function sessionForPolicyView(
+    view: ServicePolicyViewV1,
+    target = DPF_TARGET,
+  ): ProviderAdmissionSessionV1 {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
@@ -196,7 +222,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      target,
     );
   }
 
@@ -230,6 +256,40 @@ describe('provider admission orchestration', () => {
       .rejects.toThrow(/lowercase/);
     await expect(sessionForOffer(arcOffer('00'.repeat(32))).refreshPolicy())
       .rejects.toThrow(/lowercase/);
+  });
+
+  it('exposes only the unique scope for the exact protocol and verified manifest root', async () => {
+    const view = policy(arcOffer());
+    view.scopes.push({
+      ...structuredClone(view.scopes[0]),
+      scopeIdHex: '24'.repeat(32),
+      dataset: { kind: 'manifest-root', rootHex: '6a'.repeat(32) },
+    });
+    await expect(sessionForPolicyView(view).refreshPolicy()).resolves.toMatchObject({
+      scopes: [{ scopeIdHex: scopeHex, dataset: { rootHex: manifestRootHex } }],
+    });
+
+    const ambiguous = structuredClone(view);
+    ambiguous.scopes[1].dataset = { kind: 'manifest-root', rootHex: manifestRootHex };
+    ambiguous.scopes[1].entitlementProfile = 9;
+    await expect(sessionForPolicyView(ambiguous).refreshPolicy())
+      .rejects.toThrow(/exactly one scope/);
+    await expect(sessionForPolicyView(ambiguous, {
+      ...DPF_TARGET,
+      entitlementProfile: 3,
+    }).refreshPolicy()).rejects.toThrow(/exactly one scope/);
+
+    const wrongProtocol = policy(arcOffer());
+    wrongProtocol.scopes[0].protocolVersion = 2;
+    await expect(sessionForPolicyView(wrongProtocol).refreshPolicy())
+      .rejects.toThrow(/exactly one scope/);
+  });
+
+  it('rejects malformed live signed limits before any offer can be selected', async () => {
+    const view = policy(arcOffer());
+    view.scopes[0].limits.maxRequestBytes = '01';
+    await expect(sessionForPolicyView(view).refreshPolicy())
+      .rejects.toThrow(/canonical decimal u64/);
   });
 
   it('rejects an ARC raw-key fingerprint on a non-ARC policy offer', async () => {
@@ -277,7 +337,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const second = await independentFreeSession();
@@ -325,7 +385,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const selected = VerifiedSingleProviderOfferV1.create({
@@ -371,7 +431,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const selected = VerifiedSingleProviderOfferV1.create({
@@ -426,7 +486,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const selected = VerifiedSingleProviderOfferV1.create({
@@ -527,7 +587,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const second = await independentFreeSession();
@@ -583,7 +643,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
@@ -633,7 +693,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
@@ -693,7 +753,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
@@ -726,7 +786,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await expect(session.inspectRetainedCapability({
       providerIdHex: providerHex,
@@ -786,7 +846,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     const binding = {
       providerIdHex: providerHex,
@@ -842,7 +902,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await expect(session.authorizeRetainedCapability({
       providerIdHex: providerHex,
