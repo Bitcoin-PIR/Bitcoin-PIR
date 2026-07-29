@@ -76,6 +76,7 @@ mod protocol;
 pub mod service;
 pub mod strict_pair;
 mod transport;
+mod verified_query;
 mod verified_roots;
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
@@ -119,6 +120,7 @@ pub use strict_pair::{
     VerifiedStrictTwoProviderOfferPairV1,
 };
 pub use transport::PirTransport;
+pub use verified_query::VerifiedQueryResult;
 pub use verified_roots::RootPolicy;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_transport::WasmWebSocketTransport;

@@ -51,6 +51,7 @@ use crate::service::{
     AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
 };
 use crate::transport::PirTransport;
+use crate::verified_query::VerifiedQueryResult;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
 use ed25519_dalek::VerifyingKey;
@@ -480,9 +481,9 @@ fn collect_merkle_items_from_traces(traces: &[QueryTraces]) -> (Vec<BucketMerkle
 
 /// Build `BucketMerkleItem`s for one query from a `QueryResult`'s
 /// inspector-populated fields. Symmetric with [`items_from_trace`] —
-/// same per-query-item layout, same ordering — but works on the public
-/// type so callers can reverify persisted results via
-/// [`HarmonyClient::verify_merkle_batch_for_results`].
+/// same per-query-item layout, same ordering — but works on `QueryResult`
+/// for the crate-internal membership stage. It is not a complete result
+/// authenticity or release API.
 fn items_from_inspector_result(result: &QueryResult) -> Vec<BucketMerkleItem> {
     result
         .index_bins
@@ -5710,11 +5711,9 @@ impl HarmonyClient {
     /// `Some(QueryResult::merkle_failed())` to signal an unverified
     /// (untrusted) result.
     ///
-    /// Implementation is a thin shim over the two helpers that also
-    /// power the standalone
-    /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// API — items come from the per-query [`QueryTraces`], but the
-    /// verifier itself is shared.
+    /// Implementation is a thin shim over the helpers that also power the
+    /// crate-internal membership stage: items come from per-query
+    /// [`QueryTraces`], while the Merkle walker itself is shared.
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn run_merkle_verification(
         &mut self,
@@ -5724,10 +5723,9 @@ impl HarmonyClient {
     ) -> PirResult<()> {
         // Log the per-query outcome/item-count summary — kept here (not
         // in `collect_merkle_items_from_traces`) because this is the
-        // path that feeds `[PIR-AUDIT]` audit logs. The
-        // `verify_merkle_batch_for_results` path rebuilds items from
-        // already-audited query results, so it doesn't need to re-log
-        // the bin counts.
+        // path that feeds `[PIR-AUDIT]` audit logs. The crate-internal
+        // membership stage rebuilds items from already-audited query results,
+        // so it doesn't need to re-log the bin counts.
         for (qi, trace) in traces.iter().enumerate() {
             let outcome = match trace.matched_index_idx {
                 Some(_) => {
@@ -5786,9 +5784,8 @@ impl HarmonyClient {
 
     /// Shared verifier backend used by both
     /// [`run_merkle_verification`](Self::run_merkle_verification) (inline,
-    /// over fresh `QueryTraces`) and
-    /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// (standalone, over persisted `QueryResult.index_bins/chunk_bins`).
+    /// over fresh `QueryTraces`) and the crate-internal membership stage over
+    /// ephemeral `QueryResult.index_bins/chunk_bins`.
     ///
     /// Runs the full Merkle pipeline: `REQ_BUCKET_MERKLE_TREE_TOPS`
     /// fetch on the query server, `ensure_sibling_groups_ready` (which
@@ -5961,16 +5958,13 @@ impl HarmonyClient {
         Ok(per_query)
     }
 
-    /// Run a batch of PIR queries against `db_id` and return the raw
-    /// per-query results **with inspector state populated**, deferring
-    /// Merkle verification to a later
-    /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// call.
+    /// Crate-internal first half of the verified inspector composition.
+    /// Returns raw per-query results with inspector state populated and must
+    /// never be exposed outside this crate before semantic and Merkle checks.
     ///
     /// # Shape vs. the trait-level `query_batch`
     ///
-    /// Identical semantics to `DpfClient::query_batch_with_inspector`
-    /// (see that method for the full contract). In short:
+    /// Mirrors the DPF crate-internal raw stage. In short:
     ///
     /// * Every successful query returns `Some(QueryResult)` with
     ///   `index_bins` / `chunk_bins` / `matched_index_idx` populated
@@ -5978,8 +5972,8 @@ impl HarmonyClient {
     /// * `matched_index_idx == None && entries.is_empty()` encodes
     ///   "not found".
     /// * `merkle_verified` is always `false` because Merkle was **not**
-    ///   attempted. Callers MUST keep entries quarantined and pass the results to
-    ///   `verify_merkle_batch_for_results` to get real verdicts.
+    ///   attempted. The atomic wrapper keeps entries quarantined, validates
+    ///   exact input/decoded semantics, then runs the membership-only helper.
     /// * Empty input and databases without a bucket-Merkle commitment are
     ///   rejected before an address-dependent query frame is sent.
     ///
@@ -5995,7 +5989,7 @@ impl HarmonyClient {
         skip_all,
         fields(backend = "harmony", db_id, num_queries = script_hashes.len())
     )]
-    pub async fn query_batch_with_inspector(
+    pub(crate) async fn query_batch_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
         db_id: u8,
@@ -6039,12 +6033,14 @@ impl HarmonyClient {
     /// Release-safe inspector query. Query execution, semantic
     /// reconstruction, and Merkle proof verification are one native async
     /// operation, and the batch is released only when every slot passes.
+    /// Success returns immutable, non-deserializable authority objects bound
+    /// to each exact script hash and to `db_id`.
     pub async fn query_batch_verified_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
         db_id: u8,
-    ) -> PirResult<Vec<Option<QueryResult>>> {
-        let mut results = self
+    ) -> PirResult<Vec<VerifiedQueryResult>> {
+        let results = self
             .query_batch_with_inspector(script_hashes, db_id)
             .await?;
         let db_info = self
@@ -6063,25 +6059,42 @@ impl HarmonyClient {
                 "Harmony verified inspector batch contains a failed inclusion proof".into(),
             ));
         }
-        for result in results.iter_mut().flatten() {
-            result.merkle_verified = true;
+        if results.len() != script_hashes.len() {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "Harmony verified inspector result count mismatch: expected {}, got {}",
+                script_hashes.len(),
+                results.len()
+            )));
         }
-        Ok(results)
+        script_hashes
+            .iter()
+            .copied()
+            .zip(results)
+            .map(|(script_hash, result)| {
+                result
+                    .map(|result| VerifiedQueryResult::new(script_hash, db_id, result))
+                    .ok_or_else(|| {
+                        PirError::MerkleVerificationFailed(
+                            "Harmony verified inspector released a missing result".into(),
+                        )
+                    })
+            })
+            .collect()
     }
 
-    /// Standalone per-bucket Merkle verifier for results previously
-    /// returned by
-    /// [`query_batch_with_inspector`](Self::query_batch_with_inspector)
-    /// (or reconstructed by the caller from persisted storage — the
-    /// verifier only needs `QueryResult.index_bins`, `chunk_bins`, and
-    /// `matched_index_idx`).
+    /// Crate-internal per-bucket Merkle membership stage for fresh results
+    /// retained by the atomic verified-inspector call.
+    ///
+    /// This helper authenticates bin membership only. It does **not** bind
+    /// `QueryResult.entries` to script-hash inputs and therefore must never be
+    /// exposed as, or interpreted as, a complete result release verdict.
     ///
     /// Rebuilds the same `BucketMerkleItem` set the inline
     /// [`run_merkle_verification`](Self::run_merkle_verification) path
     /// builds, then runs the networked verifier via the shared
     /// [`verify_merkle_items`](Self::verify_merkle_items) helper.
     ///
-    /// Returns one `bool` per input query:
+    /// Returns one membership `bool` per input query:
     /// * `true`  — every required item for that query verified.
     /// * `false` — at least one attached item failed the proof; the
     ///   corresponding result must be treated as untrusted and should
@@ -6103,7 +6116,7 @@ impl HarmonyClient {
         skip_all,
         fields(backend = "harmony", db_id, num_results = results.len())
     )]
-    pub async fn verify_merkle_batch_for_results(
+    pub(crate) async fn verify_merkle_batch_for_results(
         &mut self,
         results: &[Option<QueryResult>],
         db_id: u8,
@@ -6353,9 +6366,9 @@ impl HarmonyClient {
     /// `db_id`. No network traffic yet; the next
     /// [`execute_step`](Self::execute_step) /
     /// [`query_batch`](Self::query_batch) /
-    /// [`query_batch_with_inspector`](Self::query_batch_with_inspector)
-    /// will see the db mismatch and refetch (or restore from the hint
-    /// cache if configured).
+    /// [`query_batch_verified_with_inspector`](Self::query_batch_verified_with_inspector)
+    /// will see the db mismatch and refetch (or restore from the hint cache
+    /// if configured).
     ///
     /// Use this when an app pins a wallet to a specific db_id ahead of
     /// time — e.g. a browser session that just fetched a fresh

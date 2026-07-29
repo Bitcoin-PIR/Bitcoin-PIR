@@ -32,6 +32,7 @@ use js_sys::Uint8Array;
 use pir_sdk::{
     BucketRef, DatabaseCatalog, DatabaseInfo, DatabaseKind, QueryResult, SyncPlan, UtxoEntry,
 };
+use pir_sdk_client::VerifiedQueryResult;
 use wasm_bindgen::prelude::*;
 
 /// Per-bucket bin Merkle verifier — pure SHA-256 walk exposed to JS so the
@@ -289,8 +290,8 @@ pub(crate) fn parse_query_result_json(data: &serde_json::Value) -> Result<QueryR
     Ok(QueryResult {
         entries,
         is_whale,
-        // Caller-supplied JSON is data, not proof. Only native query/sync
-        // paths may construct a result carrying a positive release verdict.
+        // Caller-supplied JSON is data, not proof. The raw mutable payload
+        // never carries WASM-side verification authority.
         merkle_verified: false,
         raw_chunk_data,
         index_bins,
@@ -482,11 +483,10 @@ impl WasmDatabaseCatalog {
     /// commitments? `false` if the database is absent or carries no
     /// Merkle section.
     ///
-    /// The JS-side callers check this before enabling the standalone
-    /// Merkle verifier path — `verify_merkle_batch_for_results` on the
-    /// native side does the same check internally, but the flag is
-    /// useful for UI surfaces that want to show a "verified" badge
-    /// only when verification actually ran.
+    /// The JS-side callers check this before enabling proof-backed queries;
+    /// the native atomic verifier performs the same check internally. The
+    /// flag is also useful for UI surfaces that show a "verified" badge only
+    /// when verification actually ran.
     #[wasm_bindgen(js_name = hasBucketMerkle)]
     pub fn has_bucket_merkle(&self, db_id: u8) -> bool {
         self.inner
@@ -675,6 +675,10 @@ pub fn compute_sync_plan(
 #[wasm_bindgen]
 pub struct WasmQueryResult {
     inner: QueryResult,
+    // Verification provenance is intentionally outside the mutable/serde
+    // QueryResult payload. JavaScript cannot construct or deserialize this
+    // marker; only native SDK paths in this crate may set it.
+    native_verified: bool,
 }
 
 impl WasmQueryResult {
@@ -682,8 +686,23 @@ impl WasmQueryResult {
     /// `DpfClient::sync` result entry) without re-serialising through
     /// JSON. In-crate use only — JS builds one via the `fromJson`
     /// factory.
-    pub(crate) fn from_native(result: QueryResult) -> Self {
-        Self { inner: result }
+    pub(crate) fn from_native(mut result: QueryResult) -> Self {
+        let native_verified = result.merkle_verified;
+        result.merkle_verified = false;
+        Self {
+            inner: result,
+            native_verified,
+        }
+    }
+
+    /// Preserve the unforgeable authority returned by the atomic client API
+    /// in a private WASM-side provenance marker. The legacy mutable payload
+    /// remains pessimistically unverified.
+    pub(crate) fn from_verified(result: VerifiedQueryResult) -> Self {
+        Self {
+            inner: result.to_unverified_query_result(),
+            native_verified: true,
+        }
     }
 }
 
@@ -694,7 +713,10 @@ impl WasmQueryResult {
     pub fn new() -> Self {
         let mut inner = QueryResult::empty();
         inner.merkle_verified = false;
-        Self { inner }
+        Self {
+            inner,
+            native_verified: false,
+        }
     }
 
     /// Create an unverified result from JSON.
@@ -708,6 +730,7 @@ impl WasmQueryResult {
             .map_err(|e| JsError::new(&format!("JSON parse error: {}", e)))?;
         Ok(WasmQueryResult {
             inner: parse_query_result_json(&data)?,
+            native_verified: false,
         })
     }
 
@@ -733,12 +756,13 @@ impl WasmQueryResult {
     /// Merkle release verdict (or established that commitments are N/A).
     ///
     /// `WasmQueryResult::new()` and `fromJson()` always return `false`; only
-    /// crate-internal `from_native` may preserve `true`. A `false` value means
-    /// unauthenticated/unreleased (including unverified, tainted, or failed),
-    /// so callers must never interpret it as merely an attempted failure.
+    /// crate-internal native SDK paths can set the private provenance marker.
+    /// A `false` value means unauthenticated/unreleased (including unverified,
+    /// tainted, or failed), so callers must never interpret it as merely an
+    /// attempted failure.
     #[wasm_bindgen(getter, js_name = merkleVerified)]
     pub fn merkle_verified(&self) -> bool {
-        self.inner.merkle_verified
+        self.native_verified
     }
 
     /// Get entry at index as JSON.
@@ -835,7 +859,7 @@ impl WasmQueryResult {
             "entries": entries,
             "isWhale": self.inner.is_whale,
             "totalBalance": self.inner.total_balance(),
-            "merkleVerified": self.inner.merkle_verified,
+            "merkleVerified": self.native_verified,
         });
         // Emit inspector state only when non-empty so the round-trip for
         // legacy (non-inspector) callers stays byte-identical to the
@@ -899,9 +923,9 @@ pub fn decode_delta_data(raw: &[u8]) -> Result<JsValue, JsError> {
 /// * `delta_raw` - Raw delta chunk data bytes
 ///
 /// # Returns
-/// A new WasmQueryResult with the delta applied. Verification status is
-/// inherited from `snapshot`; therefore JSON-deserialized snapshots remain
-/// unverified and cannot be promoted by merging.
+/// A new unverified WasmQueryResult with the delta applied. The caller supplies
+/// `delta_raw`, so merging always drops snapshot verification authority; the
+/// merged payload requires a fresh native verification before release.
 #[wasm_bindgen(js_name = mergeDelta)]
 pub fn merge_delta(
     snapshot: &WasmQueryResult,
@@ -909,7 +933,10 @@ pub fn merge_delta(
 ) -> Result<WasmQueryResult, JsError> {
     let merged = pir_sdk::merge_delta(&snapshot.inner, delta_raw)
         .map_err(|e| JsError::new(&format!("merge error: {}", e)))?;
-    Ok(WasmQueryResult { inner: merged })
+    Ok(WasmQueryResult {
+        inner: merged,
+        native_verified: false,
+    })
 }
 
 // ─── Hash Functions (re-exported from pir-core) ─────────────────────────────
@@ -1203,16 +1230,19 @@ mod tests {
             "caller-supplied JSON cannot establish a release verdict"
         );
 
-        let snapshot = WasmQueryResult { inner: parsed };
+        let snapshot = WasmQueryResult {
+            inner: parsed,
+            native_verified: false,
+        };
         let merged = merge_delta(&snapshot, &[0, 0]).unwrap();
         assert!(
-            !merged.inner.merkle_verified,
-            "mergeDelta must preserve deserialized taint"
+            !merged.native_verified,
+            "mergeDelta must drop verification authority"
         );
 
         let constructed = WasmQueryResult::new();
         assert!(
-            !constructed.inner.merkle_verified,
+            !constructed.native_verified,
             "the public constructor must not mint a trusted result"
         );
     }

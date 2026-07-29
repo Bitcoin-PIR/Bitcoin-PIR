@@ -16,8 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unless the entire Merkle batch verifies.
 - `WasmQueryResult.fromJson()` and the public constructor now always produce
   `merkleVerified = false`, ignoring any caller-supplied positive flag;
-  `mergeDelta()` preserves that untrusted status. Only native query/sync
-  results can carry a positive release verdict.
+  `mergeDelta()` always drops verification authority. Atomic DPF/Harmony
+  results cross the binding from an opaque native `VerifiedQueryResult`, and
+  their positive status lives in a private, non-deserializable provenance
+  marker rather than the mutable payload. Converting sync/query output to
+  caller-mutable plain JSON emits `merkleVerified = false`.
 
 ## [0.1.0] — initial release
 

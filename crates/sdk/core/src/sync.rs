@@ -1194,13 +1194,10 @@ mod tests {
     }
 
     #[test]
-    fn test_query_result_constructors_default_verified() {
-        // empty() and with_entries() default to merkle_verified=true
-        // ("no failure detected"). Callers that need the pessimistic
-        // default must set the field explicitly.
-        assert!(QueryResult::empty().merkle_verified);
-        assert!(QueryResult::with_entries(vec![]).merkle_verified);
-        assert!(QueryResult::default().merkle_verified);
+    fn test_query_result_constructors_default_unverified() {
+        assert!(!QueryResult::empty().merkle_verified);
+        assert!(!QueryResult::with_entries(vec![]).merkle_verified);
+        assert!(!QueryResult::default().merkle_verified);
     }
 
     // ─── Wire-format compatibility tests ─────────────────────────────────

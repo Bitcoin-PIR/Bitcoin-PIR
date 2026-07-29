@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(Some(q)) = result.results.first() {
         println!(
-            "{} UTXOs, {} sats, merkle_verified={}",
+            "{} UTXOs, {} sats, merkle_diagnostic={}",
             q.entries.len(),
             q.total_balance(),
             q.merkle_verified,
@@ -171,7 +171,7 @@ tag_seed, k_index, k_chunk)`; mismatched keys fail fast with
 
 ## Merkle verification
 
-All three clients verify Merkle proofs inline during `sync`:
+All three clients expose legacy Merkle diagnostic metadata during `sync`:
 
 ```rust,ignore
 if let Some(Some(q)) = result.results.first() {
@@ -181,13 +181,20 @@ if let Some(Some(q)) = result.results.first() {
 }
 ```
 
+Because `QueryResult` and its boolean are publicly mutable, a positive flag is
+not a release authority. Strict consumers should use the atomic inspector API
+below and retain its opaque return type.
+
 DPF and Harmony use per-PBC-bucket Merkle trees (INDEX + CHUNK roots per
 group). OnionPIR uses two global flat trees (INDEX + DATA) with FHE-encrypted
 sibling queries.
 
-For split-verify workflows — run PIR now, verify later — use
-`query_batch_with_inspector` / `verify_merkle_batch_for_results` on the
-DPF and Harmony clients.
+For inspector/audit output, use
+`query_batch_verified_with_inspector` on the DPF and Harmony clients. Query
+execution, exact input/result semantic reconstruction, and Merkle verification
+are one all-or-nothing operation. It returns `Vec<VerifiedQueryResult>` with
+read-only `script_hash()`, `db_id()`, `entries()`, and inspector accessors; the
+SDK does not expose raw split-verifier results as a public release authority.
 
 ## Observability
 

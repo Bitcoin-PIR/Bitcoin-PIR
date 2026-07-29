@@ -243,9 +243,12 @@ fn database_proof_payload_from_frame(frame: &[u8]) -> Result<&[u8], String> {
     Ok(&frame[4..])
 }
 
-/// Build the JS-facing JSON shape of a `SyncResult`. Mirrors
-/// [`WasmQueryResult::to_json`](crate::WasmQueryResult) for the per-item
-/// layout so the two consumers see identical entry objects.
+/// Build the JS-facing data-only JSON shape of a `SyncResult`.
+///
+/// Plain objects cannot retain the private provenance carried by a
+/// [`WasmQueryResult`](crate::WasmQueryResult), so `merkleVerified` is always
+/// false. Callers that need native provenance must use `getResult()` and keep
+/// the returned opaque handle.
 fn sync_result_to_json(sync: &SyncResult) -> serde_json::Value {
     let results: Vec<serde_json::Value> = sync
         .results
@@ -279,7 +282,7 @@ fn query_result_option_to_json(result: &Option<QueryResult>) -> serde_json::Valu
                 "entries": entries,
                 "isWhale": qr.is_whale,
                 "totalBalance": qr.total_balance(),
-                "merkleVerified": qr.merkle_verified,
+                "merkleVerified": false,
             })
         }
     }
@@ -468,7 +471,10 @@ impl WasmSyncResult {
             .map(WasmQueryResult::from_native)
     }
 
-    /// Convert the full sync result to a plain JSON object.
+    /// Convert the full sync result to a data-only plain JSON object.
+    /// Verification provenance cannot survive conversion to caller-mutable
+    /// JSON, so every `merkleVerified` property is false. Use `getResult()`
+    /// to retain the opaque native provenance marker.
     ///
     /// Shape:
     /// ```json
@@ -476,7 +482,7 @@ impl WasmSyncResult {
     ///   "results": [
     ///     null,
     ///     { "entries": [...], "isWhale": false,
-    ///       "totalBalance": 0, "merkleVerified": true }
+    ///       "totalBalance": 0, "merkleVerified": false }
     ///   ],
     ///   "syncedHeight": 900000,
     ///   "wasFreshSync": true
@@ -1766,32 +1772,7 @@ impl WasmDpfClient {
             .query_batch(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
-        let json: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| match r {
-                None => serde_json::Value::Null,
-                Some(qr) => {
-                    let entries: Vec<serde_json::Value> = qr
-                        .entries
-                        .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "txid": hex_encode(&e.txid),
-                                "vout": e.vout,
-                                "amountSats": e.amount_sats,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "entries": entries,
-                        "isWhale": qr.is_whale,
-                        "totalBalance": qr.total_balance(),
-                        "merkleVerified": qr.merkle_verified,
-                    })
-                }
-            })
-            .collect();
-        Ok(to_js_object(&json))
+        Ok(to_js_object(&query_results_to_json(&results)))
     }
 
     /// Return the two server URLs this client is connected to as a
@@ -2006,18 +1987,8 @@ impl WasmDpfClient {
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
-        for r in results {
-            match r {
-                Some(qr) => {
-                    debug_assert!(qr.merkle_verified);
-                    arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
-                }
-                None => {
-                    return Err(JsError::new(
-                        "queryBatchVerified: native verifier released a missing result",
-                    ));
-                }
-            }
+        for result in results {
+            arr.push(&JsValue::from(WasmQueryResult::from_verified(result)));
         }
         Ok(arr.into())
     }
@@ -2603,32 +2574,7 @@ impl WasmHarmonyClient {
             .query_batch(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
-        let json: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| match r {
-                None => serde_json::Value::Null,
-                Some(qr) => {
-                    let entries: Vec<serde_json::Value> = qr
-                        .entries
-                        .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "txid": hex_encode(&e.txid),
-                                "vout": e.vout,
-                                "amountSats": e.amount_sats,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "entries": entries,
-                        "isWhale": qr.is_whale,
-                        "totalBalance": qr.total_balance(),
-                        "merkleVerified": qr.merkle_verified,
-                    })
-                }
-            })
-            .collect();
-        Ok(to_js_object(&json))
+        Ok(to_js_object(&query_results_to_json(&results)))
     }
 
     // ─── Session 5: inspector / verify / DB-switch / hint-cache surface ─────
@@ -2799,18 +2745,8 @@ impl WasmHarmonyClient {
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
-        for r in results {
-            match r {
-                Some(qr) => {
-                    debug_assert!(qr.merkle_verified);
-                    arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
-                }
-                None => {
-                    return Err(JsError::new(
-                        "queryBatchVerified: native verifier released a missing result",
-                    ));
-                }
-            }
+        for result in results {
+            arr.push(&JsValue::from(WasmQueryResult::from_verified(result)));
         }
         Ok(arr.into())
     }
@@ -3697,21 +3633,20 @@ mod tests {
     }
 
     #[test]
-    fn sync_result_to_json_shape() {
+    fn sync_result_to_json_drops_raw_verification_metadata() {
         use pir_sdk::{QueryResult, SyncResult, UtxoEntry};
 
         let mut txid = [0u8; 32];
         txid[31] = 0xab;
 
+        let mut raw = QueryResult::with_entries(vec![UtxoEntry {
+            txid,
+            vout: 7,
+            amount_sats: 12345,
+        }]);
+        raw.merkle_verified = true;
         let sync = SyncResult {
-            results: vec![
-                None,
-                Some(QueryResult::with_entries(vec![UtxoEntry {
-                    txid,
-                    vout: 7,
-                    amount_sats: 12345,
-                }])),
-            ],
+            results: vec![None, Some(raw)],
             synced_height: 900_000,
             was_fresh_sync: true,
         };
@@ -3726,8 +3661,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["vout"], 7);
         assert_eq!(entries[0]["amountSats"], 12345);
-        // `merkleVerified` defaults to `true` via `QueryResult::with_entries`.
-        assert_eq!(results[1]["merkleVerified"], true);
+        // Even positive native diagnostic metadata is stripped from mutable
+        // plain JSON. Only an opaque WasmQueryResult handle preserves it.
+        assert_eq!(results[1]["merkleVerified"], false);
     }
 
     #[test]

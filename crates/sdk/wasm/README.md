@@ -182,8 +182,11 @@ TypeScript type signatures.
   does not establish authenticity or admit a result into the browser query
   path; imported (and newly constructed) results always expose
   `merkleVerified === false`, even if the JSON claims otherwise, and
-  `mergeDelta()` preserves that taint. DPF/Harmony verification is atomic
-  inside `queryBatchVerified()`.
+  `mergeDelta()` always drops verification authority. DPF/Harmony verification
+  is atomic inside `queryBatchVerified()`; its positive status comes from an
+  opaque native result and is kept outside the deserializable payload. Plain
+  JSON query/sync output always emits `merkleVerified === false`; retain the
+  `WasmQueryResult` handle when provenance is required.
 - **All byte counts are `bigint`** (`u64` on the Rust side) to survive
   multi-PB session totals safely above `Number.MAX_SAFE_INTEGER`.
 
