@@ -1414,9 +1414,7 @@ export class ProductAdmissionControllerV1 {
     }
     leg.inventory = await this.options.vault.countCapabilities(
       selectedCapabilityBinding(leg),
-      this.options.topology === 'independent-pair'
-        ? currentCapabilityAcquisitionContext(leg)
-        : undefined,
+      currentCapabilityAcquisitionContext(leg),
     );
   }
 

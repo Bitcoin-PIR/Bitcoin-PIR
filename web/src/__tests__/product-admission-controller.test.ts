@@ -302,15 +302,32 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
     binding.offerId,
     binding.scheme,
   ].join(':');
+  const contextMatches = (
+    id: string,
+    expected: Bolt11CapabilityAcquisitionContextV1 | null | undefined,
+  ) => {
+    if (expected === undefined) return true;
+    const stored = state.inventoryContexts.get(id);
+    if (expected === null) return stored === undefined;
+    return stored?.kind === expected.kind
+      && stored.issuerEndpoint === expected.issuerEndpoint
+      && stored.issuerIdHex === expected.issuerIdHex
+      && stored.network === expected.network
+      && stored.expectedPayeePubkeyHex === expected.expectedPayeePubkeyHex;
+  };
   const vault = {
     advancePolicyCheckpoint: async (_provider: string, initial: Uint8Array, advance: Function) => {
       const result = await advance(initial);
       return result.value;
     },
-    takeSingleUseCapability: async (binding: any, validate?: Function) => {
+    takeSingleUseCapability: async (
+      binding: any,
+      validate?: Function,
+      expectedContext?: Bolt11CapabilityAcquisitionContextV1 | null,
+    ) => {
       const id = key(binding);
       const count = state.inventory.get(id) ?? 0;
-      if (count === 0) return null;
+      if (count === 0 || !contextMatches(id, expectedContext)) return null;
       const payload = new Uint8Array([1, 2, 3]);
       validate?.(payload);
       state.inventory.set(id, count - 1);
@@ -318,7 +335,13 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
       return { ...binding, payload };
     },
     advanceArcCredential: async () => null,
-    countCapabilities: async (binding: any) => state.inventory.get(key(binding)) ?? 0,
+    countCapabilities: async (
+      binding: any,
+      expectedContext?: Bolt11CapabilityAcquisitionContextV1 | null,
+    ) => {
+      const id = key(binding);
+      return contextMatches(id, expectedContext) ? state.inventory.get(id) ?? 0 : 0;
+    },
     listCapabilityInventory: async (providerIdHex?: string) => [...state.inventory]
       .filter(([serialized, count]) => count > 0
         && (!providerIdHex || serialized.startsWith(`${providerIdHex}:`)))
@@ -447,7 +470,9 @@ describe('product admission lifecycle', () => {
     const bat = paidOffer(2, 'cashu-bat');
     const first = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [free])], HEX.provider0, HEX.key0, target);
     const second = session(vault, [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [bat])], HEX.provider1, HEX.key1, target);
-    state.inventory.set(inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat), 1);
+    const batInventoryKey = inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat);
+    state.inventory.set(batInventoryKey, 1);
+    state.inventoryContexts.set(batInventoryKey, boltContext(bat, LIGHTNING_PAYEE.second));
     const controller = new ProductAdmissionControllerV1({
       topology: 'independent-pair', vault,
     });
@@ -521,7 +546,9 @@ describe('product admission lifecycle', () => {
     });
     expect(first.authorize).not.toHaveBeenCalled();
 
-    state.inventory.set(inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat), 1);
+    const batInventoryKey = inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat);
+    state.inventory.set(batInventoryKey, 1);
+    state.inventoryContexts.set(batInventoryKey, boltContext(bat, LIGHTNING_PAYEE.second));
     await controller.authorize('server0');
     await controller.authorize('server1');
     expect(controller.canQuery()).toBe(true);
@@ -912,13 +939,21 @@ describe('product admission lifecycle', () => {
       issuerIdHex: firstOffer.issuerIdHex,
       endpoint: firstOffer.endpoint,
     };
-    state.inventory.set(
-      inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, firstOffer),
-      1,
+    const firstInventoryKey = inventoryKey(
+      HEX.provider0, HEX.policy0, HEX.scope0, firstOffer,
     );
-    state.inventory.set(
-      inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, secondOffer),
-      1,
+    const secondInventoryKey = inventoryKey(
+      HEX.provider1, HEX.policy1, HEX.scope1, secondOffer,
+    );
+    state.inventory.set(firstInventoryKey, 1);
+    state.inventoryContexts.set(
+      firstInventoryKey,
+      boltContext(firstOffer, LIGHTNING_PAYEE.first),
+    );
+    state.inventory.set(secondInventoryKey, 1);
+    state.inventoryContexts.set(
+      secondInventoryKey,
+      boltContext(secondOffer, LIGHTNING_PAYEE.first),
     );
     const first = session(
       vault,
@@ -1301,6 +1336,39 @@ describe('product admission lifecycle', () => {
       code: 'capability-inventory-empty',
     });
     expect(leg.authorize).toHaveBeenCalledOnce();
+  });
+
+  it('does not count or retire a single-provider capability from another BOLT11 context', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const bat = paidOffer(12, 'cashu-bat');
+    const id = inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat);
+    state.inventory.set(id, 1);
+    state.inventoryContexts.set(id, boltContext(bat, LIGHTNING_PAYEE.second));
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bat])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.first),
+      }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('oram', { scopeIdHex: HEX.scope0, offerId: bat.offerId });
+
+    expect(controller.snapshot().legs[0].inventory).toBe(0);
+    await expect(controller.authorize('oram')).rejects.toMatchObject({
+      code: 'capability-inventory-empty',
+    });
+    expect(state.takes).toBe(0);
+    expect(leg.authorize).not.toHaveBeenCalled();
+    await controller.close();
   });
 
   it('supports genuine single-provider Onion and ORAM attempts without peer metadata', async () => {
