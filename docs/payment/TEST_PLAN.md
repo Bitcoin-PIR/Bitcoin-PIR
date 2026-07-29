@@ -576,6 +576,26 @@ refunds or unspends the already committed capability.
 - cleartext ORAM and an ORAM operation under any PIR/Harmony/Onion scope fail
   closed.
 
+The default Payment CI realizes this boundary with a deterministic no-funds
+process test:
+
+```sh
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
+cargo clippy --locked --offline -p runtime --features cuckoo-oram \
+  --bin unified_server --test payment_v1_tee_oram_process_e2e \
+  --no-deps -- -D warnings
+```
+
+It constructs real direct INDEX/CHUNK Circuit ORAM images, authenticated
+sidecars and separate trusted controller state, then crosses a real
+`unified_server` secure channel and provider-local paid-receipt gate. It
+checks provider/backend/workload mismatches before ORAM work, exact handler
+output, one-frame completion, durable replay rejection and authenticated ORAM
+reopen after process restart. The fixture is `NoSevHost`, deterministic and
+uses a local SQLite rollback floor; production trust-chain and data evidence
+remain separate acceptance gates.
+
 ## Invoice lifecycle tests
 
 - invoice created only after quote row is durable;
@@ -1096,6 +1116,14 @@ cargo clippy --locked --offline -p runtime \
   --features remote-authority-process-e2e \
   --bin unified_server \
   --test payment_v1_process_e2e \
+  --no-deps -- -D warnings
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps -- -D warnings
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \

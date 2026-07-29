@@ -604,6 +604,8 @@ Full mode and payment-platform CI run:
 cargo test --offline -p runtime --test payment_v1_process_e2e
 cargo test --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
 ```
 
 The first two no-funds tests launch two independent logical providers as real
@@ -644,13 +646,28 @@ deterministic fixture keys: no issuer process, browser, wallet, Lightning node,
 external Cashu mint, Nostr relay or real funds participate. The direct-receipt
 test executes both DPF and Harmony query backends; the method-adapter test
 executes DPF. The five-method x five-workload in-process matrix remains the
-process-independent coverage for Standard Cashu, Onion and TEE-ORAM. The third process test
+process-independent coverage for Standard Cashu and Onion. The third process test
 launches one real Harmony V2Full hint provider with a private disk pool and
 checks invalid-proof non-consumption, pre-dispatch disconnect restoration,
 first-dispatch durable consumption, matching-marker restart and replaced-inode
-fail-closed behavior. The separate opt-in CDK runner
-exercises the real provider-side client against a loopback CDK mint through an
-exact test-only endpoint mapping.
+fail-closed behavior.
+
+The fourth process test uses the production `cuckoo-oram` feature. It builds a
+tiny direct INDEX/CHUNK Circuit ORAM through the same public library API used
+by `oramctl build-direct`, including authenticated sidecars and a separate
+trusted controller-state directory. A paid direct receipt crosses the real
+encrypted admission gate and reaches the direct ORAM handler; the response is
+checked against the two exact source chunk records and the fixed response
+padding budget. Same-key receipts bound to another provider or a DPF scope,
+and a raw DPF operation under the TEE-ORAM scope, fail before ORAM work. The
+grant admits one frame only, spent receipt replay remains rejected after
+restart, and a fresh receipt proves that the authenticated ORAM state reopens
+and remains usable. The pinned Linux run passed 1/1 plus warnings-denied
+clippy. This is local `NoSevHost`/deterministic-fixture evidence, not production
+attestation, DB proof, remote rollback-floor or browser evidence.
+
+The separate opt-in CDK runner exercises the real provider-side client against
+a loopback CDK mint through an exact test-only endpoint mapping.
 
 An additional non-default Standard Cashu process cell is implemented:
 
@@ -1180,9 +1197,9 @@ At minimum, a release candidate needs evidence for:
   connection/auth limits, or tree-top bandwidth overload at the edge;
 - production identity/binary pins, remote servers, hardware attestation,
   production database proofs/trusted roots, or production databases;
-- process-level Onion or TEE-ORAM execution (their canonical gate states are
-  covered in-process; Harmony query and V2Full hint lifecycle now have distinct
-  local real-provider-process boundaries);
+- process-level Onion execution (its canonical gate state is covered
+  in-process; Harmony query, Harmony V2Full hint lifecycle and direct TEE-ORAM
+  execution now have dedicated local real-provider-process boundaries);
 - a deployed browser-to-issuer-to-provider main-page network E2E (the visible
   main-page controller is covered by unit tests; the local Chromium harness
   reaches two real issuers and two real providers and executes a DPF query with

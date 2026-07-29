@@ -17,7 +17,8 @@ network.
            TCP or Unix-domain listeners.
   --full   The default offline payment-platform Rust suite, operator tooling,
            loopback-only unified-server process E2E (including strict-TLS
-           Standard Cashu), WASM checks, web typecheck/tests/bundle, a local
+           Standard Cashu and authenticated direct TEE-ORAM), WASM checks,
+           web typecheck/tests/bundle, a local
            Chromium multi-tab vault test, a real-WASM/loopback no-funds issuer
            acquisition test, and a browser -> two independent issuers -> two
            real provider-gate test. This is the default.
@@ -139,6 +140,12 @@ cargo test --locked --offline -p runtime \
 cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e \
+  -- --exact --ignored
 cargo test --locked --offline -p pir-rollback-authority-client \
   --features test-only-webpki-root \
   test_only_webpki_root_requires_owner_only_regular_file
@@ -365,6 +372,12 @@ cargo clippy --locked --offline -p runtime \
 cargo clippy --locked --offline -p runtime \
   --features test-only-unsafe-query-logging \
   --bin unified_server \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 
