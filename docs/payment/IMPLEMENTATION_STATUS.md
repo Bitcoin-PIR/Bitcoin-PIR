@@ -522,6 +522,17 @@ operator has activated the path with real money or public infrastructure.
       cross-provider rejection without a shared spent set. They intentionally
       use `NoSevHost` and `dangerous_unpaired_*`, so they are not production
       identity, binary-pin or hardware-attestation evidence.
+- [x] A separate `cuckoo-oram` process E2E builds tiny direct INDEX/CHUNK
+      Circuit ORAM images, authenticated sidecars and controller state in an
+      independent trusted-state directory, then launches the real
+      ORAM-enabled `unified_server`. It proves cleartext and pre-authorization
+      fail-closed behavior, provider/backend/workload scope binding, one-shot
+      accounting, exact direct-ORAM result bytes, durable receipt replay
+      rejection and authenticated ORAM reopen with a fresh receipt after
+      process restart. The pinned Linux run passed 1/1 and warnings-denied
+      clippy. Its deterministic data, local SQLite floor, `NoSevHost` and
+      unpaired SDK primitives are test boundaries, not production TEE or
+      trust-chain evidence.
 - [x] A non-default Standard Cashu process E2E is implemented and wired into
       Payment CI. It launches a deterministic TLS NUT-03 mint plus two real,
       independently configured `unified_server` processes: one signed policy
@@ -903,8 +914,10 @@ findings and must not be collapsed into that count.
    matrix. The isolated current-tree browser rerun passed the real-issuer case
    1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
    gate. Production trust-chain, a
-   browser-to-Standard-Cashu-provider join,
-   Harmony query, Onion and TEE-ORAM process boundaries remain open.
+   browser-to-Standard-Cashu-provider join, Harmony query and Onion process
+   boundaries remain open. TEE-ORAM now has a local real-provider-process
+   boundary; production attestation/data/floor and browser integration remain
+   open.
 6. **External dependency canaries.** Recorded runs exist for the earlier
    two-node local CLN runner, the disposable CDK runner, and one short-lived
    public Nostr transport/readback smoke. The extended CDK lifecycle and forced
