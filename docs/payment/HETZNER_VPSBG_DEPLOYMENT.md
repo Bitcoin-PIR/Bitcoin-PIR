@@ -138,25 +138,99 @@ The first Hetzner production profile loads all reviewed non-ARC method material:
   idempotency HMAC key, and non-zero minimum authorization epoch.
 
 Direct BOLT11 receipts require no provider secret beyond their signed policy
-binding. Every method advertised by the current or retained signed policies
-must have its complete runtime material. `validate_policy_method_coverage_v1`
-rejects startup if any method is missing; operators must remove an offer from
-the policy rather than weakening this check. Extra retained keys are permitted
-only for a documented rotation/grace window. ARC remains unavailable.
+binding. Every route in the one configured current policy must have its complete
+runtime material. The current-policy coverage and Standard-Cashu validators
+check that material, and any missing adapter fails startup. All three checked-
+in provider units are zero-retained: template/render gates reject
+`--service-retained-policy`, retained-policy payloads and extra retained keys.
+The binary's retained-policy validator remains available for a future,
+separately reviewed retention-capable profile; it does not authorize editing
+these closed units. ARC remains unavailable.
 
 No production Standard Cashu mint has been selected merely because local CDK
 interop passes. Unless the render plan names an approved exact production mint
 origin, WebPKI/leaf pins, unit, exposure caps, recovery keyrings and outage/
-retirement procedure, omit every mint-dependent Cashu offer from both current
-and retained signed policies. Do not render fake-wallet or loopback test mint
+retirement procedure, omit every mint-dependent Cashu offer from the current
+policy. Do not render fake-wallet or loopback test mint
 material as a substitute.
 
-Omitting those offers does not make the current closed `provider-v1` render
-mint-free: its unit and skeleton always require the exact Standard-Cashu
-custody, recovery and exposure inputs above. Until a production mint is selected,
-that profile remains unrenderable and must not be activated. Supporting a paid
-provider without Standard Cashu requires a separate profile, template closure
-and negative-test review; do not delete fields from this profile ad hoc.
+Omitting those offers does not make the closed `provider-v1` render mint-free:
+its unit and skeleton always require the exact Standard-Cashu custody, recovery
+and exposure inputs above. Until a production mint is selected, that profile
+remains unrenderable and must not be activated.
+
+Use the distinct `provider-no-standard-cashu-v1` profile for an operator whose
+current policy omits Standard Cashu. Its
+separate unit is
+`bitcoinpir-provider-no-standard-cashu.service`; the process runs under the NSS
+user and group `bitcoinpir-provider-nocashu`. It uses the
+`provider-no-standard-cashu` configuration root, a separate state directory and
+the `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` sentinel. It retains the
+provider-local BAT and complete shared-issuer routes but passes no Standard
+Cashu recovery key, custody key or mint exposure limit. The unchanged startup
+`validate_cashu_runtime_configuration_v1` and
+`validate_policy_method_coverage_v1` checks reject unavailable current or
+credential-bound routes; the Cashu validator separately rejects Standard Cashu
+in the configured current policy. This closed profile configures no retained
+policy.
+This profile is not an ARC or paid-QoS profile, and it is not
+formed by deleting fields from `provider-v1`.
+
+Use `provider-direct-v1` only for a policy set limited to Free
+open-best-effort, Free proof-of-work, provider-local Free anonymous tickets and
+direct BOLT11 receipt. It runs as `bitcoinpir-provider-direct`, has its own
+configuration/state roots and `PROVIDER-DIRECT-ACTIVATION-APPROVED` sentinel,
+and closes over exactly nine payloads: unified-server plus its hash manifest,
+database config, identity certificate/key, signed policy, and an owner-only
+remote rollback authority config, client-signing seed and value-root key. It
+has no BAT key, Cashu custody/recovery/exposure input, or
+shared authorization/approval/clearing/idempotency/operator/settlement input.
+The Cashu validator rejects Standard Cashu in the current policy. Current
+method coverage rejects BAT, shared online, ARC and every other unavailable
+applicable route at startup. The
+unit separately carries no Free-IP adapter material. This
+is a separate profile, not an authorization to delete fields from either larger
+provider unit, and it makes no paid-QoS claim.
+
+Only one of the three provider profiles may run on a host. Their systemd
+`ConditionPathExists=` checks require the selected profile's sentinel and the
+absence of the other two provider sentinels, but conditions are checked only at
+unit start. To switch profiles, first stop the old unit, remove its positive
+sentinel, and prove both that the old unit is inactive and that port `8191` has
+no listener. Confirm all provider-profile sentinels are absent before creating
+exactly the new profile sentinel and starting only its unit. Do not stage both
+positive sentinels, depend on the shared port to arbitrate, or leave a stopped
+old profile authorized to restart later.
+
+Those separate `StateDirectory=` values are isolation boundaries, not
+permission to reset economic state. Switching profiles for the same logical
+provider is not an in-place operation in this runbook. All three checked-in
+provider units and plans are zero-retained closed profiles: the gates reject a
+`--service-retained-policy` flag or retained-policy payload. Before any same-
+identity switch, stop new issuance/admission, wait through the maximum old
+policy/capability/grace horizon, fully export/retire/reconcile Standard Cashu
+custody, and drain every shared-issuer redeem to a known outcome. The static
+artifact gate cannot prove that economic drain, so separately reviewed
+transition evidence is mandatory. If any old credential or ambiguous operation
+remains, keep the old profile under its original identity or publish a new
+provider identity; do not switch it into a profile that lacks the old adapter.
+
+Only after that drain, and before any new sentinel is created, a separately
+reviewed offline migration must preserve the existing
+stable server ID, operator key and derived provider ID, policy-signing key,
+provider identity certificate/key, `ProviderStore` and its store-instance
+identity, spent/replay history, remote authority instance/key, namespace,
+client-verifying-key identity, client-signing seed, value-root key and floor.
+Re-render the TOML only with the new
+profile's canonical secret paths. Rotating any authority-identity field
+requires a separately reviewed migration ceremony; V1 has no online rebind or
+reset. The new unit must pass
+`open_existing` plus the normal store/admin and rollback preflight against that
+migrated state. Initializing an empty store in the new profile directory would
+discard replay and rollback continuity and is forbidden. If continuity cannot
+be proven, use a new provider identity and server ID, publish it as a distinct
+directory entry, and treat all old capabilities under their original provider
+policy; do not call that a profile switch.
 
 The signed policy is the commercial and resource contract. Every backend and
 operation needs its own scope. In particular, Harmony hint generation and
@@ -466,7 +540,7 @@ currently visible `getent` output looks complete; such a backend needs an
 authoritative backend-specific generation/completeness proof.
 
 Because removing a user from NSS does not revoke credentials already held by a
-Linux thread, the v3 collector also executes two bounded full `/proc` PID/TID
+Linux thread, the v4 collector also executes two bounded full `/proc` PID/TID
 passes and records `CapInh`, `CapPrm`, `CapEff`, `CapAmb`, and `CapBnd`. It
 rejects every non-root thread with a reviewed dangerous active capability; for
 managed processes, every mask must be a subset of the rendered systemd policy,
@@ -589,6 +663,19 @@ the successful exited state of the reviewed one-shot preflight, installed
 bytes, NSS, ACLs, xattrs, capabilities and `systemd-analyze verify`. Until that
 live evidence passes, these inputs remain deployment preparation rather than
 an activatable bundle.
+
+For each manifest secret, the final installed parent must be owned by its
+consumer EUID at exact mode `0700`, and every ancestor must satisfy the same
+Linux DAC ownership, write-bit and root-sticky policy as `pir-private-files`;
+positive readability alone is insufficient. The collector independently
+rejects named/default POSIX ACLs, xattrs and capabilities on each pinned
+directory descriptor, a stricter runtime rule that does not turn the Rust
+loader into a Linux POSIX/NFSv4/FUSE ACL auditor. It also binds file content and
+extended metadata to one opened inode, walks every parent component relative to
+the previously pinned directory descriptor, and repeats both closures after
+all long probes. A final lightweight structured-Conditions and unit-generation
+pass then runs immediately before evidence construction; no expensive metadata
+command follows that pass.
 
 The live file is trusted-root operational evidence, not hardware attestation.
 Before collection, independently verify the collector script from the frozen

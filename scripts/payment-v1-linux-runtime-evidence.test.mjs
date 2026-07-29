@@ -1,29 +1,54 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertEffectiveConditionSnapshotUnchangedV1,
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
   NSS_BACKEND_PROFILE,
   NSS_ENUMERATION_KIND,
   PROTECTED_PROCESS_ENUMERATION_KIND,
+  collectInstalledFileForTestV1,
+  confirmInstalledFileAcrossCollectionsForTestV1,
+  collectSecretParentDirectoryForTestV1,
+  confirmSecretParentDirectoryAcrossCollectionsForTestV1,
   collectProtectedCredentialProcessClosureV1,
   collectVisibleNssEvidenceV2,
   parseGroupEnumerationV2,
+  parseBusctlConditionsJsonV1,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
+  readOneLinkRegularForTestV1,
+  systemdUnitObjectPathV1,
   validateNonRootEdgeCapabilitiesV1,
   validateLiveRuntimeEvidence,
   validateStoppedEdgeActivationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
 } from "./payment-v1-rendered-artifact-gate.mjs";
@@ -31,6 +56,7 @@ import {
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const COLLECTOR = join(SCRIPT_DIRECTORY, "payment-v1-linux-runtime-evidence.mjs");
 const COMMANDS = [
+  "/usr/bin/busctl",
   "/usr/bin/false",
   "/usr/bin/getent",
   "/usr/bin/getfacl",
@@ -46,6 +72,16 @@ const COMMANDS = [
   "/usr/bin/uname",
   "/usr/sbin/getcap",
 ];
+const INSTALLED_FILE_PROBE_COMMANDS = [
+  "/usr/bin/getfacl",
+  "/usr/bin/getfattr",
+  "/usr/bin/sha256sum",
+  "/usr/bin/stat",
+  "/usr/bin/touch",
+  "/usr/sbin/getcap",
+];
+const CAN_EXERCISE_INSTALLED_FILE_PROBES =
+  process.platform === "linux" && INSTALLED_FILE_PROBE_COMMANDS.every(existsSync);
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -54,6 +90,156 @@ function hash(value) {
 function clone(value) {
   return structuredClone(value);
 }
+
+function installedFileExpectation(path, bytes) {
+  const stat = lstatSync(path, { bigint: true });
+  return {
+    gid: Number(stat.gid),
+    mode: Number(stat.mode & 0o7777n).toString(8).padStart(4, "0"),
+    nlink: Number(stat.nlink),
+    sha256: hash(bytes),
+    target_path: path,
+    uid: Number(stat.uid),
+  };
+}
+
+function createExactTimestampReference(root, target) {
+  const reference = join(root, "timestamp-reference");
+  writeFileSync(reference, "timestamp reference\n", { mode: 0o600 });
+  const result = spawnSync("/usr/bin/touch", ["-r", target, "--", reference], {
+    encoding: "utf8",
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return reference;
+}
+
+function restoreExactTimestamps(reference, target) {
+  const result = spawnSync("/usr/bin/touch", ["-r", reference, "--", target], {
+    encoding: "utf8",
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+function createExactDirectory(path, mode = 0o700) {
+  mkdirSync(path, { mode });
+  chmodSync(path, mode);
+}
+
+function directoryAbaHooks({ alternate, alternateParked, mutationParent, parked, target }) {
+  return {
+    afterMetadataProbe: () => {
+      renameSync(target, alternateParked);
+      renameSync(parked, target);
+      // Make the parent mutation deterministic even on filesystems whose
+      // directory timestamp granularity is coarser than the two renames.
+      utimesSync(mutationParent, new Date(1_000), new Date(2_000));
+    },
+    afterPinnedChain: () => {
+      renameSync(target, parked);
+      renameSync(alternate, target);
+    },
+  };
+}
+
+test("systemd Conditions use the reviewed busctl object path and strict a(sbbsi) schema", () => {
+  assert.equal(
+    systemdUnitObjectPathV1("bitcoinpir-provider-direct.service"),
+    "/org/freedesktop/systemd1/unit/bitcoinpir_2dprovider_2ddirect_2eservice",
+  );
+  const direct = "/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED";
+  const standard = "/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED";
+  const parsed = parseBusctlConditionsJsonV1(`${JSON.stringify({
+    type: "a(sbbsi)",
+    data: [
+      ["ConditionPathExists", false, true, standard, 1],
+      ["ConditionPathExists", false, false, direct, 1],
+    ],
+  })}\n`);
+  assert.deepEqual(parsed, [
+    {
+      negate: true,
+      parameter: standard,
+      result: 1,
+      trigger: false,
+      type: "ConditionPathExists",
+    },
+    {
+      negate: false,
+      parameter: direct,
+      result: 1,
+      trigger: false,
+      type: "ConditionPathExists",
+    },
+  ]);
+
+  for (const [label, value] of [
+    ["wrong signature", { type: "a(ss)", data: [] }],
+    ["extra top-level key", { type: "a(sbbsi)", data: [], extra: true }],
+    ["foreign condition type", { type: "a(sbbsi)", data: [["ConditionKernelCommandLine", false, false, direct, 1]] }],
+    ["noncanonical path", { type: "a(sbbsi)", data: [["ConditionPathExists", false, false, "/etc/../tmp/x", 1]] }],
+    ["invalid result", { type: "a(sbbsi)", data: [["ConditionPathExists", false, false, direct, 2]] }],
+    ["short tuple", { type: "a(sbbsi)", data: [["ConditionPathExists", false, false, direct]] }],
+    ["duplicate", { type: "a(sbbsi)", data: [
+      ["ConditionPathExists", false, false, direct, 1],
+      ["ConditionPathExists", false, false, direct, 1],
+    ] }],
+  ]) {
+    assert.throws(
+      () => parseBusctlConditionsJsonV1(JSON.stringify(value), label),
+      /reviewed|duplicate|keys|shape/,
+      label,
+    );
+  }
+  assert.throws(() => systemdUnitObjectPathV1("../evil.service"), /cannot be mapped/);
+
+  assert.equal(assertEffectiveConditionSnapshotUnchangedV1(parsed, clone(parsed), "direct"), true);
+  const changed = clone(parsed);
+  changed[0].result = 0;
+  assert.throws(
+    () => assertEffectiveConditionSnapshotUnchangedV1(parsed, changed, "direct"),
+    /conditions changed during live collection: direct/,
+  );
+  assert.throws(
+    () => assertEffectiveConditionSnapshotUnchangedV1(parsed, undefined, "direct"),
+    /snapshots are incomplete/,
+  );
+});
+
+test("live collector seals expensive secrets before its final Conditions and generation pass", () => {
+  const source = readFileSync(COLLECTOR, "utf8");
+  const secretSealMarker = source.indexOf(
+    "// Complete expensive secret revalidation only after every earlier long host,",
+  );
+  const finalStateMarker = source.indexOf(
+    "// The final external-state pass is deliberately lightweight and comes after",
+    secretSealMarker,
+  );
+  const finishedMarker = source.indexOf(
+    "  const finished = Math.floor(Date.now() / 1000);",
+    finalStateMarker,
+  );
+  const evidenceMarker = source.indexOf("  const evidence = {", finishedMarker);
+
+  assert.ok(secretSealMarker >= 0, "missing final secret-seal ordering marker");
+  assert.ok(finalStateMarker > secretSealMarker, "final unit-state pass must follow secret sealing");
+  assert.ok(finishedMarker > finalStateMarker, "collection finish timestamp must follow final unit-state pass");
+  assert.ok(evidenceMarker > finishedMarker, "evidence construction must immediately follow final state sealing");
+
+  const secretSealPass = source.slice(secretSealMarker, finalStateMarker);
+  assert.match(secretSealPass, /confirmSecretFilesUnchanged\(/);
+  assert.match(secretSealPass, /confirmSecretParentDirectoriesUnchanged\(/);
+
+  const finalStatePass = source.slice(finalStateMarker, finishedMarker);
+  assert.match(finalStatePass, /collectEffectiveConditions\(/);
+  assert.match(finalStatePass, /confirmUnitGeneration\(/);
+  assert.doesNotMatch(
+    finalStatePass,
+    /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectExtendedMetadata|collectInstalledFile/,
+    "expensive secret or metadata probes must not run after final Conditions/generation sealing",
+  );
+});
 
 function capabilityRecord(overrides = {}) {
   return {
@@ -166,7 +352,7 @@ function fixture() {
       target_path: "/run/bitcoinpir-test/service.sock",
       uid: 730,
     }],
-    schema_version: 3,
+    schema_version: 4,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -175,6 +361,7 @@ function fixture() {
       unit_name: unit.unit_name,
       user_name: "bitcoinpir-test",
     }],
+    busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: ["/usr/bin/systemd-analyze", "verify", fragmentPath],
     tmpfiles_directories: [
@@ -190,7 +377,6 @@ function fixture() {
     BindReadOnlyPaths: "",
     CapabilityBoundingSet: "",
     ConditionResult: "yes",
-    Conditions: "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
     ControlGroup: "/system.slice/bitcoinpir-test.service",
     DropInPaths: "",
     Environment: "RUST_LOG=error",
@@ -406,7 +592,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 3,
+    schema_version: 4,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -424,6 +610,14 @@ function fixture() {
       uid: 0,
     })),
     units: [{
+      conditions: [{
+        negate: false,
+        parameter: "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+        path_exists: true,
+        result: 1,
+        trigger: false,
+        type: "ConditionPathExists",
+      }],
       fragment_sha256: hash("fragment"),
       generation_confirmations: [
         clone(generationConfirmation),
@@ -503,7 +697,7 @@ function stoppedEdgeFixture() {
       [clone(socketAbsence)],
       [clone(socketAbsence)],
     ],
-    schema_version: 2,
+    schema_version: 3,
     stopped_unit_passes: [
       [clone(unitState)],
       [clone(unitState)],
@@ -650,6 +844,7 @@ function secretIsolationFixture() {
     main_pid: peerProperties.MainPID,
   };
   value.evidence.units.push({
+    conditions: clone(value.evidence.units[0].conditions),
     fragment_sha256: peerFragment.sha256,
     generation_confirmations: [
       clone(peerConfirmation),
@@ -722,14 +917,14 @@ function secretIsolationFixture() {
     dev: "1",
     expected_type: "directory",
     file_type: "directory",
-    gid: 0,
+    gid: index === parents.length - 1 ? 731 : 0,
     ino: String(400 + index),
-    mode: index === parents.length - 1 ? "0710" : "0755",
+    mode: index === parents.length - 1 ? "0700" : "0755",
     nlink: 2,
     size: 40,
     stat_command_sha256: hash(`parent-stat-${index}`),
     target_path: target,
-    uid: 0,
+    uid: index === parents.length - 1 ? 730 : 0,
     xattr_sha256: hash(`parent-xattr-${index}`),
   }));
   value.evidence.secret_access_checks = [
@@ -843,6 +1038,439 @@ test("final NSS policy confirmation rejects identity or policy drift after enume
     /changed after complete enumeration/,
   );
 });
+
+test(
+  "Linux one-link reader seals a transient same-inode rewrite before its final descriptor read",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+          afterFirstRead: () => {
+            writeFileSync(target, replacement);
+            writeFileSync(target, bytes);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+            assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+for (const phase of ["afterOpen", "afterFirstRead", "afterFinalPathOpen"]) {
+  test(
+    `Linux one-link reader rejects pathname replacement ${phase}`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-path-")));
+      try {
+        const target = join(root, "artifact");
+        const replacement = join(root, "replacement");
+        const parked = join(root, "parked");
+        const bytes = Buffer.from("same-content-and-metadata\n");
+        for (const path of [target, replacement]) {
+          writeFileSync(path, bytes, { mode: 0o640 });
+          chmodSync(path, 0o640);
+        }
+        assert.throws(
+          () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+            [phase]: () => {
+              renameSync(target, parked);
+              renameSync(replacement, target);
+            },
+          }),
+          /changed precise metadata|do not name the same stable file/,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+for (const [label, mutation] of [
+  ["truncation", Buffer.from("short\n")],
+  ["growth", Buffer.from("descriptor-bound-original-with-growth\n")],
+]) {
+  test(
+    `Linux one-link reader rejects descriptor ${label}`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-size-")));
+      try {
+        const target = join(root, "artifact");
+        const bytes = Buffer.from("descriptor-bound-original\n");
+        writeFileSync(target, bytes, { mode: 0o640 });
+        chmodSync(target, 0o640);
+        assert.throws(
+          () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+            afterFirstRead: () => writeFileSync(target, mutation),
+          }),
+          /changed precise metadata|do not name the same stable file|final descriptor read/,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+test(
+  "Linux installed-file probes bind content and metadata to one open descriptor",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-fd-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-installed-artifact\n");
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const observed = collectInstalledFileForTestV1(expected, {});
+      const stat = lstatSync(target, { bigint: true });
+
+      assert.equal(observed.dev, stat.dev.toString());
+      assert.equal(observed.ino, stat.ino.toString());
+      assert.equal(observed.sha256, expected.sha256);
+      assert.equal(
+        observed.sha256_command_sha256,
+        hash(`${expected.sha256} *${target}\n`),
+      );
+      assert.equal(observed.expected_type, "regular");
+      for (const field of [
+        "acl_sha256",
+        "capability_sha256",
+        "sha256_command_sha256",
+        "stat_command_sha256",
+        "xattr_sha256",
+      ]) {
+        assert.match(observed[field], /^[0-9a-f]{64}$/u);
+      }
+      assert.deepEqual(collectInstalledFileForTestV1(expected, {}), observed);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+for (const phase of [
+  "afterOpen",
+  "afterFirstRead",
+  "afterMetadataProbe",
+  "beforeFinalPathOpen",
+  "afterFinalPathOpen",
+]) {
+  test(
+    `Linux installed-file binding rejects same-metadata pathname replacement ${phase}`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-race-")));
+      try {
+        const target = join(root, "artifact");
+        const replacement = join(root, "replacement");
+        const parked = join(root, "opened-artifact");
+        const bytes = Buffer.from("same-content-and-metadata\n");
+        for (const path of [target, replacement]) {
+          writeFileSync(path, bytes, { mode: 0o640 });
+          chmodSync(path, 0o640);
+        }
+        const expected = installedFileExpectation(target, bytes);
+        const initial = lstatSync(target);
+        const alternate = lstatSync(replacement);
+        assert.notEqual(initial.ino, alternate.ino);
+        for (const field of ["dev", "gid", "mode", "nlink", "size", "uid"]) {
+          assert.equal(initial[field], alternate[field], `replacement ${field}`);
+        }
+
+        assert.throws(
+          () => collectInstalledFileForTestV1(expected, {
+            [phase]: () => {
+              renameSync(target, parked);
+              renameSync(replacement, target);
+            },
+          }),
+          /changed precise metadata|do not name the same stable file/,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+test(
+  "Linux installed-file binding rejects a same-inode content rewrite after metadata probes",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-inplace-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            writeFileSync(target, replacement);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+          },
+        }),
+        /content changed during descriptor reread|changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux installed-file binding seals ctime across a transient same-inode rewrite",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-ctime-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            writeFileSync(target, replacement);
+            writeFileSync(target, bytes);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+            assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux installed-file binding seals transient hardlink creation and removal",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-nlink-")));
+    try {
+      const target = join(root, "artifact");
+      const alias = join(root, "transient-hardlink");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            linkSync(target, alias);
+            unlinkSync(alias);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux repeated installed-file collections retain a private precise fingerprint",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-cross-pass-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => confirmInstalledFileAcrossCollectionsForTestV1(expected, () => {
+          writeFileSync(target, replacement);
+          writeFileSync(target, bytes);
+          chmodSync(target, 0o640);
+          restoreExactTimestamps(timestampReference, target);
+          const restored = lstatSync(target, { bigint: true });
+          assert.equal(restored.mtimeNs, initial.mtimeNs);
+          assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+        }),
+        /metadata or content changed between test collections/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux secret-parent evidence walks and probes one descriptor-bound directory chain",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-secret-chain-")));
+    try {
+      const target = join(root, "consumer");
+      createExactDirectory(target);
+      const observed = collectSecretParentDirectoryForTestV1(target, {});
+      const stat = lstatSync(target);
+      assert.equal(observed.target_path, target);
+      assert.equal(observed.dev, stat.dev.toString());
+      assert.equal(observed.ino, stat.ino.toString());
+      assert.equal(observed.mode, "0700");
+      assert.equal(observed.expected_type, "directory");
+      assert.deepEqual(collectSecretParentDirectoryForTestV1(target, {}), observed);
+      assert.deepEqual(
+        confirmSecretParentDirectoryAcrossCollectionsForTestV1(target, () => {}),
+        observed,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+for (const replacedComponent of ["final", "intermediate"]) {
+  test(
+    `Linux secret-parent descriptor walk rejects ${replacedComponent} directory ABA`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-secret-aba-")));
+      try {
+        const chainRoot = join(root, "chain");
+        createExactDirectory(chainRoot);
+        let alternate;
+        let alternateParked;
+        let mutationParent;
+        let parked;
+        let target;
+        let targetPath;
+        if (replacedComponent === "final") {
+          const intermediate = join(chainRoot, "intermediate");
+          createExactDirectory(intermediate);
+          target = join(intermediate, "final");
+          alternate = join(intermediate, "alternate-final");
+          parked = join(intermediate, "parked-final");
+          alternateParked = join(intermediate, "alternate-parked-final");
+          mutationParent = intermediate;
+          createExactDirectory(target);
+          createExactDirectory(alternate);
+          targetPath = target;
+        } else {
+          target = join(chainRoot, "intermediate");
+          alternate = join(chainRoot, "alternate-intermediate");
+          parked = join(chainRoot, "parked-intermediate");
+          alternateParked = join(chainRoot, "alternate-parked-intermediate");
+          mutationParent = chainRoot;
+          createExactDirectory(target);
+          createExactDirectory(alternate);
+          createExactDirectory(join(target, "final"));
+          createExactDirectory(join(alternate, "final"));
+          targetPath = join(target, "final");
+        }
+        const originalInode = lstatSync(target).ino;
+        const alternateInode = lstatSync(alternate).ino;
+        assert.notEqual(originalInode, alternateInode);
+
+        assert.throws(
+          () => collectSecretParentDirectoryForTestV1(
+            targetPath,
+            directoryAbaHooks({
+              alternate,
+              alternateParked,
+              mutationParent,
+              parked,
+              target,
+            }),
+          ),
+          /pinned secret directory metadata changed during probes|pinned\/final descriptor mismatch/,
+        );
+        assert.equal(lstatSync(target).ino, originalInode, "ABA restored original inode");
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+test(
+  "Linux final sealing rejects directory ABA between initial and confirmation collections",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-secret-seal-")));
+    try {
+      const parent = join(root, "consumer");
+      const target = join(parent, "keys");
+      const alternate = join(parent, "alternate-keys");
+      const parked = join(parent, "parked-keys");
+      const alternateParked = join(parent, "alternate-parked-keys");
+      createExactDirectory(parent);
+      createExactDirectory(target);
+      createExactDirectory(alternate);
+      const originalInode = lstatSync(target).ino;
+
+      assert.throws(
+        () => confirmSecretParentDirectoryAcrossCollectionsForTestV1(
+          target,
+          () => {
+            renameSync(target, parked);
+            renameSync(alternate, target);
+            renameSync(target, alternateParked);
+            renameSync(parked, target);
+            utimesSync(parent, new Date(3_000), new Date(4_000));
+          },
+        ),
+        /secret parent directory namespace fingerprint changed between test collections/,
+      );
+      assert.equal(lstatSync(target).ino, originalInode, "ABA restored original inode");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
 
 test(
   "Linux smoke exercises real getent enumeration and id -G for every visible user",
@@ -1269,12 +1897,27 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 2;
+  legacyEvidence.evidence.schema_version = 3;
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 2;
+  legacyRequest.request.schema_version = 3;
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
+
+  const legacySystemctlConditions = fixture();
+  legacySystemctlConditions.request.systemctl_show_properties = [
+    ...legacySystemctlConditions.request.systemctl_show_properties,
+    "Conditions",
+  ];
+  assert.throws(() => validate(legacySystemctlConditions), /systemctl property schema/);
+
+  const missingBusctlSchema = fixture();
+  delete missingBusctlSchema.request.busctl_unit_properties;
+  assert.throws(() => validate(missingBusctlSchema), /busctl property schema/);
+
+  const foreignBusctlSchema = fixture();
+  foreignBusctlSchema.request.busctl_unit_properties = ["Conditions", "Triggers"];
+  assert.throws(() => validate(foreignBusctlSchema), /busctl property schema/);
 
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
@@ -1317,6 +1960,67 @@ test("secret evidence binds parent metadata and positive owner/negative cross-ro
   const missingParent = secretIsolationFixture();
   missingParent.evidence.secret_parent_directories.pop();
   assert.throws(() => validate(missingParent), /parent directory evidence is incomplete/);
+
+  const rootOwnedFinalParent = secretIsolationFixture();
+  rootOwnedFinalParent.evidence.secret_parent_directories.at(-1).uid = 0;
+  assert.throws(
+    () => validate(rootOwnedFinalParent),
+    /final parent must be consumer-owned mode 0700/,
+  );
+
+  const traversableFinalParent = secretIsolationFixture();
+  traversableFinalParent.evidence.secret_parent_directories.at(-1).mode = "0710";
+  assert.throws(
+    () => validate(traversableFinalParent),
+    /final parent must be consumer-owned mode 0700/,
+  );
+
+  const writableAncestor = secretIsolationFixture();
+  writableAncestor.evidence.secret_parent_directories.find(
+    (entry) => entry.target_path === "/etc/bitcoinpir/payment-v1",
+  ).mode = "0775";
+  assert.throws(
+    () => validate(writableAncestor),
+    /ancestor violates the private-file loader policy/,
+  );
+
+  const foreignAncestor = secretIsolationFixture();
+  foreignAncestor.evidence.secret_parent_directories.find(
+    (entry) => entry.target_path === "/etc/bitcoinpir",
+  ).uid = 999;
+  assert.throws(
+    () => validate(foreignAncestor),
+    /ancestor violates the private-file loader policy/,
+  );
+
+  const mismatchedSecretOwner = secretIsolationFixture();
+  mismatchedSecretOwner.request.secret_files[0].uid = 999;
+  assert.throws(
+    () => validate(mismatchedSecretOwner),
+    /secret is not bound to its exact owner-only consumer/,
+  );
+
+  const rootOwnedStickyAncestor = secretIsolationFixture();
+  rootOwnedStickyAncestor.evidence.secret_parent_directories.find(
+    (entry) => entry.target_path === "/etc/bitcoinpir",
+  ).mode = "1777";
+  assert.equal(validate(rootOwnedStickyAncestor), true);
+
+  for (const [label, mutate] of [
+    ["negative device", (directory) => { directory.dev = "-1"; }],
+    ["noncanonical inode", (directory) => { directory.ino = "0404"; }],
+    ["fractional gid", (directory) => { directory.gid = 731.5; }],
+    ["zero links", (directory) => { directory.nlink = 0; }],
+    ["negative size", (directory) => { directory.size = -1; }],
+  ]) {
+    const malformed = secretIsolationFixture();
+    mutate(malformed.evidence.secret_parent_directories.at(-1));
+    assert.throws(
+      () => validate(malformed),
+      /secret parent directory metadata is malformed/,
+      label,
+    );
+  }
 });
 
 for (const [label, mutate, expected] of [
@@ -1336,6 +2040,20 @@ for (const [label, mutate, expected] of [
   ["runtime socket mode", (f) => { f.evidence.runtime_paths[0].mode = "0666"; }, /runtime path mode drift/],
   ["unexpected issuer group", (f) => { f.evidence.nss.users[0].supplementary_gids.push(999); }, /unexpected supplementary group|reverse group membership/],
   ["inactive unit", (f) => { f.evidence.units[0].properties.ActiveState = "inactive"; }, /not active/],
+  ["missing effective condition", (f) => { f.evidence.units[0].conditions = []; }, /effective condition drift/],
+  ["extra effective condition", (f) => { f.evidence.units[0].conditions.push({
+    negate: true,
+    parameter: "/etc/bitcoinpir/payment-v1/FOREIGN-ACTIVATION-APPROVED",
+    path_exists: false,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  }); }, /effective condition drift/],
+  ["condition negation drift", (f) => { f.evidence.units[0].conditions[0].negate = true; }, /effective condition drift/],
+  ["condition path drift", (f) => { f.evidence.units[0].conditions[0].parameter = "/etc/bitcoinpir/payment-v1/FOREIGN-ACTIVATION-APPROVED"; }, /effective condition drift/],
+  ["condition path truth drift", (f) => { f.evidence.units[0].conditions[0].path_exists = false; }, /effective condition drift/],
+  ["condition result not passed", (f) => { f.evidence.units[0].conditions[0].result = 0; }, /effective condition drift/],
+  ["trigger condition drift", (f) => { f.evidence.units[0].conditions[0].trigger = true; }, /effective condition drift/],
   ["ControlGroup drift", (f) => { f.evidence.units[0].properties.ControlGroup = "/system.slice/evil.service"; }, /reviewed system\.slice control group/],
   ["zero MainPID", (f) => { f.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
   ["effective Restart drift", (f) => { f.evidence.units[0].properties.Restart = "on-failure"; }, /Restart drift/],

@@ -27,6 +27,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
   canonicalJson,
@@ -34,13 +35,13 @@ import {
   runtimeRequestFromManifest,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v3";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
 export const STOPPED_EDGE_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-edge-v2";
+  "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE = "local-files-only-v1";
-const LIVE_SCHEMA_VERSION = 3;
-const STOPPED_EDGE_SCHEMA_VERSION = 2;
+const LIVE_SCHEMA_VERSION = 4;
+const STOPPED_EDGE_SCHEMA_VERSION = 3;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
@@ -116,6 +117,7 @@ const LOCKED_SERVICE_ACCOUNT_SHELLS = Object.freeze([
 const REVIEWED_ONESHOT_UNIT = "bitcoinpir-lightning-preflight.service";
 const REVIEWED_ONESHOT_FRAGMENT = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
 const REQUIRED_COMMANDS = Object.freeze([
+  "/usr/bin/busctl",
   "/usr/bin/false",
   "/usr/bin/getent",
   "/usr/bin/getfacl",
@@ -179,15 +181,7 @@ function validateUuid(value, label) {
 }
 
 function readOneLinkRegular(path, label, maxBytes = MAX_JSON_BYTES) {
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
-    fail(`${label} must be a one-link regular file: ${path}`);
-  }
-  if (realpathSync(path) !== path) fail(`${label} resolves through a symlink: ${path}`);
-  if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > maxBytes) {
-    fail(`${label} exceeds its size limit: ${path}`);
-  }
-  return readFileSync(path);
+  return readOneLinkRegularBoundToDescriptor(path, label, maxBytes).bytes;
 }
 
 function strictJsonBytes(bytes, label) {
@@ -271,31 +265,211 @@ function inspectTrustedCommand(path) {
   };
 }
 
+function statInteger(value, label) {
+  const number = typeof value === "bigint" ? Number(value) : value;
+  if (!Number.isSafeInteger(number) || number < 0) {
+    fail(`${label} is outside the safe evidence integer range`);
+  }
+  return number;
+}
+
+function statMode(stat) {
+  const mode = typeof stat.mode === "bigint"
+    ? Number(stat.mode & 0o7777n)
+    : stat.mode & 0o7777;
+  return mode.toString(8).padStart(4, "0");
+}
+
+function statNanoseconds(stat, field) {
+  const nanoseconds = stat[`${field}Ns`];
+  if (typeof nanoseconds === "bigint") return nanoseconds.toString();
+  const milliseconds = stat[`${field}Ms`];
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    fail(`installed artifact ${field} timestamp is invalid`);
+  }
+  return BigInt(Math.trunc(milliseconds * 1_000_000)).toString();
+}
+
 function stableStat(stat) {
   return {
     dev: stat.dev.toString(),
-    gid: stat.gid,
+    gid: statInteger(stat.gid, "installed artifact GID"),
     ino: stat.ino.toString(),
-    mode: (stat.mode & 0o7777).toString(8).padStart(4, "0"),
-    nlink: stat.nlink,
-    size: stat.size,
-    uid: stat.uid,
+    mode: statMode(stat),
+    nlink: statInteger(stat.nlink, "installed artifact link count"),
+    size: statInteger(stat.size, "installed artifact size"),
+    uid: statInteger(stat.uid, "installed artifact UID"),
   };
 }
 
-function collectExtendedMetadata(path, expectedType) {
-  const statRecord = runAbsolute("/usr/bin/stat", ["-c", "%d:%i:%u:%g:%a:%h:%s:%F", "--", path]);
+function preciseInstalledStat(stat) {
+  return {
+    ...stableStat(stat),
+    ctime_ns: statNanoseconds(stat, "ctime"),
+    mtime_ns: statNanoseconds(stat, "mtime"),
+  };
+}
+
+function readExactDescriptorBytes(fd, expectedSize, label, path) {
+  const size = statInteger(expectedSize, `${label} size`);
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count === 0) fail(`${label} became truncated during descriptor read: ${path}`);
+    offset += count;
+  }
+  const trailing = Buffer.alloc(1);
+  if (readSync(fd, trailing, 0, 1, bytes.length) !== 0) {
+    fail(`${label} grew during descriptor read: ${path}`);
+  }
+  return bytes;
+}
+
+function assertOneLinkCanonicalRegular(path, stat, label, maxBytes) {
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    statInteger(stat.nlink, `${label} link count`) !== 1 ||
+    realpathSync(path) !== path
+  ) {
+    fail(`${label} must be a canonical one-link regular file: ${path}`);
+  }
+  const size = statInteger(stat.size, `${label} size`);
+  if (size > maxBytes) fail(`${label} exceeds its size limit: ${path}`);
+}
+
+function collectFinalOneLinkRegularSnapshot(
+  path,
+  label,
+  expectedBytes,
+  maxBytes,
+  testHooks = undefined,
+) {
+  const before = lstatSync(path, { bigint: true });
+  assertOneLinkCanonicalRegular(path, before, label, maxBytes);
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, `${label} final path and descriptor`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      `${label} final path and descriptor`,
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterFinalPathOpen");
+    const bytes = readExactDescriptorBytes(fd, opened.size, label, path);
+    const after = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, after, `${label} final descriptor snapshots`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      opened,
+      after,
+      `${label} final descriptor snapshots`,
+      path,
+    );
+    if (!bytes.equals(expectedBytes)) fail(`${label} changed before its final descriptor read: ${path}`);
+    const pathAfter = lstatSync(path, { bigint: true });
+    assertOneLinkCanonicalRegular(path, pathAfter, `${label} final confirmation`, maxBytes);
+    assertSameInstalledFileSnapshot(after, pathAfter, `${label} final descriptor and path`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      after,
+      pathAfter,
+      `${label} final descriptor and path`,
+      path,
+    );
+    return { stat: after };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readOneLinkRegularBoundToDescriptor(
+  path,
+  label,
+  maxBytes = MAX_JSON_BYTES,
+  testHooks = undefined,
+) {
+  const before = lstatSync(path, { bigint: true });
+  assertOneLinkCanonicalRegular(path, before, label, maxBytes);
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, `${label} initial path and descriptor`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      `${label} initial path and descriptor`,
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterOpen");
+    const bytes = readExactDescriptorBytes(fd, opened.size, label, path);
+    const afterRead = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, path);
+    assertSamePreciseInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, path);
+    runInstalledFileTestHook(testHooks, "afterFirstRead");
+    const finalSnapshot = collectFinalOneLinkRegularSnapshot(
+      path,
+      label,
+      bytes,
+      maxBytes,
+      testHooks,
+    );
+    assertSameInstalledFileSnapshot(
+      afterRead,
+      finalSnapshot.stat,
+      `${label} initial and final descriptors`,
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      afterRead,
+      finalSnapshot.stat,
+      `${label} initial and final descriptors`,
+      path,
+    );
+    return {
+      bytes,
+      fingerprint: preciseInstalledStat(finalSnapshot.stat),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readOneLinkRegularForTestV1(path, label, maxBytes, testHooks) {
+  return readOneLinkRegularBoundToDescriptor(path, label, maxBytes, testHooks).bytes;
+}
+
+function collectExtendedMetadata(
+  path,
+  expectedType,
+  { dereferenceStat = false, evidencePath = undefined, nodeStat = undefined } = {},
+) {
+  const statRecord = runAbsolute("/usr/bin/stat", [
+    ...(dereferenceStat ? ["-L"] : []),
+    "-c",
+    "%d:%i:%u:%g:%a:%h:%s:%F",
+    "--",
+    path,
+  ]);
   if (statRecord.exit_status !== 0 || statRecord.stderr !== "") fail(`stat failed for ${path}`);
-  const nodeStat = lstatSync(path);
+  const expectedNodeStat = nodeStat ?? lstatSync(path);
   const statType = {
     directory: "directory",
     regular: "regular file",
     socket: "socket",
   }[expectedType];
   if (statType === undefined) fail(`unreviewed extended metadata type: ${expectedType}`);
-  const expectedStatLine = `${nodeStat.dev}:${nodeStat.ino}:${nodeStat.uid}:${nodeStat.gid}:${(
-    nodeStat.mode & 0o7777
-  ).toString(8)}:${nodeStat.nlink}:${nodeStat.size}:${statType}\n`;
+  const expectedStatLine = `${expectedNodeStat.dev}:${expectedNodeStat.ino}:${expectedNodeStat.uid}:${expectedNodeStat.gid}:${Number.parseInt(
+    statMode(expectedNodeStat),
+    8,
+  ).toString(8)}:${expectedNodeStat.nlink}:${expectedNodeStat.size}:${statType}\n`;
   if (statRecord.stdout !== expectedStatLine) fail(`independent stat mismatch for ${path}`);
 
   const acl = runAbsolute("/usr/bin/getfacl", ["-c", "-p", "-n", "--", path]);
@@ -313,50 +487,248 @@ function collectExtendedMetadata(path, expectedType) {
   if (capabilities.exit_status !== 0 || capabilities.stderr !== "" || capabilities.stdout !== "") {
     fail(`file capabilities are forbidden: ${path}`);
   }
+  const canonicalOutput = (stdout) => evidencePath === undefined
+    ? stdout
+    : stdout.split(path).join(evidencePath);
   return {
-    acl_sha256: hashBytes(Buffer.from(acl.stdout)),
-    capability_sha256: hashBytes(Buffer.from(capabilities.stdout)),
+    acl_sha256: hashBytes(Buffer.from(canonicalOutput(acl.stdout))),
+    capability_sha256: hashBytes(Buffer.from(canonicalOutput(capabilities.stdout))),
     expected_type: expectedType,
-    stat_command_sha256: hashBytes(Buffer.from(statRecord.stdout)),
-    xattr_sha256: hashBytes(Buffer.from(xattrs.stdout)),
+    stat_command_sha256: hashBytes(Buffer.from(canonicalOutput(statRecord.stdout))),
+    xattr_sha256: hashBytes(Buffer.from(canonicalOutput(xattrs.stdout))),
   };
 }
 
-function collectInstalledFile(expected) {
-  const path = expected.target_path;
-  const before = lstatSync(path);
-  if (!before.isFile() || before.isSymbolicLink() || realpathSync(path) !== path) {
-    fail(`installed artifact is not a canonical regular file: ${path}`);
+function assertSameInstalledFileSnapshot(left, right, label, path) {
+  if (canonicalJson(stableStat(left)) !== canonicalJson(stableStat(right))) {
+    fail(`installed artifact ${label} do not name the same stable file: ${path}`);
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+}
+
+function assertSamePreciseInstalledFileSnapshot(left, right, label, path) {
+  if (canonicalJson(preciseInstalledStat(left)) !== canonicalJson(preciseInstalledStat(right))) {
+    fail(`installed artifact ${label} changed precise metadata: ${path}`);
+  }
+}
+
+function assertCanonicalInstalledFile(path, stat, label) {
+  if (!stat.isFile() || stat.isSymbolicLink() || realpathSync(path) !== path) {
+    fail(`installed artifact ${label} is not a canonical regular file: ${path}`);
+  }
+}
+
+function runInstalledFileTestHook(testHooks, phase) {
+  if (testHooks === undefined) return;
+  const hook = testHooks[phase];
+  if (hook !== undefined) hook();
+}
+
+// Preserve the externally verified v4 evidence shape while retaining the
+// precise collector-local fingerprint needed to detect a same-inode
+// write-and-restore between repeated secret checks. Offline evidence never
+// gets to manufacture or replace this process-local comparison state.
+const installedFilePreciseFingerprints = new WeakMap();
+
+function collectFinalInstalledPathDescriptor(path, expectedBytes, testHooks = undefined) {
+  const finalPathBeforeOpen = lstatSync(path, { bigint: true });
+  assertCanonicalInstalledFile(path, finalPathBeforeOpen, "final path");
+  const finalFd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
   try {
-    const opened = fstatSync(fd);
-    const bytes = readFileSync(fd);
-    const after = fstatSync(fd);
-    if (canonicalJson(stableStat(opened)) !== canonicalJson(stableStat(after))) {
-      fail(`installed artifact metadata changed while hashing: ${path}`);
+    const finalOpened = fstatSync(finalFd, { bigint: true });
+    assertSameInstalledFileSnapshot(
+      finalPathBeforeOpen,
+      finalOpened,
+      "final path snapshot and final descriptor",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      finalPathBeforeOpen,
+      finalOpened,
+      "final path snapshot and final descriptor",
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterFinalPathOpen");
+    const finalBytes = readExactDescriptorBytes(
+      finalFd,
+      finalOpened.size,
+      "installed artifact final path",
+      path,
+    );
+    const finalAfterRead = fstatSync(finalFd, { bigint: true });
+    assertSameInstalledFileSnapshot(
+      finalOpened,
+      finalAfterRead,
+      "final descriptor read snapshots",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      finalOpened,
+      finalAfterRead,
+      "final descriptor read snapshots",
+      path,
+    );
+    if (!finalBytes.equals(expectedBytes)) {
+      fail(`installed artifact final path content changed: ${path}`);
     }
-    const sha256Command = runAbsolute("/usr/bin/sha256sum", ["--binary", "--", path]);
-    const shaMatch = /^([0-9a-f]{64}) \*.+\n$/u.exec(sha256Command.stdout);
-    if (sha256Command.exit_status !== 0 || sha256Command.stderr !== "" || !shaMatch) {
+    const finalPathAfterOpen = lstatSync(path, { bigint: true });
+    assertCanonicalInstalledFile(path, finalPathAfterOpen, "final path confirmation");
+    assertSameInstalledFileSnapshot(
+      finalAfterRead,
+      finalPathAfterOpen,
+      "final descriptor and final path confirmation",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      finalAfterRead,
+      finalPathAfterOpen,
+      "final descriptor and final path confirmation",
+      path,
+    );
+    return { stat: finalAfterRead };
+  } finally {
+    closeSync(finalFd);
+  }
+}
+
+function collectInstalledFileBoundToDescriptor(expected, testHooks = undefined) {
+  const path = expected.target_path;
+  const before = lstatSync(path, { bigint: true });
+  assertCanonicalInstalledFile(path, before, "initial path");
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, "initial path and opened descriptor", path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      "initial path and opened descriptor",
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterOpen");
+
+    const bytes = readExactDescriptorBytes(
+      fd,
+      opened.size,
+      "installed artifact initial path",
+      path,
+    );
+    const afterFirstRead = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, afterFirstRead, "initial descriptor read", path);
+    assertSamePreciseInstalledFileSnapshot(opened, afterFirstRead, "initial descriptor read", path);
+    runInstalledFileTestHook(testHooks, "afterFirstRead");
+    const descriptorPath = `/proc/${process.pid}/fd/${fd}`;
+    const descriptorSha256 = hashBytes(bytes);
+    const canonicalSha256Output = `${descriptorSha256} *${path}\n`;
+    const sha256Command = runAbsolute("/usr/bin/sha256sum", [
+      "--binary",
+      "--",
+      descriptorPath,
+    ]);
+    const expectedSha256Output = `${descriptorSha256} *${descriptorPath}\n`;
+    if (
+      sha256Command.exit_status !== 0 ||
+      sha256Command.stderr !== "" ||
+      sha256Command.stdout !== expectedSha256Output
+    ) {
       fail(`sha256sum failed for ${path}`);
     }
+    const extendedMetadata = collectExtendedMetadata(descriptorPath, "regular", {
+      dereferenceStat: true,
+      evidencePath: path,
+      nodeStat: afterFirstRead,
+    });
+    runInstalledFileTestHook(testHooks, "afterMetadataProbe");
+
+    {
+      const confirmationBytes = readExactDescriptorBytes(
+        fd,
+        afterFirstRead.size,
+        "installed artifact confirmation",
+        path,
+      );
+      if (!confirmationBytes.equals(bytes)) {
+        fail(`installed artifact content changed during descriptor reread: ${path}`);
+      }
+    }
+
+    const after = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(afterFirstRead, after, "opened descriptor snapshots", path);
+    assertSamePreciseInstalledFileSnapshot(afterFirstRead, after, "opened descriptor snapshots", path);
+    runInstalledFileTestHook(testHooks, "beforeFinalPathOpen");
+    const finalPathSnapshot = collectFinalInstalledPathDescriptor(path, bytes, testHooks);
+    assertSameInstalledFileSnapshot(
+      after,
+      finalPathSnapshot.stat,
+      "opened descriptor and final path descriptor",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      after,
+      finalPathSnapshot.stat,
+      "opened descriptor and final path descriptor",
+      path,
+    );
     const observed = {
       ...stableStat(after),
       file_type: "regular",
-      sha256: hashBytes(bytes),
-      sha256_command_sha256: hashBytes(Buffer.from(sha256Command.stdout)),
+      sha256: descriptorSha256,
+      // Preserve the stable evidence representation used by repeated secret
+      // checks without retaining the process-local /proc descriptor pathname.
+      // The raw command output was already checked exactly against that bound
+      // descriptor above.
+      sha256_command_sha256: hashBytes(Buffer.from(canonicalSha256Output)),
       target_path: path,
-      ...collectExtendedMetadata(path, "regular"),
+      ...extendedMetadata,
     };
-    if (shaMatch[1] !== observed.sha256) fail(`independent SHA-256 mismatch: ${path}`);
     for (const key of ["gid", "mode", "nlink", "sha256", "uid"]) {
       if (observed[key] !== expected[key]) fail(`installed artifact ${key} mismatch: ${path}`);
     }
+    installedFilePreciseFingerprints.set(
+      observed,
+      preciseInstalledStat(finalPathSnapshot.stat),
+    );
     return observed;
   } finally {
     closeSync(fd);
   }
+}
+
+function collectInstalledFile(expected) {
+  return collectInstalledFileBoundToDescriptor(expected);
+}
+
+// The production collector above never accepts hooks. This narrow export exists
+// only so regression tests can place deterministic pathname substitutions at
+// security-sensitive collection boundaries.
+export function collectInstalledFileForTestV1(expected, testHooks) {
+  return collectInstalledFileBoundToDescriptor(expected, testHooks);
+}
+
+function assertInstalledFileCollectionsUnchanged(before, after, stage, path) {
+  const beforePrecise = installedFilePreciseFingerprints.get(before);
+  const afterPrecise = installedFilePreciseFingerprints.get(after);
+  if (
+    beforePrecise === undefined ||
+    afterPrecise === undefined ||
+    canonicalJson(before) !== canonicalJson(after) ||
+    canonicalJson(beforePrecise) !== canonicalJson(afterPrecise)
+  ) {
+    fail(`installed artifact metadata or content changed ${stage}: ${path}`);
+  }
+}
+
+export function confirmInstalledFileAcrossCollectionsForTestV1(expected, betweenHook) {
+  const before = collectInstalledFileBoundToDescriptor(expected);
+  betweenHook();
+  const after = collectInstalledFileBoundToDescriptor(expected);
+  assertInstalledFileCollectionsUnchanged(before, after, "between test collections", expected.target_path);
+  return true;
 }
 
 function validateNssName(value, label) {
@@ -915,17 +1287,398 @@ function secretParentPaths(secretFiles) {
   return [...paths].sort();
 }
 
-function collectSecretParentDirectory(path) {
-  const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) {
-    fail(`secret parent is not a canonical directory: ${path}`);
+function secretDirectoryChainPaths(path) {
+  if (path === "/") return [{ component: null, target_path: "/" }];
+  validateAbsolutePath(path, "secret parent directory");
+  const chain = [{ component: null, target_path: "/" }];
+  let cursor = "";
+  for (const component of path.slice(1).split("/")) {
+    if (!/^[A-Za-z0-9._-]+$/u.test(component)) {
+      fail(`secret parent contains an invalid directory component: ${path}`);
+    }
+    cursor += `/${component}`;
+    chain.push({ component, target_path: cursor });
+  }
+  return chain;
+}
+
+function preciseDirectoryFingerprint(stat, precise, label) {
+  const ordinary = stableStat(stat);
+  const preciseStable = {
+    dev: precise.dev.toString(),
+    gid: precise.gid.toString(),
+    ino: precise.ino.toString(),
+    mode: (precise.mode & 0o7777n).toString(8).padStart(4, "0"),
+    nlink: precise.nlink.toString(),
+    size: precise.size.toString(),
+    uid: precise.uid.toString(),
+  };
+  const ordinaryComparable = {
+    dev: ordinary.dev,
+    gid: ordinary.gid.toString(),
+    ino: ordinary.ino,
+    mode: ordinary.mode,
+    nlink: ordinary.nlink.toString(),
+    size: ordinary.size.toString(),
+    uid: ordinary.uid.toString(),
+  };
+  if (canonicalJson(ordinaryComparable) !== canonicalJson(preciseStable)) {
+    fail(`${label} changed between ordinary and precise stat snapshots`);
   }
   return {
-    ...stableStat(stat),
-    file_type: "directory",
-    target_path: path,
-    ...collectExtendedMetadata(path, "directory"),
+    ...preciseStable,
+    ctime_ns: precise.ctimeNs.toString(),
+    mtime_ns: precise.mtimeNs.toString(),
   };
+}
+
+function snapshotSecretDirectoryPath(path, label) {
+  const stat = lstatSync(path);
+  const precise = lstatSync(path, { bigint: true });
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    !precise.isDirectory() ||
+    precise.isSymbolicLink() ||
+    realpathSync(path) !== path
+  ) {
+    fail(`${label} is not a canonical directory: ${path}`);
+  }
+  return {
+    fingerprint: preciseDirectoryFingerprint(stat, precise, label),
+    stat,
+  };
+}
+
+function snapshotSecretDirectoryFd(fd, path, label) {
+  const stat = fstatSync(fd);
+  const precise = fstatSync(fd, { bigint: true });
+  if (!stat.isDirectory() || !precise.isDirectory()) {
+    fail(`${label} is not a directory: ${path}`);
+  }
+  return {
+    fingerprint: preciseDirectoryFingerprint(stat, precise, label),
+    stat,
+  };
+}
+
+function assertSameSecretDirectorySnapshot(left, right, label, path) {
+  if (canonicalJson(left.fingerprint) !== canonicalJson(right.fingerprint)) {
+    fail(`${label}: ${path}`);
+  }
+}
+
+function closeSecretDirectoryChain(nodes) {
+  for (const node of [...nodes].reverse()) closeSync(node.fd);
+}
+
+function compareSecretDirectoryPaths(left, right) {
+  const leftDepth = left === "/" ? 0 : left.split("/").length - 1;
+  const rightDepth = right === "/" ? 0 : right.split("/").length - 1;
+  if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function openPinnedSecretDirectorySet(paths) {
+  if (!Array.isArray(paths) || new Set(paths).size !== paths.length) {
+    fail("secret directory descriptor set contains duplicate or malformed paths");
+  }
+  const orderedPaths = [...paths].sort(compareSecretDirectoryPaths);
+  const nodes = [];
+  const nodesByPath = new Map();
+  try {
+    for (const targetPath of orderedPaths) {
+      if (targetPath !== "/") {
+        validateAbsolutePath(targetPath, "secret parent directory set path");
+      }
+      const component = targetPath === "/" ? null : basename(targetPath);
+      if (component !== null && !/^[A-Za-z0-9._-]+$/u.test(component)) {
+        fail(`secret parent contains an invalid directory component: ${targetPath}`);
+      }
+      const entry = { component, target_path: targetPath };
+      const initial = snapshotSecretDirectoryPath(
+        entry.target_path,
+        "secret directory initial pathname",
+      );
+      const parent = entry.target_path === "/"
+        ? undefined
+        : nodesByPath.get(dirname(entry.target_path));
+      if (entry.target_path !== "/" && parent === undefined) {
+        fail(`secret directory descriptor set is missing an ancestor: ${entry.target_path}`);
+      }
+      const openPath = parent === undefined
+        ? "/"
+        : `/proc/${process.pid}/fd/${parent.fd}/${entry.component}`;
+      const fd = openSync(
+        openPath,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          (constants.O_CLOEXEC ?? 0),
+      );
+      let retained = false;
+      try {
+        const opened = snapshotSecretDirectoryFd(
+          fd,
+          entry.target_path,
+          "secret directory opened descriptor",
+        );
+        assertSameSecretDirectorySnapshot(
+          initial,
+          opened,
+          "secret directory initial pathname/opened descriptor mismatch",
+          entry.target_path,
+        );
+        const pathnameConfirmation = snapshotSecretDirectoryPath(
+          entry.target_path,
+          "secret directory pathname confirmation",
+        );
+        assertSameSecretDirectorySnapshot(
+          opened,
+          pathnameConfirmation,
+          "secret directory opened descriptor/pathname confirmation mismatch",
+          entry.target_path,
+        );
+        nodes.push({
+          ...entry,
+          fd,
+          opened,
+        });
+        nodesByPath.set(entry.target_path, nodes.at(-1));
+        retained = true;
+      } finally {
+        if (!retained) closeSync(fd);
+      }
+    }
+    return nodes;
+  } catch (error) {
+    closeSecretDirectoryChain(nodes);
+    throw error;
+  }
+}
+
+function runSecretParentTestHook(testHooks, phase) {
+  if (testHooks === undefined) return;
+  const hook = testHooks[phase];
+  if (hook !== undefined) hook();
+}
+
+function collectSecretParentDirectoriesBound(paths, testHooks = undefined) {
+  const pinned = openPinnedSecretDirectorySet(paths);
+  try {
+    runSecretParentTestHook(testHooks, "afterPinnedChain");
+    const extendedMetadataByPath = new Map();
+    for (const node of pinned) {
+      const descriptorPath = `/proc/${process.pid}/fd/${node.fd}`;
+      extendedMetadataByPath.set(
+        node.target_path,
+        collectExtendedMetadata(descriptorPath, "directory", {
+          dereferenceStat: true,
+          evidencePath: node.target_path,
+          nodeStat: node.opened.stat,
+        }),
+      );
+    }
+    runSecretParentTestHook(testHooks, "afterMetadataProbe");
+
+    const afterProbe = pinned.map((node) => {
+      const snapshot = snapshotSecretDirectoryFd(
+        node.fd,
+        node.target_path,
+        "secret directory post-probe descriptor",
+      );
+      assertSameSecretDirectorySnapshot(
+        node.opened,
+        snapshot,
+        "pinned secret directory metadata changed during probes",
+        node.target_path,
+      );
+      return snapshot;
+    });
+
+    const finalChain = openPinnedSecretDirectorySet(paths);
+    try {
+      if (finalChain.length !== pinned.length) {
+        fail("secret directory final descriptor set length changed");
+      }
+      for (let index = 0; index < pinned.length; index += 1) {
+        if (pinned[index].target_path !== finalChain[index].target_path) {
+          fail("secret directory final descriptor set path changed");
+        }
+        assertSameSecretDirectorySnapshot(
+          afterProbe[index],
+          finalChain[index].opened,
+          "secret directory pinned/final descriptor mismatch",
+          pinned[index].target_path,
+        );
+      }
+    } finally {
+      closeSecretDirectoryChain(finalChain);
+    }
+
+    const snapshotsByPath = new Map(
+      pinned.map((node, index) => [node.target_path, afterProbe[index]]),
+    );
+    const evidence = paths.map((path) => {
+      const snapshot = snapshotsByPath.get(path);
+      const extendedMetadata = extendedMetadataByPath.get(path);
+      if (!snapshot || !extendedMetadata) {
+        fail(`secret directory evidence set is incomplete: ${path}`);
+      }
+      return {
+        ...stableStat(snapshot.stat),
+        file_type: "directory",
+        target_path: path,
+        ...extendedMetadata,
+      };
+    });
+    const privateFingerprints = paths.map((path) => {
+      const snapshot = snapshotsByPath.get(path);
+      if (!snapshot) fail(`secret directory private fingerprint is missing: ${path}`);
+      return {
+        fingerprint: snapshot.fingerprint,
+        target_path: path,
+      };
+    });
+    return { evidence, privateFingerprints };
+  } finally {
+    closeSecretDirectoryChain(pinned);
+  }
+}
+
+function collectSecretParentDirectories(secretFiles) {
+  const paths = secretParentPaths(secretFiles);
+  return collectSecretParentDirectoriesBound(paths);
+}
+
+// Production collection never accepts hooks. This export exists only for
+// deterministic directory rename/replace regression tests.
+export function collectSecretParentDirectoryForTestV1(path, testHooks) {
+  const paths = secretDirectoryChainPaths(path).map((entry) => entry.target_path);
+  return collectSecretParentDirectoriesBound(paths, testHooks).evidence.at(-1);
+}
+
+function assertSecretParentDirectoryBundlesUnchanged(initial, confirmation, stage) {
+  if (canonicalJson(initial.evidence) !== canonicalJson(confirmation.evidence)) {
+    fail(`secret parent directory metadata changed ${stage}`);
+  }
+  if (
+    canonicalJson(initial.privateFingerprints) !==
+    canonicalJson(confirmation.privateFingerprints)
+  ) {
+    fail(`secret parent directory namespace fingerprint changed ${stage}`);
+  }
+}
+
+// Test-only cross-collection interlock: production collection stores the first
+// private bundle and performs its confirmations without any caller callback.
+export function confirmSecretParentDirectoryAcrossCollectionsForTestV1(
+  path,
+  betweenCollections,
+) {
+  const paths = secretDirectoryChainPaths(path).map((entry) => entry.target_path);
+  const initial = collectSecretParentDirectoriesBound(paths);
+  betweenCollections();
+  const confirmation = collectSecretParentDirectoriesBound(paths);
+  assertSecretParentDirectoryBundlesUnchanged(
+    initial,
+    confirmation,
+    "between test collections",
+  );
+  return initial.evidence.at(-1);
+}
+
+function validateSecretParentDirectoryEvidenceMetadata(directory, path) {
+  if (
+    typeof directory.dev !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(directory.dev) ||
+    typeof directory.ino !== "string" ||
+    !/^[1-9][0-9]*$/u.test(directory.ino) ||
+    !Number.isSafeInteger(directory.uid) ||
+    directory.uid < 0 ||
+    directory.uid > 0xffff_ffff ||
+    !Number.isSafeInteger(directory.gid) ||
+    directory.gid < 0 ||
+    directory.gid > 0xffff_ffff ||
+    typeof directory.mode !== "string" ||
+    !/^[0-7]{4}$/u.test(directory.mode) ||
+    !Number.isSafeInteger(directory.nlink) ||
+    directory.nlink < 1 ||
+    !Number.isSafeInteger(directory.size) ||
+    directory.size < 0
+  ) {
+    fail(`live secret parent directory metadata is malformed: ${path}`);
+  }
+}
+
+function validateSecretParentDirectoryPolicyV1(
+  secretFiles,
+  serviceIdentities,
+  parentDirectories,
+) {
+  const parentsByPath = new Map(
+    parentDirectories.map((directory) => [directory.target_path, directory]),
+  );
+  if (parentsByPath.size !== parentDirectories.length) {
+    fail("live secret parent directory evidence repeats a path");
+  }
+  for (const secret of secretFiles) {
+    const consumer = serviceIdentities.find(
+      (identity) => identity.unit_name === secret.consumer_unit_name,
+    );
+    if (
+      !consumer ||
+      secret.uid !== consumer.uid ||
+      secret.gid !== consumer.gid ||
+      secret.mode !== "0400"
+    ) {
+      fail(`live secret is not bound to its exact owner-only consumer: ${secret.target_path}`);
+    }
+    let cursor = dirname(secret.target_path);
+    let finalParent = true;
+    for (;;) {
+      const directory = parentsByPath.get(cursor);
+      if (!directory) {
+        fail(`live secret ancestor evidence is missing: ${cursor}`);
+      }
+      if (
+        !Number.isSafeInteger(directory.uid) ||
+        directory.uid < 0 ||
+        directory.uid > 0xffff_ffff ||
+        typeof directory.mode !== "string" ||
+        !/^[0-7]{4}$/u.test(directory.mode)
+      ) {
+        fail(`live secret ancestor metadata is malformed: ${cursor}`);
+      }
+      const permissions = Number.parseInt(directory.mode, 8);
+      if (finalParent) {
+        // This mirrors pir_private_files::validate_private_parent_fd_v1:
+        // loading after a restart must see the service euid and exact 0700,
+        // not merely a path that happened to pass a positive readability test.
+        if (directory.uid !== consumer.uid || permissions !== 0o700) {
+          fail(
+            `live secret final parent must be consumer-owned mode 0700: ${cursor}`,
+          );
+        }
+      } else {
+        const rootOwnedSticky =
+          directory.uid === 0 &&
+          (permissions & 0o1000) !== 0 &&
+          (permissions & 0o022) !== 0;
+        if (
+          (directory.uid !== 0 && directory.uid !== consumer.uid) ||
+          ((permissions & 0o022) !== 0 && !rootOwnedSticky)
+        ) {
+          fail(
+            `live secret ancestor violates the private-file loader policy: ${cursor}`,
+          );
+        }
+      }
+      if (cursor === "/") break;
+      cursor = dirname(cursor);
+      finalParent = false;
+    }
+  }
 }
 
 function secretProbeArgv(identity, targetPath) {
@@ -1505,7 +2258,6 @@ const EFFECTIVE_BASE_PROPERTIES = Object.freeze([
   "BindPaths",
   "BindReadOnlyPaths",
   "ConditionResult",
-  "Conditions",
   "ControlGroup",
   "DropInPaths",
   "Environment",
@@ -1534,6 +2286,151 @@ function effectivePropertyNames() {
     fail("collector and rendered runtime systemctl property schemas diverged");
   }
   return [...RUNTIME_SYSTEMCTL_SHOW_PROPERTIES];
+}
+
+function effectiveBusctlPropertyNames() {
+  const local = ["Conditions"];
+  if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_UNIT_PROPERTIES)) {
+    fail("collector and rendered runtime busctl property schemas diverged");
+  }
+  return [...RUNTIME_BUSCTL_UNIT_PROPERTIES];
+}
+
+function compareEffectiveConditionRecords(left, right) {
+  const leftKey = `${left.type}\0${left.parameter}\0${left.negate ? "1" : "0"}`;
+  const rightKey = `${right.type}\0${right.parameter}\0${right.negate ? "1" : "0"}`;
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function expectedEffectiveConditions(unit) {
+  if (!Array.isArray(unit.conditions) || unit.conditions.length > 64) {
+    fail(`unit conditions are not a bounded array: ${unit.unit_name}`);
+  }
+  const records = unit.conditions.map((condition) => {
+    if (typeof condition !== "string") {
+      fail(`unit condition is not a string: ${unit.unit_name}`);
+    }
+    const match = /^ConditionPathExists=(!?)(\/[A-Za-z0-9._/-]+)$/u.exec(condition);
+    if (!match || resolve(match[2]) !== match[2]) {
+      fail(`unit has an unreviewed effective condition: ${unit.unit_name}`);
+    }
+    const negate = match[1] === "!";
+    return {
+      negate,
+      parameter: match[2],
+      path_exists: !negate,
+      result: 1,
+      trigger: false,
+      type: "ConditionPathExists",
+    };
+  }).sort(compareEffectiveConditionRecords);
+  const keys = records.map((record) => `${record.type}\0${record.parameter}\0${record.negate}`);
+  if (new Set(keys).size !== keys.length) {
+    fail(`unit contains duplicate effective conditions: ${unit.unit_name}`);
+  }
+  return records;
+}
+
+export function systemdUnitObjectPathV1(unitName) {
+  if (typeof unitName !== "string" || !/^[a-z0-9][a-z0-9_.@-]{0,127}\.service$/u.test(unitName)) {
+    fail("systemd unit name cannot be mapped to a reviewed D-Bus object path");
+  }
+  const escaped = [...Buffer.from(unitName, "ascii")]
+    .map((byte) =>
+      (byte >= 0x30 && byte <= 0x39) ||
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a)
+        ? String.fromCharCode(byte)
+        : `_${byte.toString(16).padStart(2, "0")}`)
+    .join("");
+  return `/org/freedesktop/systemd1/unit/${escaped}`;
+}
+
+export function parseBusctlConditionsJsonV1(text, label = "systemd Conditions") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 128 * 1024) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (parsed.type !== "a(sbbsi)" || !Array.isArray(parsed.data) || parsed.data.length > 64) {
+    fail(`${label} does not have the reviewed a(sbbsi) shape`);
+  }
+  const records = parsed.data.map((tuple, index) => {
+    if (
+      !Array.isArray(tuple) ||
+      tuple.length !== 5 ||
+      tuple[0] !== "ConditionPathExists" ||
+      typeof tuple[1] !== "boolean" ||
+      typeof tuple[2] !== "boolean" ||
+      typeof tuple[3] !== "string" ||
+      !/^\/[A-Za-z0-9._/-]+$/u.test(tuple[3]) ||
+      resolve(tuple[3]) !== tuple[3] ||
+      !Number.isInteger(tuple[4]) ||
+      !new Set([-1, 0, 1]).has(tuple[4])
+    ) {
+      fail(`${label}.data[${index}] is not a reviewed ConditionPathExists tuple`);
+    }
+    return {
+      negate: tuple[2],
+      parameter: tuple[3],
+      result: tuple[4],
+      trigger: tuple[1],
+      type: tuple[0],
+    };
+  }).sort(compareEffectiveConditionRecords);
+  const keys = records.map((record) => `${record.type}\0${record.parameter}\0${record.negate}`);
+  if (new Set(keys).size !== keys.length) fail(`${label} contains duplicate conditions`);
+  return records;
+}
+
+function collectEffectiveConditions(unitName) {
+  const propertyNames = effectiveBusctlPropertyNames();
+  if (canonicalJson(propertyNames) !== canonicalJson(["Conditions"])) {
+    fail("runtime busctl property set is not closed");
+  }
+  const record = runAbsolute("/usr/bin/busctl", [
+    "--json=short",
+    "get-property",
+    "org.freedesktop.systemd1",
+    systemdUnitObjectPathV1(unitName),
+    "org.freedesktop.systemd1.Unit",
+    "Conditions",
+  ]);
+  if (record.exit_status !== 0 || record.stderr !== "") {
+    fail(`busctl Conditions failed for ${unitName}`);
+  }
+  return parseBusctlConditionsJsonV1(record.stdout, `${unitName}.Conditions`).map((condition) => ({
+    ...condition,
+    path_exists: existsSync(condition.parameter),
+  }));
+}
+
+function validateEffectiveConditions(unit, conditions) {
+  if (!Array.isArray(conditions)) fail(`effective conditions are missing: ${unit.unit_name}`);
+  for (const [index, condition] of conditions.entries()) {
+    exactKeys(
+      condition,
+      ["negate", "parameter", "path_exists", "result", "trigger", "type"],
+      `${unit.unit_name}.conditions[${index}]`,
+    );
+  }
+  if (canonicalJson(conditions) !== canonicalJson(expectedEffectiveConditions(unit))) {
+    fail(`effective condition drift: ${unit.unit_name}`);
+  }
+}
+
+export function assertEffectiveConditionSnapshotUnchangedV1(
+  expected,
+  actual,
+  unitName = "systemd unit",
+) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) {
+    fail(`${unitName} effective condition snapshots are incomplete`);
+  }
+  if (canonicalJson(actual) !== canonicalJson(expected)) {
+    fail(`systemd conditions changed during live collection: ${unitName}`);
+  }
+  return true;
 }
 
 function splitLiteralWords(value) {
@@ -1628,22 +2525,12 @@ function validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds) {
   return { kind: "long-running", mainPid };
 }
 
-function validateEffectiveUnitProperties(unit, properties, uptimeFinishedMilliseconds) {
+function validateEffectiveUnitProperties(unit, properties, conditions, uptimeFinishedMilliseconds) {
   exactKeys(properties, effectivePropertyNames(), `effective properties for ${unit.unit_name}`);
   if (properties.FragmentPath !== unit.fragment_path) fail(`FragmentPath drift: ${unit.unit_name}`);
   if (properties.DropInPaths !== "") fail(`systemd drop-ins are forbidden: ${unit.unit_name}`);
   if (properties.LoadState !== "loaded") fail(`unit is not loaded: ${unit.unit_name}`);
-  if (unit.conditions.length > 0 && properties.Conditions === "") {
-    fail(`effective conditions are missing: ${unit.unit_name}`);
-  }
-  for (const condition of unit.conditions) {
-    const separator = condition.indexOf("=");
-    const key = condition.slice(0, separator);
-    const value = condition.slice(separator + 1);
-    if (!properties.Conditions.includes(key) || !properties.Conditions.includes(value)) {
-      fail(`effective condition drift: ${unit.unit_name}`);
-    }
-  }
+  validateEffectiveConditions(unit, conditions);
   for (const forbidden of [
     "ExecStartPost",
     "ExecCondition",
@@ -1863,11 +2750,17 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
 }
 
 function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
+  const conditions = collectEffectiveConditions(unit.unit_name);
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
   }
-  const lifecycle = validateEffectiveUnitProperties(unit, properties, uptimeFinishedMilliseconds);
+  const lifecycle = validateEffectiveUnitProperties(
+    unit,
+    properties,
+    conditions,
+    uptimeFinishedMilliseconds,
+  );
   let generationConfirmations;
   let processIdentity;
   if (lifecycle.kind === "long-running") {
@@ -1878,8 +2771,15 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     generationConfirmations = [confirmUnitGeneration(unit, properties), confirmUnitGeneration(unit, properties)];
     processIdentity = null;
   }
+  const confirmedConditions = collectEffectiveConditions(unit.unit_name);
+  assertEffectiveConditionSnapshotUnchangedV1(
+    conditions,
+    confirmedConditions,
+    unit.unit_name,
+  );
   const fragmentBytes = readOneLinkRegular(unit.fragment_path, `systemd fragment ${unit.unit_name}`, 2 * 1024 * 1024);
   return {
+    conditions,
     fragment_sha256: hashBytes(fragmentBytes),
     generation_confirmations: generationConfirmations,
     process_identity: processIdentity,
@@ -2740,8 +3640,17 @@ export function validateLiveRuntimeEvidence({
     fail("runtime evidence request schema or collector is not reviewed");
   }
   if (evidence.collector !== RUNTIME_COLLECTOR) fail("live runtime collector identity mismatch");
-  if (canonicalJson(request.systemctl_show_properties) !== canonicalJson(RUNTIME_SYSTEMCTL_SHOW_PROPERTIES)) {
+  if (
+    !Array.isArray(request.systemctl_show_properties) ||
+    canonicalJson(request.systemctl_show_properties) !== canonicalJson(RUNTIME_SYSTEMCTL_SHOW_PROPERTIES)
+  ) {
     fail("runtime request systemctl property schema is not the reviewed closed set");
+  }
+  if (
+    !Array.isArray(request.busctl_unit_properties) ||
+    canonicalJson(request.busctl_unit_properties) !== canonicalJson(RUNTIME_BUSCTL_UNIT_PROPERTIES)
+  ) {
+    fail("runtime request busctl property schema is not the reviewed closed set");
   }
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
@@ -2891,10 +3800,19 @@ export function validateLiveRuntimeEvidence({
     if (actual.target_path !== expectedSecretParentPaths[index] || actual.file_type !== "directory" || actual.expected_type !== "directory") {
       fail(`live secret parent directory path/type drift: ${expectedSecretParentPaths[index]}`);
     }
+    validateSecretParentDirectoryEvidenceMetadata(
+      actual,
+      expectedSecretParentPaths[index],
+    );
     for (const key of ["acl_sha256", "capability_sha256", "stat_command_sha256", "xattr_sha256"]) {
       validateDigest(actual[key], `live secret parent ${key}`);
     }
   }
+  validateSecretParentDirectoryPolicyV1(
+    request.secret_files,
+    request.service_identities,
+    evidence.secret_parent_directories,
+  );
   if (!Array.isArray(evidence.runtime_directories) || evidence.runtime_directories.length !== request.tmpfiles_directories.length) {
     fail("live tmpfiles directory evidence is incomplete");
   }
@@ -2985,7 +3903,7 @@ export function validateLiveRuntimeEvidence({
     const actual = evidence.units[index];
     exactKeys(
       actual,
-      ["fragment_sha256", "generation_confirmations", "process_identity", "properties", "unit_name"],
+      ["conditions", "fragment_sha256", "generation_confirmations", "process_identity", "properties", "unit_name"],
       `live units[${index}]`,
     );
     if (actual.unit_name !== expected.unit_name || actual.properties.FragmentPath !== expected.fragment_path) {
@@ -3002,6 +3920,7 @@ export function validateLiveRuntimeEvidence({
     const lifecycle = validateEffectiveUnitProperties(
       expected,
       actual.properties,
+      actual.conditions,
       evidence.host.uptime_finished_milliseconds,
     );
     validateGenerationConfirmations(actual.generation_confirmations, actual.properties, expected.unit_name);
@@ -3422,6 +4341,31 @@ export function collectStoppedEdgeActivationEvidence({
   return evidence;
 }
 
+function confirmSecretFilesUnchanged(installedFiles, request, stage) {
+  for (const secret of request.secret_files) {
+    const before = installedFiles.find((entry) => entry.target_path === secret.target_path);
+    const expected = request.installed_files.find((entry) => entry.target_path === secret.target_path);
+    if (!before || !expected) {
+      fail(`secret is absent from installed-file closure: ${secret.target_path}`);
+    }
+    const after = collectInstalledFile(expected);
+    assertInstalledFileCollectionsUnchanged(before, after, stage, secret.target_path);
+  }
+}
+
+function confirmSecretParentDirectoriesUnchanged(
+  secretParentDirectoryBundle,
+  request,
+  stage,
+) {
+  const confirmation = collectSecretParentDirectories(request.secret_files);
+  assertSecretParentDirectoryBundlesUnchanged(
+    secretParentDirectoryBundle,
+    confirmation,
+    stage,
+  );
+}
+
 export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256, approvedPlanSha256, expectedMachineIdSha256 }) {
   assertRootLinuxCollector("collect-live");
   validateDigest(approvedManifestSha256, "approved manifest SHA-256");
@@ -3437,21 +4381,15 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   const installedFiles = request.installed_files.map(collectInstalledFile);
   const runtimeDirectories = request.tmpfiles_directories.map((entry) => collectTmpfilesDirectory(entry, nss));
   const runtimePaths = request.runtime_paths.map(collectRuntimePath);
-  const secretParentDirectories = secretParentPaths(request.secret_files).map(collectSecretParentDirectory);
+  const secretParentDirectoryBundle = collectSecretParentDirectories(request.secret_files);
+  const secretParentDirectories = secretParentDirectoryBundle.evidence;
   const secretAccessChecks = collectSecretAccessChecks(request, nss);
-  for (const secret of request.secret_files) {
-    const before = installedFiles.find((entry) => entry.target_path === secret.target_path);
-    const expected = request.installed_files.find((entry) => entry.target_path === secret.target_path);
-    if (!before || !expected) fail(`secret is absent from installed-file closure: ${secret.target_path}`);
-    const after = collectInstalledFile(expected);
-    if (canonicalJson(before) !== canonicalJson(after)) {
-      fail(`secret metadata or content changed around access probes: ${secret.target_path}`);
-    }
-  }
-  const secretParentConfirmation = secretParentPaths(request.secret_files).map(collectSecretParentDirectory);
-  if (canonicalJson(secretParentDirectories) !== canonicalJson(secretParentConfirmation)) {
-    fail("secret parent directory metadata changed around access probes");
-  }
+  confirmSecretFilesUnchanged(installedFiles, request, "around access probes");
+  confirmSecretParentDirectoriesUnchanged(
+    secretParentDirectoryBundle,
+    request,
+    "around access probes",
+  );
   const units = request.units.map((unit) =>
     collectUnit(unit, nss, request.service_identities, hostStarted.uptime_milliseconds),
   );
@@ -3474,17 +4412,43 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (canonicalJson(runtimePaths) !== canonicalJson(finalRuntimePaths)) {
     fail("runtime path metadata changed during protected process collection");
   }
+  confirmLocalFilesNssPolicyUnchanged(nss);
+  const hostFinished = readHostBinding();
+  if (!sameHostGeneration(hostStarted, hostFinished)) {
+    fail("host or boot identity changed during live collection");
+  }
+  // Complete expensive secret revalidation only after every earlier long host,
+  // systemd, procfs, NSS and runtime-path probe. File content/metadata is
+  // rechecked first; the descriptor-bound directory-set pass then also catches
+  // namespace changes made while those file probes ran.
+  confirmSecretFilesUnchanged(
+    installedFiles,
+    request,
+    "during final evidence sealing",
+  );
+  confirmSecretParentDirectoriesUnchanged(
+    secretParentDirectoryBundle,
+    request,
+    "during final evidence sealing",
+  );
+  // The final external-state pass is deliberately lightweight and comes after
+  // the expensive secret commands. Per-unit checks inside collectUnit are not
+  // enough: a profile sentinel or unit generation could otherwise change while
+  // later probes run. Recheck structured Conditions and bind each same unit
+  // generation here; nothing below this loop probes external state before the
+  // evidence object is constructed and returned.
   for (let index = 0; index < request.units.length; index += 1) {
+    const finalConditions = collectEffectiveConditions(request.units[index].unit_name);
+    assertEffectiveConditionSnapshotUnchangedV1(
+      units[index].conditions,
+      finalConditions,
+      request.units[index].unit_name,
+    );
     units[index].generation_confirmations.push(
       confirmUnitGeneration(request.units[index], units[index].properties),
     );
   }
-  confirmLocalFilesNssPolicyUnchanged(nss);
-  const hostFinished = readHostBinding();
   const finished = Math.floor(Date.now() / 1000);
-  if (!sameHostGeneration(hostStarted, hostFinished)) {
-    fail("host or boot identity changed during live collection");
-  }
   const evidence = {
     approved_plan_sha256: approvedPlanSha256,
     challenge_hex: challengeHex,

@@ -28,9 +28,9 @@ import { pathToFileURL } from "node:url";
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 3;
+const EVIDENCE_SCHEMA_VERSION = 4;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v3";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v4";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -139,6 +139,16 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/hetzner-provider.service.in",
     ]),
   }),
+  "provider-no-standard-cashu-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+    ]),
+  }),
+  "provider-direct-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+    ]),
+  }),
   "rollback-authority-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/systemd/rollback-authority.service.in",
@@ -177,7 +187,6 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "BindReadOnlyPaths",
   "CapabilityBoundingSet",
   "ConditionResult",
-  "Conditions",
   "ControlGroup",
   "DropInPaths",
   "Environment",
@@ -239,6 +248,11 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "WorkingDirectory",
 ]);
 
+// Conditions is an `a(sbbsi)` D-Bus property. systemctl 255 renders it as
+// `[unprintable]`, so the root collector must read it through busctl's strict
+// JSON mode instead of pretending it is one of the scalar show properties.
+export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze(["Conditions"]);
+
 const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in": {
     artifactClass: "systemd-unit",
@@ -267,6 +281,18 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-provider.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-provider.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/hetzner-provider-direct.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-provider-direct.service",
     modes: ["0644"],
     rootOwned: true,
   },
@@ -934,6 +960,11 @@ function expectedPayloadClass(targetPath) {
     return "binary";
   }
   const name = basename(targetPath).toLowerCase();
+  // The Rust remote-rollback loader treats the TOML itself as private
+  // deployment material: it must be owned by the service effective UID at
+  // 0400/0600.
+  // Keep that stronger contract even though the filename has a .toml suffix.
+  if (name === "remote-rollback-authority.toml") return "secret";
   if (name.endsWith(".sha256")) return "hash-manifest";
   if (
     name.endsWith(".key") ||
@@ -1016,6 +1047,14 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
       ["/etc/bitcoinpir/payment-v1/lightning/", "bitcoinpir-core-lightning.service"],
     ],
     "provider-v1": [["/etc/bitcoinpir/payment-v1/provider/", "bitcoinpir-provider.service"]],
+    "provider-no-standard-cashu-v1": [[
+      "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/",
+      "bitcoinpir-provider-no-standard-cashu.service",
+    ]],
+    "provider-direct-v1": [[
+      "/etc/bitcoinpir/payment-v1/provider-direct/",
+      "bitcoinpir-provider-direct.service",
+    ]],
     "rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/rollback-authority/", "bitcoinpir-rollback-authority.service"]],
   };
   return mappings[deploymentProfile]?.find(([prefix]) => targetPath.startsWith(prefix))?.[1];
@@ -1036,6 +1075,95 @@ function validateSecretOwnerBindings(plan) {
         `secret must be owned exclusively by ${unitName} uid=${identity.uid} gid=${identity.gid} mode 0400: ${artifact.target_path}`,
       );
     }
+  }
+}
+
+function remoteRollbackPathsForProfile(profile) {
+  const roots = {
+    "issuer-lightning-signet-v1": "/etc/bitcoinpir/payment-v1/issuer",
+    "provider-v1": "/etc/bitcoinpir/payment-v1/provider",
+    "provider-no-standard-cashu-v1":
+      "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
+    "provider-direct-v1": "/etc/bitcoinpir/payment-v1/provider-direct",
+  };
+  const root = roots[profile];
+  if (!root) return null;
+  return Object.freeze({
+    config: `${root}/remote-rollback-authority.toml`,
+    signingSeed: `${root}/remote-rollback-client-signing.seed`,
+    valueRoot: `${root}/remote-rollback-value-root.key`,
+  });
+}
+
+function validateRemoteRollbackPayloadMetadata(plan) {
+  const paths = remoteRollbackPathsForProfile(plan.deployment_profile);
+  if (!paths) return;
+  const artifacts = new Map(
+    plan.payload_artifacts.map((artifact) => [artifact.target_path, artifact]),
+  );
+  for (const [role, targetPath] of Object.entries(paths)) {
+    const artifact = artifacts.get(targetPath);
+    if (!artifact) {
+      fail(`${plan.deployment_profile} remote rollback ${role} payload is missing`);
+    }
+    if (artifact.class !== "secret") {
+      fail(
+        `${plan.deployment_profile} remote rollback ${role} must use the owner-only secret artifact class`,
+      );
+    }
+  }
+}
+
+function validateProviderPayloadClosure(plan) {
+  const profile = plan.deployment_profile;
+  if (!new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(profile)) {
+    return;
+  }
+  const direct = profile === "provider-direct-v1";
+  const noStandardCashu = profile !== "provider-v1";
+  const root = profile === "provider-v1"
+    ? "/etc/bitcoinpir/payment-v1/provider"
+    : direct
+      ? "/etc/bitcoinpir/payment-v1/provider-direct"
+      : "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu";
+  if (plan.payload_artifacts.some((artifact) =>
+    /(?:^|[-_.])retained(?:[-_.]|$)/u.test(basename(artifact.source_path)) ||
+    /(?:^|[-_.])retained(?:[-_.]|$)/u.test(basename(artifact.target_path)))) {
+    fail(`${profile} is a zero-retained closed profile and must not include retained-policy payload material`);
+  }
+  const remote = remoteRollbackPathsForProfile(profile);
+  const expected = new Set([
+    ...(!direct ? [
+      `${root}/cashu-bat.key`,
+      `${root}/provider-clearing-signing.key`,
+      `${root}/shared-clearing-approval.bin`,
+      `${root}/shared-clearing-authorization.bin`,
+      `${root}/shared-redeem-idempotency.key`,
+    ] : []),
+    ...(!noStandardCashu ? [
+      `${root}/cashu-custody-epoch-1.key`,
+      `${root}/cashu-recovery-epoch-1.key`,
+    ] : []),
+    `${root}/databases.toml`,
+    `${root}/provider-identity.cert`,
+    `${root}/provider-identity.key`,
+    remote.config,
+    remote.signingSeed,
+    remote.valueRoot,
+    `${root}/service-policy.bin`,
+    `${root}/unified-server.sha256`,
+    `/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`,
+  ]);
+  assertSameStringSet(
+    new Set(plan.payload_artifacts.map((artifact) => artifact.target_path)),
+    expected,
+    `${profile} payload targets`,
+  );
+  if (
+    noStandardCashu &&
+    Object.keys(plan.placeholders).some((name) => name.startsWith("CASHU_"))
+  ) {
+    fail(`${profile} must not declare Standard Cashu placeholders`);
   }
 }
 
@@ -1163,7 +1291,34 @@ function validatePlan(plan) {
 
   const expectedTemplates = PROFILE_CATALOG[plan.deployment_profile].templates;
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
+  validateProviderPayloadClosure(plan);
+  validateRemoteRollbackPayloadMetadata(plan);
   validateSecretOwnerBindings(plan);
+}
+
+function remoteRollbackConfigManagedReferences(profile, targetPath, bytes) {
+  const paths = remoteRollbackPathsForProfile(profile);
+  if (!paths || targetPath !== paths.config) return [];
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail(`${profile} remote rollback config is not valid UTF-8`);
+  }
+  if (/\r|\0/u.test(text)) {
+    fail(`${profile} remote rollback config must use canonical LF text`);
+  }
+  for (const [key, expected] of [
+    ["client_signing_seed_path", paths.signingSeed],
+    ["value_root_key_path", paths.valueRoot],
+  ]) {
+    const exactLine = `${key} = "${expected}"`;
+    const occurrences = text.split("\n").filter((line) => line.includes(key));
+    if (canonicalize(occurrences) !== canonicalize([exactLine])) {
+      fail(`${profile} remote rollback config must bind exact ${key}=${expected}`);
+    }
+  }
+  return [paths.signingSeed, paths.valueRoot];
 }
 
 function extractPlaceholders(text) {
@@ -1381,8 +1536,26 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
   }),
   "provider-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-provider.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "provider-no-standard-cashu-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "provider-direct-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider-direct.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
     ]),
   }),
   "rollback-authority-v1": Object.freeze({
@@ -1393,7 +1566,14 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
   }),
 });
 
-function validateProfileUnitPolicy(deploymentProfile, fragmentPath, conditions, hardening, label) {
+function validateProfileUnitPolicy(
+  deploymentProfile,
+  fragmentPath,
+  conditions,
+  hardening,
+  execStart,
+  label,
+) {
   const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
   if (!expectedConditions) {
     fail(`${label} has no closed profile-specific activation-condition policy`);
@@ -1433,13 +1613,56 @@ function validateProfileUnitPolicy(deploymentProfile, fragmentPath, conditions, 
     }
   }
   if (
-    deploymentProfile === "provider-v1" &&
-    fragmentPath === "/etc/systemd/system/bitcoinpir-provider.service"
+    new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(deploymentProfile) &&
+    new Set([
+      "/etc/systemd/system/bitcoinpir-provider.service",
+      "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service",
+      "/etc/systemd/system/bitcoinpir-provider-direct.service",
+    ]).has(fragmentPath)
   ) {
     for (const key of ["PrivateDevices", "ProtectClock", "ProtectHostname"]) {
       if (canonicalize(hardening[key] ?? []) !== canonicalize(["true"])) {
         fail(`${label} must keep provider ${key}=true`);
       }
+    }
+  }
+  if (
+    new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(
+      deploymentProfile,
+    )
+  ) {
+    const command = execStart.join("\n");
+    if (/--service-retained-policy(?:\s|=|$)/u.test(command)) {
+      fail(
+        `${label} is a zero-retained closed profile and must not configure --service-retained-policy`,
+      );
+    }
+    if (
+      /--service-(?:arc-key|free-ip-key|trust-direct-peer-ip)(?:\s|=|$)|--allow-experimental-arc(?:\s|=|$)|--require-arc(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must keep production ARC and Free-IP adapters unavailable`);
+    }
+  }
+  if (deploymentProfile === "provider-no-standard-cashu-v1") {
+    const command = execStart.join("\n");
+    if (
+      /--service-cashu-(?:recovery-key|recovery-active-epoch|custody-key|custody-active-epoch|exposure-limit)(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must not configure Standard Cashu custody, recovery or exposure material`);
+    }
+  }
+  if (deploymentProfile === "provider-direct-v1") {
+    const command = execStart.join("\n");
+    if (
+      /--service-(?:bat-key|cashu-[a-z-]+|shared-[a-z-]+)(?:\s|=|$)|--require-cashu(?:\s|=|$)|--cashu-keyset(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must keep BAT, Standard Cashu, shared issuer, ARC and Free-IP adapters unavailable`);
     }
   }
 }
@@ -1673,6 +1896,12 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/provider/unified-server.sha256":
       oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
       return;
+    case "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/unified-server.sha256":
+      oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/provider-direct/unified-server.sha256":
+      oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
+      return;
     case "/etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256":
       oneExact(`/opt/bitcoinpir/rollback-authority/${plan.placeholders.ROLLBACK_AUTHORITY_SHA256}/rollback-authority`);
       return;
@@ -1861,6 +2090,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         specification.target_path,
         parsed.conditions,
         parsed.hardening,
+        parsed.exec_start,
         `rendered unit ${specification.target_path}`,
       );
       for (const reference of parsed.managed_references) initialReferences.add(reference);
@@ -1891,6 +2121,13 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     const sourceSha256 = sha256(sourceBytes);
     if (sourceSha256 !== specification.expected_sha256) {
       fail(`payload source hash mismatch for ${specification.source_path}`);
+    }
+    for (const reference of remoteRollbackConfigManagedReferences(
+      plan.deployment_profile,
+      specification.target_path,
+      sourceBytes,
+    )) {
+      initialReferences.add(reference);
     }
     const bundlePath = artifactBundlePath(specification.target_path);
     fileBytes.set(bundlePath, sourceBytes);
@@ -2134,6 +2371,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       unit.fragment_path,
       unit.conditions,
       unit.hardening,
+      unit.exec_start,
       label,
     );
   }
@@ -2244,6 +2482,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     schema_version: EVIDENCE_SCHEMA_VERSION,
     secret_files: secretFiles,
     service_identities: manifest.service_identities,
+    busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,

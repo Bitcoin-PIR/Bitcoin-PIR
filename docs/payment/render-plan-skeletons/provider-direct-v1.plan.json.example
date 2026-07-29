@@ -1,0 +1,113 @@
+{
+  "deployment_id": "replace-provider-direct-v1",
+  "deployment_profile": "provider-direct-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/unified_server",
+      "target_path": "/opt/bitcoinpir/unified-server/INVALID_REPLACE_WITH_UNIFIED_SERVER_SHA256/unified_server",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/unified-server.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/unified-server.sha256",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/databases.toml",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/databases.toml",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/provider-identity.cert",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/provider-identity.cert",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/provider-identity.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/provider-identity.key",
+      "uid": 62935
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/remote-rollback-authority.toml",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/remote-rollback-authority.toml",
+      "uid": 62935
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/remote-rollback-client-signing.seed",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/remote-rollback-client-signing.seed",
+      "uid": 62935
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/remote-rollback-value-root.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/remote-rollback-value-root.key",
+      "uid": 62935
+    },
+    {
+      "class": "policy",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62936,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-direct/service-policy.bin",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider-direct/service-policy.bin",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "HETZNER_POLICY_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_POLICY_KEY",
+    "HETZNER_PROVIDER_ID_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_PROVIDER_ID",
+    "HETZNER_PROVIDER_SERVER_ID": "INVALID_REPLACE_WITH_SERVER_ID",
+    "UNIFIED_SERVER_SHA256": "INVALID_REPLACE_WITH_UNIFIED_SERVER_SHA256"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-provider-direct.service",
+      "uid": 0
+    }
+  ],
+  "schema_version": 1,
+  "service_identities": [
+    {
+      "gid": 62936,
+      "group_name": "bitcoinpir-provider-direct",
+      "uid": 62935,
+      "unit_name": "bitcoinpir-provider-direct.service",
+      "user_name": "bitcoinpir-provider-direct"
+    }
+  ]
+}

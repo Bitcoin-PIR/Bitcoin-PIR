@@ -22,18 +22,54 @@ deployment phases:
 
 The role gate is machine-enforced per unit:
 
-| Render profile or blocked role | Required role-specific activation sentinel(s) |
-| --- | --- |
-| `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` |
-| `issuer-lightning-signet-v1` | `SIGNET-ISSUER-ACTIVATION-APPROVED` |
-| `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` |
-| `rollback-authority-v1` | `ROLLBACK-AUTHORITY-ACTIVATION-APPROVED` |
-| `edge-rollback-authority-v1` | `ROLLBACK-EDGE-ACTIVATION-APPROVED` |
-| unresolved directory relay unit | `RELAY-ACTIVATION-APPROVED` in addition to the still-blocking relay-selection gate |
+| Render profile or blocked role | Required role-specific activation sentinel(s) | Sentinel(s) that must be absent |
+| --- | --- | --- |
+| `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` | — |
+| `issuer-lightning-signet-v1` | `SIGNET-ISSUER-ACTIVATION-APPROVED` | — |
+| `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
+| `provider-no-standard-cashu-v1` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
+| `provider-direct-v1` | `PROVIDER-DIRECT-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` |
+| `rollback-authority-v1` | `ROLLBACK-AUTHORITY-ACTIVATION-APPROVED` | — |
+| `edge-rollback-authority-v1` | `ROLLBACK-EDGE-ACTIVATION-APPROVED` | — |
+| unresolved directory relay unit | `RELAY-ACTIVATION-APPROVED` in addition to the still-blocking relay-selection gate | — |
 
 Provisioning one row's sentinel never authorizes another row. The rendered
 artifact gate validates the complete exact `ConditionPathExists=` set for every
-closed profile.
+closed profile. A host may stage several provider templates but may run only one
+provider profile. The negative sentinel conditions are evaluated when systemd
+starts a unit; they do not stop an already running process. Switching therefore
+requires an explicit ceremony: stop the old unit, remove its positive sentinel,
+prove that the old unit is inactive and port `8191` has no listener, confirm all
+other provider sentinels are absent, then create exactly the new profile's
+positive sentinel and start only its unit. Never create the new sentinel first
+or rely on a bind failure to perform the switch.
+
+The three profiles deliberately use separate `StateDirectory=` roots. That
+does not authorize a fresh `provider.sqlite3` for the same provider. All three
+checked-in provider templates are **zero-retained closed profiles**:
+the source and rendered gates reject both `--service-retained-policy` and any
+retained-policy payload. They are safe for a new provider identity, or for a
+same-identity transition only after new issuance/admission has stopped, the
+longest old policy/capability/grace horizon has elapsed, Standard Cashu custody
+has been fully exported/retired/reconciled, and every shared-issuer redeem has
+a known outcome. The static render gate cannot prove that drain; a same-
+identity transition therefore needs separately reviewed transition evidence.
+If any old credential or outcome-unknown operation remains, keep the old
+profile available under its original identity or deploy a genuinely new
+provider identity instead.
+
+After that drain, an identity-preserving profile change also requires a
+separately reviewed, stopped offline migration that preserves the
+stable server ID, operator key and derived provider ID, policy-signing key,
+provider identity certificate/key, ProviderStore/store-instance identity,
+spent and replay state, remote authority instance/key, namespace, client-
+verifying-key identity, client-signing seed, value-root key and floor before
+`open_existing` and the new profile's preflight may pass. Re-render the TOML
+only with the new profile's canonical secret paths. Rotating any authority-
+identity field requires a separately reviewed migration ceremony; V1 has no
+online rebind or reset. Otherwise
+deploy a genuinely new provider/server identity and directory entry; never
+reset state merely to make the new unit start.
 
 Inventory non-secret values in
 [DEPLOYMENT_INPUT_MATRIX.md](../../docs/payment/DEPLOYMENT_INPUT_MATRIX.md) and
@@ -57,14 +93,32 @@ The templates divide responsibilities as follows:
   policy-bound DHKE scalar between its issuer and that provider; compromise of
   either copy can forge that BAT lineage. Omit this method and use online
   shared-issuer redemption when that shared-secret boundary is unacceptable.
-  A mint-dependent Standard Cashu offer must be omitted from current and
-  retained policies unless the render plan selects an approved production
-  mint origin, WebPKI/pins, unit, finite custody/exposure limits and recovery/
-  outage procedure. The local CDK fake-wallet mint is never a production
-  dependency. The current closed `provider-v1` unit nevertheless always loads
-  those Standard-Cashu inputs, so omission leaves that whole profile blocked;
-  a provider without Standard Cashu needs a separately reviewed profile rather
-  than deleting arguments from this one.
+  Any Standard Cashu offer in the current policy must be omitted unless the render
+  plan selects an approved production mint origin, WebPKI/pins, unit, finite
+  custody/exposure limits and recovery/outage procedure. The local CDK fake-
+  wallet mint is never a production
+  dependency. The closed `provider-v1` unit always loads those Standard-Cashu
+  inputs and remains blocked without the production-mint selection gate. Select
+  the distinct `provider-no-standard-cashu-v1` unit and plan when the current
+  policy omits Standard Cashu.
+  That profile uses a separate
+  service identity, configuration/state paths and activation sentinel, retains
+  provider-local BAT and the approved shared issuer, and carries no Cashu
+  recovery, custody or exposure field. The runtime Cashu-configuration
+  validator rejects Standard Cashu in the configured current policy. This
+  zero-retained profile carries no old-policy redemption route. Do not form either
+  profile by deleting or adding arguments ad hoc.
+  The still smaller `provider-direct-v1` profile uses another independent unit,
+  account, state/configuration root, sentinel and exact nine-payload allowlist.
+  It loads no BAT, Standard-Cashu, shared-issuer, ARC or Free-IP material. Its
+  current policy may advertise only Free open-best-effort, Free proof-of-work,
+  provider-local Free anonymous tickets and direct BOLT11 receipts. It accepts
+  no retained policy or retained credential-redemption route. Its nine payloads
+  include the owner-only remote rollback config,
+  client-signing seed and value-root key. Startup coverage rejects every other
+  applicable route. It makes no
+  paid-QoS claim, and removing BAT/shared fields from either larger profile does
+  not create this profile.
 - `systemd/hetzner-cln-rpc-guard.service.in` is the only principal other than
   CLN and the dedicated one-shot preflight that may traverse the native CLN
   socket directory. It parses and reconstructs bounded JSON-RPC, permits only
@@ -174,6 +228,22 @@ and modes. Edge live evidence additionally requires hard/soft core limits of
 zero, zero current/max cgroup swap, and the host-wide
 `kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
 that exact root-owned, canonical, one-link, non-writable handler.
+For every manifest secret, live evidence mirrors the Linux private-file
+loader's DAC contract: the final parent must be owned by the consuming service
+EUID at exact mode `0700`, while every ancestor must satisfy the root/EUID
+ownership, write-bit and root-sticky exception. Independently, the runtime
+collector is stricter and rejects named/default POSIX ACLs, xattrs and file
+capabilities on the opened chain; this does not imply that the Rust loader
+audits Linux POSIX, NFSv4 or FUSE ACLs. A successful `test -r` probe is not a
+substitute. Each directory component is opened from its pinned parent with
+`O_NOFOLLOW`; installed-file and parent-directory metadata probes refer to
+pinned descriptors, with canonical pathnames rebound before and after
+collection and again after every long probe. Private nanosecond
+ctime/mtime fingerprints span those confirmations to reject rename-away-and-back
+ABA; they are collector-local comparison state and are not emitted into the
+runtime evidence schema. Only after those expensive secret checks finish does
+the collector perform its final lightweight structured-Conditions and unit-
+generation pass, immediately followed by evidence construction.
 `LimitCORE=0` alone is not sufficient when a
 kernel pipe handler ignores the resource limit. Offline review without the externally transferred full evidence
 digest is not activation evidence. HAProxy admission begins only after Caddy
@@ -193,7 +263,7 @@ generation. Neither command permits caller-authored evidence or challenge
 material; offline verification requires the complete independently transferred
 evidence digest. A warm reload is not an accepted replacement.
 
-Runtime-evidence v3 accepts only a local-files NSS authority (`passwd: files`,
+Runtime-evidence v4 accepts only a local-files NSS authority (`passwd: files`,
 `group: files`, and no explicit `initgroups:` line). It snapshots the canonical
 root-owned `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group` around NSS
 enumeration and confirms the same files again at the end of live collection,
