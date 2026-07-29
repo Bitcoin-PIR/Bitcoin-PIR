@@ -646,6 +646,29 @@ single-attempt consent for users who deliberately select a pooled issuer. Even
 then, provider origins and provider-specific policy, operator, receipt, BAT and
 ARC keys must remain distinct.
 
+The Web trusted bootstrap does not contain a provider-wide Lightning payee.
+Each provider instead has a bounded `lightningPayeeTrust` array. Every entry
+binds an exact signed-offer issuer identity, credential-free canonical HTTPS
+issuer origin, Lightning network and compressed payee identity:
+
+```json
+{
+  "lightningPayeeTrust": [{
+    "issuerIdHex": "<64 lowercase hex>",
+    "issuerOrigin": "https://issuer.example",
+    "network": "signet",
+    "expectedPayeePubkeyHex": "<02 or 03 followed by 64 lowercase hex>"
+  }]
+}
+```
+
+The issuer origin above is taken from the exact signed `ServiceOfferViewV1`;
+it is not the provider's independent `wss://` PIR endpoint. Duplicate
+`(issuerIdHex, canonical issuerOrigin, network)` tuples are rejected even when
+they repeat the same payee. A non-BOLT11 offer receives no payee context. A
+BOLT11 offer with zero or more than one exact trust match fails before invoice
+acquisition or capability retirement.
+
 If the client reaches only one provider, any capability already durably spent
 there remains spent. The product deliberately provides no automatic recovery
 or refund. The UI should acquire/present as late as possible and explain this

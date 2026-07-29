@@ -376,11 +376,13 @@ export {
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
+  expectedLightningPayeeForOfferV1,
   providerArkFingerprintV1,
-  providerExpectedPayeeV1,
+  providerLightningPayeeTrustV1,
   providerOperatorKeyV1,
 } from './product-provider-bootstrap.js';
 export type {
+  ProductLightningPayeeTrustV1,
   ProductTrustedBootstrapV1,
   ProductTrustedProviderV1,
 } from './product-provider-bootstrap.js';

@@ -434,6 +434,13 @@ application, logs, browser storage, or timing joins the payment to the PIR
 operation. The architecture's token separation reduces that application join;
 it cannot eliminate global timing analysis.
 
+The browser's independent trust bootstrap binds Lightning payees per exact
+signed `(issuer ID, canonical HTTPS issuer origin, network)` tuple. The PIR
+provider WebSocket origin is a separate trust field and is never substituted
+for the issuer origin. Provider-wide payee wildcards, duplicate tuples,
+credential-bearing issuer URLs, and BOLT11 offers without exactly one match
+fail closed. Free and Cashu-acquired offers carry no Lightning payee context.
+
 ## Process-memory handling boundary
 
 Bearer material is erased on a best-effort basis wherever this implementation

@@ -7,6 +7,20 @@ import type { SelectableDirectoryEntryV1 } from './directory-vault.js';
 import { directoryProviderTrustAnchorV1 } from './nostr-directory.js';
 import type { ProviderTrustAnchorV1 } from './service-admission.js';
 import type { LightningNetworkNameV1 } from './admission-vault.js';
+import type { ServiceOfferViewV1 } from './sdk-bridge.js';
+
+const MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1 = 64;
+
+export interface ProductLightningPayeeTrustV1 {
+  /** Exact issuer identity committed by the signed service offer. */
+  issuerIdHex: string;
+  /** Credential-free HTTPS origin committed by the signed service offer. */
+  issuerOrigin: string;
+  /** Exact BOLT11 network accepted for this issuer/payee tuple. */
+  network: LightningNetworkNameV1;
+  /** Independently trusted compressed secp256k1 Lightning node identity. */
+  expectedPayeePubkeyHex: string;
+}
 
 export interface ProductTrustedProviderV1 {
   label: string;
@@ -20,8 +34,8 @@ export interface ProductTrustedProviderV1 {
   hardwareAttestation: 'required' | 'unavailable-accepted';
   expectedArkFingerprintHex?: string;
   databaseProofPins: DatabaseProofPin[];
-  /** Independent payment trust; the Nostr directory does not supply this. */
-  expectedLightningPayeePubkeyHex?: string;
+  /** Independent exact-offer payment trust; the Nostr directory does not supply this. */
+  lightningPayeeTrust: ProductLightningPayeeTrustV1[];
 }
 
 export interface ProductTrustedBootstrapV1 {
@@ -107,12 +121,48 @@ export function providerOperatorKeyV1(provider: ProductTrustedProviderV1): Uint8
   return hexToBytes(provider.operatorSigningKeyHex);
 }
 
-export function providerExpectedPayeeV1(
+/** Return an owned copy so callers cannot mutate the in-memory bootstrap. */
+export function providerLightningPayeeTrustV1(
   provider: ProductTrustedProviderV1,
+): ProductLightningPayeeTrustV1[] {
+  return provider.lightningPayeeTrust.map((entry) => ({ ...entry }));
+}
+
+/**
+ * Resolve payment trust only after one exact signed offer has been selected.
+ * Non-BOLT11 offers deliberately carry no Lightning payee. A BOLT11 offer
+ * must match one independently bootstrapped `(issuer, origin, network)` tuple.
+ * The canonical HTTPS origin comes from `offer.endpoint`; it is never the
+ * provider's separately trusted WebSocket endpoint. Duplicate tuples are
+ * rejected even when they repeat the same payee.
+ */
+export function expectedLightningPayeeForOfferV1(
+  trust: readonly ProductLightningPayeeTrustV1[],
+  offer: ServiceOfferViewV1,
+  network: LightningNetworkNameV1,
 ): Uint8Array | undefined {
-  return provider.expectedLightningPayeePubkeyHex
-    ? hexToBytes(provider.expectedLightningPayeePubkeyHex)
-    : undefined;
+  if (offer.acquisition !== 'bolt11') return undefined;
+  if (!Array.isArray(trust) || trust.length > MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1
+      || !isNetwork(network)) {
+    throw new Error('Lightning payee trust is invalid');
+  }
+  const normalized = trust.map((entry, index) => parseLightningPayeeTrust(
+    entry,
+    `Lightning payee trust entry ${index}`,
+  ));
+  requireUnique(
+    normalized.map(lightningPayeeTrustTupleV1),
+    'Lightning payee trust tuple',
+  );
+  const issuerIdHex = nonzeroHex('signed offer issuer ID', offer.issuerIdHex, 64);
+  const issuerOrigin = httpsOrigin('signed offer issuer endpoint', offer.endpoint);
+  const matches = normalized.filter((entry) => entry.issuerIdHex === issuerIdHex
+    && entry.issuerOrigin === issuerOrigin
+    && entry.network === network);
+  if (matches.length !== 1) {
+    throw new Error('BOLT11 offer has no exact trusted Lightning payee');
+  }
+  return hexToBytes(matches[0].expectedPayeePubkeyHex);
 }
 
 export function providerArkFingerprintV1(
@@ -170,12 +220,24 @@ function parseProvider(value: unknown, index: number): ProductTrustedProviderV1 
     (pin, pinIndex) => parseDatabasePin(pin, index, pinIndex),
   );
   requireUnique(databaseProofPins.map((pin) => String(pin.dbId)), `provider ${index} database ID`);
-  const expectedLightningPayeePubkeyHex = value.expectedLightningPayeePubkeyHex === undefined
-    ? undefined
-    : compressedPubkeyHex(
-      `provider ${index} expected Lightning payee`,
-      value.expectedLightningPayeePubkeyHex,
+  if (value.expectedLightningPayeePubkeyHex !== undefined) {
+    throw new Error(
+      `provider ${index} provider-wide Lightning payee trust is not accepted`,
     );
+  }
+  if (!Array.isArray(value.lightningPayeeTrust)
+      || value.lightningPayeeTrust.length > MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1) {
+    throw new Error(
+      `provider ${index} lightningPayeeTrust must contain at most ${MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1} entries`,
+    );
+  }
+  const lightningPayeeTrust = value.lightningPayeeTrust.map((entry, trustIndex) => (
+    parseLightningPayeeTrust(entry, `provider ${index} Lightning payee trust ${trustIndex}`)
+  ));
+  requireUnique(
+    lightningPayeeTrust.map(lightningPayeeTrustTupleV1),
+    `provider ${index} Lightning payee trust tuple`,
+  );
   return {
     label,
     endpoint,
@@ -187,8 +249,27 @@ function parseProvider(value: unknown, index: number): ProductTrustedProviderV1 
     hardwareAttestation: value.hardwareAttestation,
     expectedArkFingerprintHex,
     databaseProofPins,
-    expectedLightningPayeePubkeyHex,
+    lightningPayeeTrust,
   };
+}
+
+function parseLightningPayeeTrust(
+  value: unknown,
+  field: string,
+): ProductLightningPayeeTrustV1 {
+  if (!isRecord(value)) throw new Error(`${field} must be an object`);
+  const issuerIdHex = nonzeroHex(`${field} issuer ID`, value.issuerIdHex, 64);
+  const issuerOrigin = httpsOrigin(`${field} issuer origin`, value.issuerOrigin);
+  if (!isNetwork(value.network)) throw new Error(`${field} network is invalid`);
+  const expectedPayeePubkeyHex = compressedPubkeyHex(
+    `${field} expected payee`,
+    value.expectedPayeePubkeyHex,
+  );
+  return { issuerIdHex, issuerOrigin, network: value.network, expectedPayeePubkeyHex };
+}
+
+function lightningPayeeTrustTupleV1(value: ProductLightningPayeeTrustV1): string {
+  return `${value.issuerIdHex}\u0000${value.issuerOrigin}\u0000${value.network}`;
 }
 
 function parseDatabasePin(value: unknown, providerIndex: number, pinIndex: number): DatabaseProofPin {
@@ -225,6 +306,17 @@ function websocketOrigin(field: string, value: unknown): string {
   if (parsed.protocol !== 'wss:' || parsed.username || parsed.password
       || parsed.search || parsed.hash || (parsed.pathname !== '' && parsed.pathname !== '/')) {
     throw new Error(`${field} must be a credential-free wss:// origin`);
+  }
+  return parsed.origin;
+}
+
+function httpsOrigin(field: string, value: unknown): string {
+  if (typeof value !== 'string') throw new Error(`${field} must be https://`);
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw new Error(`${field} is invalid`); }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+      || parsed.search || parsed.hash || (parsed.pathname !== '' && parsed.pathname !== '/')) {
+    throw new Error(`${field} must be a credential-free https:// origin`);
   }
   return parsed.origin;
 }
