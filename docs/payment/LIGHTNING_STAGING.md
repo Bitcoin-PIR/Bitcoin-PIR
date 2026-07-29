@@ -394,12 +394,17 @@ scopes.
 
 For default-signet staging, only after the separate persistent-Signet and
 faucet/test-coin approvals, create payer, router and issuer addresses on the
-approved staging hosts. A minimal routing smoke can start with roughly
+approved staging hosts. A visible public Signet Lightning graph is optional
+interoperability evidence, not a routing, liquidity or availability dependency;
+the acceptance topology remains the three explicitly connected nodes below. A
+minimal routing smoke can start with roughly
 25,000 signet sats each for payer and router and two roughly 20,000-sat
-announced channels. This is above the pinned CLN version's 10,000-sat minimum
-effective capacity and leaves a small on-chain fee margin; keep invoices at
-1--100 sats and do not use this minimal topology for destructive recovery
-drills. The preferred fault/close/restart allocation remains about 150,000 sats
+announced channels. The 20,000-sat size is a conservative BitcoinPIR staging
+policy, not a Core Lightning protocol minimum: the pinned `fundchannel` RPC
+accepts amounts down to its current 546-sat dust floor. This budget leaves only
+a small on-chain fee and usable-liquidity margin; keep invoices at 1--100 sats
+and do not use this minimal topology for destructive recovery drills. The
+preferred fault/close/restart allocation remains about 150,000 sats
 each for payer and router, each funding a roughly 100,000-sat outbound channel.
 An additional 50,000 issuer sats is optional on-chain closing/recovery-test
 margin; receiving the two-hop payment does not require it and it does not
@@ -436,6 +441,7 @@ used in any public-test-network experiment.
 ## Primary references
 
 - [Core Lightning configuration and networks](https://docs.corelightning.org/docs/configuration)
+- [Core Lightning `fundchannel` amount and readiness semantics](https://docs.corelightning.org/reference/fundchannel)
 - [Core Lightning local regtest example](https://github.com/ElementsProject/lightning)
 - [Core Lightning chain parameters](https://github.com/ElementsProject/lightning/blob/master/bitcoin/chainparams.c)
 - [BOLT11 payment encoding](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md)
