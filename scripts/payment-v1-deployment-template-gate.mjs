@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
-    "fa28c5a961d320484ada00a89898cd3e33a0dba3aaa0bb21e6f4da71afa76f0a",
+    "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
     "31b981a179fe1af292704d983ce97b3401da4c18cd64002510b22bb7f21a4adf",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
@@ -1589,6 +1589,27 @@ function validateIntegratedExistingCaddyManagedBlock(text) {
   const actualTopLevelHeaders = topLevelCaddyBlockHeaders(text, label);
   if (JSON.stringify(actualTopLevelHeaders) !== JSON.stringify(expectedTopLevelHeaders)) {
     fail(`${label} must contain exactly its four reviewed hostname blocks`);
+  }
+  for (const [siteAddress, siteLabel] of [
+    ["@DIRECTORY_RELAY_WSS_HOST@", "public directory site"],
+    ["@DIRECTORY_PUBLISHER_HTTPS_HOST@", "publisher directory site"],
+  ]) {
+    const siteActive = activeTemplateLines(
+      caddySiteBlock(text, siteAddress, label),
+      `${label} ${siteLabel}`,
+    );
+    const pathLines = siteActive.filter((line) => line.startsWith("path "));
+    if (JSON.stringify(pathLines) !== JSON.stringify(["path /"])) {
+      fail(`${label} ${siteLabel} must admit only the exact origin-root path`);
+    }
+    const uriExpressions = siteActive.filter((line) =>
+      line.includes("{http.request.uri}"));
+    if (
+      JSON.stringify(uriExpressions) !==
+      JSON.stringify(['expression {http.request.uri} == "/"'])
+    ) {
+      fail(`${label} ${siteLabel} must bind the exact origin-root request URI`);
+    }
   }
   const expectedUpstreams = [
     "unix//run/bitcoinpir-source-fair-edge/provider.sock",

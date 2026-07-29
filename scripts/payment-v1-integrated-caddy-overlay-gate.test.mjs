@@ -107,7 +107,7 @@ function makePlan() {
         lane: "directory-public",
         leaf_certificate_sha256: "a".repeat(64),
         max_response_bytes: 16384,
-        path: "/v1/directory",
+        path: "/",
         timeout_ms: 5000,
       },
       {
@@ -119,7 +119,7 @@ function makePlan() {
         lane: "directory-publisher",
         leaf_certificate_sha256: "b".repeat(64),
         max_response_bytes: 16384,
-        path: "/v1/directory",
+        path: "/",
         timeout_ms: 5000,
       },
       {
@@ -672,6 +672,11 @@ for (const [label, mutate, expected] of [
     "hostname reuse",
     (plan) => { plan.managed_block.placeholders.PROVIDER_WSS_HOST = plan.managed_block.placeholders.PAYMENT_ISSUER_HTTPS_HOST; },
     /four distinct hostnames/,
+  ],
+  [
+    "legacy directory path",
+    (plan) => { plan.health_checks[0].path = "/v1/directory"; },
+    /health_checks\[0\]\.path must equal \/$/,
   ],
   [
     "restart command",

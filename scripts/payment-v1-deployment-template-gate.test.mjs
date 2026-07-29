@@ -724,6 +724,10 @@ test("integrated existing-Caddy managed block rejects trust and privacy bypasses
       ),
       /PUBLIC_HTTPS_BIND.*exactly 3|PRIVATE_BIND.*exactly 1/,
     ],
+    [
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*origin-root path/,
+    ],
   ]) {
     withFixture((root) => {
       mutate(root, path, transform);

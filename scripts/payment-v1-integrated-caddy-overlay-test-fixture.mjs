@@ -504,7 +504,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "directory-public",
         leaf_certificate_sha256: "a".repeat(64),
         max_response_bytes: 16384,
-        path: "/v1/directory",
+        path: "/",
         timeout_ms: 5000,
       },
       {
@@ -516,7 +516,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "directory-publisher",
         leaf_certificate_sha256: "b".repeat(64),
         max_response_bytes: 16384,
-        path: "/v1/directory",
+        path: "/",
         timeout_ms: 5000,
       },
       {
