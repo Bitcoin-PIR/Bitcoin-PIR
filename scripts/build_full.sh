@@ -53,6 +53,10 @@ DATA_DIR="/Volumes/Bitcoin/data"
 INTERMEDIATE_DIR="$DATA_DIR/intermediate/full_${HEIGHT}"
 CHECKPOINT_DIR="$DATA_DIR/checkpoints/${HEIGHT}"
 ORAM_DIRECT_INPUT_DIR="${ORAM_DIRECT_INPUT_DIR:-$DATA_DIR/oram-inputs/checkpoints/${HEIGHT}}"
+DIRECT_ORAM_INDEX_SLOTS_PER_BIN="${DIRECT_ORAM_INDEX_SLOTS_PER_BIN:-4}"
+DIRECT_ORAM_INDEX_HASH_FNS="${DIRECT_ORAM_INDEX_HASH_FNS:-2}"
+DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB="${DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB:-950000000}"
+DIRECT_ORAM_INDEX_SEED="${DIRECT_ORAM_INDEX_SEED:-8030603977422561841}"
 
 INDEX_INPUT="$INTERMEDIATE_DIR/utxo_chunks_index_nodust.bin"
 CHUNKS_INPUT="$INTERMEDIATE_DIR/utxo_chunks_nodust.bin"
@@ -166,6 +170,19 @@ echo ""
 # (compare scripts/build_db_manifest.sh + production checkpoints/).
 rm -f "$CHECKPOINT_DIR/onion_packed_entries.bin" \
       "$CHECKPOINT_DIR/onion_index.bin"
+
+manifest_direct_args=()
+if [[ "${KEEP_ORAM_DIRECT_INPUTS:-0}" == "1" ]]; then
+    manifest_direct_args=(
+        --direct-oram-index "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin"
+        --direct-oram-chunks "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
+        --direct-index-slots-per-bin "$DIRECT_ORAM_INDEX_SLOTS_PER_BIN"
+        --direct-index-hash-fns "$DIRECT_ORAM_INDEX_HASH_FNS"
+        --direct-index-load-factor-ppb "$DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB"
+        --direct-index-seed "$DIRECT_ORAM_INDEX_SEED"
+    )
+fi
+"$SCRIPT_DIR/build_db_manifest.sh" "$CHECKPOINT_DIR" "${manifest_direct_args[@]}"
 
 echo "========================================"
 echo "Full snapshot build complete: $CHECKPOINT_DIR"

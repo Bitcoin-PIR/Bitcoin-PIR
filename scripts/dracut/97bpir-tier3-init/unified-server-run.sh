@@ -121,6 +121,10 @@ direct_input_hash() {
     awk -v name="$1" '$2 == name || $2 == "./" name { print $1; exit }' "$2"
 }
 
+sha256_path() {
+    sha256sum "$1" | awk '{ print $1 }'
+}
+
 random_seed_hex() {
     require_file /dev/urandom
     seed="$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 -v | tr -d ' \n')"
@@ -168,21 +172,21 @@ build_direct_oram() {
     source_dir="$2"
     out_dir="$3"
     db_evidence="$4"
-    root_bundle="$5"
-    expected_muhash="$6"
-    expected_from_muhash="$7"
-    expected_index_sha="$8"
-    expected_chunks_sha="$9"
-    trusted_state_dir="${10}"
+    db_manifest="$5"
+    root_bundle="$6"
+    expected_muhash="$7"
+    expected_from_muhash="$8"
+    expected_index_sha="$9"
+    expected_chunks_sha="${10}"
+    trusted_state_dir="${11}"
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
-    seed_hex="$(random_seed_hex)"
-
     source_index_file="$source_dir/utxo_chunks_index_nodust.bin"
     source_chunks_file="$source_dir/utxo_chunks_nodust.bin"
     sha_file="$source_dir/direct-inputs.sha256"
     require_file "$source_index_file"
     require_file "$source_chunks_file"
     require_file "$db_evidence"
+    require_file "$db_manifest"
     require_file "$root_bundle"
 
     if [ -r "$sha_file" ]; then
@@ -204,12 +208,21 @@ build_direct_oram() {
         "$trusted_input_dir/utxo_chunks_nodust.bin" "$db_label chunks source"
     copy_to_trusted_runtime "$db_evidence" \
         "$trusted_input_dir/build-evidence.bin" "$db_label DB evidence"
+    copy_to_trusted_runtime "$db_manifest" \
+        "$trusted_input_dir/server-db-MANIFEST.toml" "$db_label exact server DB manifest"
     copy_to_trusted_runtime "$root_bundle" \
         "$trusted_input_dir/root-bundle-payload.bin" "$db_label root bundle"
     index_file="$trusted_input_dir/utxo_chunks_index_nodust.bin"
     chunks_file="$trusted_input_dir/utxo_chunks_nodust.bin"
     db_evidence="$trusted_input_dir/build-evidence.bin"
+    db_manifest="$trusted_input_dir/server-db-MANIFEST.toml"
     root_bundle="$trusted_input_dir/root-bundle-payload.bin"
+    trusted_index_sha="$(sha256_path "$index_file")"
+    trusted_chunks_sha="$(sha256_path "$chunks_file")"
+    [ "$trusted_index_sha" = "$expected_index_sha" ] \
+        || fatal "$db_label trusted tmpfs index copy hash mismatch"
+    [ "$trusted_chunks_sha" = "$expected_chunks_sha" ] \
+        || fatal "$db_label trusted tmpfs chunks copy hash mismatch"
 
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
     echo "[unified-server-run] regenerating $db_label direct ORAM from trusted tmpfs into $out_dir; trusted state: $trusted_state_dir" >&2
@@ -229,12 +242,14 @@ build_direct_oram() {
             --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
             --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
             --index-seed "$DIRECT_INDEX_SEED" \
-            --seed-hex "$seed_hex" \
+            --encrypted \
+            --key-hex "$ORAM_PAGE_KEY_HEX" \
             --auth-store \
             --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
+            --server-db-manifest "$db_manifest" \
             --root-bundle-payload "$root_bundle" \
             --expected-muhash "$expected_muhash" \
             --expected-from-muhash "$expected_from_muhash" \
@@ -265,12 +280,14 @@ build_direct_oram() {
             --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
             --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
             --index-seed "$DIRECT_INDEX_SEED" \
-            --seed-hex "$seed_hex" \
+            --encrypted \
+            --key-hex "$ORAM_PAGE_KEY_HEX" \
             --auth-store \
             --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
+            --server-db-manifest "$db_manifest" \
             --root-bundle-payload "$root_bundle" \
             --expected-muhash "$expected_muhash" \
             --expected-index-sha256 "$expected_index_sha" \
@@ -315,6 +332,7 @@ safe_remove_runtime_path "$TRUSTED_STATE_ROOT"
 mkdir -p "$ORAM_STAGING_DIR" || fatal "failed to create $ORAM_STAGING_DIR"
 mkdir -p "$TRUSTED_INPUT_ROOT" "$TRUSTED_STATE_ROOT" \
     || fatal "failed to create SEV-protected ORAM runtime directories"
+ORAM_PAGE_KEY_HEX="$(random_seed_hex)"
 trap cleanup_build_staging EXIT
 
 MAINNET_SOURCE_DIR="$(first_existing_dir \
@@ -326,6 +344,10 @@ MAINNET_DB_EVIDENCE="$(first_existing_file \
     /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/build-evidence.bin \
     /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/build-evidence.bin)" \
     || fatal "mainnet build-evidence.bin missing"
+MAINNET_DB_MANIFEST="$(first_existing_file \
+    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/server-db/MANIFEST.toml \
+    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/server-db/MANIFEST.toml)" \
+    || fatal "mainnet exact server-db/MANIFEST.toml missing"
 MAINNET_ROOT_BUNDLE="$(first_existing_file \
     /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/root-bundle-payload.bin \
     /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/root-bundle-payload.bin)" \
@@ -340,17 +362,21 @@ DELTA_DB_EVIDENCE="$(first_existing_file \
     /home/pir/data/attestations/delta_940611_948454_sev_snp/build-evidence.bin \
     /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/build-evidence.bin)" \
     || fatal "delta build-evidence.bin missing"
+DELTA_DB_MANIFEST="$(first_existing_file \
+    /home/pir/data/attestations/delta_940611_948454_sev_snp/server-db/MANIFEST.toml \
+    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/server-db/MANIFEST.toml)" \
+    || fatal "delta exact server-db/MANIFEST.toml missing"
 DELTA_ROOT_BUNDLE="$(first_existing_file \
     /home/pir/data/attestations/delta_940611_948454_sev_snp/root-bundle-payload.bin \
     /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/root-bundle-payload.bin)" \
     || fatal "delta root-bundle-payload.bin missing"
 
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
-    "$MAINNET_DB_EVIDENCE" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
+    "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
     "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_FULL_TRUSTED_STATE_DIR"
 build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
-    "$DELTA_DB_EVIDENCE" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
+    "$DELTA_DB_EVIDENCE" "$DELTA_DB_MANIFEST" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
     "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_DELTA_TRUSTED_STATE_DIR"
 
@@ -372,6 +398,8 @@ exec "$UNIFIED_SERVER" \
     --direct-oram-drain-per-access 2 \
     --direct-oram-access-budget 75 \
     --direct-oram-cache-levels 0 \
+    --direct-oram-encrypted \
+    --direct-oram-key-hex "$ORAM_PAGE_KEY_HEX" \
     --direct-oram-auth-store \
     --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \

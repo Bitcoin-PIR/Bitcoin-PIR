@@ -1,8 +1,17 @@
 # ORAM Tier 3 Production Handoff
 
-Status as of 2026-06-27: the strict-source-bound ORAM-enabled Tier 3 UKI is
-live on pir2. The SEV-SNP report, binary pin, AMD VCEK chain, encrypted
-channel, and direct ORAM lookup smoke tests all pass against
+> Historical handoff, not a current production-activation claim. The 2026-06-27
+> deployment predated typed dataset binding and disclosed a reproducible ORAM
+> initialization seed in public build evidence. It must not be used to justify
+> paid TEE-ORAM activation. Current strict code requires fresh OS RNG, encrypted
+> authenticated bulk pages, trusted state under measured `/run`, and a typed
+> server-db manifest committed before BuildEvidence/quote creation. Both db0 and
+> db1 need newly compliant evidence; the measured db1 delta build is still an
+> explicit blocker.
+
+Status as of 2026-06-27 (historical): the then-current strict-source-bound
+ORAM-enabled Tier 3 UKI was live on pir2. The SEV-SNP report, binary pin, AMD
+VCEK chain, encrypted channel, and direct ORAM lookup smoke tests passed against
 `wss://weikeng2.bitcoinpir.org`.
 
 ## Source Revisions

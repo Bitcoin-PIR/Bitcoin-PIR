@@ -51,6 +51,12 @@ pub struct DbManifest {
     pub manifest: ManifestMeta,
     /// Map of relative file path → hex SHA-256 (case-insensitive).
     pub files: BTreeMap<String, String>,
+    /// Optional exact logical source binding for production Direct ORAM.
+    /// The section is part of the manifest bytes and therefore of the
+    /// attested `manifest_root`; it does not make the source files runtime DB
+    /// artifacts or add them to `[files]`.
+    #[serde(default)]
+    pub direct_oram: Option<DirectOramManifestV1>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +64,107 @@ pub struct ManifestMeta {
     pub version: u32,
     #[serde(default)]
     pub generated_at: Option<String>,
+}
+
+/// Typed `[direct_oram]` section committed by the attested builder.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DirectOramManifestV1 {
+    pub version: u32,
+    pub index_sha256: String,
+    pub index_bytes: u64,
+    pub index_records: u64,
+    pub chunk_sha256: String,
+    pub chunk_bytes: u64,
+    pub chunk_records: u64,
+    pub index_slots_per_bin: u32,
+    pub index_hash_fns: u32,
+    pub index_load_factor_ppb: u32,
+    pub index_seed: u64,
+}
+
+/// Hash-decoded direct section used by startup binding checks.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ValidatedDirectOramManifestV1 {
+    pub index_sha256: [u8; 32],
+    pub index_bytes: u64,
+    pub index_records: u64,
+    pub chunk_sha256: [u8; 32],
+    pub chunk_bytes: u64,
+    pub chunk_records: u64,
+    pub index_slots_per_bin: u32,
+    pub index_hash_fns: u32,
+    pub index_load_factor_ppb: u32,
+    pub index_seed: u64,
+}
+
+impl DirectOramManifestV1 {
+    pub fn validate(&self) -> Result<ValidatedDirectOramManifestV1, ManifestError> {
+        if self.version != 1 {
+            return Err(ManifestError::InvalidDirectOram(format!(
+                "unsupported direct_oram version {}",
+                self.version
+            )));
+        }
+        let index_sha256 = decode_direct_hash("direct_oram.index_sha256", &self.index_sha256)?;
+        let chunk_sha256 = decode_direct_hash("direct_oram.chunk_sha256", &self.chunk_sha256)?;
+        if index_sha256 == [0; 32] || chunk_sha256 == [0; 32] {
+            return Err(ManifestError::InvalidDirectOram(
+                "direct_oram source digests must not be all-zero".into(),
+            ));
+        }
+        if self.index_bytes
+            != self.index_records.checked_mul(25).ok_or_else(|| {
+                ManifestError::InvalidDirectOram("direct_oram INDEX byte count overflow".into())
+            })?
+        {
+            return Err(ManifestError::InvalidDirectOram(
+                "direct_oram INDEX bytes/records mismatch".into(),
+            ));
+        }
+        if self.chunk_bytes
+            != self.chunk_records.checked_mul(40).ok_or_else(|| {
+                ManifestError::InvalidDirectOram("direct_oram CHUNK byte count overflow".into())
+            })?
+        {
+            return Err(ManifestError::InvalidDirectOram(
+                "direct_oram CHUNK bytes/records mismatch".into(),
+            ));
+        }
+        if self.index_slots_per_bin == 0
+            || self.index_hash_fns == 0
+            || self.index_load_factor_ppb == 0
+            || self.index_load_factor_ppb >= 1_000_000_000
+        {
+            return Err(ManifestError::InvalidDirectOram(
+                "direct_oram INDEX layout is invalid".into(),
+            ));
+        }
+        Ok(ValidatedDirectOramManifestV1 {
+            index_sha256,
+            index_bytes: self.index_bytes,
+            index_records: self.index_records,
+            chunk_sha256,
+            chunk_bytes: self.chunk_bytes,
+            chunk_records: self.chunk_records,
+            index_slots_per_bin: self.index_slots_per_bin,
+            index_hash_fns: self.index_hash_fns,
+            index_load_factor_ppb: self.index_load_factor_ppb,
+            index_seed: self.index_seed,
+        })
+    }
+}
+
+fn decode_direct_hash(label: &str, value: &str) -> Result<[u8; 32], ManifestError> {
+    if value.len() != 64 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ManifestError::InvalidDirectOram(format!(
+            "{label} is not 64 hexadecimal characters"
+        )));
+    }
+    let bytes = hex::decode(value).map_err(|_| {
+        ManifestError::InvalidDirectOram(format!("{label} is not valid hexadecimal"))
+    })?;
+    Ok(bytes.try_into().expect("validated 32-byte digest"))
 }
 
 /// Errors produced when loading or verifying a manifest.
@@ -90,6 +197,7 @@ pub enum ManifestError {
     UnexpectedFile {
         path: String,
     },
+    InvalidDirectOram(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -125,6 +233,9 @@ impl fmt::Display for ManifestError {
                 "{} is present in the DB dir but not listed in MANIFEST.toml",
                 path
             ),
+            Self::InvalidDirectOram(message) => {
+                write!(f, "invalid [direct_oram] manifest section: {message}")
+            }
         }
     }
 }
@@ -169,6 +280,9 @@ impl DbManifest {
             })?;
         if manifest.manifest.version != SUPPORTED_VERSION {
             return Err(ManifestError::UnsupportedVersion(manifest.manifest.version));
+        }
+        if let Some(direct_oram) = manifest.direct_oram.as_ref() {
+            direct_oram.validate()?;
         }
         manifest.verify_dir_contents(base_dir)?;
         Ok(Some((manifest, sha256(&raw))))
@@ -515,5 +629,63 @@ mod tests {
             hex_encode(&h),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn direct_oram_section_preserves_exact_u64_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(MANIFEST_FILENAME),
+            format!(
+                "[manifest]\nversion = 1\n\n[direct_oram]\nversion = 1\n\
+                 index_sha256 = \"{}\"\nindex_bytes = 50\nindex_records = 2\n\
+                 chunk_sha256 = \"{}\"\nchunk_bytes = 120\nchunk_records = 3\n\
+                 index_slots_per_bin = 4\nindex_hash_fns = 2\n\
+                 index_load_factor_ppb = 950000000\nindex_seed = {}\n\n[files]\n",
+                "11".repeat(32),
+                "22".repeat(32),
+                i64::MAX,
+            ),
+        )
+        .unwrap();
+
+        let (manifest, _) = DbManifest::load_and_verify(dir.path()).unwrap().unwrap();
+        let binding = manifest.direct_oram.unwrap().validate().unwrap();
+        assert_eq!(binding.index_records, 2);
+        assert_eq!(binding.chunk_records, 3);
+        assert_eq!(binding.index_seed, i64::MAX as u64);
+    }
+
+    #[test]
+    fn direct_oram_section_rejects_unknown_fields_and_bad_record_math() {
+        let render = |extra: &str, index_bytes: u64| {
+            format!(
+                "[manifest]\nversion = 1\n\n[direct_oram]\nversion = 1\n\
+                 index_sha256 = \"{}\"\nindex_bytes = {index_bytes}\nindex_records = 2\n\
+                 chunk_sha256 = \"{}\"\nchunk_bytes = 120\nchunk_records = 3\n\
+                 index_slots_per_bin = 4\nindex_hash_fns = 2\n\
+                 index_load_factor_ppb = 950000000\nindex_seed = 7\n{extra}\n[files]\n",
+                "11".repeat(32),
+                "22".repeat(32),
+            )
+        };
+
+        let unknown = tempfile::tempdir().unwrap();
+        fs::write(
+            unknown.path().join(MANIFEST_FILENAME),
+            render("unexpected = 1", 50),
+        )
+        .unwrap();
+        assert!(matches!(
+            DbManifest::load_and_verify(unknown.path()).unwrap_err(),
+            ManifestError::InvalidToml { .. }
+        ));
+
+        let bad_math = tempfile::tempdir().unwrap();
+        fs::write(bad_math.path().join(MANIFEST_FILENAME), render("", 51)).unwrap();
+        assert!(matches!(
+            DbManifest::load_and_verify(bad_math.path()).unwrap_err(),
+            ManifestError::InvalidDirectOram(_)
+        ));
     }
 }

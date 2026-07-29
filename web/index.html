@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-+BIMxb/fETvGjcwKoAE2QWr21wygLctjeQUNWhHwygc=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-D5CvPh8ErYkSOenLKzPaSTjA1BJ7GDuYGejS1oX+6p4=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -2684,19 +2684,24 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.innerHTML = rows.join('');
         }
 
-        async function verifyAndRenderOramSourceProofBadge(idElem, label) {
+        async function verifyAndRenderOramSourceProofBadge(idElem, label, liveDatabaseProof) {
+            if (!liveDatabaseProof) {
+                throw new Error('ORAM source proof requires the current strictly verified live database proof');
+            }
             renderOramSourceProofBadge(idElem, label, {
                 state: 'unavailable',
                 checks: [],
                 mismatches: [],
-                error: 'checking static ORAM source artifacts...',
+                error: 'checking attested ORAM source artifacts against the live database proof...',
             });
             const status = await verifyOramSourceProof({
                 expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
+                liveDatabaseProof,
+                verifyAmdSignature: true,
             });
             renderOramSourceProofBadge(idElem, label, status);
             if (status.state === 'verified') {
-                log(`${label}: ORAM source binding verified from static artifacts`, 'success');
+                log(`${label}: ORAM source binding verified against AMD-signed builder evidence and the live DB proof`, 'success');
             } else if (status.state === 'unverified') {
                 log(`${label}: ORAM source binding UNVERIFIED — ${status.mismatches?.[0] || status.error || 'check failed'}`, 'error');
             } else {
@@ -5644,6 +5649,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 mismatches: [],
                 error: 'waiting for latest delta trust-chain proof',
             });
+            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for a strictly verified live db 0 proof',
+            });
 
             try {
                 log('ORAM: Connecting to attested server...', 'info');
@@ -5677,6 +5688,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             log(`ORAM DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
                         }
                         renderDatabaseProofBadge('oram-dbProofBadge', 'ORAM TEE', info);
+                        if (
+                            info.state === 'verified'
+                            && dbId === MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN.dbId
+                        ) {
+                            verifyAndRenderOramSourceProofBadge(
+                                'oram-sourceProofBadge',
+                                'ORAM TEE',
+                                info.proof,
+                            ).catch(e => log(`ORAM source-binding proof check failed: ${e?.message || e}`, 'error'));
+                        } else if (dbId === MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN.dbId) {
+                            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                                state: info.state === 'unavailable' ? 'unavailable' : 'unverified',
+                                checks: [],
+                                mismatches: info.mismatches || [],
+                                error: info.error || 'live db 0 proof was not verified',
+                            });
+                        }
                         verifyAndRenderBitcoinAnchorBadge('oram-bitcoinAnchorBadge', 'ORAM TEE', info)
                             .catch(e => log(`ORAM Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
                     },
@@ -5904,8 +5932,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         });
         oramSetButtons(false);
-        verifyAndRenderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE')
-            .catch(e => log(`ORAM source-binding proof check failed: ${e?.message || e}`, 'error'));
+        renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+            state: 'unavailable',
+            checks: [],
+            mismatches: [],
+            error: 'waiting for a strictly verified live db 0 proof and a new v2 source ceremony',
+        });
     </script>
 
     <!-- Query Inspector Modal -->

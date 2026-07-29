@@ -157,9 +157,10 @@ use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
     CircuitDirectChunkReader, CircuitDirectIndexReader, CircuitOram, CircuitOramState,
     CircuitStoreAuthLayout, CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel,
-    DirectTableMetadata, EmbeddedTreePageStore, FilePageStore, FrontCachedPageStore, OramParams,
-    PageStore, PathPageStore, Result as OramResult, TieredMerklePageStore, TieredMerkleState,
-    AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    DirectOramDatasetBindingV1, DirectTableMetadata, EmbeddedTreePageStore, FilePageStore,
+    FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result as OramResult,
+    TieredMerklePageStore, TieredMerkleState, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
+    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
@@ -400,6 +401,9 @@ struct CliArgs {
     /// Optional per-database trusted controller/auth state directories.
     /// Repeatable as `--direct-oram-trusted-state-db <db_id>=<dir>`.
     direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)>,
+    /// Development/test-only escape hatch for trusted state outside the
+    /// measured `/run/bitcoinpir-oram-state` tmpfs.
+    direct_oram_allow_trusted_state_outside_run_dev: bool,
     /// Public deterministic evictions drained after each direct ORAM read.
     direct_oram_drain_per_access: u64,
     /// Fixed direct ORAM access budget per ORAM lookup request.
@@ -581,6 +585,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut direct_oram_dir: Option<PathBuf> = None;
     let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)> = Vec::new();
+    let mut direct_oram_allow_trusted_state_outside_run_dev = false;
     let mut direct_oram_drain_per_access: u64 = 2;
     let mut direct_oram_access_budget: usize = 75;
     let mut direct_oram_encrypted = false;
@@ -998,6 +1003,9 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                 direct_oram_trusted_state_dbs.push(parsed);
                 i += 1;
             }
+            "--allow-direct-oram-trusted-state-outside-run-dev" => {
+                direct_oram_allow_trusted_state_outside_run_dev = true;
+            }
             "--direct-oram-drain-per-access" => {
                 direct_oram_drain_per_access =
                     args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -1130,6 +1138,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         direct_oram_dir,
         direct_oram_dbs,
         direct_oram_trusted_state_dbs,
+        direct_oram_allow_trusted_state_outside_run_dev,
         direct_oram_drain_per_access,
         direct_oram_access_budget,
         direct_oram_encrypted,
@@ -1941,6 +1950,7 @@ struct DirectOramIndexTable {
     poisoned: std::sync::Mutex<Option<String>>,
     dirty: std::sync::atomic::AtomicBool,
     hash_fns: usize,
+    metadata: DirectTableMetadata,
     state_path: PathBuf,
     auth_state_path: Option<PathBuf>,
     state_key: Option<[u8; 32]>,
@@ -1954,6 +1964,7 @@ struct DirectOramChunkTable {
     poisoned: std::sync::Mutex<Option<String>>,
     dirty: std::sync::atomic::AtomicBool,
     total_chunks: usize,
+    metadata: DirectTableMetadata,
     state_path: PathBuf,
     auth_state_path: Option<PathBuf>,
     state_key: Option<[u8; 32]>,
@@ -2057,6 +2068,58 @@ impl DirectOramTables {
     ) -> Result<Vec<DirectNativeLookupResult>, String> {
         direct_native_lookup_slots(self, script_hashes, slot_present)
     }
+
+    fn validate_dataset_binding(&self, database: &MappedDatabase) -> Result<(), String> {
+        let manifest_root = database.manifest_root.ok_or_else(|| {
+            "production Direct ORAM requires an exact verified server DB manifest root".to_owned()
+        })?;
+        let direct = database
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.direct_oram.as_ref())
+            .ok_or_else(|| {
+                "production Direct ORAM requires typed [direct_oram] data in MANIFEST.toml"
+                    .to_owned()
+            })?
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let expected = DirectOramDatasetBindingV1 {
+            server_db_manifest_sha256: manifest_root,
+            index_sha256: direct.index_sha256,
+            index_bytes: direct.index_bytes,
+            index_records: direct.index_records,
+            chunk_sha256: direct.chunk_sha256,
+            chunk_bytes: direct.chunk_bytes,
+            chunk_records: direct.chunk_records,
+            index_slots_per_bin: direct.index_slots_per_bin,
+            index_hash_fns: direct.index_hash_fns,
+            index_load_factor_ppb: direct.index_load_factor_ppb,
+            index_seed: direct.index_seed,
+        };
+        expected.validate().map_err(|error| error.to_string())?;
+        let index = *self
+            .index
+            .metadata
+            .require_dataset_binding()
+            .map_err(|error| error.to_string())?;
+        let chunk = *self
+            .chunk
+            .metadata
+            .require_dataset_binding()
+            .map_err(|error| error.to_string())?;
+        if index != chunk {
+            return Err(
+                "Direct ORAM INDEX and CHUNK metadata have different dataset bindings".into(),
+            );
+        }
+        if index != expected || index.digest() != expected.digest() {
+            return Err(format!(
+                "Direct ORAM metadata does not match verified DB manifest binding {}",
+                hex::encode(expected.digest())
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2124,6 +2187,7 @@ impl DirectOramIndexTable {
             poisoned: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
             hash_fns: metadata.hash_fns,
+            metadata,
             state_path: paths.state,
             auth_state_path: auth_store.then_some(paths.auth_state),
             state_key,
@@ -2259,6 +2323,7 @@ impl DirectOramChunkTable {
             poisoned: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
             total_chunks: metadata.total_items,
+            metadata,
             state_path: paths.state,
             auth_state_path: auth_store.then_some(paths.auth_state),
             state_key,
@@ -4279,7 +4344,10 @@ impl UnifiedServerData {
 
     #[cfg(feature = "cuckoo-oram")]
     fn has_oram_for(&self, db_id: u8) -> bool {
-        self.direct_oram.contains_key(&db_id) || self.cuckoo_oram.contains_key(&db_id)
+        // Payment V1 TEE-ORAM scopes are production catalog entries. Legacy
+        // Cuckoo ORAM has no exact attested source binding and must never make
+        // such a scope locally serviceable.
+        self.direct_oram.contains_key(&db_id)
     }
 
     #[cfg(not(feature = "cuckoo-oram"))]
@@ -8431,16 +8499,88 @@ async fn main() {
                     );
                     std::process::exit(2);
                 };
+                let database = all_databases.get(db_id as usize).unwrap_or_else(|| {
+                    panic!("loaded DB vector is missing configured db_id={db_id}")
+                });
+                if !args.direct_oram_auth_store {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-auth-store",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if !args.direct_oram_encrypted {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-encrypted so the host cannot track plaintext block relocation",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if args.direct_oram_no_save {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} rejects --direct-oram-no-save because mutable controller/auth state must commit",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if trusted_state_dir.is_none() {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires a separate --direct-oram-trusted-state-db",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                let trusted_state_dir = trusted_state_dir
+                    .as_deref()
+                    .expect("production Direct ORAM checked trusted-state directory");
+                if !args.direct_oram_allow_trusted_state_outside_run_dev {
+                    let trusted_state_dir = std::fs::canonicalize(trusted_state_dir)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "failed to resolve Direct ORAM trusted-state directory for db_id={} ({}): {}",
+                                db_id,
+                                trusted_state_dir.display(),
+                                error
+                            )
+                        });
+                    if !trusted_state_dir.starts_with("/run/bitcoinpir-oram-state") {
+                        eprintln!(
+                            "ERROR: production Direct ORAM for db_id={} requires trusted state under measured /run/bitcoinpir-oram-state; got {}",
+                            db_id,
+                            trusted_state_dir.display()
+                        );
+                        std::process::exit(2);
+                    }
+                    let bulk_dir = std::fs::canonicalize(&oram_dir).unwrap_or_else(|error| {
+                        panic!(
+                            "failed to resolve Direct ORAM bulk directory for db_id={} ({}): {}",
+                            db_id,
+                            oram_dir.display(),
+                            error
+                        )
+                    });
+                    if bulk_dir.starts_with(&trusted_state_dir)
+                        || trusted_state_dir.starts_with(&bulk_dir)
+                    {
+                        eprintln!(
+                            "ERROR: production Direct ORAM for db_id={} requires disjoint bulk and trusted-state directories",
+                            db_id
+                        );
+                        std::process::exit(2);
+                    }
+                } else {
+                    eprintln!(
+                        "WARNING: Direct ORAM trusted state outside measured /run explicitly allowed for development/testing (db_id={})",
+                        db_id
+                    );
+                }
 
                 println!(
                     "  Direct ORAM: enabled for db_id={} name={}, dir={}, trusted_state_dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
                     db_id,
                     db_label,
                     oram_dir.display(),
-                    trusted_state_dir
-                        .as_deref()
-                        .unwrap_or(&oram_dir)
-                        .display(),
+                    trusted_state_dir.display(),
                     args.direct_oram_access_budget,
                     args.direct_oram_drain_per_access,
                     args.direct_oram_encrypted,
@@ -8449,7 +8589,7 @@ async fn main() {
                 );
                 let tables = DirectOramTables::open_with_trusted_state(
                     &oram_dir,
-                    trusted_state_dir.as_deref(),
+                    Some(trusted_state_dir),
                     args.direct_oram_drain_per_access,
                     args.direct_oram_access_budget,
                     args.direct_oram_encrypted,
@@ -8465,6 +8605,14 @@ async fn main() {
                         db_id, db_label, e
                     )
                 });
+                tables
+                    .validate_dataset_binding(database)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "failed to bind Direct ORAM to verified DB for db_id={} ({}): {}",
+                            db_id, db_label, error
+                        )
+                    });
                 opened.insert(db_id, tables);
             }
             opened

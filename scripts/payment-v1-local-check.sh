@@ -143,6 +143,8 @@ cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_onion_process_e2e
+cargo test --locked --offline \
+  --manifest-path vendor/bitcoinpir-oram/Cargo.toml
 cargo test --locked --offline -p runtime --features cuckoo-oram \
   --test payment_v1_tee_oram_process_e2e
 cargo test --locked --offline -p bitcoinpir-directory-relay \
