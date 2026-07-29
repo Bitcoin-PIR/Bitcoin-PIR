@@ -11,12 +11,20 @@ set -euo pipefail
 
 if [ "${1:-}" = "" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat >&2 <<EOF
-Usage: $0 <db_dir>
+Usage: $0 <db_dir> [direct ORAM binding options]
 
 Walks <db_dir> recursively, hashes every regular file (excluding
 MANIFEST.toml itself), and writes MANIFEST.toml at the dir root.
 Output is deterministic: paths use forward slashes and are sorted
 under LC_ALL=C.
+
+To commit Direct ORAM sources before BuildEvidence is created, provide all:
+  --direct-oram-index PATH
+  --direct-oram-chunks PATH
+  --direct-index-slots-per-bin N
+  --direct-index-hash-fns N
+  --direct-index-load-factor-ppb N
+  --direct-index-seed N
 
 Exit codes:
   0  manifest written
@@ -27,7 +35,44 @@ EOF
 fi
 
 dir="$1"
+shift
 [ -d "$dir" ] || { echo "error: $dir is not a directory" >&2; exit 1; }
+
+direct_index=""
+direct_chunks=""
+direct_slots=""
+direct_hash_fns=""
+direct_load_ppb=""
+direct_seed=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --direct-oram-index) direct_index="${2:-}"; shift 2 ;;
+        --direct-oram-chunks) direct_chunks="${2:-}"; shift 2 ;;
+        --direct-index-slots-per-bin) direct_slots="${2:-}"; shift 2 ;;
+        --direct-index-hash-fns) direct_hash_fns="${2:-}"; shift 2 ;;
+        --direct-index-load-factor-ppb) direct_load_ppb="${2:-}"; shift 2 ;;
+        --direct-index-seed) direct_seed="${2:-}"; shift 2 ;;
+        *) echo "error: unknown argument: $1" >&2; exit 64 ;;
+    esac
+done
+
+direct_requested=0
+for value in "$direct_index" "$direct_chunks" "$direct_slots" "$direct_hash_fns" "$direct_load_ppb" "$direct_seed"; do
+    [ -n "$value" ] && direct_requested=1
+done
+if [ "$direct_requested" -eq 1 ]; then
+    [ -f "$direct_index" ] || { echo "error: direct INDEX source missing: $direct_index" >&2; exit 1; }
+    [ -f "$direct_chunks" ] || { echo "error: direct CHUNK source missing: $direct_chunks" >&2; exit 1; }
+    for pair in "slots:$direct_slots" "hash_fns:$direct_hash_fns" "load_factor_ppb:$direct_load_ppb" "seed:$direct_seed"; do
+        label=${pair%%:*}
+        value=${pair#*:}
+        case "$value" in ''|*[!0-9]*) echo "error: direct INDEX $label must be an unsigned integer" >&2; exit 64 ;; esac
+    done
+    [ "$direct_slots" -gt 0 ] || { echo "error: direct INDEX slots must be > 0" >&2; exit 64; }
+    [ "$direct_hash_fns" -gt 0 ] || { echo "error: direct INDEX hash_fns must be > 0" >&2; exit 64; }
+    [ "$direct_load_ppb" -gt 0 ] && [ "$direct_load_ppb" -lt 1000000000 ] \
+        || { echo "error: direct INDEX load_factor_ppb must be in 1..999999999" >&2; exit 64; }
+fi
 
 # sha256sum on Linux, shasum -a 256 on macOS without coreutils.
 if command -v sha256sum >/dev/null 2>&1; then
@@ -37,6 +82,19 @@ elif command -v shasum >/dev/null 2>&1; then
 else
     echo "error: neither sha256sum nor shasum found on PATH" >&2
     exit 1
+fi
+
+if [ "$direct_requested" -eq 1 ]; then
+    direct_index_sha=$(hash_one "$direct_index")
+    direct_chunks_sha=$(hash_one "$direct_chunks")
+    direct_index_bytes=$(wc -c < "$direct_index" | tr -d ' ')
+    direct_chunks_bytes=$(wc -c < "$direct_chunks" | tr -d ' ')
+    [ $((direct_index_bytes % 25)) -eq 0 ] \
+        || { echo "error: direct INDEX bytes are not a multiple of 25" >&2; exit 1; }
+    [ $((direct_chunks_bytes % 40)) -eq 0 ] \
+        || { echo "error: direct CHUNK bytes are not a multiple of 40" >&2; exit 1; }
+    direct_index_records=$((direct_index_bytes / 25))
+    direct_chunks_records=$((direct_chunks_bytes / 40))
 fi
 
 cd "$dir"
@@ -64,6 +122,21 @@ generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     printf 'version = 1\n'
     printf 'generated_at = "%s"\n' "$generated_at"
     printf '\n'
+    if [ "$direct_requested" -eq 1 ]; then
+        printf '[direct_oram]\n'
+        printf 'version = 1\n'
+        printf 'index_sha256 = "%s"\n' "$direct_index_sha"
+        printf 'index_bytes = %s\n' "$direct_index_bytes"
+        printf 'index_records = %s\n' "$direct_index_records"
+        printf 'chunk_sha256 = "%s"\n' "$direct_chunks_sha"
+        printf 'chunk_bytes = %s\n' "$direct_chunks_bytes"
+        printf 'chunk_records = %s\n' "$direct_chunks_records"
+        printf 'index_slots_per_bin = %s\n' "$direct_slots"
+        printf 'index_hash_fns = %s\n' "$direct_hash_fns"
+        printf 'index_load_factor_ppb = %s\n' "$direct_load_ppb"
+        printf 'index_seed = %s\n' "$direct_seed"
+        printf '\n'
+    fi
     printf '[files]\n'
     while IFS= read -r f; do
         # Cuckoo table files are several GB — skip hashing them.

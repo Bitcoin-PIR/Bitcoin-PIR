@@ -2,6 +2,8 @@ import type { WasmDatabaseProof } from './sdk-bridge.js';
 
 export interface VerifiedDatabaseProof {
   dbId: number;
+  /** SHA-256 of the verified server database MANIFEST.toml bytes. */
+  manifestRootHex?: string;
   buildKind: 'snapshot' | 'delta' | string;
   fromHeight: number;
   fromBlockHashHex: string;
@@ -25,6 +27,9 @@ export interface VerifiedDatabaseProof {
 
 export interface DatabaseProofPin {
   dbId: number;
+  /** Optional for legacy pins. Paid admission must require the live verified
+   * value even when a legacy static pin omits it. */
+  manifestRootHex?: string;
   buildKind: 'snapshot' | 'delta';
   fromHeight: number;
   height: number;
@@ -72,6 +77,7 @@ export interface DatabaseAnchorPoint {
 export function verifiedDatabaseProofFromWasm(proof: WasmDatabaseProof): VerifiedDatabaseProof {
   return {
     dbId: proof.dbId,
+    manifestRootHex: proof.manifestRootHex,
     buildKind: proof.buildKind,
     fromHeight: proof.fromHeight,
     fromBlockHashHex: proof.fromBlockHashHex,
@@ -114,6 +120,7 @@ export function verifyDatabaseProofAgainstPin(
   };
 
   cmp('dbId');
+  if (pin.manifestRootHex !== undefined) cmp('manifestRootHex', true);
   cmp('buildKind');
   cmp('fromHeight');
   cmp('height');

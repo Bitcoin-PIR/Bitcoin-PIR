@@ -316,6 +316,13 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     old instance and rotate either the per-provider idempotency secret or the
     clearing authorization digest/epoch before serving; an empty local-claim set
     MUST NOT be paired with that old replay history.
+70. DPF and Harmony retained-policy redemption is never exposed under an
+    ordinary one-sided SDK name. Rust and WASM low-level entry points are
+    explicitly named `dangerous_unpaired_*` / `dangerousUnpaired*`; using one
+    verifies only that provider's secure-channel, database and retained-policy
+    binding. Product code must first freeze the independently selected DPF
+    server pair or Harmony hint/query payment context. This rule does not apply
+    to the genuinely single-provider Onion and TEE-ORAM backends.
 
 ## TLS revocation residual
 
@@ -334,6 +341,14 @@ overlap supports certificate-key rotation at the same origin, but it is not a
 multi-origin migration mechanism. The old origin must remain the signed offer
 origin and stay available until every retained-policy redemption grace window
 has ended; otherwise those older capabilities intentionally fail closed.
+
+The provider runtime likewise has no retained shared-authorization keyring:
+`SharedIssuerAdmissionCommitterV1` receives one authorization, approval key and
+issuer settlement key. Retained settlement keys at the issuer or in
+`ProviderLedgerBalanceClientV1` do not recover an in-flight provider redeem
+after one of those bindings rotates. Operators must drain/reconcile pending
+redeems before rotation or explicitly accept fail-closed manual recovery risk;
+V1 makes no cross-authorization/key-rotation recovery claim.
 
 Standard-Cashu custody likewise retains the exact manifest digest and pins
 that authorized the swap. Before a planned mint leaf-key change, operators
@@ -425,6 +440,13 @@ Lightning does not itself reveal the Bitcoin address queried unless the
 application, logs, browser storage, or timing joins the payment to the PIR
 operation. The architecture's token separation reduces that application join;
 it cannot eliminate global timing analysis.
+
+The browser's independent trust bootstrap binds Lightning payees per exact
+signed `(issuer ID, canonical HTTPS issuer origin, network)` tuple. The PIR
+provider WebSocket origin is a separate trust field and is never substituted
+for the issuer origin. Provider-wide payee wildcards, duplicate tuples,
+credential-bearing issuer URLs, and BOLT11 offers without exactly one match
+fail closed. Free and Cashu-acquired offers carry no Lightning payee context.
 
 ## Process-memory handling boundary
 

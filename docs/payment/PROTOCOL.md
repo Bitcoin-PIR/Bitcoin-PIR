@@ -944,6 +944,19 @@ balance. Any actual payout is an operator/product action outside the query path
 and requires a separately reviewed executor or manual reconciliation design
 plus explicit production/funds approval.
 
+The registration's `provider_request_verifying_key` is not a ledger-only
+sentinel and is never copied from `clearing_verifying_key`. Production startup
+requires an independently provisioned Ed25519 public key and rejects reuse with
+the clearing, operator, or issuer-settlement roles. The clearing key signs
+redeem and balance requests; the provider-request key remains reserved for
+payout recovery/status. `ProviderLedgerBalanceClientV1` therefore verifies the
+signed balance directly from the operator authorization, issuer approval,
+clearing key and current/retained settlement-key lineage without manufacturing
+a payout registration digest or disabled target. It rechecks both signed
+validity windows at the caller-supplied current time before every send. The broader
+`ProviderSettlementClientV1` still requires the exact distinct-key registration
+before any payout workflow.
+
 Every retained settlement Cashu keyset registry is local trusted context bound
 to one `issuer_id`; a matching keyset ID from a different issuer lineage is
 rejected before note verification or ledger credit. Settlement-signature keys
@@ -952,6 +965,13 @@ historical keys for the same `issuer_id`. Production ledger-only operation still
 needs retained keys to authenticate exact committed redeem responses and their
 historical approvals after rotation. The transport-neutral payout model also
 resolves historical responses by their signed `issuer_settlement_key_id`.
+
+This issuer/ledger keyring does not change the provider wire/runtime boundary.
+V1 `SharedIssuerAdmissionCommitterV1` loads one current clearing authorization,
+approval key and issuer settlement key and cannot resume an in-flight provider
+redeem across their rotation. Rotation requires draining or explicit manual
+reconciliation of pending provider redeems; retained issuer keys alone are not
+a server recovery protocol.
 
 Payout is intentionally two-step. The provider first requests an issuer-signed
 intent that fixes account, opaque payout target ID, unit, value, fee, total

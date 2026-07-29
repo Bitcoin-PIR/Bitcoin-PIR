@@ -14,7 +14,9 @@ import {
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
+  VerifiedSingleProviderRetainedOfferV1,
   type ServiceAdmissionPortV1,
+  type ServiceAdmissionTargetV1,
   type ServiceAdmissionVaultV1,
 } from '../service-admission.js';
 import type { AdmissionCapabilityV1 } from '../admission-vault.js';
@@ -34,6 +36,23 @@ const secondProviderHex = '12'.repeat(32);
 const secondScopeHex = '23'.repeat(32);
 const secondProviderId = new Uint8Array(32).fill(0x12);
 const secondPolicyKey = new Uint8Array(32).fill(0x34);
+const manifestRootHex = '5a'.repeat(32);
+const limits = {
+  maxLogicalInputs: 4,
+  maxFrames: 64,
+  maxRequestBytes: '1048576',
+  maxResponseBytes: '2097152',
+  maxWallTimeMs: 30_000,
+  maxConcurrentSockets: 1,
+  maxHintGroups: 0,
+  maxWorkUnits: '10000',
+};
+const DPF_TARGET: ServiceAdmissionTargetV1 = {
+  backend: 'dpf-pir',
+  workload: 'dpf-query',
+  protocolVersion: 1,
+  expectedDatasetManifestRootHex: manifestRootHex,
+};
 
 function policy(
   offer: ServiceOfferViewV1,
@@ -52,6 +71,8 @@ function policy(
       protocolVersion: 1,
       operationProfile: 2,
       entitlementProfile: 3,
+      dataset: { kind: 'manifest-root', rootHex: manifestRootHex },
+      limits: { ...limits },
       offers: [offer],
     }],
   };
@@ -92,6 +113,7 @@ function retainedAccepted(
       protocolVersion: 1,
       operationProfile: 2,
       entitlementProfile: 3,
+      dataset: { kind: 'manifest-root', rootHex: manifestRootHex },
       limits: {
         maxLogicalInputs: 1,
         maxFrames: 1,
@@ -163,7 +185,10 @@ describe('provider admission orchestration', () => {
     }, secondProviderHex, secondScopeHex);
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-b.example',
+      operatorSigningKey: () => secondProviderId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => ({
         scopeIdHex: secondScopeHex,
@@ -177,17 +202,26 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId: secondProviderId, policySigningKey: secondPolicyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     return session;
   }
 
   function sessionForOffer(offer: ServiceOfferViewV1): ProviderAdmissionSessionV1 {
-    const view = policy(offer);
+    return sessionForPolicyView(policy(offer));
+  }
+
+  function sessionForPolicyView(
+    view: ServicePolicyViewV1,
+    target: ServiceAdmissionTargetV1 = DPF_TARGET,
+  ): ProviderAdmissionSessionV1 {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -196,7 +230,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      target,
     );
   }
 
@@ -232,6 +266,40 @@ describe('provider admission orchestration', () => {
       .rejects.toThrow(/lowercase/);
   });
 
+  it('exposes only the unique scope for the exact protocol and verified manifest root', async () => {
+    const view = policy(arcOffer());
+    view.scopes.push({
+      ...structuredClone(view.scopes[0]),
+      scopeIdHex: '24'.repeat(32),
+      dataset: { kind: 'manifest-root', rootHex: '6a'.repeat(32) },
+    });
+    await expect(sessionForPolicyView(view).refreshPolicy()).resolves.toMatchObject({
+      scopes: [{ scopeIdHex: scopeHex, dataset: { rootHex: manifestRootHex } }],
+    });
+
+    const ambiguous = structuredClone(view);
+    ambiguous.scopes[1].dataset = { kind: 'manifest-root', rootHex: manifestRootHex };
+    ambiguous.scopes[1].entitlementProfile = 9;
+    await expect(sessionForPolicyView(ambiguous).refreshPolicy())
+      .rejects.toThrow(/exactly one scope/);
+    await expect(sessionForPolicyView(ambiguous, {
+      ...DPF_TARGET,
+      entitlementProfile: 3,
+    }).refreshPolicy()).rejects.toThrow(/exactly one scope/);
+
+    const wrongProtocol = policy(arcOffer());
+    wrongProtocol.scopes[0].protocolVersion = 2;
+    await expect(sessionForPolicyView(wrongProtocol).refreshPolicy())
+      .rejects.toThrow(/exactly one scope/);
+  });
+
+  it('rejects malformed live signed limits before any offer can be selected', async () => {
+    const view = policy(arcOffer());
+    view.scopes[0].limits.maxRequestBytes = '01';
+    await expect(sessionForPolicyView(view).refreshPolicy())
+      .rejects.toThrow(/canonical decimal u64/);
+  });
+
   it('rejects an ARC raw-key fingerprint on a non-ARC policy offer', async () => {
     const polluted = {
       ...arcOffer(),
@@ -264,7 +332,10 @@ describe('provider admission orchestration', () => {
     const handle = accepted(view);
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => handle,
       authorize: async (_policy, _scope, _offer, proof) => {
         expect(checkpointCommitted).toBe(true);
@@ -277,13 +348,19 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session, scopeIdHex: scopeHex, offerId: 1 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session, scopeIdHex: scopeHex, offerId: 1,
+        providerEndpoint: 'wss://provider-a.example/v1',
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
     await expect(pair.authorize('first')).resolves.toMatchObject({ enforcedProfile: 3 });
     expect((session as unknown as { authorize?: unknown }).authorize).toBeUndefined();
@@ -316,7 +393,10 @@ describe('provider admission orchestration', () => {
     }));
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -325,7 +405,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const selected = VerifiedSingleProviderOfferV1.create({
@@ -336,6 +416,80 @@ describe('provider admission orchestration', () => {
 
     await expect(selected.authorize()).resolves.toMatchObject({ enforcedProfile: 3 });
     expect(authorize).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds a single-provider BOLT11 capability retirement to its frozen context', async () => {
+    const offer: ServiceOfferViewV1 = {
+      offerId: 18,
+      acquisition: 'bolt11',
+      authorization: 'cashu-bat',
+      freeMode: 'not-free',
+      verification: 'provider-local',
+      deploymentStatus: 'stable',
+      priorityClass: 1,
+      price: { kind: 'msat', amount: '1000' },
+      issuerIdHex: '58'.repeat(32),
+      keyIdHex: '69'.repeat(32),
+      batVerificationKeyFingerprintHex: '79'.repeat(32),
+      arcVerificationKeyFingerprintHex: '',
+      endpoint: 'https://issuer-single.invalid',
+      credentialCount: 1,
+      credentialPresentationLimit: 1,
+      privacyLeakageBits: 1,
+    };
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(6)]);
+    const expectedContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: Array.from(
+        payee,
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    };
+    vault.takeSingleUseCapability = async (binding, validate, context) => {
+      expect(context).toEqual(expectedContext);
+      const payload = new Uint8Array([1, 2, 3]);
+      validate?.(payload);
+      return { ...binding, payload };
+    };
+    const authorize = vi.fn(async () => ({
+      scopeIdHex: scopeHex,
+      enforcedProfile: 3,
+      expiresInMs: 1000,
+      hasHarmonyAttach: false,
+    }));
+    const port: ServiceAdmissionPortV1 = {
+      assertTrustAnchor: vi.fn(),
+      assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
+      fetchPolicy: async () => accepted(policy(offer)),
+      authorize,
+      requestPowChallenge: async () => { throw new Error('unused'); },
+    };
+    const session = new ProviderAdmissionSessionV1(
+      vault,
+      port,
+      { providerId, policySigningKey: policyKey },
+      DPF_TARGET,
+    );
+    await session.refreshPolicy();
+    expect(() => VerifiedSingleProviderOfferV1.create({
+      session,
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+    })).toThrow(/trusted compressed Lightning payee/);
+    const selected = VerifiedSingleProviderOfferV1.create({
+      session,
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+    });
+
+    await expect(selected.authorize()).resolves.toMatchObject({ enforcedProfile: 3 });
+    expect(authorize).toHaveBeenCalledOnce();
   });
 
   it('rejects a stale single-provider channel before starting invoice acquisition', async () => {
@@ -363,6 +517,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding,
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -371,19 +526,22 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(2)]);
     const selected = VerifiedSingleProviderOfferV1.create({
       session,
       scopeIdHex: scopeHex,
       offerId: 3,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
     });
 
     await expect(selected.startBolt11Acquisition({
       vault: {} as never,
       network: 'bitcoin',
-      expectedPayeePubkey: new Uint8Array(33).fill(2),
+      expectedPayeePubkey: payee,
     })).rejects.toThrow(/different secure-channel session/);
     expect(assertSessionBinding).toHaveBeenCalledTimes(1);
   });
@@ -418,6 +576,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => handle,
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -426,7 +585,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const selected = VerifiedSingleProviderOfferV1.create({
@@ -518,7 +677,10 @@ describe('provider admission orchestration', () => {
     });
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -527,14 +689,27 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await session.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session, scopeIdHex: scopeHex, offerId: 7 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session, scopeIdHex: scopeHex, offerId: 7,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        lightningNetwork: 'bitcoin',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
+    expect(() => pair.startBolt11Acquisition('first', {
+      vault: {} as never,
+      network: 'bitcoin',
+      expectedPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(2)]),
+    })).toThrow(/differs from the independently frozen provider context/);
     await expect(pair.authorize('first')).rejects.toBeInstanceOf(
       AmbiguousCapabilitySpendErrorV1,
     );
@@ -572,9 +747,12 @@ describe('provider admission orchestration', () => {
     const authorize = vi.fn();
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(() => {
         throw new Error('accepted policy belongs to a different secure-channel session');
       }),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -583,13 +761,21 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 9 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 9,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        lightningNetwork: 'bitcoin',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     await expect(pair.authorize('first')).rejects.toThrow(/different secure-channel session/);
@@ -624,7 +810,10 @@ describe('provider admission orchestration', () => {
     }));
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -633,13 +822,19 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 5 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 5,
+        providerEndpoint: 'wss://provider-a.example/v1',
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     await first.refreshPolicy();
@@ -679,7 +874,10 @@ describe('provider admission orchestration', () => {
     };
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => 'wss://provider-a.example',
+      operatorSigningKey: () => providerId.slice(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => ({
         scopeIdHex: scopeHex,
@@ -693,13 +891,21 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 8 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 8,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        lightningNetwork: 'bitcoin',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     const authorization = pair.authorize('first');
@@ -717,6 +923,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('unused'); },
       fetchRetainedRedemption: async () => retainedAccepted(offer),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('unused'); },
       authorizeRetained: async () => { throw new Error('must not send'); },
@@ -726,7 +933,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     await expect(session.inspectRetainedCapability({
       providerIdHex: providerHex,
@@ -777,6 +984,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('current policy must not be fetched'); },
       fetchRetainedRedemption: async () => retained,
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('current authorization must not be used'); },
       authorizeRetained,
@@ -786,7 +994,7 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
     const binding = {
       providerIdHex: providerHex,
@@ -796,17 +1004,242 @@ describe('provider admission orchestration', () => {
       scheme: 'cashu-bat' as const,
     };
 
-    await expect(session.inspectRetainedCapability(binding)).resolves.toMatchObject({
+    const inspected = await session.inspectRetainedCapability(binding);
+    expect(inspected).toMatchObject({
       policyDigestHex: binding.policyDigestHex,
       offer: { authorization: 'cashu-bat' },
     });
-    await expect(session.authorizeRetainedCapability(binding)).resolves.toMatchObject({
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(7)]);
+    const acquisitionContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: Array.from(
+        payee,
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    };
+    vault.takeSingleUseCapability = async (selectedBinding, validate, expectedContext) => {
+      retiredBinding = selectedBinding;
+      expect(expectedContext).toEqual(acquisitionContext);
+      const payload = new Uint8Array([1, 2, 3]);
+      validate?.(payload);
+      return { ...selectedBinding, payload };
+    };
+    expect(() => VerifiedSingleProviderRetainedOfferV1.create({
+      session,
+      binding,
+      redemption: inspected,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+    })).toThrow(/lacks authenticated historical payment context/);
+    const selected = VerifiedSingleProviderRetainedOfferV1.create({
+      session,
+      binding,
+      redemption: inspected,
+      lightningNetwork: 'bitcoin',
+      expectedLightningPayeePubkey: payee,
+      acquisitionContext,
+    });
+    await expect(selected.authorize()).resolves.toMatchObject({
       scopeIdHex: scopeHex,
       enforcedProfile: 3,
     });
     expect(retiredBinding).toEqual(binding);
     expect(authorizeRetained).toHaveBeenCalledOnce();
     expect(retiredProof).toEqual(new Uint8Array(3));
+  });
+
+  it('freezes mixed retained pair order and exact historical BOLT11 context', async () => {
+    const makeRetained = (
+      selectedProviderHex: string,
+      selectedProviderId: Uint8Array,
+      selectedPolicyKey: Uint8Array,
+      selectedScopeHex: string,
+      providerEndpoint: string,
+      issuerByte: string,
+      payeeFill: number,
+      offerId: number,
+    ) => {
+      const offer: ServiceOfferViewV1 = {
+        offerId,
+        acquisition: 'bolt11',
+        authorization: 'cashu-bat',
+        freeMode: 'not-free',
+        verification: 'provider-local',
+        deploymentStatus: 'stable',
+        priorityClass: 1,
+        price: { kind: 'msat', amount: '1000' },
+        issuerIdHex: issuerByte.repeat(32),
+        keyIdHex: issuerByte.repeat(16),
+        batVerificationKeyFingerprintHex: issuerByte.repeat(32),
+        arcVerificationKeyFingerprintHex: '',
+        endpoint: `https://issuer-${issuerByte}.example`,
+        credentialCount: 1,
+        credentialPresentationLimit: 1,
+        privacyLeakageBits: 0,
+      };
+      const redemption: RetainedServiceRedemptionViewV1 = {
+        providerIdHex: selectedProviderHex,
+        policyDigestHex: '44'.repeat(32),
+        scope: {
+          scopeIdHex: selectedScopeHex,
+          backend: 'dpf-pir',
+          workload: 'dpf-query',
+          protocolVersion: 1,
+          operationProfile: 2,
+          entitlementProfile: 3,
+          dataset: { kind: 'manifest-root', rootHex: manifestRootHex },
+          limits: { ...limits },
+          offers: [],
+        },
+        offer,
+      };
+      const retainedHandle = (): WasmAcceptedRetainedServiceRedemptionV1 => ({
+        free: vi.fn(),
+        providerIdHex: selectedProviderHex,
+        policyDigestHex: redemption.policyDigestHex,
+        scopeIdHex: selectedScopeHex,
+        offerId,
+        assertRedemptionReady: vi.fn(),
+        validateAuthorizationProof: vi.fn(),
+        redemptionJson: () => structuredClone(redemption),
+      });
+      const port: ServiceAdmissionPortV1 = {
+        providerEndpoint: () => providerEndpoint,
+        operatorSigningKey: () => selectedProviderId.slice(),
+        assertTrustAnchor: vi.fn(),
+        fetchPolicy: async () => { throw new Error('current policy must not be fetched'); },
+        fetchRetainedRedemption: async () => retainedHandle(),
+        assertSessionBinding: vi.fn(),
+        captureReadinessGuard: () => vi.fn(),
+        assertRetainedSessionBinding: vi.fn(),
+        authorize: async () => { throw new Error('current authorization must not be used'); },
+        authorizeRetained: async () => ({
+          scopeIdHex: selectedScopeHex,
+          enforcedProfile: 3,
+          expiresInMs: 1000,
+          hasHarmonyAttach: false,
+        }),
+        requestPowChallenge: async () => { throw new Error('unused'); },
+      };
+      const payee = new Uint8Array([2, ...new Uint8Array(32).fill(payeeFill)]);
+      const context = {
+        kind: 'bolt11' as const,
+        issuerEndpoint: offer.endpoint,
+        issuerIdHex: offer.issuerIdHex,
+        network: 'bitcoin' as const,
+        expectedPayeePubkeyHex: Array.from(payee, (byte) =>
+          byte.toString(16).padStart(2, '0')).join(''),
+      };
+      return {
+        session: new ProviderAdmissionSessionV1(
+          vault,
+          port,
+          { providerId: selectedProviderId, policySigningKey: selectedPolicyKey },
+          DPF_TARGET,
+        ),
+        binding: {
+          providerIdHex: selectedProviderHex,
+          policyDigestHex: redemption.policyDigestHex,
+          scopeIdHex: selectedScopeHex,
+          offerId,
+          scheme: 'cashu-bat' as const,
+        },
+        redemption,
+        providerEndpoint,
+        lightningNetwork: 'bitcoin' as const,
+        expectedLightningPayeePubkey: payee,
+        acquisitionContext: context,
+      };
+    };
+
+    const first = makeRetained(
+      providerHex, providerId, policyKey, scopeHex,
+      'wss://provider-a.example', '57', 7, 71,
+    );
+    const second = makeRetained(
+      secondProviderHex, secondProviderId, secondPolicyKey, secondScopeHex,
+      'wss://provider-b.example', '58', 8, 72,
+    );
+    let consumedContext: unknown = null;
+    vault.takeSingleUseCapability = async (binding, validate, context) => {
+      consumedContext = context;
+      const payload = new Uint8Array([1, 2, 3]);
+      validate?.(payload);
+      return { ...binding, payload };
+    };
+    const currentSecond = await independentFreeSession();
+    const retainedCurrent = VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'retained', value: first },
+      { kind: 'current', value: {
+        session: currentSecond,
+        scopeIdHex: secondScopeHex,
+        offerId: 91,
+        providerEndpoint: 'wss://provider-b.example',
+      } },
+    );
+    await expect(retainedCurrent.authorize('first')).resolves.toMatchObject({
+      scopeIdHex: scopeHex,
+    });
+    expect(consumedContext).toEqual(first.acquisitionContext);
+
+    const freeFirst = sessionForOffer({
+      offerId: 90,
+      acquisition: 'free',
+      authorization: 'free',
+      freeMode: 'open-best-effort',
+      verification: 'provider-local',
+      deploymentStatus: 'stable',
+      priorityClass: 1,
+      price: { kind: 'free' },
+      issuerIdHex: '00'.repeat(32),
+      keyIdHex: '',
+      batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
+      endpoint: '',
+      credentialCount: 1,
+      credentialPresentationLimit: 1,
+      privacyLeakageBits: 0,
+    });
+    await freeFirst.refreshPolicy();
+    expect(() => VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'current', value: {
+        session: freeFirst,
+        scopeIdHex: scopeHex,
+        offerId: 90,
+        providerEndpoint: 'wss://provider-a.example',
+      } },
+      { kind: 'retained', value: second },
+    )).not.toThrow();
+    expect(() => VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'retained', value: first },
+      { kind: 'retained', value: second },
+    )).not.toThrow();
+
+    expect(() => VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'retained', value: { ...first, acquisitionContext: undefined } },
+      { kind: 'retained', value: second },
+    )).toThrow(/lacks authenticated historical payment context/);
+    expect(() => VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'retained', value: {
+        ...first,
+        acquisitionContext: { ...first.acquisitionContext, issuerIdHex: '59'.repeat(32) },
+      } },
+      { kind: 'retained', value: second },
+    )).toThrow(/differs from trusted offer context/);
+    expect(() => VerifiedIndependentProviderPairV1.createSelections(
+      { kind: 'retained', value: first },
+      { kind: 'retained', value: {
+        ...second,
+        expectedLightningPayeePubkey: first.expectedLightningPayeePubkey,
+        acquisitionContext: {
+          ...second.acquisitionContext,
+          expectedPayeePubkeyHex: first.acquisitionContext.expectedPayeePubkeyHex,
+        },
+      } },
+    )).toThrow(/one Lightning payee observing both purchases/);
   });
 
   it('rejects a retained scheme mismatch before retiring proof bytes', async () => {
@@ -833,6 +1266,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('unused'); },
       fetchRetainedRedemption: async () => retainedAccepted(offer),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('unused'); },
       authorizeRetained: async () => { throw new Error('must not send'); },
@@ -842,9 +1276,9 @@ describe('provider admission orchestration', () => {
       vault,
       port,
       { providerId, policySigningKey: policyKey },
-      { backend: 'dpf-pir', workload: 'dpf-query' },
+      DPF_TARGET,
     );
-    await expect(session.authorizeRetainedCapability({
+    await expect(session.inspectRetainedCapability({
       providerIdHex: providerHex,
       policyDigestHex: '44'.repeat(32),
       scopeIdHex: scopeHex,

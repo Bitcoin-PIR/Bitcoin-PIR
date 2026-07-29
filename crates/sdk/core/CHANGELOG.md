@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `QueryResult::empty`, `with_entries`, and `Default` now start with
+  `merkle_verified = false`. Serde omits the public mutable field when
+  serializing and always resets it to `false` when deserializing, even when
+  input claims otherwise. The flag is legacy diagnostic metadata, not a
+  cryptographic release authority; release-sensitive clients use an opaque
+  verified-result type.
+
 ## [0.1.0] — initial release
 
 ### Added

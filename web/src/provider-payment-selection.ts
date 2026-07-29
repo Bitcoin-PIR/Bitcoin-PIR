@@ -12,11 +12,19 @@ import type { ServiceOfferViewV1 } from './sdk-bridge.js';
 export interface SelectedProviderOfferV1 {
   trust: ProviderTrustAnchorV1;
   offer: ServiceOfferViewV1;
+  /** Browser-trusted provider WebSocket endpoint; never sent to its peer. */
+  providerEndpoint?: string;
+  /** Browser-trusted Lightning payee key; never sent to its peer. */
+  expectedLightningPayeePubkey?: Uint8Array;
+  /** Live adapter-bound operator key; never accepted from directory self-reporting alone. */
+  trustedOperatorSigningKey?: Uint8Array;
 }
 
 export interface IndependentProviderSelectionOptionsV1 {
   /** Explicitly allow one issuer/origin to observe both credential flows. */
   allowSharedIssuerCorrelation?: boolean;
+  /** Explicitly allow one Lightning payee to observe both purchases. */
+  allowSharedLightningPayeeCorrelation?: boolean;
 }
 
 export function assertIndependentProviderOfferPairV1(
@@ -33,11 +41,9 @@ export function assertIndependentProviderOfferPairV1(
       === fixedHex('second policy key', second.trust.policySigningKey)) {
     throw new Error('the two PIR providers must not reuse one policy signing key');
   }
-  const firstOperator = first.trust.directoryAssertion?.operatorSigningKeyEd25519;
-  const secondOperator = second.trust.directoryAssertion?.operatorSigningKeyEd25519;
-  if (firstOperator && secondOperator
-      && fixedHex('first operator key', firstOperator)
-        === fixedHex('second operator key', secondOperator)) {
+  const firstOperator = requiredOperatorKey('first', first);
+  const secondOperator = requiredOperatorKey('second', second);
+  if (firstOperator === secondOperator) {
     throw new Error('the two PIR providers resolve to the same directory operator key');
   }
 
@@ -52,21 +58,57 @@ export function assertIndependentProviderOfferPairV1(
     throw new Error('the two providers reuse one raw ARC verification key');
   }
 
-  if (options.allowSharedIssuerCorrelation === true
-      || !hasCorrelationInfrastructure(first.offer)
-      || !hasCorrelationInfrastructure(second.offer)) {
-    return;
+  if (options.allowSharedIssuerCorrelation !== true) {
+    const firstIssuer = optionalIssuerId('first issuer ID', first.offer.issuerIdHex);
+    const secondIssuer = optionalIssuerId('second issuer ID', second.offer.issuerIdHex);
+    if (firstIssuer !== null && secondIssuer !== null && firstIssuer === secondIssuer) {
+      throw new Error('strict pair privacy rejects one issuer observing both credential flows');
+    }
+    const firstOrigin = issuerOrigin(first.offer.endpoint);
+    const secondOrigin = issuerOrigin(second.offer.endpoint);
+    if (firstOrigin !== null && secondOrigin !== null && firstOrigin === secondOrigin) {
+      throw new Error('strict pair privacy rejects one issuer origin serving both providers');
+    }
   }
-  const firstIssuer = optionalIssuerId('first issuer ID', first.offer.issuerIdHex);
-  const secondIssuer = optionalIssuerId('second issuer ID', second.offer.issuerIdHex);
-  if (firstIssuer !== null && secondIssuer !== null && firstIssuer === secondIssuer) {
-    throw new Error('strict pair privacy rejects one issuer observing both credential flows');
+  const firstKeyId = directReceiptKeyId('first receipt key ID', first.offer);
+  const secondKeyId = directReceiptKeyId('second receipt key ID', second.offer);
+  if (firstKeyId !== null && secondKeyId !== null && firstKeyId === secondKeyId) {
+    throw new Error('strict pair privacy rejects one receipt verification key serving both providers');
   }
-  const firstOrigin = issuerOrigin(first.offer.endpoint);
-  const secondOrigin = issuerOrigin(second.offer.endpoint);
-  if (firstOrigin !== null && secondOrigin !== null && firstOrigin === secondOrigin) {
-    throw new Error('strict pair privacy rejects one issuer origin serving both providers');
+  const firstPayee = optionalCompressedKey(
+    'first Lightning payee', first.expectedLightningPayeePubkey,
+  );
+  const secondPayee = optionalCompressedKey(
+    'second Lightning payee', second.expectedLightningPayeePubkey,
+  );
+  if (options.allowSharedLightningPayeeCorrelation !== true
+      && firstPayee !== null && secondPayee !== null && firstPayee === secondPayee) {
+    throw new Error('strict pair privacy rejects one Lightning payee observing both purchases');
   }
+  const firstProviderOrigin = providerOrigin(first.providerEndpoint);
+  const secondProviderOrigin = providerOrigin(second.providerEndpoint);
+  if (firstProviderOrigin !== null && secondProviderOrigin !== null
+      && firstProviderOrigin === secondProviderOrigin) {
+    throw new Error('strict pair privacy rejects one WebSocket origin serving both PIR roles');
+  }
+}
+
+function requiredOperatorKey(label: string, value: SelectedProviderOfferV1): string {
+  const live = value.trustedOperatorSigningKey === undefined
+    ? null
+    : fixedHex(`${label} live operator key`, value.trustedOperatorSigningKey);
+  const directoryBytes = value.trust.directoryAssertion?.operatorSigningKeyEd25519;
+  const directory = directoryBytes === undefined
+    ? null
+    : fixedHex(`${label} directory operator key`, directoryBytes);
+  if (live !== null && directory !== null && live !== directory) {
+    throw new Error(`${label} live operator key does not match its directory assertion`);
+  }
+  const resolved = live ?? directory;
+  if (resolved === null) {
+    throw new Error(`${label} provider lacks an adapter-bound trusted operator key`);
+  }
+  return resolved;
 }
 
 function batFingerprint(offer: ServiceOfferViewV1): string | null {
@@ -95,17 +137,44 @@ function arcFingerprint(offer: ServiceOfferViewV1): string | null {
   );
 }
 
-function hasCorrelationInfrastructure(offer: ServiceOfferViewV1): boolean {
-  return offer.verification !== 'provider-local'
-    || offer.acquisition !== 'free'
-    || offer.authorization !== 'free'
-    || offer.endpoint !== ''
-    || optionalIssuerId('issuer ID', offer.issuerIdHex) !== null;
-}
-
 function optionalIssuerId(field: string, value: string): string | null {
   if (/^0{64}$/.test(value)) return null;
   return canonicalNonzeroHex32(field, value);
+}
+
+function directReceiptKeyId(field: string, offer: ServiceOfferViewV1): string | null {
+  if (offer.authorization !== 'bolt11-direct-receipt') return null;
+  const value = offer.keyIdHex;
+  // The authenticated protocol permits 1..64 bytes. Preserve the exact byte
+  // string for correlation comparison. Direct-receipt key IDs are derived
+  // from the raw verification key, so equality also catches raw-key reuse;
+  // BAT and ARC use their raw-key fingerprints above and free tickets remain
+  // covered by the issuer guard.
+  if (!/^(?:[0-9a-f]{2}){1,64}$/.test(value)) {
+    throw new Error(`${field} must be 1..64 bytes of lowercase hex`);
+  }
+  if (/^0+$/.test(value)) return null;
+  return value;
+}
+
+function optionalCompressedKey(field: string, value: Uint8Array | undefined): string | null {
+  if (value === undefined) return null;
+  if (!(value instanceof Uint8Array) || value.length !== 33
+      || (value[0] !== 0x02 && value[0] !== 0x03)
+      || value.subarray(1).every((byte) => byte === 0)) {
+    throw new Error(`${field} must be a compressed secp256k1 public key`);
+  }
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function providerOrigin(endpoint: string | undefined): string | null {
+  if (endpoint === undefined || endpoint === '') return null;
+  let parsed: URL;
+  try { parsed = new URL(endpoint); } catch { throw new Error('provider WebSocket endpoint is invalid'); }
+  if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+    throw new Error('provider endpoint is not WebSocket(S)');
+  }
+  return parsed.origin;
 }
 
 function issuerOrigin(endpoint: string): string | null {

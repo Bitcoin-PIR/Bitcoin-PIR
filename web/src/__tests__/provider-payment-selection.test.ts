@@ -45,6 +45,7 @@ describe('local independent-provider payment selection', () => {
       { trust: trust(1, 11, 21), offer: offer() },
       { trust: trust(2, 12, 22), offer: offer({
         issuerIdHex: '32'.repeat(32),
+        keyIdHex: '42'.repeat(32),
         endpoint: 'https://issuer-b.example',
         batVerificationKeyFingerprintHex: '52'.repeat(32),
       }) },
@@ -156,7 +157,89 @@ describe('local independent-provider payment selection', () => {
     )).toThrow(/one issuer/);
     expect(() => assertIndependentProviderOfferPairV1(
       paid,
-      freeTicket('72'.repeat(32), 'https://tickets-b.example'),
+      {
+        ...freeTicket('72'.repeat(32), 'https://tickets-b.example'),
+        offer: {
+          ...freeTicket('72'.repeat(32), 'https://tickets-b.example').offer,
+          keyIdHex: '73'.repeat(32),
+        },
+      },
     )).not.toThrow();
+  });
+
+  it('rejects a shared delegated receipt key even with the issuer override', () => {
+    const first = {
+      trust: trust(1, 11, 21),
+      offer: offer({
+        authorization: 'bolt11-direct-receipt',
+        keyIdHex: '41'.repeat(16),
+        batVerificationKeyFingerprintHex: '',
+      }),
+    };
+    const second = { trust: trust(2, 12, 22), offer: offer({
+      authorization: 'bolt11-direct-receipt',
+      issuerIdHex: '32'.repeat(32),
+      endpoint: 'https://issuer-b.example',
+      batVerificationKeyFingerprintHex: '',
+      keyIdHex: '41'.repeat(16),
+    }) };
+    expect(() => assertIndependentProviderOfferPairV1(first, second))
+      .toThrow(/receipt verification key/);
+    expect(() => assertIndependentProviderOfferPairV1(
+      first, second, { allowSharedIssuerCorrelation: true },
+    )).toThrow(/receipt verification key/);
+  });
+
+  it('requires a separate explicit acknowledgement for one Lightning payee', () => {
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(9)]);
+    const first = {
+      trust: trust(1, 11, 21), offer: offer(),
+      expectedLightningPayeePubkey: payee,
+    };
+    const second = {
+      trust: trust(2, 12, 22),
+      offer: offer({
+        issuerIdHex: '32'.repeat(32), keyIdHex: '42'.repeat(32),
+        endpoint: 'https://issuer-b.example',
+        batVerificationKeyFingerprintHex: '52'.repeat(32),
+      }),
+      expectedLightningPayeePubkey: payee.slice(),
+    };
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      { allowSharedIssuerCorrelation: true },
+    ))
+      .toThrow(/Lightning payee/);
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      {
+        allowSharedIssuerCorrelation: true,
+        allowSharedLightningPayeeCorrelation: true,
+      },
+    )).not.toThrow();
+  });
+
+  it('rejects two PIR roles on one WebSocket origin even with different paths', () => {
+    const first = {
+      trust: trust(1, 11, 21), offer: offer(),
+      providerEndpoint: 'wss://pir.example/provider-a',
+    };
+    const second = {
+      trust: trust(2, 12, 22),
+      offer: offer({
+        issuerIdHex: '32'.repeat(32), keyIdHex: '42'.repeat(32),
+        endpoint: 'https://issuer-b.example',
+        batVerificationKeyFingerprintHex: '52'.repeat(32),
+      }),
+      providerEndpoint: 'wss://pir.example/provider-b',
+    };
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      { allowSharedIssuerCorrelation: true },
+    ))
+      .toThrow(/WebSocket origin/);
   });
 });

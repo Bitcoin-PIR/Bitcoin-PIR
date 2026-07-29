@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Disposable, fake-wallet-only NUT-03/NUT-07 interoperability test for standard Cashu.
-# This never connects to Lightning, never uses real funds, and never relaxes
-# the production WebPKI/HTTPS mint transport. The ignored Rust test receives a
-# loopback-only token and public keyset through owner-only temporary files.
+# Disposable, fake-wallet-only browser/provider/NUT-03/NUT-07 interoperability
+# test for standard Cashu. This never connects to Lightning, never uses real
+# funds, and never relaxes the production WebPKI/HTTPS mint transport. Default
+# mode uses two independent notes: Chromium feeds the first through a real
+# Standard Cashu provider plus independent Free peer and verified DPF/Merkle
+# query; the native custody lifecycle uses the second. All fixtures are
+# owner-only temporary files.
 
 usage() {
   cat <<'EOF'
@@ -20,7 +23,8 @@ exits without running Cargo. It accepts only explicitly acknowledged, SHA-256
 pinned prebuilt bpir-admin and WASM runtime artifacts; it is not current-tree
 build evidence. The default mode builds current bpir-admin and WASM artifacts
 with Cargo locked/offline before starting the mint, runs the browser evidence,
-then runs the native provider-side interoperability checks.
+then runs the real two-provider query/restart boundary and the independent
+native custody interoperability checks.
 EOF
 }
 
@@ -33,7 +37,7 @@ case "${1:-}" in
   *) usage >&2; exit 2 ;;
 esac
 
-for required_command in python3 curl ps uname date; do
+for required_command in python3 curl ps uname date cmp; do
   command -v "$required_command" >/dev/null 2>&1 || {
     echo "missing required command: $required_command" >&2
     exit 2
@@ -297,6 +301,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+expected_amount=8
+total_mint_amount=$((expected_amount * 2))
+test_leaf_spki_sha256="e91550521f8e17b21d99f7e00b99c08be1b1f31fe57772ac8f904ea50c6a609b"
+synthetic_mint_endpoint="https://cdk-loopback.invalid"
 port="${BITCOINPIR_CDK_PORT:-}"
 if [[ -z "$port" ]]; then
   port="$(python3 - <<'PY'
@@ -312,14 +320,56 @@ if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
   exit 2
 fi
 mint_endpoint="http://127.0.0.1:${port}"
+if [[ "$cdk_mode" == "run" ]]; then
+  provider_tls_port="${BITCOINPIR_CDK_PROVIDER_TLS_PORT:-}"
+  if [[ -z "$provider_tls_port" ]]; then
+    provider_tls_port="$("$PYTHON3_BIN" - "$port" <<'PY'
+import socket
+import sys
+
+excluded = int(sys.argv[1])
+while True:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        candidate = sock.getsockname()[1]
+    if candidate != excluded:
+        print(candidate)
+        break
+PY
+)"
+  fi
+  if [[ ! "$provider_tls_port" =~ ^[0-9]+$ ]] \
+    || (( provider_tls_port < 1024 || provider_tls_port > 65535 )) \
+    || [[ "$provider_tls_port" == "$port" ]]; then
+    echo "BITCOINPIR_CDK_PROVIDER_TLS_PORT must be a distinct unprivileged port" >&2
+    exit 2
+  fi
+  signed_mint_endpoint="https://localhost:${provider_tls_port}"
+  signed_leaf_spki_sha256="$test_leaf_spki_sha256"
+else
+  provider_tls_port=""
+  signed_mint_endpoint="$synthetic_mint_endpoint"
+  signed_leaf_spki_sha256="$("$PYTHON3_BIN" - "$signed_mint_endpoint" <<'PY'
+import hashlib
+import sys
+
+print(hashlib.sha256(
+    b"BitcoinPIR/payment-v1/test-only-cdk-loopback-leaf-spki/v1\x00"
+    + sys.argv[1].encode("ascii")
+).hexdigest())
+PY
+)"
+fi
 export NO_PROXY=127.0.0.1,localhost
 export no_proxy=127.0.0.1,localhost
 config_path="$runtime_dir/config.toml"
 mint_log="$runtime_dir/mintd.log"
 wallet_dir="$runtime_dir/wallet"
 mint_output="$runtime_dir/mint.log"
-send_output="$runtime_dir/send.out"
-token_file="$runtime_dir/token.cashub"
+browser_send_output="$runtime_dir/send-browser.out"
+native_send_output="$runtime_dir/send-native.out"
+browser_source_token_file="$runtime_dir/token-browser-source.cashub"
+native_token_file="$runtime_dir/token-native.cashub"
 keys_file="$runtime_dir/keys.json"
 info_file="$runtime_dir/info.json"
 browser_token_file="$runtime_dir/token-browser.cashub"
@@ -333,8 +383,8 @@ policy_file="$runtime_dir/service-policy-v1.bin"
 policy_output="$runtime_dir/service-policy.out"
 operator_key="$runtime_dir/operator-ed25519.key"
 policy_key="$runtime_dir/policy-ed25519.key"
-expected_amount=8
-synthetic_mint_endpoint="https://cdk-loopback.invalid"
+database_fixture_root="$runtime_dir/provider-database-fixture"
+database_fixture_metadata="$database_fixture_root/fixture.json"
 
 umask 077
 {
@@ -414,26 +464,39 @@ fi
 
 install -d -m 700 "$wallet_dir"
 run_bounded_command "$CDK_CLI_BIN" --work-dir "$wallet_dir" --unit sat --non-interactive \
-  mint "$mint_endpoint" "$expected_amount" > "$mint_output"
+  mint "$mint_endpoint" "$total_mint_amount" > "$mint_output"
 run_bounded_command "$CDK_CLI_BIN" --work-dir "$wallet_dir" --unit sat --non-interactive \
-  send --amount "$expected_amount" --mint-url "$mint_endpoint" > "$send_output"
-tail -n 1 "$send_output" > "$token_file"
-chmod 600 "$token_file"
-if ! grep -Eq '^cashuB[A-Za-z0-9_-]+={0,2}$' "$token_file"; then
-  echo "cdk-cli did not emit one cashuB token" >&2
+  send --amount "$expected_amount" --mint-url "$mint_endpoint" > "$browser_send_output"
+run_bounded_command "$CDK_CLI_BIN" --work-dir "$wallet_dir" --unit sat --non-interactive \
+  send --amount "$expected_amount" --mint-url "$mint_endpoint" > "$native_send_output"
+tail -n 1 "$browser_send_output" > "$browser_source_token_file"
+tail -n 1 "$native_send_output" > "$native_token_file"
+chmod 600 "$browser_source_token_file" "$native_token_file"
+for token_path in "$browser_source_token_file" "$native_token_file"; do
+  if ! grep -Eq '^cashuB[A-Za-z0-9_-]+={0,2}$' "$token_path"; then
+    echo "cdk-cli did not emit two independent cashuB tokens" >&2
+    exit 1
+  fi
+done
+if cmp -s "$browser_source_token_file" "$native_token_file"; then
+  echo "cdk-cli emitted duplicate browser and native Cashu notes" >&2
   exit 1
 fi
+rm -f -- "$browser_send_output" "$native_send_output"
 curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
   "$mint_endpoint/v1/keys" > "$keys_file"
 chmod 600 "$keys_file"
 
 # Production policy correctly forbids the disposable mint's HTTP loopback URL.
 # Cashu proofs do not commit to the NUT-00 wallet mint URL, so this owner-only
-# test fixture changes only that CBOR text field to the signed synthetic HTTPS
-# identity. Chromium must reject the untouched HTTP token and accept the
-# relabelled token only against a manifest built from the exact CDK keyset.
+# test fixture changes only that CBOR text field to the signed HTTPS identity.
+# Default mode terminates strict private-CA TLS at a feature-gated test proxy;
+# browser-only mode retains the non-routable synthetic identity. Chromium must
+# reject the untouched HTTP token and accept the relabelled first token only
+# against a manifest built from the exact CDK keyset. The second token is never
+# imported by Chromium and remains reserved for native custody lifecycle tests.
 "$PYTHON3_BIN" - \
-  "$token_file" "$browser_token_file" "$mint_endpoint" "$synthetic_mint_endpoint" <<'PY'
+  "$browser_source_token_file" "$browser_token_file" "$mint_endpoint" "$signed_mint_endpoint" <<'PY'
 import base64
 import pathlib
 import sys
@@ -470,20 +533,54 @@ pathlib.Path(destination_path).write_text("cashuB" + browser_encoded + "\n", enc
 PY
 chmod 600 "$browser_token_file"
 
-now_unix="$(date +%s)"
-issued_at=$((now_unix - 60))
-expires_at=$((now_unix + 3600))
-active_output_valid_through=$((expires_at + 3600))
-"$PYTHON3_BIN" - \
-  "$keys_file" "$manifest_config" "$synthetic_mint_endpoint" \
-  "$expires_at" "$active_output_valid_through" <<'PY'
-import hashlib
+manifest_root_hex=""
+if [[ "$cdk_mode" == "run" ]]; then
+  install -d -m 700 "$database_fixture_root"
+  BITCOINPIR_CDK_DATABASE_FIXTURE_ROOT="$database_fixture_root" \
+  BITCOINPIR_CDK_DATABASE_FIXTURE_METADATA="$database_fixture_metadata" \
+  CARGO_TARGET_DIR="$build_target_dir" \
+    cargo test --locked --offline \
+      -p runtime \
+      --features standard-cashu-process-e2e \
+      --test payment_v1_standard_cashu_process_e2e \
+      standard_cashu_prepare_real_cdk_database_fixture -- --ignored --exact
+  manifest_root_hex="$("$PYTHON3_BIN" - "$database_fixture_metadata" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
-keys_path, output_path, endpoint, accepted_through, output_through = sys.argv[1:]
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if set(value) != {"databasePath", "manifestRootHex", "bucketSuperRootHex"}:
+    raise SystemExit("prepared database metadata has an unexpected schema")
+for field in ("manifestRootHex", "bucketSuperRootHex"):
+    if not isinstance(value[field], str) or not re.fullmatch(r"[0-9a-f]{64}", value[field]):
+        raise SystemExit(f"prepared database {field} is invalid")
+database = pathlib.Path(value["databasePath"])
+if not database.is_absolute() or database.parent != pathlib.Path(sys.argv[1]).parent:
+    raise SystemExit("prepared database escaped the owner-only fixture root")
+print(value["manifestRootHex"])
+PY
+)"
+  if [[ ! "$manifest_root_hex" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "runtime fixture prepare did not emit an exact manifest root" >&2
+    exit 1
+  fi
+fi
+
+now_unix="$(date +%s)"
+issued_at=$((now_unix - 60))
+expires_at=$((now_unix + 3600))
+active_output_valid_through=$((expires_at + 3600))
+"$PYTHON3_BIN" - \
+  "$keys_file" "$manifest_config" "$signed_mint_endpoint" \
+  "$signed_leaf_spki_sha256" "$expires_at" "$active_output_valid_through" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+keys_path, output_path, endpoint, leaf_pin, accepted_through, output_through = sys.argv[1:]
 value = json.loads(pathlib.Path(keys_path).read_text(encoding="utf-8"))
 keysets = value.get("keysets")
 if not isinstance(keysets, list):
@@ -510,19 +607,15 @@ if not isinstance(fee, int) or fee < 0 or fee > 2**32 - 1:
 final_expiry = keyset.get("final_expiry")
 if final_expiry is not None and (not isinstance(final_expiry, int) or final_expiry <= 0):
     raise SystemExit("CDK final_expiry is invalid")
-synthetic_leaf_spki_pin = hashlib.sha256(
-    b"BitcoinPIR/payment-v1/test-only-cdk-loopback-leaf-spki/v1\x00"
-    + endpoint.encode("ascii")
-).hexdigest()
+if not re.fullmatch(r"[0-9a-f]{64}", leaf_pin):
+    raise SystemExit("signed mint leaf SPKI pin is invalid")
 lines = [
     "manifest_epoch = 1",
     f'mint_endpoint = "{endpoint}"',
-    # This owner-only fixture never performs TLS to the synthetic identity:
-    # Chromium only imports the signed manifest and the native test maps that
-    # exact identity to the validated loopback mint through a test transport.
-    # Keep the production pin field mandatory and use a deterministic nonzero
-    # test value instead of introducing a pinless compatibility path.
-    f'leaf_spki_sha256_pins_hex = ["{synthetic_leaf_spki_pin}"]',
+    # Default mode gives the real provider this exact private-CA pin through
+    # the production strict-HTTPS transport. Browser-only keeps a deterministic
+    # non-routable identity. Neither mode introduces a pinless fallback.
+    f'leaf_spki_sha256_pins_hex = ["{leaf_pin}"]',
     'unit = "sat"',
     f"accepted_inputs_valid_through = {accepted_through}",
     f"active_output_valid_through = {output_through}",
@@ -564,12 +657,22 @@ fi
 
 "$PYTHON3_BIN" - \
   "$policy_config" "$operator_pubkey" "$issued_at" "$expires_at" \
-  "$mint_id" "$manifest_digest" "$synthetic_mint_endpoint" "$expected_amount" <<'PY'
+  "$mint_id" "$manifest_digest" "$signed_mint_endpoint" "$expected_amount" \
+  "$manifest_root_hex" <<'PY'
 import pathlib
+import re
 import sys
 
 (output_path, operator_key, issued_at, expires_at, mint_id,
- manifest_digest, endpoint, amount) = sys.argv[1:]
+ manifest_digest, endpoint, amount, manifest_root) = sys.argv[1:]
+if manifest_root:
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_root):
+        raise SystemExit("exact provider manifest root is invalid")
+    dataset = f'''kind = "manifest-root"
+root_hex = "{manifest_root}"'''
+else:
+    dataset = '''kind = "class"
+class_id = 2'''
 config = f'''operator_pubkey_hex = "{operator_key}"
 stable_server_id = "payment-cdk-cashu-browser"
 policy_epoch = 1
@@ -585,18 +688,17 @@ operation_profile = 1
 entitlement_profile = 8
 
 [scopes.dataset]
-kind = "class"
-class_id = 2
+{dataset}
 
 [scopes.limits]
 max_logical_inputs = 1
-max_frames = 1
-max_request_bytes = 16384
-max_response_bytes = 4096
-max_wall_time_ms = 10000
+max_frames = 64
+max_request_bytes = 2097152
+max_response_bytes = 2097152
+max_wall_time_ms = 20000
 max_concurrent_sockets = 1
 max_hint_groups = 0
-max_work_units = 100
+max_work_units = 10000
 
 [[scopes.offers]]
 offer_id = 17
@@ -636,8 +738,8 @@ if [[ ! "$provider_id" =~ ^[0-9a-f]{64}$ || "$signed_policy_pubkey" != "$policy_
 fi
 
 "$PYTHON3_BIN" - \
-  "$browser_fixture_file" "$policy_file" "$token_file" "$browser_token_file" \
-  "$provider_id" "$policy_pubkey" "$mint_endpoint" "$synthetic_mint_endpoint" \
+  "$browser_fixture_file" "$policy_file" "$browser_source_token_file" "$browser_token_file" \
+  "$provider_id" "$policy_pubkey" "$mint_endpoint" "$signed_mint_endpoint" \
   "$expected_amount" <<'PY'
 import json
 import pathlib
@@ -678,22 +780,42 @@ if [[ "$cdk_mode" == "browser" ]]; then
   exit 0
 fi
 
-BITCOINPIR_CDK_CASHUB_TOKEN_FILE="$token_file" \
+BITCOINPIR_CDK_DATABASE_FIXTURE_ROOT="$database_fixture_root" \
+BITCOINPIR_CDK_DATABASE_FIXTURE_METADATA="$database_fixture_metadata" \
+BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT="$signed_mint_endpoint" \
+BITCOINPIR_CDK_MINT_ENDPOINT="$mint_endpoint" \
+BITCOINPIR_CDK_EXPECTED_AMOUNT="$expected_amount" \
+BITCOINPIR_CDK_POLICY_FILE="$policy_file" \
+BITCOINPIR_CDK_PROVIDER_ID_HEX="$provider_id" \
+BITCOINPIR_CDK_POLICY_SIGNING_PUBKEY_HEX="$policy_pubkey" \
+BITCOINPIR_CDK_BROWSER_SPEND_FILE="$browser_spend_file" \
+CARGO_TARGET_DIR="$build_target_dir" \
+  cargo test --locked --offline \
+    -p runtime \
+    --features standard-cashu-process-e2e \
+    --test payment_v1_standard_cashu_process_e2e \
+    standard_cashu_real_cdk_browser_provider_two_server_e2e -- --ignored --exact
+
+BITCOINPIR_CDK_CASHUB_TOKEN_FILE="$native_token_file" \
 BITCOINPIR_CDK_KEYS_FILE="$keys_file" \
 BITCOINPIR_CDK_MINT_ENDPOINT="$mint_endpoint" \
 BITCOINPIR_CDK_EXPECTED_AMOUNT="$expected_amount" \
+CARGO_TARGET_DIR="$build_target_dir" \
   cargo test --locked --offline -p pir-sdk-wasm --lib \
     standard_cashu::tests::real_cdk_cashub_interop -- --ignored --exact
 
-BITCOINPIR_CDK_CASHUB_TOKEN_FILE="$token_file" \
+BITCOINPIR_CDK_CASHUB_TOKEN_FILE="$native_token_file" \
 BITCOINPIR_CDK_KEYS_FILE="$keys_file" \
 BITCOINPIR_CDK_MINT_ENDPOINT="$mint_endpoint" \
+BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT="$signed_mint_endpoint" \
+BITCOINPIR_CDK_SIGNED_MINT_LEAF_SPKI_SHA256_HEX="$signed_leaf_spki_sha256" \
 BITCOINPIR_CDK_EXPECTED_AMOUNT="$expected_amount" \
 BITCOINPIR_CDK_POLICY_FILE="$policy_file" \
 BITCOINPIR_CDK_PROVIDER_ID_HEX="$provider_id" \
 BITCOINPIR_CDK_POLICY_SIGNING_PUBKEY_HEX="$policy_pubkey" \
 BITCOINPIR_CDK_NOW_UNIX="$now_unix" \
 BITCOINPIR_CDK_BROWSER_SPEND_FILE="$browser_spend_file" \
+CARGO_TARGET_DIR="$build_target_dir" \
   cargo test --locked --offline -p pir-cashu-client \
     --features insecure-dev-sqlite-store \
     --test cdk_nut03_interop \
@@ -701,7 +823,17 @@ BITCOINPIR_CDK_BROWSER_SPEND_FILE="$browser_spend_file" \
 
 # Fixed cdk-cli 0.17.3 accepts `receive` bearer tokens only as positional
 # arguments, not from stdin or a private file. The Rust client therefore
-# performs the second NUT-03 directly from authenticated custody memory. This
-# keeps the bearer out of process argv while proving the first custody lot
-# transitions UNSPENT -> SPENT and independent successor custody is UNSPENT.
+# performs the successor NUT-03 directly from authenticated custody memory.
+# This keeps the second token and custody bearer out of process argv while
+# proving the first custody lot transitions UNSPENT -> SPENT and independent
+# successor custody is UNSPENT.
+for cdk_log_path in "$mint_log" "$runtime_dir"/logs/*; do
+  [[ -f "$cdk_log_path" && ! -L "$cdk_log_path" ]] || continue
+  if grep -Eqi \
+    'cashuB[A-Za-z0-9_-]+={0,2}|payment[_-]?hash|preimage|ln(bc|tb|bcrt)[0-9a-z]{20,}' \
+    "$cdk_log_path"; then
+    echo "CDK daemon log contained forbidden bearer, hash, preimage or invoice value" >&2
+    exit 1
+  fi
+done
 echo "CDK 0.17.3 fakewallet NUT-03/NUT-07 input-SPENT, custody-UNSPENT->SPENT, successor-UNSPENT interoperability: PASS"

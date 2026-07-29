@@ -10,6 +10,8 @@ import {
 const provider = '11'.repeat(32);
 const policyDigest = '33'.repeat(32);
 const scope = '22'.repeat(32);
+const issuerId = '44'.repeat(32);
+const payeeHex = `02${'55'.repeat(32)}`;
 const databaseName = 'bitcoinpir-admission-v1';
 let opened: AdmissionCredentialVaultV1[] = [];
 let observeLockRequest: ((name: string) => void) | undefined;
@@ -284,6 +286,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(firstVault, secondVault);
     const created = await firstVault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -319,6 +324,92 @@ describe('provider-scoped admission vault validation', () => {
     await expect(first).rejects.toThrow(/response lost/);
     await expect(second).resolves.toBe('recovered');
     await expect(firstVault.getBolt11Recovery(created.id)).resolves.toBeNull();
+    const expectedContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: payeeHex,
+    };
+    await expect(firstVault.listCapabilityInventory(provider)).resolves.toEqual([{
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+      count: 1,
+      acquisitionContext: expectedContext,
+    }]);
+    await expect(firstVault.countCapabilities({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+    }, { ...expectedContext, expectedPayeePubkeyHex: `03${'55'.repeat(32)}` }))
+      .resolves.toBe(0);
+    await expect(firstVault.takeSingleUseCapability({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+    }, undefined, expectedContext)).resolves.toMatchObject({
+      payload: new Uint8Array([4]),
+      acquisitionContext: expectedContext,
+    });
+  });
+
+  it('accepts BOLT11 history only from atomic recovery completion', async () => {
+    const vault = await AdmissionCredentialVaultV1.open();
+    opened.push(vault);
+    await expect(vault.putCapability({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+      payload: new Uint8Array([1]),
+      acquisitionContext: {
+        kind: 'bolt11',
+        issuerEndpoint: 'https://issuer.example',
+        issuerIdHex: issuerId,
+        network: 'bitcoin',
+        expectedPayeePubkeyHex: payeeHex,
+      },
+    })).rejects.toThrow(/only from atomic claim recovery/);
+    await expect(vault.listCapabilityInventory(provider)).resolves.toEqual([]);
+  });
+
+  it('preserves V3 capabilities and rollback checkpoints but clears recovery in V4', async () => {
+    const legacy = await openLegacyV3Database();
+    legacy.close();
+    const vault = await AdmissionCredentialVaultV1.open();
+    opened.push(vault);
+    await expect(vault.listBolt11Recoveries()).resolves.toEqual([]);
+    const stores = await readRawMigrationStores();
+    expect(stores.records).toHaveLength(1);
+    expect(stores.records[0]).toMatchObject({
+      id: 'legacy-v3-capability',
+      bindingDigestHex: '66'.repeat(32),
+    });
+    expect(Array.from(new Uint8Array(stores.records[0].iv)))
+      .toEqual(Array(12).fill(1));
+    expect(Array.from(new Uint8Array(stores.records[0].ciphertext)))
+      .toEqual(Array(16).fill(2));
+    expect(stores.checkpoints).toHaveLength(1);
+    expect(stores.checkpoints[0].id).toBe('legacy-v3-policy-checkpoint');
+    expect(Array.from(new Uint8Array(stores.checkpoints[0].iv)))
+      .toEqual(Array(12).fill(3));
+    expect(Array.from(new Uint8Array(stores.checkpoints[0].ciphertext)))
+      .toEqual(Array(16).fill(4));
+    expect(stores.quoteKeyCheckpoints).toHaveLength(1);
+    expect(stores.quoteKeyCheckpoints[0].id).toBe('legacy-v3-quote-key-checkpoint');
+    expect(Array.from(new Uint8Array(stores.quoteKeyCheckpoints[0].iv)))
+      .toEqual(Array(12).fill(5));
+    expect(Array.from(new Uint8Array(stores.quoteKeyCheckpoints[0].ciphertext)))
+      .toEqual(Array(16).fill(6));
+    expect(stores.recoveries).toEqual([]);
   });
 
   it('refuses to install issuance under a different policy digest than its recovery', async () => {
@@ -326,6 +417,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(vault);
     const created = await vault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -352,6 +446,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(vault);
     const created = await vault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -420,4 +517,104 @@ async function createLegacyV2Database(): Promise<void> {
     tx.onabort = () => reject(new Error('legacy admission seed transaction aborted'));
   });
   db.close();
+}
+
+async function openLegacyV3Database(): Promise<IDBDatabase> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = fakeIndexedDB.open(databaseName, 3);
+    request.onupgradeneeded = () => {
+      const openedDb = request.result;
+      for (const name of [
+        'meta',
+        'records',
+        'checkpoints',
+        'quote-key-checkpoints',
+        'bolt11-recovery',
+      ]) {
+        if (!openedDb.objectStoreNames.contains(name)) {
+          openedDb.createObjectStore(name, { keyPath: 'id' });
+        }
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error('failed to create V3 admission database'));
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([
+      'records',
+      'checkpoints',
+      'quote-key-checkpoints',
+      'bolt11-recovery',
+    ], 'readwrite');
+    tx.objectStore('records').add({
+      id: 'legacy-v3-capability',
+      bindingDigestHex: '66'.repeat(32),
+      iv: Uint8Array.from(Array(12).fill(1)).buffer,
+      ciphertext: Uint8Array.from(Array(16).fill(2)).buffer,
+    });
+    tx.objectStore('checkpoints').add({
+      id: 'legacy-v3-policy-checkpoint',
+      iv: Uint8Array.from(Array(12).fill(3)).buffer,
+      ciphertext: Uint8Array.from(Array(16).fill(4)).buffer,
+    });
+    tx.objectStore('quote-key-checkpoints').add({
+      id: 'legacy-v3-quote-key-checkpoint',
+      iv: Uint8Array.from(Array(12).fill(5)).buffer,
+      ciphertext: Uint8Array.from(Array(16).fill(6)).buffer,
+    });
+    tx.objectStore('bolt11-recovery').add({
+      id: 'legacy-v3-recovery',
+      iv: Uint8Array.from(Array(12).fill(7)).buffer,
+      ciphertext: Uint8Array.from(Array(16).fill(8)).buffer,
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(new Error('failed to seed V3 recovery'));
+    tx.onabort = () => reject(new Error('V3 recovery seed transaction aborted'));
+  });
+  return db;
+}
+
+interface RawCipherRowV1 {
+  id: string;
+  bindingDigestHex?: string;
+  iv: ArrayBuffer;
+  ciphertext: ArrayBuffer;
+}
+
+async function readRawMigrationStores(): Promise<{
+  records: RawCipherRowV1[];
+  checkpoints: RawCipherRowV1[];
+  quoteKeyCheckpoints: RawCipherRowV1[];
+  recoveries: RawCipherRowV1[];
+}> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = fakeIndexedDB.open(databaseName, 4);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error('failed to inspect upgraded admission database'));
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const names = [
+        'records',
+        'checkpoints',
+        'quote-key-checkpoints',
+        'bolt11-recovery',
+      ];
+      const tx = db.transaction(names, 'readonly');
+      const records = tx.objectStore('records').getAll();
+      const checkpoints = tx.objectStore('checkpoints').getAll();
+      const quoteKeyCheckpoints = tx.objectStore('quote-key-checkpoints').getAll();
+      const recoveries = tx.objectStore('bolt11-recovery').getAll();
+      tx.oncomplete = () => resolve({
+        records: records.result as RawCipherRowV1[],
+        checkpoints: checkpoints.result as RawCipherRowV1[],
+        quoteKeyCheckpoints: quoteKeyCheckpoints.result as RawCipherRowV1[],
+        recoveries: recoveries.result as RawCipherRowV1[],
+      });
+      tx.onerror = () => reject(new Error('failed to read upgraded admission stores'));
+      tx.onabort = () => reject(new Error('upgraded admission store inspection aborted'));
+    });
+  } finally {
+    db.close();
+  }
 }

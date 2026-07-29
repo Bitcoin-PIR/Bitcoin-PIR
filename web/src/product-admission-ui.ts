@@ -7,8 +7,10 @@ import {
   type ProductAdmissionLegSnapshotV1,
   type ProductAdmissionSnapshotV1,
   type ProductOfferOptionV1,
+  type ProductRetainedCapabilityOptionV1,
+  type ProductRetainedCapabilitySelectorV1,
+  type ProductRetainedRecoveryOptionV1,
 } from './product-admission-controller.js';
-import type { AdmissionCapabilityBindingV1 } from './admission-vault.js';
 import type { RetainedServiceRedemptionViewV1 } from './sdk-bridge.js';
 
 export interface ProductProviderChoiceV1 {
@@ -39,6 +41,40 @@ interface RoleElementsV1 {
   warning: HTMLElement;
   status: HTMLElement;
   actions: HTMLElement;
+}
+
+/** The second network dial is available after the first exact offer is
+ * selected, but before any credential/payment action is allowed. */
+export function canBootstrapNextProviderV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  return snapshot.topology === 'independent-pair'
+    && snapshot.legs.length > 0
+    && snapshot.legs.every((leg) => leg.status === 'ready'
+      || leg.status === 'authorized'
+      || leg.status === 'cached-resource-ready');
+}
+
+/** Pair credential controls stay hidden until both exact selections exist. */
+export function credentialActionsReadyV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  const everyLegSelected = snapshot.legs.length > 0
+    && snapshot.legs.every((leg) => leg.selected !== null || leg.retainedSelected !== null);
+  return everyLegSelected && (snapshot.topology === 'single-provider' || snapshot.legs.length === 2);
+}
+
+/** Provider grants can begin only after every exact capability-requiring leg
+ * has local inventory. Free/open/PoW legs do not need inventory. */
+export function pairAuthorizationReadyV1(snapshot: ProductAdmissionSnapshotV1): boolean {
+  if (snapshot.topology === 'single-provider') return true;
+  if (!credentialActionsReadyV1(snapshot)) return false;
+  return snapshot.legs.every((leg) => {
+    if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') return true;
+    if (leg.retainedSelected) return (leg.inventory ?? 0) > 0;
+    const selected = leg.offers.find((candidate) => candidate.scopeIdHex === leg.selected?.scopeIdHex
+      && candidate.offerId === leg.selected?.offerId);
+    if (!selected) return false;
+    const needsInventory = selected.offer.authorization !== 'free'
+      || selected.offer.freeMode === 'anonymous-ticket';
+    return !needsInventory || (leg.inventory ?? 0) > 0;
+  });
 }
 
 /**
@@ -82,7 +118,7 @@ export class ProductAdmissionPanelV1 {
       const provider = document.createElement('select');
       provider.className = 'select admission-provider-select';
       provider.setAttribute('aria-label', `${role.label} trusted provider`);
-      provider.addEventListener('change', () => this.invalidatePreparedAttempt());
+      provider.addEventListener('change', () => this.handleProviderSelection(role.role));
       heading.append(title, provider);
 
       const identity = textLine('admission-provider-identity', 'Provider identity: not selected');
@@ -105,13 +141,13 @@ export class ProductAdmissionPanelV1 {
     }
 
     const advanced = document.createElement('label');
-    advanced.className = 'admission-shared-issuer';
+    advanced.className = 'admission-shared-infrastructure';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.dataset.action = 'allow-shared-issuer';
-    checkbox.addEventListener('change', () => void this.handleSharedIssuer(checkbox.checked));
+    checkbox.dataset.action = 'allow-shared-infrastructure';
+    checkbox.addEventListener('change', () => void this.handleSharedInfrastructure(checkbox.checked));
     const advancedText = document.createElement('span');
-    advancedText.textContent = 'Advanced: allow both credential flows (including free tickets) to expose provider/timing to one issuer for this attempt only';
+    advancedText.textContent = 'Advanced: for this attempt only, allow one issuer and/or Lightning payee to correlate both provider purchases, identities and timing';
     advanced.append(checkbox, advancedText);
     if (options.roles.length < 2) advanced.hidden = true;
     options.root.appendChild(advanced);
@@ -132,7 +168,7 @@ export class ProductAdmissionPanelV1 {
     this.renderUnavailable(
       options.length === 0
         ? 'Commercial admission 未配置；导入完整 trusted bootstrap 后才能查询。'
-        : '选择每个角色的独立 provider，然后开始严格验证。',
+        : '先严格验证第一个 provider 并选择其精确 offer；随后启用第二个角色，付款仍保持禁用。',
     );
   }
 
@@ -143,6 +179,21 @@ export class ProductAdmissionPanelV1 {
       out[role] = row.provider.value;
     }
     return out;
+  }
+
+  selectedProviderId(role: string): string {
+    const row = this.rows.get(role);
+    if (!row) throw new Error(`unknown provider role ${role}`);
+    if (!row.provider.value) throw new Error(`select a trusted provider for ${role}`);
+    return row.provider.value;
+  }
+
+  /** Capture and lock the exact staged provider before any asynchronous
+   * bootstrap work starts. A failed bootstrap render re-enables this row. */
+  freezeProviderSelection(role: string): string {
+    const providerId = this.selectedProviderId(role);
+    this.rows.get(role)!.provider.disabled = true;
+    return providerId;
   }
 
   attach(controller: ProductAdmissionControllerV1): void {
@@ -169,16 +220,32 @@ export class ProductAdmissionPanelV1 {
           ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
-            : 'Strict server verification passed. Select and authorize each exact signed offer.');
+            : snapshot?.legs.length === 1 && canBootstrapNextProviderV1(snapshot)
+              ? 'First exact offer is locked. Strictly verify the independent second provider before any payment.'
+              : snapshot?.legs.length === 1
+                ? 'Select the first provider exact signed offer before connecting the second.'
+                : 'Strictly verify and authorize the first independent provider.');
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
-    for (const row of this.rows.values()) row.provider.disabled = true;
+    const preparedRoles = new Set(snapshot.legs.map((leg) => leg.role));
+    const previousLegsReady = snapshot.legs.length === 0
+      || canBootstrapNextProviderV1(snapshot);
+    const nextRole = this.options.roles[snapshot.legs.length]?.role;
+    for (const [role, row] of this.rows) {
+      if (preparedRoles.has(role)) {
+        row.provider.disabled = true;
+      } else {
+        const available = role === nextRole && previousLegsReady;
+        row.provider.disabled = this.busy || !available;
+        this.renderPendingLeg(row, available);
+      }
+    }
     for (const leg of snapshot.legs) this.renderLeg(leg);
     const shared = this.options.root.querySelector<HTMLInputElement>(
-      '[data-action="allow-shared-issuer"]',
+      '[data-action="allow-shared-infrastructure"]',
     );
-    if (shared) shared.checked = snapshot.allowSharedIssuerCorrelationOnce;
+    if (shared) shared.checked = snapshot.allowSharedInfrastructureCorrelationOnce;
     this.options.onStateChange?.(snapshot);
   }
 
@@ -189,7 +256,10 @@ export class ProductAdmissionPanelV1 {
     const selectedValue = leg.retainedSelected
       ? (leg.retainedSelected.recoveryId
         ? recoveryChoiceValue(leg.retainedSelected.recoveryId)
-        : retainedChoiceValue(leg.retainedSelected.binding))
+        : retainedChoiceValue({
+          ...leg.retainedSelected.binding,
+          acquisitionContext: leg.retainedSelected.acquisitionContext,
+        }))
       : leg.selected ? choiceValue(leg.selected.scopeIdHex, leg.selected.offerId) : '';
     row.offer.replaceChildren(optionElement('', 'Select exact signed offer…'));
     for (const option of leg.offers) {
@@ -201,13 +271,13 @@ export class ProductAdmissionPanelV1 {
     for (const capability of leg.retainedCapabilities) {
       row.offer.appendChild(optionElement(
         retainedChoiceValue(capability),
-        `Retained ${capability.scheme} · policy ${abbreviate(capability.policyDigestHex)} · #${capability.offerId} · ${capability.count} left`,
+        retainedCapabilityLabelV1(capability),
       ));
     }
     for (const recovery of leg.retainedRecoveries) {
       row.offer.appendChild(optionElement(
         recoveryChoiceValue(recovery.id),
-        `Recover encrypted ${recovery.binding.scheme} quote · policy ${abbreviate(recovery.binding.policyDigestHex)} · #${recovery.binding.offerId}`,
+        retainedRecoveryLabelV1(recovery),
       ));
     }
     row.offer.value = selectedValue;
@@ -220,7 +290,7 @@ export class ProductAdmissionPanelV1 {
       (option) => choiceValue(option.scopeIdHex, option.offerId) === selectedValue,
       );
     row.terms.textContent = selected
-      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${priceLabel(selected)}`
+      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${priceLabel(selected)} · ${limitsLabel(selected)}`
       : 'Scope/offer: selection required';
     row.warning.textContent = selected
       ? privacyLabelForOfferV1(selected.offer)
@@ -231,7 +301,14 @@ export class ProductAdmissionPanelV1 {
     );
     row.status.textContent = statusLabel(leg, selected);
     row.status.className = `admission-provider-status status-${leg.status}`;
-    this.renderActions(row.actions, leg, selected, leg.retainedSelected !== null);
+    this.renderActions(
+      row.actions,
+      leg,
+      selected,
+      leg.retainedSelected !== null,
+      this.snapshot !== null && credentialActionsReadyV1(this.snapshot),
+      this.snapshot !== null && pairAuthorizationReadyV1(this.snapshot),
+    );
   }
 
   private renderActions(
@@ -239,9 +316,11 @@ export class ProductAdmissionPanelV1 {
     leg: ProductAdmissionLegSnapshotV1,
     selected: ProductOfferOptionV1 | undefined,
     retained: boolean,
+    credentialActionsReady: boolean,
+    authorizationReady: boolean,
   ): void {
     container.replaceChildren();
-    if (!selected) return;
+    if (!selected || !credentialActionsReady) return;
 
     if (leg.invoice) {
       const invoice = document.createElement('textarea');
@@ -293,7 +372,8 @@ export class ProductAdmissionPanelV1 {
 
     if (leg.status !== 'authorized' && leg.status !== 'cached-resource-ready'
         && leg.status !== 'ambiguous-spend'
-        && (!retained || (leg.inventory ?? 0) > 0)) {
+        && (!retained || (leg.inventory ?? 0) > 0)
+        && (authorizationReady || selected.scope.workload === 'harmony-hint')) {
       container.appendChild(actionButton(
         selected.scope.workload === 'harmony-hint' ? 'Use cache or authorize hint' : 'Authorize once',
         () => this.runAction(() => this.controller!.authorize(leg.role)),
@@ -304,16 +384,13 @@ export class ProductAdmissionPanelV1 {
   private async handleOfferSelection(role: string, value: string): Promise<void> {
     if (!this.controller || !value) return;
     if (value.startsWith('retained:')) {
-      const [, policyDigestHex, scopeIdHex, offerIdText, scheme] = value.split(':');
       const leg = this.snapshot?.legs.find((candidate) => candidate.role === role);
       if (!leg) return;
-      await this.runAction(() => this.controller!.selectRetainedCapability(role, {
-        providerIdHex: leg.providerIdHex,
-        policyDigestHex,
-        scopeIdHex,
-        offerId: Number(offerIdText),
-        scheme: scheme as ProductAdmissionLegSnapshotV1['retainedCapabilities'][number]['scheme'],
-      }));
+      const selected = leg.retainedCapabilities.find(
+        (candidate) => retainedChoiceValue(candidate) === value,
+      );
+      if (!selected) return;
+      await this.runAction(() => this.controller!.selectRetainedCapability(role, selected));
       return;
     }
     if (value.startsWith('recovery:')) {
@@ -330,9 +407,9 @@ export class ProductAdmissionPanelV1 {
     }));
   }
 
-  private async handleSharedIssuer(allowed: boolean): Promise<void> {
+  private async handleSharedInfrastructure(allowed: boolean): Promise<void> {
     if (!this.controller) return;
-    await this.runAction(async () => this.controller!.setAllowSharedIssuerCorrelationOnce(allowed));
+    await this.runAction(async () => this.controller!.setAllowSharedInfrastructureCorrelationOnce(allowed));
   }
 
   private async runAction(
@@ -360,13 +437,46 @@ export class ProductAdmissionPanelV1 {
     this.render();
   }
 
+  private handleProviderSelection(role: string): void {
+    if (this.snapshot?.legs.some((leg) => leg.role === role)) {
+      this.invalidatePreparedAttempt();
+      return;
+    }
+    const row = this.rows.get(role);
+    if (!row) return;
+    row.identity.textContent = row.provider.value
+      ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
+      : 'Provider identity: not selected';
+  }
+
+  private renderPendingLeg(row: RoleElementsV1, available: boolean): void {
+    row.identity.textContent = row.provider.value
+      ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
+      : 'Provider identity: not selected';
+    row.offer.replaceChildren(optionElement('', available
+      ? 'Connect provider to load signed offers'
+      : 'Complete previous provider first'));
+    row.offer.disabled = true;
+    row.terms.textContent = available
+      ? 'Scope/offer: connect this provider next'
+      : 'Scope/offer: waiting for previous provider';
+    row.warning.textContent = 'Privacy: this provider has not been contacted';
+    row.warning.classList.remove('experimental');
+    row.status.textContent = available ? 'Admission: ready for strict bootstrap' : 'Admission: waiting';
+    row.status.className = 'admission-provider-status status-strict-bootstrap-pending';
+    row.actions.replaceChildren();
+  }
+
   private renderUnavailable(message: string): void {
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = message;
       notice.classList.add('error');
     }
+    let roleIndex = 0;
     for (const row of this.rows.values()) {
+      row.provider.disabled = roleIndex > 0;
+      roleIndex += 1;
       row.identity.textContent = row.provider.value
         ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
         : 'Provider identity: not selected';
@@ -390,6 +500,8 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
     case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
+    case 'query-shape-unavailable': return 'The exact backend planner demand is unavailable; no offer or capability may be used.';
+    case 'entitlement-limits-insufficient': return 'The signed entitlement is below the backend planner’s known demand; no payment or capability was used.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';
     case 'lightning-payee-untrusted': return 'BOLT11 is blocked because no independent expected-payee key is trusted.';
@@ -417,6 +529,20 @@ function priceLabel(option: ProductOfferOptionV1): string {
   return price.kind === 'msat'
     ? `${price.amount} msat`
     : `${price.amount} ${price.unit ?? 'cashu units'}`;
+}
+
+function limitsLabel(option: ProductOfferOptionV1): string {
+  const limits = option.scope.limits;
+  return [
+    `caps inputs=${limits.maxLogicalInputs}`,
+    `frames=${limits.maxFrames}`,
+    `request=${limits.maxRequestBytes}B`,
+    `response=${limits.maxResponseBytes}B`,
+    `wall=${limits.maxWallTimeMs}ms`,
+    `sockets=${limits.maxConcurrentSockets}`,
+    `hints=${limits.maxHintGroups}`,
+    `work=${limits.maxWorkUnits}`,
+  ].join(', ');
 }
 
 export function privacyLabelForOfferV1(offer: ProductOfferOptionV1['offer']): string {
@@ -504,14 +630,67 @@ function choiceValue(scopeIdHex: string, offerId: number): string {
   return `${scopeIdHex}:${offerId}`;
 }
 
-function retainedChoiceValue(binding: AdmissionCapabilityBindingV1): string {
+function retainedChoiceValue(binding: ProductRetainedCapabilitySelectorV1): string {
+  const context = binding.acquisitionContext;
+  const contextSelector = context
+    ? [context.issuerIdHex, context.network, context.expectedPayeePubkeyHex,
+      encodeURIComponent(context.issuerEndpoint)].join('.')
+    : 'non-bolt11';
   return [
     'retained',
     binding.policyDigestHex,
     binding.scopeIdHex,
     String(binding.offerId),
     binding.scheme,
+    contextSelector,
   ].join(':');
+}
+
+/**
+ * Keep otherwise identical retained bindings distinguishable by their exact
+ * BOLT11 acquisition context without exposing invoices or capability bytes.
+ */
+export function retainedCapabilityLabelV1(
+  capability: ProductRetainedCapabilityOptionV1,
+): string {
+  const prefix = `Retained ${capability.scheme} · policy ${abbreviate(capability.policyDigestHex)} · #${capability.offerId} · ${capability.count} left`;
+  const context = capability.acquisitionContext;
+  if (context) {
+    return `${prefix} · ${bolt11AcquisitionContextLabelV1(context)}`;
+  }
+  if (capability.scheme === 'bolt11-direct-receipt') {
+    return `${prefix} · legacy BOLT11 context missing · unusable`;
+  }
+  return prefix;
+}
+
+export function retainedRecoveryLabelV1(
+  recovery: ProductRetainedRecoveryOptionV1,
+): string {
+  return `Recover encrypted ${recovery.binding.scheme} quote · policy ${abbreviate(recovery.binding.policyDigestHex)} · #${recovery.binding.offerId} · ${bolt11AcquisitionContextLabelV1(recovery.acquisitionContext)}`;
+}
+
+function bolt11AcquisitionContextLabelV1(
+  context: NonNullable<ProductRetainedCapabilitySelectorV1['acquisitionContext']>,
+): string {
+  const issuerOrigin = canonicalIssuerOriginForLabelV1(context.issuerEndpoint);
+  return `BOLT11 ${context.network} · issuer ${abbreviate(context.issuerIdHex)} · origin ${issuerOrigin} · payee ${abbreviate(context.expectedPayeePubkeyHex)}`;
+}
+
+function canonicalIssuerOriginForLabelV1(value: string): string {
+  let parsed: URL;
+  try { parsed = new URL(value); } catch {
+    throw new Error('retained BOLT11 issuer endpoint is invalid');
+  }
+  const loopback = parsed.hostname === '127.0.0.1'
+    || parsed.hostname === 'localhost'
+    || parsed.hostname === '[::1]';
+  if ((parsed.protocol !== 'https:' && !(loopback && parsed.protocol === 'http:'))
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || (parsed.pathname !== '' && parsed.pathname !== '/')) {
+    throw new Error('retained BOLT11 issuer endpoint must be a credential-free origin');
+  }
+  return parsed.origin;
 }
 
 function recoveryChoiceValue(recoveryId: string): string {
@@ -526,6 +705,8 @@ function retainedAsOfferOption(
     offerId: redemption.offer.offerId,
     scope: {
       ...redemption.scope,
+      dataset: { ...redemption.scope.dataset },
+      limits: { ...redemption.scope.limits },
       offers: [],
     },
     offer: { ...redemption.offer, price: { ...redemption.offer.price } },

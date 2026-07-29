@@ -7,6 +7,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -52,7 +53,8 @@ enum DualRelayReadError {
 
 struct RelayMaterial {
     label: &'static str,
-    port: u16,
+    public_port: u16,
+    publisher_port: u16,
     config: PathBuf,
     database: PathBuf,
 }
@@ -92,7 +94,8 @@ impl RelayProcess {
             stdout_path,
             stderr_path,
         };
-        process.wait_until_listening(material.port);
+        process.wait_until_listening(material.public_port);
+        process.wait_until_listening(material.publisher_port);
         process
     }
 
@@ -164,13 +167,41 @@ async fn two_relay_real_process_catalog_e2e() {
     let publisher = DirectoryPublisherKeyV1::from_secret_bytes([0x61; 32])
         .expect("deterministic test directory key");
     let now = unix_now();
-    let relay0_port = distinct_unused_port(&[]);
-    let relay1_port = distinct_unused_port(&[relay0_port]);
-    let relay0 = prepare_relay(root.path(), "relay0", relay0_port, publisher.public_key());
-    let relay1 = prepare_relay(root.path(), "relay1", relay1_port, publisher.public_key());
+    let relay0_public_port = distinct_unused_port(&[]);
+    let relay0_publisher_port = distinct_unused_port(&[relay0_public_port]);
+    let relay1_public_port = distinct_unused_port(&[relay0_public_port, relay0_publisher_port]);
+    let relay1_publisher_port = distinct_unused_port(&[
+        relay0_public_port,
+        relay0_publisher_port,
+        relay1_public_port,
+    ]);
+    let relay0 = prepare_relay(
+        root.path(),
+        "relay0",
+        relay0_public_port,
+        relay0_publisher_port,
+        publisher.public_key(),
+    );
+    let relay1 = prepare_relay(
+        root.path(),
+        "relay1",
+        relay1_public_port,
+        relay1_publisher_port,
+        publisher.public_key(),
+    );
     assert_ne!(relay0.config, relay1.config);
     assert_ne!(relay0.database, relay1.database);
-    assert_ne!(relay0.port, relay1.port);
+    assert_eq!(
+        BTreeSet::from([
+            relay0.public_port,
+            relay0.publisher_port,
+            relay1.public_port,
+            relay1.publisher_port,
+        ])
+        .len(),
+        4,
+        "both relays require distinct public and publisher listeners"
+    );
 
     let mut process0 = RelayProcess::spawn(root.path(), &relay0, 0);
     let mut process1 = RelayProcess::spawn(root.path(), &relay1, 0);
@@ -186,35 +217,67 @@ async fn two_relay_real_process_catalog_e2e() {
     );
 
     let initial = signed_catalog(&publisher, now, now.saturating_sub(2), 1, 1);
+    let wrong_lane_sentinel =
+        signed_shard(&publisher, now, now.saturating_sub(3), 0, 99, 99, 0xe0)[0].clone();
+
+    // The two sockets are protocol lanes, not interchangeable aliases. Wrong-
+    // lane messages close without an acknowledgement so a public EVENT cannot
+    // create either an acknowledgement or an archived record, and a publisher
+    // connection cannot be repurposed as a read channel. The sentinel is not
+    // reused by a later valid publish, so exact-ID absence proves rejection did
+    // not silently commit before closing the connection.
+    assert_wrong_lane_rejected(
+        relay0.public_port,
+        event_message_text(&wrong_lane_sentinel),
+        "EVENT on public relay lane",
+    )
+    .await;
+    assert_event_id_absent(relay0.public_port, wrong_lane_sentinel.id()).await;
+    assert_wrong_lane_rejected(
+        relay0.publisher_port,
+        serde_json::json!([
+            "REQ",
+            "wrong-lane-read",
+            {"ids": [hex::encode(initial[0].id())]}
+        ])
+        .to_string(),
+        "REQ on publisher relay lane",
+    )
+    .await;
 
     // Relay 0 durably commits the first event, but the socket carrying its OK
     // disappears. ID readback is the commit barrier; retrying the same signed
     // event must be accepted as an idempotent duplicate.
-    publish_without_reading_ack(relay0.port, &initial[0]).await;
-    wait_for_event_id(relay0.port, initial[0].id()).await;
-    let (accepted, reason) = publish(relay0.port, &initial[0]).await;
+    publish_without_reading_ack(relay0.publisher_port, &initial[0]).await;
+    wait_for_event_id(relay0.public_port, initial[0].id()).await;
+    let (accepted, reason) = publish(relay0.publisher_port, &initial[0]).await;
     assert!(accepted);
     assert!(
         reason.starts_with("duplicate:"),
         "unexpected retry reason: {reason}"
     );
 
-    publish_many(relay0.port, &initial[1..]).await;
-    publish_many(relay1.port, &initial).await;
-    let baseline = read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now)
-        .await
-        .expect("identical complete catalog");
+    publish_many(relay0.publisher_port, &initial[1..]).await;
+    publish_many(relay1.publisher_port, &initial).await;
+    let baseline = read_consistent_catalog(
+        relay0.public_port,
+        relay1.public_port,
+        publisher.public_key(),
+        now,
+    )
+    .await
+    .expect("identical complete catalog");
     assert_eq!(baseline.0.len(), usize::from(DIRECTORY_SHARD_COUNT_V1));
 
     // A newer shard-0 head on only one relay is a split view. The client must
     // reject the pair and must never merge the newer entry with the older
     // checkpoint (or vice versa).
     let shard0_update = signed_shard(&publisher, now, now.saturating_sub(1), 0, 2, 2, 0xb0);
-    publish_many(relay0.port, &shard0_update).await;
-    let relay0_split_head = read_catalog(relay0.port, publisher.public_key(), now)
+    publish_many(relay0.publisher_port, &shard0_update).await;
+    let relay0_split_head = read_catalog(relay0.public_port, publisher.public_key(), now)
         .await
         .expect("relay0 split-view head remains independently valid");
-    let relay1_split_head = read_catalog(relay1.port, publisher.public_key(), now)
+    let relay1_split_head = read_catalog(relay1.public_port, publisher.public_key(), now)
         .await
         .expect("relay1 split-view head remains independently valid");
     assert_ne!(
@@ -222,41 +285,64 @@ async fn two_relay_real_process_catalog_e2e() {
         "the two independently verified catalog heads must conflict"
     );
     assert_eq!(
-        read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now).await,
+        read_consistent_catalog(
+            relay0.public_port,
+            relay1.public_port,
+            publisher.public_key(),
+            now,
+        )
+        .await,
         Err(DualRelayReadError::SplitView),
         "stale relay head must fail closed with the exact split-view error"
     );
-    publish_many(relay1.port, &shard0_update).await;
-    let converged = read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now)
-        .await
-        .expect("relays converge after the same signed update");
+    publish_many(relay1.publisher_port, &shard0_update).await;
+    let converged = read_consistent_catalog(
+        relay0.public_port,
+        relay1.public_port,
+        publisher.public_key(),
+        now,
+    )
+    .await
+    .expect("relays converge after the same signed update");
     assert_ne!(converged, baseline);
     assert_eq!(converged.0[0].directory_sequence, 2);
     assert_eq!(converged.0[0].checkpoint_epoch, 2);
 
     // One offline relay is not silently replaced by the other relay's view.
     process1.stop();
-    read_catalog(relay0.port, publisher.public_key(), now)
+    read_catalog(relay0.public_port, publisher.public_key(), now)
         .await
         .expect("relay0 remains independently readable");
-    let offline_error =
-        read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now)
-            .await
-            .expect_err("dual-relay policy must fail closed while one relay is offline");
+    let offline_error = read_consistent_catalog(
+        relay0.public_port,
+        relay1.public_port,
+        publisher.public_key(),
+        now,
+    )
+    .await
+    .expect_err("dual-relay policy must fail closed while one relay is offline");
     assert!(
         matches!(
             offline_error,
             DualRelayReadError::Relay1(reason)
-                if reason.starts_with(&format!("connect relay {} failed:", relay1.port))
+                if reason.starts_with(&format!(
+                    "connect relay {} failed:",
+                    relay1.public_port
+                ))
         ),
         "offline relay1 must be attributed to the relay1 transport boundary"
     );
 
     process1 = RelayProcess::spawn(root.path(), &relay1, 1);
     assert_eq!(
-        read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now)
-            .await
-            .expect("relay1 durable restart restores the catalog"),
+        read_consistent_catalog(
+            relay0.public_port,
+            relay1.public_port,
+            publisher.public_key(),
+            now,
+        )
+        .await
+        .expect("relay1 durable restart restores the catalog"),
         converged
     );
 
@@ -264,9 +350,14 @@ async fn two_relay_real_process_catalog_e2e() {
     process0 = RelayProcess::spawn(root.path(), &relay0, 1);
     assert_ne!(process0.id(), process1.id());
     assert_eq!(
-        read_consistent_catalog(relay0.port, relay1.port, publisher.public_key(), now)
-            .await
-            .expect("both durable stores survive independent process restart"),
+        read_consistent_catalog(
+            relay0.public_port,
+            relay1.public_port,
+            publisher.public_key(),
+            now,
+        )
+        .await
+        .expect("both durable stores survive independent process restart"),
         converged
     );
 }
@@ -274,7 +365,8 @@ async fn two_relay_real_process_catalog_e2e() {
 fn prepare_relay(
     root: &Path,
     label: &'static str,
-    port: u16,
+    public_port: u16,
+    publisher_port: u16,
     directory_pubkey: &[u8; 32],
 ) -> RelayMaterial {
     let directory = root.join(label);
@@ -284,13 +376,22 @@ fn prepare_relay(
     let database = directory.join("relay.sqlite3");
     let text = format!(
         r#"profile = "bitcoinpir-directory-relay-v1"
-listen = "127.0.0.1:{port}"
+public_listen = "127.0.0.1:{public_port}"
+publisher_listen = "127.0.0.1:{publisher_port}"
 database = "{}"
 directory_pubkey_hex = "{}"
 max_connections = 32
+max_public_connections = 24
+max_publisher_connections = 8
 max_in_flight_operations = 4
+max_public_in_flight_operations = 3
+max_publisher_in_flight_operations = 1
 max_operations_per_second = 1000000
+max_public_operations_per_second = 750000
+max_publisher_operations_per_second = 250000
 max_egress_bytes_per_second = 1073741824
+max_public_egress_bytes_per_second = 805306368
+max_publisher_egress_bytes_per_second = 268435456
 max_egress_bytes_per_connection = 67108864
 max_archive_events = 20000
 max_archive_bytes = 67108864
@@ -307,7 +408,8 @@ egress_timeout_seconds = 10
     chmod(&config, 0o600);
     RelayMaterial {
         label,
-        port,
+        public_port,
+        publisher_port,
         config,
         database,
     }
@@ -403,18 +505,36 @@ async fn receive_text(client: &mut RelayClient) -> Result<String, String> {
     }
 }
 
+fn event_message_text(event: &NostrEventV1) -> String {
+    String::from_utf8(
+        event
+            .to_event_message_json_bytes()
+            .expect("publish envelope"),
+    )
+    .expect("UTF-8 publish envelope")
+}
+
+async fn assert_wrong_lane_rejected(port: u16, message: String, label: &str) {
+    let mut client = relay_client(port)
+        .await
+        .unwrap_or_else(|error| panic!("connect {label} client failed: {error}"));
+    client
+        .send(Message::Text(message.into()))
+        .await
+        .unwrap_or_else(|error| panic!("send {label} message failed: {error}"));
+    let observed = tokio::time::timeout(IO_TIMEOUT, client.next())
+        .await
+        .unwrap_or_else(|_| panic!("{label} was not rejected before the I/O timeout"));
+    match observed {
+        None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
+        Some(Ok(other)) => panic!("{label} produced an application response: {other:?}"),
+    }
+}
+
 async fn publish(port: u16, event: &NostrEventV1) -> (bool, String) {
     let mut client = relay_client(port).await.expect("connect publish client");
     client
-        .send(Message::Text(
-            String::from_utf8(
-                event
-                    .to_event_message_json_bytes()
-                    .expect("publish envelope"),
-            )
-            .expect("UTF-8 publish envelope")
-            .into(),
-        ))
+        .send(Message::Text(event_message_text(event).into()))
         .await
         .expect("send event");
     let response: Value = serde_json::from_str(
@@ -442,15 +562,7 @@ async fn publish_many(port: u16, events: &[NostrEventV1]) {
 async fn publish_without_reading_ack(port: u16, event: &NostrEventV1) {
     let mut client = relay_client(port).await.expect("connect lost-ACK client");
     client
-        .send(Message::Text(
-            String::from_utf8(
-                event
-                    .to_event_message_json_bytes()
-                    .expect("publish envelope"),
-            )
-            .expect("UTF-8 publish envelope")
-            .into(),
-        ))
+        .send(Message::Text(event_message_text(event).into()))
         .await
         .expect("send event before losing ACK");
     drop(client);
@@ -501,6 +613,40 @@ async fn wait_for_event_id(port: u16, event_id: &[u8; 32]) {
         committed,
         "lost-ACK event was not readable after 40 bounded probes"
     );
+}
+
+async fn assert_event_id_absent(port: u16, event_id: &[u8; 32]) {
+    let mut client = relay_client(port)
+        .await
+        .expect("connect wrong-lane absence probe");
+    let subscription = "wrong-lane-absence";
+    let request = serde_json::json!([
+        "REQ",
+        subscription,
+        {"ids": [hex::encode(event_id)]}
+    ]);
+    client
+        .send(Message::Text(request.to_string().into()))
+        .await
+        .expect("send wrong-lane absence probe");
+    let response: Value = serde_json::from_str(
+        &receive_text(&mut client)
+            .await
+            .expect("receive wrong-lane absence probe"),
+    )
+    .expect("parse wrong-lane absence response");
+    match response[0]
+        .as_str()
+        .expect("wrong-lane absence response kind")
+    {
+        "EVENT" => panic!(
+            "public-lane EVENT was silently persisted: {}",
+            hex::encode(event_id)
+        ),
+        "EOSE" => assert_eq!(response[1], subscription, "absence EOSE subscription"),
+        other => panic!("unexpected wrong-lane absence response: {other}"),
+    }
+    let _ = client.send(Message::Close(None)).await;
 }
 
 async fn read_consistent_catalog(

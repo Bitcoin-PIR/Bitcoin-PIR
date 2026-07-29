@@ -116,6 +116,14 @@ If a user deliberately selects two offers backed by the same shared issuer,
 surface that common-infrastructure risk before acquisition. Never claim that
 blind issuance makes the shared issuer invisible.
 
+The client models a shared Lightning payee as a second, independent correlation
+boundary. Native callers must acknowledge issuer and payee sharing separately.
+The Web product's advanced, in-memory-only confirmation explicitly acknowledges
+both for that one attempt so a pooled Cashu/BAT/ARC service can use one
+settlement node. The default rejects either form of sharing. No acknowledgement
+ever permits one provider WebSocket origin, policy/operator key, raw BAT/ARC
+key, or direct-receipt verification key to serve both PIR roles.
+
 Different provider IDs, keys, issuer IDs and domains are necessary hygiene,
 not proof of different owners. Until independently sourced operator diversity
 or a reviewed signed operator-group/governance assertion is available, the UI
@@ -335,6 +343,26 @@ reviewed configuration rollout. Restarting with the same current and retained
 files is idempotent; retain the old receipt/BAT/ARC verification keys for the
 same horizon.
 
+The browser's independently distributed trusted bootstrap has a parallel
+retention obligation. For every unexpired capability acquired through
+BOLT11, keep its exact `(issuerIdHex, canonical HTTPS issuerOrigin, network,
+expectedPayeePubkeyHex)` entry in that provider's `lightningPayeeTrust` array
+through the longest credential use/grace horizon. Removing an active tuple
+does not rebind the token: strict current and retained paths intentionally
+strand it. A payee, network, issuer-origin, or issuer-root rotation therefore
+adds a new exact tuple and retains the old tuple; a payee rotation must use a
+new issuer identity rather than assigning two payees to one tuple. The Nostr
+directory is not an authority for this table.
+
+V1 permits at most 64 trust entries per provider. Before signing or deploying
+a rotation, inventory every current and retained BOLT11 offer plus its latest
+possible capability expiry. Fail the rollout if adding the new tuple would
+exceed 64 while any old tuple can still authorize an outstanding capability.
+Stop new issuance and drain, expire, or explicitly reconcile/refund that old
+cohort before removing its tuple; never evict an active entry merely to satisfy
+the bound. Record the inventory and horizon in the rollout evidence, then test
+one retained capability under every tuple scheduled to remain.
+
 V1 has one trusted service-policy verifying key per provider process. That key
 **must remain stable for every retained credential grace period**. Rotating the
 service-policy signing key while old credentials still need redemption is not
@@ -345,6 +373,35 @@ as needed), or publish a deliberately reviewed future protocol version with an
 authenticated policy-key succession proof.
 
 V1 also loads only one shared-issuer clearing authorization per provider.
+Create it with the offline provider-operator builder, transfer its printed
+digest independently, and have the issuer run the separate approval builder.
+Provision a fourth, raw provider-request public key in the same list position;
+it must differ from clearing, operator and issuer-settlement keys. Ledger-only
+balance reads use the clearing key and need no payout registration, but the
+issuer still persists the distinct request key so a future payout/status
+workflow cannot inherit collapsed signature domains. Rotation requires a
+strictly higher authorization epoch and a new issuer approval; retain an old
+issuer settlement public key only for exact historical recovery.
+
+This retained issuer key is not a retained provider authorization. The shipped
+`unified_server` constructs one `SharedIssuerAdmissionCommitterV1` from the one
+current clearing authorization, approval and issuer endpoint/pin tuple; it has
+no keyring of old clearing authorizations and cannot reconstruct an
+outcome-unknown redeem made under an authorization that has since been
+replaced. The issuer can replay exact previously committed request bytes under
+their original idempotency key, but that server-side property is useful only
+while the provider can still reproduce and authenticate that exact request.
+Therefore V1 clearing-authorization, clearing-key or settlement-key rotation is
+a drain boundary: stop new shared-issuer admission, let every in-flight redeem
+reach a known local-delivery result, reconcile every ambiguous operation, and
+only then replace the authorization/approval and restart. If an outcome remains
+unknown, keep the old provider instance and complete its exact recovery before
+rotation or fail closed and handle it as an accounting incident. Do not claim
+that retained settlement keys make rolling shared-authorization rotation or
+cross-rotation provider recovery safe. A future retained-authorization client
+requires a separately reviewed bounded keyring, endpoint/pin lifetime rules and
+tests; V1 does not provide it.
+
 Certificate-key rotation at the same issuer origin must use a newly
 operator-signed and issuer-approved two-pin overlap, followed by removal of the
 old pin in a later higher authorization epoch. Do not change the signed issuer
@@ -352,6 +409,18 @@ origin while a current or retained policy still references the old origin:
 the exact endpoint check will make those capabilities fail closed. Keep the old
 origin serving through the longest redemption-grace horizon, or wait for a
 future multi-authorization migration protocol.
+
+This single-authorization boundary also covers the approval key and issuer
+settlement verification key loaded by `SharedIssuerAdmissionCommitterV1`.
+Retained settlement-key lookup exists at the issuer and in the independent
+`ProviderLedgerBalanceClientV1`; it is **not** a retained shared-authorization
+recovery path inside the provider runtime. V1 therefore cannot resume a
+provider-side pending redeem across a clearing-authorization, approval-key or
+issuer-settlement-key rotation. Before any such rotation, stop new redeems and
+drain/reconcile every pending provider redeem under the old authorization. If
+that cannot be done, record and explicitly accept the fail-closed/manual-
+reconciliation risk; do not describe keyring retention elsewhere as server
+recovery support.
 
 Standard-Cashu custody records retain the exact manifest digest and pin set
 that authorized each swap. Before a planned mint leaf-key rotation, publish a
@@ -539,12 +608,11 @@ public/staging listener:
    activation limits, and reject the rollout if either store exceeds them.
    Public serving logs deliberately emit only a coarse successful-check marker
    and elapsed time, never exact generation, quote, spent, or custody counts;
-5. retain the implemented loopback two-provider direct-receipt, Free, BAT and
-   experimental-ARC DPF process checks, the feature-gated Standard-Cashu/Free
-   two-provider process cell, and the real-process Harmony V2Full
-   reserve/reject/disconnect/dispatch/restart lifecycle. Then complete the
-   remaining non-DPF process cells and approved external/deployed boundaries;
-   the local process tests use
+5. retain the implemented loopback two-provider DPF checks, the complete
+   feature-gated Free/Standard-Cashu/BAT/experimental-ARC provider-process
+   supplement across Harmony hint/query, Onion and TEE-ORAM, and every
+   direct-receipt backend process case. Then complete the approved
+   external/deployed boundaries; the local process tests use
    `NoSevHost`/`dangerous_unpaired_*` and are not production trust-chain
    evidence;
 6. retain the disposable local CDK fake-wallet token-import check, then run an

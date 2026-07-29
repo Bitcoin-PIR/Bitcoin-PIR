@@ -35,11 +35,12 @@ pub use direct::{
     direct_index_candidate_bins, locate_packed_direct_item, CircuitDirectChunkReader,
     CircuitDirectIndexReader, DirectChunkBatchRead, DirectChunkPackedBlockReader, DirectChunkRead,
     DirectIndexBatchLookup, DirectIndexLookup, DirectIndexPackedBlockReader, DirectLevel,
-    DirectOramEstimate, DirectOramSizing, DirectTableInfo, DirectTableMetadata,
-    PackedDirectItemLocation, DIRECT_CHUNKS_INPUT_FILE, DIRECT_CHUNK_RECORD_SIZE,
-    DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR, DIRECT_INDEX_DEFAULT_SEED,
-    DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_FILE, DIRECT_INDEX_INPUT_RECORD_SIZE,
-    DIRECT_INDEX_SLOT_SIZE, DIRECT_SCRIPT_HASH_SIZE,
+    DirectOramDatasetBindingV1, DirectOramEstimate, DirectOramSizing, DirectTableInfo,
+    DirectTableMetadata, PackedDirectItemLocation, DIRECT_CHUNKS_INPUT_FILE,
+    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
+    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_FILE,
+    DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_INDEX_SLOT_SIZE, DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN,
+    DIRECT_SCRIPT_HASH_SIZE,
 };
 pub use embedded_tree::{
     EmbeddedTreePageStore, EmbeddedTreeState, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,

@@ -10,6 +10,7 @@ use pir_db_attest::{
     EVIDENCE_VERSION_V2,
 };
 use pir_sdk::{DatabaseCatalog, DatabaseInfo, DatabaseKind, PirError, PirResult};
+use sha2::{Digest, Sha256};
 
 pub const REQ_GET_DB_PROOF: u8 = 0x0a;
 pub const RESP_DB_PROOF: u8 = 0x0a;
@@ -62,6 +63,10 @@ impl DatabaseProofPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedDatabaseRoots {
     pub db_id: u8,
+    /// SHA-256 of the exact server database `MANIFEST.toml` whose bytes were
+    /// verified by `ProofBundle::verify` against the attested build evidence.
+    /// This is the `DatasetBindingV1::ManifestRoot` used by paid admission.
+    pub manifest_root: [u8; 32],
     pub build_kind: BuildKind,
     pub from_height: u32,
     pub from_block_hash: [u8; 32],
@@ -79,6 +84,10 @@ pub struct VerifiedDatabaseRoots {
 }
 
 impl VerifiedDatabaseRoots {
+    pub fn manifest_root_hex(&self) -> String {
+        hex32(&self.manifest_root)
+    }
+
     pub fn block_hash_hex(&self) -> String {
         display_hash_hex(&self.block_hash)
     }
@@ -154,7 +163,9 @@ pub fn verify_database_proof(
     let verified = bundle.as_attest_bundle().verify().map_err(|e| {
         PirError::VerificationFailed(format!("db proof verification failed: {}", e))
     })?;
-    verify_against_catalog_and_policy(db_info, &verified, policy)
+    let mut roots = verify_against_catalog_and_policy(db_info, &verified, policy)?;
+    roots.manifest_root = Sha256::digest(&bundle.server_db_manifest_toml).into();
+    Ok(roots)
 }
 
 pub fn verify_database_proof_v2(
@@ -331,6 +342,8 @@ fn verify_against_catalog_and_policy(
 
     Ok(VerifiedDatabaseRoots {
         db_id: db_info.db_id,
+        // Filled from the exact verified bundle by `verify_database_proof`.
+        manifest_root: [0; 32],
         build_kind: evidence.build_kind,
         from_height: evidence.from_anchor.height,
         from_block_hash: evidence.from_anchor.block_hash,
@@ -1020,6 +1033,24 @@ mod tests {
         assert_eq!(verified.bucket_super_root, [7u8; 32]);
         assert_eq!(verified.onion_super_root, [8u8; 32]);
         assert_eq!(verified.onion_entry_size, 3328);
+        assert_eq!(
+            verified.manifest_root,
+            sha256(b"[[file]]\npath='batch_pir_cuckoo.bin'\n")
+        );
+    }
+
+    #[test]
+    fn verify_database_proof_rejects_manifest_bytes_not_bound_by_evidence() {
+        let (mut bundle, db_info) = sample_bundle();
+        bundle.server_db_manifest_toml.push(b'#');
+
+        let err =
+            verify_database_proof(&db_info, &bundle, &DatabaseProofPolicy::mainnet()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("server_db_manifest_sha256 mismatch"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

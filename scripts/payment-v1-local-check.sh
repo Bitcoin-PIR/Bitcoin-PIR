@@ -17,7 +17,8 @@ network.
            TCP or Unix-domain listeners.
   --full   The default offline payment-platform Rust suite, operator tooling,
            loopback-only unified-server process E2E (including strict-TLS
-           Standard Cashu), WASM checks, web typecheck/tests/bundle, a local
+           Standard Cashu and authenticated direct TEE-ORAM), WASM checks,
+           web typecheck/tests/bundle, a local
            Chromium multi-tab vault test, a real-WASM/loopback no-funds issuer
            acquisition test, and a browser -> two independent issuers -> two
            real provider-gate test. This is the default.
@@ -90,9 +91,11 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs
+  scripts/payment-v1-linux-runtime-evidence.test.mjs \
+  scripts/payment-v1-source-fair-edge.test.mjs
 
 if [[ "$mode" == "quick" ]]; then
   echo "[5/5] quick mode complete (no external network, no funds)"
@@ -139,6 +142,11 @@ cargo test --locked --offline -p runtime \
 cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p runtime --test payment_v1_onion_process_e2e
+cargo test --locked --offline \
+  --manifest-path vendor/bitcoinpir-oram/Cargo.toml
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
 cargo test --locked --offline -p bitcoinpir-directory-relay \
   --test payment_v1_two_relay_process_e2e \
   two_relay_real_process_catalog_e2e \
@@ -251,16 +259,45 @@ cargo clippy --locked --offline -p payment-issuer \
   -- -D warnings
 cargo check --locked --offline -p runtime --bin unified_server
 
-echo "[6/9] Standard Cashu and shared-issuer signed-pin TLS process boundaries"
+echo "[6/9] Standard Cashu, complete method/backend matrix, and shared-issuer TLS boundaries"
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
   standard_cashu_real_process_tls_two_provider_e2e \
   -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_process_e2e \
+  all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_onion_process_e2e \
+  all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --test payment_v1_tee_oram_process_e2e \
+  all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart \
+  -- --exact
 cargo clippy --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --bin unified_server \
   --test payment_v1_standard_cashu_process_e2e \
+  --test payment_v1_process_e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 cashu_boundary_log="$(mktemp "${TMPDIR:-/tmp}/bpir-cashu-boundary.XXXXXX")"
@@ -299,7 +336,12 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
@@ -333,9 +375,11 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs
+  scripts/payment-v1-linux-runtime-evidence.test.mjs \
+  scripts/payment-v1-source-fair-edge.test.mjs
 
 echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
@@ -369,11 +413,18 @@ cargo clippy --locked --offline -p runtime \
   --test payment_v1_process_e2e \
   --test payment_v1_methods_process_e2e \
   --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
   --no-deps \
   -- -D warnings
 cargo clippy --locked --offline -p runtime \
   --features test-only-unsafe-query-logging \
   --bin unified_server \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 

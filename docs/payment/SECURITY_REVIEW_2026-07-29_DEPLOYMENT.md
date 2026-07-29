@@ -78,32 +78,110 @@ must prove a successful zero-status completion in the current boot. Offline
 review is meaningful only with an independently transferred full evidence
 digest.
 
+Runtime-evidence v3 narrows NSS to a provable local-files profile: exactly
+`passwd: files`, `group: files`, and inherited group-based `initgroups`. Stable
+root-owned snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
+must agree around NSS enumeration, with the complete identity-relevant `getent`
+projection, and with a final confirmation after the remaining live checks;
+`id -G` is checked for every account under a monotonic deadline. The live pass
+leaves non-identity passwd/group fields hash-bound rather than semantically
+compared. The stopped-edge pass additionally binds `/etc/shadow` and requires
+each service account to be UID/GID-pinned, login-disabled and password-locked. Duplicate
+UID/GID aliases and extra protected-group primary, explicit, or effective
+members fail closed. Remote/cached or optionally enumerable NSS providers are
+not accepted by this V1 claim.
+
+Runtime-evidence v3 also closes credentials and capabilities retained in the
+kernel after an NSS edit. Two bounded full process/thread scans must produce
+the same protected-holder records, record all four active sets plus `CapBnd`,
+and fail on a reviewed dangerous active capability held by non-root. Each
+protected holder is bound by UID, all four GIDs, supplementary group
+set, PID/TID, inode, start time and exact current systemd cgroup; all managed
+MainPIDs and a post-scan unit generation confirmation are mandatory. HAProxy's
+master and worker are allowed only because both remain in its reviewed unit
+cgroup with the same reviewed credentials and zero capabilities. Only the
+Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
+set is checked against that exact systemd policy.
+
+The scan does not prove ownership of an already-connected Unix socket FD after
+`SCM_RIGHTS` transfer. Source-fair activation consequently requires a cold
+connection reset. Stop Caddy and HAProxy, then run `collect-stopped-edge` while
+all units are inactive/dead and every manifest socket is absent. It requires
+locked/non-login service accounts plus an empty protected-credential closure;
+only then start HAProxy before Caddy and collect new-generation live evidence,
+without a warm reload. The collector also binds its namespace to a
+visible systemd PID 1, while the operator must independently attest that this
+is the target host's initial PID namespace rather than a private namespace.
+This is a trusted-root/authentication-policy argument, not proof against a
+compromised root or future local privilege escalation.
+
 These gates are source and staging controls, not hardware attestation. Their
 first real systemd/Linux execution on the target Hetzner staging host remains
 mandatory.
+
+The collector is also part of the trusted-root TCB. The evidence digest binds
+the transferred result, not the honesty of target root or the script that
+created it. The activation ceremony must independently verify and run the
+collector bytes from the frozen commit; adding the collector script itself to
+the approved rendered manifest remains a defense-in-depth follow-up.
 
 ## P1 production activation blockers
 
 ### Source-fair public admission
 
-The stock-Caddy templates and the application processes currently use global
-connection and operation budgets. A single low-bandwidth source can occupy the
-provider or directory WebSocket pool, consume the anonymous quote budget, or
-hold the rollback-authority queue without a payment or publisher key. This is
-not volumetric DDoS and cannot be dismissed as upstream capacity planning.
+The source-fair follow-up supplies separate stock-Caddy and HAProxy layers for
+the public Hetzner edge. Four protected PROXY-v2 Unix sockets feed independent,
+short-lived provider, issuer, directory-reader and directory-publisher source
+buckets. Every successful `track-sc` is checked explicitly, so full-table
+allocation failure rejects rather than admitting an unaccounted request. The
+business services receive only new source-free loopback connections.
+The Caddy source gate now closes exact per-site binds and the global upstream
+multiset, forbids imports/invokes/snippets/named routes, and accepts only PROXY
+v2. Pinned adapted-JSON tests bind the two listener/host/socket graphs and 404
+wrong-bind fallbacks. HAProxy owns the Unix sockets, so both pinned edge
+processes remain in the source-assertion TCB: a compromised HAProxy could
+self-connect and fabricate a preamble just as a compromised Caddy could send
+one. PROXY v2 and the duplicate source check are not authentication against
+either process.
 
-Before public activation:
+The source templates now enforce the following design requirements:
 
-1. add an ephemeral source-fair connection/request boundary in front of the
+1. an ephemeral source-fair connection/request boundary in front of the
    public provider, issuer and directory surfaces;
 2. do not persist IP/request records or forward source identity into the PIR,
    payment, directory or rollback business processes;
-3. give the signed directory publisher a separate private ingress and reserved
-   connection/operation/egress budget;
-4. place each rollback authority behind its sole client's WireGuard, mTLS or
-   equivalent narrow firewall allowlist; and
-5. collect negative live evidence that one source cannot exhaust every global
-   slot or quote token.
+3. the signed directory publisher has a separate private ingress, an exact
+   WireGuard/private-route client-IP check in both Caddy and HAProxy, a WebPKI
+   server certificate compatible with the current credential-free publisher,
+   a dedicated activation sentinel, and reserved connection/operation/egress
+   budget;
+4. each rollback authority binds one private address and its systemd unit
+   allows only the sole client's exact private IP; the current strict client
+   uses WebPKI/SPKI plus signed requests rather than an unsupported one-sided
+   mTLS configuration; and
+5. both edge processes have null output, zero core limits and zero cgroup swap.
+
+The public-reader and private-publisher sites currently share the pinned Caddy
+process and its process-level resource budget; all lanes also share one HAProxy
+process and cgroup despite separate frontend/table/connection/egress limits.
+Public pre-routing TCP/TLS or HAProxy process-level pressure can still affect
+publisher availability. This is an explicit residual V1 availability boundary,
+not evidence of complete ingress isolation; a deployment needing a hard
+publisher boundary must split both edge layers into separately evidenced units.
+The two relay listeners also share one mutex-protected SQLite store. Reserved
+admission slots prevent public work from consuming publisher lane capacity,
+but an active public database operation can still delay a publisher write;
+V1 does not claim storage-level availability isolation.
+
+This remains a P1 **activation** blocker until the exact pinned Linux binaries
+pass the no-skip behavior suite and target-host evidence proves the effective
+units, source-fair sockets, negative starvation cases, zero current/max swap,
+zero hard/soft core limits, and `kernel.core_pattern=|/usr/bin/false`, including
+the handler's canonical root-owned bytes and metadata. The same ceremony must
+perform the stopped-edge proof and cold Caddy/HAProxy connection reset from the
+initial host PID namespace, followed by a fresh live proof; a warm-reload
+snapshot is rejected. Linux pipe core handlers
+may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 
 The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
@@ -188,12 +266,18 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
 - green Linux CI for all Payment V1 crates, process E2Es and warnings-denied
   builds, including release rejection of every test-only feature;
 - reviewed merged commit and exact reproducible source/binary/config hashes;
-- passing rendered-profile gate and target-host live evidence collector;
+- passing rendered-profile gate and target-host stopped-edge/fresh-live
+  evidence pair, each bound to its independently transferred full digest;
 - independent rollback-authority topology lint plus private-network negative
   tests;
 - no-funds local regtest and persistent default-Signet Lightning drills,
   including backup/restore and lost-response reconciliation;
 - source-fair starvation and cgroup pressure tests;
+- cold Caddy/HAProxy stop, locked service-account/empty protected-credential
+  closure before listener creation, HAProxy-before-Caddy re-creation and
+  host-initial-PID-namespace evidence, with no warm reload or surviving
+  connection graph;
+- target-host no-core/no-swap evidence, including the host core pattern;
 - private provider/issuer/directory canaries with strict client verification;
   and
 - final manual browser acceptance by the user before public routing changes.

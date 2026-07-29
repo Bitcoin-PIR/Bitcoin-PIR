@@ -267,7 +267,18 @@ export {
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
+  VerifiedSingleProviderRetainedOfferV1,
 } from './service-admission.js';
+export {
+  assertProductQueryShapeFitsScopeV1,
+  canonicalProductQueryShapeV1,
+  canonicalServiceEntitlementLimitsV1,
+  intersectHomogeneousEntitlementLimitsV1,
+} from './service-entitlement.js';
+export type {
+  ProductQueryShapeV1,
+  ProductQueryShapesByRoleV1,
+} from './service-entitlement.js';
 export { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
 export type {
   IndependentProviderSelectionOptionsV1,
@@ -276,6 +287,11 @@ export type {
 export type {
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
+  IndependentProviderAdmissionSelectionV1,
+  IndependentRetainedProviderAdmissionSelectionV1,
+  IndependentProviderPairAdmissionSelectionV1,
+  SingleProviderAdmissionSelectionV1,
+  SingleRetainedProviderAdmissionSelectionV1,
   ProviderPairBolt11AcquisitionOptionsV1,
   ProviderPairSideV1,
   ServiceAdmissionPortV1,
@@ -346,6 +362,9 @@ export type {
   ProductStrictLegBootstrapV1,
 } from './product-admission-controller.js';
 export {
+  canBootstrapNextProviderV1,
+  credentialActionsReadyV1,
+  pairAuthorizationReadyV1,
   ProductAdmissionPanelV1,
   privacyLabelForOfferV1,
   publicAdmissionError,
@@ -358,14 +377,17 @@ export type {
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export {
+  assertIndependentProviderDialPairV1,
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
+  expectedLightningPayeeForOfferV1,
   providerArkFingerprintV1,
-  providerExpectedPayeeV1,
+  providerLightningPayeeTrustV1,
   providerOperatorKeyV1,
 } from './product-provider-bootstrap.js';
 export type {
+  ProductLightningPayeeTrustV1,
   ProductTrustedBootstrapV1,
   ProductTrustedProviderV1,
 } from './product-provider-bootstrap.js';
@@ -390,3 +412,4 @@ export {
   CASHU_POINT_BYTES,
 } from './payment-client.js';
 export type { CashuKeyset, PresentResult } from './payment-client.js';
+export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const acquisitionMock = vi.hoisted(() => ({
-  startMode: 'success' as 'success' | 'lost',
+  startMode: 'success' as 'success' | 'lost' | 'deferred',
+  deferredStart: null as null | ((assertReady: () => void) => Promise<void>),
   resume: vi.fn(),
 }));
 
@@ -31,8 +32,12 @@ vi.mock('../service-acquisition.js', () => {
   return {
     Bolt11RecoveryRequiredErrorV1: RecoveryRequired,
     Bolt11AcquisitionControllerV1: {
-      start: vi.fn(async () => {
+      start: vi.fn(async (options: { assertReady: () => void }) => {
         if (acquisitionMock.startMode === 'lost') throw new RecoveryRequired('88'.repeat(32));
+        if (acquisitionMock.startMode === 'deferred') {
+          if (!acquisitionMock.deferredStart) throw new Error('missing deferred start fixture');
+          await acquisitionMock.deferredStart(options.assertReady);
+        }
         return handle();
       }),
     },
@@ -40,7 +45,10 @@ vi.mock('../service-acquisition.js', () => {
   };
 });
 
-import { AdmissionCredentialVaultV1 } from '../admission-vault.js';
+import {
+  AdmissionCredentialVaultV1,
+  type Bolt11CapabilityAcquisitionContextV1,
+} from '../admission-vault.js';
 import {
   ProductAdmissionControllerV1,
   ProductAdmissionErrorV1,
@@ -72,8 +80,50 @@ const HEX = {
   dataset: '51'.repeat(32),
 };
 
+const PROVIDER_ENDPOINT = {
+  first: 'wss://provider-a.example/v1',
+  second: 'wss://provider-b.example/v1',
+};
+const LIGHTNING_PAYEE = {
+  first: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+  second: new Uint8Array([2, ...new Uint8Array(32).fill(2)]),
+};
+
+const TEST_LIMITS = {
+  maxLogicalInputs: 8,
+  maxFrames: 64,
+  maxRequestBytes: '1048576',
+  maxResponseBytes: '2097152',
+  maxWallTimeMs: 30_000,
+  maxConcurrentSockets: 1,
+  maxHintGroups: 2048,
+  maxWorkUnits: '10000',
+};
+
+function testTarget<
+  B extends ServiceAdmissionTargetV1['backend'],
+  W extends ServiceAdmissionTargetV1['workload'],
+>(backend: B, workload: W) {
+  return {
+    backend,
+    workload,
+    protocolVersion: backend === 'harmony-pir' ? 2 : 1,
+    expectedDatasetManifestRootHex: HEX.dataset,
+    queryShape: {
+      backend,
+      workload,
+      lowerBounds: {
+        logicalInputs: workload === 'harmony-hint' ? 0 : 1,
+        frames: 1,
+        concurrentSockets: 1,
+      },
+    },
+  } as const;
+}
+
 interface FakeVaultState {
   inventory: Map<string, number>;
+  inventoryContexts: Map<string, Bolt11CapabilityAcquisitionContextV1 | undefined>;
   takes: number;
   recoveries: any[];
 }
@@ -104,6 +154,8 @@ function paidOffer(
   authorization: 'cashu-bat' | 'arc-experimental' | 'cashu-ecash' | 'bolt11-direct-receipt',
 ): ServiceOfferViewV1 {
   const standard = authorization === 'cashu-ecash';
+  const offerHex = offerId.toString(16).padStart(2, '0');
+  const receiptHex = ((offerId + 0x40) & 0xff).toString(16).padStart(2, '0');
   return {
     offerId,
     acquisition: standard ? 'cashu-ecash' : 'bolt11',
@@ -113,16 +165,44 @@ function paidOffer(
     deploymentStatus: authorization === 'arc-experimental' ? 'experimental' : 'stable',
     priorityClass: 1,
     price: { kind: 'msat', amount: '1000' },
-    issuerIdHex: `${offerId.toString(16).padStart(2, '0')}`.repeat(32),
-    keyIdHex: '71'.repeat(16),
+    issuerIdHex: offerHex.repeat(32),
+    keyIdHex: receiptHex.repeat(32),
     batVerificationKeyFingerprintHex: authorization === 'cashu-bat' ? '81'.repeat(32) : '',
     arcVerificationKeyFingerprintHex: authorization === 'arc-experimental'
       ? `${(offerId + 0x80).toString(16).padStart(2, '0')}`.repeat(32)
       : '',
-    endpoint: 'https://issuer.example',
+    endpoint: `https://issuer-${offerId}.example`,
     credentialCount: 1,
     credentialPresentationLimit: authorization === 'arc-experimental' ? 10 : 1,
     privacyLeakageBits: 1,
+  };
+}
+
+function lightningTrust(
+  offer: ServiceOfferViewV1,
+  payee: Uint8Array,
+) {
+  return [{
+    issuerIdHex: offer.issuerIdHex,
+    issuerOrigin: new URL(offer.endpoint).origin,
+    network: 'bitcoin' as const,
+    expectedPayeePubkeyHex: Array.from(
+      payee,
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join(''),
+  }];
+}
+
+function boltContext(
+  offer: ServiceOfferViewV1,
+  payee: Uint8Array,
+): Bolt11CapabilityAcquisitionContextV1 {
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: offer.endpoint,
+    issuerIdHex: offer.issuerIdHex,
+    network: 'bitcoin',
+    expectedPayeePubkeyHex: lightningTrust(offer, payee)[0].expectedPayeePubkeyHex,
   };
 }
 
@@ -142,9 +222,11 @@ function policy(
       scopeIdHex,
       backend: target.backend,
       workload: target.workload,
-      protocolVersion: 1,
+      protocolVersion: target.protocolVersion,
       operationProfile: 1,
       entitlementProfile: 2,
+      dataset: { kind: 'manifest-root', rootHex: target.expectedDatasetManifestRootHex },
+      limits: { ...TEST_LIMITS },
       offers,
     }],
   };
@@ -167,6 +249,7 @@ function retainedView(
       protocolVersion: target.backend === 'harmony-pir' ? 2 : 1,
       operationProfile: 1,
       entitlementProfile: 2,
+      dataset: { kind: 'manifest-root', rootHex: target.expectedDatasetManifestRootHex },
       limits: {
         maxLogicalInputs: 1,
         maxFrames: 1,
@@ -206,7 +289,12 @@ function accepted(view: ServicePolicyViewV1): WasmAcceptedServicePolicyV1 {
 }
 
 function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState } {
-  const state: FakeVaultState = { inventory: new Map(), takes: 0, recoveries: [] };
+  const state: FakeVaultState = {
+    inventory: new Map(),
+    inventoryContexts: new Map(),
+    takes: 0,
+    recoveries: [],
+  };
   const key = (binding: any) => [
     binding.providerIdHex,
     binding.policyDigestHex,
@@ -214,15 +302,32 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
     binding.offerId,
     binding.scheme,
   ].join(':');
+  const contextMatches = (
+    id: string,
+    expected: Bolt11CapabilityAcquisitionContextV1 | null | undefined,
+  ) => {
+    if (expected === undefined) return true;
+    const stored = state.inventoryContexts.get(id);
+    if (expected === null) return stored === undefined;
+    return stored?.kind === expected.kind
+      && stored.issuerEndpoint === expected.issuerEndpoint
+      && stored.issuerIdHex === expected.issuerIdHex
+      && stored.network === expected.network
+      && stored.expectedPayeePubkeyHex === expected.expectedPayeePubkeyHex;
+  };
   const vault = {
     advancePolicyCheckpoint: async (_provider: string, initial: Uint8Array, advance: Function) => {
       const result = await advance(initial);
       return result.value;
     },
-    takeSingleUseCapability: async (binding: any, validate?: Function) => {
+    takeSingleUseCapability: async (
+      binding: any,
+      validate?: Function,
+      expectedContext?: Bolt11CapabilityAcquisitionContextV1 | null,
+    ) => {
       const id = key(binding);
       const count = state.inventory.get(id) ?? 0;
-      if (count === 0) return null;
+      if (count === 0 || !contextMatches(id, expectedContext)) return null;
       const payload = new Uint8Array([1, 2, 3]);
       validate?.(payload);
       state.inventory.set(id, count - 1);
@@ -230,7 +335,13 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
       return { ...binding, payload };
     },
     advanceArcCredential: async () => null,
-    countCapabilities: async (binding: any) => state.inventory.get(key(binding)) ?? 0,
+    countCapabilities: async (
+      binding: any,
+      expectedContext?: Bolt11CapabilityAcquisitionContextV1 | null,
+    ) => {
+      const id = key(binding);
+      return contextMatches(id, expectedContext) ? state.inventory.get(id) ?? 0 : 0;
+    },
     listCapabilityInventory: async (providerIdHex?: string) => [...state.inventory]
       .filter(([serialized, count]) => count > 0
         && (!providerIdHex || serialized.startsWith(`${providerIdHex}:`)))
@@ -243,6 +354,7 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
           offerId: Number(offerId),
           scheme,
           count,
+          acquisitionContext: state.inventoryContexts.get(serialized),
         };
       }),
     putCapability: async (capability: any) => {
@@ -269,9 +381,14 @@ function session(
     hasHarmonyAttach: target.workload === 'harmony-hint',
   }),
   retainedView?: RetainedServiceRedemptionViewV1,
-): { session: ProviderAdmissionSessionV1; authorize: ReturnType<typeof vi.fn> } {
+): {
+  session: ProviderAdmissionSessionV1;
+  authorize: ReturnType<typeof vi.fn>;
+  assertReady: ReturnType<typeof vi.fn>;
+} {
   let refresh = 0;
   const authorize = vi.fn(authorizeImpl);
+  const assertReady = vi.fn();
   const retainedHandle = (): WasmAcceptedRetainedServiceRedemptionV1 => {
     if (!retainedView) throw new Error('unused');
     return {
@@ -287,9 +404,13 @@ function session(
   };
   const port: ServiceAdmissionPortV1 = {
     assertTrustAnchor: vi.fn(),
+    providerEndpoint: () => providerIdHex === HEX.provider0
+      ? PROVIDER_ENDPOINT.first : PROVIDER_ENDPOINT.second,
+    operatorSigningKey: () => Uint8Array.from(Buffer.from(providerIdHex, 'hex')),
     fetchPolicy: async () => accepted(views[Math.min(refresh++, views.length - 1)]),
     fetchRetainedRedemption: async () => retainedHandle(),
     assertSessionBinding: vi.fn(),
+    captureReadinessGuard: () => assertReady,
     assertRetainedSessionBinding: vi.fn(),
     authorize,
     authorizeRetained: async () => {
@@ -315,6 +436,7 @@ function session(
       target,
     ),
     authorize,
+    assertReady,
   };
 }
 
@@ -327,27 +449,44 @@ function inventoryKey(
   return [provider, digest, scope, offer.offerId, offer.authorization].join(':');
 }
 
+function currentShapes(controller: ProductAdmissionControllerV1) {
+  return Object.fromEntries(controller.snapshot().legs.map((leg) => {
+    if (!leg.queryShape) throw new Error(`missing test query shape for ${leg.role}`);
+    return [leg.role, leg.queryShape];
+  }));
+}
+
 describe('product admission lifecycle', () => {
   beforeEach(() => {
     acquisitionMock.startMode = 'success';
+    acquisitionMock.deferredStart = null;
     acquisitionMock.resume.mockReset();
   });
 
   it('supports mixed Free and Cashu BAT methods on independent DPF legs', async () => {
     const { vault, state } = fakeVault();
-    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const target = testTarget('dpf-pir', 'dpf-query');
     const free = freeOffer(1);
     const bat = paidOffer(2, 'cashu-bat');
     const first = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [free])], HEX.provider0, HEX.key0, target);
     const second = session(vault, [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [bat])], HEX.provider1, HEX.key1, target);
-    state.inventory.set(inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat), 1);
+    const batInventoryKey = inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat);
+    state.inventory.set(batInventoryKey, 1);
+    state.inventoryContexts.set(batInventoryKey, boltContext(bat, LIGHTNING_PAYEE.second));
     const controller = new ProductAdmissionControllerV1({
       topology: 'independent-pair', vault,
     });
     await controller.prepare(async () => ({
       legs: [
-        { role: 'server0', label: 'Server 0', session: first.session, ...target },
-        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.second),
+        },
       ],
       close: vi.fn(),
     }));
@@ -357,15 +496,68 @@ describe('product admission lifecycle', () => {
     await controller.authorize('server1');
     expect(controller.canQuery()).toBe(true);
     const query = vi.fn(async () => 'ok');
-    await expect(controller.executeQuery(query)).resolves.toBe('ok');
-    await expect(controller.executeQuery(query)).rejects.toThrow(/must be authorized/);
+    await expect(controller.executeQuery(currentShapes(controller), query)).resolves.toBe('ok');
+    await expect(controller.executeQuery(currentShapes(controller), query)).rejects.toThrow(/must be authorized/);
     expect(query).toHaveBeenCalledOnce();
     expect(state.takes).toBe(1);
   });
 
-  it('stages provider legs and permits first-leg acquisition before the peer is known', async () => {
+  it('does not start a free peer grant while the paid peer still needs acquisition', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const free = freeOffer(61);
+    const bat = paidOffer(62, 'cashu-bat');
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [free])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [bat])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.second),
+        },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: free.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: bat.offerId });
+    await expect(controller.authorize('server0')).rejects.toMatchObject({
+      code: 'capability-inventory-empty',
+    });
+    expect(first.authorize).not.toHaveBeenCalled();
+
+    const batInventoryKey = inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, bat);
+    state.inventory.set(batInventoryKey, 1);
+    state.inventoryContexts.set(batInventoryKey, boltContext(bat, LIGHTNING_PAYEE.second));
+    await controller.authorize('server0');
+    await controller.authorize('server1');
+    expect(controller.canQuery()).toBe(true);
+    await controller.close();
+  });
+
+  it('stages providers sequentially but blocks payment until both exact offers are selected', async () => {
     const { vault } = fakeVault();
-    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const target = testTarget('dpf-pir', 'dpf-query');
     const firstOffer = paidOffer(21, 'bolt11-direct-receipt');
     const secondOffer = freeOffer(22);
     const first = session(
@@ -386,28 +578,321 @@ describe('product admission lifecycle', () => {
     await controller.prepareLeg(async () => ({
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
       },
       close: vi.fn(),
     }));
+    const prematureSecondBootstrap = vi.fn(async () => ({
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
+      close: vi.fn(),
+    }));
+    await expect(controller.prepareLeg(prematureSecondBootstrap)).rejects.toMatchObject({
+      code: 'offer-selection-invalidated',
+    });
+    expect(prematureSecondBootstrap).not.toHaveBeenCalled();
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 21 });
-    await controller.startBolt11('server0');
+    await expect(controller.startBolt11('server0')).rejects.toMatchObject({
+      code: 'operation-failed',
+    });
     expect(controller.snapshot().legs).toHaveLength(1);
-    expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
 
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
       close: vi.fn(),
     }));
     await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: 22 });
+    await controller.startBolt11('server0');
     expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
     expect(controller.canQuery()).toBe(false);
     await controller.close();
   });
 
-  it('does not roll back a first-leg invoice when the later offer reveals a shared issuer', async () => {
+  it('does not install an invoice when the strict pair is invalidated during acquisition', async () => {
     const { vault } = fakeVault();
-    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const paid = paidOffer(23, 'bolt11-direct-receipt');
+    const free = freeOffer(24);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [paid])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [free])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    let pairReady = true;
+    first.assertReady.mockImplementation(() => {
+      if (!pairReady) throw new Error('DPF strict pair attempt was invalidated');
+    });
+    let releaseStart!: () => void;
+    let markStartEntered!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const startEntered = new Promise<void>((resolve) => { markStartEntered = resolve; });
+    acquisitionMock.startMode = 'deferred';
+    acquisitionMock.deferredStart = async (assertReady) => {
+      markStartEntered();
+      await startGate;
+      assertReady();
+    };
+
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+          lightningPayeeTrust: lightningTrust(paid, LIGHTNING_PAYEE.first),
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: paid.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: free.offerId });
+
+    const pending = controller.startBolt11('server0');
+    await startEntered;
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
+    // DPF/Harmony production ports bind this guard to both leg generations;
+    // flipping it models the peer disconnecting while issuer I/O is awaited.
+    pairReady = false;
+    releaseStart();
+    await expect(pending).rejects.toThrow(/strict pair attempt was invalidated/);
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
+    await controller.close();
+  });
+
+  it('keeps the first selection unspent when strict bootstrap of the second leg fails', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = freeOffer(27);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const closeFirst = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
+      close: closeFirst,
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 27 });
+    await expect(controller.authorize('server0')).rejects.toMatchObject({
+      code: 'operation-failed',
+    });
+
+    await expect(controller.prepareLeg(async () => {
+      throw new Error('second provider attestation failed');
+    })).rejects.toMatchObject({ code: 'strict-bootstrap-failed' });
+
+    const snapshot = controller.snapshot();
+    expect(snapshot.phase).toBe('selecting');
+    expect(snapshot.legs).toHaveLength(1);
+    expect(snapshot.legs[0].status).toBe('ready');
+    expect(first.authorize).not.toHaveBeenCalled();
+    expect(closeFirst).not.toHaveBeenCalled();
+    expect(controller.canQuery()).toBe(false);
+    await controller.close();
+  });
+
+  it('completes staged pair preflight before either provider authorization', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const offer0 = freeOffer(41);
+    const offer1 = freeOffer(42);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const strictPairPreflight = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
+      close: async () => {},
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await expect(controller.authorize('server0')).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(first.authorize).not.toHaveBeenCalled();
+    expect(strictPairPreflight).not.toHaveBeenCalled();
+    expect(controller.canQuery()).toBe(false);
+
+    await controller.prepareLeg(async () => {
+      await strictPairPreflight();
+      return {
+        leg: {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+        close: async () => {},
+      };
+    });
+    expect(strictPairPreflight).toHaveBeenCalledOnce();
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: offer1.offerId });
+    await controller.authorize('server0');
+    const ready = await controller.authorize('server1');
+
+    expect(strictPairPreflight).toHaveBeenCalledOnce();
+    expect(ready.phase).toBe('ready-to-query');
+    expect(controller.canQuery()).toBe(true);
+    const query = vi.fn(async () => 'verified');
+    await expect(controller.executeQuery(currentShapes(controller), query)).resolves.toBe('verified');
+    expect(query).toHaveBeenCalledOnce();
+    expect(strictPairPreflight).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
+  it('does not query or rerun pair preflight when either provider authorization fails', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const offer0 = freeOffer(43);
+    const offer1 = freeOffer(44);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+      async () => { throw new Error('capability rejected'); },
+    );
+    const strictPairPreflight = vi.fn(async () => {});
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
+      close: async () => {},
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await controller.prepareLeg(async () => {
+      await strictPairPreflight();
+      return {
+        leg: {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+        close: async () => {},
+      };
+    });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: offer1.offerId });
+    await controller.authorize('server0');
+
+    await expect(controller.authorize('server1')).rejects.toThrow('capability rejected');
+
+    expect(strictPairPreflight).toHaveBeenCalledOnce();
+    expect(controller.canQuery()).toBe(false);
+    const query = vi.fn(async () => 'must not run');
+    await expect(controller.executeQuery(currentShapes(controller), query))
+      .rejects.toMatchObject({ code: 'operation-failed' });
+    expect(query).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
+  it('fails strict pair preflight before any Harmony capability is consumed', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('harmony-pir', 'harmony-query');
+    const offer0 = freeOffer(45);
+    const offer1 = freeOffer(46);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer0])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [offer1])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const strictPairPreflight = vi.fn(async () => {
+      throw new Error('tree-top root mismatch');
+    });
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'hint', label: 'Hint', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
+      close: async () => {},
+    }));
+    await controller.selectOffer('hint', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
+    await expect(controller.prepareLeg(async () => {
+      await strictPairPreflight();
+      return {
+        leg: {
+          role: 'query', label: 'Query', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+        close: async () => {},
+      };
+    })).rejects.toMatchObject({ code: 'strict-bootstrap-failed' });
+
+    expect(strictPairPreflight).toHaveBeenCalledOnce();
+    expect(first.authorize).not.toHaveBeenCalled();
+    expect(second.authorize).not.toHaveBeenCalled();
+    expect(controller.snapshot().phase).toBe('selecting');
+    expect(controller.snapshot().legs).toHaveLength(1);
+    expect(controller.canQuery()).toBe(false);
+    const query = vi.fn(async () => 'must not run');
+    await expect(controller.executeQuery(currentShapes(controller), query))
+      .rejects.toMatchObject({ code: 'operation-failed' });
+    expect(query).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
+  it('rejects a shared issuer before either provider invoice can begin', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
     const firstOffer = paidOffer(23, 'bolt11-direct-receipt');
     const secondOffer = {
       ...paidOffer(24, 'bolt11-direct-receipt'),
@@ -420,40 +905,55 @@ describe('product admission lifecycle', () => {
     await controller.prepareLeg(async () => ({
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
       }, close: vi.fn(),
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 23 });
-    await controller.startBolt11('server0');
+    await expect(controller.startBolt11('server0')).rejects.toMatchObject({
+      code: 'operation-failed',
+    });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+        lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.second),
+      },
       close: vi.fn(),
     }));
     await expect(controller.selectOffer('server1', {
       scopeIdHex: HEX.scope1,
       offerId: 24,
     })).rejects.toMatchObject({ code: 'pair-correlation-rejected' });
-    expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
     expect(controller.canQuery()).toBe(false);
     await controller.close();
   });
 
-  it('keeps an authorized first selection frozen while allowing a later peer and opt-in', async () => {
+  it('allows one-shot shared issuer and payee correlation only before either flow', async () => {
     const { vault, state } = fakeVault();
-    const target = { backend: 'dpf-pir', workload: 'dpf-query' } as const;
+    const target = testTarget('dpf-pir', 'dpf-query');
     const firstOffer = paidOffer(25, 'bolt11-direct-receipt');
     const secondOffer = {
       ...paidOffer(26, 'bolt11-direct-receipt'),
       issuerIdHex: firstOffer.issuerIdHex,
       endpoint: firstOffer.endpoint,
     };
-    state.inventory.set(
-      inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, firstOffer),
-      1,
+    const firstInventoryKey = inventoryKey(
+      HEX.provider0, HEX.policy0, HEX.scope0, firstOffer,
     );
-    state.inventory.set(
-      inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, secondOffer),
-      1,
+    const secondInventoryKey = inventoryKey(
+      HEX.provider1, HEX.policy1, HEX.scope1, secondOffer,
+    );
+    state.inventory.set(firstInventoryKey, 1);
+    state.inventoryContexts.set(
+      firstInventoryKey,
+      boltContext(firstOffer, LIGHTNING_PAYEE.first),
+    );
+    state.inventory.set(secondInventoryKey, 1);
+    state.inventoryContexts.set(
+      secondInventoryKey,
+      boltContext(secondOffer, LIGHTNING_PAYEE.first),
     );
     const first = session(
       vault,
@@ -471,18 +971,23 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
+      },
       close: vi.fn(),
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 25 });
-    await controller.authorize('server0');
-    await expect(controller.selectOffer('server0', {
-      scopeIdHex: HEX.scope0,
-      offerId: 25,
-    })).rejects.toMatchObject({ code: 'offer-selection-invalidated' });
+    await expect(controller.authorize('server0')).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(first.authorize).not.toHaveBeenCalled();
 
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+        lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.first),
+      },
       close: vi.fn(),
     }));
     await expect(controller.selectOffer('server1', {
@@ -491,20 +996,67 @@ describe('product admission lifecycle', () => {
     })).rejects.toMatchObject({ code: 'pair-correlation-rejected' });
     expect(second.authorize).not.toHaveBeenCalled();
 
-    controller.setAllowSharedIssuerCorrelationOnce(true);
+    controller.setAllowSharedInfrastructureCorrelationOnce(true);
+    await controller.authorize('server0');
+    await expect(controller.selectOffer('server0', {
+      scopeIdHex: HEX.scope0,
+      offerId: 25,
+    })).rejects.toMatchObject({ code: 'offer-selection-invalidated' });
     await controller.authorize('server1');
     expect(first.authorize).toHaveBeenCalledOnce();
     expect(second.authorize).toHaveBeenCalledOnce();
     expect(controller.canQuery()).toBe(true);
-    await controller.executeQuery(async () => 'ok');
+    await controller.executeQuery(currentShapes(controller), async () => 'ok');
     await controller.close();
+  });
+
+  it('closes every staged provider and resets state even when one close rejects', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [freeOffer(31)])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [freeOffer(32)])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const firstClose = vi.fn(async () => {});
+    const secondClose = vi.fn(async () => { throw new Error('second close failed'); });
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
+      close: firstClose,
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 31 });
+    await controller.prepareLeg(async () => ({
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
+      close: secondClose,
+    }));
+
+    await expect(controller.close()).rejects.toThrow('strict provider transports failed to close');
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(secondClose).toHaveBeenCalledOnce();
+    expect(controller.snapshot()).toMatchObject({ phase: 'idle', legs: [] });
   });
 
   it('uses an exact Harmony hint cache without authorization and authorizes before a fresh download', async () => {
     for (const cached of [true, false]) {
       const { vault } = fakeVault();
-      const hintTarget = { backend: 'harmony-pir', workload: 'harmony-hint' } as const;
-      const queryTarget = { backend: 'harmony-pir', workload: 'harmony-query' } as const;
+      const hintTarget = testTarget('harmony-pir', 'harmony-hint');
+      const queryTarget = testTarget('harmony-pir', 'harmony-query');
       const hint = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, hintTarget, [freeOffer(3)])], HEX.provider0, HEX.key0, hintTarget);
       const query = session(vault, [policy(HEX.provider1, HEX.policy1, HEX.scope1, queryTarget, [freeOffer(4)])], HEX.provider1, HEX.key1, queryTarget);
       const restore = vi.fn(async () => cached);
@@ -514,9 +1066,13 @@ describe('product admission lifecycle', () => {
         legs: [
           {
             role: 'hint', label: 'Hint', session: hint.session, ...hintTarget,
+            providerEndpoint: PROVIDER_ENDPOINT.first,
             resource: { restore, acquireAfterAuthorization: acquire, datasetIdHex: HEX.dataset, variant: 1 },
           },
-          { role: 'query', label: 'Query', session: query.session, ...queryTarget },
+          {
+            role: 'query', label: 'Query', session: query.session, ...queryTarget,
+            providerEndpoint: PROVIDER_ENDPOINT.second,
+          },
         ],
         close: vi.fn(),
       }));
@@ -531,6 +1087,73 @@ describe('product admission lifecycle', () => {
     }
   });
 
+  it('freezes the exact offer and correlation consent while a resource restore is in flight', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('harmony-pir', 'harmony-hint');
+    const firstOffer = freeOffer(51);
+    const secondOffer = freeOffer(52);
+    const current = session(
+      vault,
+      [policy(
+        HEX.provider0,
+        HEX.policy0,
+        HEX.scope0,
+        target,
+        [firstOffer, secondOffer],
+      )],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    let releaseRestore!: () => void;
+    let markRestoreEntered!: () => void;
+    const restoreGate = new Promise<void>((resolve) => { releaseRestore = resolve; });
+    const restoreEntered = new Promise<void>((resolve) => { markRestoreEntered = resolve; });
+    const restore = vi.fn(async () => {
+      markRestoreEntered();
+      await restoreGate;
+      return true;
+    });
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'single-provider',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'hint',
+        label: 'Hint',
+        session: current.session,
+        ...target,
+        resource: {
+          restore,
+          acquireAfterAuthorization: vi.fn(),
+          datasetIdHex: HEX.dataset,
+          variant: 1,
+        },
+      }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('hint', {
+      scopeIdHex: HEX.scope0,
+      offerId: firstOffer.offerId,
+    });
+
+    const authorization = controller.authorize('hint');
+    await restoreEntered;
+    await expect(controller.selectOffer('hint', {
+      scopeIdHex: HEX.scope0,
+      offerId: secondOffer.offerId,
+    })).rejects.toMatchObject({ code: 'operation-failed' });
+    expect(() => controller.setAllowSharedInfrastructureCorrelationOnce(true)).toThrow(
+      /during an admission transition/,
+    );
+    releaseRestore();
+    await expect(authorization).resolves.toMatchObject({ phase: 'ready-to-query' });
+    expect(controller.snapshot().legs[0].selected?.offerId).toBe(firstOffer.offerId);
+    expect(current.authorize).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
   it('prevents policy, quote, authorization, and query after strict bootstrap failure', async () => {
     const { vault } = fakeVault();
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
@@ -540,12 +1163,13 @@ describe('product admission lifecycle', () => {
     await expect(controller.authorize('single')).rejects.toMatchObject({
       code: 'commercial-admission-unconfigured',
     });
-    await expect(controller.executeQuery(vi.fn())).rejects.toThrow(/must be authorized/);
+    await expect(controller.executeQuery(currentShapes(controller), vi.fn()))
+      .rejects.toThrow(/must be authorized/);
   });
 
   it('invalidates exact selection after a live policy refresh', async () => {
     const { vault } = fakeVault();
-    const target = { backend: 'onion-pir', workload: 'onion-session' } as const;
+    const target = testTarget('onion-pir', 'onion-session');
     const first = policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [freeOffer(5)]);
     const second = policy(HEX.provider0, '33'.repeat(32), HEX.scope0, target, [freeOffer(6)]);
     const leg = session(vault, [first, second], HEX.provider0, HEX.key0, target);
@@ -563,14 +1187,17 @@ describe('product admission lifecycle', () => {
 
   it('surfaces lost BOLT11 response recovery without creating another invoice', async () => {
     const { vault } = fakeVault();
-    const target = { backend: 'tee-oram', workload: 'tee-oram-query' } as const;
+    const target = testTarget('tee-oram', 'tee-oram-query');
     const bolt = paidOffer(7, 'bolt11-direct-receipt');
     const leg = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bolt])], HEX.provider0, HEX.key0, target);
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
       legs: [{
         role: 'oram', label: 'ORAM', session: leg.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        lightningPayeeTrust: lightningTrust(
+          bolt,
+          new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        ),
       }],
       close: vi.fn(),
     }));
@@ -582,9 +1209,69 @@ describe('product admission lifecycle', () => {
     expect(controller.snapshot().legs[0].recoveryIds).toEqual(['88'.repeat(32)]);
   });
 
+  it('fails closed before issuer I/O when BOLT11 trust belongs to another issuer', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const selected = paidOffer(71, 'bolt11-direct-receipt');
+    const trustedOther = paidOffer(72, 'bolt11-direct-receipt');
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [selected])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(trustedOther, LIGHTNING_PAYEE.first),
+      }],
+      close: vi.fn(),
+    }));
+
+    await expect(controller.selectOffer('oram', {
+      scopeIdHex: HEX.scope0,
+      offerId: selected.offerId,
+    })).rejects.toMatchObject({ code: 'lightning-payee-untrusted' });
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
+  });
+
+  it('owns the exact BOLT11 trust snapshot after strict bootstrap', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const bolt = paidOffer(73, 'bolt11-direct-receipt');
+    const trust = lightningTrust(bolt, LIGHTNING_PAYEE.first);
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bolt])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: trust,
+      }],
+      close: vi.fn(),
+    }));
+    trust[0].issuerIdHex = 'ff'.repeat(32);
+    trust[0].expectedPayeePubkeyHex = '03'.concat('ee'.repeat(32));
+
+    await expect(controller.selectOffer('oram', {
+      scopeIdHex: HEX.scope0,
+      offerId: bolt.offerId,
+    })).resolves.toMatchObject({ errorCode: null });
+    await controller.startBolt11('oram');
+    expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
+    await controller.close();
+  });
+
   it('imports standard Cashu and reports BAT/ARC missing inventory honestly', async () => {
     const { vault } = fakeVault();
-    const target = { backend: 'onion-pir', workload: 'onion-session' } as const;
+    const target = testTarget('onion-pir', 'onion-session');
     const cashu = paidOffer(8, 'cashu-ecash');
     const leg = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [cashu])], HEX.provider0, HEX.key0, target);
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
@@ -603,7 +1290,10 @@ describe('product admission lifecycle', () => {
       const current = session(local.vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer])], HEX.provider0, HEX.key0, target);
       const missing = new ProductAdmissionControllerV1({ topology: 'single-provider', vault: local.vault });
       await missing.prepare(async () => ({
-        legs: [{ role: 'onion', label: 'Onion', session: current.session, ...target }], close: vi.fn(),
+        legs: [{
+          role: 'onion', label: 'Onion', session: current.session, ...target,
+          lightningPayeeTrust: lightningTrust(offer, LIGHTNING_PAYEE.first),
+        }], close: vi.fn(),
       }));
       await missing.selectOffer('onion', { scopeIdHex: HEX.scope0, offerId: offer.offerId });
       await expect(missing.authorize('onion')).rejects.toMatchObject({
@@ -616,9 +1306,13 @@ describe('product admission lifecycle', () => {
 
   it('never retries an ambiguous one-shot capability spend', async () => {
     const { vault, state } = fakeVault();
-    const target = { backend: 'tee-oram', workload: 'tee-oram-query' } as const;
+    const target = testTarget('tee-oram', 'tee-oram-query');
     const bat = paidOffer(11, 'cashu-bat');
     state.inventory.set(inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat), 1);
+    state.inventoryContexts.set(
+      inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat),
+      boltContext(bat, LIGHTNING_PAYEE.first),
+    );
     const leg = session(
       vault,
       [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bat])],
@@ -629,7 +1323,10 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'oram', label: 'ORAM', session: leg.session, ...target }], close: vi.fn(),
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.first),
+      }], close: vi.fn(),
     }));
     await controller.selectOffer('oram', { scopeIdHex: HEX.scope0, offerId: 11 });
     await expect(controller.authorize('oram')).rejects.toMatchObject({
@@ -641,10 +1338,43 @@ describe('product admission lifecycle', () => {
     expect(leg.authorize).toHaveBeenCalledOnce();
   });
 
+  it('does not count or retire a single-provider capability from another BOLT11 context', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('tee-oram', 'tee-oram-query');
+    const bat = paidOffer(12, 'cashu-bat');
+    const id = inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, bat);
+    state.inventory.set(id, 1);
+    state.inventoryContexts.set(id, boltContext(bat, LIGHTNING_PAYEE.second));
+    const leg = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bat])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'oram', label: 'ORAM', session: leg.session, ...target,
+        lightningPayeeTrust: lightningTrust(bat, LIGHTNING_PAYEE.first),
+      }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('oram', { scopeIdHex: HEX.scope0, offerId: bat.offerId });
+
+    expect(controller.snapshot().legs[0].inventory).toBe(0);
+    await expect(controller.authorize('oram')).rejects.toMatchObject({
+      code: 'capability-inventory-empty',
+    });
+    expect(state.takes).toBe(0);
+    expect(leg.authorize).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
   it('supports genuine single-provider Onion and ORAM attempts without peer metadata', async () => {
     for (const target of [
-      { backend: 'onion-pir', workload: 'onion-session', role: 'onion' },
-      { backend: 'tee-oram', workload: 'tee-oram-query', role: 'oram' },
+      { ...testTarget('onion-pir', 'onion-session'), role: 'onion' },
+      { ...testTarget('tee-oram', 'tee-oram-query'), role: 'oram' },
     ] as const) {
       const { vault } = fakeVault();
       const offer = freeOffer(12);
@@ -668,13 +1398,125 @@ describe('product admission lifecycle', () => {
     }
   });
 
+  it('blocks offer selection until an exact backend planner shape is installed', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const current = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [freeOffer(30)])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'server0',
+        label: 'Server 0',
+        session: current.session,
+        backend: target.backend,
+        workload: target.workload,
+      }],
+      close: vi.fn(),
+    }));
+    await expect(controller.selectOffer('server0', {
+      scopeIdHex: HEX.scope0,
+      offerId: 30,
+    })).rejects.toMatchObject({ code: 'query-shape-unavailable' });
+    expect(current.authorize).not.toHaveBeenCalled();
+  });
+
+  it('rejects a provably undersized signed limit before acquisition or capability retirement', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const paid = paidOffer(31, 'cashu-bat');
+    const undersized = policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [paid]);
+    undersized.scopes[0].limits.maxFrames = 1;
+    const current = session(vault, [undersized], HEX.provider0, HEX.key0, target);
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{ role: 'server0', label: 'Server 0', session: current.session, ...target }],
+      close: vi.fn(),
+    }));
+    controller.setQueryShape('server0', {
+      ...target.queryShape,
+      lowerBounds: { ...target.queryShape.lowerBounds, frames: 2 },
+    });
+    await expect(controller.selectOffer('server0', {
+      scopeIdHex: HEX.scope0,
+      offerId: 31,
+    })).rejects.toMatchObject({ code: 'entitlement-limits-insufficient' });
+    expect(state.takes).toBe(0);
+    expect(current.authorize).not.toHaveBeenCalled();
+  });
+
+  it('freezes planner demand at first acquisition and rechecks it before query', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const bolt = paidOffer(32, 'cashu-bat');
+    const current = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [bolt])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
+    await controller.prepare(async () => ({
+      legs: [{
+        role: 'server0',
+        label: 'Server 0',
+        session: current.session,
+        ...target,
+        lightningPayeeTrust: lightningTrust(
+          bolt,
+          new Uint8Array([2, ...new Uint8Array(32).fill(7)]),
+        ),
+      }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 32 });
+    await controller.startBolt11('server0');
+    expect(() => controller.setQueryShape('server0', target.queryShape)).not.toThrow();
+    expect(() => controller.setQueryShape('server0', {
+      ...target.queryShape,
+      lowerBounds: { ...target.queryShape.lowerBounds, frames: 2 },
+    })).toThrow(/changed after credential flow/);
+
+    // A separate free attempt reaches authorization, then rejects a changed
+    // recomputation before invoking the caller's real query closure.
+    await controller.close();
+    const freeCurrent = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [freeOffer(33)])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    await controller.prepare(async () => ({
+      legs: [{ role: 'server0', label: 'Server 0', session: freeCurrent.session, ...target }],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 33 });
+    await controller.authorize('server0');
+    const changed = currentShapes(controller);
+    changed.server0 = {
+      ...changed.server0,
+      lowerBounds: { ...changed.server0.lowerBounds, frames: 2 },
+    };
+    const query = vi.fn(async () => 'must not run');
+    await expect(controller.executeQuery(changed, query))
+      .rejects.toMatchObject({ code: 'offer-selection-invalidated' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('does not touch localStorage or console with invoice, token, or query data', async () => {
     const storage = { setItem: vi.fn(() => { throw new Error('forbidden'); }) };
     vi.stubGlobal('localStorage', storage);
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const { vault } = fakeVault();
-      const target = { backend: 'onion-pir', workload: 'onion-session' } as const;
+    const target = testTarget('onion-pir', 'onion-session');
       const offer = freeOffer(13);
       const current = session(vault, [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [offer])], HEX.provider0, HEX.key0, target);
       const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
@@ -684,7 +1526,10 @@ describe('product admission lifecycle', () => {
       }));
       await controller.selectOffer('onion', { scopeIdHex: HEX.scope0, offerId: 13 });
       await controller.authorize('onion');
-      await controller.executeQuery(async () => ({ address: 'secret', result: 'secret' }));
+      await controller.executeQuery(
+        currentShapes(controller),
+        async () => ({ address: 'secret', result: 'secret' }),
+      );
       expect(storage.setItem).not.toHaveBeenCalled();
       expect(consoleSpy).not.toHaveBeenCalled();
     } finally {
@@ -695,13 +1540,18 @@ describe('product admission lifecycle', () => {
 
   it('lists and redeems an exact capability from a retained signed policy', async () => {
     const { vault, state } = fakeVault();
-    const target = { backend: 'tee-oram', workload: 'tee-oram-query' } as const;
+    const target = testTarget('tee-oram', 'tee-oram-query');
     const currentOffer = freeOffer(31);
     const historicalOffer = paidOffer(32, 'cashu-bat');
     const oldDigest = '61'.repeat(32);
     state.inventory.set(
       inventoryKey(HEX.provider0, oldDigest, HEX.scope0, historicalOffer),
       1,
+    );
+    const historicalPayee = new Uint8Array([2, ...new Uint8Array(32).fill(8)]);
+    state.inventoryContexts.set(
+      inventoryKey(HEX.provider0, oldDigest, HEX.scope0, historicalOffer),
+      boltContext(historicalOffer, historicalPayee),
     );
     const current = session(
       vault,
@@ -714,7 +1564,10 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'oram', label: 'ORAM', session: current.session, ...target }],
+      legs: [{
+        role: 'oram', label: 'ORAM', session: current.session, ...target,
+        lightningPayeeTrust: lightningTrust(historicalOffer, historicalPayee),
+      }],
       close: vi.fn(),
     }));
     const retained = controller.snapshot().legs[0].retainedCapabilities[0];
@@ -730,14 +1583,19 @@ describe('product admission lifecycle', () => {
 
   it('resumes an encrypted BOLT11 recovery under its historical signed selector', async () => {
     const { vault, state } = fakeVault();
-    const target = { backend: 'onion-pir', workload: 'onion-session' } as const;
+    const target = testTarget('onion-pir', 'onion-session');
     const currentOffer = freeOffer(33);
     const historicalOffer = paidOffer(34, 'bolt11-direct-receipt');
     const oldDigest = '62'.repeat(32);
     const recoveryId = '91'.repeat(32);
+    const historicalPayee = new Uint8Array([2, ...new Uint8Array(32).fill(9)]);
     state.recoveries.push({
       id: recoveryId,
       issuerEndpoint: historicalOffer.endpoint,
+      issuerIdHex: historicalOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: Array.from(historicalPayee, (byte) =>
+        byte.toString(16).padStart(2, '0')).join(''),
       providerIdHex: HEX.provider0,
       policyDigestHex: oldDigest,
       scopeIdHex: HEX.scope0,
@@ -767,12 +1625,23 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'onion', label: 'Onion', session: current.session, ...target }],
+      legs: [{
+        role: 'onion', label: 'Onion', session: current.session, ...target,
+        lightningPayeeTrust: lightningTrust(historicalOffer, historicalPayee),
+      }],
       close: vi.fn(),
     }));
     await controller.selectRetainedRecovery('onion', recoveryId);
     await controller.resumeBolt11('onion', recoveryId);
-    expect(acquisitionMock.resume).toHaveBeenCalledWith({ vault, recoveryId });
+    expect(acquisitionMock.resume).toHaveBeenCalledWith({
+      vault,
+      recoveryId,
+      issuerEndpoint: historicalOffer.endpoint,
+      issuerIdHex: historicalOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: historicalPayee,
+      assertReady: expect.any(Function),
+    });
     expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
   });
 });

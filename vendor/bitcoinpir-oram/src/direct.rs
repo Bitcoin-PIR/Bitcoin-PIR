@@ -11,6 +11,7 @@ use crate::{
 };
 use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
     fs::File,
@@ -40,7 +41,11 @@ pub const DIRECT_INDEX_DEFAULT_LOAD_FACTOR: f64 = 0.95;
 /// Deterministic seed used when the caller does not supply a direct INDEX seed.
 pub const DIRECT_INDEX_DEFAULT_SEED: u64 = 0x6f72_616d_6469_7231;
 
-const DIRECT_METADATA_VERSION: u32 = 1;
+const DIRECT_METADATA_VERSION_V1: u32 = 1;
+const DIRECT_METADATA_VERSION_V2: u32 = 2;
+/// Canonical digest domain for the exact attested DB/direct-source binding.
+pub const DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN: &[u8] =
+    b"BitcoinPIR/direct-oram/dataset-binding/v1\0";
 const EMPTY_SLOT: u32 = u32::MAX;
 const CUCKOO_KEY_MIX: u64 = 0x517c_c1b7_2722_0a95;
 const GOLDEN_RATIO: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -94,6 +99,94 @@ pub struct DirectTableInfo {
     pub total_items: usize,
     /// Bytes per addressable direct item: INDEX bin bytes or CHUNK bytes.
     pub item_size: usize,
+}
+
+/// Exact, fixed-width binding between an attested server DB manifest and the
+/// two source tables used to build a Direct ORAM image pair.
+///
+/// This deliberately excludes filesystem paths and ORAM tuning parameters.
+/// Paths are not stable identities, while pack/bucket/cache parameters may
+/// vary without changing the logical dataset. The INDEX layout is included
+/// because it determines the dictionary coordinates used at query time.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DirectOramDatasetBindingV1 {
+    pub server_db_manifest_sha256: [u8; 32],
+    pub index_sha256: [u8; 32],
+    pub index_bytes: u64,
+    pub index_records: u64,
+    pub chunk_sha256: [u8; 32],
+    pub chunk_bytes: u64,
+    pub chunk_records: u64,
+    pub index_slots_per_bin: u32,
+    pub index_hash_fns: u32,
+    pub index_load_factor_ppb: u32,
+    pub index_seed: u64,
+}
+
+impl DirectOramDatasetBindingV1 {
+    /// Canonical fixed-width encoding. All integers are little-endian and no
+    /// platform-sized integer or string is admitted.
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN.len() + 148);
+        out.extend_from_slice(DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN);
+        out.extend_from_slice(&self.server_db_manifest_sha256);
+        out.extend_from_slice(&self.index_sha256);
+        out.extend_from_slice(&self.index_bytes.to_le_bytes());
+        out.extend_from_slice(&self.index_records.to_le_bytes());
+        out.extend_from_slice(&self.chunk_sha256);
+        out.extend_from_slice(&self.chunk_bytes.to_le_bytes());
+        out.extend_from_slice(&self.chunk_records.to_le_bytes());
+        out.extend_from_slice(&self.index_slots_per_bin.to_le_bytes());
+        out.extend_from_slice(&self.index_hash_fns.to_le_bytes());
+        out.extend_from_slice(&self.index_load_factor_ppb.to_le_bytes());
+        out.extend_from_slice(&self.index_seed.to_le_bytes());
+        out
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        Sha256::digest(self.encode_canonical()).into()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.server_db_manifest_sha256 == [0; 32]
+            || self.index_sha256 == [0; 32]
+            || self.chunk_sha256 == [0; 32]
+        {
+            return Err(Error::InvalidInput(
+                "direct dataset binding contains an all-zero digest".into(),
+            ));
+        }
+        if self.index_bytes
+            != self
+                .index_records
+                .checked_mul(DIRECT_INDEX_INPUT_RECORD_SIZE as u64)
+                .ok_or_else(|| Error::InvalidInput("direct index byte count overflow".into()))?
+        {
+            return Err(Error::InvalidInput(
+                "direct dataset binding index bytes/records mismatch".into(),
+            ));
+        }
+        if self.chunk_bytes
+            != self
+                .chunk_records
+                .checked_mul(DIRECT_CHUNK_RECORD_SIZE as u64)
+                .ok_or_else(|| Error::InvalidInput("direct chunk byte count overflow".into()))?
+        {
+            return Err(Error::InvalidInput(
+                "direct dataset binding chunk bytes/records mismatch".into(),
+            ));
+        }
+        if self.index_slots_per_bin == 0
+            || self.index_hash_fns == 0
+            || self.index_load_factor_ppb == 0
+            || self.index_load_factor_ppb >= 1_000_000_000
+        {
+            return Err(Error::InvalidInput(
+                "direct dataset binding has invalid INDEX layout".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl DirectTableInfo {
@@ -213,6 +306,29 @@ pub struct DirectTableMetadata {
     pub logical_blocks: usize,
     /// ORAM payload bytes per logical block.
     pub block_payload_bytes: usize,
+    /// Present only in source-bound metadata v2. INDEX and CHUNK metadata for
+    /// one database must contain byte-identical bindings.
+    pub dataset_binding: Option<DirectOramDatasetBindingV1>,
+}
+
+/// Exact legacy bincode shape. `DirectTableMetadata::load` decodes it only so
+/// runtime code can reject old unbound images with a precise fail-closed error.
+#[derive(Deserialize, Serialize)]
+struct DirectTableMetadataV1 {
+    version: u32,
+    level: DirectLevel,
+    source_path: PathBuf,
+    source_file_bytes: u64,
+    source_records: usize,
+    total_items: usize,
+    item_size: usize,
+    items_per_block: usize,
+    slots_per_bin: usize,
+    hash_fns: usize,
+    load_factor_ppb: u32,
+    seed: u64,
+    logical_blocks: usize,
+    block_payload_bytes: usize,
 }
 
 impl DirectTableMetadata {
@@ -224,7 +340,7 @@ impl DirectTableMetadata {
         let logical_blocks = info.total_items.div_ceil(items_per_block);
         let block_payload_bytes = info.item_size * items_per_block;
         Ok(Self {
-            version: DIRECT_METADATA_VERSION,
+            version: DIRECT_METADATA_VERSION_V1,
             level: info.level,
             source_path: info.path.clone(),
             source_file_bytes: info.file_bytes,
@@ -238,11 +354,34 @@ impl DirectTableMetadata {
             seed: info.seed,
             logical_blocks,
             block_payload_bytes,
+            dataset_binding: None,
+        })
+    }
+
+    /// Upgrade metadata to the source-bound v2 format.
+    pub fn bind_dataset(mut self, binding: DirectOramDatasetBindingV1) -> Result<Self> {
+        binding.validate()?;
+        self.version = DIRECT_METADATA_VERSION_V2;
+        self.dataset_binding = Some(binding);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn require_dataset_binding(&self) -> Result<&DirectOramDatasetBindingV1> {
+        if self.version != DIRECT_METADATA_VERSION_V2 {
+            return Err(Error::InvalidInput(format!(
+                "direct metadata version {} is legacy and not dataset-bound",
+                self.version
+            )));
+        }
+        self.dataset_binding.as_ref().ok_or_else(|| {
+            Error::InvalidInput("direct metadata v2 is missing its dataset binding".into())
         })
     }
 
     /// Save direct metadata.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.validate()?;
         fs::write(path, bincode::serialize(self)?)?;
         Ok(())
     }
@@ -250,18 +389,65 @@ impl DirectTableMetadata {
     /// Load direct metadata.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let bytes = fs::read(path)?;
-        let metadata: Self = bincode::deserialize(&bytes)?;
+        if bytes.len() < 4 {
+            return Err(Error::InvalidInput("truncated direct metadata".into()));
+        }
+        let version = u32::from_le_bytes(bytes[..4].try_into().expect("four-byte prefix"));
+        let metadata: Self = match version {
+            DIRECT_METADATA_VERSION_V1 => {
+                let old: DirectTableMetadataV1 = bincode::deserialize(&bytes)?;
+                Self {
+                    version: old.version,
+                    level: old.level,
+                    source_path: old.source_path,
+                    source_file_bytes: old.source_file_bytes,
+                    source_records: old.source_records,
+                    total_items: old.total_items,
+                    item_size: old.item_size,
+                    items_per_block: old.items_per_block,
+                    slots_per_bin: old.slots_per_bin,
+                    hash_fns: old.hash_fns,
+                    load_factor_ppb: old.load_factor_ppb,
+                    seed: old.seed,
+                    logical_blocks: old.logical_blocks,
+                    block_payload_bytes: old.block_payload_bytes,
+                    dataset_binding: None,
+                }
+            }
+            DIRECT_METADATA_VERSION_V2 => bincode::deserialize(&bytes)?,
+            other => {
+                return Err(Error::InvalidInput(format!(
+                    "unsupported direct metadata version {other}"
+                )))
+            }
+        };
         metadata.validate()?;
         Ok(metadata)
     }
 
     /// Check metadata invariants.
     pub fn validate(&self) -> Result<()> {
-        if self.version != DIRECT_METADATA_VERSION {
+        if self.version != DIRECT_METADATA_VERSION_V1 && self.version != DIRECT_METADATA_VERSION_V2
+        {
             return Err(Error::InvalidInput(format!(
                 "unsupported direct metadata version {}",
                 self.version
             )));
+        }
+        match (self.version, self.dataset_binding.as_ref()) {
+            (DIRECT_METADATA_VERSION_V1, None) => {}
+            (DIRECT_METADATA_VERSION_V2, Some(binding)) => binding.validate()?,
+            (DIRECT_METADATA_VERSION_V1, Some(_)) => {
+                return Err(Error::InvalidInput(
+                    "direct metadata v1 cannot carry a dataset binding".into(),
+                ))
+            }
+            (DIRECT_METADATA_VERSION_V2, None) => {
+                return Err(Error::InvalidInput(
+                    "direct metadata v2 is missing its dataset binding".into(),
+                ))
+            }
+            _ => unreachable!("version checked above"),
         }
         if self.items_per_block == 0 {
             return Err(Error::InvalidInput(
@@ -296,12 +482,35 @@ impl DirectTableMetadata {
                         "direct index metadata requires slots_per_bin and hash_fns".into(),
                     ));
                 }
+                if let Some(binding) = self.dataset_binding.as_ref() {
+                    if self.source_file_bytes != binding.index_bytes
+                        || u64::try_from(self.source_records).ok() != Some(binding.index_records)
+                        || u32::try_from(self.slots_per_bin).ok()
+                            != Some(binding.index_slots_per_bin)
+                        || u32::try_from(self.hash_fns).ok() != Some(binding.index_hash_fns)
+                        || self.load_factor_ppb != binding.index_load_factor_ppb
+                        || self.seed != binding.index_seed
+                    {
+                        return Err(Error::InvalidInput(
+                            "direct index metadata does not match its dataset binding".into(),
+                        ));
+                    }
+                }
             }
             DirectLevel::Chunk => {
                 if self.item_size != DIRECT_CHUNK_RECORD_SIZE {
                     return Err(Error::InvalidInput(
                         "direct chunk metadata item_size does not match chunk size".into(),
                     ));
+                }
+                if let Some(binding) = self.dataset_binding.as_ref() {
+                    if self.source_file_bytes != binding.chunk_bytes
+                        || u64::try_from(self.source_records).ok() != Some(binding.chunk_records)
+                    {
+                        return Err(Error::InvalidInput(
+                            "direct chunk metadata does not match its dataset binding".into(),
+                        ));
+                    }
                 }
             }
         }
@@ -1592,6 +1801,89 @@ mod tests {
         assert_eq!(got.reads[2].payload, vec![16u8; DIRECT_CHUNK_RECORD_SIZE]);
         assert!(got.drained_evictions > 0);
         assert_eq!(chunk_reader.read_dummy_many(3, 2).unwrap(), 6);
+    }
+
+    #[test]
+    fn dataset_binding_canonical_encoding_and_digest_are_stable() {
+        let binding = DirectOramDatasetBindingV1 {
+            server_db_manifest_sha256: [1; 32],
+            index_sha256: [2; 32],
+            index_bytes: 50,
+            index_records: 2,
+            chunk_sha256: [3; 32],
+            chunk_bytes: 120,
+            chunk_records: 3,
+            index_slots_per_bin: 4,
+            index_hash_fns: 2,
+            index_load_factor_ppb: 200_000_000,
+            index_seed: 7,
+        };
+        binding.validate().unwrap();
+        let encoded = binding.encode_canonical();
+        assert_eq!(
+            encoded.len(),
+            DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN.len() + 148
+        );
+        assert!(encoded.starts_with(DIRECT_ORAM_DATASET_BINDING_V1_DOMAIN));
+        assert_eq!(
+            hex::encode(binding.digest()),
+            "37c671b912d061d465bf39d00f0f90eac867200b38463ba6f6ee102c5f43d234"
+        );
+        let mut changed = binding;
+        changed.index_seed = 8;
+        assert_ne!(binding.digest(), changed.digest());
+    }
+
+    #[test]
+    fn metadata_v2_roundtrips_binding_and_legacy_v1_stays_unbound() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join(DIRECT_INDEX_INPUT_FILE);
+        write_index_records(&index_path, 2);
+        let info = DirectTableInfo::from_index_file(&index_path, 4, 2, 0.20, 7).unwrap();
+        let binding = DirectOramDatasetBindingV1 {
+            server_db_manifest_sha256: [1; 32],
+            index_sha256: [2; 32],
+            index_bytes: 50,
+            index_records: 2,
+            chunk_sha256: [3; 32],
+            chunk_bytes: 120,
+            chunk_records: 3,
+            index_slots_per_bin: 4,
+            index_hash_fns: 2,
+            index_load_factor_ppb: 200_000_000,
+            index_seed: 7,
+        };
+        let bound = DirectTableMetadata::from_info(&info, 2)
+            .unwrap()
+            .bind_dataset(binding)
+            .unwrap();
+        let v2_path = dir.path().join("bound.metadata");
+        bound.save(&v2_path).unwrap();
+        let loaded = DirectTableMetadata::load(&v2_path).unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(*loaded.require_dataset_binding().unwrap(), binding);
+
+        let legacy = DirectTableMetadataV1 {
+            version: 1,
+            level: bound.level,
+            source_path: bound.source_path.clone(),
+            source_file_bytes: bound.source_file_bytes,
+            source_records: bound.source_records,
+            total_items: bound.total_items,
+            item_size: bound.item_size,
+            items_per_block: bound.items_per_block,
+            slots_per_bin: bound.slots_per_bin,
+            hash_fns: bound.hash_fns,
+            load_factor_ppb: bound.load_factor_ppb,
+            seed: bound.seed,
+            logical_blocks: bound.logical_blocks,
+            block_payload_bytes: bound.block_payload_bytes,
+        };
+        let legacy_path = dir.path().join("legacy.metadata");
+        fs::write(&legacy_path, bincode::serialize(&legacy).unwrap()).unwrap();
+        let loaded_legacy = DirectTableMetadata::load(&legacy_path).unwrap();
+        assert_eq!(loaded_legacy.version, 1);
+        assert!(loaded_legacy.require_dataset_binding().is_err());
     }
 
     fn write_index_records(path: &Path, records: usize) {

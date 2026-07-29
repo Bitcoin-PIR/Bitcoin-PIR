@@ -108,7 +108,10 @@ describe('pre-verification security badge rendering', () => {
     expect(scriptPolicy).not.toContain("'unsafe-inline'");
     expect(scriptPolicy).not.toContain("'unsafe-eval'");
     expect(scriptPolicy).toContain("'wasm-unsafe-eval'");
-    expect(html).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
+    const markupWithoutExecutableBlocks = html
+      .replace(/<script(?:\s[^>]*)?>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style(?:\s[^>]*)?>[\s\S]*?<\/style>/gi, '');
+    expect(markupWithoutExecutableBlocks).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
 
     const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
     expect(inlineScripts).toHaveLength(3);
@@ -116,6 +119,28 @@ describe('pre-verification security badge rendering', () => {
       const digest = createHash('sha256').update(match[1]).digest('base64');
       expect(scriptPolicy).toContain(`'sha256-${digest}'`);
     }
+  });
+
+  it('closes active admission before invalid bootstrap trust is cleared', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const handlerStart = html.indexOf(
+      "document.getElementById('admissionApplyBootstrap').addEventListener",
+    );
+    const handlerEnd = html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+      handlerStart,
+    );
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    const handler = html.slice(handlerStart, handlerEnd);
+    const rejection = handler.indexOf('} catch {');
+    const close = handler.indexOf('await closeAllAdmissionAttempts(', rejection);
+    const clearBootstrap = handler.indexOf('productTrustedBootstrap = null;', rejection);
+    const clearDirectory = handler.indexOf('verifiedDirectoryCatalog = null;', rejection);
+    expect(rejection).toBeGreaterThanOrEqual(0);
+    expect(close).toBeGreaterThan(rejection);
+    expect(clearBootstrap).toBeGreaterThan(close);
+    expect(clearDirectory).toBeGreaterThan(clearBootstrap);
   });
 
   it('ships an OnionPIR loader that does not require unsafe-eval', () => {

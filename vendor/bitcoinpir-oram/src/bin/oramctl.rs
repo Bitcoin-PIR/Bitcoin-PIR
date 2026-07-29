@@ -4,14 +4,14 @@ use bitcoinpir_oram::{
     CircuitEvictionSchedule, CircuitOram, CircuitOramState, CircuitStoreAuthLayout,
     CircuitStoreAuthState, CircuitStressConfig, CircuitStressPattern, CircuitStressReport,
     CuckooLevel, CuckooOramEstimate, CuckooOramSizing, CuckooPackedBlockReader, CuckooTableInfo,
-    DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel, DirectOramEstimate,
-    DirectOramSizing, DirectTableInfo, DirectTableMetadata, EmbeddedTreePageStore, Error,
-    FilePageStore, FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result,
-    RingStressConfig, RingStressReport, TieredMerklePageStore, TieredMerkleRootBuilder,
-    TrustedBlockSource, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS,
-    DIRECT_INDEX_DEFAULT_LOAD_FACTOR, DIRECT_INDEX_DEFAULT_SEED,
-    DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_SCRIPT_HASH_SIZE,
-    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel,
+    DirectOramDatasetBindingV1, DirectOramEstimate, DirectOramSizing, DirectTableInfo,
+    DirectTableMetadata, EmbeddedTreePageStore, Error, FilePageStore, FrontCachedPageStore,
+    OramParams, PageStore, PathPageStore, Result, RingStressConfig, RingStressReport,
+    TieredMerklePageStore, TieredMerkleRootBuilder, TrustedBlockSource, AEAD_OVERHEAD,
+    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
+    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE,
+    DIRECT_SCRIPT_HASH_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
@@ -230,6 +230,9 @@ enum Command {
         /// Attested DB build-evidence.bin to bind this ORAM build to.
         #[arg(long)]
         db_build_evidence: Option<PathBuf>,
+        /// Exact server-db/MANIFEST.toml whose digest is committed by build evidence.
+        #[arg(long)]
+        server_db_manifest: Option<PathBuf>,
         /// Root-bundle payload produced by the attested DB builder.
         #[arg(long)]
         root_bundle_payload: Option<PathBuf>,
@@ -782,6 +785,7 @@ fn main() -> Result<()> {
             index_seed,
             seed_hex,
             db_build_evidence,
+            server_db_manifest,
             root_bundle_payload,
             expected_muhash,
             expected_from_muhash,
@@ -793,6 +797,26 @@ fn main() -> Result<()> {
             expected_chunks_sha256,
             strict_source_binding,
         } => {
+            let evidence_inputs = DirectBuildEvidenceInputs::parse(
+                db_build_evidence,
+                server_db_manifest,
+                root_bundle_payload,
+                expected_muhash.as_deref(),
+                expected_from_muhash.as_deref(),
+                from_bhtm_leaf_proof,
+                expected_from_height,
+                expected_from_block_hash.as_deref(),
+                expected_bhtm_tree_root.as_deref(),
+                expected_index_sha256.as_deref(),
+                expected_chunks_sha256.as_deref(),
+                strict_source_binding,
+            )?;
+            if evidence_inputs.strict_source_binding && seed_hex.is_some() {
+                return Err(Error::InvalidInput(
+                    "--strict-source-binding generates its secret ORAM RNG seed from the OS; --seed-hex is reproducible/dev-only"
+                        .into(),
+                ));
+            }
             build_direct_images(
                 &index_file,
                 &chunks_file,
@@ -816,19 +840,7 @@ fn main() -> Result<()> {
                 index_load_factor,
                 index_seed,
                 parse_seed(seed_hex.as_deref(), 0x0a)?,
-                DirectBuildEvidenceInputs::parse(
-                    db_build_evidence,
-                    root_bundle_payload,
-                    expected_muhash.as_deref(),
-                    expected_from_muhash.as_deref(),
-                    from_bhtm_leaf_proof,
-                    expected_from_height,
-                    expected_from_block_hash.as_deref(),
-                    expected_bhtm_tree_root.as_deref(),
-                    expected_index_sha256.as_deref(),
-                    expected_chunks_sha256.as_deref(),
-                    strict_source_binding,
-                )?,
+                evidence_inputs,
             )?;
         }
         Command::BenchDirect {
@@ -2423,13 +2435,13 @@ fn print_direct_estimate(info: &DirectTableInfo, e: &DirectOramEstimate) {
 
 const ORAM_BUILD_EVIDENCE_JSON_FILE: &str = "oram-build-evidence.json";
 const ORAM_BUILD_EVIDENCE_BIN_FILE: &str = "oram-build-evidence.bin";
-const ORAM_BUILD_EVIDENCE_VERSION: u32 = 1;
-const DB_BUILD_EVIDENCE_VERSION: u16 = 1;
+const ORAM_BUILD_EVIDENCE_VERSION: u32 = 2;
 const ROOT_BUNDLE_PAYLOAD_VERSION: u16 = 1;
 
 #[derive(Clone, Debug)]
 struct DirectBuildEvidenceInputs {
     db_build_evidence: Option<PathBuf>,
+    server_db_manifest: Option<PathBuf>,
     root_bundle_payload: Option<PathBuf>,
     expected_muhash: Option<[u8; 32]>,
     expected_from_muhash: Option<[u8; 32]>,
@@ -2446,6 +2458,7 @@ impl DirectBuildEvidenceInputs {
     #[allow(clippy::too_many_arguments)]
     fn parse(
         db_build_evidence: Option<PathBuf>,
+        server_db_manifest: Option<PathBuf>,
         root_bundle_payload: Option<PathBuf>,
         expected_muhash: Option<&str>,
         expected_from_muhash: Option<&str>,
@@ -2459,6 +2472,7 @@ impl DirectBuildEvidenceInputs {
     ) -> Result<Self> {
         Ok(Self {
             db_build_evidence,
+            server_db_manifest,
             root_bundle_payload,
             expected_muhash: expected_muhash.map(parse_muhash_display_hex).transpose()?,
             expected_from_muhash: expected_from_muhash
@@ -2480,6 +2494,7 @@ impl DirectBuildEvidenceInputs {
     fn empty() -> Self {
         Self {
             db_build_evidence: None,
+            server_db_manifest: None,
             root_bundle_payload: None,
             expected_muhash: None,
             expected_from_muhash: None,
@@ -2523,6 +2538,7 @@ struct CertifiedDbBinding {
     anchor: CertifiedAnchor,
     to_muhash: [u8; 32],
     root_bundle_payload_sha256: Option<[u8; 32]>,
+    server_db_manifest_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2532,6 +2548,7 @@ struct OramBuildEvidence {
     strict_source_binding: bool,
     db_certification: DbCertificationEvidence,
     db_build_evidence: Option<ArtifactEvidence>,
+    server_db_manifest: Option<ArtifactEvidence>,
     root_bundle_payload: Option<ArtifactEvidence>,
     from_bhtm_leaf_proof: Option<ArtifactEvidence>,
     source_files: DirectSourceFilesEvidence,
@@ -2574,6 +2591,27 @@ struct DirectSourceFileEvidence {
     sha256_bytes: [u8; 32],
 }
 
+#[derive(Debug, Deserialize)]
+struct ServerDbManifestForDirect {
+    direct_oram: Option<DirectOramManifestSectionV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectOramManifestSectionV1 {
+    version: u32,
+    index_sha256: String,
+    index_bytes: u64,
+    index_records: u64,
+    chunk_sha256: String,
+    chunk_bytes: u64,
+    chunk_records: u64,
+    index_slots_per_bin: u32,
+    index_hash_fns: u32,
+    index_load_factor_ppb: u32,
+    index_seed: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct DirectOramParamsEvidence {
     pack: usize,
@@ -2589,7 +2627,9 @@ struct DirectOramParamsEvidence {
     index_hash_fns: usize,
     index_load_factor: f64,
     index_seed: u64,
-    oram_rng_seed_hex: String,
+    oram_rng_seed_source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oram_rng_seed_hex: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2905,7 +2945,10 @@ fn load_certified_db_binding(
     let mut binding = None;
     if let Some(path) = &inputs.db_build_evidence {
         let bytes = fs::read(path)?;
-        binding = Some(decode_db_build_evidence_binding(&bytes)?);
+        binding = Some(decode_db_build_evidence_binding(
+            &bytes,
+            inputs.strict_source_binding,
+        )?);
     }
     if let Some(path) = &inputs.root_bundle_payload {
         let bytes = fs::read(path)?;
@@ -2928,6 +2971,110 @@ fn load_certified_db_binding(
         }
     }
     Ok(binding)
+}
+
+fn load_direct_dataset_binding(
+    inputs: &DirectBuildEvidenceInputs,
+    sources: &DirectSourceFilesEvidence,
+    infos: &[DirectTableInfo; 2],
+    certified: Option<&CertifiedDbBinding>,
+) -> Result<Option<DirectOramDatasetBindingV1>> {
+    let Some(manifest_path) = inputs.server_db_manifest.as_deref() else {
+        return Ok(None);
+    };
+    let certified = certified.ok_or_else(|| {
+        Error::InvalidInput("--server-db-manifest requires attested --db-build-evidence".into())
+    })?;
+    let expected_manifest_sha256 = certified.server_db_manifest_sha256.ok_or_else(|| {
+        Error::InvalidInput(
+            "root-bundle payload alone cannot authenticate server-db/MANIFEST.toml".into(),
+        )
+    })?;
+    let manifest_bytes = fs::read(manifest_path)?;
+    let actual_manifest_sha256 = sha256_bytes(&manifest_bytes);
+    expect_raw_hash(
+        "server DB manifest sha256",
+        expected_manifest_sha256,
+        actual_manifest_sha256,
+    )?;
+    let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|_| {
+        Error::InvalidInput(format!(
+            "server DB manifest {} is not UTF-8",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest: ServerDbManifestForDirect = toml::from_str(manifest_text).map_err(|error| {
+        Error::InvalidInput(format!(
+            "invalid server DB manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    let section = manifest.direct_oram.ok_or_else(|| {
+        Error::InvalidInput("server DB manifest has no typed [direct_oram] section".into())
+    })?;
+    if section.version != 1 {
+        return Err(Error::InvalidInput(format!(
+            "unsupported server DB direct_oram version {}",
+            section.version
+        )));
+    }
+    let index_sha256 = parse_32_hex(&section.index_sha256)?;
+    let chunk_sha256 = parse_32_hex(&section.chunk_sha256)?;
+    expect_raw_hash(
+        "manifest direct INDEX sha256",
+        index_sha256,
+        sources.index.sha256_bytes,
+    )?;
+    expect_raw_hash(
+        "manifest direct CHUNK sha256",
+        chunk_sha256,
+        sources.chunks.sha256_bytes,
+    )?;
+    let index_info = infos
+        .iter()
+        .find(|info| info.level == DirectLevel::Index)
+        .expect("direct infos include INDEX");
+    let chunk_info = infos
+        .iter()
+        .find(|info| info.level == DirectLevel::Chunk)
+        .expect("direct infos include CHUNK");
+    let expected_index_records = u64::try_from(index_info.records)
+        .map_err(|_| Error::InvalidInput("direct INDEX record count exceeds u64".into()))?;
+    let expected_chunk_records = u64::try_from(chunk_info.records)
+        .map_err(|_| Error::InvalidInput("direct CHUNK record count exceeds u64".into()))?;
+    let expected_slots = u32::try_from(index_info.slots_per_bin)
+        .map_err(|_| Error::InvalidInput("direct INDEX slots exceed u32".into()))?;
+    let expected_hash_fns = u32::try_from(index_info.hash_fns)
+        .map_err(|_| Error::InvalidInput("direct INDEX hash functions exceed u32".into()))?;
+    let expected_load_factor_ppb = (index_info.load_factor * 1_000_000_000.0).round() as u32;
+    if section.index_bytes != index_info.file_bytes
+        || section.index_records != expected_index_records
+        || section.chunk_bytes != chunk_info.file_bytes
+        || section.chunk_records != expected_chunk_records
+        || section.index_slots_per_bin != expected_slots
+        || section.index_hash_fns != expected_hash_fns
+        || section.index_load_factor_ppb != expected_load_factor_ppb
+        || section.index_seed != index_info.seed
+    {
+        return Err(Error::InvalidInput(
+            "server DB direct_oram source counts or INDEX layout do not match build inputs".into(),
+        ));
+    }
+    let binding = DirectOramDatasetBindingV1 {
+        server_db_manifest_sha256: actual_manifest_sha256,
+        index_sha256,
+        index_bytes: section.index_bytes,
+        index_records: section.index_records,
+        chunk_sha256,
+        chunk_bytes: section.chunk_bytes,
+        chunk_records: section.chunk_records,
+        index_slots_per_bin: section.index_slots_per_bin,
+        index_hash_fns: section.index_hash_fns,
+        index_load_factor_ppb: section.index_load_factor_ppb,
+        index_seed: section.index_seed,
+    };
+    binding.validate()?;
+    Ok(Some(binding))
 }
 
 fn validate_direct_build_binding(
@@ -3032,15 +3179,15 @@ fn validate_direct_build_binding(
     }
 
     if inputs.strict_source_binding {
-        if certified.is_none() {
+        if inputs.db_build_evidence.is_none() || certified.is_none() {
             return Err(Error::InvalidInput(
-                "--strict-source-binding requires --db-build-evidence or --root-bundle-payload"
+                "--strict-source-binding requires attested --db-build-evidence; a root payload alone is insufficient"
                     .into(),
             ));
         }
-        if inputs.expected_index_sha256.is_none() || inputs.expected_chunks_sha256.is_none() {
+        if inputs.server_db_manifest.is_none() {
             return Err(Error::InvalidInput(
-                "--strict-source-binding requires --expected-index-sha256 and --expected-chunks-sha256 because DB evidence v1 does not carry direct source hashes".into(),
+                "--strict-source-binding requires the exact --server-db-manifest committed by DB build evidence".into(),
             ));
         }
         if certified
@@ -3096,6 +3243,7 @@ fn direct_oram_params_evidence(
     index_load_factor: f64,
     index_seed: u64,
     seed: [u8; 32],
+    strict_source_binding: bool,
 ) -> DirectOramParamsEvidence {
     DirectOramParamsEvidence {
         pack,
@@ -3111,7 +3259,12 @@ fn direct_oram_params_evidence(
         index_hash_fns,
         index_load_factor,
         index_seed,
-        oram_rng_seed_hex: hex::encode(seed),
+        oram_rng_seed_source: if strict_source_binding {
+            "os_rng"
+        } else {
+            "reproducible_cli_or_default"
+        },
+        oram_rng_seed_hex: (!strict_source_binding).then(|| hex::encode(seed)),
     }
 }
 
@@ -3311,61 +3464,40 @@ fn compare_certified_binding(
     expect_muhash(label, expected.to_muhash, actual.to_muhash)
 }
 
-fn decode_db_build_evidence_binding(bytes: &[u8]) -> Result<CertifiedDbBinding> {
-    let cur = &mut &bytes[..];
-    let version = take_u16(cur, "db evidence version")?;
-    if version != DB_BUILD_EVIDENCE_VERSION {
-        return Err(Error::InvalidInput(format!(
-            "unsupported DB build evidence version {version}"
-        )));
-    }
-    let _builder_git_commit = take_string(cur, "builder_git_commit")?;
-    let _builder_binary_sha256 = take_arr::<32>(cur, "builder_binary_sha256")?;
-    let _tee_platform = take_string(cur, "tee_platform")?;
-    let _tee_image_measurement = take_len_bytes(cur, "tee_image_measurement")?;
-    let _core_version = take_string(cur, "core_version")?;
-    let _snapshot_sha256 = take_arr::<32>(cur, "snapshot_sha256")?;
-    let _snapshot_bytes = take_u64(cur, "snapshot_bytes")?;
-    let network_magic = take_arr::<4>(cur, "network_magic")?;
-    let build_kind = certified_build_kind_from_byte(take_u8(cur, "build_kind")?)?;
-    let from_anchor = take_certified_anchor(cur, "from_anchor")?;
-    let anchor = take_certified_anchor(cur, "anchor")?;
-    let to_muhash = take_arr::<32>(cur, "utxo_muhash")?;
-    let _dust_threshold_sats = take_u64(cur, "dust_threshold_sats")?;
-    let _max_utxos_per_spk = take_u32(cur, "max_utxos_per_spk")?;
-    let _params_hash = take_arr::<32>(cur, "params_hash")?;
-    let _index_bins_per_table = take_u32(cur, "index_bins_per_table")?;
-    let _chunk_bins_per_table = take_u32(cur, "chunk_bins_per_table")?;
-    let _onion_entry_size = take_u32(cur, "onion_entry_size")?;
-    let _bucket_super_root = take_arr::<32>(cur, "bucket_super_root")?;
-    let _onion_super_root = take_arr::<32>(cur, "onion_super_root")?;
-    let root_bundle_payload_sha256 = take_arr::<32>(cur, "root_bundle_payload_sha256")?;
-    match take_u8(cur, "has_signed_root_bundle")? {
-        0 => {}
-        1 => {
-            let _signed_root_bundle_sha256 = take_arr::<32>(cur, "signed_root_bundle_sha256")?;
-        }
-        _ => {
-            return Err(Error::InvalidInput(
-                "bad signed root bundle option tag".into(),
-            ))
-        }
-    }
-    let _database_manifest_sha256 = take_arr::<32>(cur, "database_manifest_sha256")?;
-    let _all_artifacts_manifest_sha256 = take_arr::<32>(cur, "all_artifacts_manifest_sha256")?;
-    let _server_db_manifest_sha256 = take_arr::<32>(cur, "server_db_manifest_sha256")?;
-    if !cur.is_empty() {
+fn decode_db_build_evidence_binding(
+    bytes: &[u8],
+    require_predecessor_free_full_build_v2: bool,
+) -> Result<CertifiedDbBinding> {
+    let evidence = pir_db_attest::BuildEvidence::decode(bytes)
+        .map_err(|error| Error::InvalidInput(format!("invalid DB build evidence: {error}")))?;
+    if require_predecessor_free_full_build_v2
+        && (evidence.version != pir_db_attest::EVIDENCE_VERSION_V2
+            || evidence.evidence_mode != pir_db_attest::EvidenceMode::FullBuild
+            || evidence.predecessor_evidence_sha256.is_some()
+            || evidence.predecessor_report_sha256.is_some())
+    {
         return Err(Error::InvalidInput(
-            "DB build evidence has trailing bytes".into(),
+            "strict Direct ORAM requires predecessor-free full-build-v2 DB evidence".into(),
         ));
     }
+    let build_kind = match evidence.build_kind {
+        pir_db_attest::BuildKind::Snapshot => CertifiedBuildKind::Snapshot,
+        pir_db_attest::BuildKind::Delta => CertifiedBuildKind::Delta,
+    };
     Ok(CertifiedDbBinding {
         build_kind,
-        network_magic,
-        from_anchor,
-        anchor,
-        to_muhash,
-        root_bundle_payload_sha256: Some(root_bundle_payload_sha256),
+        network_magic: evidence.network_magic,
+        from_anchor: CertifiedAnchor {
+            block_hash: evidence.from_anchor.block_hash,
+            height: evidence.from_anchor.height,
+        },
+        anchor: CertifiedAnchor {
+            block_hash: evidence.anchor.block_hash,
+            height: evidence.anchor.height,
+        },
+        to_muhash: evidence.utxo_muhash,
+        root_bundle_payload_sha256: Some(evidence.root_bundle_payload_sha256),
+        server_db_manifest_sha256: Some(evidence.server_db_manifest_sha256),
     })
 }
 
@@ -3428,6 +3560,7 @@ fn decode_root_bundle_payload_binding(bytes: &[u8]) -> Result<CertifiedDbBinding
         anchor,
         to_muhash,
         root_bundle_payload_sha256: None,
+        server_db_manifest_sha256: None,
     })
 }
 
@@ -3477,16 +3610,6 @@ fn take_u64(cur: &mut &[u8], what: &'static str) -> Result<u64> {
 
 fn take_i64(cur: &mut &[u8], what: &'static str) -> Result<i64> {
     Ok(i64::from_le_bytes(take_arr::<8>(cur, what)?))
-}
-
-fn take_len_bytes(cur: &mut &[u8], what: &'static str) -> Result<Vec<u8>> {
-    let len = take_u16(cur, what)? as usize;
-    Ok(take(cur, len, what)?.to_vec())
-}
-
-fn take_string(cur: &mut &[u8], what: &'static str) -> Result<String> {
-    String::from_utf8(take_len_bytes(cur, what)?)
-        .map_err(|_| Error::InvalidInput(format!("{what} is not UTF-8")))
 }
 
 fn parse_muhash_display_hex(input: &str) -> Result<[u8; 32]> {
@@ -3548,6 +3671,29 @@ fn build_direct_images(
     if encrypted {
         parse_required_key(key_hex)?;
     }
+    if evidence_inputs.strict_source_binding && level.levels().len() != 2 {
+        return Err(Error::InvalidInput(
+            "--strict-source-binding requires --level all so INDEX and CHUNK receive one binding"
+                .into(),
+        ));
+    }
+    if evidence_inputs.strict_source_binding && !auth_store {
+        return Err(Error::InvalidInput(
+            "--strict-source-binding requires --auth-store for production integrity".into(),
+        ));
+    }
+    if evidence_inputs.strict_source_binding && !encrypted {
+        return Err(Error::InvalidInput(
+            "--strict-source-binding requires --encrypted so untrusted bulk pages do not reveal block relocation"
+                .into(),
+        ));
+    }
+    if evidence_inputs.strict_source_binding && trusted_state_dir.is_none() {
+        return Err(Error::InvalidInput(
+            "--strict-source-binding requires --trusted-state-dir outside the untrusted bulk output"
+                .into(),
+        ));
+    }
     if evidence_inputs.strict_source_binding
         && auth_store
         && matches!(auth_layout, AuthLayoutArg::EmbeddedTree)
@@ -3561,6 +3707,37 @@ fn build_direct_images(
     if let Some(trusted_state_dir) = trusted_state_dir {
         fs::create_dir_all(trusted_state_dir)?;
     }
+    if evidence_inputs.strict_source_binding {
+        let bulk = fs::canonicalize(out_dir)?;
+        let trusted = fs::canonicalize(
+            trusted_state_dir.expect("strict mode checked trusted-state directory"),
+        )?;
+        if bulk == trusted || trusted.starts_with(&bulk) || bulk.starts_with(&trusted) {
+            return Err(Error::InvalidInput(
+                "--strict-source-binding requires disjoint bulk and trusted-state directories"
+                    .into(),
+            ));
+        }
+    }
+
+    // Initial leaf assignments and the saved position map are confidential.
+    // A host that learns this seed can reconstruct the initial logical-block
+    // to path mapping and correlate observed bulk-page accesses. Production
+    // strict builds therefore replace every caller/default seed with fresh OS
+    // entropy and never serialize or print it.
+    let seed = if evidence_inputs.strict_source_binding {
+        let mut secret = [0u8; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut secret)
+            .map_err(|error| {
+                Error::InvalidInput(format!(
+                    "failed to obtain secret ORAM RNG seed from OS: {error}"
+                ))
+            })?;
+        secret
+    } else {
+        seed
+    };
 
     let infos = direct_infos(
         index_file,
@@ -3572,6 +3749,12 @@ fn build_direct_images(
     )?;
     let source_files = direct_source_files_evidence(&infos)?;
     let certified_db = load_certified_db_binding(&evidence_inputs)?;
+    let dataset_binding = load_direct_dataset_binding(
+        &evidence_inputs,
+        &source_files,
+        &infos,
+        certified_db.as_ref(),
+    )?;
     validate_direct_build_binding(&evidence_inputs, &source_files, certified_db.as_ref())?;
     println!("build_direct=true");
     println!("index_file={}", index_file.display());
@@ -3597,7 +3780,12 @@ fn build_direct_images(
     println!("index_hash_fns={index_hash_fns}");
     println!("index_load_factor={index_load_factor:.6}");
     println!("index_seed=0x{index_seed:016x}");
-    println!("seed_hex={}", hex::encode(seed));
+    if evidence_inputs.strict_source_binding {
+        println!("oram_rng_seed_source=os_rng");
+    } else {
+        println!("oram_rng_seed_source=reproducible_cli_or_default");
+        println!("seed_hex={}", hex::encode(seed));
+    }
     println!("index_sha256={}", source_files.index.sha256);
     println!("chunks_sha256={}", source_files.chunks.sha256);
     if let Some(certified_db) = &certified_db {
@@ -3618,12 +3806,13 @@ fn build_direct_images(
     }
 
     let mut controller_states = Vec::new();
+    let mut pending_metadata = Vec::new();
     for &selected_level in level.levels() {
         let info = infos
             .iter()
             .find(|info| info.level == selected_level)
             .expect("direct_infos returns both levels");
-        controller_states.push(build_direct_table(
+        let (controller_state, metadata_path, metadata) = build_direct_table(
             out_dir,
             trusted_state_dir,
             info,
@@ -3640,8 +3829,12 @@ fn build_direct_images(
             auth_trusted_levels,
             auth_hash_page_size,
             derive_direct_level_seed(seed, info.level),
-        )?);
+            dataset_binding,
+        )?;
+        controller_states.push(controller_state);
+        pending_metadata.push((metadata_path, metadata));
     }
+    persist_direct_metadata_set(&pending_metadata)?;
 
     let evidence = OramBuildEvidence {
         version: ORAM_BUILD_EVIDENCE_VERSION,
@@ -3650,6 +3843,11 @@ fn build_direct_images(
         db_certification: build_db_certification_evidence(&evidence_inputs, certified_db.as_ref()),
         db_build_evidence: evidence_inputs
             .db_build_evidence
+            .as_deref()
+            .map(artifact_evidence)
+            .transpose()?,
+        server_db_manifest: evidence_inputs
+            .server_db_manifest
             .as_deref()
             .map(artifact_evidence)
             .transpose()?,
@@ -3679,12 +3877,51 @@ fn build_direct_images(
             index_load_factor,
             index_seed,
             seed,
+            evidence_inputs.strict_source_binding,
         ),
         output_artifacts: direct_output_artifact_manifest(out_dir)?,
         controller_states,
     };
     write_oram_build_evidence(out_dir, &evidence)?;
 
+    Ok(())
+}
+
+fn persist_direct_metadata_set(entries: &[(PathBuf, DirectTableMetadata)]) -> Result<()> {
+    if entries.is_empty() {
+        return Err(Error::InvalidInput(
+            "direct build produced no metadata entries".into(),
+        ));
+    }
+    if entries.len() == 2 {
+        let left = entries[0].1.dataset_binding;
+        let right = entries[1].1.dataset_binding;
+        if left != right {
+            return Err(Error::InvalidInput(
+                "INDEX and CHUNK metadata do not carry one identical dataset binding".into(),
+            ));
+        }
+    }
+    let pending = entries
+        .iter()
+        .map(|(path, metadata)| {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| Error::InvalidInput("direct metadata path is not UTF-8".into()))?;
+            let tmp = path.with_file_name(format!(".{file_name}.binding-v2.tmp"));
+            metadata.save(&tmp)?;
+            Ok((tmp, path))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (tmp, path) in &pending {
+        if let Err(error) = fs::rename(tmp, path) {
+            for (remaining, _) in &pending {
+                let _ = fs::remove_file(remaining);
+            }
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
 
@@ -3706,7 +3943,8 @@ fn build_direct_table(
     auth_trusted_levels: usize,
     auth_hash_page_size: usize,
     seed: [u8; 32],
-) -> Result<DirectControllerStateEvidence> {
+    dataset_binding: Option<DirectOramDatasetBindingV1>,
+) -> Result<(DirectControllerStateEvidence, PathBuf, DirectTableMetadata)> {
     let sizing = DirectOramSizing {
         items_per_block: pack,
         leaf_divisor,
@@ -3727,14 +3965,16 @@ fn build_direct_table(
     match info.level {
         DirectLevel::Index => {
             let source = DirectIndexPackedBlockReader::build(info.clone(), pack)?;
-            let metadata = source.metadata().clone();
-            build_direct_table_from_source(
+            let mut metadata = source.metadata().clone();
+            if let Some(binding) = dataset_binding {
+                metadata = metadata.bind_dataset(binding)?;
+            }
+            let evidence = build_direct_table_from_source(
                 &paths,
                 info,
                 &estimate,
                 &params,
                 source,
-                metadata,
                 encrypted,
                 key_hex,
                 state_key_hex,
@@ -3744,18 +3984,21 @@ fn build_direct_table(
                 auth_trusted_levels,
                 auth_hash_page_size,
                 seed,
-            )
+            )?;
+            Ok((evidence, paths.metadata, metadata))
         }
         DirectLevel::Chunk => {
             let source = DirectChunkPackedBlockReader::open(info.clone(), pack)?;
-            let metadata = source.metadata().clone();
-            build_direct_table_from_source(
+            let mut metadata = source.metadata().clone();
+            if let Some(binding) = dataset_binding {
+                metadata = metadata.bind_dataset(binding)?;
+            }
+            let evidence = build_direct_table_from_source(
                 &paths,
                 info,
                 &estimate,
                 &params,
                 source,
-                metadata,
                 encrypted,
                 key_hex,
                 state_key_hex,
@@ -3765,7 +4008,8 @@ fn build_direct_table(
                 auth_trusted_levels,
                 auth_hash_page_size,
                 seed,
-            )
+            )?;
+            Ok((evidence, paths.metadata, metadata))
         }
     }
 }
@@ -3777,7 +4021,6 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
     estimate: &DirectOramEstimate,
     params: &OramParams,
     source: S,
-    metadata: bitcoinpir_oram::DirectTableMetadata,
     encrypted: bool,
     key_hex: Option<&str>,
     state_key_hex: Option<&str>,
@@ -3823,7 +4066,6 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         seed,
     )?;
     oram.flush()?;
-    metadata.save(&paths.metadata)?;
     let mut controller_state = oram.snapshot();
     let stash_len = oram.stash_len();
     let pending_evictions = oram.pending_evictions()?;
@@ -6119,7 +6361,7 @@ fn open_circuit_file_stores_for_reopen(
             encrypted,
             key_hex,
             cached_pages,
-            true,
+            false,
             AuthLayoutArg::Sidecar,
         )?;
         return Ok((
@@ -6758,35 +7000,37 @@ mod tests {
     fn build_direct_strict_source_hashes_succeed() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
+        let page_key_hex = hex::encode([0xb7; 32]);
         let index_file = input.path().join("utxo_chunks_index_nodust.bin");
         let chunks_file = input.path().join("utxo_chunks_nodust.bin");
-        let payload_file = input.path().join("root-bundle-payload.bin");
         write_direct_index_records(&index_file, 16);
         write_direct_chunks(&chunks_file, 16);
         let certified_muhash = numbered_hash(0x30);
-        fs::write(
-            &payload_file,
-            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
-        )
-        .unwrap();
-        let (index_sha256, _) = sha256_file(&index_file).unwrap();
-        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let (evidence_file, manifest_file, payload_file, index_sha256, chunks_sha256) =
+            write_strict_db_evidence(
+                input.path(),
+                &index_file,
+                &chunks_file,
+                CertifiedBuildKind::Snapshot,
+                certified_muhash,
+            );
 
         build_direct_images(
             &index_file,
             &chunks_file,
             out.path(),
-            None,
+            Some(trusted.path()),
             DirectLevelArg::All,
             4,
             2,
             2,
             128,
-            false,
-            None,
+            true,
+            Some(&page_key_hex),
             None,
             0,
-            false,
+            true,
             AuthLayoutArg::Sidecar,
             1,
             64,
@@ -6796,7 +7040,8 @@ mod tests {
             DIRECT_INDEX_DEFAULT_SEED,
             [10; 32],
             DirectBuildEvidenceInputs {
-                db_build_evidence: None,
+                db_build_evidence: Some(evidence_file),
+                server_db_manifest: Some(manifest_file),
                 root_bundle_payload: Some(payload_file.clone()),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
@@ -6827,30 +7072,55 @@ mod tests {
             evidence["db_certification"]["to_muhash_hex"],
             muhash_display_hex(&certified_muhash)
         );
-        assert!(evidence["output_artifacts"]
+        assert_eq!(evidence["version"], ORAM_BUILD_EVIDENCE_VERSION);
+        assert_eq!(evidence["oram_params"]["oram_rng_seed_source"], "os_rng");
+        assert!(evidence["oram_params"].get("oram_rng_seed_hex").is_none());
+        assert!(!evidence["output_artifacts"]
             .as_array()
             .unwrap()
             .iter()
             .any(|artifact| artifact["file_name"] == "direct-index.state"));
+        for level in ["direct-index", "direct-chunk"] {
+            for suffix in ["state", "auth.state", "metadata"] {
+                assert!(!out.path().join(format!("{level}.{suffix}")).exists());
+                assert!(trusted.path().join(format!("{level}.{suffix}")).exists());
+            }
+        }
+
+        // Public bulk output and evidence must not contain the explicit dev
+        // seed input (strict mode replaces it with OS entropy) or the page key.
+        let evidence_json = fs::read(out.path().join(ORAM_BUILD_EVIDENCE_JSON_FILE)).unwrap();
+        assert!(!contains_subslice(&evidence_json, &vec![0x0a; 32]));
+        assert!(!contains_subslice(&evidence_json, page_key_hex.as_bytes()));
+        for entry in fs::read_dir(out.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                let bytes = fs::read(path).unwrap();
+                assert!(!contains_subslice(&bytes, &[0xb7; 32]));
+                assert!(!contains_subslice(&bytes, &vec![0x0a; 32]));
+            }
+        }
     }
 
     #[test]
     fn build_direct_strict_changed_source_bytes_fail() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
+        let page_key_hex = hex::encode([0xb7; 32]);
         let index_file = input.path().join("utxo_chunks_index_nodust.bin");
         let chunks_file = input.path().join("utxo_chunks_nodust.bin");
-        let payload_file = input.path().join("root-bundle-payload.bin");
         write_direct_index_records(&index_file, 16);
         write_direct_chunks(&chunks_file, 16);
         let certified_muhash = numbered_hash(0x40);
-        fs::write(
-            &payload_file,
-            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
-        )
-        .unwrap();
-        let (index_sha256, _) = sha256_file(&index_file).unwrap();
-        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let (evidence_file, manifest_file, payload_file, index_sha256, chunks_sha256) =
+            write_strict_db_evidence(
+                input.path(),
+                &index_file,
+                &chunks_file,
+                CertifiedBuildKind::Snapshot,
+                certified_muhash,
+            );
         let mut changed = fs::read(&index_file).unwrap();
         changed[0] ^= 0x55;
         fs::write(&index_file, changed).unwrap();
@@ -6859,17 +7129,17 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
-            None,
+            Some(trusted.path()),
             DirectLevelArg::All,
             4,
             2,
             2,
             128,
-            false,
-            None,
+            true,
+            Some(&page_key_hex),
             None,
             0,
-            false,
+            true,
             AuthLayoutArg::Sidecar,
             1,
             64,
@@ -6879,7 +7149,8 @@ mod tests {
             DIRECT_INDEX_DEFAULT_SEED,
             [10; 32],
             DirectBuildEvidenceInputs {
-                db_build_evidence: None,
+                db_build_evidence: Some(evidence_file),
+                server_db_manifest: Some(manifest_file),
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
@@ -6893,45 +7164,48 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("direct index source sha256 mismatch"));
+        assert!(
+            err.to_string().contains("direct INDEX") && err.to_string().contains("mismatch"),
+            "{err}"
+        );
     }
 
     #[test]
     fn build_direct_strict_changed_muhash_evidence_fails() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
+        let page_key_hex = hex::encode([0xb7; 32]);
         let index_file = input.path().join("utxo_chunks_index_nodust.bin");
         let chunks_file = input.path().join("utxo_chunks_nodust.bin");
-        let payload_file = input.path().join("root-bundle-payload.bin");
         write_direct_index_records(&index_file, 16);
         write_direct_chunks(&chunks_file, 16);
         let certified_muhash = numbered_hash(0x50);
         let expected_muhash = numbered_hash(0x60);
-        fs::write(
-            &payload_file,
-            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
-        )
-        .unwrap();
-        let (index_sha256, _) = sha256_file(&index_file).unwrap();
-        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let (evidence_file, manifest_file, payload_file, index_sha256, chunks_sha256) =
+            write_strict_db_evidence(
+                input.path(),
+                &index_file,
+                &chunks_file,
+                CertifiedBuildKind::Snapshot,
+                certified_muhash,
+            );
 
         let err = build_direct_images(
             &index_file,
             &chunks_file,
             out.path(),
-            None,
+            Some(trusted.path()),
             DirectLevelArg::All,
             4,
             2,
             2,
             128,
-            false,
-            None,
+            true,
+            Some(&page_key_hex),
             None,
             0,
-            false,
+            true,
             AuthLayoutArg::Sidecar,
             1,
             64,
@@ -6941,7 +7215,8 @@ mod tests {
             DIRECT_INDEX_DEFAULT_SEED,
             [10; 32],
             DirectBuildEvidenceInputs {
-                db_build_evidence: None,
+                db_build_evidence: Some(evidence_file),
+                server_db_manifest: Some(manifest_file),
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(expected_muhash),
                 expected_from_muhash: None,
@@ -6972,25 +7247,29 @@ mod tests {
     fn strict_delta_build_requires_and_verifies_bhtm_from_leaf() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
         let missing_out = tempfile::tempdir().unwrap();
+        let missing_trusted = tempfile::tempdir().unwrap();
+        let page_key_hex = hex::encode([0xb7; 32]);
         let index_file = input.path().join("utxo_chunks_index_nodust.bin");
         let chunks_file = input.path().join("utxo_chunks_nodust.bin");
-        let root_payload_file = input.path().join("root-bundle-payload.bin");
         let proof_file = input.path().join("from-leaf-proof.json");
         write_direct_index_records(&index_file, 16);
         write_direct_chunks(&chunks_file, 16);
         let certified_muhash = numbered_hash(0x30);
-        fs::write(
-            &root_payload_file,
-            root_payload_bytes(CertifiedBuildKind::Delta, certified_muhash),
-        )
-        .unwrap();
+        let (evidence_file, manifest_file, root_payload_file, index_sha256, chunks_sha256) =
+            write_strict_db_evidence(
+                input.path(),
+                &index_file,
+                &chunks_file,
+                CertifiedBuildKind::Delta,
+                certified_muhash,
+            );
         let block_hash = [0u8; 32];
         let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_file, 0, block_hash);
-        let (index_sha256, _) = sha256_file(&index_file).unwrap();
-        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
         let inputs = DirectBuildEvidenceInputs {
-            db_build_evidence: None,
+            db_build_evidence: Some(evidence_file),
+            server_db_manifest: Some(manifest_file),
             root_bundle_payload: Some(root_payload_file),
             expected_muhash: Some(certified_muhash),
             expected_from_muhash: Some(from_muhash),
@@ -7007,17 +7286,17 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
-            None,
+            Some(trusted.path()),
             DirectLevelArg::All,
             4,
             2,
             2,
             128,
-            false,
-            None,
+            true,
+            Some(&page_key_hex),
             None,
             0,
-            false,
+            true,
             AuthLayoutArg::Sidecar,
             1,
             64,
@@ -7036,17 +7315,17 @@ mod tests {
             &index_file,
             &chunks_file,
             missing_out.path(),
-            None,
+            Some(missing_trusted.path()),
             DirectLevelArg::All,
             4,
             2,
             2,
             128,
-            false,
-            None,
+            true,
+            Some(&page_key_hex),
             None,
             0,
-            false,
+            true,
             AuthLayoutArg::Sidecar,
             1,
             64,
@@ -7190,6 +7469,13 @@ mod tests {
         out
     }
 
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+    }
+
     fn root_payload_bytes(kind: CertifiedBuildKind, muhash: [u8; 32]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&ROOT_BUNDLE_PAYLOAD_VERSION.to_le_bytes());
@@ -7213,5 +7499,116 @@ mod tests {
         out.extend_from_slice(label);
         out.extend_from_slice(&numbered_hash(0x70));
         out
+    }
+
+    fn write_strict_db_evidence(
+        dir: &Path,
+        index_file: &Path,
+        chunks_file: &Path,
+        kind: CertifiedBuildKind,
+        muhash: [u8; 32],
+    ) -> (PathBuf, PathBuf, PathBuf, [u8; 32], [u8; 32]) {
+        let payload_path = dir.join("root-bundle-payload.bin");
+        let payload = root_payload_bytes(kind, muhash);
+        fs::write(&payload_path, &payload).unwrap();
+        let (index_sha256, index_bytes) = sha256_file(index_file).unwrap();
+        let (chunks_sha256, chunk_bytes) = sha256_file(chunks_file).unwrap();
+        let index_records = index_bytes / DIRECT_INDEX_INPUT_RECORD_SIZE as u64;
+        let chunk_records = chunk_bytes / DIRECT_CHUNK_RECORD_SIZE as u64;
+        let manifest = format!(
+            "[manifest]\nversion = 1\n\n[direct_oram]\nversion = 1\nindex_sha256 = \"{}\"\nindex_bytes = {index_bytes}\nindex_records = {index_records}\nchunk_sha256 = \"{}\"\nchunk_bytes = {chunk_bytes}\nchunk_records = {chunk_records}\nindex_slots_per_bin = {}\nindex_hash_fns = {}\nindex_load_factor_ppb = 800000000\nindex_seed = {}\n\n[files]\n",
+            hex::encode(index_sha256),
+            hex::encode(chunks_sha256),
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            DIRECT_INDEX_DEFAULT_SEED,
+        );
+        let manifest_path = dir.join("MANIFEST.toml");
+        fs::write(&manifest_path, manifest.as_bytes()).unwrap();
+        let build_kind = match kind {
+            CertifiedBuildKind::Snapshot => pir_db_attest::BuildKind::Snapshot,
+            CertifiedBuildKind::Delta => pir_db_attest::BuildKind::Delta,
+        };
+        let evidence = pir_db_attest::BuildEvidence {
+            version: pir_db_attest::EVIDENCE_VERSION_V2,
+            builder_git_commit: "0123456789abcdef".into(),
+            builder_binary_sha256: numbered_hash(0x80),
+            tee_platform: "test".into(),
+            tee_image_measurement: Vec::new(),
+            core_version: "test".into(),
+            snapshot_sha256: numbered_hash(0x81),
+            snapshot_bytes: index_bytes + chunk_bytes,
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            build_kind,
+            from_anchor: pir_db_attest::ChainAnchor {
+                block_hash: [0; 32],
+                height: 0,
+            },
+            anchor: pir_db_attest::ChainAnchor {
+                block_hash: numbered_hash(0x10),
+                height: 950_000,
+            },
+            utxo_muhash: muhash,
+            dust_threshold_sats: 576,
+            max_utxos_per_spk: 100,
+            params_hash: numbered_hash(0x20),
+            index_bins_per_table: 1,
+            chunk_bins_per_table: 1,
+            onion_entry_size: 3840,
+            bucket_super_root: numbered_hash(0x30),
+            onion_super_root: numbered_hash(0x40),
+            root_bundle_payload_sha256: sha256_bytes(&payload),
+            signed_root_bundle_sha256: None,
+            database_manifest_sha256: numbered_hash(0x50),
+            all_artifacts_manifest_sha256: numbered_hash(0x60),
+            server_db_manifest_sha256: sha256_bytes(manifest.as_bytes()),
+            evidence_mode: pir_db_attest::EvidenceMode::FullBuild,
+            predecessor_evidence_sha256: None,
+            predecessor_report_sha256: None,
+            onion_layout_v2: Some(pir_db_attest::OnionQueryLayoutV2::current(1, 1, 1, 3840)),
+        };
+        let evidence_path = dir.join("build-evidence.bin");
+        fs::write(&evidence_path, evidence.encode().unwrap()).unwrap();
+        (
+            evidence_path,
+            manifest_path,
+            payload_path,
+            index_sha256,
+            chunks_sha256,
+        )
+    }
+
+    #[test]
+    fn strict_binding_rejects_v1_and_reattest_db_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("utxo_chunks_index_nodust.bin");
+        let chunks = root.path().join("utxo_chunks_nodust.bin");
+        write_direct_index_records(&index, 4);
+        fs::write(&chunks, vec![0x42; 4 * DIRECT_CHUNK_RECORD_SIZE]).unwrap();
+        let (evidence_path, ..) = write_strict_db_evidence(
+            root.path(),
+            &index,
+            &chunks,
+            CertifiedBuildKind::Snapshot,
+            numbered_hash(0x30),
+        );
+        let encoded = fs::read(evidence_path).unwrap();
+        assert!(decode_db_build_evidence_binding(&encoded, true).is_ok());
+
+        let mut evidence = pir_db_attest::BuildEvidence::decode(&encoded).unwrap();
+        evidence.version = pir_db_attest::EVIDENCE_VERSION_V1;
+        evidence.onion_layout_v2 = None;
+        let error =
+            decode_db_build_evidence_binding(&evidence.encode().unwrap(), true).unwrap_err();
+        assert!(error.to_string().contains("predecessor-free full-build-v2"));
+
+        evidence.version = pir_db_attest::EVIDENCE_VERSION_V2;
+        evidence.evidence_mode = pir_db_attest::EvidenceMode::ReattestExisting;
+        evidence.predecessor_evidence_sha256 = Some(numbered_hash(0x90));
+        evidence.predecessor_report_sha256 = Some(numbered_hash(0x91));
+        evidence.onion_layout_v2 = Some(pir_db_attest::OnionQueryLayoutV2::current(1, 1, 1, 3840));
+        let error =
+            decode_db_build_evidence_binding(&evidence.encode().unwrap(), true).unwrap_err();
+        assert!(error.to_string().contains("predecessor-free full-build-v2"));
     }
 }

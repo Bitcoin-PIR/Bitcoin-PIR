@@ -28,9 +28,9 @@ import { pathToFileURL } from "node:url";
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 1;
+const EVIDENCE_SCHEMA_VERSION = 3;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v1";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v3";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -48,8 +48,11 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "IPAddressAllow",
   "IPAddressDeny",
   "InaccessiblePaths",
+  "LimitCORE",
   "LimitNOFILE",
   "LockPersonality",
+  "MemoryMax",
+  "MemorySwapMax",
   "MemoryDenyWriteExecute",
   "NoNewPrivileges",
   "PrivateDevices",
@@ -75,8 +78,11 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "RuntimeDirectoryMode",
   "StateDirectory",
   "StateDirectoryMode",
+  "StandardError",
+  "StandardOutput",
   "SupplementaryGroups",
   "SystemCallArchitectures",
+  "TasksMax",
   "TimeoutStartSec",
   "TimeoutStopSec",
   "Type",
@@ -106,7 +112,9 @@ const PROFILE_CATALOG = Object.freeze({
   "edge-hetzner-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
-      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
     ]),
   }),
   "edge-rollback-authority-v1": Object.freeze({
@@ -170,6 +178,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "CapabilityBoundingSet",
   "ConditionResult",
   "Conditions",
+  "ControlGroup",
   "DropInPaths",
   "Environment",
   "EnvironmentFiles",
@@ -185,11 +194,16 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "IPAddressDeny",
   "InaccessiblePaths",
   "InvocationID",
+  "LimitCORE",
+  "LimitCORESoft",
   "LoadCredential",
   "LoadState",
   "LockPersonality",
   "MainPID",
   "MemoryDenyWriteExecute",
+  "MemoryMax",
+  "MemorySwapCurrent",
+  "MemorySwapMax",
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
@@ -213,9 +227,12 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "RootDirectory",
   "RootImage",
   "SetCredential",
+  "StandardError",
+  "StandardOutput",
   "SubState",
   "SupplementaryGroups",
   "SystemCallArchitectures",
+  "TasksMax",
   "Type",
   "UMask",
   "User",
@@ -259,6 +276,18 @@ const TEMPLATE_CATALOG = Object.freeze({
     modes: ["0644"],
     rootOwned: true,
   },
+  "deploy/payment-v1/systemd/payment-v1-public-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/rollback-authority.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-rollback-authority.service",
@@ -280,6 +309,12 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
+    modes: ["0400", "0440", "0600", "0640"],
+    rootOwned: false,
+  },
+  "deploy/payment-v1/edge/source-fair-haproxy.cfg.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
     modes: ["0400", "0440", "0600", "0640"],
     rootOwned: false,
   },
@@ -324,6 +359,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "CLN_BUNDLE_SHA256",
   "CLN_RPC_GUARD_SHA256",
   "DIRECTORY_PUBLISHER_PUBKEY_HEX",
+  "HAPROXY_SHA256",
   "HETZNER_OPERATOR_PUBKEY_HEX",
   "HETZNER_POLICY_PUBKEY_HEX",
   "HETZNER_PROVIDER_ID_HEX",
@@ -334,10 +370,19 @@ const HEX64_PLACEHOLDERS = new Set([
 ]);
 
 const DNS_HOST_PLACEHOLDERS = new Set([
+  "DIRECTORY_PUBLISHER_HTTPS_HOST",
   "DIRECTORY_RELAY_WSS_HOST",
   "PAYMENT_ISSUER_HTTPS_HOST",
   "PROVIDER_WSS_HOST",
   "ROLLBACK_AUTHORITY_HTTPS_HOST",
+]);
+
+const IP_ADDRESS_PLACEHOLDERS = new Set([
+  "DIRECTORY_PUBLISHER_CLIENT_IP",
+  "DIRECTORY_PUBLISHER_PRIVATE_BIND",
+  "PUBLIC_HTTPS_BIND",
+  "ROLLBACK_AUTHORITY_CLIENT_IP",
+  "ROLLBACK_AUTHORITY_PRIVATE_BIND",
 ]);
 
 const UID_GID_PLACEHOLDERS = new Set([
@@ -359,6 +404,7 @@ const POSITIVE_SERVICE_VALUE_PLACEHOLDERS = new Set([
 const ALL_PLACEHOLDER_NAMES = new Set([
   ...HEX64_PLACEHOLDERS,
   ...DNS_HOST_PLACEHOLDERS,
+  ...IP_ADDRESS_PLACEHOLDERS,
   ...UID_GID_PLACEHOLDERS,
   ...POSITIVE_SERVICE_VALUE_PLACEHOLDERS,
   "BITCOIND_SYSTEMD_UNIT",
@@ -370,7 +416,6 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   "CLN_GUARD_MAX_INVOICES_PER_RUNTIME",
   "CLN_P2P_ANNOUNCE_ADDR",
   "CLN_P2P_BIND_ADDR",
-  "EDGE_CADDYFILE",
   "HETZNER_PROVIDER_SERVER_ID",
   "LIGHTNING_NETWORK",
 ]);
@@ -778,6 +823,22 @@ function parseHostPort(value, label, { announce = false } = {}) {
   }
 }
 
+function isPrivateNumericAddress(value) {
+  if (isIP(value) === 4) {
+    const [first, second] = value.split(".").map(Number);
+    return (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+  if (isIP(value) === 6) {
+    const canonical = value.toLowerCase();
+    return canonical.startsWith("fc") || canonical.startsWith("fd");
+  }
+  return false;
+}
+
 function validatePlaceholderValue(name, value) {
   const label = `placeholder ${name}`;
   if (!ALL_PLACEHOLDER_NAMES.has(name)) fail(`${label} is not in the closed-world schema`);
@@ -788,6 +849,24 @@ function validatePlaceholderValue(name, value) {
   }
   if (DNS_HOST_PLACEHOLDERS.has(name)) {
     validateDnsHost(value, label);
+    return;
+  }
+  if (IP_ADDRESS_PLACEHOLDERS.has(name)) {
+    validateSafeAscii(value, label, 45);
+    if (isIP(value) === 0 || ["0.0.0.0", "127.0.0.1", "::", "::1"].includes(value)) {
+      fail(`${label} must be one concrete non-loopback numeric address`);
+    }
+    if (
+      new Set([
+        "DIRECTORY_PUBLISHER_CLIENT_IP",
+        "DIRECTORY_PUBLISHER_PRIVATE_BIND",
+        "ROLLBACK_AUTHORITY_CLIENT_IP",
+        "ROLLBACK_AUTHORITY_PRIVATE_BIND",
+      ]).has(name) &&
+      !isPrivateNumericAddress(value)
+    ) {
+      fail(`${label} must be an RFC1918 IPv4 or ULA IPv6 private address`);
+    }
     return;
   }
   if (UID_GID_PLACEHOLDERS.has(name)) {
@@ -830,11 +909,6 @@ function validatePlaceholderValue(name, value) {
       return;
     case "CLN_P2P_BIND_ADDR":
       parseHostPort(value, label);
-      return;
-    case "EDGE_CADDYFILE":
-      if (!["hetzner-public.Caddyfile", "rollback-authority.Caddyfile"].includes(value)) {
-        fail(`${label} is not a reviewed edge Caddyfile basename`);
-      }
       return;
     case "HETZNER_PROVIDER_SERVER_ID":
       if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(value)) {
@@ -932,7 +1006,7 @@ function validateRenderedMetadata(artifact, catalog, label) {
 
 function secretConsumerUnit(deploymentProfile, targetPath) {
   const mappings = {
-    "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
+    "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-public-edge.service"]],
     "edge-rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
     "issuer-lightning-signet-v1": [
       ["/etc/bitcoinpir/payment-v1/issuer/", "bitcoinpir-payment-issuer.service"],
@@ -1081,11 +1155,9 @@ function validatePlan(plan) {
     targets.add(artifact.target_path);
   }
 
-  validateSecretOwnerBindings(plan);
-
-
   const expectedTemplates = PROFILE_CATALOG[plan.deployment_profile].templates;
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
+  validateSecretOwnerBindings(plan);
 }
 
 function extractPlaceholders(text) {
@@ -1252,6 +1324,26 @@ function parseSystemdUnit(text, label) {
 }
 
 function validateProfileUnitPolicy(deploymentProfile, fragmentPath, hardening, label) {
+  const privateRequestEdge =
+    (deploymentProfile === "edge-hetzner-v1" &&
+      new Set([
+        "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
+        "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+      ]).has(fragmentPath)) ||
+    (deploymentProfile === "edge-rollback-authority-v1" &&
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-edge.service");
+  if (privateRequestEdge) {
+    for (const [key, expected] of [
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["LimitCORE", "0"],
+      ["MemorySwapMax", "0"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected} so request-source state cannot persist`);
+      }
+    }
+  }
   if (
     deploymentProfile === "issuer-lightning-signet-v1" &&
     fragmentPath === "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service"
@@ -1322,6 +1414,27 @@ function hashBindingClass(artifactClass) {
 }
 
 function configManagedReferences(sourcePath, text) {
+  const edgeReferences = {
+    "deploy/payment-v1/edge/hetzner-public.Caddyfile.in": [
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+    ],
+    "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": [
+      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt",
+      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
+    ],
+  };
+  if (edgeReferences[sourcePath]) {
+    const expected = new Set(edgeReferences[sourcePath]);
+    const observed = new Set();
+    for (const match of text.matchAll(/\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+/gu)) {
+      if (match[0].startsWith("/etc/bitcoinpir/payment-v1/edge/")) observed.add(match[0]);
+    }
+    if (canonicalize([...observed].sort(asciiCompare)) !== canonicalize([...expected].sort(asciiCompare))) {
+      fail(`rendered ${sourcePath} must reference exactly its reviewed TLS files`);
+    }
+    return [...observed].sort(asciiCompare);
+  }
   if (sourcePath !== "deploy/payment-v1/lightning/lightningd.conf.in") return [];
   const references = new Set();
   for (const original of text.split("\n")) {
@@ -1418,7 +1531,17 @@ function validateHashManifestScope(manifestPath, entries, plan) {
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
     case "/etc/bitcoinpir/payment-v1/edge/edge-config.sha256":
-      oneExact(`/etc/bitcoinpir/payment-v1/edge/${plan.placeholders.EDGE_CADDYFILE}`);
+      oneExact(
+        plan.deployment_profile === "edge-hetzner-v1"
+          ? "/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile"
+          : "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256":
+      oneExact(`/opt/bitcoinpir/haproxy/${plan.placeholders.HAPROXY_SHA256}/haproxy`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg");
       return;
     case "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256":
       oneExact(`/opt/bitcoinpir/payment-issuer/${plan.placeholders.PAYMENT_ISSUER_SHA256}/payment-issuer`);
@@ -1521,6 +1644,7 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
 
   const pathChecks = [
     ["CADDY_SHA256", "/opt/bitcoinpir/caddy/", "/caddy", true],
+    ["HAPROXY_SHA256", "/opt/bitcoinpir/haproxy/", "/haproxy", true],
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
@@ -1583,15 +1707,27 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   for (const name of requiredPlaceholders) validatePlaceholderValue(name, plan.placeholders[name]);
   if (
     plan.deployment_profile === "edge-hetzner-v1" &&
-    plan.placeholders.EDGE_CADDYFILE !== "hetzner-public.Caddyfile"
+    new Set([
+      plan.placeholders.PUBLIC_HTTPS_BIND,
+      plan.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND,
+      plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP,
+    ]).size !== 3
   ) {
-    fail("edge-hetzner-v1 must select hetzner-public.Caddyfile");
+    fail("edge-hetzner-v1 public, publisher-private bind, and publisher-client roles must use distinct addresses");
+  }
+  if (
+    plan.deployment_profile === "edge-hetzner-v1" &&
+    isIP(plan.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND) !==
+      isIP(plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP)
+  ) {
+    fail("edge-hetzner-v1 publisher private bind and client addresses must use the same IP family");
   }
   if (
     plan.deployment_profile === "edge-rollback-authority-v1" &&
-    plan.placeholders.EDGE_CADDYFILE !== "rollback-authority.Caddyfile"
+    plan.placeholders.ROLLBACK_AUTHORITY_PRIVATE_BIND ===
+      plan.placeholders.ROLLBACK_AUTHORITY_CLIENT_IP
   ) {
-    fail("edge-rollback-authority-v1 must select rollback-authority.Caddyfile");
+    fail("rollback-authority private bind and sole-client addresses must differ");
   }
   if (plan.deployment_profile === "issuer-lightning-signet-v1") {
     const uidValues = ["ISSUER_UID", "LIGHTNING_UID", "CLN_GUARD_UID", "PREFLIGHT_UID"].map(
@@ -1974,12 +2110,58 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       target_path: artifact.target_path,
       uid: artifact.uid,
     }));
+  const runtimePaths = [];
+  if (manifest.deployment_profile === "edge-hetzner-v1") {
+    const sourceFairIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === "bitcoinpir-payment-v1-source-fair-edge.service",
+    );
+    if (!sourceFairIdentity) {
+      fail("Hetzner edge runtime request is missing the source-fair service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: sourceFairIdentity.gid,
+      mode: "0750",
+      target_path: "/run/bitcoinpir-source-fair-edge",
+      uid: sourceFairIdentity.uid,
+    });
+    for (const name of [
+      "directory-public.sock",
+      "directory-publisher.sock",
+      "issuer.sock",
+      "provider.sock",
+    ]) {
+      runtimePaths.push({
+        file_type: "socket",
+        gid: sourceFairIdentity.gid,
+        mode: "0660",
+        target_path: `/run/bitcoinpir-source-fair-edge/${name}`,
+        uid: sourceFairIdentity.uid,
+      });
+    }
+  }
+  if (manifest.deployment_profile === "edge-rollback-authority-v1") {
+    const edgeIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === "bitcoinpir-payment-v1-edge.service",
+    );
+    if (!edgeIdentity) {
+      fail("rollback-authority edge runtime request is missing its service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: edgeIdentity.gid,
+      mode: "0700",
+      target_path: "/run/bitcoinpir-rollback-authority-edge",
+      uid: edgeIdentity.uid,
+    });
+  }
   return {
     approved_plan_sha256: manifest.approved_plan_sha256,
     collector: RUNTIME_COLLECTOR,
     deployment_profile: manifest.deployment_profile,
     installed_files: installedFiles,
     manifest_sha256: manifestSha256,
+    runtime_paths: runtimePaths,
     schema_version: EVIDENCE_SCHEMA_VERSION,
     secret_files: secretFiles,
     service_identities: manifest.service_identities,

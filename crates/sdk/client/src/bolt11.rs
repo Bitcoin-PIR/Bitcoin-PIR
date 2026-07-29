@@ -95,6 +95,30 @@ impl Bolt11QuoteKeyCheckpointV1 {
     pub const fn highest_epoch(&self) -> u64 {
         self.guard.highest_epoch()
     }
+
+    /// Validate one exact issuer delegation against this durable stream
+    /// without constructing an invoice intent. Strict two-provider callers
+    /// use this to freeze the payee and delegation before either payment leg
+    /// can begin; quote preparation repeats the verification and returns the
+    /// checkpoint that must be persisted.
+    pub(crate) fn verify_delegation_for_issuer_v1(
+        &self,
+        expected_issuer_id: &[u8; 32],
+        delegation_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<Bolt11QuoteKeyDelegationV1> {
+        if &self.issuer_id() != expected_issuer_id {
+            return Err(PirError::VerificationFailed(
+                "quote-key checkpoint issuer differs from the signed offer".into(),
+            ));
+        }
+        let delegation =
+            Bolt11QuoteKeyDelegationV1::decode(delegation_bytes).map_err(protocol_decode_error)?;
+        self.guard
+            .verify_and_advance(&delegation, now_unix)
+            .map_err(protocol_verification_error)?;
+        Ok(delegation)
+    }
 }
 
 /// A quote intent whose provider policy, commercial terms, issuer delegation,

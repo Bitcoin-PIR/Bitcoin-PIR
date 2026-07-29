@@ -426,6 +426,7 @@ async fn test_dpf_client_sync_empty() {
 
     assert!(result.results.is_empty());
     assert!(result.synced_height > 0);
+    assert!(result.was_fresh_sync);
 
     client.disconnect().await.unwrap();
 }

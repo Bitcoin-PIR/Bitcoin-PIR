@@ -21,6 +21,21 @@ Current target shape:
 - Tier 3 startup regenerates the ORAM images from proof-bound direct inputs and
   does not reuse mutable ORAM state across reboots.
 
+Production activation is currently blocked until **both** database proofs have
+typed Direct ORAM manifest commitments made before BuildEvidence/quote
+creation. BitcoinPIR's full-snapshot wrapper enforces the ordering, but the
+independent attested-builder still emits v1 evidence, so db0 is not yet
+eligible. The retained/reattested db1 delta also requires a new measured delta
+build. Strict startup and the builder wrapper fail closed rather than accepting
+either historical manifests or the current v1 producer output.
+
+The ORAM initial leaf/position-map seed is confidential. Strict `oramctl`
+builds obtain it internally from the OS RNG, never accept `--seed-hex`, and do
+not write it to stdout, build evidence, or the persistent bulk directory. Page
+keys likewise remain inside the measured guest. Controller state, auth state,
+and direct metadata must remain under `/run/bitcoinpir-oram-state`; the server
+rejects other paths unless the explicit development-only escape hatch is used.
+
 ## Current VPSBG Candidate
 
 Observed upgraded host:

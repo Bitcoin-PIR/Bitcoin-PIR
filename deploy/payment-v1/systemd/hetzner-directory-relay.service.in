@@ -46,8 +46,9 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay
 ReadWritePaths=/var/lib/bitcoinpir-directory-relay
+InaccessiblePaths=/run/bitcoinpir-source-fair-edge
 
 # A resolved relay config must bind the application to loopback; a same-host
-# WebSocket TLS edge provides public reads/writes. The directory publisher
+# WebSocket TLS edge provides separated public reads and private writes. The directory publisher
 # private key is never installed on this host. There is intentionally no
 # [Install] section.

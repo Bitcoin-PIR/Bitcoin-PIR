@@ -53,9 +53,426 @@ function fakeAnnouncement(
   } as unknown as WasmAnnounceVerification;
 }
 
+function fakeInstalledProof(dbId = 0): any {
+  const proof = { dbId, muhashHex: 'aa'.repeat(32), bucketSuperRootHex: 'bb'.repeat(32) };
+  return {
+    pin: { dbId },
+    proof,
+    status: { state: 'verified', proof },
+  };
+}
+
+function decodedButUnverifiedWasmResult(): any {
+  return {
+    entryCount: 0,
+    totalBalance: 0n,
+    isWhale: false,
+    // Deliberately malicious/stale transport default. The adapter must not
+    // expose it as an inclusion verdict before verifyMerkleBatch.
+    merkleVerified: true,
+    indexBins: () => [{ pbcGroup: 0, binIndex: 0, binContent: '00' }],
+    chunkBins: () => [],
+    matchedIndexIdx: () => undefined,
+    rawChunkData: () => undefined,
+  };
+}
+
+function verifiedWasmResult(amountSats = 9, txidByte = 1): any {
+  return {
+    entryCount: 1,
+    getEntry: () => ({ txid: txidByte.toString(16).padStart(2, '0').repeat(32), vout: 0, amountSats }),
+    totalBalance: BigInt(amountSats),
+    isWhale: false,
+    merkleVerified: true,
+    indexBins: () => [{ pbcGroup: 0, binIndex: 0, binContent: '00' }],
+    chunkBins: () => [],
+    matchedIndexIdx: () => 0,
+    rawChunkData: () => undefined,
+  };
+}
+
+const OPERATOR_PIN_0 = new Uint8Array(32).fill(0x41);
+const OPERATOR_PIN_1 = new Uint8Array(32).fill(0x42);
+const BINARY_0 = '51'.repeat(32);
+const BINARY_1 = '52'.repeat(32);
+
+function strictDpfPair(client: any): BatchPirClientAdapter {
+  const adapter = new BatchPirClientAdapter({
+    server0Url: 'wss://pir1.invalid',
+    server1Url: 'wss://pir2.invalid',
+    strictVerification: true,
+    verifyOperatorIdentity: true,
+    expectedServer0Pin: { binarySha256Hex: BINARY_0 },
+    expectedServer1Pin: { binarySha256Hex: BINARY_1 },
+    expectedServer0Id: 'pir1',
+    expectedServer1Id: 'pir2',
+    pinnedOperatorPubkey0: OPERATOR_PIN_0,
+    pinnedOperatorPubkey1: OPERATOR_PIN_1,
+  });
+  const state = adapter as any;
+  state.wasmClient = client;
+  state.secureChannelLegs = [true, true];
+  state.strictLegReady = [true, true];
+  state.installedProofsByLeg = [[fakeInstalledProof()], [fakeInstalledProof()]];
+  state.pairConsistencyReady = true;
+  state.pairPreflightState = 'pending';
+  adapter.attestation = {
+    server0: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+    server1: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+  };
+  adapter.operatorIdentity = {
+    server0: { state: 'verified', serverId: 'pir1', binarySha256Hex: BINARY_0 },
+    server1: { state: 'verified', serverId: 'pir2', binarySha256Hex: BINARY_1 },
+  };
+  state.legGenerations = [1, 1];
+  state.legOwners = [
+    {
+      generation: 1,
+      client,
+      diagnostic: state.ws0,
+      url: 'wss://pir1.invalid',
+      configSignature: state.legConfigSignature(0),
+    },
+    {
+      generation: 1,
+      client,
+      diagnostic: state.ws1,
+      url: 'wss://pir2.invalid',
+      configSignature: state.legConfigSignature(1),
+    },
+  ];
+  return adapter;
+}
+
+function strictHarmonyPair(client: any): HarmonyPirClientAdapter {
+  const adapter = new HarmonyPirClientAdapter({
+    hintServerUrl: 'wss://hint.invalid',
+    queryServerUrl: 'wss://query.invalid',
+    strictVerification: true,
+    verifyOperatorIdentity: true,
+    expectedServer0Pin: { binarySha256Hex: BINARY_0 },
+    expectedServer1Pin: { binarySha256Hex: BINARY_1 },
+    expectedServer0Id: 'hint',
+    expectedServer1Id: 'query',
+    pinnedHintOperatorPubkey: OPERATOR_PIN_0,
+    pinnedQueryOperatorPubkey: OPERATOR_PIN_1,
+  });
+  const state = adapter as any;
+  state.wasmClient = client;
+  state.secureChannelLegs = [true, true];
+  state.strictLegReady = [true, true];
+  state.installedProofsByLeg = [[fakeInstalledProof()], [fakeInstalledProof()]];
+  state.pairConsistencyReady = true;
+  state.pairPreflightState = 'pending';
+  adapter.attestation = {
+    hint: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+    query: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+  };
+  adapter.operatorIdentity = {
+    hint: { state: 'verified', serverId: 'hint', binarySha256Hex: BINARY_0 },
+    query: { state: 'verified', serverId: 'query', binarySha256Hex: BINARY_1 },
+  };
+  state.legGenerations = [1, 1];
+  state.legOwners = [
+    {
+      generation: 1,
+      client,
+      url: 'wss://hint.invalid',
+      configSignature: state.legConfigSignature(0),
+    },
+    {
+      generation: 1,
+      client,
+      url: 'wss://query.invalid',
+      configSignature: state.legConfigSignature(1),
+    },
+  ];
+  return adapter;
+}
+
 describe('adapter WASM lifecycle', () => {
   beforeEach(() => {
     policyFree.mockClear();
+  });
+
+  it('exposes one canonical zero-network product planner contract', () => {
+    const dpfPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
+      backend: 'dpf-pir',
+      workload: 'dpf-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 3,
+        workUnits: '470',
+        concurrentSockets: 1,
+      },
+      pbcRounds: 1,
+      exactIndexFrames: 1,
+      omitted: ['requestBytes', 'responseBytes', 'merkleFrames'],
+    }));
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (dpf as any).wasmClient = { planServiceQuery: dpfPlan };
+    const hash0 = new Uint8Array(20).fill(1);
+    const hash1 = new Uint8Array(20).fill(2);
+    expect(dpf.planServiceQuery([hash0, hash1], 7)).toEqual({
+      backend: 'dpf-pir',
+      workload: 'dpf-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 3,
+        workUnits: '470',
+        concurrentSockets: 1,
+      },
+    });
+    expect(dpfPlan).toHaveBeenCalledOnce();
+    expect(dpfPlan.mock.calls[0][0]).toEqual(
+      new Uint8Array([...hash0, ...hash1]),
+    );
+    expect(dpfPlan.mock.calls[0][1]).toBe(7);
+
+    const harmonyQueryPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
+      backend: 'harmony-pir',
+      workload: 'harmony-query',
+      lowerBounds: { logicalInputs: 1, frames: 4, workUnits: '900', concurrentSockets: 1 },
+      pbcRounds: 1,
+      exactIndexFrames: 2,
+      omitted: ['dataDependentAdditionalChunkFrames'],
+    }));
+    const harmonyHintPlan = vi.fn((_dbId: number) => ({
+      backend: 'harmony-pir',
+      workload: 'harmony-hint',
+      lowerBounds: {
+        logicalInputs: 0,
+        frames: 1,
+        workUnits: '155',
+        hintGroups: 155,
+        concurrentSockets: 1,
+      },
+      omitted: ['siblingHintGroups'],
+    }));
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (harmony as any).wasmClient = {
+      planServiceQuery: harmonyQueryPlan,
+      planServiceHint: harmonyHintPlan,
+    };
+    expect(harmony.planServiceQuery([hash0], 8)).toEqual({
+      backend: 'harmony-pir',
+      workload: 'harmony-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 4,
+        workUnits: '900',
+        concurrentSockets: 1,
+      },
+    });
+    expect(harmony.planServiceHint(8)).toEqual({
+      backend: 'harmony-pir',
+      workload: 'harmony-hint',
+      lowerBounds: {
+        logicalInputs: 0,
+        frames: 1,
+        workUnits: '155',
+        hintGroups: 155,
+        concurrentSockets: 1,
+      },
+    });
+    expect(harmonyQueryPlan).toHaveBeenCalledWith(hash0, 8);
+    expect(harmonyHintPlan).toHaveBeenCalledWith(8);
+  });
+
+  it('rejects malformed planner hashes before entering WASM', () => {
+    const planServiceQuery = vi.fn();
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = { planServiceQuery };
+    expect(() => adapter.planServiceQuery([new Uint8Array(19)])).toThrow(
+      'scriptHash[0] must be 20 bytes',
+    );
+    expect(planServiceQuery).not.toHaveBeenCalled();
+  });
+
+  it('never inherits a native merkleVerified default before explicit verification', async () => {
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (dpf as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+    };
+    const dpfResults = await dpf.queryBatch([new Uint8Array(20)]);
+    expect(dpfResults[0]?.merkleVerified).toBe(false);
+
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (harmony as any).hintsLoaded = true;
+    (harmony as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+    };
+    const harmonyResults = await harmony.queryBatch(['00']);
+    expect(harmonyResults.get(0)?.merkleVerified).toBe(false);
+  });
+
+  it('restores DPF fields from the verified native handle and consumes the batch once', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(9, 1)]),
+    };
+    const result = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    result.entries = [{ txid: new Uint8Array(32).fill(0xff), vout: 7, amount: 999n }];
+    result.totalSats = 999n;
+    result.allIndexBins = undefined;
+
+    await expect(adapter.verifyMerkleBatch([result])).resolves.toEqual([true]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({ vout: 0, amount: 9n });
+    expect(result.entries[0].txid).toEqual(new Uint8Array(32).fill(1));
+    expect(result).toMatchObject({ totalSats: 9n, merkleVerified: true });
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/live verified batch/);
+  });
+
+  it('rejects reordered DPF results and invalidates the whole release batch', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(1, 1), verifiedWasmResult(2, 2)]),
+    };
+    const results = (await adapter.queryBatch([new Uint8Array(20), new Uint8Array(20)])) as any[];
+    await expect(adapter.verifyMerkleBatch([results[1], results[0]])).rejects.toThrow(/reordered/);
+    await expect(adapter.verifyMerkleBatch(results)).rejects.toThrow(/live verified batch/);
+  });
+
+  it('invalidates an older DPF release batch when a new query starts', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    let amount = 1;
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(amount++)]),
+    };
+    const oldResult = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    const newResult = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    await expect(adapter.verifyMerkleBatch([oldResult])).rejects.toThrow(/stale|another query/);
+    await expect(adapter.verifyMerkleBatch([newResult])).rejects.toThrow(/live verified batch/);
+  });
+
+  it('restores Harmony input metadata and payload from its verified native binding', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(21, 3)]),
+    };
+    const result = (await adapter.queryBatch(['00'])).get(0)!;
+    const expectedScriptHash = result.scriptHash;
+    result.scriptHash = 'ff'.repeat(20);
+    result.scriptHashBytes = new Uint8Array(20).fill(0xff);
+    result.utxos = [{ txid: 'ff'.repeat(32), vout: 7, value: 999 }];
+
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).resolves.toEqual([true]);
+    expect(result.scriptHash).toBe(expectedScriptHash);
+    expect(result.scriptHashBytes).not.toEqual(new Uint8Array(20).fill(0xff));
+    expect(result.utxos).toHaveLength(1);
+    expect(result.utxos[0]).toMatchObject({ vout: 0, value: 21 });
+    expect(result.merkleVerified).toBe(true);
+  });
+
+  it('rejects and scrubs a DPF result without a live native handle', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {};
+    const result: any = {
+      entries: [{ txid: new Uint8Array(32).fill(1), vout: 0, amount: 9n }],
+      totalSats: 9n,
+      startChunkId: 1,
+      numChunks: 1,
+      numRounds: 1,
+      isWhale: false,
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/live verified batch/);
+    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+    expect(result.allIndexBins).toBeUndefined();
+  });
+
+  it('rejects and scrubs a Harmony result without a live native handle', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {};
+    const result: any = {
+      address: 'fixture',
+      scriptHash: '11'.repeat(20),
+      utxos: [{ txid: '22'.repeat(32), vout: 0, value: 9 }],
+      whale: false,
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).rejects.toThrow(/live verified batch/);
+    expect(result).toMatchObject({ utxos: [], merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+    expect(result.allIndexBins).toBeUndefined();
+  });
+
+  it('never persists a main-only Harmony hint cache over a complete entitlement', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+      prpBackend: 0,
+    });
+    const saveHints = vi.fn(() => new Uint8Array([1]));
+    (adapter as any).wasmClient = {
+      hasCompleteHints: vi.fn(() => false),
+      saveHints,
+    };
+    (adapter as any).catalog = { databases: [] };
+    (adapter as any).catalogToSdkHandle = () => ({ free: vi.fn() });
+    (adapter as any).databaseProofs.set(0, {
+      state: 'verified',
+      proof: { bucketSuperRootHex: '51'.repeat(32) },
+    });
+    await adapter.saveHintsToCache({
+      providerIdHex: '11'.repeat(32),
+      policyDigestHex: '31'.repeat(32),
+      scopeIdHex: '21'.repeat(32),
+      offerId: 1,
+      datasetIdHex: '51'.repeat(32),
+      prpBackend: 0,
+    });
+    expect(saveHints).not.toHaveBeenCalled();
   });
 
   it('frees both DPF attestation handles when a UI callback throws', async () => {
@@ -225,5 +642,652 @@ describe('adapter WASM lifecycle', () => {
 
     await expect((adapter as any).attestAndUpgrade()).resolves.toBeUndefined();
     expect(seen).toEqual([hintPin, queryPin]);
+  });
+
+  it('defensively retains directory-configured operator pins for both staged adapters', () => {
+    const dpfPin = new Uint8Array(32).fill(0x71);
+    const harmonyPin = new Uint8Array(32).fill(0x72);
+    const dpf = new BatchPirClientAdapter({
+      server0Url: '', server1Url: '', strictVerification: true,
+    });
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: '', queryServerUrl: '', strictVerification: true,
+    });
+
+    dpf.configureServerLeg(0, {
+      url: 'wss://directory-dpf.invalid',
+      pinnedOperatorPubkey: dpfPin,
+    });
+    harmony.configureProviderLeg(0, {
+      url: 'wss://directory-hint.invalid',
+      pinnedOperatorPubkey: harmonyPin,
+    });
+    dpfPin.fill(0xff);
+    harmonyPin.fill(0xff);
+
+    expect((dpf as any).operatorPinForLeg(0)).toEqual(new Uint8Array(32).fill(0x71));
+    expect((harmony as any).operatorPinForLeg(0)).toEqual(new Uint8Array(32).fill(0x72));
+  });
+
+  it('retains manual constructor pins when only a staged endpoint is reconfigured', () => {
+    const dpfPin = new Uint8Array(32).fill(0x73);
+    const harmonyPin = new Uint8Array(32).fill(0x74);
+    const dpfExpected = { binarySha256Hex: '73'.repeat(32) };
+    const harmonyExpected = { binarySha256Hex: '74'.repeat(32) };
+    const dpf = new BatchPirClientAdapter({
+      server0Url: '',
+      server1Url: '',
+      strictVerification: true,
+      expectedServer0Pin: dpfExpected,
+      expectedServer0Id: 'manual-dpf',
+      pinnedOperatorPubkey0: dpfPin,
+    });
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: '',
+      queryServerUrl: '',
+      strictVerification: true,
+      expectedServer0Pin: harmonyExpected,
+      expectedServer0Id: 'manual-hint',
+      pinnedHintOperatorPubkey: harmonyPin,
+    });
+
+    dpf.configureServerLeg(0, { url: 'wss://manual-dpf.invalid' });
+    harmony.configureProviderLeg(0, { url: 'wss://manual-hint.invalid' });
+    dpfPin.fill(0xff);
+    harmonyPin.fill(0xff);
+    dpfExpected.binarySha256Hex = 'ff'.repeat(32);
+    harmonyExpected.binarySha256Hex = 'ff'.repeat(32);
+
+    expect((dpf as any).operatorPinForLeg(0)).toEqual(new Uint8Array(32).fill(0x73));
+    expect((dpf as any).config.expectedServer0Pin.binarySha256Hex).toBe('73'.repeat(32));
+    expect((dpf as any).config.expectedServer0Id).toBe('manual-dpf');
+    expect((harmony as any).operatorPinForLeg(0)).toEqual(new Uint8Array(32).fill(0x74));
+    expect((harmony as any).config.expectedServer0Pin.binarySha256Hex).toBe('74'.repeat(32));
+    expect((harmony as any).config.expectedServer0Id).toBe('manual-hint');
+  });
+
+  it('preserves an admitted DPF first leg when the second transport fails', async () => {
+    const disconnectServer = vi.fn(async () => {});
+    const diagnosticDisconnect = vi.fn();
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+      pinnedOperatorPubkey1: OPERATOR_PIN_1,
+    });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).ws1 = {
+      connect: vi.fn(async () => {}),
+      disconnect: diagnosticDisconnect,
+    };
+    (adapter as any).wasmClient = {
+      connectServer: vi.fn(async (idx: number) => {
+        if (idx === 1) throw new Error('second transport unavailable');
+      }),
+      disconnectServer,
+      isServerConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('second transport unavailable');
+
+    expect(adapter.isLegReady(0)).toBe(true);
+    expect(adapter.isLegReady(1)).toBe(false);
+    expect(disconnectServer).toHaveBeenCalledOnce();
+    expect(disconnectServer).toHaveBeenCalledWith(1);
+    expect(diagnosticDisconnect).toHaveBeenCalledOnce();
+    expect((adapter as any).wasmClient.connectServer).toHaveBeenCalledWith(1);
+  });
+
+  it('rejects duplicate DPF operator pins before dialing the second provider', async () => {
+    const duplicate = new Uint8Array(32).fill(0x61);
+    const connectDiagnostic = vi.fn(async () => {});
+    const connectServer = vi.fn(async () => {});
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      pinnedOperatorPubkey0: duplicate,
+      pinnedOperatorPubkey1: duplicate.slice(),
+    });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).ws1 = { connect: connectDiagnostic, disconnect: vi.fn() };
+    (adapter as any).wasmClient = {
+      connectServer,
+      isServerConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('distinct operator pins');
+    expect(connectDiagnostic).not.toHaveBeenCalled();
+    expect(connectServer).not.toHaveBeenCalled();
+    expect(adapter.isLegReady(0)).toBe(true);
+  });
+
+  it('rejects duplicate Harmony operator pins before dialing the second provider', async () => {
+    const duplicate = new Uint8Array(32).fill(0x62);
+    const connectProvider = vi.fn(async () => {});
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+      pinnedHintOperatorPubkey: duplicate,
+      pinnedQueryOperatorPubkey: duplicate.slice(),
+    });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).wasmClient = {
+      connectProvider,
+      isProviderConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('distinct operator pins');
+    expect(connectProvider).not.toHaveBeenCalled();
+    expect(adapter.isLegReady(0)).toBe(true);
+  });
+
+  it('does not let a late DPF diagnostic connect revive a disconnected leg', async () => {
+    let releaseDiagnostic!: () => void;
+    const connectServer = vi.fn(async () => {});
+    const diagnosticDisconnect = vi.fn();
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+    });
+    (adapter as any).ws0 = {
+      connect: vi.fn(() => new Promise<void>((resolve) => { releaseDiagnostic = resolve; })),
+      disconnect: diagnosticDisconnect,
+    };
+    (adapter as any).wasmClient = {
+      connectServer,
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+    };
+
+    const connecting = adapter.connectLeg(0);
+    await Promise.resolve();
+    await adapter.disconnectLeg(0);
+    releaseDiagnostic();
+
+    await expect(connecting).rejects.toThrow('connection attempt was invalidated');
+    expect(connectServer).not.toHaveBeenCalled();
+    expect(diagnosticDisconnect).toHaveBeenCalledTimes(2);
+    expect(adapter.isLegReady(0)).toBe(false);
+    expect(adapter.getCatalog()).toBeNull();
+  });
+
+  it('frees a late DPF catalog handle and never publishes it after disconnect', async () => {
+    let releaseCatalog!: (value: any) => void;
+    const catalogFree = vi.fn();
+    const fetchCatalogFromServer = vi.fn(() => new Promise<any>((resolve) => {
+      releaseCatalog = resolve;
+    }));
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      expectedArkFingerprint: null,
+      expectedServer0Pin: { binarySha256Hex: '02'.repeat(32) },
+      expectedServer0Id: 'pir1',
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+      databaseProofPins: [
+        { dbId: 0, paramsHashHex: '01'.repeat(32) } as any,
+      ],
+    });
+    (adapter as any).ws0 = { connect: vi.fn(async () => {}), disconnect: vi.fn() };
+    (adapter as any).wasmClient = {
+      connectServer: vi.fn(async () => {}),
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+      attest: vi.fn(async () => fakeAttestation(vi.fn())),
+      upgradeServerToSecureChannel: vi.fn(async () => {}),
+      announce: vi.fn(async () => fakeAnnouncement(vi.fn())),
+      fetchCatalogFromServer,
+    };
+
+    const connecting = adapter.connectLeg(0);
+    for (let index = 0; index < 10 && !fetchCatalogFromServer.mock.calls.length; index += 1) {
+      await Promise.resolve();
+    }
+    expect(fetchCatalogFromServer).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    releaseCatalog({
+      toJson: () => JSON.stringify({ databases: [{ db_id: 0 }] }),
+      free: catalogFree,
+    });
+
+    await expect(connecting).rejects.toThrow('connection attempt was invalidated');
+    expect(catalogFree).toHaveBeenCalledOnce();
+    expect(adapter.getCatalog()).toBeNull();
+  });
+
+  it('does not let a late Harmony native connect revive a disconnected role', async () => {
+    let releaseConnect!: () => void;
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+      strictVerification: true,
+      pinnedHintOperatorPubkey: OPERATOR_PIN_0,
+    });
+    (adapter as any).wasmClient = {
+      connectProvider: vi.fn(() => new Promise<void>((resolve) => { releaseConnect = resolve; })),
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+    };
+
+    const connecting = adapter.connectLeg(0);
+    await Promise.resolve();
+    await adapter.disconnectLeg(0);
+    releaseConnect();
+
+    await expect(connecting).rejects.toThrow('connection attempt was invalidated');
+    expect(adapter.isLegReady(0)).toBe(false);
+    expect(adapter.getCatalog()).toBeNull();
+  });
+
+  it('frees a late Harmony catalog handle and never publishes it after disconnect', async () => {
+    let releaseCatalog!: (value: any) => void;
+    const catalogFree = vi.fn();
+    const fetchCatalogFromProvider = vi.fn(() => new Promise<any>((resolve) => {
+      releaseCatalog = resolve;
+    }));
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      expectedArkFingerprint: null,
+      expectedServer0Pin: { binarySha256Hex: '02'.repeat(32) },
+      expectedServer0Id: 'pir1',
+      pinnedHintOperatorPubkey: OPERATOR_PIN_0,
+      databaseProofPins: [
+        { dbId: 0, paramsHashHex: '01'.repeat(32) } as any,
+      ],
+    });
+    (adapter as any).wasmClient = {
+      connectProvider: vi.fn(async () => {}),
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+      attest: vi.fn(async () => fakeAttestation(vi.fn())),
+      upgradeProviderToSecureChannel: vi.fn(async () => {}),
+      announce: vi.fn(async () => fakeAnnouncement(vi.fn())),
+      fetchCatalogFromProvider,
+    };
+
+    const connecting = adapter.connectLeg(0);
+    for (let index = 0; index < 10 && !fetchCatalogFromProvider.mock.calls.length; index += 1) {
+      await Promise.resolve();
+    }
+    expect(fetchCatalogFromProvider).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    releaseCatalog({
+      toJson: () => JSON.stringify({ databases: [{ db_id: 0 }] }),
+      free: catalogFree,
+    });
+
+    await expect(connecting).rejects.toThrow('connection attempt was invalidated');
+    expect(catalogFree).toHaveBeenCalledOnce();
+    expect(adapter.getCatalog()).toBeNull();
+  });
+
+  it('recognizes two staged DPF secure legs before committing aggregate readiness', () => {
+    const binary0 = '41'.repeat(32);
+    const binary1 = '42'.repeat(32);
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      expectedServer0Pin: { binarySha256Hex: binary0 },
+      expectedServer1Pin: { binarySha256Hex: binary1 },
+      expectedServer0Id: 'pir1',
+      expectedServer1Id: 'pir2',
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+      pinnedOperatorPubkey1: OPERATOR_PIN_1,
+    });
+    (adapter as any).secureChannelLegs = [true, true];
+    (adapter as any).secureChannelEstablished = false;
+    adapter.attestation = {
+      server0: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+      server1: { state: 'verified', sevStatus: 'noSevHost', pinStatus: 'match' },
+    };
+    adapter.operatorIdentity = {
+      server0: { state: 'verified', serverId: 'pir1', binarySha256Hex: binary0 },
+      server1: { state: 'verified', serverId: 'pir2', binarySha256Hex: binary1 },
+    };
+
+    expect(() => (adapter as any).assertStrictTransportReady()).not.toThrow();
+  });
+
+  it('preserves Harmony hints and hint admission when the query leg fails', async () => {
+    const disconnectProvider = vi.fn(async () => {});
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: true,
+      pinnedHintOperatorPubkey: OPERATOR_PIN_0,
+      pinnedQueryOperatorPubkey: OPERATOR_PIN_1,
+    });
+    (adapter as any).strictLegReady = [true, false];
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      connectProvider: vi.fn(async (idx: number) => {
+        if (idx === 1) throw new Error('query transport unavailable');
+      }),
+      disconnectProvider,
+      isProviderConnected: vi.fn((idx: number) => idx === 0),
+    };
+
+    await expect(adapter.connectLeg(1)).rejects.toThrow('query transport unavailable');
+
+    expect(adapter.isLegReady(0)).toBe(true);
+    expect(adapter.isLegReady(1)).toBe(false);
+    expect(adapter.hintsLoaded).toBe(true);
+    expect(disconnectProvider).toHaveBeenCalledOnce();
+    expect(disconnectProvider).toHaveBeenCalledWith(1);
+  });
+
+  it('clears the DPF adapter session mirror when the final staged leg closes', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+    });
+    (adapter as any).catalog = { databases: [{ dbId: 0 }] };
+    (adapter as any).databaseProofs.set(0, { state: 'verified' });
+    (adapter as any).strictLegReady = [true, false];
+    (adapter as any).wasmClient = {
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+    };
+
+    await adapter.disconnectLeg(0);
+
+    expect(adapter.getCatalog()).toBeNull();
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+    expect(adapter.isLegReady(0)).toBe(false);
+  });
+
+  it('clears in-memory Harmony hints and catalog when the final role closes', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+      strictVerification: true,
+    });
+    (adapter as any).catalog = { databases: [{ dbId: 0 }] };
+    (adapter as any).databaseProofs.set(0, { state: 'verified' });
+    (adapter as any).strictLegReady = [true, false];
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+    };
+
+    await adapter.disconnectLeg(0);
+
+    expect(adapter.getCatalog()).toBeNull();
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+    expect(adapter.hintsLoaded).toBe(false);
+    expect(adapter.isLegReady(0)).toBe(false);
+  });
+
+  it('keeps DPF capability use and queries blocked until pre-authorization preflight completes', async () => {
+    const preflightDatabase = vi.fn(async () => {});
+    const authorizeService = vi.fn(async () => ({}));
+    const adapter = strictDpfPair({ preflightDatabase, authorizeService });
+    const port = adapter.serviceAdmissionPort(0, 0);
+
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    expect(() => port.authorize({} as any, new Uint8Array(32), 0, new Uint8Array()))
+      .toThrow('requires prepared strict admission');
+    await Promise.all([
+      adapter.prepareStrictAdmission(0),
+      adapter.prepareStrictAdmission(0),
+    ]);
+
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await port.authorize({} as any, new Uint8Array(32), 0, new Uint8Array());
+    expect(authorizeService).toHaveBeenCalledOnce();
+    await expect(adapter.queryBatch([], undefined, 1)).rejects.toThrow(
+      'strict DPF admission is bound to db_id 0, not db_id 1',
+    );
+  });
+
+  it('invalidates DPF acquisition binding when either prepared peer disconnects', async () => {
+    const connected = [true, true];
+    const verifyServicePolicySession = vi.fn();
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyServicePolicySession,
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    const survivingPort = adapter.serviceAdmissionPort(0, 0);
+    const policy = { marker: 'signed-policy' } as any;
+
+    await adapter.prepareStrictAdmission(0);
+    survivingPort.assertSessionBinding(policy);
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+
+    await adapter.disconnectLeg(1);
+    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
+      'requires prepared strict admission',
+    );
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates Harmony acquisition binding when either prepared peer disconnects', async () => {
+    const connected = [true, true];
+    const verifyServicePolicySession = vi.fn();
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyServicePolicySession,
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    const survivingPort = adapter.hintServiceAdmissionPort(0);
+    const policy = { marker: 'signed-policy' } as any;
+
+    await adapter.prepareStrictAdmission(0);
+    survivingPort.assertSessionBinding(policy);
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+
+    await adapter.disconnectLeg(1);
+    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
+      'requires prepared strict admission',
+    );
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks distinct operator pins at the final DPF pair gate', async () => {
+    const preflightDatabase = vi.fn(async () => {});
+    const adapter = strictDpfPair({ preflightDatabase });
+    (adapter as any).config.pinnedOperatorPubkey1 = OPERATOR_PIN_0.slice();
+    (adapter as any).legOwners[1].configSignature = (adapter as any).legConfigSignature(1);
+
+    await expect(adapter.prepareStrictAdmission(0)).rejects.toThrow('distinct operator pins');
+    expect(preflightDatabase).not.toHaveBeenCalled();
+  });
+
+  it('rechecks distinct operator pins at the final Harmony pair gate', async () => {
+    const preflightDatabase = vi.fn(async () => {});
+    const adapter = strictHarmonyPair({ preflightDatabase });
+    (adapter as any).config.pinnedQueryOperatorPubkey = OPERATOR_PIN_0.slice();
+    (adapter as any).legOwners[1].configSignature = (adapter as any).legConfigSignature(1);
+
+    await expect(adapter.prepareStrictAdmission(0)).rejects.toThrow('distinct operator pins');
+    expect(preflightDatabase).not.toHaveBeenCalled();
+  });
+
+  it('allows first-leg Harmony policy display but blocks capability paths before preflight', async () => {
+    const policy = { marker: 'signed-policy' } as any;
+    const fetchServicePolicy = vi.fn(async () => policy);
+    const requestHintPowChallenge = vi.fn(async () => ({ marker: 'challenge' }));
+    const adapter = strictHarmonyPair({
+      preflightDatabase: vi.fn(async () => {}),
+      fetchServicePolicy,
+      requestHintPowChallenge,
+    });
+    const port = adapter.hintServiceAdmissionPort(0);
+
+    await expect(port.fetchPolicy(
+      new Uint8Array(32),
+      new Uint8Array(32),
+      1n,
+      new Uint8Array(),
+    )).resolves.toBe(policy);
+    await expect(adapter.fetchHints()).rejects.toThrow(
+      'hint acquisition requires prepared strict admission',
+    );
+    expect(() => port.requestPowChallenge(
+      policy,
+      new Uint8Array(32),
+      0,
+      1n,
+    )).toThrow('requires prepared strict admission');
+
+    await adapter.prepareStrictAdmission(0);
+    await port.requestPowChallenge(policy, new Uint8Array(32), 0, 1n);
+    expect(requestHintPowChallenge).toHaveBeenCalledOnce();
+    expect(fetchServicePolicy).toHaveBeenCalledWith(
+      0,
+      0,
+      expect.any(Uint8Array),
+      expect.any(Uint8Array),
+      1n,
+      expect.any(Uint8Array),
+    );
+  });
+
+  it('makes a failed Harmony pre-authorization preflight fail closed and one-shot', async () => {
+    const preflightDatabase = vi.fn(async () => {
+      throw new Error('tree-top mismatch');
+    });
+    const adapter = strictHarmonyPair({ preflightDatabase });
+
+    await expect(adapter.prepareStrictAdmission(0)).rejects.toThrow('tree-tops preflight failed');
+    await expect(adapter.prepareStrictAdmission(0)).rejects.toThrow('retry is disabled');
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+  });
+
+  it('does not let an obsolete DPF preflight completion revive a disconnected pair', async () => {
+    let releasePreflight!: () => void;
+    const preflightDatabase = vi.fn(() => new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    }));
+    const adapter = strictDpfPair({
+      preflightDatabase,
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+    });
+
+    const finalization = adapter.prepareStrictAdmission(0);
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    releasePreflight();
+
+    await expect(finalization).rejects.toThrow('invalidated');
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+  });
+
+  it('does not let an obsolete Harmony preflight completion revive a disconnected pair', async () => {
+    let releasePreflight!: () => void;
+    const preflightDatabase = vi.fn(() => new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    }));
+    const adapter = strictHarmonyPair({
+      preflightDatabase,
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+    });
+
+    const finalization = adapter.prepareStrictAdmission(0);
+    expect(preflightDatabase).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(1);
+    releasePreflight();
+
+    await expect(finalization).rejects.toThrow('invalidated');
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
+    expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
+  });
+
+  it('rejects a late DPF query response after either verified peer disconnects', async () => {
+    let resolveQuery!: (results: any[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchVerified: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    await adapter.prepareStrictAdmission(0);
+
+    const pending = adapter.queryBatch([new Uint8Array(20)]);
+    expect(client.queryBatchVerified).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(1);
+    resolveQuery([decodedButUnverifiedWasmResult()]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+  });
+
+  it('rejects a late Harmony query without publishing inspector data', async () => {
+    let resolveQuery!: (results: any[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchVerified: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    adapter.hintsLoaded = true;
+    await adapter.prepareStrictAdmission(0);
+
+    const pending = adapter.queryBatch(['00']);
+    expect(client.queryBatchVerified).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    resolveQuery([decodedButUnverifiedWasmResult()]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+    expect(adapter.lastInspectorData).toBeNull();
+  });
+
+  it('rejects a previously verified DPF batch after peer disconnect', async () => {
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult()]),
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    await adapter.prepareStrictAdmission(0);
+    const result = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    await adapter.disconnectLeg(0);
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/not ready|invalidated|stale/);
+    expect(result.merkleVerified).toBe(false);
+  });
+
+  it('rejects a previously verified Harmony batch after peer disconnect', async () => {
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult()]),
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    adapter.hintsLoaded = true;
+    await adapter.prepareStrictAdmission(0);
+    const result = (await adapter.queryBatch(['00'])).get(0)!;
+    await adapter.disconnectLeg(1);
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).rejects.toThrow(/not ready|invalidated|stale/);
+    expect(result.merkleVerified).toBe(false);
   });
 });

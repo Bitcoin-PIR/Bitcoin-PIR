@@ -24,6 +24,9 @@
 }
 
 @ROLLBACK_AUTHORITY_HTTPS_HOST@ {
+	bind @ROLLBACK_AUTHORITY_PRIVATE_BIND@
+	tls /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key
+
 	@authority_call {
 		method POST
 		path /v1/rollback-authority/calls

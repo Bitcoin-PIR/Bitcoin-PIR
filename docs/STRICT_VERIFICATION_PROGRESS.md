@@ -58,7 +58,8 @@ passed end to end after the Pages deployment.
 
 Completed production proof activation for PR C:
 
-1. Copied `web/public/proofs/oram-source/mainnet_948454/db/` to a stable proof
+1. Copied the then-public historical
+   `web/public/proofs/oram-source/mainnet_948454/db/` bundle to a stable proof
    directory on Hetzner and VPSBG, for example
    `/home/pir/data/attestations/mainnet_948454_sev_snp/`.
 2. Added that path as the `proof_dir` of the `main` / `db_id=0` entry in each
@@ -73,6 +74,13 @@ Completed production proof activation for PR C:
    both server summaries were `YES`, database proof/tree-top preflight passed,
    query results received automatic Merkle `Verified` marks, and each query
    ended with the client disconnected. Harmony hints remained browser-cached.
+
+That v1 web artifact was later found to expose a reproducible ORAM
+initialization seed. It has been removed from `web/public` and preserved only
+as a byte-identical negative regression fixture under
+`web/src/__tests__/fixtures/oram-source-proof-v1-leaked/`. This does not revoke
+the ordinary database-root proof described above, but it makes that artifact
+ineligible as a paid TEE-ORAM source proof.
 
 ## PR D — standalone OnionPIR web client
 
