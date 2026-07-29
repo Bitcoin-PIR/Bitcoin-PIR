@@ -32,6 +32,9 @@ const QUERY_SCRIPT_HASH_BYTE = 0x42;
 
 interface LegStateV1 {
   fixture: PaymentTwoProviderFixtureV1['providers'][number];
+  /** Test-only stand-in for the adapter's verified live operator-key output.
+   * Global setup accepts it only after exact bpir-admin inventory binding. */
+  trustedOperatorSigningKey: Uint8Array;
   policy: WasmAcceptedServicePolicyV1;
   view: ServicePolicyViewV1;
   scope: ServiceScopeViewV1;
@@ -522,6 +525,7 @@ function selectVariant(variant: PaymentTwoProviderVariantV1): ReturnType<
         ),
       },
       offer: offers[0],
+      trustedOperatorSigningKey: activeLegs[0].trustedOperatorSigningKey,
     },
     {
       trust: {
@@ -533,6 +537,7 @@ function selectVariant(variant: PaymentTwoProviderVariantV1): ReturnType<
         ),
       },
       offer: offers[1],
+      trustedOperatorSigningKey: activeLegs[1].trustedOperatorSigningKey,
     },
   );
   selectedVariant = variant;
@@ -638,7 +643,17 @@ async function connectAndFetchPolicies(): Promise<[string, string]> {
           })) {
         throw new Error(`provider ${provider.index} live signed policy differs from the harness`);
       }
-      fetched.push({ fixture: provider, policy: accepted, view, scope });
+      fetched.push({
+        fixture: provider,
+        trustedOperatorSigningKey: exactHexBytes(
+          'trustedOperatorSigningKeyHex',
+          provider.trustedOperatorSigningKeyHex,
+          32,
+        ),
+        policy: accepted,
+        view,
+        scope,
+      });
     } catch (error) {
       accepted.free();
       throw error;
@@ -873,6 +888,8 @@ function validateFixture(fixture: PaymentTwoProviderFixtureV1): void {
       || fixture.providers[0]?.providerIdHex === fixture.providers[1]?.providerIdHex
       || fixture.providers[0]?.policySigningPubkeyHex
         === fixture.providers[1]?.policySigningPubkeyHex
+      || fixture.providers[0]?.trustedOperatorSigningKeyHex
+        === fixture.providers[1]?.trustedOperatorSigningKeyHex
       || fixture.providers[0]?.issuerOrigin === fixture.providers[1]?.issuerOrigin
       || (fixture.settlementMode === 'fake'
         && fixture.providers[0]?.expectedPayeePubkeyHex
@@ -891,6 +908,23 @@ function validateFixture(fixture: PaymentTwoProviderFixtureV1): void {
     throw new Error('browser harness refused a non-independent or funds-capable fixture');
   }
   exactHexBytes('manifestRootHex', fixture.manifestRootHex, 32);
+  for (const provider of fixture.providers) {
+    exactHexBytes('providerIdHex', provider.providerIdHex, 32);
+    exactHexBytes(
+      'policySigningPubkeyHex',
+      provider.policySigningPubkeyHex,
+      32,
+    );
+    exactHexBytes(
+      'trustedOperatorSigningKeyHex',
+      provider.trustedOperatorSigningKeyHex,
+      32,
+    );
+    if (provider.trustedOperatorSigningKeyHex === provider.providerIdHex
+        || provider.trustedOperatorSigningKeyHex === provider.policySigningPubkeyHex) {
+      throw new Error('browser harness operator trust key aliases provider or policy identity');
+    }
+  }
   exactHexBytes('databaseProof.blockHashHex', fixture.databaseProof.blockHashHex, 32);
   exactHexBytes('databaseProof.anchorHex', fixture.databaseProof.anchorHex, 36);
   exactHexBytes('databaseProof.indexMasterSeedHex', fixture.databaseProof.indexMasterSeedHex, 8);
