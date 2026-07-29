@@ -67,6 +67,7 @@ initializing a blank store and calling it a switch.
 
 | File | Gate profile | Scope |
 | --- | --- | --- |
+| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One stopped-only relay config fixed to UID 62951/GID 62952/mode 0400 for the real loader, plus blocked unit preparation; v2 stopped evidence additionally requires a consumer-owned 0700 final parent and real-EUID readability. No binary, key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
@@ -88,9 +89,17 @@ overlay skeleton separately pins both this canonical plan and its complete
 committed receipt, the canonical adapted-JSON digest, and the fresh runtime
 probe executables; a receipt summary alone is not sufficient.
 
-There is intentionally no directory-relay plan. The gate's deployment profile
-catalog does not contain one. A source template existing in the repository does
-not authorize inventing a profile or bypassing dependency closure.
+The directory-relay skeleton is intentionally weaker than an activation plan:
+it has no payload artifacts, its unit remains exactly `ExecStart=/usr/bin/false`,
+and the live collector rejects the profile. Materializing its public-key
+placeholder permits only offline review of the bounded config bytes. Relay
+selection must still move through its separate artifact gate and reviewed PR;
+installation, start, private-key use, routing and publication remain separately
+approved actions. The fixed unit/NSS/config/state paths describe one instance;
+under the current default `2..8` distinct-origin client contract, a second
+origin remains blocked. A separately reviewed explicit centralized-single-relay
+browser opt-in may remove that default requirement, but this skeleton cannot
+silently do so.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.

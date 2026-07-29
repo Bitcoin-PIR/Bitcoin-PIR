@@ -1,4 +1,4 @@
-# BitcoinPIR Payment V1 deployment template; relay selection is initially UNRESOLVED.
+# BitcoinPIR Payment V1 deployment template; relay selection is not resolved.
 [Unit]
 Description=BitcoinPIR Hetzner directory-only relay (blocked template)
 After=network-online.target
@@ -18,13 +18,20 @@ WorkingDirectory=/var/lib/bitcoinpir-directory-relay
 Environment=RUST_LOG=error
 # The reviewed directory-only relay exposes only --config with an absolute,
 # owner-only TOML path. Keeping ExecStart as an unconditional failure prevents
-# use before the final implementation audit and exact artifact selection. The
+# use before exact artifact selection. The
 # pinned binary path, binary/config hash checks and sole --config argument must
 # replace this line in the same PR that changes relay-selection.toml from
-# UNRESOLVED to RESOLVED.
+# not-resolved to resolved.
 ExecStart=/usr/bin/false
 Restart=no
 TimeoutStopSec=30
+LimitCORE=0
+LimitNOFILE=4096
+MemoryMax=536870912
+MemorySwapMax=0
+TasksMax=128
+StandardOutput=null
+StandardError=null
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -34,6 +41,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictSUIDSGID=true

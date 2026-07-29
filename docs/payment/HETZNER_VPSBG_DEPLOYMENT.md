@@ -42,11 +42,11 @@ needs to know the other's identity or payment method.
   Hetzner payment issuer + CLN -- pinned HTTPS/CAS --> issuer authority host
   Hetzner directory Relay A + same-host TLS edges
 
-  VPSBG Tier 3 provider       -- pinned HTTPS/CAS --> provider-1 authority host
+  VPSBG Tier 3 provider       -- no payment store/rollback authority
     existing PIR process + enforced V1 + Free/PoW only
     no issuer, relay or mint
 
-  The three authority hosts above are separately administered failure domains.
+  The two stateful authority hosts above are separately administered failure domains.
 
   independent Relay B failure domain
   +----------------------+
@@ -54,11 +54,13 @@ needs to know the other's identity or payment method.
   +----------------------+
 ```
 
-The rollback authorities are not extra processes on the Hetzner provider or
-VPSBG detailed-store hosts. Provider 0, Provider 1, and the issuer require
-separate authority hosts, service accounts, TLS keys, Ed25519 keys, namespaces,
-administrators, logs, and backup/restore domains. Co-location is permitted only
-for an explicitly non-production exercise.
+The rollback authorities are not extra processes on the stateful Hetzner
+provider or issuer hosts. Provider 0 and the issuer require separate authority
+hosts, service accounts, TLS keys, Ed25519 keys, namespaces, administrators,
+logs, and backup/restore domains. Co-location is permitted only for an
+explicitly non-production exercise. The exact-pinned VPSBG Free-PoW profile is
+the narrow storeless exception described below; adding any stateful method to
+it creates a new authority requirement.
 
 Relay A and Relay B likewise require genuinely independent host, network,
 administrator, log and backup/restore domains; a second hostname on the Hetzner
@@ -345,6 +347,7 @@ records:
 
 - a full 40-hex source commit;
 - source archive and Cargo.lock SHA-256;
+- canonical reproducible-build manifest SHA-256;
 - exact binary SHA-256 and `--version` output;
 - exact bounded config SHA-256; and
 - the pinned directory publisher public key.
@@ -359,12 +362,16 @@ application listeners to loopback, use the same-host WSS edge, disable
 access/event/body/IP logging, disable NIP-42 for the current publisher, retain
 the NIP-01 addressable-event replacement ordering, and enforce the
 BitcoinPIR bounds: 262,176-byte outer EVENT message, 192 KiB content, kind
-30078, and a deployment-config size no greater than 16 KiB. At least two relay
-hostnames are still required for directory use; two aliases on one Hetzner host
-do not provide operator or failure independence.
+30078, and a deployment-config size no greater than 16 KiB. The current default
+browser/publisher contract requires `2..8` distinct WSS relay origins, so under
+that default a second origin remains a blocker; two aliases for one origin do
+not satisfy it. A separately reviewed, explicit centralized-single-relay
+browser opt-in may later implement the user's accepted centralized-directory
+mode, but this stopped profile neither supplies that opt-in nor permits an
+automatic fallback from `2..8` to one.
 
 The reviewed process interface is intentionally narrow: exactly
-`bitcoinpir-directory-relay --config /absolute/owner-only.toml`, with no CLI
+`bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`, with no CLI
 overrides. The TOML must declare `profile = "bitcoinpir-directory-relay-v1"` and
 contain exactly `public_listen`, `publisher_listen`, `database`,
 `directory_pubkey_hex`, the four global connection/operation/rate/egress caps,
@@ -375,8 +382,12 @@ equal each global cap, `max_egress_bytes_per_connection`, `max_archive_events`, 
 `egress_timeout_seconds`; unknown fields and missing fields fail closed.
 `deploy/payment-v1/directory-relay.toml.example` fixes the database below the
 unit's only writable StateDirectory at
-`/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The config must be mode
-0400 or 0600 under a private parent directory.
+`/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The loader accepts only an
+effective-UID-owned mode 0400 or 0600 file under a private parent directory;
+the reviewed deployment shape is specifically UID 62951, GID 62952, mode 0400
+and never root-owned/group-readable 0440. Its final parent must be owned by UID
+62951 with exact mode 0700; the stopped collector probes readability as the
+real service EUID and seals the descriptor-bound ancestor chain.
 
 The relay has separate public-read and private-publisher accept loops and
 acquires a lane reservation before a shared global reservation. The public
@@ -404,13 +415,86 @@ The source gate/readback suite passed 80/80, the relay library/binary suite
 passed 24/24 in Linux Docker, and the exact-head CI exercised the real
 two-relay process topology. This closes only the implementation-audit item.
 Relay selection remains unresolved until the exact source archive, Cargo.lock,
-Linux binary, bounded config and publisher public-key pins are recorded, two
-genuinely independent relay failure domains are approved, and target-host
-runtime/fault evidence passes.
+Linux binary, bounded config and publisher public-key pins are recorded,
+target-host runtime/fault evidence passes, and either the default contract's
+second independent relay origin is approved or a separately reviewed explicit
+centralized-single-relay browser opt-in is selected.
 
 Accordingly, no public relay service or catalog publication belongs in a
 rendered plan today. The locally held publisher key, if any, is not relay
 selection evidence and its installation/use requires its own approval.
+
+The repository now has one stopped-only `directory-relay-v1` render skeleton.
+It renders the bounded config plus the blocked unit only; it carries no binary
+payload and cannot pass the live collector. This closes offline preparation
+shape, not relay selection or installation authority. The only applicable
+Linux runtime command is `collect-stopped-relay`, followed by independently
+pinned `verify-stopped-relay-offline`; both reject any non-false `ExecStart`,
+any pre-start command, installed-file/fragment/effective-unit drift, a failed
+`systemd-analyze verify`, any requested runtime socket, or any live evidence.
+The v2 stopped-relay schema reads systemd Conditions only through busctl's
+typed `a(sbbsi)` value, requires the unresolved selection sentinel to be
+absent, binds the private config to its real consumer and 0700 final parent,
+and seals both file and descriptor-walk fingerprints before the final
+Conditions/stopped-generation pass. For the inactive/dead unit, systemd 255
+evidence records the dynamic
+`MemorySwapCurrent=[not set]` while the configured and effective
+`MemorySwapMax=0` remains mandatory.
+
+For a future selection, run `scripts/build-payment-v1-directory-relay.sh` from
+the frozen reviewed source. Its pinned Linux-amd64 container runs with network
+disabled and performs two independent empty builds from a canonical full-commit
+Git archive. Commit resolution, archive and lockfile generation, and Git/Tar
+version capture all occur inside that digest-pinned container; host Git/Tar
+bytes are not trusted as build inputs. The source proof copies only Git object
+bytes into a temporary minimal bare database and does not import replace refs,
+grafts, shallow state, repository config, uncommitted attributes or alternate
+object stores. Then run
+`scripts/payment-v1-directory-relay-artifact-gate.mjs verify-selection`; it
+recomputes the archive, proves its embedded `Cargo.lock` matches the commit,
+requires both clean binaries and the selected binary to be byte-identical,
+rechecks the recorded Git/Tar versions, independently rebuilds the already
+verified archive twice from gate-private snapshots, reads `--version` only
+from the verified binary's private snapshot, and hashes the exact `config.toml`
+bytes. The resulting build-manifest digest is a selection field. None of those
+steps authorizes installing the binary, changing `/usr/bin/false`, using the
+publisher key, opening a listener, routing traffic or publishing an event.
+The verifier seals the artifact-root parent chain across long rebuilds. The
+recipe applies host-side `SIGKILL` timeouts to every Docker operation, reseals
+the complete closed-world allowlist after long runners and after manifest
+creation, compiles the publisher helper before the final seal, and immediately
+publishes with `renameat2(RENAME_NOREPLACE)`; unsupported kernels and every
+destination type fail closed. Each allowlisted file is bound through precise
+descriptor stat/read/hash/reopen seals including nlink and nanosecond ctime.
+The source-proof and recipe build phases use writable bind mounts and therefore
+reject a root host UID or GID instead of silently running their containers as
+root. Verifier-only rebuilds and binary-version execution have no writable bind
+mounts and always run as fixed unprivileged UID/GID 65532 with owner-matched
+private tmpfs workspaces, regardless of the invoking operator.
+The verifier additionally requires an effective-UID-owned mode-0700 artifact
+root, rejects Docker mount-source commas/control bytes, bounds Docker and
+binary-version execution time/resources, and rechecks repository/object-store
+inodes plus every allowlisted artifact after the long builds. The recipe
+atomically publishes the completed directory with `RENAME_NOREPLACE`, so a
+concurrently created output file, directory or symlink blocks publication
+instead of receiving or replacing any artifact path. It then reseals the
+published inode set, repeats the full canonical-source/two-rebuild/version gate
+against the published path, and performs one final fast seal before reporting
+PASS.
+
+The build and published preparation directory remain writable in principle by
+the invoking EUID, and root remains outside this race model. Descriptor seals
+detect mutations during each bounded verification window; they do not make a
+same-EUID or root process untrusted after PASS. Consequently this output is not
+a production installation boundary. Independent digest verification and a
+separately reviewed copy into a root-owned, build-EUID-unwritable target remain
+mandatory before any later installation gate can advance.
+
+The recipe and verifier's clean builds on one Docker daemon establish local
+determinism only; the daemon and its host remain a trusted execution boundary.
+Before relay selection becomes `RESOLVED`, an independent operator on a clean,
+separately administered host must reproduce the same archive, lockfile,
+Git/Tar-version, build-manifest and binary digests.
 
 ## VPSBG minimal change
 
@@ -427,9 +511,15 @@ behavior remains authoritative.
 The frozen VPSBG policy must contain only current `FreeV1` ProofOfWork offers.
 It may expose multiple backend-specific scopes, but every offer has
 `free_mode = proof-of-work`, a non-zero bounded difficulty, no issuer/key
-binding, and a zero price. Before baking, inspect the canonical signed policy
-and verify its SHA-256 against the UKI manifest. The CLI alone cannot prove the
-contents of a signed policy.
+binding, an empty endpoint/privacy-leakage declaration, and a zero price. Before
+baking, inspect the canonical signed policy, compute its domain-separated
+`ServicePolicyV1::policy_digest()` over the complete signed canonical bytes,
+place that exact non-zero value in
+`--service-storeless-free-pow-policy-digest-hex`, and separately verify the
+file's ordinary SHA-256 against the UKI manifest. Those are different digests.
+The exact protocol digest argument and the script that supplies it MUST be
+inside the measured UKI; an unmeasured host argument or mutable environment
+variable does not replace a rollback floor.
 
 The VPSBG template deliberately has no:
 
@@ -440,36 +530,34 @@ The VPSBG template deliberately has no:
 - online-authority method material; a Free-PoW-only policy creates no online
   V2Full authorization route and needs no V2Full override flag.
 
-### P1 activation blocker: VPSBG hostile-host secrecy
+### Storeless measured-policy boundary
 
-The existing Tier 3 `/home/pir/data` is supplied by a host-visible rootfs. The
-repository does not yet implement SEV-SNP sealing, a vTPM, or
-attestation-gated key release for this data. An effective-user-owned mode-0700
-subtree and single-link mode-0600 files protect only against ordinary accounts
-inside the guest. They do not protect against the VPSBG operator: the VPSBG
-host can read or copy the ProviderStore and the remote rollback client's
-Ed25519 seed/value-root key material.
+The VPSBG Free-PoW profile now uses the deliberately narrow storeless runtime
+path. Startup opens no ProviderStore or rollback authority and accepts no
+retained policy, Free-IP quota/key, payment or credential key, direct receipt,
+Cashu, BAT, ARC, shared issuer, legacy credential gate, or test HTTPS root.
+Policy activation rejects an empty policy, an empty scope, any non-Free-PoW
+offer, and unused credential/issuer/endpoint/privacy fields. Runtime admission
+keeps only one fresh challenge in the secure connection; the solution is bound
+to provider, exact policy/scope/offer/operation, random challenge and that
+connection's secure-channel exporter. Closing or restarting loses the
+challenge and cannot turn it into a reusable bearer credential.
 
-This is an activation blocker even for the Free-PoW canary while it requires a
-ProviderStore. Before production activation, the user must explicitly approve
-one of two designs:
+This removes the earlier ProviderStore/remote-authority secret from the VPSBG
+Free-PoW canary; it does not claim that a host-visible rootfs is sealed. The
+signed policy is public and may remain on host-visible storage because its
+signature, provider/key pins and measured exact digest reject replacement.
+Any later stateful method, retained redemption, durable quota or payment method
+must leave this profile and restore the ordinary ProviderStore plus independent
+rollback-authority design; no automatic fallback exists.
 
-1. implement and review attestation-gated key release or equivalent sealing; or
-2. expand the trust boundary and accept that the VPSBG host can steal these
-   availability/rollback credentials.
+The digest pin is immutable for one measurement. Changing policy epoch,
+validity, expiry, scope, dataset, limit, difficulty, priority or any other signed
+byte changes the protocol digest and therefore requires a new measured UKI.
+Plan renewal before `expires_at`; expiry fails closed and cannot be repaired by
+editing the host policy file or command line.
 
-The second choice also abandons the remote authority's anti-rollback guarantee
-*against the VPSBG host itself*: a host that steals the client signing and
-value-root keys can create correctly signed Read/CAS traffic that the
-independent authority cannot distinguish from the guest. The authority still
-separates other failure and administration domains, but it no longer protects
-the detailed store from a malicious VPSBG operator.
-
-Owner-only permissions remain required defense in depth, but must never be
-presented as hostile-host secrecy. The provider rollback authority itself
-remains on an independently administered remote host.
-
-Any binary, policy, run-script or initramfs change requires a new UKI, preserved
+Any binary, policy digest, run-script or initramfs change requires a new UKI, preserved
 previous known-good UKI, portal upload, reboot, fresh SEV-SNP measurement,
 binary hash, attestation verification and client pin update. Those are remote
 activation actions and require separate approval.
@@ -796,6 +884,12 @@ binding only; it does not fetch the claimed commit or recompute an archive,
 `Cargo.lock`, binary, config, policy or publisher-key digest. Repeated-digit
 test hashes are accepted only inside negative/shape fixtures.
 
+The separate directory-relay artifact gate supplies that missing byte proof;
+both gates are required. It accepts neither a metadata-only claim nor a build
+manifest without the canonical archive, archive-contained lockfile, two clean
+binaries, pinned Git/Tar version records, executable version output and exact
+config bytes available for independent recomputation.
+
 `scripts/payment-v1-rendered-artifact-gate.mjs` now renders and verifies one
 closed profile from an externally digest-approved plan. It recomputes every
 digest from exact staged bytes, rejects unresolved placeholders and extra or
@@ -844,5 +938,7 @@ Hetzner rollback changes routing back to the previously verified process and
 preserves both detailed stores and remote authority floors; it never restores a
 stale store snapshot or lowers an authority. VPSBG rollback selects the
 preserved previous known-good UKI through the portal and restores the matching
-client measurement/binary pins. It does not edit the measured run script in
-place.
+client measurement/binary pins and that image's matching exact Free-PoW policy
+digest. This VPSBG profile has no payment ProviderStore, WAL/SHM or rollback
+authority to restore. It does not edit the measured run script, digest argument
+or policy in place.

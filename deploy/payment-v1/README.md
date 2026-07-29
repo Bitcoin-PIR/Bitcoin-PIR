@@ -154,7 +154,15 @@ The templates divide responsibilities as follows:
   `relay-selection.toml.example` is `UNRESOLVED`. It is a deployment contract
   for the repository's directory-only relay, not a generic Nostr relay unit.
   A future resolved service may pass only one absolute owner-only TOML path via
-  `--config`; direct command-line overrides remain forbidden.
+  `--config`; that path is fixed as
+  `/etc/bitcoinpir/payment-v1/directory-relay/config.toml` and direct
+  command-line overrides remain forbidden. The current stopped-only render
+  profile carries no binary payload and the unit remains `/usr/bin/false`.
+  Its config is installed for the actual loader as UID `62951`, GID `62952`,
+  mode `0400`; root-owned/group-readable `0440` is deliberately rejected. The
+  config is a private loader input: its final parent must be owned by UID
+  `62951` with mode `0700`, and stopped evidence must prove readability through
+  that service's real effective UID.
 - `systemd/payment-v1-source-fair-edge.service.in` runs pinned HAProxy 2.8
   without a StateDirectory, logs, peers, stats, or persisted source state. It
   owns a volatile `0750` runtime directory and four `0660` PROXY-v2 Unix
@@ -303,3 +311,81 @@ The directory service is still deliberately non-activatable while
 render, install a publisher key, or publish a catalog merely because the rest
 of a profile passes. Relay resolution, key installation/use and public Nostr
 publication are distinct reviewed/approved steps.
+
+This closed profile has one fixed unit/NSS/config/state identity. The current
+default browser/publisher contract still requires `2..8` distinct WSS origins,
+so a second origin blocks use under that default. A separately reviewed
+explicit centralized-single-relay browser opt-in may implement the user's
+accepted centralized-directory mode; this profile does not weaken the default
+or authorize an automatic fallback.
+
+`scripts/build-payment-v1-directory-relay.sh` is the closed Linux-amd64 build
+recipe. It uses a registry-digest-pinned Rust container already present on the
+operator host, disables container networking, creates a full-commit canonical
+Git archive, copies that commit's `Cargo.lock`, and performs two separate empty
+builds. Host Git/Tar do not supply those bytes: commit resolution, archive and
+lockfile generation, and Git/Tar version capture all occur in the pinned
+`linux/amd64` container, using a temporary minimal bare object database that
+does not import replace refs, grafts, shallow state, repository config,
+uncommitted attributes or alternate object stores. It aborts unless both
+binaries are byte-identical and records the source-tool versions plus the
+selected binary's real `--version` output in canonical build-manifest bytes.
+
+`scripts/payment-v1-directory-relay-artifact-gate.mjs` independently
+recomputes the Git archive for the full source commit, proves that the archive,
+commit and copied `Cargo.lock` agree, verifies all three ELF64 x86-64 binary
+copies, rechecks the exact recorded Git/Tar versions, executes `--version` in
+the same pinned networkless container, independently rebuilds the verified
+archive twice from private snapshots and requires both outputs to equal the
+selected binary, and binds the actual config bytes and publisher public key to
+a future resolved selection. The selection also pins the canonical
+build-manifest SHA-256.
+The artifact root must remain owned by the verifier's effective UID with exact
+mode `0700`; its descriptor-bound parent chain and nanosecond leaf fingerprint
+are sealed across the long verification. After every long runner, the verifier
+re-reads the closed nine-file allowlist and descriptor-binds each regular file's
+device, inode, owner, mode, link count, size, nanosecond ctime/mtime and SHA-256
+through read and reopen/reseal passes. Manifest creation performs the same full
+seal after `build-manifest.json` exists. Docker bind-source paths reject
+commas and control bytes; every container and binary-version execution has
+CPU, file-descriptor, core-dump, in-container timeout and uncatchable host-side
+timeout bounds. Repository/object-store paths and inodes plus the source
+archive are rechecked after the long rebuilds. Final output publication compiles
+the helper before the last complete artifact seal, then immediately calls
+Linux/amd64 `renameat2(RENAME_NOREPLACE)` without an intervening compiler or
+shell. `EEXIST`, `ENOSYS` and every other refusal fail closed; there is no
+check-then-rename fallback. The published inode set is immediately resealed,
+then the published path repeats the full canonical-source, two-clean-rebuild
+and version verification and ends with another complete fast seal before PASS.
+Writable-bind source/build phases reject root host UID or GID. The verifier's
+read-only rebuild and version phases always use fixed unprivileged UID/GID
+65532 with owner-matched private tmpfs workspaces, so a root operator cannot
+silently turn those container checks into root execution.
+The build directory and published preparation artifact remain owned by the
+invoking EUID. These seals detect races but cannot make that EUID, or root,
+untrusted: either can mutate bytes after PASS. Therefore this publication is
+not an installation or authenticity boundary. A separate verifier must pin the
+reported digests, and production installation must copy verified bytes into its
+separately reviewed root-owned target without granting the build EUID write
+authority.
+Two clean builds on one Docker daemon prove local determinism, not independent
+supply-chain consensus: that daemon and host remain trusted execution
+boundaries. Before `RESOLVED`, a second operator on an independently prepared
+clean host must reproduce the same source archive, lockfile, Git/Tar versions,
+manifest and binary digests.
+Repeated-digit fixture hashes cannot satisfy this verifier. No current local
+artifact hash or production publisher key is committed here.
+
+The closed `directory-relay-v1` render profile and skeleton are preparation
+only. The generic and Linux live collectors reject it. Only
+`collect-stopped-relay` / `verify-stopped-relay-offline` are valid, and they
+require the unit to remain inactive/dead with `ExecStart=/usr/bin/false`, no
+pre-start command, two stable passes over every manifest-bound installed file
+and effective unit property, strict typed `a(sbbsi)` systemd Conditions proving
+that `RELAY-SELECTION-RESOLVED` is absent, successful `systemd-analyze verify`,
+no runtime socket request, and no protected service-account credential holder.
+The v2 stopped-relay evidence also descriptor-binds the config's complete
+parent chain, proves the exact consumer EUID can read it, requires its final
+parent to be consumer-owned mode `0700`, and performs a final private-input
+seal before the last Conditions/generation pass. This is not installation,
+activation or publication evidence.
