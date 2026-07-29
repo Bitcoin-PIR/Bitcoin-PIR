@@ -196,6 +196,25 @@ describe('strict OnionPIR session lifecycle', () => {
     expect(sendRaw).not.toHaveBeenCalled();
   });
 
+  it('rejects the test-only script-hash override in strict mode', async () => {
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = seedStrictQuerySession(client, socket);
+    internal.wasmModule = {};
+    client.setScriptHashOverrideForNextQuery([new Uint8Array(20).fill(9)]);
+
+    await expect(client.queryBatch([new Uint8Array(20).fill(1)]))
+      .rejects.toThrow('forbids the test-only script-hash override');
+    expect(socket.sendRaw).not.toHaveBeenCalled();
+  });
+
   it('plans the exact Onion INDEX round without generating keys or network traffic', () => {
     const socket = {
       isOpen: () => true,
@@ -251,6 +270,8 @@ describe('strict OnionPIR session lifecycle', () => {
 
     const pending = client.queryBatch([new Uint8Array(20)]);
     expect(socket.sendRaw).toHaveBeenCalledOnce();
+    await expect(client.queryBatch([new Uint8Array(20)]))
+      .rejects.toThrow('pipeline is already in flight');
     client.disconnect();
     release(new Uint8Array());
 
@@ -294,11 +315,13 @@ describe('strict OnionPIR session lifecycle', () => {
       scriptHash: new Uint8Array(20).fill(4),
     };
     const [handle] = internal.capturePendingResultBatch(
-      [result], [result.scriptHash], 0, 7,
+      [result], [result.scriptHash], 0, 7, internal.resultEpoch,
     );
 
     const pending = client.verifyMerkleBatch([handle]);
     expect(internal.verifySubTree).toHaveBeenCalledOnce();
+    await expect(client.queryBatch([new Uint8Array(20)]))
+      .rejects.toThrow('pipeline is already in flight');
     client.disconnect();
     release(new Map([['0:0', true], ['0:1', true]]));
 
@@ -347,8 +370,9 @@ describe('strict OnionPIR session lifecycle', () => {
       verificationGeneration: 7,
     };
     const [handle] = internal.capturePendingResultBatch(
-      [trusted], [expectedScriptHash], 0, 7,
+      [trusted], [expectedScriptHash], 0, 7, internal.resultEpoch,
     );
+    expect(handle.numRounds).toBe(0);
 
     // Pre-verification fields are caller-controlled. The verifier must ignore
     // them and restore the private query snapshot only after the whole batch.
@@ -398,7 +422,7 @@ describe('strict OnionPIR session lifecycle', () => {
     const first = result(1);
     const second = result(2);
     const handles = internal.capturePendingResultBatch(
-      [first, second], [first.scriptHash, second.scriptHash], 0, 7,
+      [first, second], [first.scriptHash, second.scriptHash], 0, 7, internal.resultEpoch,
     );
 
     await expect(client.verifyMerkleBatch([handles[1], handles[0]]))

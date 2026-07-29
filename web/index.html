@@ -4095,8 +4095,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // DB selector and delta example buttons reveal after the
                 // first successful sync (see opExecuteSync).
                 opRefreshSyncStateUI();
-                // Dev-only: expose client on window for browser console debugging.
-                window.opClient = opClient;
             } catch (error) {
                 candidate?.disconnect();
                 log(`OnionPIR connection failed: ${error.message}`, 'error');
