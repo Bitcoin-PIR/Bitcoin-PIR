@@ -297,15 +297,20 @@ account, TLS/key material, administrator, log stream and backup/restore domain.
 Co-location removes the independent anti-rollback and non-collusion failure
 boundary even though authority values are opaque.
 
-### VPSBG hostile-host state custody
+### VPSBG hostile-host state custody (resolved for the storeless Free-PoW scope)
 
-The prepared VPSBG change is only a non-executable Free/PoW service-auth
-argument fragment. Its ProviderStore and remote-authority client secrets would
-still reside in host-visible `/home/pir/data`; ordinary file modes do not hide
-them from the VPSBG operator. Production activation therefore requires either
-attestation-gated key release/sealing or explicit user acceptance that the
-VPSBG host joins this trust boundary. Until that decision, the live VPSBG
-service and measured UKI remain unchanged.
+This finding applied to the earlier ProviderStore-based VPSBG proposal. The
+current fragment selects an exact-digest-pinned, storeless runtime that accepts
+only provider-local `FreeV1` proof-of-work offers and opens no ProviderStore,
+WAL/SHM or rollback-authority client. There is consequently no payment-store or
+authority secret for attestation-gated release in this narrow profile. The
+provider ID, policy verification key, exact domain-separated policy digest and
+launch arguments must instead be measured in the UKI; changing any signed
+policy byte requires a newly measured UKI and client pins. Adding a retained
+policy, durable quota, payment, Cashu, BAT, ARC or shared-issuer method revives
+the original P1 custody finding and requires the ordinary independent store
+and rollback-authority design. The live VPSBG service and measured UKI remain
+unchanged until the separately approved UKI ceremony.
 
 ### Real staging evidence and resource isolation
 

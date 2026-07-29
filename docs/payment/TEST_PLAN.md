@@ -55,15 +55,21 @@ Mixed-provider scenarios:
 
 `cargo test --offline -p runtime --test payment_v1_process_e2e` and
 `cargo test --offline -p runtime --test payment_v1_methods_process_e2e`
-launch two independent provider child processes on explicit `127.0.0.1`
-listeners. Both perform the real WebSocket and encrypted-channel handshake,
+launch real provider child processes on explicit `127.0.0.1` listeners. The
+stateful cases use two independent providers; the first binary also launches a
+single exact-pinned storeless Free-PoW provider. All perform the real WebSocket
+and encrypted-channel handshake,
 verify each provider's exact signed manifest-root policy, execute a valid DPF
 frame, enforce the signed frame limit and reject replay after restart.
 
 The first test covers provider-specific direct receipts. The same provider-1
 receipt is rejected at provider 0 and subsequently accepted at provider 1, so
 it detects accidental cross-provider burn/shared spent state; a misspelled
-bind flag must also exit before listening. The second covers Free open,
+bind flag must also exit before listening. Its storeless case proves a fresh
+secure-channel-bound PoW challenge can authorize one protected DPF frame with
+no ProviderStore/rollback SQLite, rejects the solution on a new exporter with
+no outstanding challenge, and rejects wrong digest, Free-open policy and every
+stateful/payment/credential input before listening. The second covers Free open,
 provider-local durable IP quota, an actual Cashu BAT blind/DLEQ/unblind proof,
 and real experimental ARC issuance/presentation. It verifies independent
 provider keys/quotas, cross-provider BAT/ARC rejection, and durable quota,
