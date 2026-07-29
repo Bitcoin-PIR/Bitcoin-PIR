@@ -117,6 +117,12 @@ export interface QueryResult {
   verifiedDbId?: number;
   verifiedOnionRootHex?: string;
   verificationGeneration?: number;
+  /**
+   * Opaque, client-owned result handle. While true, user-facing fields are
+   * deliberately blank and may only be released by the same live client's
+   * one-shot inclusion verifier.
+   */
+  verificationPending?: true;
 }
 
 // ─── Connection state ───────────────────────────────────────────────────────

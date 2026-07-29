@@ -899,6 +899,23 @@ export function selectChunkUniqueFetches(
 
 // ─── Client class ─────────────────────────────────────────────────────────
 
+interface PendingOnionResultBinding {
+  batchId: number;
+  ordinal: number;
+  dbId: number;
+  generation: number;
+  expectedScriptHash: Uint8Array;
+  snapshot: QueryResult;
+}
+
+interface PendingOnionBatch {
+  batchId: number;
+  dbId: number;
+  generation: number;
+  handles: QueryResult[];
+  bindings: PendingOnionResultBinding[];
+}
+
 export class OnionPirWebClient {
   private ws: ManagedWebSocket | null = null;
   private secureChannel: WasmStandaloneSecureChannelV1 | null = null;
@@ -950,6 +967,9 @@ export class OnionPirWebClient {
   private installedOnionRoots = new Map<number, InstalledOnionRoot>();
   private verifiedTreeTops = new Map<number, VerifiedTreeTopBinding>();
   private databaseProofStatuses = new Map<number, DatabaseProofStatus>();
+  private nextResultBatchId = 1;
+  private pendingResultBindings = new WeakMap<QueryResult, PendingOnionResultBinding>();
+  private pendingResultBatch: PendingOnionBatch | null = null;
   readonly attestation: ServerAttestation = { state: 'unattested' };
   readonly operatorIdentity: OperatorIdentity = { state: 'not-checked' };
 
@@ -984,6 +1004,7 @@ export class OnionPirWebClient {
   }
 
   private clearSessionTrust(): void {
+    this.invalidatePendingResultBatch();
     this.strictReady = false;
     this.installedOnionRoots.clear();
     this.verifiedTreeTops.clear();
@@ -1181,6 +1202,88 @@ export class OnionPirWebClient {
     this.leakageRecorder?.recordRound('onion', round);
   }
 
+  private invalidatePendingResultBatch(): void {
+    const pending = this.pendingResultBatch;
+    this.pendingResultBatch = null;
+    if (!pending) return;
+    for (const handle of pending.handles) {
+      this.pendingResultBindings.delete(handle);
+      scrubUnverifiedOnionResult(handle);
+    }
+  }
+
+  private capturePendingResultBatch(
+    trustedResults: readonly (QueryResult | null)[],
+    expectedScriptHashes: readonly Uint8Array[],
+    dbId: number,
+    generation: number,
+  ): QueryResult[] {
+    this.invalidatePendingResultBatch();
+    if (trustedResults.length === 0 || trustedResults.length !== expectedScriptHashes.length) {
+      throw new Error('OnionPIR result batch does not match its query inputs');
+    }
+
+    const batchId = this.nextResultBatchId++;
+    const handles: QueryResult[] = [];
+    const bindings: PendingOnionResultBinding[] = [];
+    for (let ordinal = 0; ordinal < trustedResults.length; ordinal += 1) {
+      const trusted = trustedResults[ordinal];
+      const expectedScriptHash = expectedScriptHashes[ordinal];
+      if (!trusted || !trusted.scriptHash || !bytesEqual(trusted.scriptHash, expectedScriptHash)) {
+        throw new Error(`OnionPIR result ${ordinal} is not bound to its query input`);
+      }
+      const snapshot = cloneOnionQueryResult(trusted);
+      const handle = pendingOnionResultHandle(snapshot.numRounds);
+      const binding: PendingOnionResultBinding = {
+        batchId,
+        ordinal,
+        dbId,
+        generation,
+        expectedScriptHash: expectedScriptHash.slice(),
+        snapshot,
+      };
+      handles.push(handle);
+      bindings.push(binding);
+      this.pendingResultBindings.set(handle, binding);
+    }
+    this.pendingResultBatch = { batchId, dbId, generation, handles, bindings };
+    return handles;
+  }
+
+  private consumePendingResultBatch(
+    handles: readonly QueryResult[],
+    dbId: number,
+    generation: number,
+  ): PendingOnionResultBinding[] {
+    const pending = this.pendingResultBatch;
+    if (!pending) throw new Error('OnionPIR result has no live verification handle');
+    if (
+      pending.dbId !== dbId || pending.generation !== generation ||
+      handles.length !== pending.handles.length
+    ) {
+      this.invalidatePendingResultBatch();
+      throw new Error('OnionPIR result batch is stale or incomplete');
+    }
+    for (let ordinal = 0; ordinal < handles.length; ordinal += 1) {
+      const handle = handles[ordinal];
+      const binding = this.pendingResultBindings.get(handle);
+      if (
+        handle !== pending.handles[ordinal] || !binding ||
+        binding.batchId !== pending.batchId || binding.ordinal !== ordinal ||
+        binding.dbId !== dbId || binding.generation !== generation ||
+        !binding.snapshot.scriptHash ||
+        !bytesEqual(binding.snapshot.scriptHash, binding.expectedScriptHash)
+      ) {
+        this.invalidatePendingResultBatch();
+        throw new Error(`OnionPIR result ${ordinal} is not the expected live handle`);
+      }
+    }
+
+    this.pendingResultBatch = null;
+    for (const handle of pending.handles) this.pendingResultBindings.delete(handle);
+    return pending.bindings;
+  }
+
   /** Return the currently active database ID (0 = main). */
   getDbId(): number { return this.dbId; }
 
@@ -1190,6 +1293,7 @@ export class OnionPirWebClient {
    */
   setDbId(newDbId: number): void {
     if (newDbId === this.dbId) return;
+    this.invalidatePendingResultBatch();
     const oldDbId = this.dbId;
     this.dbId = newDbId;
     // Re-sync BFV params from the per-DB info, if available. Keeps the
@@ -2015,6 +2119,11 @@ export class OnionPirWebClient {
     if (override && override.length === scriptHashes.length) {
       scriptHashes = override;
     }
+    if (scriptHashes.length === 0) throw new Error('OnionPIR query requires an input');
+    scriptHashes = scriptHashes.map((hash, index) => {
+      if (hash.length !== 20) throw new Error(`scriptHash[${index}] must be 20 bytes`);
+      return hash.slice();
+    });
 
     // Re-sync BFV params with the requested DB. This lets the caller switch
     // between main and delta in a single queryBatch call. For dbId != 0,
@@ -2029,6 +2138,9 @@ export class OnionPirWebClient {
       this.updateParamsForActiveDb();
     }
     this.assertCurrentQuerySession(queryGeneration, dbId, 'query start');
+    // Generating a new FHE key/query transcript invalidates the only batch
+    // that the one-shot verifier is allowed to release.
+    this.invalidatePendingResultBatch();
 
     const N = scriptHashes.length;
     const progress = onProgress || (() => {});
@@ -2327,6 +2439,15 @@ export class OnionPirWebClient {
         }
         const realChunks: number[] = [];
         if (ir && ir.numEntries > 0) {
+          const end = ir.entryId + ir.numEntries;
+          if (
+            !Number.isSafeInteger(ir.entryId) || !Number.isSafeInteger(ir.numEntries) ||
+            ir.entryId < 0 || ir.numEntries < 0 || end > this.totalPacked ||
+            !Number.isSafeInteger(ir.byteOffset) || ir.byteOffset < 0 ||
+            ir.byteOffset >= PACKED_ENTRY_SIZE
+          ) {
+            throw new Error(`OnionPIR INDEX result ${i} describes an invalid CHUNK range`);
+          }
           for (let j = 0; j < ir.numEntries; j++) {
             realChunks.push(ir.entryId + j);
           }
@@ -2598,22 +2719,15 @@ export class OnionPirWebClient {
           continue;
         }
 
-        // Found path — assemble UTXO data from this query's real entries.
-        const parts: Uint8Array[] = [];
-        for (let j = 0; j < ir.numEntries; j++) {
-          const eid = ir.entryId + j;
-          const entry = decryptedEntries.get(eid);
-          if (!entry) continue;
-          if (j === 0) {
-            parts.push(entry.slice(ir.byteOffset));
-          } else {
-            parts.push(entry);
-          }
-        }
-        const totalLen = parts.reduce((s, p) => s + p.length, 0);
-        const fullData = new Uint8Array(totalLen);
-        let pos = 0;
-        for (const p of parts) { fullData.set(p, pos); pos += p.length; }
+        // Found path — every INDEX-declared CHUNK is mandatory. Silently
+        // concatenating only the bins a provider returned would authenticate
+        // a truncated/empty result under otherwise-valid Merkle leaves.
+        const fullData = reassembleCompleteOnionChunks(
+          ir.entryId,
+          ir.numEntries,
+          ir.byteOffset,
+          decryptedEntries,
+        );
 
         const { entries, totalSats } = this.decodeUtxoData(fullData);
         results[qi] = {
@@ -2649,7 +2763,7 @@ export class OnionPirWebClient {
         `=== Batch complete: ${matched}/${N} matched; ${verifiable}/${N} verifiable results ===`,
         'success',
       );
-      return results;
+      return this.capturePendingResultBatch(results, scriptHashes, dbId, queryGeneration);
 
     } finally {
       // Free WASM clients
@@ -2705,6 +2819,17 @@ export class OnionPirWebClient {
       verificationDbId,
       'inclusion verification start',
     );
+    const releaseHandles = results;
+    try {
+      const pending = this.consumePendingResultBatch(
+        releaseHandles,
+        verificationDbId,
+        verificationGeneration,
+      );
+      // From here through verdict aggregation, use only the private immutable
+      // snapshots captured by queryBatch. Caller-mutated fields and invented
+      // JSON never participate in proof verification or result publication.
+      results = pending.map((binding) => cloneOnionQueryResult(binding.snapshot));
     // Per-DB Merkle lookup: falls back to the top-level `onionpir_merkle`
     // when dbId=0 (backward compatible with older servers that only emit
     // main-DB Merkle info at the top level).
@@ -2832,7 +2957,7 @@ export class OnionPirWebClient {
         'DATA inclusion verification',
       );
     } catch (error) {
-      for (const result of results) scrubUnverifiedOnionResult(result);
+      for (const result of releaseHandles) scrubUnverifiedOnionResult(result);
       throw error;
     }
 
@@ -2857,18 +2982,26 @@ export class OnionPirWebClient {
     );
     for (const [ri, ok] of perResultOk) {
       out[ri] = ok;
-      results[ri].merkleVerified = ok;
       if (ok) verified++;
     }
 
     const total = perResultOk.size;
-    if (verified === total && total > 0) {
+    const wholeBatchVerified = total === results.length && out.every((ok) => ok === true);
+    if (wholeBatchVerified && total > 0) {
+      for (let index = 0; index < releaseHandles.length; index += 1) {
+        publishVerifiedOnionResult(releaseHandles[index], results[index]);
+      }
       this.log(`Merkle VERIFIED: all ${total} results valid (per-group index+data trees)`, 'success');
     } else if (total > 0) {
+      for (const result of releaseHandles) scrubUnverifiedOnionResult(result);
       this.log(`Merkle: ${verified}/${total} verified, ${total - verified} failed`, verified > 0 ? 'info' : 'error');
     }
 
     return out;
+    } catch (error) {
+      for (const result of releaseHandles) scrubUnverifiedOnionResult(result);
+      throw error;
+    }
   }
 
   /**
@@ -3157,9 +3290,95 @@ export class OnionPirWebClient {
   }
 }
 
+export function reassembleCompleteOnionChunks(
+  startChunkId: number,
+  numChunks: number,
+  byteOffset: number,
+  decryptedEntries: ReadonlyMap<number, Uint8Array>,
+): Uint8Array {
+  if (!Number.isSafeInteger(startChunkId) || startChunkId < 0
+      || !Number.isSafeInteger(numChunks) || numChunks <= 0
+      || !Number.isSafeInteger(byteOffset) || byteOffset < 0) {
+    throw new Error('OnionPIR INDEX result has invalid CHUNK coordinates');
+  }
+  const parts: Uint8Array[] = [];
+  let chunkSize: number | null = null;
+  for (let offset = 0; offset < numChunks; offset += 1) {
+    const entryId = startChunkId + offset;
+    const entry = decryptedEntries.get(entryId);
+    if (!entry) {
+      throw new Error(`OnionPIR provider omitted expected CHUNK entry ${entryId}`);
+    }
+    if (entry.length === 0 || (chunkSize !== null && entry.length !== chunkSize)) {
+      throw new Error(`OnionPIR provider returned malformed CHUNK entry ${entryId}`);
+    }
+    chunkSize ??= entry.length;
+    if (offset === 0) {
+      if (byteOffset >= entry.length) {
+        throw new Error('OnionPIR INDEX byte offset exceeds the first CHUNK');
+      }
+      parts.push(entry.slice(byteOffset));
+    } else {
+      parts.push(entry);
+    }
+  }
+  const totalLen = parts.reduce((sum, part) => sum + part.length, 0);
+  const fullData = new Uint8Array(totalLen);
+  let position = 0;
+  for (const part of parts) {
+    fullData.set(part, position);
+    position += part.length;
+  }
+  return fullData;
+}
+
+function cloneOnionQueryResult(result: QueryResult): QueryResult {
+  return {
+    ...result,
+    entries: result.entries.map((entry) => ({ ...entry, txid: entry.txid.slice() })),
+    rawChunkData: result.rawChunkData?.slice(),
+    scriptHash: result.scriptHash?.slice(),
+    indexBinHash: result.indexBinHash?.slice(),
+    indexBinLeaves: result.indexBinLeaves?.map((leaf) => ({ ...leaf, hash: leaf.hash.slice() })),
+    dataBinLeaves: result.dataBinLeaves?.map((leaf) => ({ ...leaf, hash: leaf.hash.slice() })),
+    allIndexBins: result.allIndexBins?.map((bin) => ({
+      ...bin,
+      binContent: bin.binContent.slice(),
+    })),
+    indexBinContent: result.indexBinContent?.slice(),
+    chunkPbcGroups: result.chunkPbcGroups?.slice(),
+    chunkBinIndices: result.chunkBinIndices?.slice(),
+    chunkBinContents: result.chunkBinContents?.map((bin) => bin.slice()),
+  };
+}
+
+function pendingOnionResultHandle(numRounds: number): QueryResult {
+  return {
+    entries: [],
+    totalSats: 0n,
+    startChunkId: 0,
+    numChunks: 0,
+    numRounds,
+    isWhale: false,
+    merkleVerified: false,
+    verificationPending: true,
+  };
+}
+
+function publishVerifiedOnionResult(target: QueryResult, trusted: QueryResult): void {
+  scrubUnverifiedOnionResult(target);
+  Object.assign(target, cloneOnionQueryResult(trusted));
+  target.verificationPending = undefined;
+  target.merkleVerified = true;
+}
+
 function scrubUnverifiedOnionResult(result: QueryResult): void {
   result.entries = [];
   result.totalSats = 0n;
+  result.startChunkId = 0;
+  result.numChunks = 0;
+  result.numRounds = 0;
+  result.isWhale = false;
   result.rawChunkData = undefined;
   result.scriptHash = undefined;
   result.merkleVerified = false;
@@ -3170,6 +3389,7 @@ function scrubUnverifiedOnionResult(result: QueryResult): void {
   result.verifiedDbId = undefined;
   result.verifiedOnionRootHex = undefined;
   result.verificationGeneration = undefined;
+  result.verificationPending = undefined;
 }
 
 // ─── Hex helper ─────────────────────────────────────────────────────────────

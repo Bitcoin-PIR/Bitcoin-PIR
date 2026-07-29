@@ -6,7 +6,11 @@
  * verifier error, or any non-true verdict rejects the whole batch.
  */
 export async function requireVerifiedQueryResultsV1<
-  T extends { allIndexBins?: readonly unknown[] },
+  T extends {
+    allIndexBins?: readonly unknown[];
+    indexBinLeaves?: readonly unknown[];
+    verificationPending?: true;
+  },
 >(
   results: readonly (T | null | undefined)[],
   verify: (concrete: T[]) => Promise<readonly boolean[]>,
@@ -18,7 +22,10 @@ export async function requireVerifiedQueryResultsV1<
   const concrete: T[] = [];
   for (let index = 0; index < results.length; index++) {
     const result = results[index];
-    if (!result || !Array.isArray(result.allIndexBins) || result.allIndexBins.length === 0) {
+    const hasDpfTrace = Array.isArray(result?.allIndexBins) && result.allIndexBins.length > 0;
+    const hasOnionTrace = Array.isArray(result?.indexBinLeaves) && result.indexBinLeaves.length > 0;
+    const hasOpaqueVerifierHandle = result?.verificationPending === true;
+    if (!result || (!hasDpfTrace && !hasOnionTrace && !hasOpaqueVerifierHandle)) {
       throw new Error(`${label} result ${index} has no verifiable INDEX trace`);
     }
     concrete.push(result);

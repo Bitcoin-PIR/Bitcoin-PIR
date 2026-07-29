@@ -24,6 +24,16 @@ describe('strict PIR result release', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it('accepts an opaque live handle but still requires a true verifier verdict', async () => {
+    const pending = { verificationPending: true as const };
+    await expect(requireVerifiedQueryResultsV1(
+      [pending], async () => [true], 'Onion db 0',
+    )).resolves.toEqual([pending]);
+    await expect(requireVerifiedQueryResultsV1(
+      [pending], async () => [false], 'Onion db 0',
+    )).rejects.toThrow('verification failed');
+  });
+
   it('rejects a false verdict and verifier length skew', async () => {
     await expect(requireVerifiedQueryResultsV1(
       [traced(), traced()], async () => [true, false], 'DPF delta db 1',

@@ -4,6 +4,7 @@ import {
   databaseProofV2Request,
   decodeBatchResult,
   OnionPirWebClient,
+  reassembleCompleteOnionChunks,
   responsePayloadFromFrame,
 } from '../onionpir_client.js';
 
@@ -75,6 +76,32 @@ describe('strict OnionPIR duplicate Merkle coordinates', () => {
       .toThrow('conflicting hashes');
     expect(() => assertConsistentOnionMerkleLeaves([second, first]))
       .toThrow('conflicting hashes');
+  });
+});
+
+describe('strict OnionPIR CHUNK completeness', () => {
+  it('reassembles every INDEX-declared CHUNK in order', () => {
+    const chunks = new Map<number, Uint8Array>([
+      [4, new Uint8Array([0, 1, 2])],
+      [5, new Uint8Array([3, 4, 5])],
+    ]);
+    expect([...reassembleCompleteOnionChunks(4, 2, 1, chunks)])
+      .toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('rejects omission, inconsistent size, and an out-of-range first offset', () => {
+    expect(() => reassembleCompleteOnionChunks(
+      4, 2, 0, new Map([[4, new Uint8Array([1, 2])]]),
+    )).toThrow('omitted expected CHUNK entry 5');
+    expect(() => reassembleCompleteOnionChunks(
+      4, 2, 0, new Map([
+        [4, new Uint8Array([1, 2])],
+        [5, new Uint8Array([3])],
+      ]),
+    )).toThrow('malformed CHUNK entry 5');
+    expect(() => reassembleCompleteOnionChunks(
+      4, 1, 2, new Map([[4, new Uint8Array([1, 2])]]),
+    )).toThrow('byte offset exceeds');
   });
 });
 
@@ -264,17 +291,125 @@ describe('strict OnionPIR session lifecycle', () => {
       verifiedDbId: 0,
       verifiedOnionRootHex: 'ab'.repeat(32),
       verificationGeneration: 7,
+      scriptHash: new Uint8Array(20).fill(4),
     };
+    const [handle] = internal.capturePendingResultBatch(
+      [result], [result.scriptHash], 0, 7,
+    );
 
-    const pending = client.verifyMerkleBatch([result]);
+    const pending = client.verifyMerkleBatch([handle]);
     expect(internal.verifySubTree).toHaveBeenCalledOnce();
     client.disconnect();
     release(new Map([['0:0', true], ['0:1', true]]));
 
     await expect(pending).rejects.toThrow(/stale OnionPIR/);
-    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
-    expect(result.rawChunkData).toBeUndefined();
-    expect(result.indexBinLeaves).toBeUndefined();
+    expect(handle).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
+    expect(handle.rawChunkData).toBeUndefined();
+    expect(handle.indexBinLeaves).toBeUndefined();
+  });
+
+  it('verifies an immutable one-shot snapshot and only then releases it', async () => {
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = seedStrictQuerySession(client, socket);
+    internal.wasmModule = {};
+    internal.fheSecretKey = new Uint8Array([3]);
+    internal.verifySubTree = vi.fn(async () => new Map([
+      ['0:0', true], ['0:1', true], ['0:2', true],
+    ]));
+    const expectedScriptHash = new Uint8Array(20).fill(4);
+    const trusted: any = {
+      entries: [{ txid: new Uint8Array(32).fill(8), vout: 1, amount: 9n }],
+      totalSats: 9n,
+      startChunkId: 4,
+      numChunks: 1,
+      numRounds: 1,
+      isWhale: false,
+      merkleVerified: false,
+      rawChunkData: new Uint8Array([7]),
+      scriptHash: expectedScriptHash,
+      indexBinLeaves: [
+        { hash: new Uint8Array(32).fill(1), pbcGroup: 0, bin: 0 },
+        { hash: new Uint8Array(32).fill(2), pbcGroup: 0, bin: 1 },
+      ],
+      dataBinLeaves: [
+        { hash: new Uint8Array(32).fill(3), pbcGroup: 0, bin: 2 },
+      ],
+      verifiedDbId: 0,
+      verifiedOnionRootHex: 'ab'.repeat(32),
+      verificationGeneration: 7,
+    };
+    const [handle] = internal.capturePendingResultBatch(
+      [trusted], [expectedScriptHash], 0, 7,
+    );
+
+    // Pre-verification fields are caller-controlled. The verifier must ignore
+    // them and restore the private query snapshot only after the whole batch.
+    handle.entries = [{ txid: new Uint8Array(32), vout: 99, amount: 1n }];
+    handle.rawChunkData = new Uint8Array([0]);
+    handle.scriptHash = new Uint8Array(20).fill(9);
+    handle.indexBinLeaves = [{ hash: new Uint8Array(32), pbcGroup: 9, bin: 9 }];
+
+    await expect(client.verifyMerkleBatch([handle])).resolves.toEqual([true]);
+    expect(handle.merkleVerified).toBe(true);
+    expect(handle.verificationPending).toBeUndefined();
+    expect(handle.totalSats).toBe(9n);
+    expect(handle.entries[0]).toMatchObject({ vout: 1, amount: 9n });
+    expect([...handle.entries[0].txid]).toEqual([...new Uint8Array(32).fill(8)]);
+    expect([...handle.rawChunkData!]).toEqual([7]);
+    expect([...handle.scriptHash!]).toEqual([...expectedScriptHash]);
+
+    await expect(client.verifyMerkleBatch([handle]))
+      .rejects.toThrow('no live verification handle');
+    expect(handle.entries).toEqual([]);
+  });
+
+  it('rejects invented and reordered result handles before proof I/O', async () => {
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = seedStrictQuerySession(client, socket);
+    internal.wasmModule = {};
+    internal.fheSecretKey = new Uint8Array([3]);
+    internal.verifySubTree = vi.fn();
+    const result = (fill: number): any => ({
+      entries: [], totalSats: 0n, startChunkId: 0, numChunks: 0, numRounds: 1,
+      isWhale: false, scriptHash: new Uint8Array(20).fill(fill),
+      indexBinLeaves: [
+        { hash: new Uint8Array(32).fill(1), pbcGroup: 0, bin: 0 },
+        { hash: new Uint8Array(32).fill(2), pbcGroup: 0, bin: 1 },
+      ],
+      dataBinLeaves: [], verifiedDbId: 0,
+      verifiedOnionRootHex: 'ab'.repeat(32), verificationGeneration: 7,
+    });
+    const first = result(1);
+    const second = result(2);
+    const handles = internal.capturePendingResultBatch(
+      [first, second], [first.scriptHash, second.scriptHash], 0, 7,
+    );
+
+    await expect(client.verifyMerkleBatch([handles[1], handles[0]]))
+      .rejects.toThrow('not the expected live handle');
+    expect(internal.verifySubTree).not.toHaveBeenCalled();
+
+    const invented = result(3);
+    await expect(client.verifyMerkleBatch([invented]))
+      .rejects.toThrow('no live verification handle');
+    expect(invented.entries).toEqual([]);
+    expect(internal.verifySubTree).not.toHaveBeenCalled();
   });
 
   it('consumes the proof handle and clears the installed root on disconnect', () => {
