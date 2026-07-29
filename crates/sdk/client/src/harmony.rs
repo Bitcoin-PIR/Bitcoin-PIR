@@ -9211,6 +9211,9 @@ mod tests {
         let db_info = sample_db_info();
         let sent = Arc::new(Mutex::new(Vec::new()));
         let mut client = HarmonyClient::new("mock://hint", "mock://query");
+        // Keep this synthetic 32-bin fixture focused on the expected
+        // fail-closed verification error, not random relocation cycles.
+        client.set_master_key([0x42; 16]);
         client.connect_with_transport(
             Box::new(MockTransport::new("mock://hint")),
             Box::new(ZeroHarmonyQueryTransport::new(sent.clone())),
@@ -9271,6 +9274,10 @@ mod tests {
 
         let sent = Arc::new(Mutex::new(Vec::new()));
         let mut client = HarmonyClient::new("mock://hint", "mock://query");
+        // This test exercises batching, leakage accounting, and the shared
+        // Merkle verdict. Pin the synthetic 32-bin fixture's PRP layout so
+        // unrelated relocation-chain randomness cannot make it flaky.
+        client.set_master_key([0x42; 16]);
         client.connect_with_transport(
             Box::new(MockTransport::new("mock://hint")),
             Box::new(ZeroHarmonyQueryTransport::new(sent.clone())),
