@@ -3,10 +3,11 @@
 Status: normative release plan. Not every item below is implemented. The
 currently reproducible no-funds coverage and its precise limitations are in
 `LOCAL_ACCEPTANCE.md`; `IMPLEMENTATION_STATUS.md` lists release blockers. In
-particular, the five-method/backend matrix is a canonical wire/gate integration
-test. Separate loopback tests execute direct receipt, Free, provider-local BAT
-and experimental ARC admission plus DPF work through two real provider
-processes. A separate Chromium boundary now executes generated WASM against a
+particular, the canonical five-method/backend matrix remains deterministic
+wire/gate evidence. Separate loopback tests execute direct receipt at every
+backend and Free, strict-TLS Standard Cashu, provider-local BAT and experimental
+ARC through production committers, ProviderStore and all five backend handlers.
+A separate Chromium boundary now executes generated WASM against a
 real loopback no-funds issuer. A third harness launches two issuers and two
 providers through browser admission, proof-bound Merkle preflight and one real
 encrypted two-server DPF query. The extended CDK lifecycle has passed its final
@@ -19,13 +20,13 @@ real-WASM/real-loopback-issuer case passed 1/1 with the two explicit CLN cases
 skipped by default. Pushed CI remains a per-commit merge gate. The current focused
 shared-redeem/clone-fencing P0 suites pass 93/93 service-store tests and 6/6
 provider-clearing shared-grant tests; these are not an aggregate full-suite
-claim. Remaining
-unexecuted boundaries include non-DPF
-process cells, an external public-WebPKI mint, persistent public-network
-Lightning and a deployed complete-query browser/issuer/two-provider E2E. One
-authorized short-lived public-relay publish/readback smoke with disposable keys has run;
-production-catalog publication and monitored relay operation remain
-unexecuted.
+claim. The feature-gated provider-process method matrix now closes all 25
+method/workload cells with production committers and backend handlers.
+Remaining unexecuted boundaries include an external public-WebPKI mint,
+persistent public-network Lightning and a deployed complete-query
+browser/issuer/two-provider E2E. One authorized short-lived public-relay
+publish/readback smoke with disposable keys has run; production-catalog
+publication and monitored relay operation remain unexecuted.
 
 ## Positive conformance matrix
 
@@ -101,6 +102,45 @@ the capability has been atomically consumed, then rejects receipt replay after
 ProviderStore/process restart. The generated Merkle sibling ciphertexts are
 real handler/decryption evidence; the tiny fixture does not claim an end-user
 inclusion proof against a production Bitcoin database.
+
+The four non-receipt methods also cross every non-DPF production process
+boundary under the Standard-Cashu private-root test feature:
+
+```sh
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_process_e2e \
+  all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_onion_process_e2e \
+  all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --test payment_v1_tee_oram_process_e2e \
+  all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart \
+  -- --exact
+```
+
+These tests share one fixture for Free-IP, strict-TLS Standard Cashu, Cashu
+BAT and experimental ARC, but do not share or replace any production
+committer. Every AUTH frame is encrypted and uses the exact signed
+provider/backend/workload scope. A deliberately wrong operation is rejected
+before the same proof succeeds, each real backend handler returns its native
+result, and provider restart preserves Free-IP quota, Cashu input, BAT serial
+and ARC nullifier rejection. Cashu wrong-scope and replay attempts are also
+proved not to reach the mint. Harmony full hints additionally use two
+independent capabilities per method: the first proves pre-dispatch disconnect
+restores the same ready inode, while the second proves first dispatch unlinks
+that inode before exposing its PRP and remains spent after restart. ARC remains
+experimental; matrix coverage does not satisfy its independent review gate.
 
 A separate non-default process test exercises the production provider remote
 rollback-authority selection and client path:
@@ -336,15 +376,17 @@ This ledger is a source-level audit of the executable seams, not a claim that a
 fresh run passed. A check mark in separate columns does not mean one execution
 joined those columns. In particular, the five-method/backend matrix uses an
 authoritative-committer double, so it proves canonical wire/gate dispatch but
-not a live method adapter.
+not a live method adapter. The feature-gated process supplement separately
+uses the production Free, Standard Cashu, BAT and experimental ARC committers
+and all five native backend handlers.
 
 | Method | Web / generated-WASM boundary | Real provider wire / process | Authoritative state boundary | One same-run browser-to-store path |
 |---|---|---|---|---|
-| Direct BOLT11 receipt | yes: `payment-real-issuer` and `payment-two-provider` | yes: `payment_v1_process_e2e` and the browser process harness | provider-local receipt spend survives restart | yes: `payment-two-provider` joins real Chromium, generated WASM, fake-settlement issuer, encrypted provider wire, `unified_server`, ProviderStore and a verified DPF query |
-| Cashu BAT | yes: generated-WASM issuer acquisition in the opt-in CLN case and in the no-funds two-provider browser case | yes: `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof and durable provider-local spend/restart rejection | yes: the no-funds `payment-two-provider` BAT leg joins issuer, browser, provider and store |
-| Free | yes: the no-funds `payment-two-provider` Chromium variant selects the exact signed one-request/one-hour `ip-rate-limited` offer, including the IP-rate-bucket leakage flag, and creates no invoice | yes: open and IP-limited Free reach a real encrypted DPF provider | IP quota is durable and restart-tested; the browser topology also requires a second secure connection to receive `server-busy`; open best effort intentionally has no spent row | yes: browser, generated WASM, exact signed Free/IP mode, real provider/store gate, durable same-provider rejection and verified DPF/Merkle query share one process topology; the final isolated-target current-tree run passed 3/3 |
-| ARC experimental | yes: generated-WASM acquisition/presentation exists in the opt-in CLN case and the no-funds two-provider browser variant | yes: `payment_v1_methods_process_e2e` and the browser topology use the real ARC adapter | provider-local tag/nullifier persistence and restart rejection | yes: local issuer, browser persist-before-release, real provider/store replay rejection and verified DPF/Merkle query share one topology; the final isolated-target current-tree run passed 3/3, and ARC remains experimental/review-blocked |
-| Standard Cashu eCash | yes: CDK default mode imports a real `cashuB` through freshly rebuilt current JS/WASM; browser-only accepts only explicitly acknowledged, SHA-256-pinned prebuilt runtime artifacts | yes: the feature-gated process cell launches a real Standard-Cashu `unified_server`, strict TLS NUT-03 mint, an independent Free peer, two secure channels, DPF/Merkle and restart/failure cases; the final current-tree matrix passed it 1/1 with warnings denied and release guards | real ProviderStore swap/custody and real-CDK NUT-03/NUT-12 exist; the process cell uses durable provider stores and proves local replay rejection, but not an independent production floor | not one same-run browser topology: the browser/CDK boundary and real-provider process boundary each have a final current-tree pass, but are separate executions |
+| Direct BOLT11 receipt | yes: `payment-real-issuer` and `payment-two-provider` | yes: dedicated process cases reach DPF, Harmony hint/query, Onion and TEE-ORAM handlers | provider-local receipt spend survives restart | yes: `payment-two-provider` joins real Chromium, generated WASM, fake-settlement issuer, encrypted provider wire, `unified_server`, ProviderStore and a verified DPF query |
+| Cashu BAT | yes: generated-WASM issuer acquisition in the opt-in CLN case and in the no-funds two-provider browser case | yes: `payment_v1_methods_process_e2e` plus the feature-gated non-DPF process supplement reach all five backends | real blind/DLEQ/unblind proof and durable provider-local spend/restart rejection | yes: the no-funds `payment-two-provider` BAT leg joins issuer, browser, provider and store |
+| Free | yes: the no-funds `payment-two-provider` Chromium variant selects the exact signed one-request/one-hour `ip-rate-limited` offer, including the IP-rate-bucket leakage flag, and creates no invoice | yes: durable IP-limited Free reaches all five native backend handlers | IP quota is durable and restart-tested; the browser topology also requires a second secure connection to receive `server-busy`; open best effort intentionally has no spent row | yes: browser, generated WASM, exact signed Free/IP mode, real provider/store gate, durable same-provider rejection and verified DPF/Merkle query share one process topology; the final isolated-target current-tree run passed 3/3 |
+| ARC experimental | yes: generated-WASM acquisition/presentation exists in the opt-in CLN case and the no-funds two-provider browser variant | yes: the real ARC adapter reaches all five native backend handlers | provider-local tag/nullifier persistence and restart rejection | yes: local issuer, browser persist-before-release, real provider/store replay rejection and verified DPF/Merkle query share one topology; the final isolated-target current-tree run passed 3/3, and ARC remains experimental/review-blocked |
+| Standard Cashu eCash | yes: CDK default mode imports a real `cashuB` through freshly rebuilt current JS/WASM; browser-only accepts only explicitly acknowledged, SHA-256-pinned prebuilt runtime artifacts | yes: feature-gated strict-TLS NUT-03 cases reach all five native backend handlers | real ProviderStore swap/custody and real-CDK NUT-03/NUT-12 exist; the process cells use durable provider stores and prove local replay rejection without a second mint request, but not an independent production floor | not one same-run browser topology: the browser/CDK boundary and real-provider process boundary each have a final current-tree pass, but are separate executions |
 
 The updated CDK default-mode closure item completed on 2026-07-28: the exact
 Chromium-emitted spend reached the Standard-Cashu runtime committer and
@@ -1270,6 +1312,26 @@ cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
   standard_cashu_real_process_tls_two_provider_e2e -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_process_e2e \
+  all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_onion_process_e2e \
+  all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --test payment_v1_tee_oram_process_e2e \
+  all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart \
+  -- --exact
 cargo clippy --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --bin unified_server \

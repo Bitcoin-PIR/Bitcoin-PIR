@@ -580,12 +580,11 @@ public/staging listener:
    activation limits, and reject the rollout if either store exceeds them.
    Public serving logs deliberately emit only a coarse successful-check marker
    and elapsed time, never exact generation, quote, spent, or custody counts;
-5. retain the implemented loopback two-provider direct-receipt, Free, BAT and
-   experimental-ARC DPF process checks, the feature-gated Standard-Cashu/Free
-   two-provider process cell, and the real-process Harmony V2Full
-   reserve/reject/disconnect/dispatch/restart lifecycle. Then complete the
-   remaining non-DPF process cells and approved external/deployed boundaries;
-   the local process tests use
+5. retain the implemented loopback two-provider DPF checks, the complete
+   feature-gated Free/Standard-Cashu/BAT/experimental-ARC provider-process
+   supplement across Harmony hint/query, Onion and TEE-ORAM, and every
+   direct-receipt backend process case. Then complete the approved
+   external/deployed boundaries; the local process tests use
    `NoSevHost`/`dangerous_unpaired_*` and are not production trust-chain
    evidence;
 6. retain the disposable local CDK fake-wallet token-import check, then run an

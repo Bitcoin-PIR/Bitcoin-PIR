@@ -15,7 +15,11 @@
 
 #![cfg(unix)]
 
+#[path = "support/payment_v1_method_matrix.rs"]
+mod payment_v1_method_matrix;
+
 use ed25519_dalek::SigningKey;
+use payment_v1_method_matrix::{MatrixMethod, MethodMatrixFixture, TestCashuMint};
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, sha256, Hash256, ZERO_HASH};
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
@@ -23,17 +27,18 @@ use pir_runtime_core::protocol::{HarmonyHintRequestV2, Request, Response};
 use pir_sdk_client::attest::{attest_with_eph_binding, SevStatus};
 use pir_sdk_client::channel::{establish, SecureChannelTransport};
 use pir_sdk_client::{
+    dangerous_unpaired_accept_service_authorization_response_v1,
     dangerous_unpaired_authorize_service_operation_v1,
     dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
     AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1, WsConnection,
 };
 use pir_service_protocol::{
-    derive_provider_id, paid_receipt_key_id, AcquisitionMethod, AuthPaddingClassV1, AuthScheme,
-    BackendId, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1,
-    DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1, HintTransport,
-    OperationStartV1, PaidReceiptBindingV1, PaidReceiptV1, PriceV1, PrivacyLeakageV1,
-    ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode,
-    WorkloadId,
+    derive_provider_id, paid_receipt_key_id, AcquisitionMethod, AuthBeginV1, AuthPaddingClassV1,
+    AuthScheme, AuthorizationProofV1, BackendId, CredentialKeyBindingClaimsV1,
+    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeModeV1, HintTransport, OperationStartV1, PaidReceiptBindingV1,
+    PaidReceiptV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyV1,
+    ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId, REQ_AUTH_BEGIN_V1,
 };
 use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -71,6 +76,7 @@ struct ProviderFixture {
     policy_digest: [u8; 32],
     issued_at: u64,
     receipt_not_after: u64,
+    method_matrix: Option<MethodMatrixFixture>,
 }
 
 impl ProviderFixture {
@@ -115,53 +121,60 @@ impl ServerProcess {
         let stderr_path = root.join(format!("harmony-pool-generation-{generation}-stderr.log"));
         let stdout = File::create(&stdout_path).expect("create server stdout log");
         let stderr = File::create(&stderr_path).expect("create server stderr log");
+        // The method matrix includes Standard Cashu (online authority). Keep
+        // one pool entry reserved for provider-local methods while the online
+        // authorization limiter owns the other; the receipt-only baseline
+        // intentionally retains its historical single-entry pool.
+        let pool_size = if fixture.method_matrix.is_some() {
+            "2"
+        } else {
+            "1"
+        };
+        let mut args = vec![
+            "--bind-address".to_owned(),
+            "127.0.0.1".to_owned(),
+            "--port".to_owned(),
+            port.to_string(),
+            "--data-dir".to_owned(),
+            db_path.display().to_string(),
+            "--role".to_owned(),
+            "secondary".to_owned(),
+            "--disable-onion".to_owned(),
+            "--serve-hints".to_owned(),
+            "--pool-size".to_owned(),
+            pool_size.to_owned(),
+            "--pool-db-id".to_owned(),
+            "0".to_owned(),
+            "--pool-dir".to_owned(),
+            pool_dir.display().to_string(),
+            "--require-service-auth-v1".to_owned(),
+            "--service-policy".to_owned(),
+            fixture.policy_path.display().to_string(),
+            "--service-provider-id-hex".to_owned(),
+            hex::encode(fixture.provider_id),
+            "--service-policy-key-hex".to_owned(),
+            hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+            "--service-store".to_owned(),
+            fixture.store_path.display().to_string(),
+            "--service-rollback-authority".to_owned(),
+            fixture.rollback_path.display().to_string(),
+            "--allow-local-service-rollback-authority-dev".to_owned(),
+            "--max-connections".to_owned(),
+            "16".to_owned(),
+            "--service-max-concurrent-auth".to_owned(),
+            "4".to_owned(),
+            "--websocket-handshake-timeout-ms".to_owned(),
+            "1000".to_owned(),
+            "--connection-idle-timeout-ms".to_owned(),
+            "30000".to_owned(),
+            "--service-pre-auth-timeout-ms".to_owned(),
+            "30000".to_owned(),
+        ];
+        if let Some(matrix) = &fixture.method_matrix {
+            matrix.extend_server_args(&mut args);
+        }
         let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
-            .args([
-                "--bind-address",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--data-dir",
-                db_path.to_str().expect("UTF-8 test DB path"),
-                "--role",
-                "secondary",
-                "--disable-onion",
-                "--serve-hints",
-                "--pool-size",
-                "1",
-                "--pool-db-id",
-                "0",
-                "--pool-dir",
-                pool_dir.to_str().expect("UTF-8 test pool path"),
-                "--require-service-auth-v1",
-                "--service-policy",
-                fixture
-                    .policy_path
-                    .to_str()
-                    .expect("UTF-8 test policy path"),
-                "--service-provider-id-hex",
-                &hex::encode(fixture.provider_id),
-                "--service-policy-key-hex",
-                &hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
-                "--service-store",
-                fixture.store_path.to_str().expect("UTF-8 test store path"),
-                "--service-rollback-authority",
-                fixture
-                    .rollback_path
-                    .to_str()
-                    .expect("UTF-8 test rollback path"),
-                "--allow-local-service-rollback-authority-dev",
-                "--max-connections",
-                "16",
-                "--service-max-concurrent-auth",
-                "4",
-                "--websocket-handshake-timeout-ms",
-                "1000",
-                "--connection-idle-timeout-ms",
-                "30000",
-                "--service-pre-auth-timeout-ms",
-                "30000",
-            ])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -237,7 +250,7 @@ async fn harmony_v2_full_pool_reserves_consumes_recovers_and_fails_closed_over_r
     let pool_dir = root.path().join("harmony-pool");
     fs::create_dir(&pool_dir).unwrap();
     chmod(&pool_dir, 0o700);
-    let fixture = build_provider(root.path(), manifest_root, unix_now());
+    let fixture = build_provider(root.path(), manifest_root, unix_now(), None);
     let port = unused_loopback_port();
     let mut server = ServerProcess::spawn(root.path(), &db_path, &pool_dir, &fixture, port, 0);
 
@@ -459,6 +472,204 @@ async fn harmony_v2_full_pool_reserves_consumes_recovers_and_fails_closed_over_r
     );
 }
 
+#[cfg(feature = "standard-cashu-process-e2e")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let mint = TestCashuMint::spawn(root.path());
+    let (db_path, manifest_root) = write_merkle_database(root.path());
+    let pool_dir = root.path().join("harmony-matrix-pool");
+    fs::create_dir(&pool_dir).unwrap();
+    chmod(&pool_dir, 0o700);
+    let fixture = build_provider(root.path(), manifest_root, unix_now(), Some(&mint));
+    let port = unused_loopback_port();
+    let mut server = ServerProcess::spawn(root.path(), &db_path, &pool_dir, &fixture, port, 0);
+    let marker_path = pool_dir.join(BINDING_MARKER);
+    wait_for_path(
+        &mut server,
+        &marker_path,
+        "durable matrix pool binding marker",
+    );
+    let matrix = fixture.method_matrix.as_ref().unwrap();
+    wait_for_ready_pool_size(&mut server, &pool_dir, 2);
+
+    for method in MatrixMethod::ALL {
+        let method_fixture = matrix.method(method);
+        assert_eq!(method_fixture.proof_count(), 2);
+
+        // AUTH reserves pool capacity. A disconnect before the first hint
+        // dispatch returns that exact inode, while the method-specific
+        // capability itself remains durably consumed.
+        let (mut disconnect, accepted) = within(
+            "open matrix pre-dispatch session",
+            open_verified_session(port, &fixture, manifest_root),
+        )
+        .await;
+        let scope = accepted
+            .policy()
+            .scopes
+            .iter()
+            .find(|entry| entry.scope.scope_id() == fixture.scope_id)
+            .unwrap();
+        assert_eq!(scope.scope.backend, BackendId::HarmonyPirV2);
+        assert_eq!(scope.scope.workload, WorkloadId::HarmonyHintBundleV1);
+        let proof0 = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &fixture.scope_id,
+            method_fixture.offer_id(),
+            method_fixture.proof(0),
+        )
+        .unwrap();
+        let attempts_before_wrong_scope = mint.attempt_count();
+        let wrong = raw_authorization_request(
+            &accepted,
+            fixture.scope_id,
+            method_fixture.offer_id(),
+            OperationStartV1::DpfQuery { db_id: 0 },
+            proof0.clone(),
+        );
+        let response = within(
+            "reject wrong matrix hint operation",
+            disconnect.roundtrip(&wrong),
+        )
+        .await
+        .unwrap();
+        let error = dangerous_unpaired_accept_service_authorization_response_v1(
+            &response,
+            &accepted,
+            fixture.scope_id,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("wrong-scope"),
+            "{method:?}: {error}"
+        );
+        assert_eq!(mint.attempt_count(), attempts_before_wrong_scope);
+        within(
+            "grant matrix pre-dispatch capability",
+            dangerous_unpaired_authorize_service_operation_v1(
+                &mut disconnect,
+                &accepted,
+                fixture.scope_id,
+                method_fixture.offer_id(),
+                v2_full_operation(),
+                proof0,
+            ),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method:?} pre-dispatch auth failed: {error}"));
+        let reserved_ready = wait_for_locked_ready(&mut server, &pool_dir);
+        let ready_metadata = fs::metadata(&reserved_ready).unwrap();
+        within("disconnect matrix reservation", disconnect.close())
+            .await
+            .unwrap();
+        wait_until_unlocked(&mut server, &reserved_ready);
+        let restored_metadata = fs::metadata(&reserved_ready).unwrap();
+        assert_eq!(ready_metadata.dev(), restored_metadata.dev());
+        assert_eq!(ready_metadata.ino(), restored_metadata.ino());
+
+        // A second independent capability reaches the real V2Full handler.
+        // First dispatch unlinks its exact ready name before exposing the PRP.
+        let (mut dispatch, accepted) = within(
+            "open matrix dispatch session",
+            open_verified_session(port, &fixture, manifest_root),
+        )
+        .await;
+        let proof1 = dangerous_unpaired_build_authorization_proof_v1(
+            &accepted,
+            &fixture.scope_id,
+            method_fixture.offer_id(),
+            method_fixture.proof(1),
+        )
+        .unwrap();
+        within(
+            "grant matrix dispatch capability",
+            dangerous_unpaired_authorize_service_operation_v1(
+                &mut dispatch,
+                &accepted,
+                fixture.scope_id,
+                method_fixture.offer_id(),
+                v2_full_operation(),
+                proof1,
+            ),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method:?} dispatch auth failed: {error}"));
+        let dispatched_ready = wait_for_locked_ready(&mut server, &pool_dir);
+        let expected_prp = ready_file_prp_key(&dispatched_ready);
+        within(
+            "send matrix V2Full dispatch",
+            dispatch.send(v2_full_request()),
+        )
+        .await
+        .unwrap();
+        let preamble = within("receive matrix V2Full preamble", dispatch.recv())
+            .await
+            .unwrap();
+        assert_eq!(parse_v2_full_preamble(&preamble), expected_prp);
+        assert!(
+            !dispatched_ready.exists(),
+            "{method:?} dispatch did not burn ready name"
+        );
+        let _ = within("close matrix dispatch", dispatch.close()).await;
+        wait_for_ready_pool_size(&mut server, &pool_dir, 2);
+    }
+    assert_eq!(
+        mint.attempt_count(),
+        2,
+        "two Cashu capabilities reach the mint"
+    );
+
+    let (stdout_first, stderr_first) = server.stop();
+    assert_server_log(&stdout_first, &stderr_first, port);
+    let mut server = ServerProcess::spawn(root.path(), &db_path, &pool_dir, &fixture, port, 1);
+    let restarted_ready = wait_for_ready_pool_size(&mut server, &pool_dir, 2)
+        .into_iter()
+        .next()
+        .unwrap();
+    for method in MatrixMethod::ALL {
+        let method_fixture = matrix.method(method);
+        for proof_index in 0..method_fixture.proof_count() {
+            let (mut replay, accepted) = within(
+                "open matrix replay session",
+                open_verified_session(port, &fixture, manifest_root),
+            )
+            .await;
+            let proof = dangerous_unpaired_build_authorization_proof_v1(
+                &accepted,
+                &fixture.scope_id,
+                method_fixture.offer_id(),
+                method_fixture.proof(proof_index),
+            )
+            .unwrap();
+            let error = within(
+                "reject matrix replay",
+                dangerous_unpaired_authorize_service_operation_v1(
+                    &mut replay,
+                    &accepted,
+                    fixture.scope_id,
+                    method_fixture.offer_id(),
+                    v2_full_operation(),
+                    proof,
+                ),
+            )
+            .await
+            .expect_err("matrix capability replay must stay terminal after restart");
+            assert!(
+                error.to_string().contains(method.replay_rejection()),
+                "{method:?}/{proof_index}: {error}"
+            );
+            replay.close().await.unwrap();
+        }
+    }
+    assert_eq!(mint.attempt_count(), 2, "Cashu replay reached the mint");
+    assert!(restarted_ready.exists());
+    wait_until_unlocked(&mut server, &restarted_ready);
+    let (stdout, stderr) = server.stop();
+    assert_server_log(&stdout, &stderr, port);
+}
+
 async fn within<T>(label: &str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(IO_TIMEOUT, future)
         .await
@@ -476,6 +687,43 @@ fn v2_full_operation() -> OperationStartV1 {
 
 fn v2_full_request() -> Vec<u8> {
     Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id: 0 }).encode()
+}
+
+fn raw_authorization_request(
+    accepted: &AcceptedServicePolicyV1,
+    scope_id: [u8; 32],
+    offer_id: u32,
+    operation: OperationStartV1,
+    proof: AuthorizationProofV1,
+) -> Vec<u8> {
+    let offer = accepted
+        .policy()
+        .scopes
+        .iter()
+        .find(|entry| entry.scope.scope_id() == scope_id)
+        .and_then(|entry| entry.offers.iter().find(|offer| offer.offer_id == offer_id))
+        .unwrap();
+    let request = AuthBeginV1 {
+        policy_digest: accepted.policy_digest(),
+        scope_id,
+        offer_id,
+        scheme: offer.authorization,
+        key_id: offer.key_id.clone(),
+        operation,
+        proof: proof
+            .encode_for(offer.authorization, offer.free_mode)
+            .unwrap(),
+    };
+    encode_service_request(REQ_AUTH_BEGIN_V1, &request.encode_padded().unwrap())
+}
+
+fn encode_service_request(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let total_len = 1usize.checked_add(payload.len()).unwrap();
+    let mut request = Vec::with_capacity(4 + total_len);
+    request.extend_from_slice(&u32::try_from(total_len).unwrap().to_le_bytes());
+    request.push(opcode);
+    request.extend_from_slice(payload);
+    request
 }
 
 async fn open_verified_session(
@@ -550,7 +798,12 @@ async fn open_verified_session(
     (secure, accepted)
 }
 
-fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFixture {
+fn build_provider(
+    root: &Path,
+    manifest_root: [u8; 32],
+    now: u64,
+    matrix_mint: Option<&TestCashuMint>,
+) -> ProviderFixture {
     let provider_root = root.join("provider");
     let store_dir = provider_root.join("store-domain");
     let rollback_dir = provider_root.join("rollback-domain");
@@ -630,6 +883,23 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
         privacy_leakage: PrivacyLeakageV1::from_bits(PrivacyLeakageV1::DIRECT_PAYMENT_TO_SPEND)
             .unwrap(),
     };
+    let method_matrix = matrix_mint.map(|mint| {
+        MethodMatrixFixture::build(
+            &provider_root,
+            provider_id,
+            scope_id,
+            ENTITLEMENT_PROFILE,
+            issued_at,
+            expires_at,
+            2,
+            0x61,
+            mint,
+        )
+    });
+    let mut offers = vec![offer];
+    if let Some(matrix) = &method_matrix {
+        offers.extend(matrix.offers().iter().cloned());
+    }
     let total_groups = u16::try_from(INDEX_PARAMS.k + CHUNK_PARAMS.k).unwrap();
     let policy = ServicePolicyV1::sign(
         provider_id,
@@ -649,7 +919,7 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
                 max_hint_groups: total_groups,
                 max_work_units: u64::from(total_groups),
             },
-            offers: vec![offer],
+            offers,
         }],
         &policy_signing_key,
     )
@@ -689,6 +959,7 @@ fn build_provider(root: &Path, manifest_root: [u8; 32], now: u64) -> ProviderFix
         policy_digest,
         issued_at,
         receipt_not_after,
+        method_matrix,
     }
 }
 
@@ -844,6 +1115,35 @@ fn wait_for_ready_file(
     }
 }
 
+fn wait_for_ready_pool_size(
+    server: &mut ServerProcess,
+    pool_dir: &Path,
+    minimum: usize,
+) -> Vec<PathBuf> {
+    let deadline = Instant::now() + PROCESS_TIMEOUT;
+    loop {
+        server.assert_running("waiting for HarmonyPIR ready pool capacity");
+        let ready: Vec<_> = ready_files(pool_dir)
+            .into_iter()
+            .filter(|path| ready_file_publish_is_complete(path))
+            .collect();
+        if ready.len() >= minimum {
+            // Publication drops the staging inode lock immediately after the
+            // final link becomes single-link. Give the worker one scheduling
+            // turn to enqueue every observed entry before AUTH probes the pool.
+            thread::sleep(Duration::from_millis(25));
+            return ready;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {minimum} HarmonyPIR ready pool files\nstdout:\n{}\nstderr:\n{}",
+            read_log(&server.stdout_path),
+            read_log(&server.stderr_path),
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn ready_file_publish_is_complete(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| {
         metadata.file_type().is_file()
@@ -891,6 +1191,30 @@ fn wait_until_unlocked(server: &mut ServerProcess, path: &Path) {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for server reservation to release"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_locked_ready(server: &mut ServerProcess, pool_dir: &Path) -> PathBuf {
+    let deadline = Instant::now() + IO_TIMEOUT;
+    loop {
+        server.assert_running("waiting for the reserved HarmonyPIR ready inode");
+        for path in ready_files(pool_dir) {
+            let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+                continue;
+            };
+            match file.try_lock() {
+                Err(TryLockError::WouldBlock) => return path,
+                Ok(()) => file.unlock().unwrap(),
+                Err(TryLockError::Error(error)) => {
+                    panic!("reservation lock probe failed: {error}")
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the server-owned ready inode reservation"
         );
         thread::sleep(Duration::from_millis(25));
     }

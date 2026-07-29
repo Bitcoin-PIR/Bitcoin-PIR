@@ -577,11 +577,11 @@ the complete vendor tree as an incidental Payment change.
 
 | Method | Focused command/boundary | What it proves | What it does not prove |
 |---|---|---|---|
-| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and leakage disclosure, zero invoice/issuer requests, durable same-provider rejection, independent provider-1 ARC admission and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
+| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, the feature-gated non-receipt process matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, including wrong-operation non-burn and restart-persistent quota rejection; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and verified DPF/Merkle execution | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
 | Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket and generated-WASM acquisition path; the final current-tree opt-in run passed the forced payer -> router -> issuer route and joined verified provider queries | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
-| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and one same-run first-note path through private-CA strict TLS, a real Cashu provider, independent Free peer, two secure channels, exact-root preflight, DPF/Merkle, restart and local replay rejection without a second CDK touch; a second independent note covers the native custody lifecycle | an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
-| Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof through a real provider process and provider-local durable BAT spend/restart rejection | a public/shared Cashu service or production key custody |
-| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
+| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated Standard-Cashu/non-receipt process commands below | exact swap/recovery/grant-to-custody state machine, generated-JS/WASM plus real-CDK NUT-03/NUT-12, and strict-TLS NUT-03 swap through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes; wrong-operation and replay rejection do not make an extra mint request | an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
+| Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, `payment_v1_methods_process_e2e`, and the feature-gated non-receipt process matrix | real blind/DLEQ/unblind proofs through DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, plus provider-local durable serial rejection after restart | a public/shared Cashu service or production key custody |
+| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, the feature-gated non-receipt process matrix, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through DPF, Harmony hint/query, Onion and TEE-ORAM provider processes plus nullifier persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
 
 The cross-product test is:
 
@@ -595,6 +595,33 @@ full hints, Harmony queries, Onion and TEE-ORAM gate state. It is a wire/gate
 integration test, not five live external payment integrations. Focused
 production-adapter tests supplement the synthetic committers used to make the
 matrix deterministic.
+
+The production-process cross-product supplement is feature-gated only because
+its Standard Cashu leg installs a private test CA. One shared fixture prepares
+Free-IP, strict-TLS Standard Cashu, BAT and experimental ARC offers/proofs; the
+real `unified_server`, production committer, ProviderStore and native backend
+handler are never replaced. It runs the four exact tests named in
+`docs/payment/TEST_PLAN.md`. Together with the dedicated direct-receipt tests
+and DPF method-adapter tests, this closes all 25 method/workload cells. Each
+non-receipt cell checks encrypted AUTH, exact signed scope/workload,
+wrong-operation non-burn, native handler output and restart-persistent method
+state. Harmony hint uses two capabilities per method to separately prove
+pre-dispatch reservation restoration and first-dispatch durable consumption.
+ARC remains experimental despite this coverage.
+
+### 2026-07-29 provider-process matrix closeout
+
+The candidate based on `eb08d956` passed the four focused matrix commands in
+`TEST_PLAN.md` on Linux/arm64 in `bpir-rust-ci:1.94.1` (1/1 each). A combined
+`cuckoo-oram,standard-cashu-process-e2e` run of all four process test binaries
+then passed 9/9, including every pre-existing direct-receipt process test. The
+pre-existing strict-TLS two-provider Standard Cashu process case separately
+passed 1/1. Both targeted Clippy invocations passed with warnings denied: the
+Standard-Cashu server plus Harmony-query/hint and Onion targets, and the
+combined-feature TEE-ORAM target. No public mint, external network, remote
+provider, production attestation, Lightning node or funds participated. The
+ARC leg used the required explicit experimental opt-in and is not a
+cryptographic-review claim.
 
 ## Loopback provider process boundaries
 
@@ -656,13 +683,14 @@ verification, or an attested build. Its receipt is constructed from public
 deterministic fixture keys: no issuer process, browser, wallet, Lightning node,
 external Cashu mint, Nostr relay or real funds participate. The direct-receipt
 test executes both DPF and Harmony query backends; the method-adapter test
-executes DPF, and the dedicated Onion test executes the real Onion handler.
-The five-method x five-workload in-process matrix remains the cross-product
-coverage independent of those process cells. The Harmony process test launches
-one real Harmony V2Full hint provider with a private disk pool and checks
-invalid-proof non-consumption, pre-dispatch disconnect restoration,
-first-dispatch durable consumption, matching-marker restart and replaced-inode
-fail-closed behavior.
+executes DPF, and the dedicated backend tests execute Harmony hints, Onion and
+TEE-ORAM. The five-method x five-workload in-process matrix remains
+deterministic wire/gate evidence, while the feature-gated process supplement
+exercises the same cross-product through production committers and handlers.
+The Harmony process test launches one real Harmony V2Full hint provider with a
+private disk pool and checks invalid-proof non-consumption, per-method
+pre-dispatch disconnect restoration, first-dispatch durable consumption,
+matching-marker restart and replaced-inode fail-closed behavior.
 
 The fourth process test uses the production `cuckoo-oram` feature. It builds a
 tiny direct INDEX/CHUNK Circuit ORAM through the same public library API used
