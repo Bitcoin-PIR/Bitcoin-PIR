@@ -365,8 +365,11 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
   const mutations = [
     [
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
-      (text) => text.replace("reverse_proxy 127.0.0.1:8191", "reverse_proxy attacker.example:443"),
-      /reviewed loopback upstream|non-reviewed or non-loopback upstream/,
+      (text) => text.replace(
+        "reverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock",
+        "reverse_proxy attacker.example:443",
+      ),
+      /reverse_proxy upstream multiset|non-reviewed upstream/,
     ],
     [
       "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -449,6 +452,204 @@ test("public issuer edge exposes ledger accrual only", () => {
   });
 });
 
+test("source-fair edge rejects identity leaks, persistence, bypasses, and unbounded lanes", () => {
+  const mutations = [
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("proxy_protocol v2", "proxy_protocol v1"),
+      /proxy_protocol v2|PROXY v2/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        /(https:\/\/:443 \{[\s\S]*?)respond "" 404/u,
+        '$1respond "" 200',
+      ),
+      /no-host fallback site.*respond/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@\n\tbind @PUBLIC_HTTPS_BIND@",
+      ),
+      /site binds must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `(extra_public_bind) {\n\tbind @PUBLIC_HTTPS_BIND@\n}\nimport extra_public_bind\n${text}`,
+      /import\/invoke expansion|snippet or named route/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `import /etc/bitcoinpir/payment-v1/edge/optional/*.Caddyfile\n${text}`,
+      /import\/invoke expansion/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `${text}\nhttps://0.0.0.0:444 { respond "" 404 }\n`,
+      /top-level block headers must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => `${text}\n&(cross_lane) {\n\treverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock {\n\t\ttransport http {\n\t\t\tproxy_protocol v1\n\t\t}\n\t}\n}\ninvoke cross_lane\n`,
+      /import\/invoke expansion|snippet or named route/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+        "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\treverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock {\n\t}",
+      ),
+      /reverse_proxy upstream multiset must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("header_up -*", "header_up X-Forwarded-For {http.request.remote.host}"),
+      /clear all client headers|header_up -\*|source or correlation header/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "header_up -*",
+        "header_up -*\n\t\t\theader_up CF-Connecting-IP {http.request.remote.host}",
+      ),
+      /source identity header forwarding/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text
+        .replaceAll("directory-public.sock", "directory-lane-swap.sock")
+        .replaceAll("directory-publisher.sock", "directory-public.sock")
+        .replaceAll("directory-lane-swap.sock", "directory-publisher.sock"),
+      /site upstreams must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text
+        .replace(
+          "@DIRECTORY_RELAY_WSS_HOST@ {\n\tbind @PUBLIC_HTTPS_BIND@",
+          "@DIRECTORY_RELAY_WSS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        )
+        .replace(
+          "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+          "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @PUBLIC_HTTPS_BIND@",
+        ),
+      /site binds must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace("    no log\n", "    log stdout format raw local0\n"),
+      /no log|logging|persistent/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace("expire 2m nopurge", "expire 24h"),
+      /bounded|expiring|nopurge|stick-table/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "    http-request deny deny_status 429 unless { sc0_tracked }\n",
+        "",
+      ),
+      /immediately reject|post-allocation tracking guards/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "server provider 127.0.0.1:8191 maxconn 128",
+        "server provider 127.0.0.1:8191 maxconn 128 send-proxy-v2",
+      ),
+      /PROXY|source|application backend/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "server provider 127.0.0.1:8191 maxconn 128",
+        "server provider 127.0.0.1:8191 maxconn 128\n    server observer 127.0.0.1:8192",
+      ),
+      /exactly the four reviewed source-free loopback application peers/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace("    http-request del-header CF-Connecting-IP\n", ""),
+      /delete CF-Connecting-IP independently on all four application lanes/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      (text) => text.replace(
+        "RuntimeDirectory=bitcoinpir-source-fair-edge",
+        "StateDirectory=bitcoinpir-source-fair-edge\nRuntimeDirectory=bitcoinpir-source-fair-edge",
+      ),
+      /StateDirectory|directive keys/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      (text) => text.replace(
+        "Requires=bitcoinpir-payment-v1-source-fair-edge.service\n",
+        "",
+      ),
+      /Requires|directive keys/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      (text) => text.replace("StandardOutput=null", "StandardOutput=journal"),
+      /StandardOutput/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      (text) => text.replace("StandardError=null", "StandardError=journal"),
+      /StandardError/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      (text) => text.replace("LimitCORE=0", "LimitCORE=infinity"),
+      /LimitCORE/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      (text) => text.replace("MemorySwapMax=0", "MemorySwapMax=infinity"),
+      /MemorySwapMax/,
+    ],
+    [
+      "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
+      (text) => text.replace("\tbind @ROLLBACK_AUTHORITY_PRIVATE_BIND@\n", ""),
+      /ROLLBACK_AUTHORITY_PRIVATE_BIND|bind/,
+    ],
+    [
+      "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
+      (text) => text.replace(
+        "\ttls /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key\n",
+        "",
+      ),
+      /rollback-authority-server|tls/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      (text) => text.replace(
+        "IPAddressAllow=localhost @ROLLBACK_AUTHORITY_CLIENT_IP@",
+        "IPAddressAllow=localhost",
+      ),
+      /ROLLBACK_AUTHORITY_CLIENT_IP|IPAddressAllow/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      (text) => text.replace(
+        "RuntimeDirectory=bitcoinpir-rollback-authority-edge",
+        "StateDirectory=bitcoinpir-rollback-authority-edge\nRuntimeDirectory=bitcoinpir-rollback-authority-edge",
+      ),
+      /StateDirectory|directive keys/,
+    ],
+  ];
+  for (const [relativePath, transform, expected] of mutations) {
+    withFixture((root) => {
+      mutate(root, relativePath, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
 test("CLN guard and cross-UID isolation reject topology regressions", () => {
   const mutations = [
     [
@@ -491,7 +692,10 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
     ],
     [
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
-      (text) => text.replace("InaccessiblePaths=/srv/lightning /srv/bitcoin\n", ""),
+      (text) => text.replace(
+        "InaccessiblePaths=/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge\n",
+        "",
+      ),
       /InaccessiblePaths/,
     ],
     [

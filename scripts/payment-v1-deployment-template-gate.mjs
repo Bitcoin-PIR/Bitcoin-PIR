@@ -26,9 +26,11 @@ export const ACTIVE_BASELINES = Object.freeze({
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
-    "d54ae5e0ec9fea4a72b1eb83ebe1225f18d386437b639db7bc49fa03f730a3d8",
+    "31b981a179fe1af292704d983ce97b3401da4c18cd64002510b22bb7f21a4adf",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
-    "7aa07c8d18c94708e6e58034066b1908456e6a5ac64d2ac2d169f4ed6822b95d",
+    "237162cb5d57333adf789e612fcdb4be602bf6e0c9cd99a03ecd079ab8aa257f",
+  "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
+    "5d3e28438563f592aea4d4a26a7e260f3e313a9e505a0b945bb9f602f0436653",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "937737e212f2be0a2fda92fe1aaa421b1aeefdd074261ca78485ca9430d0c443",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
@@ -46,9 +48,13 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
     "e0fa6b1213ae660f74a541d086a16f0c20b8b8eac91f7afe780ffb4ff67ed2ee",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "c9557f8d547bc4b800593452f5308d91d65419603e5a5f046f5d06af9033b4e9",
+    "7d43ab957b5b927936af34bb13ef165524d5ff3c80979e24830df2ea72670d55",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
-    "49edab939937c98d420e6a6bef6ad3a834effa502630deb666229272993ca841",
+    "1d0c19241d66bd14b261ad20408dcf0a7f2487ece19503e9d7dcccda37d8aedb",
+  "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
+    "c820e03d9f2dd1d39c82c8a90e5794a8439b7bfbfac22b6387898ddd8184491e",
+  "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in":
+    "392339c240062bfa301488ba50f5b05693bea5984d466f494303b9a1519ef074",
 });
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
@@ -58,6 +64,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/edge/README.md",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
+  "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
   "deploy/payment-v1/lightning/README.md",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
@@ -68,6 +75,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+  "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+  "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
   "deploy/payment-v1/systemd/hetzner-provider.service.in",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
   "deploy/payment-v1/systemd/rollback-authority.service.in",
@@ -277,7 +286,12 @@ const COMMON_SERVICE_KEYS = new Set([
   "RestartSec",
   "TimeoutStopSec",
   "TimeoutStartSec",
+  "LimitCORE",
   "LimitNOFILE",
+  "MemoryMax",
+  "MemorySwapMax",
+  "StandardError",
+  "StandardOutput",
   "SupplementaryGroups",
   "Environment",
   "NoNewPrivileges",
@@ -297,6 +311,7 @@ const COMMON_SERVICE_KEYS = new Set([
   "RestrictNamespaces",
   "RestrictRealtime",
   "SystemCallArchitectures",
+  "TasksMax",
   "CapabilityBoundingSet",
   "AmbientCapabilities",
   "RestrictAddressFamilies",
@@ -479,6 +494,7 @@ function validateHetznerProvider(text) {
       "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictNamespaces",
       "RestrictRealtime", "SystemCallArchitectures", "CapabilityBoundingSet",
       "AmbientCapabilities", "RestrictAddressFamilies", "ReadOnlyPaths", "ReadWritePaths",
+      "InaccessiblePaths",
     ],
     label,
   );
@@ -497,6 +513,7 @@ function validateHetznerProvider(text) {
   exactDirectiveValues(unit, "Service", "ProtectHostname", ["true"], label);
   exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/provider"], label);
   exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-provider-payment-v1"], label);
+  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(
     unit,
     "Service",
@@ -612,7 +629,7 @@ function validateHetznerIssuer(text) {
   exactDirectiveValues(unit, "Service", "ProtectHostname", ["true"], label);
   exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/issuer /run/bitcoinpir-cln-rpc-guard/issuer /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@"], label);
   exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-payment-issuer"], label);
-  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/srv/lightning /srv/bitcoin"], label);
+  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(
     unit,
     "Service",
@@ -1007,44 +1024,55 @@ function validateLightningPreflightUnit(text) {
 }
 
 function validatePaymentEdgeUnit(text) {
-  const label = "Payment V1 Caddy edge template";
+  const label = "Payment V1 rollback-authority Caddy edge template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
-  ]);
+    "/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
+  ], { requireStateDirectoryMode: false });
   exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
   exactDirectiveKeys(
     unit,
     "Service",
     [
-      "Type", "User", "Group", "UMask", "StateDirectory", "StateDirectoryMode",
+      "Type", "User", "Group", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
       "WorkingDirectory", "Environment", "ExecStartPre", "ExecStart", "Restart",
       "RestartSec", "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE",
+      "LimitCORE", "MemoryMax", "MemorySwapMax", "TasksMax", "StandardError",
+      "StandardOutput",
       "AmbientCapabilities", "CapabilityBoundingSet", "NoNewPrivileges",
       "PrivateDevices", "PrivateTmp", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
       "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
       "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
       "RestrictNamespaces", "SystemCallArchitectures", "RestrictAddressFamilies",
-      "ReadOnlyPaths", "ReadWritePaths",
+      "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths", "ReadWritePaths",
     ],
     label,
   );
   validatePinnedServiceSandbox(unit, label, "notify", "CAP_NET_BIND_SERVICE");
-  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Payment V1 pinned TLS edge (template only)"], label);
+  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Payment V1 pinned private rollback-authority TLS edge (template only)"], label);
   exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
   exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
   exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-payment-edge"], label);
   exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-payment-edge"], label);
-  exactDirectiveValues(unit, "Service", "StateDirectory", ["bitcoinpir-payment-edge"], label);
-  exactDirectiveValues(unit, "Service", "StateDirectoryMode", ["0700"], label);
-  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-payment-edge"], label);
-  exactDirectiveValues(unit, "Service", "Environment", ["XDG_DATA_HOME=/var/lib/bitcoinpir-payment-edge/data XDG_CONFIG_HOME=/var/lib/bitcoinpir-payment-edge/config"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-rollback-authority-edge"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0700"], label);
+  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/run/bitcoinpir-rollback-authority-edge"], label);
+  exactDirectiveValues(unit, "Service", "Environment", ["XDG_DATA_HOME=/run/bitcoinpir-rollback-authority-edge/data XDG_CONFIG_HOME=/run/bitcoinpir-rollback-authority-edge/config"], label);
   exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
   exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
   exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["60"], label);
   exactDirectiveValues(unit, "Service", "TimeoutStopSec", ["30"], label);
-  exactDirectiveValues(unit, "Service", "LimitNOFILE", ["65535"], label);
+  exactDirectiveValues(unit, "Service", "LimitNOFILE", ["1024"], label);
+  exactDirectiveValues(unit, "Service", "LimitCORE", ["0"], label);
+  exactDirectiveValues(unit, "Service", "MemoryMax", ["268435456"], label);
+  exactDirectiveValues(unit, "Service", "MemorySwapMax", ["0"], label);
+  exactDirectiveValues(unit, "Service", "TasksMax", ["128"], label);
+  exactDirectiveValues(unit, "Service", "StandardError", ["null"], label);
+  exactDirectiveValues(unit, "Service", "StandardOutput", ["null"], label);
+  exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
+  exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost @ROLLBACK_AUTHORITY_CLIENT_IP@"], label);
   exactDirectiveValues(
     unit,
     "Service",
@@ -1053,7 +1081,7 @@ function validatePaymentEdgeUnit(text) {
       "/usr/bin/test -x /opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/caddy.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/edge-config.sha256",
-      "/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy validate --config /etc/bitcoinpir/payment-v1/edge/@EDGE_CADDYFILE@ --adapter caddyfile",
+      "/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy validate --config /etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile --adapter caddyfile",
     ],
     label,
   );
@@ -1061,11 +1089,150 @@ function validatePaymentEdgeUnit(text) {
     unit,
     "Service",
     "ExecStart",
-    ["/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy run --config /etc/bitcoinpir/payment-v1/edge/@EDGE_CADDYFILE@ --adapter caddyfile"],
+    ["/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy run --config /etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile --adapter caddyfile"],
     label,
   );
   exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/edge"], label);
+  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/run/bitcoinpir-rollback-authority-edge"], label);
+  rejectPattern(text, /(?:^|\n)\s*StateDirectory/um, label, "persistent state directory");
+}
+
+function validatePublicPaymentEdgeUnit(text) {
+  const label = "Payment V1 public Caddy edge template";
+  const unit = validateInactiveSystemdTemplate(text, label, [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+  ]);
+  exactDirectiveKeys(unit, "Unit", [
+    "Description", "After", "Wants", "Requires", "BindsTo", "ConditionPathExists",
+  ], label);
+  exactDirectiveKeys(unit, "Service", [
+    "Type", "User", "Group", "SupplementaryGroups", "UMask", "StateDirectory",
+    "StateDirectoryMode", "WorkingDirectory", "Environment", "ExecStartPre",
+    "ExecStart", "Restart", "RestartSec", "TimeoutStartSec", "TimeoutStopSec",
+    "LimitNOFILE", "MemoryMax", "TasksMax", "StandardError", "StandardOutput", "AmbientCapabilities",
+    "LimitCORE", "MemorySwapMax",
+    "CapabilityBoundingSet", "NoNewPrivileges", "PrivateDevices", "PrivateTmp",
+    "ProtectSystem", "ProtectHome", "ProtectKernelTunables", "ProtectKernelModules",
+    "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock", "ProtectHostname",
+    "LockPersonality", "MemoryDenyWriteExecute", "RestrictSUIDSGID",
+    "RestrictRealtime", "RestrictNamespaces", "SystemCallArchitectures",
+    "RestrictAddressFamilies", "ReadOnlyPaths", "ReadWritePaths",
+  ], label);
+  validatePinnedServiceSandbox(unit, label, "notify", "CAP_NET_BIND_SERVICE");
+  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Payment V1 pinned public TLS edge (template only)"], label);
+  exactDirectiveValues(unit, "Unit", "After", ["network-online.target bitcoinpir-payment-v1-source-fair-edge.service"], label);
+  exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
+  exactDirectiveValues(unit, "Unit", "Requires", ["bitcoinpir-payment-v1-source-fair-edge.service"], label);
+  exactDirectiveValues(unit, "Unit", "BindsTo", ["bitcoinpir-payment-v1-source-fair-edge.service"], label);
+  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-payment-edge"], label);
+  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-payment-edge"], label);
+  exactDirectiveValues(unit, "Service", "SupplementaryGroups", ["bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "StateDirectory", ["bitcoinpir-payment-edge"], label);
+  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-payment-edge"], label);
+  exactDirectiveValues(unit, "Service", "Environment", ["XDG_DATA_HOME=/var/lib/bitcoinpir-payment-edge/data XDG_CONFIG_HOME=/var/lib/bitcoinpir-payment-edge/config"], label);
+  exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
+  exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["60"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStopSec", ["30"], label);
+  exactDirectiveValues(unit, "Service", "LimitNOFILE", ["4096"], label);
+  exactDirectiveValues(unit, "Service", "LimitCORE", ["0"], label);
+  exactDirectiveValues(unit, "Service", "MemoryMax", ["536870912"], label);
+  exactDirectiveValues(unit, "Service", "MemorySwapMax", ["0"], label);
+  exactDirectiveValues(unit, "Service", "TasksMax", ["512"], label);
+  exactDirectiveValues(unit, "Service", "StandardError", ["null"], label);
+  exactDirectiveValues(unit, "Service", "StandardOutput", ["null"], label);
+  exactDirectiveValues(unit, "Service", "ExecStartPre", [
+    "/usr/bin/test -x /opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/caddy.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/edge-config.sha256",
+    "/usr/bin/test -S /run/bitcoinpir-source-fair-edge/provider.sock",
+    "/usr/bin/test -S /run/bitcoinpir-source-fair-edge/issuer.sock",
+    "/usr/bin/test -S /run/bitcoinpir-source-fair-edge/directory-public.sock",
+    "/usr/bin/test -S /run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+    "/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy validate --config /etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile --adapter caddyfile",
+  ], label);
+  exactDirectiveValues(unit, "Service", "ExecStart", [
+    "/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy run --config /etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile --adapter caddyfile",
+  ], label);
+  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/edge /run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-payment-edge"], label);
+}
+
+function validateSourceFairEdgeUnit(text) {
+  const label = "Payment V1 HAProxy source-fair edge template";
+  const unit = validateInactiveSystemdTemplate(text, label, [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+  ], { requireStateDirectoryMode: false });
+  exactDirectiveKeys(unit, "Unit", [
+    "Description", "After", "Wants", "Before", "ConditionPathExists",
+  ], label);
+  exactDirectiveKeys(unit, "Service", [
+    "Type", "User", "Group", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
+    "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
+    "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE", "MemoryMax", "TasksMax",
+    "LimitCORE", "MemorySwapMax",
+    "StandardError", "StandardOutput",
+    "NoNewPrivileges", "PrivateDevices", "PrivateTmp", "ProtectSystem",
+    "ProtectHome", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
+    "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
+    "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
+    "RestrictNamespaces", "SystemCallArchitectures", "CapabilityBoundingSet",
+    "AmbientCapabilities", "RestrictAddressFamilies", "IPAddressDeny",
+    "IPAddressAllow", "ReadOnlyPaths", "ReadWritePaths",
+  ], label);
+  for (const key of [
+    "NoNewPrivileges", "PrivateDevices", "PrivateTmp", "ProtectHome",
+    "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
+    "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
+    "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
+    "RestrictNamespaces",
+  ]) exactDirectiveValues(unit, "Service", key, ["true"], label);
+  exactDirectiveValues(unit, "Service", "ProtectSystem", ["strict"], label);
+  exactDirectiveValues(unit, "Service", "SystemCallArchitectures", ["native"], label);
+  exactDirectiveValues(unit, "Service", "CapabilityBoundingSet", [""], label);
+  exactDirectiveValues(unit, "Service", "AmbientCapabilities", [""], label);
+  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Payment V1 pinned source-fair edge (template only)"], label);
+  exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
+  exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
+  exactDirectiveValues(unit, "Unit", "Before", ["bitcoinpir-payment-v1-public-edge.service"], label);
+  exactDirectiveValues(unit, "Service", "Type", ["notify"], label);
+  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "UMask", ["0007"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0750"], label);
+  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/run/bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
+  exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["30"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStopSec", ["15"], label);
+  exactDirectiveValues(unit, "Service", "LimitNOFILE", ["2048"], label);
+  exactDirectiveValues(unit, "Service", "LimitCORE", ["0"], label);
+  exactDirectiveValues(unit, "Service", "MemoryMax", ["268435456"], label);
+  exactDirectiveValues(unit, "Service", "MemorySwapMax", ["0"], label);
+  exactDirectiveValues(unit, "Service", "TasksMax", ["128"], label);
+  exactDirectiveValues(unit, "Service", "StandardError", ["null"], label);
+  exactDirectiveValues(unit, "Service", "StandardOutput", ["null"], label);
+  exactDirectiveValues(unit, "Service", "RestrictAddressFamilies", ["AF_UNIX AF_INET AF_INET6"], label);
+  exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
+  exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost"], label);
+  exactDirectiveValues(unit, "Service", "ExecStartPre", [
+    "/usr/bin/test -x /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256",
+    "/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -c -q -f /etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+  ], label);
+  exactDirectiveValues(unit, "Service", "ExecStart", [
+    "/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -Ws -db -q -f /etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+  ], label);
+  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/source-fair-edge /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@"], label);
+  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/run/bitcoinpir-source-fair-edge"], label);
+  rejectPattern(text, /(?:^|\n)\s*StateDirectory/um, label, "persistent state directory");
 }
 
 function activeTemplateLines(text, label) {
@@ -1200,7 +1367,23 @@ function validateActivationPrerequisites(text) {
   requireText(text, "Before mainnet/real value", label);
 }
 
-function validateCaddyTemplate(text, label, requiredUpstreams) {
+function topLevelCaddyBlockHeaders(text, label) {
+  const headers = [];
+  let depth = 0;
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trimStart().startsWith("#") ? "" : rawLine.trim();
+    if (line === "") continue;
+    const opens = [...line].filter((character) => character === "{").length;
+    const closes = [...line].filter((character) => character === "}").length;
+    if (depth === 0 && opens > 0) headers.push(line);
+    depth += opens - closes;
+    if (depth < 0) fail(`${label} has an unmatched top-level closing brace`);
+  }
+  if (depth !== 0) fail(`${label} has an unterminated top-level block`);
+  return headers;
+}
+
+function validateCaddyTemplate(text, label, expectedUpstreams, expectedTopLevelHeaders) {
   requireText(text, "admin off", label);
   requireText(text, "persist_config off", label);
   requireText(text, "auto_https disable_redirects", label);
@@ -1214,17 +1397,325 @@ function validateCaddyTemplate(text, label, requiredUpstreams) {
   rejectPattern(text, /\b(?:debug|trace)\b/iu, label, "debug/trace logging");
   rejectPattern(text, /(?:^|\n)\s*log\s*\{/mu, label, "site access-log directive");
   rejectPattern(text, /(?:^|\n)\s*(?:forward_auth|php_fastcgi|file_server|redir)\b/mu, label, "unreviewed handler");
-  for (const upstream of requiredUpstreams) {
-    const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    const matches = text.match(new RegExp(`reverse_proxy\\s+${escaped}`, "gu")) ?? [];
-    if (matches.length === 0) fail(`${label} must contain reviewed loopback upstream ${upstream}`);
-  }
   rejectPattern(
     text,
-    /(?:^|\n)\s*reverse_proxy[ \t]+(?!127\.0\.0\.1:(?:5610|8191|8080|8099)\b)\S+/gu,
+    /\b(?:import|invoke)\b/mu,
     label,
-    "non-reviewed or non-loopback upstream",
+    "Caddy import/invoke expansion outside the reviewed closed world",
   );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*&?\([^\n)]+\)\s*\{/mu,
+    label,
+    "Caddy snippet or named route outside the reviewed closed world",
+  );
+  const topLevelHeaders = topLevelCaddyBlockHeaders(text, label);
+  if (JSON.stringify(topLevelHeaders) !== JSON.stringify(expectedTopLevelHeaders)) {
+    fail(
+      `${label} top-level block headers must equal ${JSON.stringify(expectedTopLevelHeaders)}`,
+    );
+  }
+
+  const active = activeTemplateLines(text, label);
+  const actualUpstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} contains a malformed reverse_proxy directive`);
+      return match[1];
+    });
+  const sortedActualUpstreams = [...actualUpstreams].sort();
+  const sortedExpectedUpstreams = [...expectedUpstreams].sort();
+  if (JSON.stringify(sortedActualUpstreams) !== JSON.stringify(sortedExpectedUpstreams)) {
+    fail(
+      `${label} reverse_proxy upstream multiset must equal ${JSON.stringify(sortedExpectedUpstreams)}`,
+    );
+  }
+  const approvedUpstreams = new Set([
+    "127.0.0.1:5610",
+    "127.0.0.1:8191",
+    "127.0.0.1:8080",
+    "127.0.0.1:8099",
+    "unix//run/bitcoinpir-source-fair-edge/provider.sock",
+    "unix//run/bitcoinpir-source-fair-edge/issuer.sock",
+    "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
+    "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+  ]);
+  for (const upstream of actualUpstreams) {
+    if (!approvedUpstreams.has(upstream)) {
+      fail(`${label} contains non-reviewed upstream ${upstream}`);
+    }
+  }
+  for (const line of active.filter((candidate) => candidate.startsWith("proxy_protocol "))) {
+    if (line !== "proxy_protocol v2") {
+      fail(`${label} may use only the reviewed proxy_protocol v2 transport`);
+    }
+  }
+}
+
+function caddySiteBlock(text, siteAddress, label) {
+  const lines = text.split("\n");
+  const header = `${siteAddress} {`;
+  const starts = lines
+    .map((line, index) => line.trim() === header ? index : -1)
+    .filter((index) => index >= 0);
+  if (starts.length !== 1) {
+    fail(`${label} must contain exactly one ${header} site block`);
+  }
+
+  let depth = 0;
+  const block = [];
+  for (let index = starts[0]; index < lines.length; index += 1) {
+    const line = lines[index];
+    block.push(line);
+    if (!line.trimStart().startsWith("#")) {
+      for (const character of line) {
+        if (character === "{") depth += 1;
+        if (character === "}") depth -= 1;
+        if (depth < 0) fail(`${label} has an unbalanced ${siteAddress} site block`);
+      }
+    }
+    if (depth === 0) return block.join("\n");
+  }
+  fail(`${label} has an unterminated ${siteAddress} site block`);
+}
+
+function exactCaddySiteBindingsAndUpstreams(
+  text,
+  siteAddress,
+  expectedBinds,
+  expectedUpstreams,
+  label,
+) {
+  const block = caddySiteBlock(text, siteAddress, label);
+  const active = activeTemplateLines(block, `${label} ${siteAddress} site`);
+  const binds = active.filter((line) => line.startsWith("bind "));
+  if (JSON.stringify(binds) !== JSON.stringify(expectedBinds)) {
+    fail(`${label} ${siteAddress} site binds must equal ${JSON.stringify(expectedBinds)}`);
+  }
+  const upstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} has a malformed reverse_proxy in ${siteAddress}`);
+      return match[1];
+    });
+  if (JSON.stringify(upstreams) !== JSON.stringify(expectedUpstreams)) {
+    fail(
+      `${label} ${siteAddress} site upstreams must equal ${JSON.stringify(expectedUpstreams)}`,
+    );
+  }
+  return { active, block };
+}
+
+function requireExactActiveLine(active, line, expectedCount, label) {
+  const actualCount = active.filter((candidate) => candidate === line).length;
+  if (actualCount !== expectedCount) {
+    fail(`${label} must contain ${JSON.stringify(line)} exactly ${expectedCount} time(s)`);
+  }
+}
+
+function validateHetznerPublicCaddyLaneBindings(text) {
+  const label = "Hetzner public Caddy template";
+  exactCaddySiteBindingsAndUpstreams(
+    text,
+    "@PROVIDER_WSS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
+    ["unix//run/bitcoinpir-source-fair-edge/provider.sock"],
+    label,
+  );
+  exactCaddySiteBindingsAndUpstreams(
+    text,
+    "@PAYMENT_ISSUER_HTTPS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
+    Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
+    label,
+  );
+  exactCaddySiteBindingsAndUpstreams(
+    text,
+    "@DIRECTORY_RELAY_WSS_HOST@",
+    ["bind @PUBLIC_HTTPS_BIND@"],
+    ["unix//run/bitcoinpir-source-fair-edge/directory-public.sock"],
+    label,
+  );
+  const publisher = exactCaddySiteBindingsAndUpstreams(
+    text,
+    "@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+    ["bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@"],
+    ["unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock"],
+    label,
+  );
+  const noHostFallback = exactCaddySiteBindingsAndUpstreams(
+    text,
+    "https://:443",
+    [
+      "bind @PUBLIC_HTTPS_BIND@",
+      "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+    ],
+    [],
+    label,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    "remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@",
+    1,
+    `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    noHostFallback.active,
+    "tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+    1,
+    `${label} no-host fallback site`,
+  );
+  requireExactActiveLine(
+    noHostFallback.active,
+    "respond \"\" 404",
+    1,
+    `${label} no-host fallback site`,
+  );
+}
+
+function validateSourceFairHaproxy(text) {
+  const label = "Payment V1 HAProxy source-fair configuration";
+  const active = activeTemplateLines(text, label);
+  const activeText = active.join("\n");
+  for (const required of [
+    "maxconn 320",
+    "backend provider_sources",
+    "backend issuer_sources",
+    "backend issuer_quote_sources",
+    "backend issuer_quote_global",
+    "backend directory_public_sources",
+    "backend directory_publisher_sources",
+    "bind /run/bitcoinpir-source-fair-edge/provider.sock accept-proxy mode 660",
+    "bind /run/bitcoinpir-source-fair-edge/issuer.sock accept-proxy mode 660",
+    "bind /run/bitcoinpir-source-fair-edge/directory-public.sock accept-proxy mode 660",
+    "bind /run/bitcoinpir-source-fair-edge/directory-publisher.sock accept-proxy mode 660",
+    "http-request deny deny_status 403 unless { src @DIRECTORY_PUBLISHER_CLIENT_IP@ }",
+    "stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)",
+    "stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),http_req_rate(60s),bytes_out_rate(1s)",
+    "stick-table type integer size 1 expire 2m nopurge store http_req_rate(60s)",
+    "http-request track-sc0 src,ipmask(32,64) table provider_sources",
+    "http-request track-sc0 src,ipmask(32,64) table issuer_sources",
+    "http-request track-sc0 src,ipmask(32,64) table directory_public_sources",
+    "http-request track-sc0 src,ipmask(32,64) table directory_publisher_sources",
+    "http-request track-sc1 src,ipmask(32,64) table issuer_quote_sources if quote_create",
+    "http-request track-sc2 int(1) table issuer_quote_global if quote_create",
+    "http-request deny deny_status 429 unless { sc0_tracked }",
+    "http-request deny deny_status 429 if quote_create !{ sc1_tracked }",
+    "http-request deny deny_status 429 if quote_create !{ sc2_tracked }",
+    "http-request deny deny_status 429 if { sc0_conn_cur gt 8 }",
+    "http-request deny deny_status 429 if { sc0_conn_cur gt 4 }",
+    "http-request deny deny_status 429 if { sc0_conn_cur gt 2 }",
+    "http-request deny deny_status 429 if quote_create { sc1_http_req_rate gt 6 }",
+    "http-request deny deny_status 429 if quote_create { sc2_http_req_rate gt 60 }",
+    "server provider 127.0.0.1:8191 maxconn 128",
+    "server issuer 127.0.0.1:5610 maxconn 128",
+    "server directory-public 127.0.0.1:8080 maxconn 48",
+    "server directory-publisher 127.0.0.1:8081 maxconn 4",
+  ]) requireText(activeText, required, label);
+  const proxyBinds = active.filter((line) => /^bind .*accept-proxy mode 660$/u.test(line));
+  if (proxyBinds.length !== 4) fail(`${label} must expose exactly four protected PROXY-v2 Unix sockets`);
+  const tables = active.filter((line) => line.startsWith("stick-table "));
+  if (tables.length !== 6 || tables.some((line) => !line.includes("expire 2m nopurge"))) {
+    fail(`${label} must have exactly six bounded, expiring, non-evicting memory tables`);
+  }
+  const sourceTableFullChecks = active.filter((line) => line.includes("table_avl(") && line.includes("in_table("));
+  if (sourceTableFullChecks.length !== 5) {
+    fail(`${label} must fail closed when any source-keyed table is full`);
+  }
+  const trackedAllocationGuards = [
+    [
+      "http-request track-sc0 src,ipmask(32,64) table provider_sources",
+      "http-request deny deny_status 429 unless { sc0_tracked }",
+    ],
+    [
+      "http-request track-sc0 src,ipmask(32,64) table issuer_sources",
+      "http-request deny deny_status 429 unless { sc0_tracked }",
+    ],
+    [
+      "http-request track-sc1 src,ipmask(32,64) table issuer_quote_sources if quote_create",
+      "http-request deny deny_status 429 if quote_create !{ sc1_tracked }",
+    ],
+    [
+      "http-request track-sc2 int(1) table issuer_quote_global if quote_create",
+      "http-request deny deny_status 429 if quote_create !{ sc2_tracked }",
+    ],
+    [
+      "http-request track-sc0 src,ipmask(32,64) table directory_public_sources",
+      "http-request deny deny_status 429 unless { sc0_tracked }",
+    ],
+    [
+      "http-request track-sc0 src,ipmask(32,64) table directory_publisher_sources",
+      "http-request deny deny_status 429 unless { sc0_tracked }",
+    ],
+  ];
+  for (const [track, guard] of trackedAllocationGuards) {
+    const trackIndex = active.indexOf(track);
+    if (trackIndex < 0 || active[trackIndex + 1] !== guard) {
+      fail(`${label} must immediately reject a failed ${track} allocation`);
+    }
+  }
+  const publisherSourceGuard =
+    "http-request deny deny_status 403 unless { src @DIRECTORY_PUBLISHER_CLIENT_IP@ }";
+  if (
+    active.filter((line) => line === publisherSourceGuard).length !== 1 ||
+    active.indexOf(publisherSourceGuard) >=
+      active.indexOf(
+        "http-request track-sc0 src,ipmask(32,64) table directory_publisher_sources",
+      )
+  ) {
+    fail(`${label} must reject the non-publisher source before allocating publisher state`);
+  }
+  const allocationGuardCount = active.filter((line) =>
+    /sc[012]_tracked/u.test(line)
+  ).length;
+  if (allocationGuardCount !== trackedAllocationGuards.length) {
+    fail(`${label} must have exactly six post-allocation tracking guards`);
+  }
+  const egressFilters = active.filter((line) => line.startsWith("filter bwlim-out "));
+  const enabledEgressFilters = active.filter((line) => line.startsWith("http-request set-bandwidth-limit "));
+  if (egressFilters.length !== 8 || enabledEgressFilters.length !== 8) {
+    fail(`${label} must enforce shared-source and per-stream egress on every lane`);
+  }
+  if (active.filter((line) => line === "no log").length !== 1) {
+    fail(`${label} must explicitly disable transaction logging once`);
+  }
+  const expectedApplicationServers = [
+    "server directory-public 127.0.0.1:8080 maxconn 48",
+    "server directory-publisher 127.0.0.1:8081 maxconn 4",
+    "server issuer 127.0.0.1:5610 maxconn 128",
+    "server provider 127.0.0.1:8191 maxconn 128",
+  ];
+  const applicationServers = active
+    .filter((line) => line.startsWith("server "))
+    .sort();
+  if (JSON.stringify(applicationServers) !== JSON.stringify(expectedApplicationServers)) {
+    fail(`${label} must open exactly the four reviewed source-free loopback application peers`);
+  }
+  for (const line of active) {
+    if (/^log(?:\s|$)/u.test(line)) fail(`${label} contains a log target`);
+  }
+  rejectPattern(
+    activeText,
+    /(?:^|\s)(?:peers|stats|server-state-file|load-server-state-from-file|send-proxy(?:-v2)?|option\s+forwardfor|unique-id-format|capture|lua-load|filter\s+spoe)(?:\s|$)/u,
+    label,
+    "persistent/replicated state, identity forwarding, capture, or extension hook",
+  );
+  rejectPattern(activeText, /127\.0\.0\.1:8099/u, label, "rollback-authority routing");
+  rejectPattern(activeText, /http-request\s+(?:add|set)-header/iu, label, "header identity injection");
+  for (const header of [
+    "Baggage", "CF-Connecting-IP", "Client-IP", "Fastly-Client-IP",
+    "Fly-Client-IP", "Forwarded", "Traceparent", "Tracestate",
+    "True-Client-IP", "Via", "X-Client-IP", "X-Cluster-Client-IP",
+    "X-Correlation-ID", "X-Envoy-External-Address", "X-Forwarded-For",
+    "X-Forwarded-Host", "X-Forwarded-Proto", "X-Original-Client-IP",
+    "X-Original-Forwarded-For", "X-Real-IP", "X-Request-ID",
+  ]) {
+    if (active.filter((line) => line === `http-request del-header ${header}`).length !== 4) {
+      fail(`${label} must delete ${header} independently on all four application lanes`);
+    }
+  }
 }
 
 function validateVpsbgFreePow(text, mode) {
@@ -1374,13 +1865,22 @@ function validateRelayConfigExample(text, selection) {
   const config = parseRelaySelection(text);
   const expectedKeys = [
     "profile",
-    "listen",
+    "public_listen",
+    "publisher_listen",
     "database",
     "directory_pubkey_hex",
     "max_connections",
+    "max_public_connections",
+    "max_publisher_connections",
     "max_in_flight_operations",
+    "max_public_in_flight_operations",
+    "max_publisher_in_flight_operations",
     "max_operations_per_second",
+    "max_public_operations_per_second",
+    "max_publisher_operations_per_second",
     "max_egress_bytes_per_second",
+    "max_public_egress_bytes_per_second",
+    "max_publisher_egress_bytes_per_second",
     "max_egress_bytes_per_connection",
     "max_archive_events",
     "max_archive_bytes",
@@ -1399,12 +1899,21 @@ function validateRelayConfigExample(text, selection) {
   }
   for (const [field, expected] of [
     ["profile", "bitcoinpir-directory-relay-v1"],
-    ["listen", "127.0.0.1:8080"],
+    ["public_listen", "127.0.0.1:8080"],
+    ["publisher_listen", "127.0.0.1:8081"],
     ["database", "/var/lib/bitcoinpir-directory-relay/relay.sqlite3"],
-    ["max_connections", 64],
+    ["max_connections", 52],
+    ["max_public_connections", 48],
+    ["max_publisher_connections", 4],
     ["max_in_flight_operations", 8],
+    ["max_public_in_flight_operations", 6],
+    ["max_publisher_in_flight_operations", 2],
     ["max_operations_per_second", 64],
+    ["max_public_operations_per_second", 48],
+    ["max_publisher_operations_per_second", 16],
     ["max_egress_bytes_per_second", 16_777_216],
+    ["max_public_egress_bytes_per_second", 12_582_912],
+    ["max_publisher_egress_bytes_per_second", 4_194_304],
     ["max_egress_bytes_per_connection", 67_108_864],
     ["max_archive_events", 100_000],
     ["max_archive_bytes", 268_435_456],
@@ -1456,6 +1965,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".service.in") &&
       !rel.endsWith(".args.in") &&
       !rel.endsWith(".Caddyfile.in") &&
+      !rel.endsWith(".cfg.in") &&
       !rel.endsWith(".conf.in") &&
       !rel.endsWith(".sh.in") &&
       !rel.endsWith(".toml.example") &&
@@ -1539,6 +2049,24 @@ export function validateDeploymentTree(rootInput) {
   );
   validatePaymentEdgeUnit(paymentEdge.text);
 
+  const publicPaymentEdge = readRequired(
+    root,
+    "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+  );
+  validatePublicPaymentEdgeUnit(publicPaymentEdge.text);
+
+  const sourceFairEdgeUnit = readRequired(
+    root,
+    "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+  );
+  validateSourceFairEdgeUnit(sourceFairEdgeUnit.text);
+
+  const sourceFairHaproxy = readRequired(
+    root,
+    "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+  );
+  validateSourceFairHaproxy(sourceFairHaproxy.text);
+
   const activationPrerequisites = readRequired(
     root,
     "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
@@ -1587,7 +2115,58 @@ export function validateDeploymentTree(rootInput) {
   validateCaddyTemplate(
     publicEdge.text,
     "Hetzner public Caddy template",
-    ["127.0.0.1:8191", "127.0.0.1:5610", "127.0.0.1:8080"],
+    [
+      "unix//run/bitcoinpir-source-fair-edge/provider.sock",
+      ...Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
+      "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
+      "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+    ],
+    [
+      "{",
+      "@PROVIDER_WSS_HOST@ {",
+      "@PAYMENT_ISSUER_HTTPS_HOST@ {",
+      "@DIRECTORY_RELAY_WSS_HOST@ {",
+      "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+      "https://:443 {",
+    ],
+  );
+  validateHetznerPublicCaddyLaneBindings(publicEdge.text);
+  for (const required of [
+    "read_header 5s",
+    "read_body 15s",
+    "idle 60s",
+    "max_header_size 16KiB",
+    "bind @PUBLIC_HTTPS_BIND@",
+    "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+    "remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@",
+    "tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+  ]) requireText(publicEdge.text, required, "Hetzner public Caddy template");
+  if ((publicEdge.text.match(/remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@/gu) ?? []).length !== 1) {
+    fail("Hetzner public Caddy template must use the exact publisher client address once");
+  }
+  rejectPattern(
+    publicEdge.text,
+    /\b(?:client_auth|trust_pool)\b/u,
+    "Hetzner public Caddy template",
+    "publisher client-certificate requirement unsupported by bpir-admin",
+  );
+  if ((publicEdge.text.match(/proxy_protocol v2/gu) ?? []).length !== 7) {
+    fail("Hetzner public Caddy template must use PROXY v2 on exactly seven reviewed upstream routes");
+  }
+  if ((publicEdge.text.match(/header_up -\*/gu) ?? []).length !== 7) {
+    fail("Hetzner public Caddy template must clear all client headers on every upstream route");
+  }
+  rejectPattern(
+    publicEdge.text,
+    /header_up\s+(?:CF-Connecting-IP|Client-IP|Fastly-Client-IP|Fly-Client-IP|Forwarded|True-Client-IP|X-Client-IP|X-Cluster-Client-IP|X-Envoy-External-Address|X-Forwarded(?:-[A-Za-z0-9-]+)?|X-Original-(?:Client-IP|Forwarded-For)|X-Real-IP)\b/iu,
+    "Hetzner public Caddy template",
+    "source identity header forwarding",
+  );
+  rejectPattern(
+    publicEdge.text,
+    /reverse_proxy\s+127\.0\.0\.1:/u,
+    "Hetzner public Caddy template",
+    "direct business-service bypass",
   );
   requireText(
     publicEdge.text,
@@ -1609,7 +2188,12 @@ export function validateDeploymentTree(rootInput) {
     authorityEdge.text,
     "rollback-authority Caddy template",
     ["127.0.0.1:8099"],
+    ["{", "@ROLLBACK_AUTHORITY_HTTPS_HOST@ {"],
   );
+  for (const required of [
+    "bind @ROLLBACK_AUTHORITY_PRIVATE_BIND@",
+    "tls /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
+  ]) requireText(authorityEdge.text, required, "rollback-authority Caddy template");
 
   const authority = readRequired(
     root,
@@ -1666,7 +2250,7 @@ export function validateDeploymentTree(rootInput) {
       "RestrictSUIDSGID", "RestrictNamespaces", "RestrictRealtime",
       "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
       "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths",
-      "ReadWritePaths",
+      "ReadWritePaths", "InaccessiblePaths",
       ...(selection.status === "RESOLVED" ? ["ExecStartPre"] : []),
       ...(selection.status === "RESOLVED" ? ["RestartSec"] : []),
     ],
@@ -1685,6 +2269,7 @@ export function validateDeploymentTree(rootInput) {
   exactDirectiveValues(relayParsed, "Service", "IPAddressAllow", ["localhost"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-directory-relay"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], relayLabel);
   rejectPattern(
     relayUnit.text,
     /publisher-(?:private|signing)-key|directory-(?:private|signing)-key/i,

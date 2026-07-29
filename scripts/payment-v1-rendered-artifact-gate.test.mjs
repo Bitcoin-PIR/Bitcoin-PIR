@@ -33,8 +33,11 @@ import {
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY = resolve(SCRIPT_DIRECTORY, "..");
 const GATE = join(SCRIPT_DIRECTORY, "payment-v1-rendered-artifact-gate.mjs");
-const EDGE_UNIT = "deploy/payment-v1/systemd/payment-v1-edge.service.in";
+const EDGE_UNIT = "deploy/payment-v1/systemd/payment-v1-public-edge.service.in";
+const SOURCE_FAIR_UNIT = "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in";
+const LEGACY_EDGE_UNIT = "deploy/payment-v1/systemd/payment-v1-edge.service.in";
 const EDGE_CONFIG = "deploy/payment-v1/edge/hetzner-public.Caddyfile.in";
+const SOURCE_FAIR_CONFIG = "deploy/payment-v1/edge/source-fair-haproxy.cfg.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
 const PROVIDER_UNIT = "deploy/payment-v1/systemd/hetzner-provider.service.in";
 const ISSUER_TEMPLATES = [
@@ -116,11 +119,12 @@ function renderText(sourceRoot, sourcePath, placeholders) {
   return text;
 }
 
-function addPayload(fixture, targetPath, bytes, index) {
+function addPayload(fixture, targetPath, bytes, index, metadata = {}) {
   const sourcePath = `payload/${String(index).padStart(3, "0")}-${basename(targetPath)}`;
   writeParent(join(fixture.inputRoot, sourcePath), bytes);
   return {
     ...payloadMetadata(targetPath),
+    ...metadata,
     expected_sha256: hashBytes(bytes),
     source_path: sourcePath,
     target_path: targetPath,
@@ -130,35 +134,77 @@ function addPayload(fixture, targetPath, bytes, index) {
 function makeEdgeFixture(t) {
   const fixture = temporaryRoots(t);
   copySource(fixture.sourceRoot, EDGE_UNIT);
+  copySource(fixture.sourceRoot, SOURCE_FAIR_UNIT);
   copySource(fixture.sourceRoot, EDGE_CONFIG);
+  copySource(fixture.sourceRoot, SOURCE_FAIR_CONFIG);
   const caddyBytes = Buffer.from("reviewed-caddy-v2\n");
   const caddySha = hashBytes(caddyBytes);
+  const haproxyBytes = Buffer.from("reviewed-haproxy-v2\n");
+  const haproxySha = hashBytes(haproxyBytes);
   const placeholders = {
     CADDY_SHA256: caddySha,
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.23.0.6",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.23.0.5",
     DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
-    EDGE_CADDYFILE: "hetzner-public.Caddyfile",
+    HAPROXY_SHA256: haproxySha,
     PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
     PROVIDER_WSS_HOST: "pir.example.net",
+    PUBLIC_HTTPS_BIND: "198.51.100.23",
   };
   const renderedConfig = Buffer.from(renderText(fixture.sourceRoot, EDGE_CONFIG, placeholders));
+  const renderedSourceFairConfig = Buffer.from(
+    renderText(fixture.sourceRoot, SOURCE_FAIR_CONFIG, placeholders),
+  );
   const targets = {
-    binary: `/opt/bitcoinpir/caddy/${caddySha}/caddy`,
-    binaryManifest: "/etc/bitcoinpir/payment-v1/edge/caddy.sha256",
+    caddyBinary: `/opt/bitcoinpir/caddy/${caddySha}/caddy`,
+    caddyBinaryManifest: "/etc/bitcoinpir/payment-v1/edge/caddy.sha256",
     config: "/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile",
     configManifest: "/etc/bitcoinpir/payment-v1/edge/edge-config.sha256",
+    haproxyBinary: `/opt/bitcoinpir/haproxy/${haproxySha}/haproxy`,
+    haproxyBinaryManifest: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256",
+    publisherCertificate: "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+    publisherKey: "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+    sourceFairConfig: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+    sourceFairConfigManifest: "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256",
   };
   const payloads = [
-    [targets.binary, caddyBytes],
-    [targets.binaryManifest, Buffer.from(`${caddySha}  ${targets.binary}\n`)],
+    [targets.caddyBinary, caddyBytes],
+    [targets.caddyBinaryManifest, Buffer.from(`${caddySha}  ${targets.caddyBinary}\n`)],
     [
       targets.configManifest,
       Buffer.from(`${hashBytes(renderedConfig)}  ${targets.config}\n`),
+    ],
+    [targets.haproxyBinary, haproxyBytes],
+    [
+      targets.haproxyBinaryManifest,
+      Buffer.from(`${haproxySha}  ${targets.haproxyBinary}\n`),
+    ],
+    [targets.publisherCertificate, Buffer.from("reviewed-publisher-certificate\n")],
+    [targets.publisherKey, Buffer.from("reviewed-publisher-private-key\n")],
+    [
+      targets.sourceFairConfigManifest,
+      Buffer.from(
+        `${hashBytes(renderedSourceFairConfig)}  ${targets.sourceFairConfig}\n`,
+      ),
     ],
   ];
   const plan = {
     deployment_id: "hetzner-edge-v1-test",
     deployment_profile: "edge-hetzner-v1",
-    payload_artifacts: payloads.map(([target, bytes], index) => addPayload(fixture, target, bytes, index)),
+    payload_artifacts: payloads.map(([target, bytes], index) => {
+      if (target === targets.publisherKey) {
+        return addPayload(fixture, target, bytes, index, {
+          class: "secret", gid: 730, mode: "0400", uid: 729,
+        });
+      }
+      if (target === targets.publisherCertificate) {
+        return addPayload(fixture, target, bytes, index, {
+          class: "config", gid: 730, mode: "0440", uid: 0,
+        });
+      }
+      return addPayload(fixture, target, bytes, index);
+    }),
     placeholders,
     rendered_artifacts: [
       {
@@ -174,18 +220,43 @@ function makeEdgeFixture(t) {
         mode: "0644",
         source_path: EDGE_UNIT,
         source_sha256: hashFile(join(fixture.sourceRoot, EDGE_UNIT)),
-        target_path: "/etc/systemd/system/bitcoinpir-payment-v1-edge.service",
+        target_path: "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
+        uid: 0,
+      },
+      {
+        gid: 732,
+        mode: "0440",
+        source_path: SOURCE_FAIR_CONFIG,
+        source_sha256: hashFile(join(fixture.sourceRoot, SOURCE_FAIR_CONFIG)),
+        target_path: targets.sourceFairConfig,
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0644",
+        source_path: SOURCE_FAIR_UNIT,
+        source_sha256: hashFile(join(fixture.sourceRoot, SOURCE_FAIR_UNIT)),
+        target_path: "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
         uid: 0,
       },
     ],
     schema_version: 1,
-    service_identities: [{
-      gid: 730,
-      group_name: "bitcoinpir-payment-edge",
-      uid: 729,
-      unit_name: "bitcoinpir-payment-v1-edge.service",
-      user_name: "bitcoinpir-payment-edge",
-    }],
+    service_identities: [
+      {
+        gid: 730,
+        group_name: "bitcoinpir-payment-edge",
+        uid: 729,
+        unit_name: "bitcoinpir-payment-v1-public-edge.service",
+        user_name: "bitcoinpir-payment-edge",
+      },
+      {
+        gid: 732,
+        group_name: "bitcoinpir-source-fair-edge",
+        uid: 731,
+        unit_name: "bitcoinpir-payment-v1-source-fair-edge.service",
+        user_name: "bitcoinpir-source-fair-edge",
+      },
+    ],
   };
   return { ...fixture, plan, targets };
 }
@@ -454,26 +525,41 @@ function makeRollbackEdgeFixture(t) {
   const fixture = temporaryRoots(t);
   const source = "deploy/payment-v1/edge/rollback-authority.Caddyfile.in";
   copySource(fixture.sourceRoot, source);
-  copySource(fixture.sourceRoot, EDGE_UNIT);
+  copySource(fixture.sourceRoot, LEGACY_EDGE_UNIT);
   const binaryBytes = Buffer.from("reviewed-caddy-rollback\n");
   const binarySha = hashBytes(binaryBytes);
   const binaryTarget = `/opt/bitcoinpir/caddy/${binarySha}/caddy`;
   const configTarget = "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile";
   const placeholders = {
     CADDY_SHA256: binarySha,
-    EDGE_CADDYFILE: "rollback-authority.Caddyfile",
+    ROLLBACK_AUTHORITY_CLIENT_IP: "10.44.0.2",
     ROLLBACK_AUTHORITY_HTTPS_HOST: "authority.example.net",
+    ROLLBACK_AUTHORITY_PRIVATE_BIND: "10.44.0.3",
   };
   const configSha = hashBytes(renderText(fixture.sourceRoot, source, placeholders));
   const contents = [
     [binaryTarget, binaryBytes],
     ["/etc/bitcoinpir/payment-v1/edge/caddy.sha256", `${binarySha}  ${binaryTarget}\n`],
     ["/etc/bitcoinpir/payment-v1/edge/edge-config.sha256", `${configSha}  ${configTarget}\n`],
+    ["/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt", "reviewed rollback server certificate\n"],
+    ["/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key", "reviewed rollback server private key\n"],
   ];
   const plan = {
     deployment_id: "rollback-edge-v1-test",
     deployment_profile: "edge-rollback-authority-v1",
-    payload_artifacts: contents.map(([target, bytes], index) => addPayload(fixture, target, bytes, index)),
+    payload_artifacts: contents.map(([target, bytes], index) => {
+      if (target.endsWith("rollback-authority-server.key")) {
+        return addPayload(fixture, target, bytes, index, {
+          class: "secret", gid: 730, mode: "0400", uid: 729,
+        });
+      }
+      if (target.endsWith("rollback-authority-server.crt")) {
+        return addPayload(fixture, target, bytes, index, {
+          class: "config", gid: 730, mode: "0440", uid: 0,
+        });
+      }
+      return addPayload(fixture, target, bytes, index);
+    }),
     placeholders,
     rendered_artifacts: [
       {
@@ -487,8 +573,8 @@ function makeRollbackEdgeFixture(t) {
       {
         gid: 0,
         mode: "0644",
-        source_path: EDGE_UNIT,
-        source_sha256: hashFile(join(fixture.sourceRoot, EDGE_UNIT)),
+        source_path: LEGACY_EDGE_UNIT,
+        source_sha256: hashFile(join(fixture.sourceRoot, LEGACY_EDGE_UNIT)),
         target_path: "/etc/systemd/system/bitcoinpir-payment-v1-edge.service",
         uid: 0,
       },
@@ -550,7 +636,7 @@ function makeRuntimeEvidence(model) {
     },
     installed_files: clone(model.request.installed_files),
     manifest_sha256: model.manifestSha256,
-    schema_version: 1,
+    schema_version: 3,
     systemd_analyze_verify: {
       argv: clone(model.request.systemd_analyze_argv),
       exit_status: 0,
@@ -585,6 +671,17 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   assert.deepEqual(Object.keys(first.manifest.hash_bindings).sort(), [
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
+  assert.equal(first.request.units.length, 2);
+  assert.deepEqual(
+    first.request.runtime_paths.map(({ file_type, mode, target_path }) => ({ file_type, mode, target_path })),
+    [
+      { file_type: "directory", mode: "0750", target_path: "/run/bitcoinpir-source-fair-edge" },
+      { file_type: "socket", mode: "0660", target_path: "/run/bitcoinpir-source-fair-edge/directory-public.sock" },
+      { file_type: "socket", mode: "0660", target_path: "/run/bitcoinpir-source-fair-edge/directory-publisher.sock" },
+      { file_type: "socket", mode: "0660", target_path: "/run/bitcoinpir-source-fair-edge/issuer.sock" },
+      { file_type: "socket", mode: "0660", target_path: "/run/bitcoinpir-source-fair-edge/provider.sock" },
+    ],
+  );
   assert.equal(verifyFixture(fixture).manifestSha256, first.manifestSha256);
   const secondRoot = join(fixture.root, "second");
   const second = renderFixture(fixture, secondRoot);
@@ -593,6 +690,87 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     readdirSync(fixture.bundleRoot, { recursive: true }).sort(),
     readdirSync(secondRoot, { recursive: true }).sort(),
   );
+});
+
+for (const [sourcePath, label] of [
+  [EDGE_UNIT, "public Caddy edge"],
+  [SOURCE_FAIR_UNIT, "source-fair HAProxy edge"],
+]) {
+  for (const directive of ["StandardOutput", "StandardError", "LimitCORE", "MemorySwapMax"]) {
+    const expectedValue = directive.startsWith("Standard") ? "null" : "0";
+    test(`edge profile keeps ${label} ${directive}=${expectedValue}`, (t) => {
+      const fixture = makeEdgeFixture(t);
+      updateTemplate(fixture, sourcePath, (text) =>
+        text.replace(
+          `${directive}=${expectedValue}`,
+          `${directive}=${directive.startsWith("Standard") ? "journal" : "infinity"}`,
+        ),
+      );
+      assert.throws(
+        () => renderFixture(fixture),
+        new RegExp(`${directive}=|request-source state cannot persist`),
+      );
+    });
+  }
+}
+
+for (const directive of ["StandardOutput", "StandardError", "LimitCORE", "MemorySwapMax"]) {
+  test(`rollback edge keeps ${directive} fail-closed`, (t) => {
+    const fixture = makeRollbackEdgeFixture(t);
+    updateTemplate(fixture, LEGACY_EDGE_UNIT, (text) =>
+      text.replace(
+        `${directive}=${directive.startsWith("Standard") ? "null" : "0"}`,
+        `${directive}=${directive.startsWith("Standard") ? "journal" : "infinity"}`,
+      ),
+    );
+    assert.throws(
+      () => renderFixture(fixture),
+      new RegExp(`${directive}=|request-source state cannot persist`),
+    );
+  });
+}
+
+test("rollback edge requires distinct private bind and sole-client addresses", (t) => {
+  for (const [field, value, expected] of [
+    ["ROLLBACK_AUTHORITY_PRIVATE_BIND", "198.51.100.8", /RFC1918|ULA/],
+    ["ROLLBACK_AUTHORITY_CLIENT_IP", "198.51.100.9", /RFC1918|ULA/],
+  ]) {
+    const fixture = makeRollbackEdgeFixture(t);
+    fixture.plan.placeholders[field] = value;
+    assert.throws(() => renderFixture(fixture), expected);
+  }
+  const same = makeRollbackEdgeFixture(t);
+  same.plan.placeholders.ROLLBACK_AUTHORITY_CLIENT_IP =
+    same.plan.placeholders.ROLLBACK_AUTHORITY_PRIVATE_BIND;
+  assert.throws(
+    () => renderFixture(same),
+    /private bind and sole-client addresses must differ/,
+  );
+});
+
+test("Hetzner edge binds one distinct same-family private publisher client", (t) => {
+  for (const field of [
+    "DIRECTORY_PUBLISHER_PRIVATE_BIND",
+    "DIRECTORY_PUBLISHER_CLIENT_IP",
+  ]) {
+    const publicAddress = makeEdgeFixture(t);
+    publicAddress.plan.placeholders[field] = "198.51.100.9";
+    assert.throws(() => renderFixture(publicAddress), /RFC1918|ULA/);
+  }
+
+  const sameAsBind = makeEdgeFixture(t);
+  sameAsBind.plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP =
+    sameAsBind.plan.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND;
+  assert.throws(() => renderFixture(sameAsBind), /roles must use distinct addresses/);
+
+  const sameAsPublic = makeEdgeFixture(t);
+  sameAsPublic.plan.placeholders.PUBLIC_HTTPS_BIND =
+    sameAsPublic.plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP;
+  assert.throws(() => renderFixture(sameAsPublic), /roles must use distinct addresses/);
+
+  const mixedFamily = makeEdgeFixture(t);
+  mixedFamily.plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP = "fd23::6";
+  assert.throws(() => renderFixture(mixedFamily), /same IP family/);
 });
 
 test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, and referenced files", (t) => {
@@ -800,13 +978,13 @@ test("payload class and target metadata are target-derived and secrets cannot be
 test("hash manifests are strict, sorted, complete, and bind actual artifacts", (t) => {
   const wrong = makeEdgeFixture(t);
   const manifest = wrong.plan.payload_artifacts.find((entry) => entry.target_path.endsWith("caddy.sha256"));
-  writeFileSync(join(wrong.inputRoot, manifest.source_path), `${"1".repeat(64)}  ${wrong.targets.binary}\n`);
+  writeFileSync(join(wrong.inputRoot, manifest.source_path), `${"1".repeat(64)}  ${wrong.targets.caddyBinary}\n`);
   manifest.expected_sha256 = hashFile(join(wrong.inputRoot, manifest.source_path));
   assert.throws(() => renderFixture(wrong), /wrong digest/);
 
   const malformed = makeEdgeFixture(t);
   const second = malformed.plan.payload_artifacts.find((entry) => entry.target_path.endsWith("caddy.sha256"));
-  writeFileSync(join(malformed.inputRoot, second.source_path), `${hashBytes("x")} *${malformed.targets.binary}\n`);
+  writeFileSync(join(malformed.inputRoot, second.source_path), `${hashBytes("x")} *${malformed.targets.caddyBinary}\n`);
   second.expected_sha256 = hashFile(join(malformed.inputRoot, second.source_path));
   assert.throws(() => renderFixture(malformed), /strict sha256sum syntax/);
 
@@ -832,6 +1010,15 @@ test("hash manifests are strict, sorted, complete, and bind actual artifacts", (
   writeFileSync(clnPath, `${reversed}\n`);
   clnManifest.expected_sha256 = hashFile(clnPath);
   assert.throws(() => renderFixture(unsorted), /bytewise ASCII sorted/);
+});
+
+test("HAProxy content-address placeholder must equal the selected binary digest", (t) => {
+  const fixture = makeEdgeFixture(t);
+  fixture.plan.placeholders.HAPROXY_SHA256 = "1".repeat(64);
+  assert.throws(
+    () => renderFixture(fixture),
+    /HAPROXY_SHA256 must select|must bind only|dependency is missing|references missing artifact/,
+  );
 });
 
 test("systemd rejects duplicate single-valued directives even without an empty reset", (t) => {

@@ -894,11 +894,16 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
 ```
 
 It launches two copies of the repository's production
-`bitcoinpir-directory-relay` binary and covers separate
-config/SQLite/ports/runtimes, complete 16-shard signed readback, one relay
-offline, two independently valid but conflicting stale-head views with an exact
-split-view error, bounded-backoff lost-ACK readback plus idempotent retry, and
-independent restart recovery. The remote-authority full-mode cell also selects
+`bitcoinpir-directory-relay` binary and covers separate config/SQLite/runtime
+state plus four distinct loopback listeners. Every accepted signed `EVENT`
+publication uses a publisher lane; every accepted ID/catalog `REQ` and returned
+`EVENT`/`EOSE` uses a public lane. Deliberate wrong-lane probes must close, and
+an exact-ID public readback proves the rejected EVENT sentinel was not
+persisted. The test covers complete 16-shard signed readback, one relay offline, two
+independently valid but conflicting stale-head views with an exact split-view
+error, a public-lane lost-ACK durability barrier followed by an idempotent
+publisher-lane retry, and readiness of both listeners after independent restart.
+The remote-authority full-mode cell also selects
 `three_authority_process::three_authority_real_process_topology_e2e`. That test
 spawns three authority child test harnesses which invoke production
 `rollback_authority::run` and three TLS-edge child harnesses; the parent process
@@ -907,8 +912,9 @@ deployment-set validator owns duplicate-pin/namespace rejection, raw clients
 own wrong-pin/client/cross-domain transport assertions, and the production
 adapters own crossed-provider, independently isolated provider- and
 issuer-authority outages, exact same-generation issuer recovery and stale-floor
-assertions. During each authority outage the other two business domains remain
-usable. It does not launch `unified_server`, `payment-issuer`, or installed
+assertions. During each authority outage the other two Stores remain
+independently openable and authenticated through their own authorities. It does
+not launch `unified_server`, `payment-issuer`, or installed
 binaries. These new commands require their first Linux CI run on the candidate
 commit; no passing result is claimed here, and same-host processes do not prove
 operational independence.
@@ -1123,6 +1129,25 @@ local rollback floors and deterministic all-zero database remain
 non-production boundaries, and ARC remains experimental pending independent
 review.
 
+## Source-fair cold-activation evidence
+
+The pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
+four deployment, rendered-artifact, runtime-evidence and source-fair suites
+140/140 with no skip. This includes real Linux `getent`, `id -G`, procfs
+all-thread scanning, all active capability sets plus `CapBnd`, rejection tests
+for CHOWN/DAC_OVERRIDE/FOWNER/SETFCAP and managed-unit capability expansion,
+locked service-account policy validation, the stopped-edge evidence validator,
+pinned Caddy adapted-JSON closure, and 4xx/no-backend cross-bind probes.
+
+This is deterministic compatibility evidence, not target-host activation. The
+actual candidate must first collect an independently digest-pinned
+`collect-stopped-edge` record while Caddy and HAProxy are fully stopped and all
+Unix listeners are absent. Only after approval may it start HAProxy then Caddy
+and collect a separate digest-pinned `collect-live` record. Both must run from
+the target host's independently confirmed initial PID namespace; a warm reload,
+container-only record or evidence without its complete transferred SHA-256 is
+not accepted.
+
 ## Expected acceptance record
 
 Record the commit, platform/toolchain, command mode, pass/fail result and any
@@ -1141,7 +1166,8 @@ At minimum, a release candidate needs evidence for:
 6. persistence/restart/concurrency suites;
 7. deterministic no-funds fixture generation;
 8. the locked product contract and exact external EasyCrypt record;
-9. an approved staging network E2E once its edge controls are implemented.
+9. the stopped-edge and fresh-live source-fair activation evidence pair;
+10. an approved staging network E2E once its edge controls are implemented.
 
 ## Not exercised by this procedure
 

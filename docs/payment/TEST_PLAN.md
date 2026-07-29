@@ -128,9 +128,10 @@ calls the production provider/issuer Store adapters to exercise correct-domain
 opens and a crossed provider authority. It independently stops one provider
 authority backend and then the issuer authority backend while each TLS edge
 continues listening: the affected Store returns
-`RollbackAuthorityUnavailable`, the other two business domains remain usable,
-and restart against the original authority database recovers the exact issuer
-store generation and commitment. A separate stale-provider-authority case first
+`RollbackAuthorityUnavailable`, while the other two Stores remain independently
+openable and authenticated through their own authorities. Restart against the
+original authority database recovers the exact issuer store generation and
+commitment. A separate stale-provider-authority case first
 proves that the restored backup returns an authenticated empty floor, and the
 provider adapter then requires the exact `RollbackFloorMissing` result.
 Restoring the current database is required for recovery. This test does **not**
@@ -192,14 +193,19 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
 ```
 
 Two copies of the repository's production `bitcoinpir-directory-relay` binary
-use different owner-only configs, loopback ports, SQLite files and runtimes. A
-real WebSocket client publishes and cryptographically verifies the same complete
-16-shard catalog from both, proves both stale-head views remain independently
-valid before requiring the exact split-view rejection, rejects one-relay-offline,
-resolves a lost positive ACK with bounded-backoff ID readback plus idempotent
-same-event retry, and verifies independent restart recovery. The test
-deliberately does not infer relay-operator or host independence from local
-process separation.
+use different owner-only configs, SQLite files and runtimes, plus four distinct
+loopback listeners: one public read lane and one private publisher lane per
+relay. Every accepted signed `EVENT` uses a publisher lane, and every accepted
+ID/catalog `REQ` plus returned `EVENT`/`EOSE` uses the corresponding public
+lane. Deliberate wrong-lane probes must close; an exact-ID public readback
+proves the rejected EVENT sentinel was not persisted. The client
+cryptographically verifies the same complete 16-shard catalog from both,
+proves both stale-head views remain independently valid before requiring the
+exact split-view rejection, rejects one-relay-offline, resolves a lost positive
+ACK with a public-lane bounded-backoff ID barrier followed by an idempotent
+same-event publisher-lane retry, and verifies both listeners return after each
+independent process restart. The test deliberately does not infer relay-operator
+or host independence from local process separation.
 
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:
@@ -741,6 +747,44 @@ refunds or unspends the already committed capability.
 - routing fee is not treated as underpayment;
 - late settlement issues once if backend says settled;
 - no automatic refund/query-credit restore.
+
+## Deployment evidence tests
+
+- runtime-evidence accepts only the exact local-files NSS profile and checks
+  stable root-owned policy snapshots, identity-relevant `getent` projections,
+  every user's `id -G`, UID/GID uniqueness and protected-group closure;
+- a final policy snapshot detects `/etc/nsswitch.conf`, `/etc/passwd` or
+  `/etc/group` drift during later live checks;
+- two bounded full `/proc/<pid>/task/<tid>` scans must produce identical
+  protected UID/GID holder records, record `CapInh`, `CapPrm`, `CapEff`,
+  `CapAmb`, and `CapBnd`, and reject reviewed dangerous active capabilities on
+  non-root threads; managed masks must fit the exact rendered policy (Caddy
+  only `CAP_NET_BIND_SERVICE`, HAProxy/business services zero). An unmanaged
+  stale holder, wrong cgroup, changed credential/capability, omitted MainPID,
+  pass race, DAC/ownership/set-ID/SETFCAP bypass or legacy evidence fails;
+- an exact managed-unit cgroup may contain master/worker processes only with the
+  unit's complete reviewed UID/GID/group set, and a post-scan generation check
+  rebinds MainPID, InvocationID and ControlGroup;
+- post-scan directory/socket snapshots must still equal the pre-scan inode,
+  type, owner, group, mode, ACL/xattr/capability and stat-command evidence;
+- real Ubuntu procfs enumeration and an Alpine repeated-`Groups:` regression run
+  without skips; evidence count/byte/time bounds fail closed;
+- stopped-edge evidence requires every manifest unit inactive/dead with
+  MainPID 0 and empty ControlGroup, every runtime socket absent, every service
+  account UID/GID-pinned with a nologin/false shell and locked shadow password,
+  and an empty protected-holder closure across both passes; active units,
+  present sockets, login-capable/unlocked accounts, namespace drift and legacy
+  evidence fail closed;
+- target activation invalidates all old connected FDs, approves the exact
+  stopped-edge evidence digest before any listener, recreates the volatile
+  listeners in HAProxy-before-Caddy order, collects a fresh live digest, and
+  independently proves execution in the host initial PID namespace;
+- public and publisher relay listeners reject deliberate wrong-lane EVENTs and
+  prove their exact event IDs absent before a correct-lane publication.
+- Caddy source validation rejects additive binds/upstreams, imports, invokes,
+  snippets, named routes and non-v2 proxy transports; pinned adapted JSON has
+  exactly the two reviewed listener/host/socket graphs, and both cross-bind
+  HTTP probes return 4xx without changing any of the four backend counters.
 
 ## Directory tests
 
