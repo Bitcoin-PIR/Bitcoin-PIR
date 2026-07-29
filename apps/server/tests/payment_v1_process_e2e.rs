@@ -972,3 +972,7 @@ fn unix_now() -> u64 {
 #[cfg(feature = "remote-authority-process-e2e")]
 #[path = "support/payment_v1_remote_authority_process.rs"]
 mod remote_authority_process;
+
+#[cfg(feature = "remote-authority-process-e2e")]
+#[path = "support/payment_v1_three_authority_process.rs"]
+mod three_authority_process;

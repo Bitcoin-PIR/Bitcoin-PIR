@@ -7,6 +7,11 @@
 //! backend is used only to satisfy no-funds startup; this test never creates or
 //! settles an invoice. The peer provider independently selects Free/Open.
 //!
+//! The TLS edge also drops one complete, successful redeem response after the
+//! issuer commits it. The provider must fail closed without a delivery claim,
+//! then recover by replaying the exact request after the issuer and provider
+//! restart against their original stores and rollback floors.
+//!
 //! The private test CA hook is inherited from `standard-cashu-process-e2e`, so
 //! there is one test-only WebPKI injection surface and `pir-strict-https` keeps
 //! its release compile guard. All bearer/key fixtures are deterministic public
@@ -39,9 +44,9 @@ use pir_service_protocol::{
     CredentialUnitV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
     FreeAuthorizationProofV1, FreeModeV1, IssuerClearingApprovalV1, LightningNetworkV1,
     OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationClaimsV1,
-    ProviderClearingAuthorizationV1, ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1,
-    ServiceScopeV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1, VerificationMode,
-    WorkloadId,
+    ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1,
+    ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, SettlementModesV1,
+    SettlementRuleV1, SettlementUnitV1, VerificationMode, WorkloadId,
 };
 use pir_service_store::{
     ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions as ProviderStoreOptions,
@@ -61,6 +66,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 const SHARED_OFFER_ID: u32 = 61;
 const FREE_OFFER_ID: u32 = 62;
@@ -70,6 +76,11 @@ const TINY_BINS_PER_TABLE: usize = 128;
 const TEST_LEAF_SPKI_SHA256_HEX: &str =
     "e91550521f8e17b21d99f7e00b99c08be1b1f31fe57772ac8f904ea50c6a609b";
 const TLS_EDGE_HELPER_MARKER: &str = "BITCOINPIR_TEST_ONLY_SHARED_ISSUER_TLS_EDGE_V1";
+const TLS_EDGE_TRANSCRIPT_PATH: &str = "BITCOINPIR_TEST_SHARED_ISSUER_TRANSCRIPTS";
+const TLS_EDGE_DROP_SUCCESS_ONCE_PATH: &str = "BITCOINPIR_TEST_SHARED_ISSUER_DROP_SUCCESS_ONCE";
+const REDEEM_CONTENT_TYPE: &str = "application/vnd.bitcoinpir.redeem-v1";
+const REDEEM_RESULT_CONTENT_TYPE: &str = "application/vnd.bitcoinpir.redeem-result-v1";
+const REDEEM_TRANSCRIPT_DIGEST_BYTES: usize = 3 * 32;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROXY_HTTP_BYTES: usize = 128 * 1024;
@@ -214,6 +225,25 @@ struct TlsMaterial {
     private_key: PathBuf,
 }
 
+/// Fixed-size, test-local replay evidence. No envelope, credential, raw
+/// idempotency key, HTTP metadata, peer address, or timing is persisted.
+#[derive(Clone, Copy)]
+struct RedeemTranscriptDigests {
+    canonical_body: [u8; 32],
+    request_digest: [u8; 32],
+    idempotency_key_digest: [u8; 32],
+}
+
+impl RedeemTranscriptDigests {
+    fn encode(self) -> [u8; REDEEM_TRANSCRIPT_DIGEST_BYTES] {
+        let mut encoded = [0u8; REDEEM_TRANSCRIPT_DIGEST_BYTES];
+        encoded[..32].copy_from_slice(&self.canonical_body);
+        encoded[32..64].copy_from_slice(&self.request_digest);
+        encoded[64..].copy_from_slice(&self.idempotency_key_digest);
+        encoded
+    }
+}
+
 #[test]
 #[ignore = "spawned only by shared_issuer_real_process_tls_e2e"]
 fn shared_issuer_tls_edge_subprocess() {
@@ -233,8 +263,18 @@ fn shared_issuer_tls_edge_subprocess() {
     let counter_path = PathBuf::from(required_env(
         "BITCOINPIR_TEST_SHARED_ISSUER_FORWARD_COUNTER",
     ));
-    serve_tls_edge(bind, upstream, &certificate, &private_key, &counter_path)
-        .expect("serve shared-issuer TLS edge");
+    let transcript_path = PathBuf::from(required_env(TLS_EDGE_TRANSCRIPT_PATH));
+    let drop_success_once_path = env::var_os(TLS_EDGE_DROP_SUCCESS_ONCE_PATH).map(PathBuf::from);
+    serve_tls_edge(
+        bind,
+        upstream,
+        &certificate,
+        &private_key,
+        &counter_path,
+        &transcript_path,
+        drop_success_once_path.as_deref(),
+    )
+    .expect("serve shared-issuer TLS edge");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -310,8 +350,20 @@ async fn shared_issuer_real_process_tls_e2e() {
     init_issuer_store(&issuer);
     let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &shared_providers);
     let forward_counter = root.path().join("tls-edge-forwarded.log");
+    let transcript_path = root.path().join("tls-edge-transcript-digests.bin");
+    let drop_success_once_path = root.path().join("tls-edge-drop-success-once.marker");
     write_private_file(&forward_counter, b"");
-    let tls_edge = spawn_tls_edge(root.path(), edge_port, issuer_port, &tls, &forward_counter);
+    write_private_file(&transcript_path, b"");
+    assert!(!drop_success_once_path.exists());
+    let tls_edge = spawn_tls_edge(
+        root.path(),
+        edge_port,
+        issuer_port,
+        &tls,
+        &forward_counter,
+        &transcript_path,
+        Some(&drop_success_once_path),
+    );
 
     assert_ne!(paid.provider_id, free.provider_id);
     assert_ne!(paid.store_path, free.store_path);
@@ -320,9 +372,40 @@ async fn shared_issuer_real_process_tls_e2e() {
     let paid_server = spawn_provider(root.path(), &db_path, &paid, paid_port, 0, Some(&tls.root));
     let free_server = spawn_provider(root.path(), &db_path, &free, free_port, 0, None);
 
+    // The edge reads a complete HTTP 200 from the real issuer, proving that the
+    // ledger commit completed, then drops that one downstream response. The
+    // provider must fail closed and must not create a local delivery claim.
+    let lost_response = authorize_only(paid_port, &paid, manifest_root)
+        .await
+        .expect_err("committed issuer response loss must not grant locally");
+    assert!(
+        lost_response.contains("internal-after-spend"),
+        "unexpected outcome-unknown rejection: {lost_response}"
+    );
+    assert_payment_material_absent(&lost_response, "", &[&paid]);
+    let (paid_loss_stdout, paid_loss_stderr) = paid_server.stop();
+    assert_server_log(&paid_loss_stdout, &paid_loss_stderr, paid_port, &paid);
+    assert_provider_spend_inventory(&paid, 0);
+    assert_eq!(forwarded_request_count(&forward_counter), 1);
+    assert_private_regular_file(&drop_success_once_path);
+    let response_loss_marker =
+        fs::read(&drop_success_once_path).expect("read response-loss marker");
+    assert_eq!(
+        response_loss_marker.as_slice(),
+        b"committed-response-dropped\n"
+    );
+
+    // Kill and reopen the actual issuer against the same detailed store and
+    // rollback floor. The provider is also reopened to prove recovery does not
+    // depend on volatile client state.
+    let (issuer_loss_stdout, issuer_loss_stderr) = payment_issuer.stop();
+    assert_issuer_log(&issuer_loss_stdout, &issuer_loss_stderr, &paid);
+    assert_issuer_ledger(&issuer, &paid, &[&wrong_ca, &wrong_pin, &offline]);
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &shared_providers);
+    let paid_server = spawn_provider(root.path(), &db_path, &paid, paid_port, 1, Some(&tls.root));
     exercise_grant_and_dpf(paid_port, &paid, manifest_root)
         .await
-        .expect("shared-issuer BAT must redeem and authorize");
+        .expect("exact redeem replay after issuer restart must recover one grant");
     exercise_grant_and_dpf(free_port, &free, manifest_root)
         .await
         .expect("peer provider must independently accept Free/Open");
@@ -331,11 +414,15 @@ async fn shared_issuer_real_process_tls_e2e() {
     let (free_stdout, free_stderr) = free_server.stop();
     assert_server_log(&paid_stdout_first, &paid_stderr_first, paid_port, &paid);
     assert_server_log(&free_stdout, &free_stderr, free_port, &free);
+    assert_provider_spend_inventory(&paid, 1);
+    assert_eq!(forwarded_request_count(&forward_counter), 2);
+    assert_private_regular_file(&transcript_path);
+    assert_first_two_forwarded_requests_are_identical(&transcript_path);
 
     // Reopen the paid provider against the same local store. The issuer may
     // return its exact durable redeem response, but the provider-local claim is
     // already committed and a second connection grant is forbidden.
-    let paid_server = spawn_provider(root.path(), &db_path, &paid, paid_port, 1, Some(&tls.root));
+    let paid_server = spawn_provider(root.path(), &db_path, &paid, paid_port, 2, Some(&tls.root));
     let replay = authorize_only(paid_port, &paid, manifest_root)
         .await
         .expect_err("replayed shared-issuer proof must not grant after restart");
@@ -345,12 +432,12 @@ async fn shared_issuer_real_process_tls_e2e() {
     );
     let (paid_stdout, paid_stderr) = paid_server.stop();
     assert_server_log(&paid_stdout, &paid_stderr, paid_port, &paid);
-    assert_eq!(provider_local_claim_count(&paid), 1);
+    assert_provider_spend_inventory(&paid, 1);
 
     let forwarded_after_replay = forwarded_request_count(&forward_counter);
     assert!(
-        (1..=2).contains(&forwarded_after_replay),
-        "initial redeem must be forwarded once; exact replay may be rejected locally or replayed at the issuer"
+        (2..=3).contains(&forwarded_after_replay),
+        "loss recovery must forward twice; a later spent replay may be rejected locally or replayed at the issuer"
     );
 
     // Every trust failure uses a fresh provider process/store. The signed
@@ -369,7 +456,7 @@ async fn shared_issuer_real_process_tls_e2e() {
             .expect_err("wrong CA/pin/offline issuer must fail closed");
         let (stdout, stderr) = server.stop();
         assert_server_log(&stdout, &stderr, port, fixture);
-        assert_eq!(provider_local_claim_count(fixture), 0);
+        assert_provider_spend_inventory(fixture, 0);
         assert_eq!(
             forwarded_request_count(&forward_counter),
             forwarded_after_replay,
@@ -379,16 +466,8 @@ async fn shared_issuer_real_process_tls_e2e() {
 
     let (edge_stdout, edge_stderr) = tls_edge.stop();
     let (issuer_stdout, issuer_stderr) = payment_issuer.stop();
-    for forbidden in ["payment_hash", "preimage", "invoice", "secret_raw"] {
-        assert!(!edge_stdout.contains(forbidden));
-        assert!(!edge_stderr.contains(forbidden));
-    }
-    assert!(issuer_stdout.contains("payment-issuer fake service listening"));
-    assert!(issuer_stdout.contains("issuer_store_startup_check=ok"));
-    for forbidden in ["payment_hash", "preimage", "invoice", "secret_raw"] {
-        assert!(!issuer_stdout.contains(forbidden));
-        assert!(!issuer_stderr.contains(forbidden));
-    }
+    assert_payment_material_absent(&edge_stdout, &edge_stderr, &[&paid]);
+    assert_issuer_log(&issuer_stdout, &issuer_stderr, &paid);
 
     assert_issuer_ledger(&issuer, &paid, &[&wrong_ca, &wrong_pin, &offline]);
 }
@@ -969,13 +1048,17 @@ fn spawn_tls_edge(
     issuer_port: u16,
     material: &TlsMaterial,
     counter_path: &Path,
+    transcript_path: &Path,
+    drop_success_once_path: Option<&Path>,
 ) -> ChildProcess {
     let label = "shared-issuer-tls-edge".to_owned();
     let stdout_path = root.join("shared-issuer-tls-edge-stdout.log");
     let stderr_path = root.join("shared-issuer-tls-edge-stderr.log");
     let stdout = File::create(&stdout_path).expect("create TLS edge stdout log");
     let stderr = File::create(&stderr_path).expect("create TLS edge stderr log");
-    let child = Command::new(env::current_exe().expect("current integration test executable"))
+    let mut command =
+        Command::new(env::current_exe().expect("current integration test executable"));
+    command
         .args([
             "--ignored",
             "--exact",
@@ -997,9 +1080,14 @@ fn spawn_tls_edge(
             "BITCOINPIR_TEST_SHARED_ISSUER_FORWARD_COUNTER",
             counter_path,
         )
+        .env(TLS_EDGE_TRANSCRIPT_PATH, transcript_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
+        .stderr(Stdio::from(stderr));
+    if let Some(path) = drop_success_once_path {
+        command.env(TLS_EDGE_DROP_SUCCESS_ONCE_PATH, path);
+    }
+    let child = command
         .spawn()
         .expect("spawn shared-issuer TLS edge process");
     let mut process = ChildProcess {
@@ -1204,7 +1292,7 @@ fn write_tiny_table(path: &Path, params: &pir_core::params::TableParams, tag_see
     fs::write(path, bytes).unwrap();
 }
 
-fn provider_local_claim_count(fixture: &ProviderFixture) -> u64 {
+fn assert_provider_spend_inventory(fixture: &ProviderFixture, expected: u64) {
     let rollback = SqliteRollbackFloorAuthorityV1::open_existing(
         &fixture.rollback_path,
         ProviderStoreOptions::default().busy_timeout,
@@ -1217,10 +1305,11 @@ fn provider_local_claim_count(fixture: &ProviderFixture) -> u64 {
         Arc::new(rollback),
     )
     .expect("open provider store for audit");
-    store
+    let inventory = store
         .operational_inventory()
-        .expect("provider operational inventory")
-        .spent_capability_rows
+        .expect("provider operational inventory");
+    assert_eq!(inventory.spent_capability_rows, expected);
+    assert_eq!(inventory.observed_spend_commit_seq, expected);
 }
 
 fn assert_issuer_ledger(
@@ -1250,6 +1339,7 @@ fn assert_issuer_ledger(
         paid.shared.as_ref().unwrap().account_id
     );
     assert_eq!(paid_balance.unit, SettlementUnitV1::AuthCredit);
+    assert_eq!(paid_balance.ledger_sequence, 1);
     assert_eq!(
         (paid_balance.available_value, paid_balance.reserved_value),
         (9, 0)
@@ -1271,13 +1361,47 @@ fn assert_server_log(stdout: &str, stderr: &str, port: u16, fixture: &ProviderFi
     assert!(stdout.contains(&format!("Listening on ws://127.0.0.1:{port}")));
     assert!(stdout.contains("Service admission V1: enforced"));
     assert!(!stderr.contains("UNSAFE DEBUG QUERY LOGGING ENABLED"));
-    for forbidden in ["payment_hash", "preimage", "invoice", "secret_raw"] {
-        assert!(!stdout.contains(forbidden));
-        assert!(!stderr.contains(forbidden));
+    assert_payment_material_absent(stdout, stderr, &[fixture]);
+}
+
+fn assert_issuer_log(stdout: &str, stderr: &str, fixture: &ProviderFixture) {
+    assert!(stdout.contains("payment-issuer fake service listening"));
+    assert!(stdout.contains("issuer_store_startup_check=ok"));
+    assert_payment_material_absent(stdout, stderr, &[fixture]);
+}
+
+fn assert_payment_material_absent(stdout: &str, stderr: &str, fixtures: &[&ProviderFixture]) {
+    let stdout_lower = stdout.to_ascii_lowercase();
+    let stderr_lower = stderr.to_ascii_lowercase();
+    for forbidden in [
+        "payment_hash",
+        "payment hash",
+        "paymenthash",
+        "preimage",
+        "invoice",
+        "secret_raw",
+    ] {
+        assert!(!stdout_lower.contains(forbidden));
+        assert!(!stderr_lower.contains(forbidden));
     }
-    if let Some(shared) = &fixture.shared {
-        assert!(!stdout.contains(&hex::encode(shared.proof.secret_raw)));
-        assert!(!stderr.contains(&hex::encode(shared.proof.secret_raw)));
+    for fixture in fixtures {
+        let Some(shared) = &fixture.shared else {
+            continue;
+        };
+        let proof = shared
+            .proof
+            .encode()
+            .expect("encode BAT proof for log audit");
+        for forbidden in [
+            hex::encode(shared.proof.secret_raw),
+            hex::encode(shared.proof.c),
+            hex::encode(proof),
+            format!("{:?}", shared.proof.secret_raw),
+            format!("{:?}", shared.proof.c),
+        ] {
+            assert!(!stdout_lower.contains(forbidden.as_str()));
+            assert!(!stderr_lower.contains(forbidden.as_str()));
+        }
     }
 }
 
@@ -1319,6 +1443,8 @@ fn serve_tls_edge(
     certificate_pem: &[u8],
     private_key_pem: &[u8],
     counter_path: &Path,
+    transcript_path: &Path,
+    drop_success_once_path: Option<&Path>,
 ) -> io::Result<()> {
     if !bind.ip().is_loopback() || !upstream.ip().is_loopback() {
         return Err(io::Error::new(
@@ -1341,7 +1467,15 @@ fn serve_tls_edge(
     let listener = TcpListener::bind(bind)?;
     loop {
         let (socket, _) = listener.accept()?;
-        if serve_one_tls_edge_request(socket, upstream, Arc::clone(&config), counter_path).is_err()
+        if serve_one_tls_edge_request(
+            socket,
+            upstream,
+            Arc::clone(&config),
+            counter_path,
+            transcript_path,
+            drop_success_once_path,
+        )
+        .is_err()
         {
             // Readiness probes and malformed TLS/HTTP are deliberately silent.
             // Never log peer addresses, credential bytes, timing, or responses.
@@ -1354,18 +1488,15 @@ fn serve_one_tls_edge_request(
     upstream_address: SocketAddr,
     config: Arc<ServerConfig>,
     counter_path: &Path,
+    transcript_path: &Path,
+    drop_success_once_path: Option<&Path>,
 ) -> io::Result<()> {
     socket.set_read_timeout(Some(TLS_IO_TIMEOUT))?;
     socket.set_write_timeout(Some(TLS_IO_TIMEOUT))?;
     let connection = ServerConnection::new(config).map_err(io::Error::other)?;
     let mut tls = StreamOwned::new(connection, socket);
     let request = read_bounded_http_request(&mut tls)?;
-    if !request.starts_with(b"POST /v1/redeems HTTP/1.1\r\n") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "TLS edge accepts only the issuer redeem route",
-        ));
-    }
+    let transcript = validate_canonical_redeem_request(&request)?;
 
     let mut upstream = TcpStream::connect_timeout(&upstream_address, TLS_IO_TIMEOUT)?;
     upstream.set_read_timeout(Some(TLS_IO_TIMEOUT))?;
@@ -1385,11 +1516,180 @@ fn serve_one_tls_edge_request(
             "issuer response is empty or exceeded the proxy bound",
         ));
     }
+    let canonical_success =
+        validate_canonical_redeem_success_response(&response, &transcript.request_digest)?;
+    append_redeem_transcript_digests(transcript_path, transcript)?;
+    if canonical_success && mark_drop_success_response_once(drop_success_once_path)? {
+        // The complete issuer success response proves the redeem commit escaped
+        // the application boundary. Drop the downstream TLS stream without
+        // forwarding one response, modeling an outcome-unknown network loss.
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "test-only committed issuer response loss",
+        ));
+    }
     tls.write_all(&response)?;
     tls.flush()?;
     tls.conn.send_close_notify();
     let _ = tls.flush();
     Ok(())
+}
+
+fn validate_canonical_redeem_request(wire: &[u8]) -> io::Result<RedeemTranscriptDigests> {
+    let body =
+        exact_content_length_http_body(wire, "POST /v1/redeems HTTP/1.1", REDEEM_CONTENT_TYPE)?;
+    let envelope = ProviderRedeemEnvelopeV1::decode(body).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer request body is not a redeem envelope",
+        )
+    })?;
+    let canonical = Zeroizing::new(envelope.encode().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer redeem envelope cannot be canonically encoded",
+        )
+    })?);
+    if canonical.as_slice() != body {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer redeem envelope is not canonical",
+        ));
+    }
+    let request_digest = envelope.request.request_digest().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer redeem request digest is invalid",
+        )
+    })?;
+    Ok(RedeemTranscriptDigests {
+        canonical_body: sha256(body),
+        request_digest,
+        idempotency_key_digest: sha256(&envelope.request.idempotency_key),
+    })
+}
+
+fn validate_canonical_redeem_success_response(
+    wire: &[u8],
+    expected_request_digest: &[u8; 32],
+) -> io::Result<bool> {
+    let (head, _) = split_http_wire(wire)?;
+    if head.split("\r\n").next() != Some("HTTP/1.1 200 OK") {
+        return Ok(false);
+    }
+    let body = exact_content_length_http_body(wire, "HTTP/1.1 200 OK", REDEEM_RESULT_CONTENT_TYPE)?;
+    let response = ProviderRedeemResponseV1::decode(body).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer success body is not a redeem response",
+        )
+    })?;
+    let canonical = response.encode().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer redeem response cannot be canonically encoded",
+        )
+    })?;
+    if canonical.as_slice() != body || &response.request_digest != expected_request_digest {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "issuer redeem response is non-canonical or bound to another request",
+        ));
+    }
+    Ok(true)
+}
+
+fn exact_content_length_http_body<'a>(
+    wire: &'a [u8],
+    expected_start_line: &str,
+    expected_content_type: &str,
+) -> io::Result<&'a [u8]> {
+    let (head, body) = split_http_wire(wire)?;
+    let mut lines = head.split("\r\n");
+    if lines.next() != Some(expected_start_line) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected HTTP start line",
+        ));
+    }
+    let mut content_type = None;
+    let mut content_length = None;
+    for line in lines {
+        if !line.is_ascii() || line.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "non-ASCII or folded HTTP header",
+            ));
+        }
+        let (name, raw_value) = line
+            .split_once(':')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP header"))?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed HTTP header name",
+            ));
+        }
+        let value = raw_value.trim_matches(|character| matches!(character, ' ' | '\t'));
+        if name.eq_ignore_ascii_case("content-type") {
+            if content_type.replace(value).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate HTTP content type",
+                ));
+            }
+        } else if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some()
+                || value.is_empty()
+                || !value.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid or duplicate HTTP content length",
+                ));
+            }
+            content_length = Some(value.parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "HTTP content length overflow")
+            })?);
+        } else if name.eq_ignore_ascii_case("transfer-encoding")
+            || (name.eq_ignore_ascii_case("content-encoding")
+                && !value.eq_ignore_ascii_case("identity"))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encoded HTTP body is forbidden",
+            ));
+        }
+    }
+    if content_type != Some(expected_content_type) || content_length != Some(body.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP content type or body length is not exact",
+        ));
+    }
+    Ok(body)
+}
+
+fn split_http_wire(wire: &[u8]) -> io::Result<(&str, &[u8])> {
+    let head_end = wire
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing HTTP header terminator")
+        })?;
+    let head = std::str::from_utf8(&wire[..head_end])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-ASCII HTTP headers"))?;
+    if head.is_empty() || !head.is_ascii() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty HTTP header block",
+        ));
+    }
+    Ok((head, &wire[head_end + 4..]))
 }
 
 fn read_bounded_http_request(reader: &mut impl Read) -> io::Result<Vec<u8>> {
@@ -1462,6 +1762,35 @@ fn append_forward_counter(path: &Path) -> io::Result<()> {
     file.sync_data()
 }
 
+fn append_redeem_transcript_digests(
+    path: &Path,
+    transcript: RedeemTranscriptDigests,
+) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new().append(true).open(path)?;
+    file.write_all(&transcript.encode())?;
+    file.sync_data()
+}
+
+fn mark_drop_success_response_once(path: Option<&Path>) -> io::Result<bool> {
+    let Some(path) = path else {
+        return Ok(false);
+    };
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(b"committed-response-dropped\n")?;
+            file.sync_all()?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn forwarded_request_count(path: &Path) -> u64 {
     u64::try_from(
         fs::read(path)
@@ -1471,6 +1800,26 @@ fn forwarded_request_count(path: &Path) -> u64 {
             .count(),
     )
     .expect("forward counter fits u64")
+}
+
+fn assert_first_two_forwarded_requests_are_identical(path: &Path) {
+    let digests = fs::read(path).expect("read TLS edge transcript digests");
+    assert_eq!(
+        digests.len(),
+        2 * REDEEM_TRANSCRIPT_DIGEST_BYTES,
+        "response-loss recovery must make exactly two completed issuer requests"
+    );
+    for (label, start, end) in [
+        ("canonical redeem envelope", 0, 32),
+        ("request digest", 32, 64),
+        ("idempotency key digest", 64, 96),
+    ] {
+        assert_eq!(
+            &digests[start..end],
+            &digests[REDEEM_TRANSCRIPT_DIGEST_BYTES + start..REDEEM_TRANSCRIPT_DIGEST_BYTES + end],
+            "issuer restart recovery changed the {label}"
+        );
+    }
 }
 
 fn test_leaf_spki_sha256() -> [u8; 32] {

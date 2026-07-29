@@ -125,6 +125,38 @@ wrong CA, wrong pin and offline authority all fail before the provider listens.
 Authority process logs are checked not to contain its instance, namespace,
 keys, invoice, payment hash or preimage.
 
+The same feature also contains a three-business-domain topology test:
+
+```sh
+cargo test --locked --offline -p runtime \
+  --features remote-authority-process-e2e \
+  --test payment_v1_process_e2e \
+  three_authority_process::three_authority_real_process_topology_e2e \
+  -- --exact
+```
+
+It starts three independent child copies of the current test harness, each of
+which invokes production `rollback_authority::run`, plus three independent TLS
+edge child harnesses. Provider 0, provider 1 and issuer authority domains have
+separate authority SQLite databases, authority/client/value-root keys,
+namespaces, ports and distinct localhost TLS leaf/SPKI pins. The public
+deployment-set validator rejects repeated pins or namespaces; raw remote
+clients prove wrong-pin, unprovisioned-client and cross-domain configurations
+fail with their exact remote-call classifications. The parent test directly
+calls the production provider/issuer Store adapters to exercise correct-domain
+opens and a crossed provider authority. It independently stops one provider
+authority backend and then the issuer authority backend while each TLS edge
+continues listening: the affected Store returns
+`RollbackAuthorityUnavailable`, the other two business domains remain usable,
+and restart against the original authority database recovers the exact issuer
+store generation and commitment. A separate stale-provider-authority case first
+proves that the restored backup returns an authenticated empty floor, and the
+provider adapter then requires the exact `RollbackFloorMissing` result.
+Restoring the current database is required for recovery. This test does **not**
+launch `unified_server`, `payment-issuer`, or an installed authority binary. It
+is a single-host process/file topology test and does not establish different
+operators, machines, administrative domains or backup custody.
+
 The corresponding issuer-binary boundary is exercised separately:
 
 ```sh
@@ -154,8 +186,8 @@ enable either test feature, and a non-debug provider or payment-issuer build
 with it fails at compile time. The crate's build script separately rejects a
 Cargo release profile even if that profile manually enables Rust debug
 assertions; `debug_assertions` is not treated as the production boundary. The
-checked-in leaf private key has no production trust or secrecy value, and the
-E2Es require no OpenSSL command or network access.
+checked-in test leaf private keys have no production trust or secrecy value,
+and the E2Es require no OpenSSL command or network access.
 
 Fake Lightning has a separate artifact boundary. Default `payment-issuer`
 builds contain neither `serve-fake` nor `/__test/fake/settle`; local no-funds
@@ -169,6 +201,24 @@ issuer case covers store initialization/open rather than acquisition or query
 wiring. They do not satisfy production identity/binary pin, hardware proof,
 database proof/trusted-root, Merkle preflight/inclusion, real issuer/browser,
 external dependency, or non-DPF process-level cells.
+
+The repository relay has a separate real-process two-relay test:
+
+```sh
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e -- --exact --ignored
+```
+
+Two copies of the repository's production `bitcoinpir-directory-relay` binary
+use different owner-only configs, loopback ports, SQLite files and runtimes. A
+real WebSocket client publishes and cryptographically verifies the same complete
+16-shard catalog from both, proves both stale-head views remain independently
+valid before requiring the exact split-view rejection, rejects one-relay-offline,
+resolves a lost positive ACK with bounded-backoff ID readback plus idempotent
+same-event retry, and verifies independent restart recovery. The test
+deliberately does not infer relay-operator or host independence from local
+process separation.
 
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:
@@ -243,15 +293,23 @@ BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
 
 It launches a real `payment-issuer`, a redeem-only private WebPKI TLS edge, one
 real shared-BAT `unified_server`, and an independently selected Free/Open peer.
-The paid provider must verify the signed issuer origin and leaf-SPKI pin,
-redeem exactly once, accrue one ledger credit, and durably claim one local
-grant. Restart/replay cannot create a second grant. Wrong CA, wrong signed pin
-and offline issuer fail before issuer HTTP application handling and create no
-local claim or ledger account. CI additionally denies warnings for the exact
-runtime/test targets and proves the test-only WebPKI feature cannot compile in
-a release profile. The current preparation branch has static source evidence
-only until that Linux CI cell passes; it is not public ingress, production
-rollback-authority, real Lightning or payout-executor evidence.
+After reading one complete canonical issuer HTTP 200 bound to the redeem request
+digest, the test edge persists a one-shot test marker and deliberately drops
+that downstream response. This proves the issuer commit escaped its application
+boundary while the provider must fail closed with no local delivery claim. The
+issuer and provider then restart against their original stores and rollback
+floors. Replaying the identical proof must reproduce the same canonical-body,
+request and idempotency-key SHA-256 digests, recover exactly one local grant and
+leave the issuer ledger at one credit/sequence; a later replay cannot create a
+second grant. The digest transcript is a fixed-size, test-local oracle and does
+not persist the raw envelope, credential, idempotency key, HTTP metadata, peer
+address or timing. Wrong CA, wrong signed pin and offline issuer fail before
+issuer HTTP application handling and create no local claim or ledger account.
+CI additionally denies warnings for the exact runtime/test targets and proves
+the test-only WebPKI feature cannot compile in a release profile. The current
+preparation branch has static source evidence only until that Linux CI cell
+passes; it is not public ingress, production rollback-authority, real Lightning
+or payout-executor evidence.
 
 ### First-version executable path ledger
 

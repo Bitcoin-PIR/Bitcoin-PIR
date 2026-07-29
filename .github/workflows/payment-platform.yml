@@ -233,6 +233,7 @@ jobs:
         run: |
           cargo test --locked --offline -p pir-rollback-authority-client --features test-only-webpki-root test_only_webpki_root_requires_owner_only_regular_file
           cargo test --locked --offline -p runtime --features remote-authority-process-e2e --test payment_v1_process_e2e remote_authority_process::remote_authority_real_process_tls_provider_e2e -- --exact
+          cargo test --locked --offline -p runtime --features remote-authority-process-e2e --test payment_v1_process_e2e three_authority_process::three_authority_real_process_topology_e2e -- --exact
           cargo clippy --locked --offline -p runtime --features remote-authority-process-e2e --bin unified_server --test payment_v1_process_e2e --no-deps -- -D warnings
           cargo test --locked --offline -p payment-issuer --features remote-authority-process-e2e --test remote_authority_process_e2e payment_issuer_remote_authority_real_process_tls_e2e -- --exact
           cargo clippy --locked --offline -p payment-issuer --features remote-authority-process-e2e --all-targets --no-deps -- -D warnings
