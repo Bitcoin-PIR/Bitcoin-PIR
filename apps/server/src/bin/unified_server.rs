@@ -9562,7 +9562,7 @@ async fn main() {
         }
         if runtime.provider_store.is_none() {
             println!(
-                "  Storeless Free-PoW: exact measured policy digest; no provider store or rollback authority"
+                "  Storeless Free-PoW: exact policy digest pin active; no provider store or rollback authority"
             );
         }
         AdmissionEnforcementV1::Enforced

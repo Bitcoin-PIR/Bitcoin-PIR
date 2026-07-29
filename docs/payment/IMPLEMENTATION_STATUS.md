@@ -56,7 +56,7 @@ operator has activated the path with real money or public infrastructure.
       pre-existing durable provider spend state.
 - [x] Signed policy activation with provider identity, policy epoch/fork,
       credential-keyset and Cashu-manifest rollback floors.
-- [x] A separate exact-digest storeless activation path exists only for a
+- [x] A separate exact-digest storeless activation path is intended for a
       measured Free-PoW provider. It rejects empty policies/scopes and every
       non-provider-local Free proof-of-work or decorated issuer/credential
       offer, and `unified_server` refuses retained policies, ProviderStore,
@@ -65,9 +65,12 @@ operator has activated the path with real money or public infrastructure.
       secure-channel challenge, PoW solution, AUTH and one protected DPF frame,
       rejects the same solution on a second secure-channel exporter with no
       outstanding challenge, and confirms that no provider/rollback
-      SQLite/WAL/SHM appears. This is source/test evidence, not a built or
-      uploaded VPSBG UKI. The exact policy digest must be measured; any policy
-      renewal or signed-byte change requires a new UKI and client pin ceremony.
+      SQLite/WAL/SHM appears. This is source/test evidence, not proof that a
+      VPSBG UKI has been built, uploaded, or measured. A deployment may claim
+      measurement only after its exact policy digest and startup arguments are
+      covered by independently verified UKI/attestation evidence; any policy
+      renewal or signed-byte change then requires a new UKI and client pin
+      ceremony.
 - [x] ProviderStore schema v7 with global provider-local spend uniqueness,
       BAT raw-key lineage, durable Free IP quota state, standard-Cashu swap
       recovery intents, finite per-mint/unit custody exposure, encrypted

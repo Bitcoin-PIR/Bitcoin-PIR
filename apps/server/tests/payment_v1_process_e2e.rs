@@ -377,7 +377,7 @@ async fn exact_pinned_storeless_free_pow_challenge_authorizes_one_real_query() {
 
     let (stdout, stderr) = server.stop();
     assert_loopback_listener(0, port, &stdout, &stderr);
-    assert!(stdout.contains("Storeless Free-PoW: exact measured policy digest"));
+    assert!(stdout.contains("Storeless Free-PoW: exact policy digest pin active"));
     assert!(!stdout.contains("Provider store startup_check=ok"));
     assert!(
         !tree_contains_provider_state(root.path()),
