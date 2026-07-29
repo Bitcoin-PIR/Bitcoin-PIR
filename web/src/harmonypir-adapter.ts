@@ -33,7 +33,8 @@
  * What moves to WASM:
  *   * All PIR wire-format logic (INDEX + CHUNK K-padded queries, PRP
  *     hint replay, group relocation tracking).
- *   * Per-bucket bin-Merkle verification (`verifyMerkleBatch`).
+ *   * Per-bucket bin-Merkle verification before any result handle crosses
+ *     the WASM boundary (`queryBatchVerified`).
  *   * Padding invariants (K=75 INDEX / K_CHUNK=80 CHUNK / 25-MERKLE) —
  *     owned by the native `HarmonyClient`, not re-implementable here.
  *
@@ -214,6 +215,20 @@ interface HarmonyLegOwnerV1 {
   configSignature: string;
 }
 
+interface HarmonyVerifiedResultBindingV1 {
+  handle: WasmQueryResult;
+  batchId: number;
+  batchSize: number;
+  slot: number;
+  dbId: number;
+  pairGeneration: number;
+  inputIndex: number;
+  address: string;
+  scriptHashHex: string;
+  scriptHashBytes: Uint8Array;
+  merkleRootHex: string | undefined;
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 /**
@@ -281,13 +296,14 @@ export class HarmonyPirClientAdapter {
   lastInspectorData: Map<number, QueryInspectorData> | null = null;
   private externalCloseCallback: (() => void) | null = null;
 
-  /**
-   * Back-reference from translated `HarmonyQueryResult` to its
-   * originating `WasmQueryResult` handle. `WeakMap` so the pair can be
-   * collected once the caller drops the translated result.
-   */
-  private readonly wasmHandles: WeakMap<HarmonyQueryResult, WasmQueryResult> =
-    new WeakMap();
+  /** Native-verified handles awaiting the legacy UI's one-shot release
+   * boundary. Persisted or caller-constructed JSON can never enter it. */
+  private readonly verifiedHandles: WeakMap<
+    HarmonyQueryResult,
+    HarmonyVerifiedResultBindingV1
+  > = new WeakMap();
+  private verifiedBatchGeneration = 0;
+  private activeVerifiedBatchId: number | null = null;
 
   constructor(config: HarmonyPirClientConfig) {
     this.config = {
@@ -496,6 +512,8 @@ export class HarmonyPirClientAdapter {
     this.strictReady = false;
     this.secureChannelEstablished = false;
     this.pairGeneration += 1;
+    this.verifiedBatchGeneration += 1;
+    this.activeVerifiedBatchId = null;
     this.pairConsistencyReady = false;
     this.pairPreflightState = 'not-ready';
     this.pairPreflightPromise = null;
@@ -1535,7 +1553,7 @@ export class HarmonyPirClientAdapter {
   /**
    * Batch query. Accepts Bitcoin addresses or raw-hex scriptPubKeys,
    * converts them to 20-byte HASH160 scripthashes, and issues a single
-   * WASM `queryBatchRaw`. Returns a `Map<qi, HarmonyQueryResult>` keyed
+   * WASM `queryBatchVerified`. Returns a `Map<qi, HarmonyQueryResult>` keyed
    * by the input index (matching the legacy UI contract — failed
    * conversions / not-found slots are omitted from the map).
    */
@@ -1599,9 +1617,23 @@ export class HarmonyPirClientAdapter {
 
     // ── Submit batch ──
     progress?.('index', `submitting ${scriptHashes.length} queries`);
+    const batchId = ++this.verifiedBatchGeneration;
+    this.activeVerifiedBatchId = null;
     const packed = packScriptHashes(scriptHashes);
-    const wqrs = await client.queryBatchRaw(packed, this.dbId);
+    const wqrs = await client.queryBatchVerified(packed, this.dbId);
     this.assertLiveQueryPair(client, generation, this.dbId, 'query response');
+    if (batchId !== this.verifiedBatchGeneration) {
+      throw new Error('stale Harmony verified result batch was superseded by a newer query');
+    }
+    if (wqrs.length !== scriptHashes.length) {
+      throw new Error(
+        `Harmony verified query returned ${wqrs.length} results for ${scriptHashes.length} inputs`,
+      );
+    }
+    if (wqrs.some((result) => result.merkleVerified !== true)) {
+      throw new Error('Harmony native verifier returned an unverified result handle');
+    }
+    this.activeVerifiedBatchId = batchId;
     progress?.('decode', `translating ${wqrs.length} results`);
 
     // ── Translate + build inspector shim ──
@@ -1617,7 +1649,19 @@ export class HarmonyPirClientAdapter {
         scriptHashes[j],
         this.getMerkleRootHex(),
       );
-      this.wasmHandles.set(qr, wqr);
+      this.verifiedHandles.set(qr, {
+        handle: wqr,
+        batchId,
+        batchSize: wqrs.length,
+        slot: j,
+        dbId: this.dbId,
+        pairGeneration: generation,
+        inputIndex: qi,
+        address: addressesOut[j],
+        scriptHashHex: shHexes[j],
+        scriptHashBytes: scriptHashes[j].slice(),
+        merkleRootHex: this.getMerkleRootHex(),
+      });
       out.set(qi, qr);
       inspector.set(qi, buildInspectorShim(addressesOut[j], shHexes[j], qr));
     }
@@ -1649,9 +1693,9 @@ export class HarmonyPirClientAdapter {
   }
 
   /**
-   * Batch-verify Merkle proofs for previously-returned
-   * `HarmonyQueryResult`s. Delegates to `WasmHarmonyClient.verifyMerkleBatch`
-   * via the per-result JSON round-trip (same trick as the DPF adapter).
+   * One-shot release boundary for a native-verified Harmony batch. Only the
+   * exact live objects in their original order/database/session are accepted;
+   * every public field is then reconstructed from the opaque verified handle.
    */
   async verifyMerkleBatch(
     results: HarmonyQueryResult[],
@@ -1677,40 +1721,53 @@ export class HarmonyPirClientAdapter {
         `Harmony inclusion verification db_id ${dbId} does not match active db_id ${this.dbId}`,
       );
     }
-    if (results.length === 0
-        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
-      throw new Error('strict Harmony inclusion verification requires an INDEX trace for every result');
-    }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
-    const jsonArr: any[] = results.map((r) => {
-      const handle = this.wasmHandles.get(r);
-      if (handle) return handle.toJson();
-      return harmonyResultToJson(r);
-    });
-    let verdicts: boolean[];
     try {
-      verdicts = await client.verifyMerkleBatch(jsonArr, dbId);
-      this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification response');
+      if (results.length === 0 || this.activeVerifiedBatchId === null) {
+        throw new Error('strict Harmony inclusion verification requires a live verified batch');
+      }
+      const bindings = results.map((result, slot) => {
+        const binding = this.verifiedHandles.get(result);
+        if (!binding) {
+          throw new Error(`Harmony result ${slot} has no live native verification handle`);
+        }
+        if (binding.batchId !== this.activeVerifiedBatchId
+            || binding.batchSize !== results.length
+            || binding.slot !== slot
+            || binding.dbId !== dbId
+            || binding.pairGeneration !== generation
+            || binding.handle.merkleVerified !== true) {
+          throw new Error(`Harmony result ${slot} is stale, reordered, or bound to another query`);
+        }
+        return binding;
+      });
+
+      for (let index = 0; index < results.length; index++) {
+        const binding = bindings[index];
+        const trusted = translateWasmResult(
+          binding.handle,
+          binding.address,
+          binding.scriptHashHex,
+          binding.scriptHashBytes.slice(),
+          binding.merkleRootHex,
+        );
+        scrubUnverifiedHarmonyResult(results[index]);
+        Object.assign(results[index], trusted, { merkleVerified: true });
+        this.verifiedHandles.delete(results[index]);
+        this.lastInspectorData?.set(
+          binding.inputIndex,
+          buildInspectorShim(binding.address, binding.scriptHashHex, results[index]),
+        );
+      }
+      this.activeVerifiedBatchId = null;
     } catch (error) {
+      this.activeVerifiedBatchId = null;
       for (const result of results) scrubUnverifiedHarmonyResult(result);
       throw error;
     }
-    if (verdicts.length !== results.length) {
-      for (const result of results) scrubUnverifiedHarmonyResult(result);
-      throw new Error(
-        `Harmony inclusion verifier returned ${verdicts.length} verdicts for ${results.length} results`,
-      );
-    }
-    const passed = verdicts.filter(Boolean).length;
-    onProgress?.('Merkle', `done (${passed}/${verdicts.length} passed)`);
-
-    // Propagate the verdict back into the results in-place so UI
-    // renderers reading `r.merkleVerified` see the decision.
-    for (let i = 0; i < results.length; i++) {
-      results[i].merkleVerified = !!verdicts[i];
-      if (verdicts[i] !== true) scrubUnverifiedHarmonyResult(results[i]);
-    }
+    const verdicts = results.map(() => true);
+    onProgress?.('Merkle', `done (${verdicts.length}/${verdicts.length} passed)`);
     return verdicts;
   }
 
@@ -1946,6 +2003,8 @@ export class HarmonyPirClientAdapter {
     this.strictReady = false;
     this.secureChannelEstablished = false;
     this.pairGeneration += 1;
+    this.verifiedBatchGeneration += 1;
+    this.activeVerifiedBatchId = null;
     this.secureChannelLegs = [false, false];
     this.strictLegReady = [false, false];
     this.installedProofsByLeg = [null, null];
@@ -2034,6 +2093,8 @@ export class HarmonyPirClientAdapter {
     this.strictReady = false;
     this.secureChannelEstablished = false;
     this.pairGeneration += 1;
+    this.verifiedBatchGeneration += 1;
+    this.activeVerifiedBatchId = null;
     this.secureChannelLegs = [false, false];
     this.strictLegReady = [false, false];
     this.installedProofsByLeg = [null, null];
@@ -2243,8 +2304,8 @@ function translateWasmResult(
     scriptHash: scriptHashHex,
     utxos,
     whale: wqr.isWhale,
-    // Native query decoding has not yet run the inclusion verifier. Never
-    // inherit a transport/fixture default as a release verdict.
+    // Native verification has completed, but the UI-visible object remains
+    // quarantined until the adapter's one-shot object/order check runs.
     merkleVerified: false,
     merkleRootHex,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
@@ -2262,59 +2323,6 @@ function translateWasmResult(
   };
 }
 
-/**
- * Rebuild a `WasmQueryResult`-compatible JSON object from a hand-crafted
- * `HarmonyQueryResult`. Used when the UI passes back results that
- * weren't produced by this adapter instance (e.g. deserialized from
- * storage). Matches the field-name contract in `pir-sdk-wasm`'s
- * `parse_query_result_json`.
- */
-function harmonyResultToJson(r: HarmonyQueryResult): any {
-  const entries = r.utxos.map((u) => {
-    // Undo the display-order reversal from `translateWasmResult` so
-    // the JSON txid matches what the WASM verifier expects (internal
-    // byte order).
-    const txidBytes = hexToBytes(u.txid);
-    const txidInternal = new Uint8Array(txidBytes.length);
-    for (let k = 0; k < txidBytes.length; k++) {
-      txidInternal[k] = txidBytes[txidBytes.length - 1 - k];
-    }
-    return {
-      txid: bytesToHex(txidInternal),
-      vout: u.vout,
-      amountSats: u.value,
-    };
-  });
-  const obj: any = {
-    entries,
-    isWhale: r.whale,
-    merkleVerified: false,
-  };
-  if (r.allIndexBins && r.allIndexBins.length > 0) {
-    obj.indexBins = r.allIndexBins.map((b) => ({
-      pbcGroup: b.pbcGroup,
-      binIndex: b.binIndex,
-      binContent: bytesToHex(b.binContent),
-    }));
-    if (r.utxos.length > 0 && r.indexPbcGroup !== undefined) {
-      const idx = r.allIndexBins.findIndex(
-        (b) => b.pbcGroup === r.indexPbcGroup && b.binIndex === r.indexBinIndex,
-      );
-      if (idx >= 0) obj.matchedIndexIdx = idx;
-    }
-  }
-  if (r.chunkPbcGroups && r.chunkPbcGroups.length > 0) {
-    obj.chunkBins = r.chunkPbcGroups.map((grp, i) => ({
-      pbcGroup: grp,
-      binIndex: r.chunkBinIndices?.[i] ?? 0,
-      binContent: bytesToHex(r.chunkBinContents?.[i] ?? new Uint8Array()),
-    }));
-  }
-  if (r.rawChunkData) {
-    obj.rawChunkData = bytesToHex(r.rawChunkData);
-  }
-  return obj;
-}
 
 /**
  * Build a reduced `QueryInspectorData` from the translated

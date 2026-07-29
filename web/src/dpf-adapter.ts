@@ -21,7 +21,8 @@
  *
  * What moves to WASM:
  *   * All PIR wire-format logic (INDEX + CHUNK batched queries).
- *   * Per-bucket bin-Merkle verification (`verifyMerkleBatch`).
+ *   * Per-bucket bin-Merkle verification before any result handle crosses
+ *     the WASM boundary (`queryBatchVerified`).
  *   * Padding invariants (K=75 INDEX / K_CHUNK=80 CHUNK / 25-MERKLE) —
  *     owned by the native `DpfClient`, not re-implementable here.
  *
@@ -367,6 +368,16 @@ interface DpfLegOwnerV1 {
   configSignature: string;
 }
 
+interface DpfVerifiedResultBindingV1 {
+  handle: WasmQueryResult;
+  batchId: number;
+  batchSize: number;
+  slot: number;
+  dbId: number;
+  pairGeneration: number;
+  scriptHashHex: string;
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 /**
@@ -382,14 +393,13 @@ export class BatchPirClientAdapter {
   private wasmClient: WasmDpfClient | null = null;
   private catalog: DatabaseCatalog | null = null;
   private serverInfo: ServerInfoJson | null = null;
-  /**
-   * Back-reference from translated `QueryResult` to its originating
-   * `WasmQueryResult` handle. `WeakMap` so the pair can be collected once
-   * the caller drops the translated result. `verifyMerkleBatch` reaches
-   * here to round-trip each result through `toJson()` without having to
-   * re-serialise by hand.
-   */
-  private readonly wasmHandles: WeakMap<QueryResult, WasmQueryResult> = new WeakMap();
+  /** Native-verified, input-bound result handles awaiting one-shot release
+   * through the legacy `verifyMerkleBatch` UI boundary. No JSON proof can be
+   * imported into this map. */
+  private readonly verifiedHandles: WeakMap<QueryResult, DpfVerifiedResultBindingV1> =
+    new WeakMap();
+  private verifiedBatchGeneration = 0;
+  private activeVerifiedBatchId: number | null = null;
   private connected = false;
   private secureChannelEstablished = false;
   private secureChannelLegs: [boolean, boolean] = [false, false];
@@ -1220,16 +1230,38 @@ export class BatchPirClientAdapter {
     this.assertLiveQueryPair(client, generation, dbId, 'query start');
     onProgress?.('Level 1', 'sending batched INDEX queries');
 
+    const batchId = ++this.verifiedBatchGeneration;
+    this.activeVerifiedBatchId = null;
     const packed = packScriptHashes(scriptHashes);
-    const wqrs = await client.queryBatchRaw(packed, dbId);
+    const wqrs = await client.queryBatchVerified(packed, dbId);
     this.assertLiveQueryPair(client, generation, dbId, 'query response');
+    if (batchId !== this.verifiedBatchGeneration) {
+      throw new Error('stale DPF verified result batch was superseded by a newer query');
+    }
+    if (wqrs.length !== scriptHashes.length) {
+      throw new Error(
+        `DPF verified query returned ${wqrs.length} results for ${scriptHashes.length} inputs`,
+      );
+    }
+    if (wqrs.some((result) => result.merkleVerified !== true)) {
+      throw new Error('DPF native verifier returned an unverified result handle');
+    }
+    this.activeVerifiedBatchId = batchId;
     onProgress?.('Decode', `translating ${wqrs.length} results`);
 
     const out: (QueryResult | null)[] = new Array(wqrs.length);
     for (let i = 0; i < wqrs.length; i++) {
       const wqr = wqrs[i];
       const qr = translateWasmResult(wqr);
-      this.wasmHandles.set(qr, wqr);
+      this.verifiedHandles.set(qr, {
+        handle: wqr,
+        batchId,
+        batchSize: wqrs.length,
+        slot: i,
+        dbId,
+        pairGeneration: generation,
+        scriptHashHex: bytesToHex(scriptHashes[i]),
+      });
       // The legacy BatchPirClient surfaced pure "not found" queries as
       // `null`. Preserve that contract for callers that do
       // `if (result) found++`. Queries that probed INDEX bins but found
@@ -1248,12 +1280,11 @@ export class BatchPirClientAdapter {
    * inspector-populated `QueryResult`s. `dbId` selects which database's
    * Merkle roots to verify against (0 = main, 1+ = delta).
    *
-   * Each `QueryResult` is serialised to JSON via the stashed
-   * `WasmQueryResult.toJson()` (or, for results that came from
-   * elsewhere, via a manual `queryResultToJson` reconstruction) and
-   * handed to `WasmDpfClient.verifyMerkleBatch`. The native verifier
-   * drives the K-padded sibling-query rounds, parses the tree-tops
-   * blob, walks every proof, and returns a `boolean[]` of verdicts.
+   * Native Rust already completed the Merkle round before the query promise
+   * resolved. This boundary is deliberately one-shot: it accepts only the
+   * exact live objects, order, database, and pair generation returned by the
+   * latest query, then reconstructs every field from the opaque verified
+   * handles. Persisted or hand-crafted JSON is not a verification input.
    */
   async verifyMerkleBatch(
     results: QueryResult[],
@@ -1274,38 +1305,43 @@ export class BatchPirClientAdapter {
     const client = this.wasmClient;
     const generation = this.pairGeneration;
     this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification start');
-    if (results.length === 0
-        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
-      throw new Error('strict DPF inclusion verification requires an INDEX trace for every result');
-    }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
-    const jsonArr: any[] = results.map((r) => {
-      const handle = this.wasmHandles.get(r);
-      if (handle) return handle.toJson();
-      return queryResultToJson(r);
-    });
-
-    let verdicts: boolean[];
     try {
-      verdicts = await client.verifyMerkleBatch(jsonArr, dbId);
-      this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification response');
+      if (results.length === 0 || this.activeVerifiedBatchId === null) {
+        throw new Error('strict DPF inclusion verification requires a live verified batch');
+      }
+      const bindings = results.map((result, slot) => {
+        const binding = this.verifiedHandles.get(result);
+        if (!binding) {
+          throw new Error(`DPF result ${slot} has no live native verification handle`);
+        }
+        if (binding.batchId !== this.activeVerifiedBatchId
+            || binding.batchSize !== results.length
+            || binding.slot !== slot
+            || binding.dbId !== dbId
+            || binding.pairGeneration !== generation
+            || binding.handle.merkleVerified !== true) {
+          throw new Error(`DPF result ${slot} is stale, reordered, or bound to another query`);
+        }
+        return binding;
+      });
+
+      for (let index = 0; index < results.length; index++) {
+        const binding = bindings[index];
+        const trusted = translateWasmResult(binding.handle);
+        scrubUnverifiedDpfResult(results[index]);
+        Object.assign(results[index], trusted, { merkleVerified: true });
+        this.verifiedHandles.delete(results[index]);
+      }
+      this.activeVerifiedBatchId = null;
     } catch (error) {
+      this.activeVerifiedBatchId = null;
       for (const result of results) scrubUnverifiedDpfResult(result);
       throw error;
     }
-    if (verdicts.length !== results.length) {
-      for (const result of results) scrubUnverifiedDpfResult(result);
-      throw new Error(
-        `DPF inclusion verifier returned ${verdicts.length} verdicts for ${results.length} results`,
-      );
-    }
-    for (let index = 0; index < results.length; index++) {
-      results[index].merkleVerified = verdicts[index] === true;
-      if (verdicts[index] !== true) scrubUnverifiedDpfResult(results[index]);
-    }
-    const passed = verdicts.filter(Boolean).length;
-    onProgress?.('Merkle', `done (${passed}/${verdicts.length} passed)`);
+    const verdicts = results.map(() => true);
+    onProgress?.('Merkle', `done (${verdicts.length}/${verdicts.length} passed)`);
     return verdicts;
   }
 
@@ -1318,6 +1354,8 @@ export class BatchPirClientAdapter {
     this.strictReady = false;
     this.secureChannelEstablished = false;
     this.pairGeneration += 1;
+    this.verifiedBatchGeneration += 1;
+    this.activeVerifiedBatchId = null;
     this.secureChannelLegs = [false, false];
     this.strictLegReady = [false, false];
     this.installedProofsByLeg = [null, null];
@@ -2061,7 +2099,7 @@ function scrubUnverifiedDpfResult(result: QueryResult): void {
 
 /**
  * Pack an `N`-entry `Uint8Array[]` of 20-byte HASH160 outputs into a
- * single `Uint8Array(20 * N)`, as expected by `WasmDpfClient.queryBatchRaw`.
+ * single `Uint8Array(20 * N)`, as expected by `WasmDpfClient.queryBatchVerified`.
  */
 function packScriptHashes(hashes: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(hashes.length * 20);
@@ -2078,7 +2116,7 @@ function packScriptHashes(hashes: Uint8Array[]): Uint8Array {
 
 /**
  * Translate a `WasmQueryResult` (opaque handle from
- * `WasmDpfClient.queryBatchRaw`) into the legacy `QueryResult` shape.
+ * `WasmDpfClient.queryBatchVerified`) into the legacy `QueryResult` shape.
  *
  * The two shapes differ in:
  *   * `entries`: WASM uses `{txid: hex, vout, amountSats}`; web uses
@@ -2128,8 +2166,8 @@ function translateWasmResult(wqr: WasmQueryResult): QueryResult {
     numChunks: chunkBinsRaw.length,
     numRounds: 0,
     isWhale: wqr.isWhale,
-    // Native query decoding has not yet run the inclusion verifier. Never
-    // inherit a transport/fixture default as a release verdict.
+    // The native handle is verified, but the legacy UI boundary remains
+    // explicitly quarantined until its one-shot object/order check runs.
     merkleVerified: false,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
     indexPbcGroup: primary?.pbcGroup,
@@ -2141,55 +2179,4 @@ function translateWasmResult(wqr: WasmQueryResult): QueryResult {
     chunkBinContents:
       chunkBinsRaw.length > 0 ? chunkBinsRaw.map((b) => hexToBytes(b.binContent)) : undefined,
   };
-}
-
-/**
- * Rebuild a `WasmQueryResult`-compatible JSON object from a hand-crafted
- * `QueryResult` (one that doesn't have a stashed WASM handle, e.g.
- * persisted through localStorage). Matches the field-name contract that
- * `parse_query_result_json` accepts in `pir-sdk-wasm`.
- */
-function queryResultToJson(r: QueryResult): any {
-  const entries = r.entries.map((e) => ({
-    txid: bytesToHex(e.txid),
-    vout: e.vout,
-    // `parse_query_result_json` reads via `as_u64()`, so we must pass a
-    // number (not a bigint) in JSON. The hex / decimal representation
-    // doesn't matter — `JSON.stringify` handles bigints by conversion.
-    amountSats: Number(e.amount),
-  }));
-  const obj: any = {
-    entries,
-    isWhale: r.isWhale,
-    merkleVerified: false,
-  };
-  if (r.allIndexBins && r.allIndexBins.length > 0) {
-    obj.indexBins = r.allIndexBins.map((b) => ({
-      pbcGroup: b.pbcGroup,
-      binIndex: b.binIndex,
-      binContent: bytesToHex(b.binContent),
-    }));
-    // Derive the matched-idx by scanning for the bin whose
-    // (pbcGroup, binIndex) matches the primary-match fields. Only emit
-    // when the result is an actual match — a not-found with
-    // `indexPbcGroup === allIndexBins[0].pbcGroup` would otherwise be
-    // miscategorised as a match.
-    if (r.entries.length > 0 && r.indexPbcGroup !== undefined) {
-      const idx = r.allIndexBins.findIndex(
-        (b) => b.pbcGroup === r.indexPbcGroup && b.binIndex === r.indexBinIndex,
-      );
-      if (idx >= 0) obj.matchedIndexIdx = idx;
-    }
-  }
-  if (r.chunkPbcGroups && r.chunkPbcGroups.length > 0) {
-    obj.chunkBins = r.chunkPbcGroups.map((grp, i) => ({
-      pbcGroup: grp,
-      binIndex: r.chunkBinIndices?.[i] ?? 0,
-      binContent: bytesToHex(r.chunkBinContents?.[i] ?? new Uint8Array()),
-    }));
-  }
-  if (r.rawChunkData) {
-    obj.rawChunkData = bytesToHex(r.rawChunkData);
-  }
-  return obj;
 }

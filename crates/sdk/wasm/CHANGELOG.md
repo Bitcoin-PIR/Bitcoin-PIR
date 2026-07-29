@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Replaced the browser-facing split `queryBatchRaw` + arbitrary-JSON
+  `verifyMerkleBatch` flow with `queryBatchVerified`. DPF/Harmony now retain
+  query results inside one native async operation, re-derive input-dependent
+  INDEX/CHUNK semantics, require every expected CHUNK, and release no handles
+  unless the entire Merkle batch verifies.
+- `WasmQueryResult.fromJson()` and the public constructor now always produce
+  `merkleVerified = false`, ignoring any caller-supplied positive flag;
+  `mergeDelta()` preserves that untrusted status. Only native query/sync
+  results can carry a positive release verdict.
+
 ## [0.1.0] — initial release
 
 ### Added
@@ -84,8 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call otherwise).
 - **`WasmQueryResult.toJson()` / `fromJson()`** — round-trip
   shape with hex-encoded `txid` / `binContent` / `rawChunkData`.
-  `rawChunkData` hex-decodes symmetrically so persisted results
-  survive `fromJson` → `verifyMerkleBatch` byte-exact.
+  `rawChunkData` hex-decodes symmetrically for data portability. Deserialized
+  results are not accepted as DPF/Harmony proof input.
 - **`WasmDatabaseCatalog.getEntry(dbId)` / `hasBucketMerkle(dbId)`**
   accessors for the browser adapter layer.
 
