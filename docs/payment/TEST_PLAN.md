@@ -269,11 +269,14 @@ or host independence from local process separation.
 Payment CI also runs the stopped-only artifact recipe itself in a dedicated
 Ubuntu job. The job pulls the exact digest-pinned Rust image, archives the
 checked-out commit, completes both clean builds, atomically publishes the
-owner-only temporary artifact, and then completes the gate's two independent
-rebuilds and final seal verification. The artifact stays under the ephemeral
-runner directory and is neither uploaded nor installed; a passing job does not
-resolve `relay-selection.toml`, replace `/usr/bin/false`, open a listener, or
-activate the relay.
+owner-only temporary artifact, and exercises both independent-rebuild gates.
+`create-manifest` performs two clean rebuilds before publication; after the
+atomic rename, `verify-build` performs two more clean rebuilds against the
+published path before the final seal. The recipe therefore performs six
+empty-target builds in total. The artifact stays under the ephemeral runner
+directory and is neither uploaded nor installed; a passing job does not resolve
+`relay-selection.toml`, replace `/usr/bin/false`, open a listener, or activate
+the relay.
 
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:
