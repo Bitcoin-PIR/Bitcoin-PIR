@@ -528,6 +528,12 @@ Cashu-specific:
 
 ### Harmony query
 
+- `payment_v1_process_e2e` launches two independent provider processes and
+  executes the canonical level-0 h0/h1 plus level-1 h0/h1 four-frame query at
+  each provider under distinct Harmony scopes/offers/credential keys. It also
+  checks DPF-to-Harmony scope mismatch non-consumption, terminal-DFA rejection,
+  and durable Harmony replay rejection after restart without naming a hint
+  provider;
 - query server does not learn hint provider;
 - query grant cannot fetch hints;
 - cached hint metadata is compatible with policy/dataset binding;
