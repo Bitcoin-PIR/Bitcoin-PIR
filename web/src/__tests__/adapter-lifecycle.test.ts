@@ -1023,4 +1023,106 @@ describe('adapter WASM lifecycle', () => {
     await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
     expect(adapter.getDatabaseProofStatus(0)).toBeUndefined();
   });
+
+  it('rejects a late DPF query response after either verified peer disconnects', async () => {
+    let resolveQuery!: (results: any[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchRaw: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    await adapter.prepareStrictAdmission(0);
+
+    const pending = adapter.queryBatch([new Uint8Array(20)]);
+    expect(client.queryBatchRaw).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(1);
+    resolveQuery([decodedButUnverifiedWasmResult()]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+  });
+
+  it('rejects a late Harmony query without publishing inspector data', async () => {
+    let resolveQuery!: (results: any[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      queryBatchRaw: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    adapter.hintsLoaded = true;
+    await adapter.prepareStrictAdmission(0);
+
+    const pending = adapter.queryBatch(['00']);
+    expect(client.queryBatchRaw).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    resolveQuery([decodedButUnverifiedWasmResult()]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+    expect(adapter.lastInspectorData).toBeNull();
+  });
+
+  it('scrubs a DPF result when a late verifier resolves after peer disconnect', async () => {
+    let resolveVerification!: (verdicts: boolean[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyMerkleBatch: vi.fn(() => new Promise<boolean[]>((resolve) => {
+        resolveVerification = resolve;
+      })),
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    await adapter.prepareStrictAdmission(0);
+    const result: any = {
+      entries: [{ txid: new Uint8Array(32), vout: 0, amount: 9n }],
+      totalSats: 9n,
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+
+    const pending = adapter.verifyMerkleBatch([result]);
+    expect(client.verifyMerkleBatch).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(0);
+    resolveVerification([true]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+  });
+
+  it('scrubs a Harmony result when a late verifier resolves after peer disconnect', async () => {
+    let resolveVerification!: (verdicts: boolean[]) => void;
+    const connected = [true, true];
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyMerkleBatch: vi.fn(() => new Promise<boolean[]>((resolve) => {
+        resolveVerification = resolve;
+      })),
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    adapter.hintsLoaded = true;
+    await adapter.prepareStrictAdmission(0);
+    const result: any = {
+      utxos: [{ txid: '22'.repeat(32), vout: 0, value: 9 }],
+      rawChunkData: new Uint8Array([7]),
+      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
+    };
+
+    const pending = adapter.verifyMerkleBatch([result], undefined, 0);
+    expect(client.verifyMerkleBatch).toHaveBeenCalledOnce();
+    await adapter.disconnectLeg(1);
+    resolveVerification([true]);
+
+    await expect(pending).rejects.toThrow(/invalidated|stale/);
+    expect(result).toMatchObject({ utxos: [], merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+  });
 });

@@ -15,6 +15,7 @@ import {
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
   type ServiceAdmissionPortV1,
+  type ServiceAdmissionTargetV1,
   type ServiceAdmissionVaultV1,
 } from '../service-admission.js';
 import type { AdmissionCapabilityV1 } from '../admission-vault.js';
@@ -45,12 +46,12 @@ const limits = {
   maxHintGroups: 0,
   maxWorkUnits: '10000',
 };
-const DPF_TARGET = {
+const DPF_TARGET: ServiceAdmissionTargetV1 = {
   backend: 'dpf-pir',
   workload: 'dpf-query',
   protocolVersion: 1,
   expectedDatasetManifestRootHex: manifestRootHex,
-} as const;
+};
 
 function policy(
   offer: ServiceOfferViewV1,

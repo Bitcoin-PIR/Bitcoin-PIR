@@ -1452,6 +1452,43 @@ export class OnionPirWebClient {
     return this.ws.sendRaw(msg);
   }
 
+  private assertCurrentQuerySession(
+    generation: number,
+    dbId: number,
+    operation: string,
+  ): void {
+    if (generation !== this.sessionGeneration || !this.ws?.isOpen() || this.dbId !== dbId) {
+      throw new Error(`stale OnionPIR ${operation} result`);
+    }
+    if (!this.isStrictVerification()) return;
+    const installed = this.installedOnionRoots.get(dbId);
+    const binding = this.verifiedTreeTops.get(dbId);
+    if (
+      !this.strictReady ||
+      !installed || installed.generation !== generation ||
+      !binding || binding.generation !== generation ||
+      binding.rootHex !== installed.onionSuperRootHex
+    ) {
+      throw new Error(`stale OnionPIR ${operation} trust binding for db ${dbId}`);
+    }
+  }
+
+  private async sendRawForQuerySession(
+    msg: Uint8Array,
+    generation: number,
+    dbId: number,
+    operation: string,
+  ): Promise<Uint8Array> {
+    this.assertCurrentQuerySession(generation, dbId, `${operation} start`);
+    const socket = this.ws!;
+    const response = await socket.sendRaw(msg);
+    if (this.ws !== socket) {
+      throw new Error(`stale OnionPIR ${operation} socket`);
+    }
+    this.assertCurrentQuerySession(generation, dbId, `${operation} response`);
+    return response;
+  }
+
   private replaceAttestation(status: ServerAttestation): void {
     for (const key of Object.keys(this.attestation)) {
       delete (this.attestation as unknown as Record<string, unknown>)[key];
@@ -1895,6 +1932,7 @@ export class OnionPirWebClient {
     if (!this.isConnected()) throw new Error('Not connected');
     if (!this.wasmModule) throw new Error('WASM not loaded');
 
+    const queryGeneration = this.sessionGeneration;
     const dbId = dbIdOverride ?? this.dbId;
     if (this.isStrictVerification()) {
       const installed = this.installedOnionRoots.get(dbId);
@@ -1931,6 +1969,7 @@ export class OnionPirWebClient {
     } else {
       this.updateParamsForActiveDb();
     }
+    this.assertCurrentQuerySession(queryGeneration, dbId, 'query start');
 
     const N = scriptHashes.length;
     const progress = onProgress || (() => {});
@@ -1994,7 +2033,12 @@ export class OnionPirWebClient {
       if (!this.registeredDbs.has(dbId)) {
         progress('Setup', `Registering keys (dbId=${dbId})...`);
         const regMsg = encodeRegisterKeys(galoisKeys, gswKeys, dbId);
-        const ack = await this.sendRaw(regMsg);
+        const ack = await this.sendRawForQuerySession(
+          regMsg,
+          queryGeneration,
+          dbId,
+          'key registration',
+        );
         this.recordRound({
           kind: 'onion_key_register',
           server_id: 0,
@@ -2087,7 +2131,12 @@ export class OnionPirWebClient {
 
         progress('Level 1', `Round ${roundNum}/${totalRounds}: querying server (${queries.length} FHE queries)...`);
         const batchMsg = encodeBatchQuery(REQ_ONIONPIR_INDEX_QUERY, totalIndexRounds, queries, dbId);
-        const respRaw = await this.sendRaw(batchMsg);
+        const respRaw = await this.sendRawForQuerySession(
+          batchMsg,
+          queryGeneration,
+          dbId,
+          'INDEX query',
+        );
         // Per-group item count: every group sends INDEX_CUCKOO_NUM_HASHES
         // FHE queries — matches the Rust shape (and DPF's INDEX shape).
         // The Merkle INDEX item-count symmetry invariant lives in this
@@ -2339,7 +2388,12 @@ export class OnionPirWebClient {
 
           progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: querying server...`);
           const batchMsg = encodeBatchQuery(REQ_ONIONPIR_CHUNK_QUERY, ri, queries, dbId);
-          const respRaw = await this.sendRaw(batchMsg);
+          const respRaw = await this.sendRawForQuerySession(
+            batchMsg,
+            queryGeneration,
+            dbId,
+            'CHUNK query',
+          );
           // OnionPIR CHUNK shape: 1 FHE query per group, K_CHUNK groups.
           // Differs from DPF/Harmony CHUNK (which send 2 per group); the
           // Rust `OnionClient::query_chunk_level` pin matches this.
@@ -2393,6 +2447,7 @@ export class OnionPirWebClient {
       // Reassemble results
       // ════════════════════════════════════════════════════════════════
       progress('Decode', 'Decoding UTXO data...');
+      this.assertCurrentQuerySession(queryGeneration, dbId, 'query decode');
 
       const results: (QueryResult | null)[] = new Array(N).fill(null);
 
@@ -2407,7 +2462,7 @@ export class OnionPirWebClient {
         ? {
             verifiedDbId: this.dbId,
             verifiedOnionRootHex: installedRoot.onionSuperRootHex,
-            verificationGeneration: this.sessionGeneration,
+            verificationGeneration: queryGeneration,
           }
         : {};
 
@@ -2530,6 +2585,7 @@ export class OnionPirWebClient {
       const matched = results.filter(
         r => r !== null && !r.isWhale && r.entries.length > 0,
       ).length;
+      this.assertCurrentQuerySession(queryGeneration, dbId, 'query completion');
       this.log(
         `=== Batch complete: ${matched}/${N} matched; ${verifiable}/${N} verifiable results ===`,
         'success',
@@ -2583,6 +2639,13 @@ export class OnionPirWebClient {
   ): Promise<boolean[]> {
     if (!this.isConnected()) throw new Error('Not connected');
     if (!this.wasmModule) throw new Error('WASM not loaded');
+    const verificationGeneration = this.sessionGeneration;
+    const verificationDbId = this.dbId;
+    this.assertCurrentQuerySession(
+      verificationGeneration,
+      verificationDbId,
+      'inclusion verification start',
+    );
     // Per-DB Merkle lookup: falls back to the top-level `onionpir_merkle`
     // when dbId=0 (backward compatible with older servers that only emit
     // main-DB Merkle info at the top level).
@@ -2680,8 +2743,39 @@ export class OnionPirWebClient {
     const indexLeaves = leaves.filter(l => l.tree === 'index');
     const dataLeaves = leaves.filter(l => l.tree === 'data');
 
-    const indexVerdicts = await this.verifySubTree('index', merkle, indexLeaves, progress);
-    const dataVerdicts = await this.verifySubTree('data', merkle, dataLeaves, progress);
+    let indexVerdicts: Map<string, boolean>;
+    let dataVerdicts: Map<string, boolean>;
+    try {
+      indexVerdicts = await this.verifySubTree(
+        'index',
+        merkle,
+        indexLeaves,
+        progress,
+        verificationGeneration,
+        verificationDbId,
+      );
+      this.assertCurrentQuerySession(
+        verificationGeneration,
+        verificationDbId,
+        'INDEX inclusion verification',
+      );
+      dataVerdicts = await this.verifySubTree(
+        'data',
+        merkle,
+        dataLeaves,
+        progress,
+        verificationGeneration,
+        verificationDbId,
+      );
+      this.assertCurrentQuerySession(
+        verificationGeneration,
+        verificationDbId,
+        'DATA inclusion verification',
+      );
+    } catch (error) {
+      for (const result of results) scrubUnverifiedOnionResult(result);
+      throw error;
+    }
 
     // Aggregate: a result passes iff ALL of its leaves verified. A
     // failure on any leaf can never be overridden back to `true`.
@@ -2697,6 +2791,11 @@ export class OnionPirWebClient {
     }
 
     let verified = 0;
+    this.assertCurrentQuerySession(
+      verificationGeneration,
+      verificationDbId,
+      'inclusion verdict publication',
+    );
     for (const [ri, ok] of perResultOk) {
       out[ri] = ok;
       results[ri].merkleVerified = ok;
@@ -2742,6 +2841,8 @@ export class OnionPirWebClient {
     info: OnionPirMerkleInfoJson,
     leaves: { pbcGroup: number; bin: number; hash: Uint8Array }[],
     progress: (step: string, detail: string) => void,
+    generation: number,
+    dbId: number,
   ): Promise<Map<string, boolean>> {
     const out = new Map<string, boolean>();
     const arity = info.arity;
@@ -2763,22 +2864,27 @@ export class OnionPirWebClient {
       // Strict sessions reuse only the tree-tops cached by the pre-query
       // proof-root preflight. Their generation/root binding was checked by
       // verifyMerkleBatch before reaching this method.
-      const binding = this.verifiedTreeTops.get(this.dbId);
-      if (!binding) throw new Error(`strict OnionPIR tree-tops missing for db ${this.dbId}`);
+      const binding = this.verifiedTreeTops.get(dbId);
+      if (!binding) throw new Error(`strict OnionPIR tree-tops missing for db ${dbId}`);
       allTops = binding.allTops;
     } else {
       // Advisory/back-compat flow: fetch and bind against the advertised root.
       progress('Merkle', `Fetching ${treeName} tree-top blob...`);
-      const ttPayloadLen = this.dbId !== 0 ? 2 : 1;
+      const ttPayloadLen = dbId !== 0 ? 2 : 1;
       const ttReq = new Uint8Array(4 + ttPayloadLen);
       new DataView(ttReq.buffer).setUint32(0, ttPayloadLen, true);
       ttReq[4] = treeTopReq;
-      if (this.dbId !== 0) ttReq[5] = this.dbId;
-      const ttRaw = await this.sendRaw(ttReq);
+      if (dbId !== 0) ttReq[5] = dbId;
+      const ttRaw = await this.sendRawForQuerySession(
+        ttReq,
+        generation,
+        dbId,
+        `${treeName} tree-top`,
+      );
       this.recordRound({
         kind: 'merkle_tree_tops',
         server_id: 0,
-        db_id: this.dbId,
+        db_id: dbId,
         request_bytes: ttReq.length,
         response_bytes: ttRaw.length,
         items: [],
@@ -2885,8 +2991,13 @@ export class OnionPirWebClient {
         }
 
         // round_id is vestigial under the per-group design — send 0.
-        const batchMsg = encodeBatchQuery(sibReq, 0, queries, this.dbId);
-        const respRaw = await this.sendRaw(batchMsg);
+        const batchMsg = encodeBatchQuery(sibReq, 0, queries, dbId);
+        const respRaw = await this.sendRawForQuerySession(
+          batchMsg,
+          generation,
+          dbId,
+          `${treeName} sibling pass ${pass}`,
+        );
         // One PIR sibling level ⇒ level is always 0. K FHE queries, one
         // per PBC group — items[g] = 1 each. Matches the Rust
         // `verify_sub_tree`'s `Index/ChunkMerkleSiblings { level: 0 }`.
@@ -2894,7 +3005,7 @@ export class OnionPirWebClient {
           kind: treeName === 'index' ? 'index_merkle_siblings' : 'chunk_merkle_siblings',
           level: 0,
           server_id: 0,
-          db_id: this.dbId,
+          db_id: dbId,
           request_bytes: batchMsg.length,
           response_bytes: respRaw.length,
           items: new Array(k).fill(1),
@@ -2985,6 +3096,21 @@ export class OnionPirWebClient {
     this.log(`[PIR-AUDIT] OnionPIR Merkle ${treeName}: ${verified}/${n} leaves verified`);
     return out;
   }
+}
+
+function scrubUnverifiedOnionResult(result: QueryResult): void {
+  result.entries = [];
+  result.totalSats = 0n;
+  result.rawChunkData = undefined;
+  result.scriptHash = undefined;
+  result.merkleVerified = false;
+  result.merkleSuperRoot = undefined;
+  result.indexBinHash = undefined;
+  result.indexBinLeaves = undefined;
+  result.dataBinLeaves = undefined;
+  result.verifiedDbId = undefined;
+  result.verifiedOnionRootHex = undefined;
+  result.verificationGeneration = undefined;
 }
 
 // ─── Hex helper ─────────────────────────────────────────────────────────────

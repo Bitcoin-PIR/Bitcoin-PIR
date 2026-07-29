@@ -79,6 +79,43 @@ describe('strict OnionPIR duplicate Merkle coordinates', () => {
 });
 
 describe('strict OnionPIR session lifecycle', () => {
+  function seedStrictQuerySession(client: OnionPirWebClient, socket: any): any {
+    const internal = client as any;
+    internal.sessionGeneration = 7;
+    internal.ws = socket;
+    internal.strictReady = true;
+    internal.dbId = 0;
+    internal.installedOnionRoots.set(0, {
+      dbId: 0,
+      onionSuperRootHex: 'ab'.repeat(32),
+      generation: 7,
+      indexK: 1,
+      chunkK: 1,
+      indexBinsPerTable: 8,
+      chunkBinsPerTable: 8,
+      tagSeed: 1n,
+      indexMasterSeed: 2n,
+      chunkMasterSeed: 3n,
+      totalPackedEntries: 8,
+      indexSlotsPerBin: 1,
+      indexSlotSize: 16,
+    });
+    internal.verifiedTreeTops.set(0, {
+      generation: 7,
+      rootHex: 'ab'.repeat(32),
+      allTops: [],
+    });
+    internal.serverInfo = {
+      onionpir_merkle: {
+        arity: 2,
+        super_root: 'ab'.repeat(32),
+        index: { k: 1, num_pt: 1 },
+        data: { k: 1, num_pt: 1 },
+      },
+    };
+    return internal;
+  }
+
   it('cannot install a tree-top response after its socket was disconnected', async () => {
     let release!: (value: Uint8Array) => void;
     const response = new Promise<Uint8Array>((resolve) => { release = resolve; });
@@ -130,6 +167,89 @@ describe('strict OnionPIR session lifecycle', () => {
     await expect(client.queryBatch([new Uint8Array(32)]))
       .rejects.toThrow('proof/layout/tree-tops are not ready');
     expect(sendRaw).not.toHaveBeenCalled();
+  });
+
+  it('rejects a late query response from a disconnected OnionPIR session', async () => {
+    let release!: (value: Uint8Array) => void;
+    const response = new Promise<Uint8Array>((resolve) => { release = resolve; });
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(() => response),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = seedStrictQuerySession(client, socket);
+    const indexClient = {
+      generateQuery: vi.fn(() => new Uint8Array([1])),
+      delete: vi.fn(),
+    };
+    internal.wasmModule = {
+      OnionPirClient: class {
+        id(): number { return 9; }
+        galoisKeys(): Uint8Array { return new Uint8Array([1]); }
+        gswKey(): Uint8Array { return new Uint8Array([2]); }
+        exportSecretKey(): Uint8Array { return new Uint8Array([3]); }
+        delete(): void {}
+      },
+      createClientFromSecretKey: vi.fn(() => indexClient),
+    };
+
+    const pending = client.queryBatch([new Uint8Array(20)]);
+    expect(socket.sendRaw).toHaveBeenCalledOnce();
+    client.disconnect();
+    release(new Uint8Array());
+
+    await expect(pending).rejects.toThrow(/stale OnionPIR key registration/);
+    expect(indexClient.delete).toHaveBeenCalledOnce();
+  });
+
+  it('scrubs results when an OnionPIR verifier resolves after disconnect', async () => {
+    let release!: (value: Map<string, boolean>) => void;
+    const response = new Promise<Map<string, boolean>>((resolve) => { release = resolve; });
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = seedStrictQuerySession(client, socket);
+    internal.wasmModule = {};
+    internal.fheSecretKey = new Uint8Array([3]);
+    internal.verifySubTree = vi.fn(() => response);
+    const result: any = {
+      entries: [{ txid: new Uint8Array(32), vout: 0, amount: 9n }],
+      totalSats: 9n,
+      startChunkId: 1,
+      numChunks: 0,
+      numRounds: 1,
+      isWhale: false,
+      merkleVerified: false,
+      rawChunkData: new Uint8Array([7]),
+      indexBinLeaves: [
+        { hash: new Uint8Array(32).fill(1), pbcGroup: 0, bin: 0 },
+        { hash: new Uint8Array(32).fill(2), pbcGroup: 0, bin: 1 },
+      ],
+      dataBinLeaves: [],
+      verifiedDbId: 0,
+      verifiedOnionRootHex: 'ab'.repeat(32),
+      verificationGeneration: 7,
+    };
+
+    const pending = client.verifyMerkleBatch([result]);
+    expect(internal.verifySubTree).toHaveBeenCalledOnce();
+    client.disconnect();
+    release(new Map([['0:0', true], ['0:1', true]]));
+
+    await expect(pending).rejects.toThrow(/stale OnionPIR/);
+    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
+    expect(result.rawChunkData).toBeUndefined();
+    expect(result.indexBinLeaves).toBeUndefined();
   });
 
   it('consumes the proof handle and clears the installed root on disconnect', () => {

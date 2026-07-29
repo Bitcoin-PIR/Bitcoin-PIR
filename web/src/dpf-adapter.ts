@@ -852,6 +852,24 @@ export class BatchPirClientAdapter {
     this.assertLegProofsMatch();
   }
 
+  private assertLiveQueryPair(
+    client: WasmDpfClient,
+    generation: number,
+    dbId: number,
+    operation: string,
+  ): void {
+    if (this.pairGeneration !== generation || this.wasmClient !== client) {
+      throw new Error(`stale DPF ${operation} result`);
+    }
+    if (!this.isStrictVerification()) return;
+    this.assertCurrentStrictPair(client, generation);
+    if (!this.isPreparedAdmissionDb(dbId)) {
+      throw new Error(
+        `strict DPF ${operation} requires prepared admission for db_id ${dbId}`,
+      );
+    }
+  }
+
   private newDiagnosticSocket(serverIndex: 0 | 1): ManagedWebSocket {
     return new ManagedWebSocket({
       url: serverIndex === 0 ? this.config.server0Url : this.config.server1Url,
@@ -1164,10 +1182,14 @@ export class BatchPirClientAdapter {
         `strict DPF admission is bound to db_id ${this.admissionDbId}, not db_id ${dbId}`,
       );
     }
+    const client = this.wasmClient;
+    const generation = this.pairGeneration;
+    this.assertLiveQueryPair(client, generation, dbId, 'query start');
     onProgress?.('Level 1', 'sending batched INDEX queries');
 
     const packed = packScriptHashes(scriptHashes);
-    const wqrs = await this.wasmClient.queryBatchRaw(packed, dbId);
+    const wqrs = await client.queryBatchRaw(packed, dbId);
+    this.assertLiveQueryPair(client, generation, dbId, 'query response');
     onProgress?.('Decode', `translating ${wqrs.length} results`);
 
     const out: (QueryResult | null)[] = new Array(wqrs.length);
@@ -1206,9 +1228,8 @@ export class BatchPirClientAdapter {
     dbId: number = 0,
   ): Promise<boolean[]> {
     if (!this.wasmClient) throw new Error('Not connected');
-    if (results.length === 0
-        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
-      throw new Error('strict DPF inclusion verification requires an INDEX trace for every result');
+    if (this.isStrictVerification() && !this.strictReady) {
+      throw new Error('strict verification is not ready');
     }
     if (this.isStrictVerification()
         && this.pairPreflightDbId !== null
@@ -1216,6 +1237,13 @@ export class BatchPirClientAdapter {
       throw new Error(
         `strict DPF Merkle verification is bound to db_id ${this.admissionDbId}, not db_id ${dbId}`,
       );
+    }
+    const client = this.wasmClient;
+    const generation = this.pairGeneration;
+    this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification start');
+    if (results.length === 0
+        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
+      throw new Error('strict DPF inclusion verification requires an INDEX trace for every result');
     }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
@@ -1225,7 +1253,14 @@ export class BatchPirClientAdapter {
       return queryResultToJson(r);
     });
 
-    const verdicts = await this.wasmClient.verifyMerkleBatch(jsonArr, dbId);
+    let verdicts: boolean[];
+    try {
+      verdicts = await client.verifyMerkleBatch(jsonArr, dbId);
+      this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification response');
+    } catch (error) {
+      for (const result of results) scrubUnverifiedDpfResult(result);
+      throw error;
+    }
     if (verdicts.length !== results.length) {
       for (const result of results) scrubUnverifiedDpfResult(result);
       throw new Error(
@@ -1386,7 +1421,7 @@ export class BatchPirClientAdapter {
   /** Staged admission binds one exact database. The legacy all-at-once path
    * preflights every pinned database, so retain compatibility only for roots
    * whose verified status was actually published by that completed gate. */
-  private isPreparedAdmissionDb(dbId: number): boolean {
+  isPreparedAdmissionDb(dbId: number): boolean {
     if (!this.strictReady || !this.isPairPreflightComplete()) return false;
     if (this.admissionDbId !== null) return this.admissionDbId === dbId;
     return this.pairPreflightDbId === null

@@ -1419,6 +1419,24 @@ export class HarmonyPirClientAdapter {
     });
   }
 
+  private assertLiveQueryPair(
+    client: WasmHarmonyClient,
+    generation: number,
+    dbId: number,
+    operation: string,
+  ): void {
+    if (this.pairGeneration !== generation || this.wasmClient !== client) {
+      throw new Error(`stale Harmony ${operation} result`);
+    }
+    if (!this.isStrictVerification()) return;
+    this.assertCurrentStrictPair(client, generation);
+    if (!this.isPreparedAdmissionDb(dbId)) {
+      throw new Error(
+        `strict Harmony ${operation} requires prepared admission for db_id ${dbId}`,
+      );
+    }
+  }
+
   private recordDatabaseProofStatus(dbId: number, status: DatabaseProofStatus): void {
     this.databaseProofs.set(dbId, status);
     this.config.onDatabaseProof?.(dbId, status);
@@ -1493,6 +1511,9 @@ export class HarmonyPirClientAdapter {
         `strict Harmony admission is bound to db_id ${this.admissionDbId}, not db_id ${this.dbId}`,
       );
     }
+    const client = this.wasmClient;
+    const generation = this.pairGeneration;
+    this.assertLiveQueryPair(client, generation, this.dbId, 'query start');
     if (dbId !== undefined && dbId !== this.dbId) {
       throw new Error(
         `queryBatch dbId=${dbId} does not match active dbId=${this.dbId}; ` +
@@ -1529,12 +1550,14 @@ export class HarmonyPirClientAdapter {
     if (!this.hintsLoaded) {
       progress?.('setup', 'downloading hints');
       await this.fetchHints();
+      this.assertLiveQueryPair(client, generation, this.dbId, 'hint response');
     }
 
     // ── Submit batch ──
     progress?.('index', `submitting ${scriptHashes.length} queries`);
     const packed = packScriptHashes(scriptHashes);
-    const wqrs = await this.wasmClient.queryBatchRaw(packed, this.dbId);
+    const wqrs = await client.queryBatchRaw(packed, this.dbId);
+    this.assertLiveQueryPair(client, generation, this.dbId, 'query response');
     progress?.('decode', `translating ${wqrs.length} results`);
 
     // ── Translate + build inspector shim ──
@@ -1592,15 +1615,6 @@ export class HarmonyPirClientAdapter {
     dbId: number = this.dbId,
   ): Promise<boolean[]> {
     if (!this.wasmClient) throw new Error('Not connected');
-    if (dbId !== this.dbId) {
-      throw new Error(
-        `Harmony inclusion verification db_id ${dbId} does not match active db_id ${this.dbId}`,
-      );
-    }
-    if (results.length === 0
-        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
-      throw new Error('strict Harmony inclusion verification requires an INDEX trace for every result');
-    }
     if (this.isStrictVerification() && !this.strictReady) {
       throw new Error('strict verification is not ready');
     }
@@ -1611,6 +1625,18 @@ export class HarmonyPirClientAdapter {
         `strict Harmony Merkle verification is bound to db_id ${this.admissionDbId}, not db_id ${dbId}`,
       );
     }
+    const client = this.wasmClient;
+    const generation = this.pairGeneration;
+    this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification start');
+    if (dbId !== this.dbId) {
+      throw new Error(
+        `Harmony inclusion verification db_id ${dbId} does not match active db_id ${this.dbId}`,
+      );
+    }
+    if (results.length === 0
+        || results.some((result) => !result.allIndexBins || result.allIndexBins.length === 0)) {
+      throw new Error('strict Harmony inclusion verification requires an INDEX trace for every result');
+    }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
     const jsonArr: any[] = results.map((r) => {
@@ -1618,7 +1644,14 @@ export class HarmonyPirClientAdapter {
       if (handle) return handle.toJson();
       return harmonyResultToJson(r);
     });
-    const verdicts = await this.wasmClient.verifyMerkleBatch(jsonArr, dbId);
+    let verdicts: boolean[];
+    try {
+      verdicts = await client.verifyMerkleBatch(jsonArr, dbId);
+      this.assertLiveQueryPair(client, generation, dbId, 'inclusion verification response');
+    } catch (error) {
+      for (const result of results) scrubUnverifiedHarmonyResult(result);
+      throw error;
+    }
     if (verdicts.length !== results.length) {
       for (const result of results) scrubUnverifiedHarmonyResult(result);
       throw new Error(
@@ -1944,7 +1977,7 @@ export class HarmonyPirClientAdapter {
 
   /** Exact staged binding, with a compatibility allowance for the legacy
    * bootstrap that preflights and publishes every pinned database root. */
-  private isPreparedAdmissionDb(dbId: number): boolean {
+  isPreparedAdmissionDb(dbId: number): boolean {
     if (!this.strictReady || !this.isPairPreflightComplete()) return false;
     if (this.admissionDbId !== null) return this.admissionDbId === dbId;
     return this.pairPreflightDbId === null
