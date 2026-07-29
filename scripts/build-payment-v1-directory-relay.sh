@@ -289,9 +289,9 @@ reject_docker_mount_path "$publisher_helper_directory" 'publisher helper directo
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \
-  --memory 67108864 \
-  --memory-swap 67108864 \
-  --pids-limit 16 \
+  --memory 268435456 \
+  --memory-swap 268435456 \
+  --pids-limit 64 \
   --cpus 1 \
   --ulimit nofile=64:64 \
   --ulimit core=0:0 \

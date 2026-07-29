@@ -236,9 +236,12 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.equal(recipe.match(/--memory 6442450944/gmu)?.length, 1);
   assert.equal(recipe.match(/--memory-swap 6442450944/gmu)?.length, 1);
   assert.equal(recipe.match(/--pids-limit 512/gmu)?.length, 1);
-  assert.equal(recipe.match(/--memory 268435456/gmu)?.length, 1);
-  assert.equal(recipe.match(/--memory-swap 268435456/gmu)?.length, 1);
-  assert.equal(recipe.match(/--pids-limit 64/gmu)?.length, 1);
+  assert.equal(recipe.match(/--memory 268435456/gmu)?.length, 2);
+  assert.equal(recipe.match(/--memory-swap 268435456/gmu)?.length, 2);
+  assert.equal(recipe.match(/--pids-limit 64/gmu)?.length, 2);
+  assert.equal(recipe.match(/--memory 67108864/gmu)?.length, 1);
+  assert.equal(recipe.match(/--memory-swap 67108864/gmu)?.length, 1);
+  assert.equal(recipe.match(/--pids-limit 16/gmu)?.length, 1);
   assert.equal(recipe.match(/--ulimit core=0:0/gmu)?.length, 5);
   assert.equal(recipe.match(/--ulimit nofile=/gmu)?.length, 5);
   for (const seconds of ["30", "60", "330", "1830"]) {
@@ -248,6 +251,36 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
     );
   }
   assert.match(recipe, /payment-v1-renameat2-noreplace\.rs/gu);
+  const helperCompileMarker = recipe.indexOf(
+    'publisher_helper_directory="$(mktemp -d',
+  );
+  const finalSealMarker = recipe.indexOf(
+    'artifact_publication_seal="$(node',
+    helperCompileMarker,
+  );
+  const helperCompileRecipe = recipe.slice(helperCompileMarker, finalSealMarker);
+  assert.match(helperCompileRecipe, /--memory 268435456/gu);
+  assert.match(helperCompileRecipe, /--memory-swap 268435456/gu);
+  assert.match(helperCompileRecipe, /--pids-limit 64/gu);
+  assert.doesNotMatch(helperCompileRecipe, /--memory 67108864/gu);
+  assert.doesNotMatch(helperCompileRecipe, /--pids-limit 16/gu);
+  const atomicPublishMarker = recipe.indexOf(
+    '"$host_timeout_path" --signal=KILL 30s "$docker_path" run',
+    finalSealMarker,
+  );
+  const outputIdentityMarker = recipe.indexOf(
+    "output_identity=''",
+    atomicPublishMarker,
+  );
+  const atomicPublishRecipe = recipe.slice(
+    atomicPublishMarker,
+    outputIdentityMarker,
+  );
+  assert.match(atomicPublishRecipe, /--memory 67108864/gu);
+  assert.match(atomicPublishRecipe, /--memory-swap 67108864/gu);
+  assert.match(atomicPublishRecipe, /--pids-limit 16/gu);
+  assert.doesNotMatch(atomicPublishRecipe, /--memory 268435456/gu);
+  assert.doesNotMatch(atomicPublishRecipe, /--pids-limit 64/gu);
   assert.match(recipe, /verify-directory-chain \\/gu);
   assert.match(recipe, /verify-directory-chain-identity \\/gu);
   assert.match(recipe, /\/publisher\/payment-v1-renameat2-noreplace \\\n+  "\/publish\/\$staging_name" "\/publish\/\$output_name"/gu);
