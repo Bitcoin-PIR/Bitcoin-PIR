@@ -903,8 +903,11 @@ findings and must not be collapsed into that count.
    matrix. The isolated current-tree browser rerun passed the real-issuer case
    1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
    gate. Production trust-chain, a
-   browser-to-Standard-Cashu-provider join,
-   Harmony query, Onion and TEE-ORAM process boundaries remain open.
+   browser-to-Standard-Cashu-provider join, and Onion and TEE-ORAM process
+   boundaries remain open. The direct-receipt two-provider process test now
+   executes a complete four-frame K-padded Harmony query under a distinct
+   Harmony scope, offer and credential key, including wrong-scope
+   non-consumption, terminal-DFA rejection and restart replay rejection.
 6. **External dependency canaries.** Recorded runs exist for the earlier
    two-node local CLN runner, the disposable CDK runner, and one short-lived
    public Nostr transport/readback smoke. The extended CDK lifecycle and forced

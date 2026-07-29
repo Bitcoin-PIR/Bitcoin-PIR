@@ -1,11 +1,12 @@
 //! Loopback-only Payment V1 process/wire integration test.
 //!
-//! This test deliberately uses a tiny, manifest-bound DPF database and public
-//! deterministic test keys. It starts two independent `unified_server`
+//! This test deliberately uses a tiny, manifest-bound DPF/Harmony database and
+//! public deterministic test keys. It starts two independent `unified_server`
 //! processes and exercises the real WebSocket, attestation-bound secure
-//! channel, signed policy, direct-receipt authorization, backend gate, and
-//! durable replay boundary. It never starts an issuer, contacts a Lightning
-//! node/mint/relay, or moves funds.
+//! channel, signed per-workload policy and keys, direct-receipt authorization,
+//! DPF and four-frame K-padded Harmony query handlers, backend gate, and durable
+//! replay boundary. It never starts an issuer or hint server, contacts a
+//! Lightning node/mint/relay, or moves funds.
 //!
 //! On ordinary CI hosts this deliberately observes `NoSevHost` and uses the
 //! SDK's `dangerous_unpaired_*` helpers. That covers the local wire and gate
@@ -19,7 +20,9 @@ use libdpf::Dpf;
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
-use pir_runtime_core::protocol::{BatchQuery, Request, Response};
+use pir_runtime_core::protocol::{
+    BatchQuery, HarmonyBatchItem, HarmonyBatchQuery, Request, Response,
+};
 use pir_sdk_client::attest::{attest_with_eph_binding, SevStatus};
 use pir_sdk_client::channel::{establish, SecureChannelTransport};
 use pir_sdk_client::{
@@ -45,7 +48,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const OFFER_ID: u32 = 2;
+const DPF_OFFER_ID: u32 = 2;
+const HARMONY_OFFER_ID: u32 = 3;
 const OPERATION_PROFILE: u16 = 11;
 const ENTITLEMENT_PROFILE: u16 = 101;
 const TINY_BINS_PER_TABLE: usize = 128;
@@ -56,31 +60,40 @@ struct ProviderFixture {
     index: u8,
     provider_id: [u8; 32],
     policy_signing_key: SigningKey,
-    receipt_signing_key: SigningKey,
+    dpf_receipt_signing_key: SigningKey,
+    harmony_receipt_signing_key: SigningKey,
     issuer_id: [u8; 32],
     policy_path: PathBuf,
     store_path: PathBuf,
     rollback_path: PathBuf,
-    scope_id: [u8; 32],
+    dpf_scope_id: [u8; 32],
+    harmony_scope_id: [u8; 32],
     policy_digest: [u8; 32],
     issued_at: u64,
     receipt_not_after: u64,
 }
 
 impl ProviderFixture {
-    fn receipt(&self, serial_byte: u8) -> PaidReceiptV1 {
+    fn receipt(&self, scope_id: [u8; 32], offer_id: u32, serial_byte: u8) -> PaidReceiptV1 {
+        let receipt_signing_key = if scope_id == self.dpf_scope_id {
+            &self.dpf_receipt_signing_key
+        } else if scope_id == self.harmony_scope_id {
+            &self.harmony_receipt_signing_key
+        } else {
+            panic!("receipt fixture requested for an unknown scope")
+        };
         PaidReceiptV1::sign(
             self.issuer_id,
             [serial_byte; 32],
             PaidReceiptBindingV1 {
-                scope_id: self.scope_id,
-                offer_id: OFFER_ID,
+                scope_id,
+                offer_id,
                 policy_digest: self.policy_digest,
                 entitlement_profile: ENTITLEMENT_PROFILE,
             },
             self.issued_at,
             self.receipt_not_after,
-            &self.receipt_signing_key,
+            receipt_signing_key,
         )
         .expect("deterministic receipt fixture must be valid")
     }
@@ -224,8 +237,16 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
     );
     assert_ne!(provider0.issuer_id, provider1.issuer_id);
     assert_ne!(
-        paid_receipt_key_id(&provider0.receipt_signing_key.verifying_key()),
-        paid_receipt_key_id(&provider1.receipt_signing_key.verifying_key())
+        paid_receipt_key_id(&provider0.dpf_receipt_signing_key.verifying_key()),
+        paid_receipt_key_id(&provider1.dpf_receipt_signing_key.verifying_key())
+    );
+    assert_ne!(
+        paid_receipt_key_id(&provider0.harmony_receipt_signing_key.verifying_key()),
+        paid_receipt_key_id(&provider1.harmony_receipt_signing_key.verifying_key())
+    );
+    assert_ne!(
+        paid_receipt_key_id(&provider0.dpf_receipt_signing_key.verifying_key()),
+        paid_receipt_key_id(&provider0.harmony_receipt_signing_key.verifying_key())
     );
     assert_ne!(provider0.store_path, provider1.store_path);
 
@@ -242,19 +263,19 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
     // a real server rejection, not a client-side pair simulation.
     let (mut wrong_target, accepted0) =
         open_verified_session(port0, &provider0, manifest_root, &request).await;
-    let provider1_receipt = provider1.receipt(0x71);
+    let provider1_receipt = provider1.receipt(provider1.dpf_scope_id, DPF_OFFER_ID, 0x71);
     let wrong_proof = dangerous_unpaired_build_authorization_proof_v1(
         &accepted0,
-        &provider0.scope_id,
-        OFFER_ID,
+        &provider0.dpf_scope_id,
+        DPF_OFFER_ID,
         &provider1_receipt.encode().unwrap(),
     )
     .unwrap();
     let error = dangerous_unpaired_authorize_service_operation_v1(
         &mut wrong_target,
         &accepted0,
-        provider0.scope_id,
-        OFFER_ID,
+        provider0.dpf_scope_id,
+        DPF_OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         wrong_proof,
     )
@@ -277,8 +298,69 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
 
     // Provider 0 independently accepts only its own capability, then lets
     // exactly one bounded backend frame reach the real DPF handler.
-    let receipt0 = provider0.receipt(0x80);
+    let receipt0 = provider0.receipt(provider0.dpf_scope_id, DPF_OFFER_ID, 0x80);
     exercise_paid_grant(port0, &provider0, manifest_root, &request, &receipt0).await;
+
+    let harmony_requests = valid_tiny_harmony_query_requests();
+
+    // Entitlements are backend/workload-specific. A fresh DPF receipt cannot
+    // authorize a Harmony query scope, and the rejected mismatch must not burn
+    // the receipt at its intended DPF scope.
+    let dpf_only_receipt = provider0.receipt(provider0.dpf_scope_id, DPF_OFFER_ID, 0x81);
+    let (mut wrong_scope, wrong_scope_policy) =
+        open_verified_session(port0, &provider0, manifest_root, &harmony_requests[0]).await;
+    let wrong_scope_proof = dangerous_unpaired_build_authorization_proof_v1(
+        &wrong_scope_policy,
+        &provider0.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        &dpf_only_receipt.encode().unwrap(),
+    )
+    .unwrap();
+    let wrong_scope_error = dangerous_unpaired_authorize_service_operation_v1(
+        &mut wrong_scope,
+        &wrong_scope_policy,
+        provider0.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        OperationStartV1::HarmonyQuery { db_id: 0 },
+        wrong_scope_proof,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        wrong_scope_error.to_string().contains("invalid-or-spent"),
+        "{wrong_scope_error}"
+    );
+    wrong_scope.close().await.unwrap();
+    exercise_paid_grant(
+        port0,
+        &provider0,
+        manifest_root,
+        &request,
+        &dpf_only_receipt,
+    )
+    .await;
+
+    // Each provider independently prices and spends its Harmony query scope.
+    // The four accepted frames execute real INDEX/CHUNK K-padded queries in
+    // the production process without configuring or naming any hint server.
+    let harmony_receipt0 = provider0.receipt(provider0.harmony_scope_id, HARMONY_OFFER_ID, 0x90);
+    let harmony_receipt1 = provider1.receipt(provider1.harmony_scope_id, HARMONY_OFFER_ID, 0x91);
+    exercise_harmony_query_grant(
+        port0,
+        &provider0,
+        manifest_root,
+        &harmony_requests,
+        &harmony_receipt0,
+    )
+    .await;
+    exercise_harmony_query_grant(
+        port1,
+        &provider1,
+        manifest_root,
+        &harmony_requests,
+        &harmony_receipt1,
+    )
+    .await;
 
     // Stop and restart provider 0 against the same SQLite domain. Its durable
     // store must reject the same receipt on a fresh process and secure session.
@@ -289,16 +371,16 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
         open_verified_session(port0, &provider0, manifest_root, &request).await;
     let replay_proof = dangerous_unpaired_build_authorization_proof_v1(
         &replay_policy,
-        &provider0.scope_id,
-        OFFER_ID,
+        &provider0.dpf_scope_id,
+        DPF_OFFER_ID,
         &receipt0.encode().unwrap(),
     )
     .unwrap();
     let replay = dangerous_unpaired_authorize_service_operation_v1(
         &mut replay_session,
         &replay_policy,
-        provider0.scope_id,
-        OFFER_ID,
+        provider0.dpf_scope_id,
+        DPF_OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         replay_proof,
     )
@@ -306,6 +388,31 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
     .unwrap_err();
     assert!(replay.to_string().contains("invalid-or-spent"), "{replay}");
     replay_session.close().await.unwrap();
+
+    let (mut harmony_replay_session, harmony_replay_policy) =
+        open_verified_session(port0, &provider0, manifest_root, &harmony_requests[0]).await;
+    let harmony_replay_proof = dangerous_unpaired_build_authorization_proof_v1(
+        &harmony_replay_policy,
+        &provider0.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        &harmony_receipt0.encode().unwrap(),
+    )
+    .unwrap();
+    let harmony_replay = dangerous_unpaired_authorize_service_operation_v1(
+        &mut harmony_replay_session,
+        &harmony_replay_policy,
+        provider0.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        OperationStartV1::HarmonyQuery { db_id: 0 },
+        harmony_replay_proof,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        harmony_replay.to_string().contains("invalid-or-spent"),
+        "{harmony_replay}"
+    );
+    harmony_replay_session.close().await.unwrap();
 
     let (stdout0, stderr0) = server0.stop();
     let (stdout1, stderr1) = server1.stop();
@@ -373,22 +480,22 @@ async fn exercise_paid_grant(
     let (mut secure, accepted) = open_verified_session(port, fixture, manifest_root, request).await;
     let proof = dangerous_unpaired_build_authorization_proof_v1(
         &accepted,
-        &fixture.scope_id,
-        OFFER_ID,
+        &fixture.dpf_scope_id,
+        DPF_OFFER_ID,
         &receipt.encode().unwrap(),
     )
     .unwrap();
     let grant = dangerous_unpaired_authorize_service_operation_v1(
         &mut secure,
         &accepted,
-        fixture.scope_id,
-        OFFER_ID,
+        fixture.dpf_scope_id,
+        DPF_OFFER_ID,
         OperationStartV1::DpfQuery { db_id: 0 },
         proof,
     )
     .await
     .expect("provider-specific direct receipt must authorize");
-    assert_eq!(grant.scope_id, fixture.scope_id);
+    assert_eq!(grant.scope_id, fixture.dpf_scope_id);
     assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
 
     let response = secure.roundtrip(request).await.unwrap();
@@ -406,6 +513,78 @@ async fn exercise_paid_grant(
     expect_error_response(
         &secure.roundtrip(request).await.unwrap(),
         "service entitlement limit exceeded",
+    );
+    secure.close().await.unwrap();
+}
+
+async fn exercise_harmony_query_grant(
+    port: u16,
+    fixture: &ProviderFixture,
+    manifest_root: [u8; 32],
+    requests: &[Vec<u8>],
+    receipt: &PaidReceiptV1,
+) {
+    assert_eq!(requests.len(), 4);
+    let (mut secure, accepted) =
+        open_verified_session(port, fixture, manifest_root, &requests[0]).await;
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &fixture.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        &receipt.encode().unwrap(),
+    )
+    .unwrap();
+    let grant = dangerous_unpaired_authorize_service_operation_v1(
+        &mut secure,
+        &accepted,
+        fixture.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        OperationStartV1::HarmonyQuery { db_id: 0 },
+        proof,
+    )
+    .await
+    .expect("provider-specific Harmony receipt must authorize");
+    assert_eq!(grant.scope_id, fixture.harmony_scope_id);
+    assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
+
+    for (request, (expected_level, expected_round)) in
+        requests.iter().zip([(0u8, 0u16), (0, 1), (1, 0), (1, 1)])
+    {
+        let response = secure.roundtrip(request).await.unwrap();
+        match Response::decode(&response).unwrap() {
+            Response::HarmonyBatchResult(result) => {
+                assert_eq!(result.level, expected_level);
+                assert_eq!(result.round_id, expected_round);
+                assert_eq!(result.sub_results_per_group, 1);
+                let expected_groups = if expected_level == 0 {
+                    INDEX_PARAMS.k
+                } else {
+                    CHUNK_PARAMS.k
+                };
+                let expected_bin_size = if expected_level == 0 {
+                    INDEX_PARAMS.bin_size()
+                } else {
+                    CHUNK_PARAMS.bin_size()
+                };
+                assert_eq!(result.items.len(), expected_groups);
+                for (group, item) in result.items.iter().enumerate() {
+                    assert_eq!(usize::from(item.group_id), group);
+                    assert_eq!(item.sub_results.len(), 1);
+                    assert_eq!(item.sub_results[0].len(), expected_bin_size);
+                    assert!(item.sub_results[0].iter().all(|byte| *byte == 0));
+                }
+            }
+            other => panic!("authorized Harmony frame did not reach handler: {other:?}"),
+        }
+    }
+
+    // The price applies to one signed four-frame query job. The completed DFA
+    // is terminal: a second job cannot reopen or extend the consumed grant,
+    // even though the first repeated frame would fit an individual frame
+    // shape.
+    expect_error_response(
+        &secure.roundtrip(&requests[0]).await.unwrap(),
+        "backend frame violates the operation sequence",
     );
     secure.close().await.unwrap();
 }
@@ -504,14 +683,15 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
     let operator_key = SigningKey::from_bytes(&[0x10u8.wrapping_add(index); 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x20u8.wrapping_add(index); 32]);
     let issuer_root_key = SigningKey::from_bytes(&[0x30u8.wrapping_add(index); 32]);
-    let receipt_signing_key = SigningKey::from_bytes(&[0x40u8.wrapping_add(index); 32]);
+    let dpf_receipt_signing_key = SigningKey::from_bytes(&[0x40u8.wrapping_add(index); 32]);
+    let harmony_receipt_signing_key = SigningKey::from_bytes(&[0x60u8.wrapping_add(index); 32]);
     let stable_server_id = format!("payment-v1-process-provider-{index}");
     let provider_id =
         derive_provider_id(&operator_key.verifying_key().to_bytes(), &stable_server_id);
     let issued_at = now.saturating_sub(60);
     let expires_at = now.checked_add(3_600).unwrap();
     let receipt_not_after = now.checked_add(600).unwrap();
-    let scope = ServiceScopeV1 {
+    let dpf_scope = ServiceScopeV1 {
         provider_id,
         backend: BackendId::DpfPirV1,
         workload: WorkloadId::DpfEvaluateJobV1,
@@ -522,30 +702,61 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         operation_profile: OPERATION_PROFILE,
         entitlement_profile: ENTITLEMENT_PROFILE,
     };
-    let scope_id = scope.scope_id();
-    let receipt_key_id = paid_receipt_key_id(&receipt_signing_key.verifying_key()).to_vec();
-    let retired_policy_grace_seconds = 1_800;
-    let binding = CredentialKeyBindingV1::sign(
-        CredentialKeyBindingClaimsV1 {
-            provider_id,
-            scope_id,
-            offer_id: OFFER_ID,
-            scheme: AuthScheme::Bolt11DirectReceiptV1,
-            keyset_epoch: 1,
-            entitlement_profile: ENTITLEMENT_PROFILE,
-            unit: CredentialUnitV1::Entitlement,
-            amount: 1,
-            presentation_limit: 1,
-            not_before: issued_at.saturating_sub(60),
-            not_after: expires_at + u64::from(retired_policy_grace_seconds),
-            credential_key_id: receipt_key_id.clone(),
-            verification_key: receipt_signing_key.verifying_key().to_bytes().to_vec(),
+    let harmony_scope = ServiceScopeV1 {
+        provider_id,
+        backend: BackendId::HarmonyPirV2,
+        workload: WorkloadId::HarmonyQueryJobV1,
+        protocol_version: 2,
+        dataset: DatasetBindingV1::ManifestRoot {
+            root: manifest_root,
         },
-        &issuer_root_key,
-    )
-    .unwrap();
-    let offer = ServiceOfferV1 {
-        offer_id: OFFER_ID,
+        operation_profile: OPERATION_PROFILE,
+        entitlement_profile: ENTITLEMENT_PROFILE,
+    };
+    let dpf_scope_id = dpf_scope.scope_id();
+    let harmony_scope_id = harmony_scope.scope_id();
+    let dpf_receipt_key_id = paid_receipt_key_id(&dpf_receipt_signing_key.verifying_key()).to_vec();
+    let harmony_receipt_key_id =
+        paid_receipt_key_id(&harmony_receipt_signing_key.verifying_key()).to_vec();
+    let retired_policy_grace_seconds = 1_800;
+    let make_binding =
+        |scope_id, offer_id, receipt_signing_key: &SigningKey, receipt_key_id: &[u8]| {
+            CredentialKeyBindingV1::sign(
+                CredentialKeyBindingClaimsV1 {
+                    provider_id,
+                    scope_id,
+                    offer_id,
+                    scheme: AuthScheme::Bolt11DirectReceiptV1,
+                    keyset_epoch: 1,
+                    entitlement_profile: ENTITLEMENT_PROFILE,
+                    unit: CredentialUnitV1::Entitlement,
+                    amount: 1,
+                    presentation_limit: 1,
+                    not_before: issued_at.saturating_sub(60),
+                    not_after: expires_at + u64::from(retired_policy_grace_seconds),
+                    credential_key_id: receipt_key_id.to_vec(),
+                    verification_key: receipt_signing_key.verifying_key().to_bytes().to_vec(),
+                },
+                &issuer_root_key,
+            )
+            .unwrap()
+        };
+    let dpf_binding = make_binding(
+        dpf_scope_id,
+        DPF_OFFER_ID,
+        &dpf_receipt_signing_key,
+        &dpf_receipt_key_id,
+    );
+    let harmony_binding = make_binding(
+        harmony_scope_id,
+        HARMONY_OFFER_ID,
+        &harmony_receipt_signing_key,
+        &harmony_receipt_key_id,
+    );
+    let issuer_id = dpf_binding.issuer_id;
+    assert_eq!(issuer_id, harmony_binding.issuer_id);
+    let make_offer = |offer_id, key_id: Vec<u8>, binding: CredentialKeyBindingV1| ServiceOfferV1 {
+        offer_id,
         acquisition: AcquisitionMethod::Bolt11V1,
         free_mode: FreeModeV1::NotFree,
         free_quota: 0,
@@ -557,8 +768,8 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         deployment_status: DeploymentStatus::Stable,
         price: PriceV1::MilliSatoshi(1_000),
         issuer_id: binding.issuer_id,
-        key_id: receipt_key_id,
-        credential_binding: Some(binding.clone()),
+        key_id,
+        credential_binding: Some(binding),
         cashu_mint_manifest: None,
         endpoint: format!("https://issuer-{index}.fixture.invalid"),
         invoice_expiry_seconds: 600,
@@ -576,20 +787,40 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         issued_at,
         expires_at,
         AuthPaddingClassV1::Class16KiB,
-        vec![ServiceScopePolicyV1 {
-            scope,
-            limits: EntitlementLimitsV1 {
-                max_logical_inputs: 1,
-                max_frames: 1,
-                max_request_bytes: 16 * 1024,
-                max_response_bytes: 4 * 1024,
-                max_wall_time_ms: 10_000,
-                max_concurrent_sockets: 1,
-                max_hint_groups: 0,
-                max_work_units: 2,
+        vec![
+            ServiceScopePolicyV1 {
+                scope: dpf_scope,
+                limits: EntitlementLimitsV1 {
+                    max_logical_inputs: 1,
+                    max_frames: 1,
+                    max_request_bytes: 16 * 1024,
+                    max_response_bytes: 4 * 1024,
+                    max_wall_time_ms: 10_000,
+                    max_concurrent_sockets: 1,
+                    max_hint_groups: 0,
+                    max_work_units: 2,
+                },
+                offers: vec![make_offer(DPF_OFFER_ID, dpf_receipt_key_id, dpf_binding)],
             },
-            offers: vec![offer],
-        }],
+            ServiceScopePolicyV1 {
+                scope: harmony_scope,
+                limits: EntitlementLimitsV1 {
+                    max_logical_inputs: 1,
+                    max_frames: 4,
+                    max_request_bytes: 64 * 1024,
+                    max_response_bytes: 64 * 1024,
+                    max_wall_time_ms: 10_000,
+                    max_concurrent_sockets: 1,
+                    max_hint_groups: 0,
+                    max_work_units: 320,
+                },
+                offers: vec![make_offer(
+                    HARMONY_OFFER_ID,
+                    harmony_receipt_key_id,
+                    harmony_binding,
+                )],
+            },
+        ],
         &policy_signing_key,
     )
     .unwrap();
@@ -620,12 +851,14 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         index,
         provider_id,
         policy_signing_key,
-        receipt_signing_key,
-        issuer_id: binding.issuer_id,
+        dpf_receipt_signing_key,
+        harmony_receipt_signing_key,
+        issuer_id,
         policy_path,
         store_path,
         rollback_path,
-        scope_id,
+        dpf_scope_id,
+        harmony_scope_id,
         policy_digest,
         issued_at,
         receipt_not_after,
@@ -674,6 +907,33 @@ fn valid_tiny_dpf_request() -> Vec<u8> {
         keys: vec![vec![key0.to_bytes(), key1.to_bytes()]],
     })
     .encode()
+}
+
+fn valid_tiny_harmony_query_requests() -> Vec<Vec<u8>> {
+    [(0u8, 0u16), (0, 1), (1, 0), (1, 1)]
+        .into_iter()
+        .map(|(level, round_id)| {
+            let group_count = if level == 0 {
+                INDEX_PARAMS.k
+            } else {
+                CHUNK_PARAMS.k
+            };
+            let items = (0..group_count)
+                .map(|group_id| HarmonyBatchItem {
+                    group_id: u8::try_from(group_id).expect("fixture K fits u8"),
+                    sub_queries: vec![vec![0]],
+                })
+                .collect();
+            Request::HarmonyBatchQuery(HarmonyBatchQuery {
+                level,
+                round_id,
+                sub_queries_per_group: 1,
+                items,
+                db_id: 0,
+            })
+            .encode()
+        })
+        .collect()
 }
 
 fn expect_error_response(response: &[u8], needle: &str) {
