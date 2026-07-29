@@ -47,10 +47,9 @@ use pir_service_protocol::{
     Bolt11QuoteKeyDelegationV1, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1,
     CredentialUnitV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
     FreeAuthorizationProofV1, FreeModeV1, IssuerClearingApprovalV1, LightningNetworkV1,
-    OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationClaimsV1,
-    ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1,
-    ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, SettlementModesV1,
-    SettlementRuleV1, SettlementUnitV1, VerificationMode, WorkloadId,
+    OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationV1,
+    ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1,
+    ServiceScopePolicyV1, ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
 };
 use pir_service_store::{
     ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions as ProviderStoreOptions,
@@ -356,8 +355,7 @@ async fn shared_issuer_real_process_tls_e2e() {
     // store invariant that one BAT public key has one immutable lineage.
     let shared_providers = [&paid];
     init_issuer_store(&issuer);
-    let payment_issuer =
-        spawn_payment_issuer(root.path(), issuer_port, &issuer, &shared_providers);
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &shared_providers);
     let forward_counter = root.path().join("tls-edge-forwarded.log");
     let transcript_path = root.path().join("tls-edge-transcript-digests.bin");
     let drop_success_once_path = root.path().join("tls-edge-drop-success-once.marker");
@@ -451,7 +449,11 @@ async fn shared_issuer_real_process_tls_e2e() {
     assert_server_log(&paid_stdout_first, &paid_stderr_first, paid_port, &paid);
     assert_server_log(&free_stdout, &free_stderr, free_port, &free);
     assert_provider_spend_inventory(&paid, 1);
-    assert_eq!(forwarded_request_count(&forward_counter), 2);
+    assert_eq!(
+        forwarded_request_count(&forward_counter),
+        4,
+        "two recovery redeems and two signed balance reads must reach the issuer"
+    );
     assert_private_regular_file(&transcript_path);
     assert_first_two_forwarded_requests_are_identical(&transcript_path);
 
@@ -510,7 +512,7 @@ async fn shared_issuer_real_process_tls_e2e() {
     );
     let (rotated_stdout, rotated_stderr) = rotated_provider.stop();
     assert_server_log(&rotated_stdout, &rotated_stderr, paid_port, &paid);
-    assert_eq!(provider_local_claim_count(&paid), 1);
+    assert_provider_spend_inventory(&paid, 1);
     let forwarded_after_rotation = forwarded_request_count(&forward_counter);
     assert!(
         (forwarded_after_replay + 1..=forwarded_after_replay + 2)
