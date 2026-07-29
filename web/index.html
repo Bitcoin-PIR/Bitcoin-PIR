@@ -1922,6 +1922,68 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
+        function productScriptHashes(kind) {
+            const textareaId = {
+                dpf: 'scriptPubkeys', onion: 'op-scriptPubkeys',
+                harmony: 'hp-scriptPubkeys', oram: 'oram-scriptPubkeys',
+            }[kind];
+            const rawValues = document.getElementById(textareaId).value
+                .split('\n').map(value => value.trim()).filter(Boolean);
+            const hashes = [];
+            for (const raw of rawValues) {
+                const scriptHex = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0
+                    ? raw.toLowerCase()
+                    : addressToScriptPubKey(raw);
+                if (scriptHex) hashes.push(scriptHash(hexToBytes(scriptHex)));
+            }
+            if (hashes.length === 0) {
+                throw new Error(`${kind} planner has no valid query inputs`);
+            }
+            return hashes;
+        }
+
+        function planProductRole(kind, role) {
+            const hashes = productScriptHashes(kind);
+            if (kind === 'dpf') {
+                if (!client || dpfAdmissionDbId === null) {
+                    throw new Error('DPF planner requires the live verified database');
+                }
+                return client.planServiceQuery(hashes, dpfAdmissionDbId);
+            }
+            if (kind === 'harmony') {
+                if (!hpClient) throw new Error('Harmony planner requires the live verified client');
+                const dbId = hpClient.getDbId();
+                return role === 'hint'
+                    ? hpClient.planServiceHint(dbId)
+                    : hpClient.planServiceQuery(hashes, dbId);
+            }
+            if (kind === 'onion') {
+                if (!opClient || onionAdmissionDbId === null) {
+                    throw new Error('OnionPIR planner requires the live verified database');
+                }
+                return opClient.planServiceQuery(hashes, onionAdmissionDbId);
+            }
+            if (!oramClient || oramAdmissionDbId === null) {
+                throw new Error('ORAM planner requires the live verified database');
+            }
+            return oramClient.planServiceQuery(hashes, oramAdmissionDbId);
+        }
+
+        function installPreparedProductQueryShapes(kind, controller) {
+            const snapshot = controller.snapshot();
+            for (const leg of snapshot.legs) {
+                controller.setQueryShape(leg.role, planProductRole(kind, leg.role));
+            }
+        }
+
+        function currentProductQueryShapes(kind, controller) {
+            const shapes = {};
+            for (const leg of controller.snapshot().legs) {
+                shapes[leg.role] = planProductRole(kind, leg.role);
+            }
+            return shapes;
+        }
+
         function verifiedAdmissionManifestRoot(connected, dbId, label) {
             const status = connected.getDatabaseProofStatus(dbId);
             const rootHex = status?.state === 'verified'
@@ -2130,6 +2192,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     };
                 });
             }
+            installPreparedProductQueryShapes(kind, controller);
             admissionPanels[kind].render(controller.snapshot());
             return controller;
         }
@@ -2159,6 +2222,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         kind, secondRole, vault, controller,
                     ),
                 );
+                installPreparedProductQueryShapes(kind, controller);
                 admissionPanels[kind].render(controller.snapshot());
                 log(`${kind}: both providers and tree-tops strictly verified; capabilities may now be acquired or authorized independently.`, 'success');
                 return;
@@ -2169,7 +2233,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 return;
             }
             try {
-                await controller.executeQuery(query);
+                await controller.executeQuery(
+                    currentProductQueryShapes(kind, controller),
+                    query,
+                );
             } finally {
                 await closeAdmissionAttempt(kind, 'Previous one-query connection closed. Start a new strict admission attempt.');
             }
