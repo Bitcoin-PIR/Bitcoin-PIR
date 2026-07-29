@@ -89,8 +89,8 @@ describe('strict OnionPIR session lifecycle', () => {
       dbId: 0,
       onionSuperRootHex: 'ab'.repeat(32),
       generation: 7,
-      indexK: 1,
-      chunkK: 1,
+      indexK: 75,
+      chunkK: 80,
       indexBinsPerTable: 8,
       chunkBinsPerTable: 8,
       tagSeed: 1n,
@@ -167,6 +167,31 @@ describe('strict OnionPIR session lifecycle', () => {
     await expect(client.queryBatch([new Uint8Array(32)]))
       .rejects.toThrow('proof/layout/tree-tops are not ready');
     expect(sendRaw).not.toHaveBeenCalled();
+  });
+
+  it('plans the exact Onion INDEX round without generating keys or network traffic', () => {
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    seedStrictQuerySession(client, socket);
+
+    expect(client.planServiceQuery([new Uint8Array(20)])).toEqual({
+      backend: 'onion-pir',
+      workload: 'onion-session',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 5,
+        concurrentSockets: 1,
+        workUnits: '386',
+      },
+    });
+    expect(socket.sendRaw).not.toHaveBeenCalled();
   });
 
   it('rejects a late query response from a disconnected OnionPIR session', async () => {

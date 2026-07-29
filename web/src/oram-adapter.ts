@@ -38,6 +38,7 @@ import {
   type WasmOramClient,
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
+import type { ProductQueryShapeV1 } from './service-entitlement.js';
 import {
   assertLiveOperatorIdentityV1,
   type ServiceAdmissionPortV1,
@@ -352,6 +353,43 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     return this.queryBatchInternal(scriptHashes, dbId, onProgress);
+  }
+
+  /** Exact zero-wire accounting for the single atomic ORAM request frame. */
+  planServiceQuery(
+    scriptHashes: Uint8Array[],
+    dbId: number = 0,
+  ): ProductQueryShapeV1 {
+    if (!this.wasmClient) throw new Error('Not connected');
+    if (this.isStrictVerification()
+        && (!this.strictReady || this.databaseProofs.get(dbId)?.state !== 'verified')) {
+      throw new Error(`strict ORAM service planning requires verified db_id ${dbId}`);
+    }
+    const plannerConfig = this.config.batchPlanner
+      ? {
+          ...this.config.batchPlanner,
+          maxScriptHashesPerRequest:
+            this.config.batchPlanner.maxScriptHashesPerRequest
+            ?? this.config.maxScriptHashesPerRequest,
+        }
+      : null;
+    const plan = plannerConfig ? resolveOramBatchPlan(plannerConfig) : null;
+    const maxRealInputs = plan
+      ? plan.maxScriptHashesPerRequest
+      : resolveMaxScriptHashesPerRequest(this.config.maxScriptHashesPerRequest);
+    const batch = requireAtomicOramRequest(scriptHashes, maxRealInputs);
+    if (batch.length === 0) throw new Error('ORAM service plan requires an input');
+    const chargedSlots = plan?.paddedSlotCount ?? batch.length;
+    return {
+      backend: 'tee-oram',
+      workload: 'tee-oram-query',
+      lowerBounds: {
+        logicalInputs: chargedSlots,
+        frames: 1,
+        concurrentSockets: 1,
+        workUnits: chargedSlots.toString(),
+      },
+    };
   }
 
   /**

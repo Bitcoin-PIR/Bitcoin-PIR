@@ -139,6 +139,37 @@ describe('ORAM adapter', () => {
     expect(calls[0]).toHaveLength(60);
   });
 
+  it('plans the exact padded ORAM gate counters without SDK wire I/O', () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      batchPlanner: {
+        accessBudget: 12,
+        indexReadsPerScriptHash: 2,
+        expectedChunkReadsPerScriptHash: 1,
+        paddedSlotCount: 4,
+        maxScriptHashesPerRequest: 4,
+      },
+    });
+    const queryBatchPadded = vi.fn();
+    (adapter as any).wasmClient = { queryBatchPadded };
+
+    expect(adapter.planServiceQuery([
+      new Uint8Array(20),
+      new Uint8Array(20),
+      new Uint8Array(20),
+    ])).toEqual({
+      backend: 'tee-oram',
+      workload: 'tee-oram-query',
+      lowerBounds: {
+        logicalInputs: 4,
+        frames: 1,
+        concurrentSockets: 1,
+        workUnits: '4',
+      },
+    });
+    expect(queryBatchPadded).not.toHaveBeenCalled();
+  });
+
   it('rejects an oversized atomic product query before SDK wire I/O', async () => {
     const adapter = new OramPirClientAdapter({
       serverUrl: 'wss://oram.example',

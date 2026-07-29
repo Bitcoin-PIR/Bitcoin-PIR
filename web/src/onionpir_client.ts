@@ -54,6 +54,7 @@ import {
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
 import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
+import type { ProductQueryShapeV1 } from './service-entitlement.js';
 import type {
   DatabaseCatalog,
   OnionPirMerkleInfoJson,
@@ -1923,6 +1924,48 @@ export class OnionPirWebClient {
   // ═══════════════════════════════════════════════════════════════════════
   // BATCH QUERY
   // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Run the exact INDEX PBC planner without generating keys or touching the
+   * network. Data-dependent CHUNK and Merkle counts remain conservative
+   * lower bounds; the returned shape never claims a complete byte/time fit.
+   */
+  planServiceQuery(
+    scriptHashes: Uint8Array[],
+    dbId: number = this.dbId,
+  ): ProductQueryShapeV1 {
+    if (scriptHashes.length === 0) throw new Error('OnionPIR service plan requires an input');
+    for (let index = 0; index < scriptHashes.length; index += 1) {
+      if (scriptHashes[index].length !== 20) {
+        throw new Error(`scriptHash[${index}] must be 20 bytes`);
+      }
+    }
+    const generation = this.sessionGeneration;
+    this.assertCurrentQuerySession(generation, dbId, 'service planning');
+    const installed = this.installedOnionRoots.get(dbId);
+    const indexK = this.isStrictVerification() ? installed!.indexK : this.indexK;
+    const chunkK = this.isStrictVerification() ? installed!.chunkK : this.chunkK;
+    const indexRounds = planPbcRounds(scriptHashes.map(deriveGroups), indexK).length;
+    // Mandatory lower-bound frames: register, every exact INDEX round, one
+    // CHUNK round (including all-not-found), and one pass for each Merkle
+    // sub-tree. Collisions/data can only increase the latter phases.
+    const frames = 1 + indexRounds + 1 + 2;
+    const workUnits = 1n
+      + BigInt(indexRounds * 2 * indexK)
+      + BigInt(chunkK)
+      + BigInt(indexK)
+      + BigInt(chunkK);
+    return {
+      backend: 'onion-pir',
+      workload: 'onion-session',
+      lowerBounds: {
+        logicalInputs: indexRounds,
+        frames,
+        concurrentSockets: 1,
+        workUnits: workUnits.toString(),
+      },
+    };
+  }
 
   async queryBatch(
     scriptHashes: Uint8Array[],

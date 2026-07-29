@@ -1833,11 +1833,25 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return admissionVaultPromise;
         }
 
+        function setAdmissionQueryControlsFrozen(kind, frozen) {
+            const controls = {
+                dpf: ['scriptPubkeys', 'dbSelect'],
+                onion: ['op-scriptPubkeys', 'op-dbSelect'],
+                harmony: ['hp-scriptPubkeys', 'hp-dbSelect', 'hp-prpSelect'],
+                oram: ['oram-scriptPubkeys', 'oram-dbSelect'],
+            }[kind] ?? [];
+            for (const id of controls) {
+                const element = document.getElementById(id);
+                if (element) element.disabled = frozen;
+            }
+        }
+
         async function closeAdmissionAttempt(kind, message = 'Start a new strict admission attempt.') {
             const controller = admissionControllers[kind];
             admissionControllers[kind] = null;
             if (controller) await controller.close().catch(() => {});
             admissionPanels[kind].detach(message);
+            setAdmissionQueryControlsFrozen(kind, false);
         }
 
         async function closeAllAdmissionAttempts(message) {
@@ -1908,6 +1922,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
+        function verifiedAdmissionManifestRoot(connected, dbId, label) {
+            const status = connected.getDatabaseProofStatus(dbId);
+            const rootHex = status?.state === 'verified'
+                ? status.proof?.manifestRootHex?.toLowerCase()
+                : null;
+            if (!/^[0-9a-f]{64}$/.test(rootHex ?? '') || /^0{64}$/.test(rootHex)) {
+                throw new Error(`${label} verified database manifest root is unavailable`);
+            }
+            return rootHex;
+        }
+
         async function prepareIndependentProductLeg(kind, role, vault) {
             const provider = selectedAdmissionProvider(kind, role);
             if (kind === 'dpf') {
@@ -1920,13 +1945,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (serverIndex === 1) {
                     await connected.prepareStrictAdmission(dbId);
                 }
+                const manifestRootHex = verifiedAdmissionManifestRoot(
+                    connected, dbId, `DPF server ${serverIndex}`,
+                );
                 return {
                     leg: {
                         role,
                         label: `Server ${serverIndex} · DPF query workload`,
                         session: new ProviderAdmissionSessionV1(
                             vault, connected.serviceAdmissionPort(serverIndex, dbId), trustForProvider(provider),
-                            { backend: 'dpf-pir', workload: 'dpf-query' },
+                            {
+                                backend: 'dpf-pir', workload: 'dpf-query',
+                                protocolVersion: 1,
+                                expectedDatasetManifestRootHex: manifestRootHex,
+                            },
                         ),
                         backend: 'dpf-pir', workload: 'dpf-query',
                         network: productTrustedBootstrap.network,
@@ -1950,6 +1982,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (providerIndex === 1) {
                 await connected.prepareStrictAdmission(dbId);
             }
+            const manifestRootHex = verifiedAdmissionManifestRoot(
+                connected, dbId, providerIndex === 0 ? 'Harmony hint provider' : 'Harmony query provider',
+            );
             const leg = {
                 role,
                 label: providerIndex === 0
@@ -1964,6 +1999,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     {
                         backend: 'harmony-pir',
                         workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
+                        protocolVersion: 2,
+                        expectedDatasetManifestRootHex: manifestRootHex,
                     },
                 ),
                 backend: 'harmony-pir',
@@ -2046,12 +2083,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         const connected = await opConnect(provider);
                         const dbId = connected.getDbId();
                         onionAdmissionDbId = dbId;
+                        const manifestRootHex = verifiedAdmissionManifestRoot(
+                            connected, dbId, 'OnionPIR provider',
+                        );
                         return {
                             legs: [{
                                 role: 'onion', label: 'Onion provider',
                                 session: new ProviderAdmissionSessionV1(
                                     vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                                    { backend: 'onion-pir', workload: 'onion-session' },
+                                    {
+                                        backend: 'onion-pir', workload: 'onion-session',
+                                        protocolVersion: 1,
+                                        expectedDatasetManifestRootHex: manifestRootHex,
+                                    },
                                 ),
                                 backend: 'onion-pir', workload: 'onion-session',
                                 network: productTrustedBootstrap.network,
@@ -2064,12 +2108,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const connected = await oramConnect(provider);
                     const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
                     oramAdmissionDbId = dbId;
+                    const manifestRootHex = verifiedAdmissionManifestRoot(
+                        connected, dbId, 'ORAM provider',
+                    );
                     return {
                         legs: [{
                             role: 'oram', label: 'ORAM provider',
                             session: new ProviderAdmissionSessionV1(
                                 vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                                { backend: 'tee-oram', workload: 'tee-oram-query' },
+                                {
+                                    backend: 'tee-oram', workload: 'tee-oram-query',
+                                    protocolVersion: 1,
+                                    expectedDatasetManifestRootHex: manifestRootHex,
+                                },
                             ),
                             backend: 'tee-oram', workload: 'tee-oram-query',
                             network: productTrustedBootstrap.network,
@@ -2089,7 +2140,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const phase = controller?.snapshot().phase ?? 'idle';
             if (!controller || phase === 'idle' || phase === 'failed' || phase === 'querying') {
                 if (controller) await closeAdmissionAttempt(kind);
-                controller = await prepareProductAdmission(kind);
+                setAdmissionQueryControlsFrozen(kind, true);
+                try {
+                    controller = await prepareProductAdmission(kind);
+                } catch (error) {
+                    await closeAdmissionAttempt(kind, 'Strict admission failed; inputs are editable again.');
+                    throw error;
+                }
                 log(`${kind}: strict verification and signed policy complete; select and authorize each exact offer.`, 'success');
                 return;
             }
