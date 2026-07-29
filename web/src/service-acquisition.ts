@@ -80,6 +80,12 @@ export interface StartBolt11AcquisitionV1 {
 export interface ResumeBolt11AcquisitionV1 {
   vault: AdmissionCredentialVaultV1;
   recoveryId: string;
+  issuerEndpoint: string;
+  issuerIdHex: string;
+  network: LightningNetworkNameV1;
+  expectedPayeePubkey: Uint8Array;
+  /** Revalidated around recovery load and every possible invoice POST/escape. */
+  assertReady: () => void;
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
   allowInsecureLoopback?: boolean;
@@ -169,6 +175,9 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
     try {
       recovery = await options.vault.createBolt11Recovery({
         issuerEndpoint: endpoint,
+        issuerIdHex: canonicalHex32('offer.issuerIdHex', options.offer.issuerIdHex),
+        network: options.network,
+        expectedPayeePubkeyHex: bytesToHex(payee),
         providerIdHex: canonicalHex32('policy.providerIdHex', options.policy.providerIdHex),
         policyDigestHex: canonicalHex32(
           'policy.policyDigestHex',
@@ -208,22 +217,45 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
 
   /** Restore without making a network request. */
   static async resume(options: ResumeBolt11AcquisitionV1): Promise<Bolt11AcquisitionControllerV1> {
+    options.assertReady();
     const recovery = await options.vault.getBolt11Recovery(options.recoveryId);
+    options.assertReady();
     if (!recovery) throw new Error('BOLT11 recovery record was not found (it may be complete)');
-    canonicalIssuerEndpoint(recovery.issuerEndpoint, options.allowInsecureLoopback ?? false);
-    const wasm = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
+    const endpoint = canonicalIssuerEndpoint(
+      options.issuerEndpoint,
+      options.allowInsecureLoopback ?? false,
+    );
+    const issuerIdHex = canonicalHex32('issuerIdHex', options.issuerIdHex);
+    const payee = fixedBytes('expectedPayeePubkey', options.expectedPayeePubkey, 33);
+    if (!['bitcoin', 'testnet', 'signet', 'regtest'].includes(options.network)) {
+      throw new Error('unsupported Lightning network');
+    }
+    if (recovery.issuerEndpoint !== endpoint
+        || recovery.issuerIdHex !== issuerIdHex
+        || recovery.network !== options.network
+        || recovery.expectedPayeePubkeyHex !== bytesToHex(payee)) {
+      throw new Error('BOLT11 recovery does not match the frozen issuer/network/payee context');
+    }
+    let wasm: WasmBolt11AcquisitionV1 | null = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
       recovery.state,
       trustedNowUnix(),
     );
-    return new Bolt11AcquisitionControllerV1(
-      options.vault,
-      recovery,
-      wasm,
-      options.fetchImpl ?? fetch,
-      options.allowInsecureLoopback ?? false,
-      requestTimeout(options.requestTimeoutMs),
-      () => {},
-    );
+    try {
+      options.assertReady();
+      const controller = new Bolt11AcquisitionControllerV1(
+        options.vault,
+        recovery,
+        wasm,
+        options.fetchImpl ?? fetch,
+        options.allowInsecureLoopback ?? false,
+        requestTimeout(options.requestTimeoutMs),
+        options.assertReady,
+      );
+      wasm = null;
+      return controller;
+    } finally {
+      wasm?.free();
+    }
   }
 
   get recoveryId(): string {
@@ -427,7 +459,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
   }
 }
 
-/** Resume never creates a new invoice and therefore needs no new pair check. */
+/** Resume remains bound to the current strict pair and may complete a pre-quote recovery. */
 export function resumeBolt11AcquisitionV1(
   options: ResumeBolt11AcquisitionV1,
 ): Promise<Bolt11AcquisitionHandleV1> {

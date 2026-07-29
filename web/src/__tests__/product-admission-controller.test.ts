@@ -343,6 +343,9 @@ function session(
   };
   const port: ServiceAdmissionPortV1 = {
     assertTrustAnchor: vi.fn(),
+    providerEndpoint: () => providerIdHex === HEX.provider0
+      ? PROVIDER_ENDPOINT.first : PROVIDER_ENDPOINT.second,
+    operatorSigningKey: () => Uint8Array.from(Buffer.from(providerIdHex, 'hex')),
     fetchPolicy: async () => accepted(views[Math.min(refresh++, views.length - 1)]),
     fetchRetainedRedemption: async () => retainedHandle(),
     assertSessionBinding: vi.fn(),
@@ -1395,9 +1398,14 @@ describe('product admission lifecycle', () => {
     const historicalOffer = paidOffer(34, 'bolt11-direct-receipt');
     const oldDigest = '62'.repeat(32);
     const recoveryId = '91'.repeat(32);
+    const historicalPayee = new Uint8Array([2, ...new Uint8Array(32).fill(9)]);
     state.recoveries.push({
       id: recoveryId,
       issuerEndpoint: historicalOffer.endpoint,
+      issuerIdHex: historicalOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: Array.from(historicalPayee, (byte) =>
+        byte.toString(16).padStart(2, '0')).join(''),
       providerIdHex: HEX.provider0,
       policyDigestHex: oldDigest,
       scopeIdHex: HEX.scope0,
@@ -1427,12 +1435,23 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'single-provider', vault });
     await controller.prepare(async () => ({
-      legs: [{ role: 'onion', label: 'Onion', session: current.session, ...target }],
+      legs: [{
+        role: 'onion', label: 'Onion', session: current.session, ...target,
+        expectedLightningPayeePubkey: historicalPayee,
+      }],
       close: vi.fn(),
     }));
     await controller.selectRetainedRecovery('onion', recoveryId);
     await controller.resumeBolt11('onion', recoveryId);
-    expect(acquisitionMock.resume).toHaveBeenCalledWith({ vault, recoveryId });
+    expect(acquisitionMock.resume).toHaveBeenCalledWith({
+      vault,
+      recoveryId,
+      issuerEndpoint: historicalOffer.endpoint,
+      issuerIdHex: historicalOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: historicalPayee,
+      assertReady: expect.any(Function),
+    });
     expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
   });
 });

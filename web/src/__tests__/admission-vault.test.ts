@@ -10,6 +10,8 @@ import {
 const provider = '11'.repeat(32);
 const policyDigest = '33'.repeat(32);
 const scope = '22'.repeat(32);
+const issuerId = '44'.repeat(32);
+const payeeHex = `02${'55'.repeat(32)}`;
 const databaseName = 'bitcoinpir-admission-v1';
 let opened: AdmissionCredentialVaultV1[] = [];
 let observeLockRequest: ((name: string) => void) | undefined;
@@ -284,6 +286,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(firstVault, secondVault);
     const created = await firstVault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -319,6 +324,69 @@ describe('provider-scoped admission vault validation', () => {
     await expect(first).rejects.toThrow(/response lost/);
     await expect(second).resolves.toBe('recovered');
     await expect(firstVault.getBolt11Recovery(created.id)).resolves.toBeNull();
+    const expectedContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: payeeHex,
+    };
+    await expect(firstVault.listCapabilityInventory(provider)).resolves.toEqual([{
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+      count: 1,
+      acquisitionContext: expectedContext,
+    }]);
+    await expect(firstVault.countCapabilities({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+    }, { ...expectedContext, expectedPayeePubkeyHex: `03${'55'.repeat(32)}` }))
+      .resolves.toBe(0);
+    await expect(firstVault.takeSingleUseCapability({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+    }, undefined, expectedContext)).resolves.toMatchObject({
+      payload: new Uint8Array([4]),
+      acquisitionContext: expectedContext,
+    });
+  });
+
+  it('accepts BOLT11 history only from atomic recovery completion', async () => {
+    const vault = await AdmissionCredentialVaultV1.open();
+    opened.push(vault);
+    await expect(vault.putCapability({
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'bolt11-direct-receipt',
+      payload: new Uint8Array([1]),
+      acquisitionContext: {
+        kind: 'bolt11',
+        issuerEndpoint: 'https://issuer.example',
+        issuerIdHex: issuerId,
+        network: 'bitcoin',
+        expectedPayeePubkeyHex: payeeHex,
+      },
+    })).rejects.toThrow(/only from atomic claim recovery/);
+    await expect(vault.listCapabilityInventory(provider)).resolves.toEqual([]);
+  });
+
+  it('clears unauthenticated V3 invoice recovery during the V4 database upgrade', async () => {
+    const legacy = await openLegacyV3Database();
+    legacy.close();
+    const vault = await AdmissionCredentialVaultV1.open();
+    opened.push(vault);
+    await expect(vault.listBolt11Recoveries()).resolves.toEqual([]);
   });
 
   it('refuses to install issuance under a different policy digest than its recovery', async () => {
@@ -326,6 +394,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(vault);
     const created = await vault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -352,6 +423,9 @@ describe('provider-scoped admission vault validation', () => {
     opened.push(vault);
     const created = await vault.createBolt11Recovery({
       issuerEndpoint: 'https://issuer.example',
+      issuerIdHex: issuerId,
+      network: 'bitcoin',
+      expectedPayeePubkeyHex: payeeHex,
       providerIdHex: provider,
       policyDigestHex: policyDigest,
       scopeIdHex: scope,
@@ -420,4 +494,38 @@ async function createLegacyV2Database(): Promise<void> {
     tx.onabort = () => reject(new Error('legacy admission seed transaction aborted'));
   });
   db.close();
+}
+
+async function openLegacyV3Database(): Promise<IDBDatabase> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = fakeIndexedDB.open(databaseName, 3);
+    request.onupgradeneeded = () => {
+      const openedDb = request.result;
+      for (const name of [
+        'meta',
+        'records',
+        'checkpoints',
+        'quote-key-checkpoints',
+        'bolt11-recovery',
+      ]) {
+        if (!openedDb.objectStoreNames.contains(name)) {
+          openedDb.createObjectStore(name, { keyPath: 'id' });
+        }
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error('failed to create V3 admission database'));
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('bolt11-recovery', 'readwrite');
+    tx.objectStore('bolt11-recovery').add({
+      id: 'legacy-v3-recovery',
+      iv: new ArrayBuffer(12),
+      ciphertext: new ArrayBuffer(16),
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(new Error('failed to seed V3 recovery'));
+    tx.onabort = () => reject(new Error('V3 recovery seed transaction aborted'));
+  });
+  return db;
 }

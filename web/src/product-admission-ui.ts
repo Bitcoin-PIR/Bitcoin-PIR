@@ -7,8 +7,8 @@ import {
   type ProductAdmissionLegSnapshotV1,
   type ProductAdmissionSnapshotV1,
   type ProductOfferOptionV1,
+  type ProductRetainedCapabilitySelectorV1,
 } from './product-admission-controller.js';
-import type { AdmissionCapabilityBindingV1 } from './admission-vault.js';
 import type { RetainedServiceRedemptionViewV1 } from './sdk-bridge.js';
 
 export interface ProductProviderChoiceV1 {
@@ -254,7 +254,10 @@ export class ProductAdmissionPanelV1 {
     const selectedValue = leg.retainedSelected
       ? (leg.retainedSelected.recoveryId
         ? recoveryChoiceValue(leg.retainedSelected.recoveryId)
-        : retainedChoiceValue(leg.retainedSelected.binding))
+        : retainedChoiceValue({
+          ...leg.retainedSelected.binding,
+          acquisitionContext: leg.retainedSelected.acquisitionContext,
+        }))
       : leg.selected ? choiceValue(leg.selected.scopeIdHex, leg.selected.offerId) : '';
     row.offer.replaceChildren(optionElement('', 'Select exact signed offer…'));
     for (const option of leg.offers) {
@@ -379,16 +382,13 @@ export class ProductAdmissionPanelV1 {
   private async handleOfferSelection(role: string, value: string): Promise<void> {
     if (!this.controller || !value) return;
     if (value.startsWith('retained:')) {
-      const [, policyDigestHex, scopeIdHex, offerIdText, scheme] = value.split(':');
       const leg = this.snapshot?.legs.find((candidate) => candidate.role === role);
       if (!leg) return;
-      await this.runAction(() => this.controller!.selectRetainedCapability(role, {
-        providerIdHex: leg.providerIdHex,
-        policyDigestHex,
-        scopeIdHex,
-        offerId: Number(offerIdText),
-        scheme: scheme as ProductAdmissionLegSnapshotV1['retainedCapabilities'][number]['scheme'],
-      }));
+      const selected = leg.retainedCapabilities.find(
+        (candidate) => retainedChoiceValue(candidate) === value,
+      );
+      if (!selected) return;
+      await this.runAction(() => this.controller!.selectRetainedCapability(role, selected));
       return;
     }
     if (value.startsWith('recovery:')) {
@@ -628,13 +628,19 @@ function choiceValue(scopeIdHex: string, offerId: number): string {
   return `${scopeIdHex}:${offerId}`;
 }
 
-function retainedChoiceValue(binding: AdmissionCapabilityBindingV1): string {
+function retainedChoiceValue(binding: ProductRetainedCapabilitySelectorV1): string {
+  const context = binding.acquisitionContext;
+  const contextSelector = context
+    ? [context.issuerIdHex, context.network, context.expectedPayeePubkeyHex,
+      encodeURIComponent(context.issuerEndpoint)].join('.')
+    : 'non-bolt11';
   return [
     'retained',
     binding.policyDigestHex,
     binding.scopeIdHex,
     String(binding.offerId),
     binding.scheme,
+    contextSelector,
   ].join(':');
 }
 

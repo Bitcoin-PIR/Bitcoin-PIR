@@ -12,6 +12,8 @@ import {
   type AdmissionCapabilityBindingV1,
   type AdmissionCapabilityV1,
   type AdmissionSchemeV1,
+  type Bolt11CapabilityAcquisitionContextV1,
+  type LightningNetworkNameV1,
 } from './admission-vault.js';
 import { hexToBytes } from './hash.js';
 import {
@@ -40,7 +42,10 @@ import { canonicalServiceEntitlementLimitsV1 } from './service-entitlement.js';
 // public route to authorization/acquisition transitions. No symbol, peer
 // identity, or pair identifier ever crosses a network boundary.
 const PAIR_SELECTION_V1 = Symbol('BitcoinPIR/verified-pair-selection/v1');
+const PAIR_RETAINED_SELECTION_V1 = Symbol('BitcoinPIR/verified-pair-retained-selection/v1');
+const PAIR_CONNECTION_CONTEXT_V1 = Symbol('BitcoinPIR/verified-pair-connection-context/v1');
 const PAIR_AUTHORIZATION_V1 = Symbol('BitcoinPIR/verified-pair-authorization/v1');
+const PAIR_RETAINED_AUTHORIZATION_V1 = Symbol('BitcoinPIR/verified-pair-retained-authorization/v1');
 const PAIR_ACQUISITION_V1 = Symbol('BitcoinPIR/verified-pair-acquisition/v1');
 const PAIR_CASHU_IMPORT_V1 = Symbol('BitcoinPIR/verified-pair-cashu-import/v1');
 
@@ -65,6 +70,10 @@ export interface ProviderTrustAnchorV1 {
 export interface ServiceAdmissionPortV1 {
   /** Fail before policy I/O unless the live strict identity closes the anchor. */
   assertTrustAnchor(trust: ProviderTrustAnchorV1): void;
+  /** Actual live adapter endpoint, not a caller- or directory-supplied label. */
+  providerEndpoint?(): string;
+  /** Actual verified operator key bound to that adapter connection. */
+  operatorSigningKey?(): Uint8Array;
   fetchPolicy(
     expectedProviderId: Uint8Array,
     policySigningKey: Uint8Array,
@@ -146,6 +155,7 @@ export interface ServiceAdmissionVaultV1 {
   takeSingleUseCapability(
     binding: AdmissionCapabilityBindingV1,
     validateBeforeRetire?: (payload: Uint8Array) => void,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<AdmissionCapabilityV1 | null>;
   advanceArcCredential(
     binding: AdmissionCapabilityBindingV1,
@@ -155,6 +165,7 @@ export interface ServiceAdmissionVaultV1 {
       releaseAfterPersisted: () => Uint8Array;
       discard: () => void;
     },
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<Uint8Array | null>;
 }
 
@@ -192,8 +203,26 @@ export interface ProviderAdmissionSelectionV1 {
 export interface IndependentProviderAdmissionSelectionV1
   extends ProviderAdmissionSelectionV1 {
   providerEndpoint: string;
+  lightningNetwork?: LightningNetworkNameV1;
   expectedLightningPayeePubkey?: Uint8Array;
 }
+
+/** One already-inspected historical signed offer, frozen before pair use. */
+export interface IndependentRetainedProviderAdmissionSelectionV1 {
+  session: ProviderAdmissionSessionV1;
+  binding: AdmissionCapabilityBindingV1;
+  redemption: RetainedServiceRedemptionViewV1;
+  providerEndpoint: string;
+  lightningNetwork?: LightningNetworkNameV1;
+  expectedLightningPayeePubkey?: Uint8Array;
+  /** Authenticated historical context copied from the encrypted capability. */
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
+}
+
+/** Current and historical legs may be mixed without weakening pair checks. */
+export type IndependentProviderPairAdmissionSelectionV1 =
+  | { kind: 'current'; value: IndependentProviderAdmissionSelectionV1 }
+  | { kind: 'retained'; value: IndependentRetainedProviderAdmissionSelectionV1 };
 
 export type ProviderPairSideV1 = 'first' | 'second';
 
@@ -346,6 +375,50 @@ export class ProviderAdmissionSessionV1 {
     };
   }
 
+  [PAIR_RETAINED_SELECTION_V1](
+    binding: AdmissionCapabilityBindingV1,
+    redemption: RetainedServiceRedemptionViewV1,
+  ): SessionRetainedPairSelectionV1 {
+    const canonical = exactRetainedBinding(binding, this.trust);
+    const verified = validateRetainedRedemptionView(
+      redemption,
+      canonical,
+      this.target,
+    );
+    return {
+      trust: cloneTrustAnchor(this.trust),
+      offer: cloneOffer(verified.offer),
+      binding: { ...canonical },
+      redemption: cloneRetainedRedemptionView(verified),
+      redemptionFingerprint: retainedRedemptionFingerprintV1(verified),
+    };
+  }
+
+  [PAIR_CONNECTION_CONTEXT_V1](): FrozenPairConnectionContextV1 {
+    const endpointValue = this.port.providerEndpoint?.();
+    const operatorValue = this.port.operatorSigningKey?.();
+    if (typeof endpointValue !== 'string' || !(operatorValue instanceof Uint8Array)) {
+      throw new Error('strict pair admission requires adapter-bound endpoint and operator key');
+    }
+    let endpoint: URL;
+    try { endpoint = new URL(endpointValue); } catch {
+      throw new Error('adapter-bound provider WebSocket endpoint is invalid');
+    }
+    if ((endpoint.protocol !== 'wss:' && endpoint.protocol !== 'ws:')
+        || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new Error('adapter-bound provider endpoint must be credential-free WebSocket URL');
+    }
+    requireFixedNonzero('adapter-bound operator signing key', operatorValue, 32);
+    const directoryOperator = this.trust.directoryAssertion?.operatorSigningKeyEd25519;
+    if (directoryOperator && !equalBytes(directoryOperator, operatorValue)) {
+      throw new Error('adapter-bound operator key does not match directory trust assertion');
+    }
+    return {
+      providerEndpoint: endpoint.origin,
+      trustedOperatorSigningKey: operatorValue.slice(),
+    };
+  }
+
   /**
    * Authorize exactly one signed offer. Paid/single-use material is retired
    * (or ARC state advanced) before the request is allowed onto the network.
@@ -356,6 +429,7 @@ export class ProviderAdmissionSessionV1 {
     scopeIdHex: string,
     offerId: number,
     options: ServiceAuthorizationOptionsV1 = {},
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<ServiceGrantViewV1> {
     this.beginTransition('authorize');
     try {
@@ -433,7 +507,7 @@ export class ProviderAdmissionSessionV1 {
         } finally {
           state.free();
         }
-      });
+      }, expectedAcquisitionContext);
       if (!presentation) throw new Error('no ARC credential is available for this exact offer');
       proof = presentation;
       retiredOrAdvanced = true;
@@ -443,6 +517,7 @@ export class ProviderAdmissionSessionV1 {
         scope,
         offer,
         schemeForPaidOffer(offer.authorization),
+        expectedAcquisitionContext,
       );
       retiredOrAdvanced = true;
     }
@@ -482,8 +557,10 @@ export class ProviderAdmissionSessionV1 {
    * signed policy. This path deliberately has no acquisition, policy
    * checkpoint, offer-selection, free/PoW, or automatic-retry surface.
    */
-  async authorizeRetainedCapability(
+  async [PAIR_RETAINED_AUTHORIZATION_V1](
     binding: AdmissionCapabilityBindingV1,
+    expectedRedemption?: RetainedServiceRedemptionViewV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<ServiceGrantViewV1> {
     this.beginTransition('authorize-retained');
     let retained: WasmAcceptedRetainedServiceRedemptionV1 | null = null;
@@ -507,9 +584,24 @@ export class ProviderAdmissionSessionV1 {
         canonical,
         this.target,
       );
+      if (expectedRedemption !== undefined) {
+        const expected = validateRetainedRedemptionView(
+          expectedRedemption,
+          canonical,
+          this.target,
+        );
+        if (retainedRedemptionFingerprintV1(retainedView)
+            !== retainedRedemptionFingerprintV1(expected)) {
+          throw new Error('retained signed redemption changed after strict pair selection');
+        }
+      }
       retainedPort.assertRetainedSessionBinding(retained, nowUnix);
 
-      const proof = await this.retireRetainedCapability(retained, canonical);
+      const proof = await this.retireRetainedCapability(
+        retained,
+        canonical,
+        expectedAcquisitionContext,
+      );
       // Repeat the live-channel and grace check immediately after the durable
       // local retirement and before the one-shot network boundary.
       try {
@@ -733,6 +825,7 @@ export class ProviderAdmissionSessionV1 {
     scope: ServiceScopeViewV1,
     offer: ServiceOfferViewV1,
     scheme: AdmissionSchemeV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<Uint8Array> {
     const scopeId = hexToBytes32('scopeIdHex', scope.scopeIdHex);
     const capability = await this.vault.takeSingleUseCapability(
@@ -744,6 +837,7 @@ export class ProviderAdmissionSessionV1 {
         scheme,
       ),
       (candidate) => accepted.validateAuthorizationProof(scopeId, offer.offerId, candidate),
+      expectedAcquisitionContext,
     );
     if (!capability) {
       throw new Error(`no ${scheme} capability is available for this exact provider offer`);
@@ -754,6 +848,7 @@ export class ProviderAdmissionSessionV1 {
   private async retireRetainedCapability(
     accepted: WasmAcceptedRetainedServiceRedemptionV1,
     binding: AdmissionCapabilityBindingV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<Uint8Array> {
     if (binding.scheme === 'arc-experimental') {
       const presentation = await this.vault.advanceArcCredential(binding, (serializedState) => {
@@ -790,7 +885,7 @@ export class ProviderAdmissionSessionV1 {
         } finally {
           state.free();
         }
-      });
+      }, expectedAcquisitionContext);
       if (!presentation) {
         throw new Error('no retained ARC credential is available for this exact offer');
       }
@@ -800,6 +895,7 @@ export class ProviderAdmissionSessionV1 {
     const capability = await this.vault.takeSingleUseCapability(
       binding,
       (candidate) => accepted.validateAuthorizationProof(candidate),
+      expectedAcquisitionContext,
     );
     if (!capability) {
       throw new Error(`no retained ${binding.scheme} capability is available for this exact offer`);
@@ -853,9 +949,32 @@ interface SessionPairSelectionV1 extends SelectedProviderOfferV1 {
   offerFingerprint: string;
 }
 
-interface PairLegV1 extends IndependentProviderAdmissionSelectionV1 {
-  verified: SessionPairSelectionV1;
+interface SessionRetainedPairSelectionV1 extends SelectedProviderOfferV1 {
+  binding: AdmissionCapabilityBindingV1;
+  redemption: RetainedServiceRedemptionViewV1;
+  redemptionFingerprint: string;
 }
+
+interface FrozenPairConnectionContextV1 {
+  providerEndpoint: string;
+  trustedOperatorSigningKey: Uint8Array;
+}
+
+interface CurrentPairLegV1 extends IndependentProviderAdmissionSelectionV1 {
+  kind: 'current';
+  verified: SessionPairSelectionV1;
+  expectedAcquisitionContext: Bolt11CapabilityAcquisitionContextV1 | null;
+  trustedOperatorSigningKey: Uint8Array;
+}
+
+interface RetainedPairLegV1 extends IndependentRetainedProviderAdmissionSelectionV1 {
+  kind: 'retained';
+  verified: SessionRetainedPairSelectionV1;
+  expectedAcquisitionContext: Bolt11CapabilityAcquisitionContextV1 | null;
+  trustedOperatorSigningKey: Uint8Array;
+}
+
+type PairLegV1 = CurrentPairLegV1 | RetainedPairLegV1;
 
 interface SingleLegV1 extends ProviderAdmissionSelectionV1 {
   verified: SessionPairSelectionV1;
@@ -920,6 +1039,45 @@ export class VerifiedSingleProviderOfferV1 {
   }
 }
 
+/** Historical single-provider typestate with exact signed-view revalidation. */
+export class VerifiedSingleProviderRetainedOfferV1 {
+  private constructor(
+    private readonly session: ProviderAdmissionSessionV1,
+    private readonly verified: SessionRetainedPairSelectionV1,
+  ) {}
+
+  static create(
+    selection: Omit<IndependentRetainedProviderAdmissionSelectionV1,
+      'providerEndpoint' | 'expectedLightningPayeePubkey'>,
+  ): VerifiedSingleProviderRetainedOfferV1 {
+    if (!(selection.session instanceof ProviderAdmissionSessionV1)) {
+      throw new Error('single retained selection has an invalid admission session');
+    }
+    return new VerifiedSingleProviderRetainedOfferV1(
+      selection.session,
+      selection.session[PAIR_RETAINED_SELECTION_V1](
+        selection.binding,
+        selection.redemption,
+      ),
+    );
+  }
+
+  offer(): ServiceOfferViewV1 {
+    return cloneOffer(this.verified.offer);
+  }
+
+  trust(): ProviderTrustAnchorV1 {
+    return cloneTrustAnchor(this.verified.trust);
+  }
+
+  authorize(_options: ServiceAuthorizationOptionsV1 = {}): Promise<ServiceGrantViewV1> {
+    return this.session[PAIR_RETAINED_AUTHORIZATION_V1](
+      this.verified.binding,
+      this.verified.redemption,
+    );
+  }
+}
+
 /**
  * Browser-local typestate proving that both independently discovered provider
  * selections passed the strict correlation checks. It deliberately exposes
@@ -936,34 +1094,33 @@ export class VerifiedIndependentProviderPairV1 {
     second: IndependentProviderAdmissionSelectionV1,
     options: IndependentProviderSelectionOptionsV1 = {},
   ): VerifiedIndependentProviderPairV1 {
-    if (first.session === second.session) {
-      throw new Error('the two PIR selections must use distinct admission sessions');
-    }
-    validateAdmissionSelection('first pair', first);
-    validateAdmissionSelection('second pair', second);
-    const firstVerified = first.session[PAIR_SELECTION_V1](first.scopeIdHex, first.offerId);
-    const secondVerified = second.session[PAIR_SELECTION_V1](second.scopeIdHex, second.offerId);
-    const firstPayment = freezeProviderPaymentContextV1('first pair', first, firstVerified.offer);
-    const secondPayment = freezeProviderPaymentContextV1('second pair', second, secondVerified.offer);
-    assertIndependentProviderOfferPairV1(
-      { ...firstVerified, ...firstPayment },
-      { ...secondVerified, ...secondPayment },
+    return this.createSelections(
+      { kind: 'current', value: first },
+      { kind: 'current', value: second },
       options,
     );
-    return new VerifiedIndependentProviderPairV1(
-      {
-        ...first,
-        ...firstPayment,
-        scopeIdHex: canonicalHex32('first scopeIdHex', first.scopeIdHex),
-        verified: firstVerified,
-      },
-      {
-        ...second,
-        ...secondPayment,
-        scopeIdHex: canonicalHex32('second scopeIdHex', second.scopeIdHex),
-        verified: secondVerified,
-      },
+  }
+
+  static createSelections(
+    firstSelection: IndependentProviderPairAdmissionSelectionV1,
+    secondSelection: IndependentProviderPairAdmissionSelectionV1,
+    options: IndependentProviderSelectionOptionsV1 = {},
+  ): VerifiedIndependentProviderPairV1 {
+    if (firstSelection.value.session === secondSelection.value.session) {
+      throw new Error('the two PIR selections must use distinct admission sessions');
+    }
+    const first = freezeAdmissionPairLegV1('first pair', firstSelection);
+    const second = freezeAdmissionPairLegV1('second pair', secondSelection);
+    assertIndependentProviderOfferPairV1(
+      { ...first.verified, providerEndpoint: first.providerEndpoint,
+        expectedLightningPayeePubkey: first.expectedLightningPayeePubkey,
+        trustedOperatorSigningKey: first.trustedOperatorSigningKey },
+      { ...second.verified, providerEndpoint: second.providerEndpoint,
+        expectedLightningPayeePubkey: second.expectedLightningPayeePubkey,
+        trustedOperatorSigningKey: second.trustedOperatorSigningKey },
+      options,
     );
+    return new VerifiedIndependentProviderPairV1(first, second);
   }
 
   offer(side: ProviderPairSideV1): ServiceOfferViewV1 {
@@ -980,12 +1137,19 @@ export class VerifiedIndependentProviderPairV1 {
     options: ServiceAuthorizationOptionsV1 = {},
   ): Promise<ServiceGrantViewV1> {
     const leg = this.leg(side);
-    return leg.session[PAIR_AUTHORIZATION_V1](
-      leg.verified,
-      leg.scopeIdHex,
-      leg.offerId,
-      options,
-    );
+    return leg.kind === 'current'
+      ? leg.session[PAIR_AUTHORIZATION_V1](
+        leg.verified,
+        leg.scopeIdHex,
+        leg.offerId,
+        options,
+        leg.expectedAcquisitionContext,
+      )
+      : leg.session[PAIR_RETAINED_AUTHORIZATION_V1](
+        leg.verified.binding,
+        leg.verified.redemption,
+        leg.expectedAcquisitionContext,
+      );
   }
 
   /**
@@ -997,12 +1161,18 @@ export class VerifiedIndependentProviderPairV1 {
     options: ProviderPairBolt11AcquisitionOptionsV1,
   ): Promise<Bolt11AcquisitionHandleV1> {
     const leg = this.leg(side);
+    if (leg.kind !== 'current') {
+      throw new Error('a retained provider capability cannot start a new invoice');
+    }
     const frozenPayee = leg.expectedLightningPayeePubkey;
     if (leg.verified.offer.acquisition !== 'bolt11' || frozenPayee === undefined) {
       throw new Error('selected provider payment context is not a frozen BOLT11 leg');
     }
     if (!equalBytes(frozenPayee, options.expectedPayeePubkey)) {
       throw new Error('BOLT11 payee differs from the independently frozen provider context');
+    }
+    if (leg.lightningNetwork !== options.network) {
+      throw new Error('BOLT11 network differs from the independently frozen provider context');
     }
     return leg.session[PAIR_ACQUISITION_V1](
       leg.verified,
@@ -1018,6 +1188,9 @@ export class VerifiedIndependentProviderPairV1 {
     options: StandardCashuImportOptionsV1,
   ): Promise<string> {
     const leg = this.leg(side);
+    if (leg.kind !== 'current') {
+      throw new Error('a retained provider capability cannot import a new Cashu token');
+    }
     return leg.session[PAIR_CASHU_IMPORT_V1](
       leg.verified,
       leg.scopeIdHex,
@@ -1058,6 +1231,19 @@ export function assertLiveOperatorIdentityV1(
   if (liveKey !== bytesToLowerHex(expected.operatorSigningKeyEd25519)) {
     throw new Error('live operator public key does not match the directory assertion');
   }
+}
+
+/** Return only a cryptographically verified live operator key for pair binding. */
+export function verifiedLiveOperatorSigningKeyV1(
+  identity: LiveOperatorIdentityV1,
+): Uint8Array {
+  if (identity.state !== 'verified'
+      || typeof identity.operatorPubkeyHex !== 'string'
+      || !/^[0-9a-f]{64}$/.test(identity.operatorPubkeyHex)
+      || /^0{64}$/.test(identity.operatorPubkeyHex)) {
+    throw new Error('strict pair admission requires a verified live operator signing key');
+  }
+  return hexToBytes(identity.operatorPubkeyHex);
 }
 
 function validatePolicyView(
@@ -1389,6 +1575,37 @@ function cloneRetainedRedemptionView(
   };
 }
 
+function retainedRedemptionFingerprintV1(
+  view: RetainedServiceRedemptionViewV1,
+): string {
+  const dataset = view.scope.dataset.kind === 'class'
+    ? ['class', view.scope.dataset.classId]
+    : view.scope.dataset.kind === 'catalog-epoch'
+      ? ['catalog-epoch', view.scope.dataset.epoch]
+      : ['manifest-root', view.scope.dataset.rootHex];
+  const limits = view.scope.limits;
+  return JSON.stringify([
+    canonicalHex32('retained providerIdHex', view.providerIdHex),
+    canonicalHex32('retained policyDigestHex', view.policyDigestHex),
+    canonicalHex32('retained scopeIdHex', view.scope.scopeIdHex),
+    view.scope.backend,
+    view.scope.workload,
+    view.scope.protocolVersion,
+    view.scope.operationProfile,
+    view.scope.entitlementProfile,
+    dataset,
+    limits.maxLogicalInputs,
+    limits.maxFrames,
+    limits.maxRequestBytes,
+    limits.maxResponseBytes,
+    limits.maxWallTimeMs,
+    limits.maxConcurrentSockets,
+    limits.maxHintGroups,
+    limits.maxWorkUnits,
+    offerFingerprintV1(view.offer),
+  ]);
+}
+
 function trustedNowUnix(): bigint {
   const millis = Date.now();
   if (!Number.isFinite(millis) || millis <= 0) throw new Error('trusted wall clock is unavailable');
@@ -1510,11 +1727,85 @@ function validateAdmissionSelection(label: string, value: ProviderAdmissionSelec
   }
 }
 
+function freezeAdmissionPairLegV1(
+  label: string,
+  selection: IndependentProviderPairAdmissionSelectionV1,
+): PairLegV1 {
+  if (selection.kind === 'current') {
+    const current = selection.value;
+    validateAdmissionSelection(label, current);
+    const verified = current.session[PAIR_SELECTION_V1](current.scopeIdHex, current.offerId);
+    const connection = current.session[PAIR_CONNECTION_CONTEXT_V1]();
+    requireConfiguredEndpointMatchesConnection(label, current.providerEndpoint, connection);
+    const payment = freezeProviderPaymentContextV1(
+      label,
+      { ...current, providerEndpoint: connection.providerEndpoint },
+      verified.offer,
+      false,
+    );
+    return {
+      kind: 'current',
+      ...current,
+      trustedOperatorSigningKey: connection.trustedOperatorSigningKey,
+      ...payment,
+      scopeIdHex: canonicalHex32(`${label} scopeIdHex`, current.scopeIdHex),
+      verified,
+    };
+  }
+  const retained = selection.value;
+  if (!(retained.session instanceof ProviderAdmissionSessionV1)) {
+    throw new Error(`${label} retained selection has an invalid admission session`);
+  }
+  const verified = retained.session[PAIR_RETAINED_SELECTION_V1](
+    retained.binding,
+    retained.redemption,
+  );
+  const connection = retained.session[PAIR_CONNECTION_CONTEXT_V1]();
+  requireConfiguredEndpointMatchesConnection(label, retained.providerEndpoint, connection);
+  const payment = freezeProviderPaymentContextV1(
+    label,
+    { ...retained, providerEndpoint: connection.providerEndpoint },
+    verified.offer,
+    true,
+  );
+  return {
+    kind: 'retained',
+    ...retained,
+    binding: { ...verified.binding },
+    redemption: cloneRetainedRedemptionView(verified.redemption),
+    trustedOperatorSigningKey: connection.trustedOperatorSigningKey,
+    ...payment,
+    verified,
+  };
+}
+
+function requireConfiguredEndpointMatchesConnection(
+  label: string,
+  configuredValue: string,
+  connection: FrozenPairConnectionContextV1,
+): void {
+  let configured: URL;
+  try { configured = new URL(configuredValue); } catch {
+    throw new Error(`${label} configured provider endpoint is invalid`);
+  }
+  if (configured.origin !== connection.providerEndpoint) {
+    throw new Error(`${label} configured provider endpoint differs from the live adapter connection`);
+  }
+}
+
 function freezeProviderPaymentContextV1(
   label: string,
-  selection: IndependentProviderAdmissionSelectionV1,
+  selection: Pick<
+    IndependentRetainedProviderAdmissionSelectionV1,
+    'providerEndpoint' | 'lightningNetwork' | 'expectedLightningPayeePubkey'
+      | 'acquisitionContext'
+  >,
   offer: ServiceOfferViewV1,
-): Pick<PairLegV1, 'providerEndpoint' | 'expectedLightningPayeePubkey'> {
+  requireHistoricalContext: boolean,
+): Pick<
+  PairLegV1,
+  'providerEndpoint' | 'expectedLightningPayeePubkey' | 'expectedAcquisitionContext'
+> {
   let endpoint: URL;
   try {
     endpoint = new URL(selection.providerEndpoint);
@@ -1533,15 +1824,78 @@ function freezeProviderPaymentContextV1(
         || payee.subarray(1).every((byte) => byte === 0)) {
       throw new Error(`${label} BOLT11 offer requires one trusted compressed Lightning payee key`);
     }
+    const network = selection.lightningNetwork;
+    if (network !== 'bitcoin' && network !== 'testnet'
+        && network !== 'signet' && network !== 'regtest') {
+      throw new Error(`${label} BOLT11 offer requires one trusted Lightning network`);
+    }
+    const expectedAcquisitionContext = canonicalBolt11AcquisitionContextV1(
+      label,
+      offer,
+      network,
+      payee,
+    );
+    if (selection.acquisitionContext !== undefined
+        && !sameBolt11AcquisitionContextV1(
+          selection.acquisitionContext,
+          expectedAcquisitionContext,
+        )) {
+      throw new Error(`${label} retained capability payment context differs from trusted offer context`);
+    }
+    if (requireHistoricalContext && selection.acquisitionContext === undefined) {
+      throw new Error(`${label} retained BOLT11 capability lacks authenticated historical payment context`);
+    }
     return {
       providerEndpoint: endpoint.origin,
       expectedLightningPayeePubkey: payee.slice(),
+      expectedAcquisitionContext,
     };
   }
   if (payee !== undefined) {
     throw new Error(`${label} non-BOLT11 offer must not carry a Lightning payee context`);
   }
-  return { providerEndpoint: endpoint.origin };
+  if (selection.acquisitionContext !== undefined) {
+    throw new Error(`${label} non-BOLT11 capability must not carry a BOLT11 payment context`);
+  }
+  return { providerEndpoint: endpoint.origin, expectedAcquisitionContext: null };
+}
+
+function canonicalBolt11AcquisitionContextV1(
+  label: string,
+  offer: ServiceOfferViewV1,
+  network: LightningNetworkNameV1,
+  payee: Uint8Array,
+): Bolt11CapabilityAcquisitionContextV1 {
+  let issuer: URL;
+  try { issuer = new URL(offer.endpoint); } catch {
+    throw new Error(`${label} BOLT11 issuer endpoint is invalid`);
+  }
+  const loopback = issuer.hostname === '127.0.0.1'
+    || issuer.hostname === 'localhost' || issuer.hostname === '[::1]';
+  if ((issuer.protocol !== 'https:' && !(loopback && issuer.protocol === 'http:'))
+      || issuer.username || issuer.password || issuer.hash || issuer.search
+      || (issuer.pathname !== '' && issuer.pathname !== '/')) {
+    throw new Error(`${label} BOLT11 issuer endpoint must be a credential-free HTTPS origin`);
+  }
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: issuer.origin,
+    issuerIdHex: canonicalHex32(`${label} issuerIdHex`, offer.issuerIdHex),
+    network,
+    expectedPayeePubkeyHex: Array.from(payee, (byte) =>
+      byte.toString(16).padStart(2, '0')).join(''),
+  };
+}
+
+function sameBolt11AcquisitionContextV1(
+  first: Bolt11CapabilityAcquisitionContextV1,
+  second: Bolt11CapabilityAcquisitionContextV1,
+): boolean {
+  return first.kind === 'bolt11'
+    && first.issuerEndpoint === second.issuerEndpoint
+    && first.issuerIdHex === second.issuerIdHex
+    && first.network === second.network
+    && first.expectedPayeePubkeyHex === second.expectedPayeePubkeyHex;
 }
 
 function equalBytes(first: Uint8Array, second: Uint8Array): boolean {

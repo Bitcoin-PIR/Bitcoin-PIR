@@ -323,6 +323,60 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
     expect(quotePosts).toBe(0);
   });
 
+  it('binds resume to exact issuer/network/payee and blocks a stale pre-quote POST', async () => {
+    const offer = signedOffer();
+    const recovery = {
+      id: recoveryId,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin' as const,
+      expectedPayeePubkeyHex: Array.from(payee, (byte) =>
+        byte.toString(16).padStart(2, '0')).join(''),
+      providerIdHex: providerHex,
+      policyDigestHex: '77'.repeat(32),
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+      expectedScheme: 'bolt11-direct-receipt' as const,
+      state: new Uint8Array([1, 1, 0]),
+    };
+    const withBolt11Recovery = vi.fn();
+    const vault = {
+      getBolt11Recovery: vi.fn(async () => ({ ...recovery, state: recovery.state.slice() })),
+      withBolt11Recovery,
+    } as unknown as AdmissionCredentialVaultV1;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    await expect(Bolt11AcquisitionControllerV1.resume({
+      vault,
+      recoveryId,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: new Uint8Array([3, ...payee.subarray(1)]),
+      assertReady: () => {},
+      fetchImpl,
+    })).rejects.toThrow(/issuer\/network\/payee context/);
+
+    let ready = true;
+    const resumed = await Bolt11AcquisitionControllerV1.resume({
+      vault,
+      recoveryId,
+      issuerEndpoint: offer.endpoint,
+      issuerIdHex: offer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      assertReady: () => {
+        if (!ready) throw new Error('strict pair invalidated before resumed quote');
+      },
+      fetchImpl,
+    });
+    ready = false;
+    await expect(resumed.ensureQuote()).rejects.toThrow(/invalidated before resumed quote/);
+    expect(withBolt11Recovery).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    resumed.close();
+  });
+
   it('persists a linearized quote but never exposes its invoice after invalidation', async () => {
     let successfulInvoiceReads = 0;
     const instrument = (state?: Uint8Array): FakeAcquisition => {
@@ -653,11 +707,21 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
     const resumedClaim = await Bolt11AcquisitionControllerV1.resume({
       vault,
       recoveryId,
+      issuerEndpoint: selectedOffer.endpoint,
+      issuerIdHex: selectedOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      assertReady: () => {},
       fetchImpl,
     });
     const stalePoll = await Bolt11AcquisitionControllerV1.resume({
       vault,
       recoveryId,
+      issuerEndpoint: selectedOffer.endpoint,
+      issuerIdHex: selectedOffer.issuerIdHex,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      assertReady: () => {},
       fetchImpl,
     });
     const claim = resumedClaim.claim();

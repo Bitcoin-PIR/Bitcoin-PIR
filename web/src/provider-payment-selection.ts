@@ -16,6 +16,8 @@ export interface SelectedProviderOfferV1 {
   providerEndpoint?: string;
   /** Browser-trusted Lightning payee key; never sent to its peer. */
   expectedLightningPayeePubkey?: Uint8Array;
+  /** Live adapter-bound operator key; never accepted from directory self-reporting alone. */
+  trustedOperatorSigningKey?: Uint8Array;
 }
 
 export interface IndependentProviderSelectionOptionsV1 {
@@ -39,11 +41,9 @@ export function assertIndependentProviderOfferPairV1(
       === fixedHex('second policy key', second.trust.policySigningKey)) {
     throw new Error('the two PIR providers must not reuse one policy signing key');
   }
-  const firstOperator = first.trust.directoryAssertion?.operatorSigningKeyEd25519;
-  const secondOperator = second.trust.directoryAssertion?.operatorSigningKeyEd25519;
-  if (firstOperator && secondOperator
-      && fixedHex('first operator key', firstOperator)
-        === fixedHex('second operator key', secondOperator)) {
+  const firstOperator = requiredOperatorKey('first', first);
+  const secondOperator = requiredOperatorKey('second', second);
+  if (firstOperator === secondOperator) {
     throw new Error('the two PIR providers resolve to the same directory operator key');
   }
 
@@ -91,6 +91,24 @@ export function assertIndependentProviderOfferPairV1(
       && firstProviderOrigin === secondProviderOrigin) {
     throw new Error('strict pair privacy rejects one WebSocket origin serving both PIR roles');
   }
+}
+
+function requiredOperatorKey(label: string, value: SelectedProviderOfferV1): string {
+  const live = value.trustedOperatorSigningKey === undefined
+    ? null
+    : fixedHex(`${label} live operator key`, value.trustedOperatorSigningKey);
+  const directoryBytes = value.trust.directoryAssertion?.operatorSigningKeyEd25519;
+  const directory = directoryBytes === undefined
+    ? null
+    : fixedHex(`${label} directory operator key`, directoryBytes);
+  if (live !== null && directory !== null && live !== directory) {
+    throw new Error(`${label} live operator key does not match its directory assertion`);
+  }
+  const resolved = live ?? directory;
+  if (resolved === null) {
+    throw new Error(`${label} provider lacks an adapter-bound trusted operator key`);
+  }
+  return resolved;
 }
 
 function batFingerprint(offer: ServiceOfferViewV1): string | null {

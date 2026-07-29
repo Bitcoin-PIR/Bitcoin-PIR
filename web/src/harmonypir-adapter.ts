@@ -103,6 +103,7 @@ import type {
 import { ManagedWebSocket } from './ws.js';
 import {
   assertLiveOperatorIdentityV1,
+  verifiedLiveOperatorSigningKeyV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
 import {
@@ -1309,6 +1310,8 @@ export class HarmonyPirClientAdapter {
     const authorizedClient = (): WasmHarmonyClient =>
       this.requirePreparedAdmissionClient(0, dbId);
     return {
+      providerEndpoint: () => this.config.hintServerUrl,
+      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity.hint),
       assertTrustAnchor: (trust) => {
         client();
         assertLiveOperatorIdentityV1(trust, this.operatorIdentity.hint);
@@ -1339,6 +1342,8 @@ export class HarmonyPirClientAdapter {
     const authorizedClient = (): WasmHarmonyClient =>
       this.requirePreparedAdmissionClient(1, dbId);
     return {
+      providerEndpoint: () => this.config.queryServerUrl,
+      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity.query),
       assertTrustAnchor: (trust) => {
         client();
         assertLiveOperatorIdentityV1(trust, this.operatorIdentity.query);

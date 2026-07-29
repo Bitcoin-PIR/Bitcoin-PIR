@@ -41,6 +41,7 @@ import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import type { ProductQueryShapeV1 } from './service-entitlement.js';
 import {
   assertLiveOperatorIdentityV1,
+  verifiedLiveOperatorSigningKeyV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
 import {
@@ -307,6 +308,8 @@ export class OramPirClientAdapter {
       return this.wasmClient;
     };
     return {
+      providerEndpoint: () => this.config.serverUrl,
+      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity),
       assertTrustAnchor: (trust) => {
         client();
         assertLiveOperatorIdentityV1(trust, this.operatorIdentity);

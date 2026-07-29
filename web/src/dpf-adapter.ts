@@ -69,6 +69,7 @@ import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
 import {
   assertLiveOperatorIdentityV1,
+  verifiedLiveOperatorSigningKeyV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
 import {
@@ -1065,6 +1066,11 @@ export class BatchPirClientAdapter {
       return current;
     };
     return {
+      providerEndpoint: () => serverIndex === 0
+        ? this.config.server0Url : this.config.server1Url,
+      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(
+        serverIndex === 0 ? this.operatorIdentity.server0 : this.operatorIdentity.server1,
+      ),
       assertTrustAnchor: (trust) => {
         client();
         assertLiveOperatorIdentityV1(

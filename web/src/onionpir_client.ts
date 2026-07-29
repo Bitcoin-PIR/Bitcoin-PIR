@@ -65,6 +65,7 @@ import { fetchDatabaseCatalog } from './server-info.js';
 import type { LeakageRecorder, RoundProfile } from './leakage.js';
 import {
   assertLiveOperatorIdentityV1,
+  verifiedLiveOperatorSigningKeyV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
 
@@ -1095,6 +1096,8 @@ export class OnionPirWebClient {
       }
     };
     return {
+      providerEndpoint: () => this.config.serverUrl,
+      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity),
       assertTrustAnchor: (trust) => {
         admission().free();
         assertLiveOperatorIdentityV1(trust, this.operatorIdentity);
