@@ -36,19 +36,22 @@ use pir_sdk_client::dangerous_unpaired_accept_service_authorization_response_v1;
 use pir_sdk_client::{
     dangerous_unpaired_authorize_service_operation_v1,
     dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
-    AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1, WsConnection,
+    request_pow_challenge_v1, AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1,
+    WsConnection,
 };
 use pir_service_protocol::{
-    derive_provider_id, paid_receipt_key_id, AcquisitionMethod, AuthPaddingClassV1, AuthScheme,
-    BackendId, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1,
-    DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1, OperationStartV1,
-    PaidReceiptBindingV1, PaidReceiptV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1,
+    derive_provider_id, paid_receipt_key_id, pow_solution_meets_difficulty_v1, AcquisitionMethod,
+    AuthPaddingClassV1, AuthScheme, BackendId, CredentialKeyBindingClaimsV1,
+    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeModeV1, FreePowProofV1, OperationStartV1, PaidReceiptBindingV1,
+    PaidReceiptV1, PowChallengeResponseV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1,
     ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
 };
 #[cfg(feature = "standard-cashu-process-e2e")]
 use pir_service_protocol::{AuthBeginV1, AuthorizationProofV1, REQ_AUTH_BEGIN_V1};
 use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
 use std::fs::{self, File};
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -82,6 +85,15 @@ struct ProviderFixture {
     issued_at: u64,
     receipt_not_after: u64,
     harmony_method_matrix: Option<MethodMatrixFixture>,
+}
+
+#[derive(Debug)]
+struct StorelessFreePowFixture {
+    provider_id: [u8; 32],
+    policy_signing_key: SigningKey,
+    policy_path: PathBuf,
+    dpf_scope_id: [u8; 32],
+    policy_digest: [u8; 32],
 }
 
 impl ProviderFixture {
@@ -187,6 +199,37 @@ impl ServerProcess {
         server
     }
 
+    fn spawn_storeless_free_pow(
+        root: &Path,
+        db_path: &Path,
+        fixture: &StorelessFreePowFixture,
+        port: u16,
+    ) -> Self {
+        let stdout_path = root.join("storeless-free-pow-stdout.log");
+        let stderr_path = root.join("storeless-free-pow-stderr.log");
+        let stdout = File::create(&stdout_path).expect("create storeless server stdout log");
+        let stderr = File::create(&stderr_path).expect("create storeless server stderr log");
+        let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
+            .args(storeless_free_pow_server_args(
+                db_path,
+                fixture,
+                port,
+                fixture.policy_digest,
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .expect("spawn storeless Free-PoW unified_server");
+        let mut server = Self {
+            child,
+            stdout_path,
+            stderr_path,
+        };
+        server.wait_until_listening(port);
+        server
+    }
+
     fn wait_until_listening(&mut self, port: u16) {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -220,6 +263,226 @@ impl ServerProcess {
         let _ = self.child.wait();
         (read_log(&self.stdout_path), read_log(&self.stderr_path))
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_pinned_storeless_free_pow_challenge_authorizes_one_real_query() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
+    let fixture = build_storeless_free_pow_provider(root.path(), manifest_root, unix_now());
+    let port = unused_loopback_port();
+    let server = ServerProcess::spawn_storeless_free_pow(root.path(), &db_path, &fixture, port);
+    let request = valid_tiny_dpf_request();
+
+    let (mut secure, accepted) = open_verified_session_exact(
+        port,
+        fixture.provider_id,
+        &fixture.policy_signing_key,
+        fixture.policy_digest,
+        0,
+        manifest_root,
+        &request,
+    )
+    .await;
+    let first_exporter = secure
+        .service_authorization_exporter_v1()
+        .expect("first secure channel exposes an authorization exporter");
+    let operation = OperationStartV1::DpfQuery { db_id: 0 };
+    let challenge = request_pow_challenge_v1(
+        &mut secure,
+        &accepted,
+        fixture.dpf_scope_id,
+        DPF_OFFER_ID,
+        operation.clone(),
+        unix_now(),
+    )
+    .await
+    .expect("request exact secure-channel-bound Free-PoW challenge");
+    assert_eq!(challenge.secure_channel_exporter, first_exporter);
+    let solution = solve_pow(&challenge);
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &fixture.dpf_scope_id,
+        DPF_OFFER_ID,
+        &solution.encode().unwrap(),
+    )
+    .unwrap();
+    let grant = dangerous_unpaired_authorize_service_operation_v1(
+        &mut secure,
+        &accepted,
+        fixture.dpf_scope_id,
+        DPF_OFFER_ID,
+        operation.clone(),
+        proof,
+    )
+    .await
+    .expect("storeless Free-PoW proof must authorize its exact operation");
+    assert_eq!(grant.scope_id, fixture.dpf_scope_id);
+    assert_eq!(grant.enforced_profile, ENTITLEMENT_PROFILE);
+
+    match Response::decode(&secure.roundtrip(&request).await.unwrap()).unwrap() {
+        Response::IndexBatch(result) => {
+            assert_eq!(result.results.len(), 2);
+            assert!(result.results.iter().all(|group| group.len() == 2));
+        }
+        other => panic!("authorized storeless DPF frame did not reach handler: {other:?}"),
+    }
+    expect_error_response(
+        &secure.roundtrip(&request).await.unwrap(),
+        "service entitlement limit exceeded",
+    );
+    secure.close().await.unwrap();
+
+    // A challenge is connection/exporter-bound. A new connection has no
+    // outstanding challenge state and must reject the old proof rather than
+    // treating storeless mode as an unbounded bearer grant.
+    let (mut replay, replay_policy) = open_verified_session_exact(
+        port,
+        fixture.provider_id,
+        &fixture.policy_signing_key,
+        fixture.policy_digest,
+        0,
+        manifest_root,
+        &request,
+    )
+    .await;
+    let replay_exporter = replay
+        .service_authorization_exporter_v1()
+        .expect("second secure channel exposes an authorization exporter");
+    assert_ne!(replay_exporter, first_exporter);
+    assert_ne!(replay_exporter, challenge.secure_channel_exporter);
+    let replay_proof = dangerous_unpaired_build_authorization_proof_v1(
+        &replay_policy,
+        &fixture.dpf_scope_id,
+        DPF_OFFER_ID,
+        &solution.encode().unwrap(),
+    )
+    .unwrap();
+    let replay_error = dangerous_unpaired_authorize_service_operation_v1(
+        &mut replay,
+        &replay_policy,
+        fixture.dpf_scope_id,
+        DPF_OFFER_ID,
+        operation,
+        replay_proof,
+    )
+    .await
+    .expect_err("cross-connection Free-PoW replay must fail closed");
+    assert!(
+        replay_error.to_string().contains("invalid-or-spent"),
+        "{replay_error}"
+    );
+    replay.close().await.unwrap();
+
+    let (stdout, stderr) = server.stop();
+    assert_loopback_listener(0, port, &stdout, &stderr);
+    assert!(stdout.contains("Storeless Free-PoW: exact measured policy digest"));
+    assert!(!stdout.contains("Provider store startup_check=ok"));
+    assert!(
+        !tree_contains_provider_state(root.path()),
+        "storeless process fixture unexpectedly created provider/rollback SQLite, WAL, or SHM state"
+    );
+}
+
+#[test]
+fn storeless_free_pow_startup_rejects_wrong_pin_broader_policy_and_stateful_flags() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
+    let fixture = build_storeless_free_pow_provider(root.path(), manifest_root, unix_now());
+
+    assert_storeless_startup_fails(
+        root.path(),
+        &db_path,
+        &fixture,
+        [0x42; 32],
+        &[],
+        "exact storeless policy digest pin",
+    );
+
+    let broader_path = root.path().join("open-free-policy.bin");
+    let broader = build_open_free_policy(&fixture, manifest_root, unix_now());
+    fs::write(&broader_path, broader.encode().unwrap()).unwrap();
+    chmod(&broader_path, 0o644);
+    assert_storeless_startup_fails_with_policy(
+        root.path(),
+        &db_path,
+        &fixture,
+        &broader_path,
+        broader.policy_digest().unwrap(),
+        &[],
+        "must contain only provider-local Free proof-of-work offers",
+    );
+
+    for extra in [
+        vec!["--service-store", "/nonexistent/provider.sqlite3"],
+        vec!["--service-rollback-authority", "/nonexistent/floor.sqlite3"],
+        vec!["--service-free-ip-key", "/nonexistent/free-ip.key"],
+        vec!["--service-bat-key", "/nonexistent/bat.key"],
+        vec![
+            "--service-arc-key",
+            "01=/nonexistent/arc.key",
+            "--allow-experimental-arc",
+        ],
+        vec!["--cashu-keyset", "fixture:00"],
+        vec![
+            "--service-cashu-recovery-key",
+            "1=/nonexistent/cashu-recovery.key",
+        ],
+        vec![
+            "--service-shared-authorization",
+            "/nonexistent/shared-authorization.bin",
+        ],
+        vec![
+            "--service-retained-policy",
+            fixture.policy_path.to_str().unwrap(),
+        ],
+    ] {
+        assert_storeless_startup_fails(
+            root.path(),
+            &db_path,
+            &fixture,
+            fixture.policy_digest,
+            &extra,
+            "storeless Free-PoW mode forbids",
+        );
+    }
+
+    assert_storeless_startup_fails(
+        root.path(),
+        &db_path,
+        &fixture,
+        fixture.policy_digest,
+        &["--arc-key", "/nonexistent/legacy-arc.key"],
+        "legacy experimental ARC configuration requires explicit --allow-experimental-arc",
+    );
+
+    let digest_hex = hex::encode(fixture.policy_digest);
+    assert_storeless_startup_fails(
+        root.path(),
+        &db_path,
+        &fixture,
+        fixture.policy_digest,
+        &[
+            "--service-storeless-free-pow-policy-digest-hex",
+            digest_hex.as_str(),
+        ],
+        "--service-storeless-free-pow-policy-digest-hex must not be repeated",
+    );
+
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    assert_storeless_startup_fails(
+        root.path(),
+        &db_path,
+        &fixture,
+        fixture.policy_digest,
+        &[
+            "--test-only-service-https-root-pem",
+            "/nonexistent/test-https-root.pem",
+        ],
+        "storeless Free-PoW mode forbids",
+    );
 }
 
 impl Drop for ServerProcess {
@@ -770,6 +1033,30 @@ async fn open_verified_session(
     SecureChannelTransport<WsConnection>,
     AcceptedServicePolicyV1,
 ) {
+    open_verified_session_exact(
+        port,
+        fixture.provider_id,
+        &fixture.policy_signing_key,
+        fixture.policy_digest,
+        fixture.index,
+        manifest_root,
+        backend_request,
+    )
+    .await
+}
+
+async fn open_verified_session_exact(
+    port: u16,
+    provider_id: [u8; 32],
+    policy_signing_key: &SigningKey,
+    policy_digest: [u8; 32],
+    provider_index: u8,
+    manifest_root: [u8; 32],
+    backend_request: &[u8],
+) -> (
+    SecureChannelTransport<WsConnection>,
+    AcceptedServicePolicyV1,
+) {
     let url = format!("ws://127.0.0.1:{port}");
     let mut raw = WsConnection::connect_once(&url)
         .await
@@ -779,8 +1066,8 @@ async fn open_verified_session(
     // the server independently rejects a cleartext expensive backend frame.
     let local_reject = fetch_verified_service_policy_v1(
         &mut raw,
-        fixture.provider_id,
-        &fixture.policy_signing_key.verifying_key(),
+        provider_id,
+        &policy_signing_key.verifying_key(),
         unix_now(),
         &ServicePolicyCheckpointV1::initial(),
     )
@@ -795,9 +1082,9 @@ async fn open_verified_session(
     // Keep deterministic fixtures without reusing client ephemeral material
     // across the multiple real connections opened by this test.
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut eph_seed = [0x20u8.wrapping_add(fixture.index); 32];
-    let mut random = [0x40u8.wrapping_add(fixture.index); 32];
-    let mut handshake_nonce = [0x60u8.wrapping_add(fixture.index); 32];
+    let mut eph_seed = [0x20u8.wrapping_add(provider_index); 32];
+    let mut random = [0x40u8.wrapping_add(provider_index); 32];
+    let mut handshake_nonce = [0x60u8.wrapping_add(provider_index); 32];
     eph_seed[..8].copy_from_slice(&session_id.to_le_bytes());
     random[..8].copy_from_slice(&session_id.wrapping_add(0x1000).to_le_bytes());
     handshake_nonce[..8].copy_from_slice(&session_id.wrapping_add(0x2000).to_le_bytes());
@@ -825,14 +1112,14 @@ async fn open_verified_session(
     .expect("secure-channel upgrade");
     let accepted = fetch_verified_service_policy_v1(
         &mut secure,
-        fixture.provider_id,
-        &fixture.policy_signing_key.verifying_key(),
+        provider_id,
+        &policy_signing_key.verifying_key(),
         unix_now(),
         &ServicePolicyCheckpointV1::initial(),
     )
     .await
     .expect("verify exact signed provider policy");
-    assert_eq!(accepted.policy_digest(), fixture.policy_digest);
+    assert_eq!(accepted.policy_digest(), policy_digest);
     assert_eq!(accepted.checkpoint().rollback_guard().highest_epoch, 1);
 
     expect_error_response(
@@ -840,6 +1127,342 @@ async fn open_verified_session(
         "authorization required",
     );
     (secure, accepted)
+}
+
+fn storeless_free_pow_server_args(
+    db_path: &Path,
+    fixture: &StorelessFreePowFixture,
+    port: u16,
+    expected_policy_digest: [u8; 32],
+) -> Vec<String> {
+    storeless_free_pow_server_args_with_policy(
+        db_path,
+        fixture,
+        &fixture.policy_path,
+        port,
+        expected_policy_digest,
+    )
+}
+
+fn storeless_free_pow_server_args_with_policy(
+    db_path: &Path,
+    fixture: &StorelessFreePowFixture,
+    policy_path: &Path,
+    port: u16,
+    expected_policy_digest: [u8; 32],
+) -> Vec<String> {
+    vec![
+        "--bind-address".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--data-dir".to_owned(),
+        db_path.display().to_string(),
+        "--role".to_owned(),
+        "secondary".to_owned(),
+        "--disable-onion".to_owned(),
+        "--serve-queries".to_owned(),
+        "--require-service-auth-v1".to_owned(),
+        "--service-policy".to_owned(),
+        policy_path.display().to_string(),
+        "--service-provider-id-hex".to_owned(),
+        hex::encode(fixture.provider_id),
+        "--service-policy-key-hex".to_owned(),
+        hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+        "--service-storeless-free-pow-policy-digest-hex".to_owned(),
+        hex::encode(expected_policy_digest),
+        "--max-connections".to_owned(),
+        "16".to_owned(),
+        "--service-max-concurrent-auth".to_owned(),
+        "4".to_owned(),
+        "--websocket-handshake-timeout-ms".to_owned(),
+        "1000".to_owned(),
+        "--connection-idle-timeout-ms".to_owned(),
+        "60000".to_owned(),
+        "--service-pre-auth-timeout-ms".to_owned(),
+        "60000".to_owned(),
+    ]
+}
+
+fn assert_storeless_startup_fails(
+    root: &Path,
+    db_path: &Path,
+    fixture: &StorelessFreePowFixture,
+    expected_policy_digest: [u8; 32],
+    extra_args: &[&str],
+    expected_error: &str,
+) {
+    assert_storeless_startup_fails_with_policy(
+        root,
+        db_path,
+        fixture,
+        &fixture.policy_path,
+        expected_policy_digest,
+        extra_args,
+        expected_error,
+    );
+}
+
+fn assert_storeless_startup_fails_with_policy(
+    root: &Path,
+    db_path: &Path,
+    fixture: &StorelessFreePowFixture,
+    policy_path: &Path,
+    expected_policy_digest: [u8; 32],
+    extra_args: &[&str],
+    expected_error: &str,
+) {
+    let port = unused_loopback_port();
+    let mut args = storeless_free_pow_server_args_with_policy(
+        db_path,
+        fixture,
+        policy_path,
+        port,
+        expected_policy_digest,
+    );
+    args.extend(extra_args.iter().map(|value| (*value).to_owned()));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rejected storeless configuration");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child
+            .try_wait()
+            .expect("poll rejected storeless configuration")
+            .is_some()
+        {
+            break;
+        }
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(50),
+        )
+        .is_ok()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("rejected storeless configuration opened a listener");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("rejected storeless configuration did not terminate");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child
+        .wait_with_output()
+        .expect("collect rejected storeless configuration output");
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains(expected_error),
+        "expected startup error {expected_error:?}, got:\n{combined}"
+    );
+    assert!(
+        TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "rejected storeless configuration left a listener"
+    );
+    assert!(root.exists());
+}
+
+fn build_storeless_free_pow_provider(
+    root: &Path,
+    manifest_root: [u8; 32],
+    now: u64,
+) -> StorelessFreePowFixture {
+    let provider_root = root.join("storeless-free-pow-provider");
+    fs::create_dir(&provider_root).unwrap();
+    chmod(&provider_root, 0o700);
+    let operator_key = SigningKey::from_bytes(&[0x71; 32]);
+    let policy_signing_key = SigningKey::from_bytes(&[0x72; 32]);
+    let provider_id = derive_provider_id(
+        &operator_key.verifying_key().to_bytes(),
+        "payment-v1-storeless-free-pow-provider",
+    );
+    let scope = ServiceScopeV1 {
+        provider_id,
+        backend: BackendId::DpfPirV1,
+        workload: WorkloadId::DpfEvaluateJobV1,
+        protocol_version: 1,
+        dataset: DatasetBindingV1::ManifestRoot {
+            root: manifest_root,
+        },
+        operation_profile: OPERATION_PROFILE,
+        entitlement_profile: ENTITLEMENT_PROFILE,
+    };
+    let dpf_scope_id = scope.scope_id();
+    let policy = sign_free_policy(
+        provider_id,
+        scope,
+        FreeModeV1::ProofOfWork,
+        8,
+        now,
+        &policy_signing_key,
+    );
+    let policy_digest = policy.policy_digest().unwrap();
+    let policy_path = provider_root.join("service-policy-v1.bin");
+    fs::write(&policy_path, policy.encode().unwrap()).unwrap();
+    chmod(&policy_path, 0o644);
+    StorelessFreePowFixture {
+        provider_id,
+        policy_signing_key,
+        policy_path,
+        dpf_scope_id,
+        policy_digest,
+    }
+}
+
+fn build_open_free_policy(
+    fixture: &StorelessFreePowFixture,
+    manifest_root: [u8; 32],
+    now: u64,
+) -> ServicePolicyV1 {
+    sign_free_policy(
+        fixture.provider_id,
+        ServiceScopeV1 {
+            provider_id: fixture.provider_id,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::ManifestRoot {
+                root: manifest_root,
+            },
+            operation_profile: OPERATION_PROFILE,
+            entitlement_profile: ENTITLEMENT_PROFILE,
+        },
+        FreeModeV1::OpenBestEffort,
+        0,
+        now,
+        &fixture.policy_signing_key,
+    )
+}
+
+fn sign_free_policy(
+    provider_id: [u8; 32],
+    scope: ServiceScopeV1,
+    free_mode: FreeModeV1,
+    free_pow_difficulty_bits: u8,
+    now: u64,
+    signing_key: &SigningKey,
+) -> ServicePolicyV1 {
+    ServicePolicyV1::sign(
+        provider_id,
+        1,
+        now.saturating_sub(60),
+        now.checked_add(3_600).unwrap(),
+        AuthPaddingClassV1::Class16KiB,
+        vec![ServiceScopePolicyV1 {
+            scope,
+            limits: EntitlementLimitsV1 {
+                max_logical_inputs: 1,
+                max_frames: 1,
+                max_request_bytes: 16 * 1024,
+                max_response_bytes: 4 * 1024,
+                max_wall_time_ms: 10_000,
+                max_concurrent_sockets: 1,
+                max_hint_groups: 0,
+                max_work_units: 4,
+            },
+            offers: vec![ServiceOfferV1 {
+                offer_id: DPF_OFFER_ID,
+                acquisition: AcquisitionMethod::FreeV1,
+                free_mode,
+                free_quota: 0,
+                free_window_seconds: 0,
+                free_pow_difficulty_bits,
+                priority_class: 1,
+                authorization: AuthScheme::FreeV1,
+                verification: VerificationMode::ProviderLocal,
+                deployment_status: DeploymentStatus::Stable,
+                price: PriceV1::Free,
+                issuer_id: [0; 32],
+                key_id: Vec::new(),
+                credential_binding: None,
+                cashu_mint_manifest: None,
+                endpoint: String::new(),
+                invoice_expiry_seconds: 0,
+                claim_window_seconds: 0,
+                minimum_credential_validity_seconds: 1,
+                retired_policy_grace_seconds: 0,
+                credential_count: 1,
+                credential_presentation_limit: 1,
+                privacy_leakage: PrivacyLeakageV1::NONE,
+            }],
+        }],
+        signing_key,
+    )
+    .unwrap()
+}
+
+fn solve_pow(challenge: &PowChallengeResponseV1) -> FreePowProofV1 {
+    for nonce in 0..=u64::MAX {
+        let solution = FreePowProofV1 {
+            challenge_id: challenge.challenge_id,
+            nonce,
+        };
+        if pow_solution_meets_difficulty_v1(challenge, &solution).unwrap() {
+            return solution;
+        }
+    }
+    unreachable!("bounded test difficulty has a solution")
+}
+
+fn tree_contains_provider_state(root: &Path) -> bool {
+    fs::read_dir(root)
+        .unwrap_or_else(|error| {
+            panic!("inspect storeless runtime tree {}: {error}", root.display())
+        })
+        .map(|entry| {
+            entry.unwrap_or_else(|error| {
+                panic!(
+                    "inspect entry under storeless runtime tree {}: {error}",
+                    root.display()
+                )
+            })
+        })
+        .any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                tree_contains_provider_state(&path)
+            } else {
+                let suspicious_name =
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.contains(".sqlite")
+                                || name.ends_with("-wal")
+                                || name.ends_with("-shm")
+                                || name.contains("rollback")
+                                || name == "provider.db"
+                        });
+                suspicious_name || file_has_sqlite_header(&path)
+            }
+        })
+}
+
+fn file_has_sqlite_header(path: &Path) -> bool {
+    let mut file = File::open(path).unwrap_or_else(|error| {
+        panic!("inspect storeless runtime file {}: {error}", path.display())
+    });
+    let mut header = [0u8; 16];
+    let mut filled = 0;
+    while filled < header.len() {
+        match file.read(&mut header[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) => panic!("read storeless runtime file {}: {error}", path.display()),
+        }
+    }
+    filled == header.len() && &header == b"SQLite format 3\0"
 }
 
 fn build_provider(

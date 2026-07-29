@@ -1812,8 +1812,7 @@ function validateVpsbgFreePow(text, mode) {
       ["--service-policy", "/home/pir/data/payment-v1/vpsbg-free-pow-only-policy.bin"],
       ["--service-provider-id-hex", "@VPSBG_PROVIDER_ID_HEX@"],
       ["--service-policy-key-hex", "@VPSBG_POLICY_PUBKEY_HEX@"],
-      ["--service-store", "/home/pir/data/payment-v1/provider.sqlite3"],
-      ["--service-remote-rollback-authority-config", "/home/pir/data/payment-v1/remote-rollback-authority.toml"],
+      ["--service-storeless-free-pow-policy-digest-hex", "@VPSBG_FREE_POW_POLICY_DIGEST_HEX@"],
       ["--service-max-concurrent-auth", "16"],
       ["--service-pre-auth-timeout-ms", "60000"],
     ],
@@ -2300,8 +2299,10 @@ export function validateDeploymentTree(rootInput) {
   );
   for (const required of [
     "P1 activation blocker",
-    "attestation-gated key release",
-    "host can read or copy",
+    "Storeless measured-policy boundary",
+    "exact protocol digest argument and the script that supplies it MUST be",
+    "requires a new measured UKI",
+    "opens no ProviderStore or rollback authority",
   ]) {
     requireText(deploymentDoc.text, required, "Hetzner/VPSBG deployment document");
   }

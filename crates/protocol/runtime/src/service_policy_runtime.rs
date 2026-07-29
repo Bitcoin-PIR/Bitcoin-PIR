@@ -11,10 +11,10 @@ use std::fmt;
 
 use ed25519_dalek::VerifyingKey;
 use pir_service_protocol::{
-    AuthScheme, CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1, FreeModeV1,
-    PolicyRollbackGuardV1, ProviderId, ServiceOfferV1, ServicePolicyEpochFloorsV1,
-    ServicePolicyResponseV1, ServicePolicyV1, ServiceProtocolError, VerifiedCurrentPolicyV1,
-    VerifiedRetiredOfferV1, VerifiedServiceOfferV1,
+    AcquisitionMethod, AuthScheme, CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1,
+    FreeModeV1, PolicyRollbackGuardV1, PriceV1, ProviderId, ServiceOfferV1,
+    ServicePolicyEpochFloorsV1, ServicePolicyResponseV1, ServicePolicyV1, ServiceProtocolError,
+    VerificationMode, VerifiedCurrentPolicyV1, VerifiedRetiredOfferV1, VerifiedServiceOfferV1,
 };
 use pir_service_store::{
     ArcExclusiveKeyLineageVerifierV1, ProviderStore, StoreError,
@@ -34,6 +34,8 @@ pub enum ServicePolicyActivationErrorV1 {
     RetainedPolicyIsCurrent,
     RetainedPolicyIsNotOlder,
     RetainedPolicyHasNoCredentialOffers,
+    ExactPolicyDigestMismatch,
+    StorelessPolicyIsNotFreeProofOfWorkOnly,
     MissingMethodAdapter(AdmissionMethodRouteV1),
 }
 
@@ -63,6 +65,11 @@ impl fmt::Display for ServicePolicyActivationErrorV1 {
             ),
             Self::RetainedPolicyHasNoCredentialOffers => formatter
                 .write_str("retained service policy has no provider-bound credential offers"),
+            Self::ExactPolicyDigestMismatch => formatter
+                .write_str("service policy does not match the exact storeless policy digest pin"),
+            Self::StorelessPolicyIsNotFreeProofOfWorkOnly => formatter.write_str(
+                "storeless service policy must contain only provider-local Free proof-of-work offers",
+            ),
             Self::MissingMethodAdapter(route) => {
                 write!(
                     formatter,
@@ -85,6 +92,8 @@ impl std::error::Error for ServicePolicyActivationErrorV1 {
             | Self::RetainedPolicyIsCurrent
             | Self::RetainedPolicyIsNotOlder
             | Self::RetainedPolicyHasNoCredentialOffers
+            | Self::ExactPolicyDigestMismatch
+            | Self::StorelessPolicyIsNotFreeProofOfWorkOnly
             | Self::MissingMethodAdapter(_) => None,
         }
     }
@@ -361,6 +370,97 @@ pub fn activate_retained_service_policy_v1(
     })
 }
 
+/// Activate one exact, signed, provider-local Free proof-of-work policy without
+/// opening a ProviderStore or rollback authority.
+///
+/// This deliberately narrow mode exists for measured, immutable deployments
+/// whose command line pins the exact canonical policy digest. The digest pin is
+/// the rollback/fork boundary: accepting an operator key, epoch floor, or
+/// mutable policy path alone would let a hostile host replay an older signed
+/// free policy. Paid methods, durable IP quota, anonymous tickets, retained
+/// policies, and every credential-bearing offer still require the ordinary
+/// rollback-aware [`activate_service_policy_v1`] path.
+pub fn activate_exact_storeless_free_pow_policy_v1(
+    canonical_signed_policy: &[u8],
+    expected_provider_id: ProviderId,
+    verifying_key: VerifyingKey,
+    expected_policy_digest: [u8; 32],
+    now_unix: u64,
+) -> Result<ActivatedServicePolicyV1, ServicePolicyActivationErrorV1> {
+    if canonical_signed_policy.is_empty() {
+        return Err(ServicePolicyActivationErrorV1::EmptyPolicy);
+    }
+    if canonical_signed_policy.len() > MAX_SIGNED_POLICY_BYTES {
+        return Err(ServicePolicyActivationErrorV1::PolicyTooLarge {
+            len: canonical_signed_policy.len(),
+        });
+    }
+
+    let policy = ServicePolicyV1::decode(canonical_signed_policy)?;
+    if policy.encode()?.as_slice() != canonical_signed_policy {
+        return Err(ServicePolicyActivationErrorV1::NonCanonicalPolicy);
+    }
+    let policy_digest = policy.policy_digest()?;
+    if expected_policy_digest.iter().all(|byte| *byte == 0)
+        || policy_digest != expected_policy_digest
+    {
+        return Err(ServicePolicyActivationErrorV1::ExactPolicyDigestMismatch);
+    }
+    if policy.scopes.is_empty()
+        || policy.scopes.iter().any(|scope| scope.offers.is_empty())
+        || policy
+            .scopes
+            .iter()
+            .flat_map(|scope| &scope.offers)
+            .any(|offer| {
+                offer.acquisition != AcquisitionMethod::FreeV1
+                    || offer.authorization != AuthScheme::FreeV1
+                    || offer.free_mode != FreeModeV1::ProofOfWork
+                    || offer.verification != VerificationMode::ProviderLocal
+                    || offer.price != PriceV1::Free
+                    || offer.issuer_id != [0; 32]
+                    || !offer.key_id.is_empty()
+                    || offer.credential_binding.is_some()
+                    || offer.cashu_mint_manifest.is_some()
+                    || !offer.endpoint.is_empty()
+                    || offer.invoice_expiry_seconds != 0
+                    || offer.claim_window_seconds != 0
+                    || offer.minimum_credential_validity_seconds != 1
+                    || offer.retired_policy_grace_seconds != 0
+                    || offer.credential_count != 1
+                    || offer.credential_presentation_limit != 1
+                    || offer.privacy_leakage != pir_service_protocol::PrivacyLeakageV1::NONE
+            })
+    {
+        return Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly);
+    }
+
+    // The exact digest pin supplies both the epoch and same-epoch fork guard.
+    // Credential/mint floors are empty because the policy shape above forbids
+    // all credential and Cashu material.
+    let rollback_guard = PolicyRollbackGuardV1 {
+        highest_epoch: policy.policy_epoch,
+        digest_at_highest_epoch: policy_digest,
+    };
+    let epoch_floors = ServicePolicyEpochFloorsV1::initial();
+    policy.verify_current_for_acquisition(
+        &expected_provider_id,
+        now_unix,
+        &rollback_guard,
+        &epoch_floors,
+        &verifying_key,
+    )?;
+
+    Ok(ActivatedServicePolicyV1 {
+        policy,
+        provider_id: expected_provider_id,
+        verifying_key,
+        rollback_guard,
+        epoch_floors,
+        policy_digest,
+    })
+}
+
 /// Decode, verify, durably advance rollback state, install provider-local
 /// bearer namespaces, and only then return an activatable policy.
 pub fn activate_service_policy_v1(
@@ -623,6 +723,28 @@ mod tests {
         .unwrap()
     }
 
+    fn free_pow_policy(
+        signing: &SigningKey,
+        provider_id: ProviderId,
+        epoch: u64,
+    ) -> ServicePolicyV1 {
+        let template = free_policy(signing, provider_id, epoch);
+        let mut scopes = template.scopes;
+        let offer = &mut scopes[0].offers[0];
+        offer.free_mode = FreeModeV1::ProofOfWork;
+        offer.free_pow_difficulty_bits = 8;
+        ServicePolicyV1::sign(
+            provider_id,
+            epoch,
+            template.issued_at,
+            template.expires_at,
+            template.auth_padding_class,
+            scopes,
+            signing,
+        )
+        .unwrap()
+    }
+
     fn retained_receipt_policy(
         signing: &SigningKey,
         provider_id: ProviderId,
@@ -765,6 +887,187 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn exact_storeless_free_pow_activation_needs_no_store_and_keeps_exact_pin() {
+        let provider_id = [9; 32];
+        let signing = SigningKey::from_bytes(&[3; 32]);
+        let policy = free_pow_policy(&signing, provider_id, 2);
+        let bytes = policy.encode().unwrap();
+        let digest = policy.policy_digest().unwrap();
+
+        let activated = activate_exact_storeless_free_pow_policy_v1(
+            &bytes,
+            provider_id,
+            signing.verifying_key(),
+            digest,
+            150,
+        )
+        .unwrap();
+        assert_eq!(activated.policy_digest(), digest);
+        assert!(activated.verify_current(150).is_ok());
+
+        let wrong_digest = [0x42; 32];
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &bytes,
+                provider_id,
+                signing.verifying_key(),
+                wrong_digest,
+                150,
+            ),
+            Err(ServicePolicyActivationErrorV1::ExactPolicyDigestMismatch)
+        ));
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &bytes,
+                provider_id,
+                signing.verifying_key(),
+                [0; 32],
+                150,
+            ),
+            Err(ServicePolicyActivationErrorV1::ExactPolicyDigestMismatch)
+        ));
+    }
+
+    #[test]
+    fn exact_storeless_free_pow_rejects_every_broader_policy_shape() {
+        let provider_id = [9; 32];
+        let signing = SigningKey::from_bytes(&[3; 32]);
+
+        let open = free_policy(&signing, provider_id, 2);
+        let open_bytes = open.encode().unwrap();
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &open_bytes,
+                provider_id,
+                signing.verifying_key(),
+                open.policy_digest().unwrap(),
+                150,
+            ),
+            Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
+        ));
+
+        let paid = retained_receipt_policy(&signing, provider_id, 2).0;
+        let paid_bytes = paid.encode().unwrap();
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &paid_bytes,
+                provider_id,
+                signing.verifying_key(),
+                paid.policy_digest().unwrap(),
+                110,
+            ),
+            Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
+        ));
+
+        let policy = free_pow_policy(&signing, provider_id, 2);
+        let mut trailing = policy.encode().unwrap();
+        trailing.push(0);
+        assert!(activate_exact_storeless_free_pow_policy_v1(
+            &trailing,
+            provider_id,
+            signing.verifying_key(),
+            policy.policy_digest().unwrap(),
+            150,
+        )
+        .is_err());
+        assert!(activate_exact_storeless_free_pow_policy_v1(
+            &policy.encode().unwrap(),
+            [8; 32],
+            signing.verifying_key(),
+            policy.policy_digest().unwrap(),
+            150,
+        )
+        .is_err());
+        assert!(activate_exact_storeless_free_pow_policy_v1(
+            &policy.encode().unwrap(),
+            provider_id,
+            SigningKey::from_bytes(&[4; 32]).verifying_key(),
+            policy.policy_digest().unwrap(),
+            150,
+        )
+        .is_err());
+
+        let empty = ServicePolicyV1::sign(
+            provider_id,
+            2,
+            100,
+            200,
+            AuthPaddingClassV1::Class16KiB,
+            Vec::new(),
+            &signing,
+        )
+        .unwrap();
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &empty.encode().unwrap(),
+                provider_id,
+                signing.verifying_key(),
+                empty.policy_digest().unwrap(),
+                150,
+            ),
+            Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
+        ));
+
+        let template = free_pow_policy(&signing, provider_id, 2);
+        let mut empty_offer_scopes = template.scopes;
+        empty_offer_scopes[0].offers.clear();
+        let empty_offer_scope = ServicePolicyV1::sign(
+            provider_id,
+            2,
+            template.issued_at,
+            template.expires_at,
+            template.auth_padding_class,
+            empty_offer_scopes,
+            &signing,
+        )
+        .unwrap();
+        assert!(matches!(
+            activate_exact_storeless_free_pow_policy_v1(
+                &empty_offer_scope.encode().unwrap(),
+                provider_id,
+                signing.verifying_key(),
+                empty_offer_scope.policy_digest().unwrap(),
+                150,
+            ),
+            Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
+        ));
+
+        for mutate in [
+            |offer: &mut ServiceOfferV1| offer.endpoint = "https://issuer.invalid".to_owned(),
+            |offer: &mut ServiceOfferV1| offer.minimum_credential_validity_seconds = 2,
+            |offer: &mut ServiceOfferV1| offer.retired_policy_grace_seconds = 1,
+            |offer: &mut ServiceOfferV1| {
+                offer.privacy_leakage =
+                    PrivacyLeakageV1::from_bits(PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING).unwrap()
+            },
+        ] {
+            let template = free_pow_policy(&signing, provider_id, 2);
+            let mut scopes = template.scopes;
+            mutate(&mut scopes[0].offers[0]);
+            let decorated = ServicePolicyV1::sign(
+                provider_id,
+                2,
+                template.issued_at,
+                template.expires_at,
+                template.auth_padding_class,
+                scopes,
+                &signing,
+            )
+            .unwrap();
+            assert!(matches!(
+                activate_exact_storeless_free_pow_policy_v1(
+                    &decorated.encode().unwrap(),
+                    provider_id,
+                    signing.verifying_key(),
+                    decorated.policy_digest().unwrap(),
+                    150,
+                ),
+                Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
+            ));
+        }
     }
 
     #[test]
