@@ -19,6 +19,10 @@ const MAX_DIRECTORY_EVENT_BYTES_TOTAL = 16 * 1024 * 1024;
 const MAX_WASM_DIRECTORY_BATCH_BYTES = 64 * 1024 * 1024;
 const UTF8 = new TextEncoder();
 
+export type DirectoryRelayModeV1 =
+  | 'strict-multi-relay'
+  | 'centralized-single-relay';
+
 export interface DirectoryWebSocketV1 {
   readonly readyState: number;
   send(data: string): void;
@@ -35,6 +39,8 @@ export interface DirectoryWebSocketV1 {
 
 export interface NostrDirectoryRefreshOptionsV1 {
   relays: string[];
+  /** Defaults to strict. Centralized mode is an explicit, exact-one-relay opt-in. */
+  relayMode?: DirectoryRelayModeV1;
   pinnedDirectoryPubkeyHex: string;
   vault: DirectoryRollbackVaultV1;
   timeoutMs?: number;
@@ -134,8 +140,13 @@ export function directoryProviderTrustAnchorV1(
 export async function refreshNostrDirectoryV1(
   options: NostrDirectoryRefreshOptionsV1,
 ): Promise<SelectableDirectoryCatalogV1> {
+  const relayMode = options.relayMode ?? 'strict-multi-relay';
+  if (relayMode !== 'strict-multi-relay' && relayMode !== 'centralized-single-relay') {
+    throw new Error('directory relay mode is unsupported');
+  }
   const relayUrls = validateRelayUrls(
     options.relays,
+    relayMode,
     options.allowInsecureLoopback ?? false,
   );
   const directoryPubkeyHex = canonicalNonzeroHex32(
@@ -157,21 +168,33 @@ export async function refreshNostrDirectoryV1(
     .filter((result): result is PromiseFulfilledResult<CompleteRelayV1> =>
       result.status === 'fulfilled')
     .map((result) => result.value);
-  if (complete.length < 2) {
-    throw new Error('fewer than two relays returned complete 16-shard EOSE catalogs');
+  if (relayMode === 'strict-multi-relay' && complete.length < 2) {
+    throw new Error(
+      'strict directory refresh has fewer than two complete 16-shard EOSE relay catalogs',
+    );
+  }
+  if (relayMode === 'centralized-single-relay' && complete.length !== 1) {
+    throw new Error('centralized directory relay did not return one complete 16-shard EOSE catalog');
   }
   const batch = UTF8.encode(JSON.stringify({
     version: 1,
+    directoryMode: relayMode,
     relays: complete,
   }));
   if (batch.length > MAX_WASM_DIRECTORY_BATCH_BYTES) {
     throw new Error('complete directory relay batch exceeds the WASM V1 bound');
   }
-  const candidate = sdk.WasmDirectoryCatalogCandidateV1.verifyRelayCatalogs(
-    batch,
-    directoryPubkey,
-    trustedNowUnix(),
-  );
+  const candidate = relayMode === 'centralized-single-relay'
+    ? sdk.WasmDirectoryCatalogCandidateV1.verifyCentralizedSingleRelayCatalog(
+      batch,
+      directoryPubkey,
+      trustedNowUnix(),
+    )
+    : sdk.WasmDirectoryCatalogCandidateV1.verifyRelayCatalogs(
+      batch,
+      directoryPubkey,
+      trustedNowUnix(),
+    );
   try {
     return await options.vault.acceptCatalog(candidate);
   } finally {
@@ -336,9 +359,22 @@ function subscriptionIdFromReq(request: string): string {
   return value[1];
 }
 
-function validateRelayUrls(values: string[], allowInsecureLoopback: boolean): string[] {
-  if (!Array.isArray(values) || values.length < 2 || values.length > MAX_RELAYS) {
-    throw new Error('directory refresh requires two to eight relay URLs');
+function validateRelayUrls(
+  values: string[],
+  relayMode: DirectoryRelayModeV1,
+  allowInsecureLoopback: boolean,
+): string[] {
+  if (!Array.isArray(values)) {
+    throw new Error('directory relay URLs must be an array');
+  }
+  if (relayMode === 'centralized-single-relay' && values.length !== 1) {
+    throw new Error(
+      'centralized single-relay mode requires exactly one relay URL and never downgrades strict mode',
+    );
+  }
+  if (relayMode === 'strict-multi-relay'
+      && (values.length < 2 || values.length > MAX_RELAYS)) {
+    throw new Error('strict directory refresh requires two to eight relay URLs');
   }
   const canonical = values.map((value) => {
     let parsed: URL;

@@ -438,6 +438,24 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::DirectoryArtifact(_)));
+
+        let centralized = Cli::try_parse_from([
+            "bpir-admin",
+            "directory-artifact",
+            "publish",
+            "--artifact",
+            "entry.event.json",
+            "--relay",
+            "wss://central.example",
+            "--centralized-single-relay",
+            "--directory-pubkey-hex",
+            &hex::encode([1u8; 32]),
+            "--now-unix",
+            "1500",
+            "--validate-only",
+        ])
+        .unwrap();
+        assert!(matches!(centralized.command, Command::DirectoryArtifact(_)));
     }
 
     #[test]

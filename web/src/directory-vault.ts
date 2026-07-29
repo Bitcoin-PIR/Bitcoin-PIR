@@ -100,6 +100,11 @@ export interface SelectableDirectoryShardV1 {
 export interface SelectableDirectoryCatalogV1 {
   version: 1;
   directoryPubkeyHex: string;
+  /** Relay transport assurance only; never persisted in rollback state. */
+  directoryMode: 'strict-multi-relay' | 'centralized-single-relay';
+  directoryAssurance:
+    | 'multi-origin-split-view-compared'
+    | 'centralized-degraded-no-relay-cross-check';
   shards: SelectableDirectoryShardV1[];
 }
 
@@ -315,6 +320,7 @@ function parseSelectableCatalog(
   if (value.version !== 1
       || canonicalHex32('directoryPubkeyHex', value.directoryPubkeyHex)
         !== expectedDirectoryPubkeyHex
+      || !validDirectoryAssurance(value.directoryMode, value.directoryAssurance)
       || !Array.isArray(value.shards) || value.shards.length !== 16) {
     throw new Error('selectable directory catalog has the wrong namespace or shard count');
   }
@@ -353,6 +359,16 @@ function parseSelectableCatalog(
     }
   });
   return value;
+}
+
+function validDirectoryAssurance(
+  mode: unknown,
+  assurance: unknown,
+): boolean {
+  return (mode === 'strict-multi-relay'
+      && assurance === 'multi-origin-split-view-compared')
+    || (mode === 'centralized-single-relay'
+      && assurance === 'centralized-degraded-no-relay-cross-check');
 }
 
 function fixedStateBytes(value: unknown): Uint8Array {

@@ -411,7 +411,10 @@ operator has activated the path with real money or public infrastructure.
 ### Directory and operator tooling
 
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
-      checkpoints, tombstones, relay split-view checks and rollback state.
+      checkpoints, tombstones, strict-mode relay split-view checks and rollback
+      state. The separate centralized-single-relay API requires an explicit
+      exact-one-relay opt-in and marks the result degraded without persisting its
+      mode or a relay URL in rollback state.
 - [x] A repository-owned directory-only Nostr relay now implements the exact
       bounded `EVENT`/`REQ`/`CLOSE` subset for one pinned kind-30078 publisher.
       It binds loopback, stores an immutable canonical-event archive plus
@@ -823,7 +826,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       duplicate/unexpected/missing, non-text, oversized, timeout and partial
       failure behavior. Its `--validate-only` preflight applies the exact
       artifact/key/time/relay checks without invoking transport. Distinct
-      hostnames do not prove independent operators.
+      hostnames do not prove independent operators. Strict mode remains the
+      two-to-eight default; centralized mode is an explicit exact-one flag and
+      every outcome labels its degraded assurance.
 - [x] `bitcoinpir-directory-relay` implements the intentionally narrow
       directory-only Nostr surface: canonical signed EVENT validation for one
       pinned publisher/kind, bounded ID-filtered REQ/EOSE readback, immutable
@@ -831,8 +836,11 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       bounded connection/work/egress/archive/time dimensions and graceful
       drain. It is not a general-purpose relay. The production selection and
       unit remain `UNRESOLVED`/`ExecStart=/usr/bin/false`; final merged source,
-      binary/config/public-key hashes, source-fair ingress and a second
-      independently operated relay are activation gates.
+      binary/config/public-key hashes, source-fair ingress and one explicitly
+      selected directory mode are activation gates. Strict mode needs two
+      distinct WSS origins; an independent second operator is stronger than
+      same-host origin diversity but is not required by the approved
+      centralized/degraded profile.
 - [x] Source-template, rendered-profile and live-Linux evidence tools are
       checked in. The source gate freezes inactive templates and the unchanged
       VPSBG baseline. The rendered gate binds one externally approved plan to

@@ -171,7 +171,14 @@ interface PirSdkWasm {
   };
   /** Strict transport-neutral verifier for complete multi-relay catalogs. */
   WasmDirectoryCatalogCandidateV1: {
+    /** Default strict path: two to eight complete relay origins. */
     verifyRelayCatalogs(
+      relayBatchJson: Uint8Array,
+      pinnedDirectoryPubkey: Uint8Array,
+      nowUnix: bigint,
+    ): WasmDirectoryCatalogCandidateV1;
+    /** Explicit degraded path: exactly one centralized relay, never a fallback. */
+    verifyCentralizedSingleRelayCatalog(
       relayBatchJson: Uint8Array,
       pinnedDirectoryPubkey: Uint8Array,
       nowUnix: bigint,

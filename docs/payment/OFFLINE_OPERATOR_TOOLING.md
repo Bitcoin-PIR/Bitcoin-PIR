@@ -92,6 +92,11 @@ node scripts/payment-v1-nostr-readback.mjs \
   --timeout-ms 60000
 ```
 
+For the explicitly accepted centralized/degraded profile, both publisher and
+readback use exactly one `--relay` plus `--centralized-single-relay`. One relay
+without that flag, or two relays with it, is rejected before network I/O. The
+strict default remains two to eight origins and never falls back after failure.
+
 This helper requires the lockfile-pinned `ws` development dependency already
 installed under `web/node_modules`. It disables redirects and compression,
 sets a transport-level maximum payload, requests only the frozen event IDs and

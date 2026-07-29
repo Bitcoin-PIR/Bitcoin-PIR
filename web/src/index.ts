@@ -325,7 +325,8 @@ export type {
   ResumeBolt11AcquisitionV1,
 } from './service-acquisition.js';
 
-// Complete multi-relay Nostr directory refresh and durable rollback storage.
+// Explicit strict-multi or centralized/degraded Nostr directory refresh and
+// durable rollback storage. Centralized mode never activates implicitly.
 export { DirectoryRollbackVaultV1 } from './directory-vault.js';
 export type {
   DirectoryDiscoveryEntryJsonV1,
@@ -393,6 +394,7 @@ export type {
 } from './product-provider-bootstrap.js';
 export type { HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
 export type {
+  DirectoryRelayModeV1,
   DirectoryProviderTrustMaterialV1,
   DirectoryWebSocketV1,
   NostrDirectoryRefreshOptionsV1,

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
   return {
     candidate,
     verifyRelayCatalogs: vi.fn(() => candidate),
+    verifyCentralizedSingleRelayCatalog: vi.fn(() => candidate),
   };
 });
 
@@ -25,11 +26,15 @@ vi.mock('../sdk-bridge.js', () => ({
     ),
     WasmDirectoryCatalogCandidateV1: {
       verifyRelayCatalogs: mocks.verifyRelayCatalogs,
+      verifyCentralizedSingleRelayCatalog: mocks.verifyCentralizedSingleRelayCatalog,
     },
   }),
 }));
 
-import type { DirectoryRollbackVaultV1 } from '../directory-vault.js';
+import type {
+  DirectoryRollbackVaultV1,
+  SelectableDirectoryCatalogV1,
+} from '../directory-vault.js';
 import {
   type DirectoryWebSocketV1,
   refreshNostrDirectoryV1,
@@ -39,12 +44,20 @@ const directoryPubkey = '11'.repeat(32);
 const selectable = {
   version: 1 as const,
   directoryPubkeyHex: directoryPubkey,
+  directoryMode: 'strict-multi-relay' as const,
+  directoryAssurance: 'multi-origin-split-view-compared' as const,
   shards: Array.from({ length: 16 }, (_, shard) => ({
     shard,
     checkpointEpoch: '1',
     checkpointRootHex: '22'.repeat(32),
     entries: [],
   })),
+};
+
+const centralizedSelectable = {
+  ...selectable,
+  directoryMode: 'centralized-single-relay' as const,
+  directoryAssurance: 'centralized-degraded-no-relay-cross-check' as const,
 };
 
 class MockRelay implements DirectoryWebSocketV1 {
@@ -103,9 +116,9 @@ class MockRelay implements DirectoryWebSocketV1 {
   }
 }
 
-function vault(): DirectoryRollbackVaultV1 {
+function vault(catalog: SelectableDirectoryCatalogV1 = selectable): DirectoryRollbackVaultV1 {
   return {
-    acceptCatalog: vi.fn(async () => selectable),
+    acceptCatalog: vi.fn(async () => catalog),
   } as unknown as DirectoryRollbackVaultV1;
 }
 
@@ -113,6 +126,7 @@ describe('Nostr directory relay transport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.verifyRelayCatalogs.mockImplementation(() => mocks.candidate);
+    mocks.verifyCentralizedSingleRelayCatalog.mockImplementation(() => mocks.candidate);
   });
 
   it('requires two complete 16-shard EOSE views and forwards raw EVENT envelopes', async () => {
@@ -133,10 +147,56 @@ describe('Nostr directory relay transport', () => {
       socket.sent.filter((message) => JSON.parse(message)[0] === 'REQ').length === 16)).toBe(true);
     const call = mocks.verifyRelayCatalogs.mock.calls[0] as unknown as [Uint8Array];
     const batch = JSON.parse(new TextDecoder().decode(call[0]));
+    expect(batch.directoryMode).toBe('strict-multi-relay');
     expect(batch.relays).toHaveLength(2);
     expect(batch.relays[0].eventMessages).toHaveLength(16);
     expect(batch.relays[0].eventMessages[0]).toContain('relay-a.example');
     expect(mocks.candidate.free).toHaveBeenCalledOnce();
+  });
+
+  it('accepts exactly one relay only through explicit centralized/degraded mode', async () => {
+    const durable = vault(centralizedSelectable);
+    const result = await refreshNostrDirectoryV1({
+      relays: ['wss://central.example'],
+      relayMode: 'centralized-single-relay',
+      pinnedDirectoryPubkeyHex: directoryPubkey,
+      vault: durable,
+      webSocketFactory: (url) => new MockRelay(url),
+    });
+    expect(result).toEqual(centralizedSelectable);
+    expect(mocks.verifyRelayCatalogs).not.toHaveBeenCalled();
+    expect(mocks.verifyCentralizedSingleRelayCatalog).toHaveBeenCalledOnce();
+    const call = mocks.verifyCentralizedSingleRelayCatalog.mock.calls[0] as unknown as [Uint8Array];
+    const batch = JSON.parse(new TextDecoder().decode(call[0]));
+    expect(batch.directoryMode).toBe('centralized-single-relay');
+    expect(batch.relays).toHaveLength(1);
+  });
+
+  it('rejects one relay without opt-in, zero, more than eight, or centralized mode with two', async () => {
+    const common = {
+      pinnedDirectoryPubkeyHex: directoryPubkey,
+      vault: vault(),
+      webSocketFactory: (url: string) => new MockRelay(url),
+    };
+    await expect(refreshNostrDirectoryV1({
+      ...common,
+      relays: ['wss://central.example'],
+    })).rejects.toThrow(/strict directory refresh requires two to eight/);
+    await expect(refreshNostrDirectoryV1({
+      ...common,
+      relays: [],
+    })).rejects.toThrow(/strict directory refresh requires two to eight/);
+    await expect(refreshNostrDirectoryV1({
+      ...common,
+      relays: Array.from({ length: 9 }, (_, index) => `wss://relay-${index}.example`),
+    })).rejects.toThrow(/strict directory refresh requires two to eight/);
+    await expect(refreshNostrDirectoryV1({
+      ...common,
+      relays: ['wss://one.example', 'wss://two.example'],
+      relayMode: 'centralized-single-relay',
+    })).rejects.toThrow(/requires exactly one relay URL/);
+    expect(mocks.verifyRelayCatalogs).not.toHaveBeenCalled();
+    expect(mocks.verifyCentralizedSingleRelayCatalog).not.toHaveBeenCalled();
   });
 
   it('does not accept a relay missing one EOSE as a partial catalog', async () => {
@@ -146,8 +206,24 @@ describe('Nostr directory relay transport', () => {
       vault: vault(),
       timeoutMs: 10,
       webSocketFactory: (url) => new MockRelay(url, url.includes('relay-b') ? 15 : null),
-    })).rejects.toThrow(/fewer than two relays/);
+    })).rejects.toThrow(/fewer than two complete/);
     expect(mocks.verifyRelayCatalogs).not.toHaveBeenCalled();
+    expect(mocks.verifyCentralizedSingleRelayCatalog).not.toHaveBeenCalled();
+  });
+
+  it('does not retry or upgrade a failed centralized relay into another mode', async () => {
+    const factory = vi.fn(() => new MockRelay('central', 15));
+    await expect(refreshNostrDirectoryV1({
+      relays: ['wss://central.example'],
+      relayMode: 'centralized-single-relay',
+      pinnedDirectoryPubkeyHex: directoryPubkey,
+      vault: vault(centralizedSelectable),
+      timeoutMs: 10,
+      webSocketFactory: factory,
+    })).rejects.toThrow(/centralized directory relay did not return one complete/);
+    expect(factory).toHaveBeenCalledOnce();
+    expect(mocks.verifyRelayCatalogs).not.toHaveBeenCalled();
+    expect(mocks.verifyCentralizedSingleRelayCatalog).not.toHaveBeenCalled();
   });
 
   it('propagates Rust same-epoch split-view rejection before durable acceptance', async () => {
@@ -185,5 +261,6 @@ describe('Nostr directory relay transport', () => {
     const batch = JSON.parse(new TextDecoder().decode(call[0]));
     expect(batch.relays).toHaveLength(2);
     expect(batch.relays.every((relay: any) => !relay.eventMessages[0].includes('xxx'))).toBe(true);
+    expect(mocks.verifyCentralizedSingleRelayCatalog).not.toHaveBeenCalled();
   });
 });

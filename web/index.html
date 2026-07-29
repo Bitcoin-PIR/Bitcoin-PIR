@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-CgvPrHAhbcSIkVnQ5vZjIG4cc7zUnfQkDzVseNcld0Y=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-CMiYEGZ+09+D3Zf8RXg8tANKrBNXTzck8lHgcj0tw/w=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -907,13 +907,18 @@
                             <button type="button" id="admissionApplyBootstrap" class="btn">Apply in memory</button>
                             <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Commercial admission unconfigured; all queries fail closed.</span>
                         </div>
-                        <label for="admissionDirectoryRelays">Optional Nostr directory relays (one wss:// URL per line; explicit refresh only, at least two complete relays)</label>
+                        <label for="admissionDirectoryMode">Directory relay assurance mode</label>
+                        <select id="admissionDirectoryMode" class="input">
+                            <option value="strict-multi-relay" selected>Strict multi-relay (2–8 distinct WSS origins)</option>
+                            <option value="centralized-single-relay">Centralized single relay — degraded, no relay cross-check</option>
+                        </select>
+                        <label for="admissionDirectoryRelays">Optional Nostr directory relays (one wss:// URL per line; explicit refresh only)</label>
                         <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false"></textarea>
                         <label for="admissionDirectoryKey">Pinned directory Nostr x-only secp256k1 public key (64 lowercase hex; independent bootstrap)</label>
                         <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false">
                         <div class="admission-config-actions">
                             <button type="button" id="admissionRefreshDirectory" class="btn ghost">Refresh directory now</button>
-                            <span>Directory health and advertised pins are discovery metadata, never trust roots.</span>
+                            <span>Centralized mode requires exactly one relay and is visibly degraded. Relay data remains signed discovery metadata; live identity, binary, attestation, database and result verification still fail closed.</span>
                         </div>
                     </div>
                 </details>
@@ -1882,20 +1887,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const status = document.getElementById('admissionConfigStatus');
             const relays = document.getElementById('admissionDirectoryRelays').value
                 .split('\n').map(value => value.trim()).filter(Boolean);
+            const relayMode = document.getElementById('admissionDirectoryMode').value;
             const pinnedDirectoryPubkeyHex = document.getElementById('admissionDirectoryKey').value.trim();
             let vault = null;
             try {
                 if (!productTrustedBootstrap) throw new Error('bootstrap required');
-                status.textContent = 'Refreshing all 16 directory shards from independent relays…';
+                status.textContent = relayMode === 'centralized-single-relay'
+                    ? 'Refreshing all 16 directory shards from one centralized relay (degraded; no relay cross-check)…'
+                    : 'Refreshing all 16 directory shards from distinct WSS relay origins…';
                 vault = await DirectoryRollbackVaultV1.open();
                 verifiedDirectoryCatalog = await refreshNostrDirectoryV1({
                     relays,
+                    relayMode,
                     pinnedDirectoryPubkeyHex,
                     vault,
                 });
                 await closeAllAdmissionAttempts('Directory trust changed; start a new strict admission attempt.');
                 renderTrustedProviderOptions();
-                status.textContent = 'Directory catalog verified across at least two complete relays and rollback state committed.';
+                status.textContent = verifiedDirectoryCatalog.directoryMode === 'centralized-single-relay'
+                    ? 'Centralized/degraded directory verified from one complete relay; no relay split-view or outage cross-check. Rollback state committed and live provider verification remains strict.'
+                    : 'Directory verified across at least two complete WSS origins; same-epoch split-view comparison passed and rollback state committed. Origin count does not prove independent operators.';
             } catch {
                 status.textContent = 'Directory refresh rejected; the last trusted bootstrap remains, with no automatic retry.';
             } finally {

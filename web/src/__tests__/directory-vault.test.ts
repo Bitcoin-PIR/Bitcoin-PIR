@@ -54,6 +54,8 @@ class Candidate implements WasmDirectoryCatalogCandidateV1 {
     return JSON.stringify({
       version: 1,
       directoryPubkeyHex: directory,
+      directoryMode: 'strict-multi-relay',
+      directoryAssurance: 'multi-origin-split-view-compared',
       shards: Array.from({ length: 16 }, (_, shard) => ({
         shard,
         checkpointEpoch: '1',
@@ -103,6 +105,9 @@ describe('encrypted directory rollback vault', () => {
     const first = new Candidate(0);
     const selected = await firstVault.acceptCatalog(first);
     expect(selected.shards).toHaveLength(16);
+    expect(JSON.stringify(first.seenCurrent)).not.toMatch(
+      /relay|directoryMode|directoryAssurance|invoice|payment|query/i,
+    );
     expect(first.acknowledgePersisted).toHaveBeenCalledOnce();
     expect(first.selectableCalledAfterAck).toBe(true);
     firstVault.close();

@@ -679,7 +679,10 @@ reviewed mainnet implementation and negative tests.
 6. retain the disposable local CDK fake-wallet token-import check, then run an
    approved WebPKI Cashu mint NUT-03/recovery/outage canary; separately run an
    approved regtest/signet Core Lightning canary;
-7. approved relay split-view/outage drill;
+7. approved mode-specific relay drill: centralized mode proves one-relay outage
+   fails closed without retry or strict-mode downgrade, while strict mode proves
+   two-origin completeness, split-view rejection and no fallback after one of an
+   exact two-origin set fails;
 8. logging/metrics review against `SECURITY.md`;
 9. ARC kept experimental and optional pending independent review. Local ARC
    integration requires `--allow-experimental-arc` on each configured

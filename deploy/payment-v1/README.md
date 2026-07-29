@@ -302,4 +302,7 @@ The directory service is still deliberately non-activatable while
 `relay-selection.toml.example` is `UNRESOLVED`. Do not include it in a public
 render, install a publisher key, or publish a catalog merely because the rest
 of a profile passes. Relay resolution, key installation/use and public Nostr
-publication are distinct reviewed/approved steps.
+publication are distinct reviewed/approved steps. Resolution also records one
+explicit directory transport mode: strict mode retains two to eight distinct
+WSS origins, while centralized mode accepts exactly one and must be presented as
+degraded. No render infers independent operators from origin count.

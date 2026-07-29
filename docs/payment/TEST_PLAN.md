@@ -260,11 +260,27 @@ lane. Deliberate wrong-lane probes must close; an exact-ID public readback
 proves the rejected EVENT sentinel was not persisted. The client
 cryptographically verifies the same complete 16-shard catalog from both,
 proves both stale-head views remain independently valid before requiring the
-exact split-view rejection, rejects one-relay-offline, resolves a lost positive
+exact split-view rejection, rejects one-relay-offline in strict mode, resolves a lost positive
 ACK with a public-lane bounded-backoff ID barrier followed by an idempotent
 same-event publisher-lane retry, and verifies both listeners return after each
 independent process restart. The test deliberately does not infer relay-operator
 or host independence from local process separation.
+
+Directory mode tests additionally require all of the following across the
+publisher CLI, staging readback, WASM and Web adapter:
+
+- one relay is rejected by the default strict path before network I/O;
+- exactly one relay is accepted only by the explicit
+  `centralized-single-relay` option/API and its selectable result is marked
+  `centralized-degraded-no-relay-cross-check`;
+- two strict origins still pass only after two complete 16-shard EOSE views and
+  same-epoch divergence remains a hard split-view failure;
+- when one member of an exact two-origin strict refresh fails, the remaining
+  view is not sent through or accepted by the centralized verifier;
+- zero relays, more than eight relays, or two relays combined with the
+  centralized option reject;
+- relay URL, mode, query and payment data never enter encrypted rollback-state
+  records. The mode is permitted only in the in-memory selectable result.
 
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:

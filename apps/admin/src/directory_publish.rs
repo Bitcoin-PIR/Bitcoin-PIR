@@ -30,7 +30,7 @@ use crate::directory_artifact::{
     MAX_EVENT_MESSAGE_BYTES_V1,
 };
 
-const MIN_RELAYS_V1: usize = 2;
+const MIN_STRICT_RELAYS_V1: usize = 2;
 const MAX_RELAYS_V1: usize = 8;
 const MAX_PUBLISH_ARTIFACTS_V1: usize = 1_024;
 const MAX_PUBLISH_EVENTS_V1: usize = 16 * 1_024;
@@ -45,9 +45,12 @@ pub struct DirectoryPublishArgs {
     /// Signed artifact: one canonical EVENT message or one exact 16-checkpoint array.
     #[arg(long = "artifact", required = true)]
     artifacts: Vec<PathBuf>,
-    /// Distinct credential-free canonical public wss relay. Repeat 2..8 times.
+    /// Distinct credential-free canonical public wss relay. Repeat 2..8 times by default.
     #[arg(long = "relay", required = true)]
     relays: Vec<String>,
+    /// Explicitly publish to exactly one centralized relay (degraded: no relay cross-check).
+    #[arg(long)]
+    centralized_single_relay: bool,
     /// Pinned x-only BIP340 directory publisher key (32-byte lowercase hex).
     #[arg(long)]
     directory_pubkey_hex: String,
@@ -60,6 +63,28 @@ pub struct DirectoryPublishArgs {
     /// Validate the frozen artifacts, key pin and relay set without network I/O.
     #[arg(long)]
     validate_only: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RelaySetModeV1 {
+    StrictMultiRelay,
+    CentralizedSingleRelay,
+}
+
+impl RelaySetModeV1 {
+    const fn directory_mode(self) -> &'static str {
+        match self {
+            Self::StrictMultiRelay => "strict-multi-relay",
+            Self::CentralizedSingleRelay => "centralized-single-relay",
+        }
+    }
+
+    const fn assurance(self) -> &'static str {
+        match self {
+            Self::StrictMultiRelay => "multi-origin-split-view-capable",
+            Self::CentralizedSingleRelay => "centralized-degraded-no-relay-cross-check",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -181,15 +206,20 @@ async fn run_with_publisher_v1<P: RelayPublisherV1>(
         decode_lower_fixed_hex::<32>(&args.directory_pubkey_hex, "directory publisher public key")?;
     let events = load_publish_events_v1(&args.artifacts, &directory_pubkey, args.now_unix)?;
     let event_set_digest = event_set_digest_v1(&events)?;
-    let targets = validate_relay_targets_v1(args.relays)?;
+    let relay_mode = if args.centralized_single_relay {
+        RelaySetModeV1::CentralizedSingleRelay
+    } else {
+        RelaySetModeV1::StrictMultiRelay
+    };
+    let targets = validate_relay_targets_v1(args.relays, relay_mode)?;
     if args.validate_only {
-        emit_validation_outcomes_v1(&targets, events.len(), event_set_digest);
+        emit_validation_outcomes_v1(&targets, events.len(), event_set_digest, relay_mode);
         return Ok(());
     }
     let timeout = Duration::from_secs(args.relay_timeout_seconds);
     let outcomes =
         publish_all_relays_v1(publisher, &targets, &events, event_set_digest, timeout).await;
-    let failures = emit_publish_outcomes_v1(&outcomes);
+    let failures = emit_publish_outcomes_v1(&outcomes, relay_mode);
     if failures == 0 {
         Ok(())
     } else {
@@ -204,13 +234,16 @@ fn emit_validation_outcomes_v1(
     targets: &[RelayTargetV1],
     event_count: usize,
     event_set_digest: [u8; 32],
+    relay_mode: RelaySetModeV1,
 ) {
     for target in targets {
         println!(
-            "relay_host={} event_count={} event_set_digest_hex={} result=validated",
+            "relay_host={} event_count={} event_set_digest_hex={} directory_mode={} assurance={} result=validated",
             target.host,
             event_count,
-            hex::encode(event_set_digest)
+            hex::encode(event_set_digest),
+            relay_mode.directory_mode(),
+            relay_mode.assurance(),
         );
     }
 }
@@ -238,23 +271,30 @@ async fn publish_all_relays_v1<P: RelayPublisherV1>(
     outcomes
 }
 
-fn emit_publish_outcomes_v1(outcomes: &[RelayPublishOutcomeV1]) -> usize {
+fn emit_publish_outcomes_v1(
+    outcomes: &[RelayPublishOutcomeV1],
+    relay_mode: RelaySetModeV1,
+) -> usize {
     let mut failures = 0usize;
     for outcome in outcomes {
         match outcome.result {
             Ok(()) => println!(
-                "relay_host={} event_count={} event_set_digest_hex={} result=ok",
+                "relay_host={} event_count={} event_set_digest_hex={} directory_mode={} assurance={} result=ok",
                 outcome.host,
                 outcome.event_count,
-                hex::encode(outcome.event_set_digest)
+                hex::encode(outcome.event_set_digest),
+                relay_mode.directory_mode(),
+                relay_mode.assurance(),
             ),
             Err(error) => {
                 failures += 1;
                 eprintln!(
-                    "relay_host={} event_count={} event_set_digest_hex={} result={}",
+                    "relay_host={} event_count={} event_set_digest_hex={} directory_mode={} assurance={} result={}",
                     outcome.host,
                     outcome.event_count,
                     hex::encode(outcome.event_set_digest),
+                    relay_mode.directory_mode(),
+                    relay_mode.assurance(),
                     error.code()
                 );
             }
@@ -523,11 +563,25 @@ fn validate_checkpoint_bundle_v1(
     Ok(())
 }
 
-fn validate_relay_targets_v1(relays: Vec<String>) -> Result<Vec<RelayTargetV1>, String> {
-    if !(MIN_RELAYS_V1..=MAX_RELAYS_V1).contains(&relays.len()) {
-        return Err(format!(
-            "--relay count must be between {MIN_RELAYS_V1} and {MAX_RELAYS_V1}"
-        ));
+fn validate_relay_targets_v1(
+    relays: Vec<String>,
+    relay_mode: RelaySetModeV1,
+) -> Result<Vec<RelayTargetV1>, String> {
+    match relay_mode {
+        RelaySetModeV1::StrictMultiRelay
+            if !(MIN_STRICT_RELAYS_V1..=MAX_RELAYS_V1).contains(&relays.len()) =>
+        {
+            return Err(format!(
+                "--relay count must be between {MIN_STRICT_RELAYS_V1} and {MAX_RELAYS_V1}; exactly one requires --centralized-single-relay"
+            ));
+        }
+        RelaySetModeV1::CentralizedSingleRelay if relays.len() != 1 => {
+            return Err(
+                "--centralized-single-relay requires exactly one --relay and never downgrades a multi-relay configuration"
+                    .to_owned(),
+            );
+        }
+        _ => {}
     }
     let mut seen_urls = BTreeSet::new();
     let mut seen_hosts = BTreeSet::new();
@@ -629,27 +683,54 @@ mod tests {
     }
 
     #[test]
-    fn relay_targets_require_two_to_eight_distinct_public_wss_hosts() {
-        assert!(validate_relay_targets_v1(vec!["wss://one.example".into()]).is_err());
-        assert!(validate_relay_targets_v1(vec![
-            "ws://one.example".into(),
-            "wss://two.example".into()
-        ])
+    fn relay_targets_require_explicit_centralized_opt_in_or_two_to_eight_strict_hosts() {
+        assert!(validate_relay_targets_v1(vec![], RelaySetModeV1::StrictMultiRelay).is_err());
+        assert!(validate_relay_targets_v1(
+            vec!["wss://one.example".into()],
+            RelaySetModeV1::StrictMultiRelay
+        )
         .is_err());
-        assert!(validate_relay_targets_v1(vec![
-            "wss://user@one.example".into(),
-            "wss://two.example".into()
-        ])
+        let centralized = validate_relay_targets_v1(
+            vec!["wss://one.example".into()],
+            RelaySetModeV1::CentralizedSingleRelay,
+        )
+        .unwrap();
+        assert_eq!(centralized.len(), 1);
+        assert_eq!(
+            RelaySetModeV1::CentralizedSingleRelay.assurance(),
+            "centralized-degraded-no-relay-cross-check"
+        );
+        assert!(validate_relay_targets_v1(
+            vec!["wss://one.example".into(), "wss://two.example".into()],
+            RelaySetModeV1::CentralizedSingleRelay,
+        )
         .is_err());
-        assert!(validate_relay_targets_v1(vec![
-            "wss://one.example/a".into(),
-            "wss://one.example/b".into()
-        ])
+        assert!(validate_relay_targets_v1(
+            (0..=MAX_RELAYS_V1)
+                .map(|index| format!("wss://relay-{index}.example"))
+                .collect(),
+            RelaySetModeV1::StrictMultiRelay,
+        )
         .is_err());
-        let targets = validate_relay_targets_v1(vec![
-            "wss://one.example".into(),
-            "wss://two.example/nostr".into(),
-        ])
+        assert!(validate_relay_targets_v1(
+            vec!["ws://one.example".into(), "wss://two.example".into()],
+            RelaySetModeV1::StrictMultiRelay
+        )
+        .is_err());
+        assert!(validate_relay_targets_v1(
+            vec!["wss://user@one.example".into(), "wss://two.example".into()],
+            RelaySetModeV1::StrictMultiRelay
+        )
+        .is_err());
+        assert!(validate_relay_targets_v1(
+            vec!["wss://one.example/a".into(), "wss://one.example/b".into()],
+            RelaySetModeV1::StrictMultiRelay
+        )
+        .is_err());
+        let targets = validate_relay_targets_v1(
+            vec!["wss://one.example".into(), "wss://two.example/nostr".into()],
+            RelaySetModeV1::StrictMultiRelay,
+        )
         .unwrap();
         assert_eq!(targets[0].host, "one.example");
         assert_eq!(targets[1].host, "two.example");
@@ -882,11 +963,14 @@ mod tests {
 
     #[tokio::test]
     async fn all_relays_are_attempted_and_partial_failure_or_timeout_is_non_success() {
-        let targets = validate_relay_targets_v1(vec![
-            "wss://one.example".into(),
-            "wss://two.example".into(),
-            "wss://three.example".into(),
-        ])
+        let targets = validate_relay_targets_v1(
+            vec![
+                "wss://one.example".into(),
+                "wss://two.example".into(),
+                "wss://three.example".into(),
+            ],
+            RelaySetModeV1::StrictMultiRelay,
+        )
         .unwrap();
         let key = DirectoryPublisherKeyV1::from_secret_bytes([27; 32]).unwrap();
         let events = vec![entry_event(&key, 1)];
@@ -917,7 +1001,10 @@ mod tests {
         assert!(outcomes
             .iter()
             .all(|outcome| outcome.event_set_digest == digest));
-        assert_eq!(emit_publish_outcomes_v1(&outcomes), 2);
+        assert_eq!(
+            emit_publish_outcomes_v1(&outcomes, RelaySetModeV1::StrictMultiRelay),
+            2
+        );
     }
 
     #[tokio::test]
@@ -936,6 +1023,7 @@ mod tests {
             DirectoryPublishArgs {
                 artifacts: vec![artifact],
                 relays: vec!["wss://one.example".into(), "wss://two.example".into()],
+                centralized_single_relay: false,
                 directory_pubkey_hex: hex::encode(key.public_key()),
                 now_unix: NOW,
                 relay_timeout_seconds: 1,

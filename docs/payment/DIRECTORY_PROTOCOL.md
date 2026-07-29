@@ -89,10 +89,15 @@ sequence/epoch fork is rejected rather than resolved by relay tie-breaking.
 The publisher also emits coarse-shard catalog-checkpoint events under a
 distinct `d` namespace. A checkpoint commits to its epoch, validity window,
 shard rule, and the sorted `(provider_id, directory_sequence, event_id)` set.
-Directory-based discovery requires at least two configured relays, compares
-the newest same-epoch checkpoints, and fails closed on different roots. This
-makes a seen split view detectable; it cannot stop a malicious directory from
-presenting a consistent malicious catalog to every relay.
+The default strict discovery mode requires two to eight configured WSS origins,
+compares the newest same-epoch checkpoints, and fails closed on different
+roots. This makes a seen split view detectable; it cannot stop a malicious
+directory publisher or coordinated relays from presenting one consistent
+malicious catalog everywhere. V1 also has an explicitly named
+`centralized-single-relay` mode for exactly one origin. That mode is displayed
+as centralized/degraded and provides no relay split-view or relay-outage
+cross-check. It does not weaken event signatures, checkpoint completeness,
+anti-rollback persistence, or later live provider verification.
 
 Before any entry in a shard is selectable, the client sorts the verified entry
 events by `provider_id` and requires an exact match with every checkpoint tuple.
@@ -107,12 +112,20 @@ The relay transport must wait for NIP-01 `EOSE` before declaring the initial
 shard complete; a timeout, `CLOSED`, disconnect, or missing `EOSE` leaves that
 relay's shard unusable rather than accepting a partial catalog.
 
-The V1 browser adapter opens two to eight distinct `wss://` relay origins,
-sends all 16 Rust-generated `REQ` filters to each, and forwards raw `EVENT`
-envelopes unchanged to the Rust/WASM verifier. A relay contributes a view only
-after every subscription reaches `EOSE`; at least two complete views are
-required. The adapter encrypts rollback states in IndexedDB and applies all
-entry plus 16 checkpoint transitions in one digest-CAS transaction under a
+The V1 browser adapter defaults to `strict-multi-relay`: it opens two to eight
+distinct `wss://` origins, sends all 16 Rust-generated `REQ` filters to each,
+and forwards raw `EVENT` envelopes unchanged to the strict Rust/WASM verifier.
+A relay contributes a view only after every subscription reaches `EOSE`; at
+least two complete views are required, and one failed member of an exact
+two-origin configuration never causes fallback to centralized mode. With more
+than two configured origins, strict mode intentionally accepts at least two
+complete views; all complete views are compared by WASM and incomplete origins
+contribute nothing. This is a strict multi-origin threshold, not centralized
+fallback. The separate `centralized-single-relay` UI/API option accepts exactly one origin and
+calls a distinct WASM verifier entry point whose input also carries that mode.
+The returned selectable catalog records the mode and degraded assurance, but
+the encrypted rollback state contains neither mode nor relay URL. The adapter
+applies all entry plus 16 checkpoint transitions in one digest-CAS transaction under a
 directory-key Web Lock. Rust withholds the selectable catalog until it receives
 the exact post-commit successor bytes. Refresh is explicit and never triggered
 by an address query, provider selection, or payment event.
@@ -420,8 +433,13 @@ policy. `max_archive_bytes` counts canonical event JSON BLOB bytes rather than
 SQLite/WAL/index disk usage. Operators must add filesystem quota and free-space
 monitoring, back up the database and WAL as one consistent state domain, and
 restore only a fully checked copy with the same publisher key and configured
-capacity. Two relay origins remain required; two names reaching the same relay
-do not create an independent view.
+capacity. Strict mode still requires two distinct WSS origins; centralized mode
+requires exactly one explicit origin. Two origins or processes on one machine
+do not create independent operator, network, storage, backup, or outage domains.
+They can detect accidental view divergence but provide substantially weaker
+availability and adversarial split-view resistance than independent operators.
+Neither arrangement makes a relay a trust root: clients authenticate the
+publisher's events and still execute the full live provider trust chain.
 
 ## Publisher artifacts and relay transport
 
@@ -500,7 +518,7 @@ The explicit `publish` command is the only directory-artifact command that
 opens the network. It accepts one or more already-signed canonical entry EVENT
 files and/or exact 16-message checkpoint arrays; it never accepts or reads a
 signing key. Pin the expected directory public key and publish the same frozen
-artifacts to between two and eight relay hostnames:
+artifacts to between two and eight relay hostnames in the default strict mode:
 
 ```sh
 bpir-admin directory-artifact publish \
@@ -508,6 +526,21 @@ bpir-admin directory-artifact publish \
   --artifact directory-checkpoints.json \
   --relay wss://relay-one.example \
   --relay wss://relay-two.example/nostr \
+  --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
+  --now-unix "$NOW" \
+  --relay-timeout-seconds 60
+```
+
+An operator who explicitly accepts centralized/degraded relay availability may
+instead publish to exactly one relay. Merely supplying one `--relay` is rejected;
+the named opt-in is mandatory and is included in every bounded outcome line:
+
+```sh
+bpir-admin directory-artifact publish \
+  --artifact pir-a.entry.event.json \
+  --artifact directory-checkpoints.json \
+  --relay wss://relay-one.example \
+  --centralized-single-relay \
   --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
   --now-unix "$NOW" \
   --relay-timeout-seconds 60
@@ -522,8 +555,8 @@ explicit network-publication boundary for the reviewed frozen inputs.
 Before dialing, every EVENT is verified through the production entry or
 checkpoint parser against that key and time. Duplicate IDs, noncanonical bytes,
 mixed/incomplete checkpoint bundles, and expired or malformed events fail
-closed. Relay URLs must be canonical credential-free public `wss://` URLs with
-distinct hostnames. Different hostnames do **not** prove different operators,
+closed. Relay URLs must be canonical credential-free public `wss://` URLs;
+strict-mode hostnames must be distinct. Different hostnames do **not** prove different operators,
 registrable domains, infrastructure, or legal control; the directory operator
 must audit those independence properties when selecting relays.
 
@@ -537,9 +570,11 @@ relay. This strict control-frame policy must be included in relay compatibility
 testing; a relay that injects Ping/Pong during the short publish exchange is not
 compatible with this V1 publisher.
 
-Publishing to multiple relays is not atomic. The command attempts every relay,
+Publishing to multiple relays is not atomic. Strict mode attempts every relay,
 prints only relay hostname, event count and a bounded result code, and exits
-nonzero if any relay fails. Each line also includes one domain-separated
+nonzero if any relay fails; it never silently converts that invocation to
+centralized mode. Centralized mode likewise exits nonzero when its only relay
+fails. Each line also includes the explicit directory mode/assurance and one domain-separated
 digest of the sorted event-ID/signature set, never an event ID. It never logs
 event content, signature or ID. An
 operator may safely rerun the exact immutable artifact: positive OK for an
@@ -562,6 +597,9 @@ metadata. Non-Unix publisher input fails closed. The tool requests the frozen
 artifact's exact IDs and
 requires the exact publisher-reported set digest, recomputes each NIP-01 event
 ID, and requires every exact event value once followed by EOSE from each relay.
+A centralized readback invocation likewise requires the explicit
+`--centralized-single-relay` flag and exactly one relay; strict readback retains
+the default two-to-eight range and never falls back after a failure.
 A
 positive publish OK and successful immediate readback are compatibility
 observations, not a durability SLA or proof of relay-operator independence.
@@ -586,6 +624,12 @@ publisher/readback threat model.
 - unexpected tags and JSON fields capable of carrying payment or peer artifacts
   fail closed;
 - catalog fetch request shape contains no pair, query, address, or method;
+- one relay without the named centralized opt-in rejects, one with the opt-in
+  verifies and is marked centralized/degraded, strict two-origin mode still
+  compares split views, and zero, more than eight, or centralized-plus-two
+  inputs reject before dialing;
+- failure of either member in an exact two-origin strict refresh never invokes
+  the centralized verifier or accepts the remaining view;
 - exact publisher transport requires positive per-event/per-relay OK, rejects
   false, duplicate, unexpected, missing, non-text, oversized and timed-out
   replies, and reports partial success as a command failure;

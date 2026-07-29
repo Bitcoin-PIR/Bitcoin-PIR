@@ -63,6 +63,7 @@ function replaceRelayField(text, field, value) {
 function resolvedRelaySelection(text, overrides = {}) {
   const values = {
     status: "RESOLVED",
+    directory_mode: "strict-multi-relay",
     implementation: "bitcoinpir-directory-only",
     source_repository: "https://github.com/Bitcoin-PIR/Bitcoin-PIR.git",
     source_commit: "1".repeat(40),
@@ -974,6 +975,21 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
     publisher_pubkey_hex: "0".repeat(64),
   });
   assert.throws(() => validateRelaySelection(zeroPublisher), /must be non-zero/);
+
+  const implicitOrUnknownMode = resolvedRelaySelection(unresolved, {
+    directory_mode: "single",
+  });
+  assert.throws(
+    () => validateRelaySelection(implicitOrUnknownMode),
+    /directory_mode must be strict-multi-relay or centralized-single-relay/,
+  );
+
+  assert.equal(
+    validateRelaySelection(resolvedRelaySelection(unresolved, {
+      directory_mode: "centralized-single-relay",
+    })).directoryMode,
+    "centralized-single-relay",
+  );
 });
 
 test("a future directory-only exact-hash relay selection is accepted", () => {
@@ -983,6 +999,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
   );
   assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
     status: "RESOLVED",
+    directoryMode: "strict-multi-relay",
     binarySha256: "4".repeat(64),
     publisherPubkey: "6".repeat(64),
   });
