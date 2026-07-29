@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-CMiYEGZ+09+D3Zf8RXg8tANKrBNXTzck8lHgcj0tw/w=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-kBwyD5IKxlHW+y14Bc8Rmn3Psc3PT1KpZlCyt5en9rc=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -907,7 +907,7 @@
                             <button type="button" id="admissionApplyBootstrap" class="btn">Apply in memory</button>
                             <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Commercial admission unconfigured; all queries fail closed.</span>
                         </div>
-                        <label for="admissionDirectoryMode">Directory relay assurance mode</label>
+                        <label for="admissionDirectoryMode">Assurance mode for the next directory refresh (changing it clears current directory trust)</label>
                         <select id="admissionDirectoryMode" class="input">
                             <option value="strict-multi-relay" selected>Strict multi-relay (2–8 distinct WSS origins)</option>
                             <option value="centralized-single-relay">Centralized single relay — degraded, no relay cross-check</option>
@@ -1644,7 +1644,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
@@ -1714,6 +1714,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ─── Product admission state (query-independent, no localStorage) ──
         let productTrustedBootstrap = null;
         let verifiedDirectoryCatalog = null;
+        let directoryRefreshGeneration = 0;
+        let admissionTrustTransitions = 0;
+        let admissionTrustRevision = 0;
         let admissionVaultPromise = null;
         const admissionControllers = { dpf: null, onion: null, harmony: null, oram: null };
         const admissionPanels = {
@@ -1860,26 +1863,59 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function closeAllAdmissionAttempts(message) {
-            await Promise.all(Object.keys(admissionControllers).map(kind => closeAdmissionAttempt(kind, message)));
+            admissionTrustTransitions += 1;
+            try {
+                await Promise.all(Object.keys(admissionControllers).map(kind => closeAdmissionAttempt(kind, message)));
+            } finally {
+                admissionTrustTransitions -= 1;
+            }
         }
 
         document.getElementById('admissionApplyBootstrap').addEventListener('click', async () => {
             const status = document.getElementById('admissionConfigStatus');
             const textarea = document.getElementById('admissionBootstrapJson');
+            const applyGeneration = ++directoryRefreshGeneration;
+            let parsed = null;
             try {
-                const parsed = parseProductTrustedBootstrapV1(textarea.value);
-                await closeAllAdmissionAttempts('Trusted bootstrap changed; start a new strict admission attempt.');
-                productTrustedBootstrap = parsed;
-                verifiedDirectoryCatalog = null;
-                textarea.value = '';
-                renderTrustedProviderOptions();
-                status.textContent = `${parsed.providers.length} trusted provider bootstrap(s) loaded in memory; no connection was made.`;
+                parsed = parseProductTrustedBootstrapV1(textarea.value);
             } catch {
-                await closeAllAdmissionAttempts('Invalid trusted bootstrap; strict admission attempts were closed.');
-                productTrustedBootstrap = null;
+                // Keep parsed null. Invalid bootstrap input invalidates the old
+                // in-memory trust just as a valid replacement does.
+            }
+            admissionTrustRevision += 1;
+            productTrustedBootstrap = null;
+            verifiedDirectoryCatalog = null;
+            renderTrustedProviderOptions();
+            status.textContent = parsed
+                ? 'Applying replacement trusted bootstrap; admission is temporarily fail closed.'
+                : 'Rejecting invalid trusted bootstrap; admission is temporarily fail closed.';
+            await closeAllAdmissionAttempts(parsed
+                ? 'Trusted bootstrap changed; start a new strict admission attempt.'
+                : 'Invalid trusted bootstrap; strict admission attempts were closed.');
+            if (applyGeneration !== directoryRefreshGeneration) return;
+            if (!parsed) {
+                status.textContent = 'Rejected invalid trusted bootstrap; commercial admission remains fail closed.';
+                return;
+            }
+            productTrustedBootstrap = parsed;
+            textarea.value = '';
+            renderTrustedProviderOptions();
+            status.textContent = `${parsed.providers.length} trusted provider bootstrap(s) loaded in memory; no connection was made.`;
+        });
+
+        document.getElementById('admissionDirectoryMode').addEventListener('change', async event => {
+            directoryRefreshGeneration += 1;
+            const nextMode = event.currentTarget.value;
+            if (verifiedDirectoryCatalog && verifiedDirectoryCatalog.directoryMode !== nextMode) {
+                admissionTrustRevision += 1;
                 verifiedDirectoryCatalog = null;
                 renderTrustedProviderOptions();
-                status.textContent = 'Rejected invalid trusted bootstrap; commercial admission remains fail closed.';
+                document.getElementById('admissionConfigStatus').textContent =
+                    'Directory refresh mode changed; the previous verified catalog was cleared before the next refresh. Admission remains fail closed.';
+                await closeAllAdmissionAttempts('Directory refresh mode changed; the previous directory trust was cleared.');
+            } else {
+                document.getElementById('admissionConfigStatus').textContent =
+                    'Directory refresh mode changed; no directory catalog is active. Run an explicit refresh before directory trust can be used.';
             }
         });
 
@@ -1888,6 +1924,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const relays = document.getElementById('admissionDirectoryRelays').value
                 .split('\n').map(value => value.trim()).filter(Boolean);
             const relayMode = document.getElementById('admissionDirectoryMode').value;
+            const refreshGeneration = ++directoryRefreshGeneration;
             const pinnedDirectoryPubkeyHex = document.getElementById('admissionDirectoryKey').value.trim();
             let vault = null;
             try {
@@ -1896,19 +1933,33 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'Refreshing all 16 directory shards from one centralized relay (degraded; no relay cross-check)…'
                     : 'Refreshing all 16 directory shards from distinct WSS relay origins…';
                 vault = await DirectoryRollbackVaultV1.open();
-                verifiedDirectoryCatalog = await refreshNostrDirectoryV1({
+                const candidateDirectoryCatalog = await refreshNostrDirectoryV1({
                     relays,
                     relayMode,
                     pinnedDirectoryPubkeyHex,
                     vault,
                 });
+                if (refreshGeneration !== directoryRefreshGeneration
+                    || document.getElementById('admissionDirectoryMode').value !== relayMode) {
+                    return;
+                }
+                admissionTrustRevision += 1;
                 await closeAllAdmissionAttempts('Directory trust changed; start a new strict admission attempt.');
+                if (refreshGeneration !== directoryRefreshGeneration) return;
+                verifiedDirectoryCatalog = candidateDirectoryCatalog;
                 renderTrustedProviderOptions();
                 status.textContent = verifiedDirectoryCatalog.directoryMode === 'centralized-single-relay'
                     ? 'Centralized/degraded directory verified from one complete relay; no relay split-view or outage cross-check. Rollback state committed and live provider verification remains strict.'
                     : 'Directory verified across at least two complete WSS origins; same-epoch split-view comparison passed and rollback state committed. Origin count does not prove independent operators.';
             } catch {
-                status.textContent = 'Directory refresh rejected; the last trusted bootstrap remains, with no automatic retry.';
+                if (refreshGeneration !== directoryRefreshGeneration) return;
+                const failure = directoryRefreshFailureStateV1(verifiedDirectoryCatalog, relayMode);
+                if (!failure.retainCatalog) {
+                    if (verifiedDirectoryCatalog) admissionTrustRevision += 1;
+                    verifiedDirectoryCatalog = null;
+                    renderTrustedProviderOptions();
+                }
+                status.textContent = failure.statusText;
             } finally {
                 vault?.close();
             }
@@ -2134,7 +2185,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function prepareProductAdmission(kind) {
+            if (admissionTrustTransitions !== 0) {
+                throw new Error('admission trust is changing; start again after the fail-closed transition completes');
+            }
+            const trustRevision = admissionTrustRevision;
             const vault = await admissionVault();
+            if (trustRevision !== admissionTrustRevision || admissionTrustTransitions !== 0) {
+                throw new Error('admission trust changed while the credential vault was opening');
+            }
             const topology = kind === 'dpf' || kind === 'harmony'
                 ? 'independent-pair'
                 : 'single-provider';
@@ -2204,12 +2262,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     };
                 });
             }
+            if (trustRevision !== admissionTrustRevision || admissionControllers[kind] !== controller) {
+                await controller.close().catch(() => {});
+                throw new Error('admission trust changed while strict provider verification was in flight');
+            }
             installPreparedProductQueryShapes(kind, controller);
             admissionPanels[kind].render(controller.snapshot());
             return controller;
         }
 
         async function runProductAdmissionQuery(kind, query) {
+            if (admissionTrustTransitions !== 0) {
+                throw new Error('admission trust is changing; queries remain fail closed');
+            }
             validateQueryInputBeforeAdmission(kind);
             let controller = admissionControllers[kind];
             const phase = controller?.snapshot().phase ?? 'idle';

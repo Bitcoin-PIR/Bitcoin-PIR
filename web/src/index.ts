@@ -339,6 +339,13 @@ export {
   directoryProviderTrustMaterialV1,
   refreshNostrDirectoryV1,
 } from './nostr-directory.js';
+export {
+  directoryRefreshFailureStateV1,
+} from './directory-refresh-status.js';
+export type {
+  DirectoryRefreshFailureStateV1,
+  RetainedDirectoryCatalogAssuranceV1,
+} from './directory-refresh-status.js';
 
 // Product application admission lifecycle. These controllers contain no
 // address/query payloads and never persist payment material in localStorage.

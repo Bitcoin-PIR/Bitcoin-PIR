@@ -121,7 +121,7 @@ describe('pre-verification security badge rendering', () => {
     }
   });
 
-  it('closes active admission before invalid bootstrap trust is cleared', () => {
+  it('invalidates directory refresh and clears old trust before bootstrap replacement awaits', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const handlerStart = html.indexOf(
       "document.getElementById('admissionApplyBootstrap').addEventListener",
@@ -133,14 +133,42 @@ describe('pre-verification security badge rendering', () => {
     expect(handlerStart).toBeGreaterThanOrEqual(0);
     expect(handlerEnd).toBeGreaterThan(handlerStart);
     const handler = html.slice(handlerStart, handlerEnd);
-    const rejection = handler.indexOf('} catch {');
-    const close = handler.indexOf('await closeAllAdmissionAttempts(', rejection);
-    const clearBootstrap = handler.indexOf('productTrustedBootstrap = null;', rejection);
-    const clearDirectory = handler.indexOf('verifiedDirectoryCatalog = null;', rejection);
-    expect(rejection).toBeGreaterThanOrEqual(0);
-    expect(close).toBeGreaterThan(rejection);
-    expect(clearBootstrap).toBeGreaterThan(close);
+    const invalidate = handler.indexOf('const applyGeneration = ++directoryRefreshGeneration;');
+    const clearBootstrap = handler.indexOf('productTrustedBootstrap = null;');
+    const clearDirectory = handler.indexOf('verifiedDirectoryCatalog = null;', clearBootstrap);
+    const render = handler.indexOf('renderTrustedProviderOptions();', clearDirectory);
+    const close = handler.indexOf('await closeAllAdmissionAttempts(', render);
+    const generationCheck = handler.indexOf('applyGeneration !== directoryRefreshGeneration', close);
+    expect(invalidate).toBeGreaterThanOrEqual(0);
+    expect(clearBootstrap).toBeGreaterThan(invalidate);
     expect(clearDirectory).toBeGreaterThan(clearBootstrap);
+    expect(render).toBeGreaterThan(clearDirectory);
+    expect(close).toBeGreaterThan(render);
+    expect(generationCheck).toBeGreaterThan(close);
+  });
+
+  it('clears active directory trust when the selected refresh mode changes', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const handlerStart = html.indexOf(
+      "document.getElementById('admissionDirectoryMode').addEventListener",
+    );
+    const handlerEnd = html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+      handlerStart,
+    );
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    const handler = html.slice(handlerStart, handlerEnd);
+    const invalidate = handler.indexOf('directoryRefreshGeneration += 1;');
+    const mismatch = handler.indexOf('verifiedDirectoryCatalog.directoryMode !== nextMode');
+    const clear = handler.indexOf('verifiedDirectoryCatalog = null;', mismatch);
+    const render = handler.indexOf('renderTrustedProviderOptions();', clear);
+    const close = handler.indexOf('await closeAllAdmissionAttempts(', render);
+    expect(invalidate).toBeGreaterThanOrEqual(0);
+    expect(mismatch).toBeGreaterThan(invalidate);
+    expect(clear).toBeGreaterThan(mismatch);
+    expect(render).toBeGreaterThan(clear);
+    expect(close).toBeGreaterThan(render);
   });
 
   it('ships an OnionPIR loader that does not require unsafe-eval', () => {
