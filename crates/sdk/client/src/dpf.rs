@@ -24,6 +24,7 @@ use crate::service::{
     AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
 };
 use crate::transport::PirTransport;
+use crate::verified_query::VerifiedQueryResult;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
 use ed25519_dalek::VerifyingKey;
@@ -346,9 +347,9 @@ fn collect_merkle_items_from_traces(traces: &[QueryTraces]) -> (Vec<BucketMerkle
 /// Build `BucketMerkleItem`s for one query from a `QueryResult`'s
 /// inspector-populated fields (`index_bins`, `chunk_bins`,
 /// `matched_index_idx`). Symmetric with [`items_from_trace`] — same
-/// per-query-item layout, same ordering — but works on the public type
-/// so callers can reverify persisted results via
-/// [`DpfClient::verify_merkle_batch_for_results`].
+/// per-query-item layout, same ordering — but works on `QueryResult` for the
+/// crate-internal membership stage. It does not bind caller-visible entries
+/// to script-hash inputs and must never become a public release authority.
 fn items_from_inspector_result(result: &QueryResult) -> Vec<BucketMerkleItem> {
     result
         .index_bins
@@ -416,9 +417,9 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
 }
 
 /// Move internal query traces onto public results for the split inspector
-/// flow.  Genuine absence is represented by a synthesised result so its INDEX
-/// bins survive, but every output remains explicitly unverified until the
-/// caller completes `verify_merkle_batch_for_results`.
+/// flow. Genuine absence is represented by a synthesised result so its INDEX
+/// bins survive, but every output remains explicitly unverified. Only the
+/// public atomic wrapper may release it after semantic and membership checks.
 fn attach_inspector_traces(
     mut results: Vec<Option<QueryResult>>,
     traces: Vec<QueryTraces>,
@@ -1840,10 +1841,9 @@ impl DpfClient {
     /// false`) so the caller can distinguish verification failure from a
     /// genuine not-found.
     ///
-    /// Implementation is a thin shim over the two helpers that also power
-    /// the standalone [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// API — items come from the per-query [`QueryTraces`], but the verifier
-    /// itself is shared.
+    /// Implementation is a thin shim over the helpers that also power the
+    /// crate-internal membership stage: items come from per-query
+    /// [`QueryTraces`], while the Merkle walker itself is shared.
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -1857,9 +1857,9 @@ impl DpfClient {
     ) -> PirResult<()> {
         // Log the per-query outcome/item-count summary — kept here (not in
         // `collect_merkle_items_from_traces`) because this is the path that
-        // feeds `[PIR-AUDIT]` audit logs. The `verify_merkle_batch_for_results`
-        // path rebuilds items from already-audited query results, so it
-        // doesn't need to re-log the bin counts.
+        // feeds `[PIR-AUDIT]` audit logs. The crate-internal membership stage
+        // rebuilds items from already-audited query results, so it doesn't
+        // need to re-log the bin counts.
         for (qi, trace) in traces.iter().enumerate() {
             let outcome = match trace.matched_index_idx {
                 Some(_) => {
@@ -1917,9 +1917,8 @@ impl DpfClient {
     }
 
     /// Shared verifier backend used by both [`run_merkle_verification`]
-    /// (inline, over fresh `QueryTraces`) and
-    /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// (standalone, over persisted `QueryResult.index_bins/chunk_bins`).
+    /// (inline, over fresh `QueryTraces`) and the crate-internal membership
+    /// stage over ephemeral `QueryResult.index_bins/chunk_bins`.
     ///
     /// Runs the full Merkle pipeline: `REQ_BUCKET_MERKLE_TREE_TOPS` fetch
     /// on server 0, then [`verify_bucket_merkle_batch_dpf`] (K-padded
@@ -2044,9 +2043,9 @@ impl DpfClient {
                     // this to `false` if the INDEX proof fails.
                     merkle_verified: true,
                     raw_chunk_data: None,
-                    // Inspector fields stay empty here — only the inspector
-                    // path (`query_batch_with_inspector`) populates them
-                    // from `traces`.
+                    // Inspector fields stay empty here — only the atomic
+                    // verified-inspector composition populates them from
+                    // `traces`.
                     index_bins: Vec::new(),
                     chunk_bins: Vec::new(),
                     matched_index_idx: None,
@@ -2084,9 +2083,8 @@ impl DpfClient {
                 } else {
                     None
                 },
-                // Inspector fields stay empty here — only the inspector
-                // path (`query_batch_with_inspector`) copies them from
-                // `traces` into the result.
+                // Inspector fields stay empty here — only the atomic
+                // verified-inspector composition copies them from `traces`.
                 index_bins: Vec::new(),
                 chunk_bins: Vec::new(),
                 matched_index_idx: None,
@@ -3042,11 +3040,9 @@ impl DpfClient {
         Ok(())
     }
 
-    /// Run a batch of PIR queries against `db_id` and return the raw
-    /// per-query results **with inspector state populated**, deferring
-    /// Merkle verification to a later
-    /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
-    /// call.
+    /// Crate-internal first half of the verified inspector composition.
+    /// Returns raw per-query results with inspector state populated and must
+    /// never be exposed outside this crate before semantic and Merkle checks.
     ///
     /// # Shape vs. the trait-level `query_batch`
     ///
@@ -3067,9 +3063,8 @@ impl DpfClient {
     ///   absence proof — that invariant is preserved end-to-end by
     ///   `query_index_level`).
     /// * `merkle_verified` is always `false` because Merkle was **not**
-    ///   attempted. Callers MUST keep entries quarantined and pass the results to
-    ///   `verify_merkle_batch_for_results`, which returns the real
-    ///   verdicts.
+    ///   attempted. The atomic wrapper keeps entries quarantined, validates
+    ///   exact input/decoded semantics, then runs the membership-only helper.
     /// * Empty input and databases without a bucket-Merkle commitment are
     ///   rejected before an address-dependent PIR frame is sent.
     ///
@@ -3086,7 +3081,7 @@ impl DpfClient {
         skip_all,
         fields(backend = "dpf", db_id, num_queries = script_hashes.len())
     )]
-    pub async fn query_batch_with_inspector(
+    pub(crate) async fn query_batch_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
         db_id: u8,
@@ -3131,12 +3126,14 @@ impl DpfClient {
     /// reconstruction, and Merkle verification all complete inside this one
     /// native call; no unverified result is returned to the caller. The batch
     /// is all-or-nothing so a single failed proof releases no sibling slot.
+    /// Success returns immutable, non-deserializable authority objects bound
+    /// to each exact script hash and to `db_id`.
     pub async fn query_batch_verified_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
         db_id: u8,
-    ) -> PirResult<Vec<Option<QueryResult>>> {
-        let mut results = self
+    ) -> PirResult<Vec<VerifiedQueryResult>> {
+        let results = self
             .query_batch_with_inspector(script_hashes, db_id)
             .await?;
         let db_info = self
@@ -3155,24 +3152,42 @@ impl DpfClient {
                 "DPF verified inspector batch contains a failed inclusion proof".into(),
             ));
         }
-        for result in results.iter_mut().flatten() {
-            result.merkle_verified = true;
+        if results.len() != script_hashes.len() {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result count mismatch: expected {}, got {}",
+                script_hashes.len(),
+                results.len()
+            )));
         }
-        Ok(results)
+        script_hashes
+            .iter()
+            .copied()
+            .zip(results)
+            .map(|(script_hash, result)| {
+                result
+                    .map(|result| VerifiedQueryResult::new(script_hash, db_id, result))
+                    .ok_or_else(|| {
+                        PirError::MerkleVerificationFailed(
+                            "DPF verified inspector released a missing result".into(),
+                        )
+                    })
+            })
+            .collect()
     }
 
-    /// Standalone per-bucket Merkle verifier for results previously
-    /// returned by [`query_batch_with_inspector`](Self::query_batch_with_inspector)
-    /// (or reconstructed by the caller from persisted storage — the
-    /// verifier only needs `QueryResult.index_bins`, `chunk_bins`, and
-    /// `matched_index_idx`).
+    /// Crate-internal per-bucket Merkle membership stage for fresh results
+    /// retained by the atomic verified-inspector call.
+    ///
+    /// This helper authenticates bin membership only. It does **not** bind
+    /// `QueryResult.entries` to script-hash inputs and therefore must never be
+    /// exposed as, or interpreted as, a complete result release verdict.
     ///
     /// Rebuilds the same `BucketMerkleItem` set the inline
     /// [`run_merkle_verification`](Self::run_merkle_verification) path
     /// builds, then runs the networked verifier via the shared
     /// [`verify_merkle_items`](Self::verify_merkle_items) helper.
     ///
-    /// Returns one `bool` per input query:
+    /// Returns one membership `bool` per input query:
     /// * `true`  — every required item for that query verified.
     /// * `false` — at least one attached item failed the proof; the
     ///   corresponding result must be treated as untrusted and should
@@ -3193,7 +3208,7 @@ impl DpfClient {
         skip_all,
         fields(backend = "dpf", db_id, num_results = results.len())
     )]
-    pub async fn verify_merkle_batch_for_results(
+    pub(crate) async fn verify_merkle_batch_for_results(
         &mut self,
         results: &[Option<QueryResult>],
         db_id: u8,

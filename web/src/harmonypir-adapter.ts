@@ -1233,7 +1233,7 @@ export class HarmonyPirClientAdapter {
   /**
    * No-op for API compatibility. The legacy client reserved and
    * allocated per-group WASM state here; the native `HarmonyClient`
-   * does this lazily inside `query_batch_with_inspector`, so there's
+   * does this lazily inside `queryBatchVerified`, so there's
    * nothing to do up front.
    */
   async initGroups(): Promise<void> {

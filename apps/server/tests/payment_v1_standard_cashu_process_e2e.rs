@@ -6,7 +6,7 @@
 //! hostname/time/WebPKI validation plus a mandatory leaf-SPKI pin), while the
 //! peer provider independently selects Free/OpenBestEffort. The client uses
 //! attestation-bound secure channels, proof-bound bucket-Merkle preflight, a
-//! real two-server DPF query, and explicit Merkle absence verification.
+//! real two-server DPF query, and atomic input/CHUNK/Merkle verification.
 //!
 //! The CA, provider keys, accepted input bearer and mint signing key are public
 //! deterministic fixtures; provider output secrets still come from the real OS
@@ -353,51 +353,36 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
         .expect("proof-bound bucket-Merkle tree-top preflight");
     let leakage = Arc::new(BufferingLeakageRecorder::new());
     client.set_leakage_recorder(Some(leakage.clone()));
-    let mut results = client
-        .query_batch_with_inspector(&[[0x39; 20], [0x3a; 20]], 0)
+    let results = client
+        .query_batch_verified_with_inspector(&[[0x39; 20], [0x3a; 20]], 0)
         .await
-        .expect("one paid two-address DPF inspector batch");
+        .expect("one paid two-address atomically verified DPF batch");
 
     // Payment V1 grants one logical job per INDEX frame, not per address.
-    // The N=2 inspector call must therefore use one packed PBC INDEX round
+    // The N=2 verified call must therefore use one packed PBC INDEX round
     // (one transcript entry per server).  The old sequential implementation
     // emitted two INDEX rounds and the second was rejected by the strict
     // max_logical_inputs=1 grant below.
-    let raw_profile = leakage.take_profile("dpf");
-    assert_eq!(raw_profile.count_of_kind(&RoundKind::Index), 2);
-    assert_eq!(raw_profile.count_of_kind(&RoundKind::Chunk), 4);
+    let verified_profile = leakage.take_profile("dpf");
+    assert_eq!(verified_profile.count_of_kind(&RoundKind::Index), 2);
+    assert_eq!(verified_profile.count_of_kind(&RoundKind::Chunk), 4);
     assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|result| result
-        .as_ref()
-        .is_some_and(|result| !result.merkle_verified)));
+    assert_eq!(results[0].script_hash(), [0x39; 20]);
+    assert_eq!(results[1].script_hash(), [0x3a; 20]);
+    assert!(results.iter().all(|result| result.db_id() == 0));
     assert_ne!(
-        results[0].as_ref().unwrap().index_bins[0].pbc_group,
-        results[1].as_ref().unwrap().index_bins[0].pbc_group,
+        results[0].index_bins()[0].pbc_group,
+        results[1].index_bins()[0].pbc_group,
         "fixed N=2 vectors must occupy independent PBC groups",
     );
 
-    // Exercise one real standalone batch verifier call with a deliberately
-    // bad first proof.  Per-query folding must preserve the independent
-    // positive verdict for query 1; it must never promote either raw result's
-    // embedded flag (the immutable return value remains quarantined).
-    results[0]
-        .as_mut()
-        .and_then(|result| result.index_bins.first_mut())
-        .and_then(|bin| bin.bin_content.first_mut())
-        .map(|byte| *byte ^= 1)
-        .expect("first inspector result has a Merkle-covered INDEX bin");
-    let verdicts = client
-        .verify_merkle_batch_for_results(&results, 0)
-        .await
-        .expect("single real bucket-Merkle batch verification");
-    assert_eq!(verdicts, vec![false, true]);
+    // The public SDK surface is atomic: it never exposes the internal raw
+    // inspector/membership split, so both slots have already passed exact
+    // input semantics and Merkle verification here. Partial-verdict/tamper
+    // behaviour remains covered by crate-internal unit tests.
     assert!(results
         .iter()
-        .all(|result| result.as_ref().is_some_and(|result| {
-            result.entries.is_empty()
-                && result.matched_index_idx.is_none()
-                && !result.merkle_verified
-        })));
+        .all(|result| { result.entries().is_empty() && result.matched_index_idx().is_none() }));
     client.disconnect().await.unwrap();
 
     let (stdout0_first, stderr0_first) = server0.stop();
@@ -576,17 +561,13 @@ async fn standard_cashu_real_cdk_browser_provider_two_server_e2e() {
         .await
         .expect("proof-bound bucket-Merkle tree-top preflight");
     let results = client
-        .query_batch_with_inspector(&[[0x39; 20]], 0)
+        .query_batch_verified_with_inspector(&[[0x39; 20]], 0)
         .await
-        .expect("real two-server DPF query after browser Cashu admission");
-    let verdicts = client
-        .verify_merkle_batch_for_results(&results, 0)
-        .await
-        .expect("real bucket-Merkle absence verification");
-    assert_eq!(verdicts, vec![true]);
-    assert!(results[0]
-        .as_ref()
-        .is_some_and(|result| result.entries.is_empty() && result.matched_index_idx.is_none()));
+        .expect("real atomically verified two-server DPF query after browser Cashu admission");
+    assert_eq!(results[0].script_hash(), [0x39; 20]);
+    assert_eq!(results[0].db_id(), 0);
+    assert!(results[0].entries().is_empty());
+    assert!(results[0].matched_index_idx().is_none());
     client.disconnect().await.unwrap();
 
     let (stdout0_first, stderr0_first) = server0.stop();
