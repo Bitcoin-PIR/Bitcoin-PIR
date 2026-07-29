@@ -181,15 +181,7 @@ function validateUuid(value, label) {
 }
 
 function readOneLinkRegular(path, label, maxBytes = MAX_JSON_BYTES) {
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
-    fail(`${label} must be a one-link regular file: ${path}`);
-  }
-  if (realpathSync(path) !== path) fail(`${label} resolves through a symlink: ${path}`);
-  if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > maxBytes) {
-    fail(`${label} exceeds its size limit: ${path}`);
-  }
-  return readFileSync(path);
+  return readOneLinkRegularBoundToDescriptor(path, label, maxBytes).bytes;
 }
 
 function strictJsonBytes(bytes, label) {
@@ -273,16 +265,185 @@ function inspectTrustedCommand(path) {
   };
 }
 
+function statInteger(value, label) {
+  const number = typeof value === "bigint" ? Number(value) : value;
+  if (!Number.isSafeInteger(number) || number < 0) {
+    fail(`${label} is outside the safe evidence integer range`);
+  }
+  return number;
+}
+
+function statMode(stat) {
+  const mode = typeof stat.mode === "bigint"
+    ? Number(stat.mode & 0o7777n)
+    : stat.mode & 0o7777;
+  return mode.toString(8).padStart(4, "0");
+}
+
+function statNanoseconds(stat, field) {
+  const nanoseconds = stat[`${field}Ns`];
+  if (typeof nanoseconds === "bigint") return nanoseconds.toString();
+  const milliseconds = stat[`${field}Ms`];
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    fail(`installed artifact ${field} timestamp is invalid`);
+  }
+  return BigInt(Math.trunc(milliseconds * 1_000_000)).toString();
+}
+
 function stableStat(stat) {
   return {
     dev: stat.dev.toString(),
-    gid: stat.gid,
+    gid: statInteger(stat.gid, "installed artifact GID"),
     ino: stat.ino.toString(),
-    mode: (stat.mode & 0o7777).toString(8).padStart(4, "0"),
-    nlink: stat.nlink,
-    size: stat.size,
-    uid: stat.uid,
+    mode: statMode(stat),
+    nlink: statInteger(stat.nlink, "installed artifact link count"),
+    size: statInteger(stat.size, "installed artifact size"),
+    uid: statInteger(stat.uid, "installed artifact UID"),
   };
+}
+
+function preciseInstalledStat(stat) {
+  return {
+    ...stableStat(stat),
+    ctime_ns: statNanoseconds(stat, "ctime"),
+    mtime_ns: statNanoseconds(stat, "mtime"),
+  };
+}
+
+function readExactDescriptorBytes(fd, expectedSize, label, path) {
+  const size = statInteger(expectedSize, `${label} size`);
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count === 0) fail(`${label} became truncated during descriptor read: ${path}`);
+    offset += count;
+  }
+  const trailing = Buffer.alloc(1);
+  if (readSync(fd, trailing, 0, 1, bytes.length) !== 0) {
+    fail(`${label} grew during descriptor read: ${path}`);
+  }
+  return bytes;
+}
+
+function assertOneLinkCanonicalRegular(path, stat, label, maxBytes) {
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    statInteger(stat.nlink, `${label} link count`) !== 1 ||
+    realpathSync(path) !== path
+  ) {
+    fail(`${label} must be a canonical one-link regular file: ${path}`);
+  }
+  const size = statInteger(stat.size, `${label} size`);
+  if (size > maxBytes) fail(`${label} exceeds its size limit: ${path}`);
+}
+
+function collectFinalOneLinkRegularSnapshot(
+  path,
+  label,
+  expectedBytes,
+  maxBytes,
+  testHooks = undefined,
+) {
+  const before = lstatSync(path, { bigint: true });
+  assertOneLinkCanonicalRegular(path, before, label, maxBytes);
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, `${label} final path and descriptor`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      `${label} final path and descriptor`,
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterFinalPathOpen");
+    const bytes = readExactDescriptorBytes(fd, opened.size, label, path);
+    const after = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, after, `${label} final descriptor snapshots`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      opened,
+      after,
+      `${label} final descriptor snapshots`,
+      path,
+    );
+    if (!bytes.equals(expectedBytes)) fail(`${label} changed before its final descriptor read: ${path}`);
+    const pathAfter = lstatSync(path, { bigint: true });
+    assertOneLinkCanonicalRegular(path, pathAfter, `${label} final confirmation`, maxBytes);
+    assertSameInstalledFileSnapshot(after, pathAfter, `${label} final descriptor and path`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      after,
+      pathAfter,
+      `${label} final descriptor and path`,
+      path,
+    );
+    return { stat: after };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readOneLinkRegularBoundToDescriptor(
+  path,
+  label,
+  maxBytes = MAX_JSON_BYTES,
+  testHooks = undefined,
+) {
+  const before = lstatSync(path, { bigint: true });
+  assertOneLinkCanonicalRegular(path, before, label, maxBytes);
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, `${label} initial path and descriptor`, path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      `${label} initial path and descriptor`,
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterOpen");
+    const bytes = readExactDescriptorBytes(fd, opened.size, label, path);
+    const afterRead = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, path);
+    assertSamePreciseInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, path);
+    runInstalledFileTestHook(testHooks, "afterFirstRead");
+    const finalSnapshot = collectFinalOneLinkRegularSnapshot(
+      path,
+      label,
+      bytes,
+      maxBytes,
+      testHooks,
+    );
+    assertSameInstalledFileSnapshot(
+      afterRead,
+      finalSnapshot.stat,
+      `${label} initial and final descriptors`,
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      afterRead,
+      finalSnapshot.stat,
+      `${label} initial and final descriptors`,
+      path,
+    );
+    return {
+      bytes,
+      fingerprint: preciseInstalledStat(finalSnapshot.stat),
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readOneLinkRegularForTestV1(path, label, maxBytes, testHooks) {
+  return readOneLinkRegularBoundToDescriptor(path, label, maxBytes, testHooks).bytes;
 }
 
 function collectExtendedMetadata(
@@ -305,8 +466,9 @@ function collectExtendedMetadata(
     socket: "socket",
   }[expectedType];
   if (statType === undefined) fail(`unreviewed extended metadata type: ${expectedType}`);
-  const expectedStatLine = `${expectedNodeStat.dev}:${expectedNodeStat.ino}:${expectedNodeStat.uid}:${expectedNodeStat.gid}:${(
-    expectedNodeStat.mode & 0o7777
+  const expectedStatLine = `${expectedNodeStat.dev}:${expectedNodeStat.ino}:${expectedNodeStat.uid}:${expectedNodeStat.gid}:${Number.parseInt(
+    statMode(expectedNodeStat),
+    8,
   ).toString(8)}:${expectedNodeStat.nlink}:${expectedNodeStat.size}:${statType}\n`;
   if (statRecord.stdout !== expectedStatLine) fail(`independent stat mismatch for ${path}`);
 
@@ -343,6 +505,12 @@ function assertSameInstalledFileSnapshot(left, right, label, path) {
   }
 }
 
+function assertSamePreciseInstalledFileSnapshot(left, right, label, path) {
+  if (canonicalJson(preciseInstalledStat(left)) !== canonicalJson(preciseInstalledStat(right))) {
+    fail(`installed artifact ${label} changed precise metadata: ${path}`);
+  }
+}
+
 function assertCanonicalInstalledFile(path, stat, label) {
   if (!stat.isFile() || stat.isSymbolicLink() || realpathSync(path) !== path) {
     fail(`installed artifact ${label} is not a canonical regular file: ${path}`);
@@ -355,30 +523,71 @@ function runInstalledFileTestHook(testHooks, phase) {
   if (hook !== undefined) hook();
 }
 
-function collectFinalInstalledPathDescriptor(path) {
-  const finalPathBeforeOpen = lstatSync(path);
+// Preserve the externally verified v4 evidence shape while retaining the
+// precise collector-local fingerprint needed to detect a same-inode
+// write-and-restore between repeated secret checks. Offline evidence never
+// gets to manufacture or replace this process-local comparison state.
+const installedFilePreciseFingerprints = new WeakMap();
+
+function collectFinalInstalledPathDescriptor(path, expectedBytes, testHooks = undefined) {
+  const finalPathBeforeOpen = lstatSync(path, { bigint: true });
   assertCanonicalInstalledFile(path, finalPathBeforeOpen, "final path");
   const finalFd = openSync(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
   );
   try {
-    const finalOpened = fstatSync(finalFd);
+    const finalOpened = fstatSync(finalFd, { bigint: true });
     assertSameInstalledFileSnapshot(
       finalPathBeforeOpen,
       finalOpened,
       "final path snapshot and final descriptor",
       path,
     );
-    const finalPathAfterOpen = lstatSync(path);
-    assertCanonicalInstalledFile(path, finalPathAfterOpen, "final path confirmation");
+    assertSamePreciseInstalledFileSnapshot(
+      finalPathBeforeOpen,
+      finalOpened,
+      "final path snapshot and final descriptor",
+      path,
+    );
+    runInstalledFileTestHook(testHooks, "afterFinalPathOpen");
+    const finalBytes = readExactDescriptorBytes(
+      finalFd,
+      finalOpened.size,
+      "installed artifact final path",
+      path,
+    );
+    const finalAfterRead = fstatSync(finalFd, { bigint: true });
     assertSameInstalledFileSnapshot(
       finalOpened,
+      finalAfterRead,
+      "final descriptor read snapshots",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      finalOpened,
+      finalAfterRead,
+      "final descriptor read snapshots",
+      path,
+    );
+    if (!finalBytes.equals(expectedBytes)) {
+      fail(`installed artifact final path content changed: ${path}`);
+    }
+    const finalPathAfterOpen = lstatSync(path, { bigint: true });
+    assertCanonicalInstalledFile(path, finalPathAfterOpen, "final path confirmation");
+    assertSameInstalledFileSnapshot(
+      finalAfterRead,
       finalPathAfterOpen,
       "final descriptor and final path confirmation",
       path,
     );
-    return finalOpened;
+    assertSamePreciseInstalledFileSnapshot(
+      finalAfterRead,
+      finalPathAfterOpen,
+      "final descriptor and final path confirmation",
+      path,
+    );
+    return { stat: finalAfterRead };
   } finally {
     closeSync(finalFd);
   }
@@ -386,18 +595,33 @@ function collectFinalInstalledPathDescriptor(path) {
 
 function collectInstalledFileBoundToDescriptor(expected, testHooks = undefined) {
   const path = expected.target_path;
-  const before = lstatSync(path);
+  const before = lstatSync(path, { bigint: true });
   assertCanonicalInstalledFile(path, before, "initial path");
   const fd = openSync(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
   );
   try {
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     assertSameInstalledFileSnapshot(before, opened, "initial path and opened descriptor", path);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      "initial path and opened descriptor",
+      path,
+    );
     runInstalledFileTestHook(testHooks, "afterOpen");
 
-    const bytes = readFileSync(fd);
+    const bytes = readExactDescriptorBytes(
+      fd,
+      opened.size,
+      "installed artifact initial path",
+      path,
+    );
+    const afterFirstRead = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, afterFirstRead, "initial descriptor read", path);
+    assertSamePreciseInstalledFileSnapshot(opened, afterFirstRead, "initial descriptor read", path);
+    runInstalledFileTestHook(testHooks, "afterFirstRead");
     const descriptorPath = `/proc/${process.pid}/fd/${fd}`;
     const descriptorSha256 = hashBytes(bytes);
     const canonicalSha256Output = `${descriptorSha256} *${path}\n`;
@@ -417,16 +641,36 @@ function collectInstalledFileBoundToDescriptor(expected, testHooks = undefined) 
     const extendedMetadata = collectExtendedMetadata(descriptorPath, "regular", {
       dereferenceStat: true,
       evidencePath: path,
-      nodeStat: opened,
+      nodeStat: afterFirstRead,
     });
     runInstalledFileTestHook(testHooks, "afterMetadataProbe");
 
-    const after = fstatSync(fd);
-    assertSameInstalledFileSnapshot(opened, after, "opened descriptor snapshots", path);
-    const finalPathDescriptor = collectFinalInstalledPathDescriptor(path);
+    {
+      const confirmationBytes = readExactDescriptorBytes(
+        fd,
+        afterFirstRead.size,
+        "installed artifact confirmation",
+        path,
+      );
+      if (!confirmationBytes.equals(bytes)) {
+        fail(`installed artifact content changed during descriptor reread: ${path}`);
+      }
+    }
+
+    const after = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(afterFirstRead, after, "opened descriptor snapshots", path);
+    assertSamePreciseInstalledFileSnapshot(afterFirstRead, after, "opened descriptor snapshots", path);
+    runInstalledFileTestHook(testHooks, "beforeFinalPathOpen");
+    const finalPathSnapshot = collectFinalInstalledPathDescriptor(path, bytes, testHooks);
     assertSameInstalledFileSnapshot(
       after,
-      finalPathDescriptor,
+      finalPathSnapshot.stat,
+      "opened descriptor and final path descriptor",
+      path,
+    );
+    assertSamePreciseInstalledFileSnapshot(
+      after,
+      finalPathSnapshot.stat,
       "opened descriptor and final path descriptor",
       path,
     );
@@ -445,6 +689,10 @@ function collectInstalledFileBoundToDescriptor(expected, testHooks = undefined) 
     for (const key of ["gid", "mode", "nlink", "sha256", "uid"]) {
       if (observed[key] !== expected[key]) fail(`installed artifact ${key} mismatch: ${path}`);
     }
+    installedFilePreciseFingerprints.set(
+      observed,
+      preciseInstalledStat(finalPathSnapshot.stat),
+    );
     return observed;
   } finally {
     closeSync(fd);
@@ -460,6 +708,27 @@ function collectInstalledFile(expected) {
 // security-sensitive collection boundaries.
 export function collectInstalledFileForTestV1(expected, testHooks) {
   return collectInstalledFileBoundToDescriptor(expected, testHooks);
+}
+
+function assertInstalledFileCollectionsUnchanged(before, after, stage, path) {
+  const beforePrecise = installedFilePreciseFingerprints.get(before);
+  const afterPrecise = installedFilePreciseFingerprints.get(after);
+  if (
+    beforePrecise === undefined ||
+    afterPrecise === undefined ||
+    canonicalJson(before) !== canonicalJson(after) ||
+    canonicalJson(beforePrecise) !== canonicalJson(afterPrecise)
+  ) {
+    fail(`installed artifact metadata or content changed ${stage}: ${path}`);
+  }
+}
+
+export function confirmInstalledFileAcrossCollectionsForTestV1(expected, betweenHook) {
+  const before = collectInstalledFileBoundToDescriptor(expected);
+  betweenHook();
+  const after = collectInstalledFileBoundToDescriptor(expected);
+  assertInstalledFileCollectionsUnchanged(before, after, "between test collections", expected.target_path);
+  return true;
 }
 
 function validateNssName(value, label) {
@@ -4080,9 +4349,7 @@ function confirmSecretFilesUnchanged(installedFiles, request, stage) {
       fail(`secret is absent from installed-file closure: ${secret.target_path}`);
     }
     const after = collectInstalledFile(expected);
-    if (canonicalJson(before) !== canonicalJson(after)) {
-      fail(`secret metadata or content changed ${stage}: ${secret.target_path}`);
-    }
+    assertInstalledFileCollectionsUnchanged(before, after, stage, secret.target_path);
   }
 }
 
