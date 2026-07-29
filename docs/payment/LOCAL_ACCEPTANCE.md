@@ -673,13 +673,18 @@ BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
 
 This is the executable provider-to-shared-clearing seam: a real issuer behind
 a private signed-pin TLS edge, a real paid provider and an independent Free
-peer. It proves one issuer redemption/ledger credit, one provider-local grant,
-restart/replay at-most-once behavior, and fail-closed wrong-CA/wrong-pin/offline
-dependencies without invoice creation or real funds. It does not prove public
-source-fair ingress, independent production rollback domains, real Lightning,
-automated payout, or target-host systemd state. The source is wired into CI,
-but this preparation branch must not record a pass until the Linux cell has run
-on the exact candidate commit.
+peer. The edge reads one complete canonical issuer success, then drops that
+response after the issuer commit while retaining only three test-local SHA-256
+digests. The provider fails closed without a local claim. Restarting both issuer
+and provider against their original stores/floors and replaying the exact proof
+must reproduce all three digests, recover exactly one provider-local grant and
+leave exactly one issuer ledger credit/sequence; a later replay cannot create a
+second grant. Wrong-CA, wrong-pin and offline dependencies fail closed without
+invoice creation or real funds. It does not prove public source-fair ingress,
+independent production rollback domains, real Lightning, automated payout, or
+target-host systemd state. The source is wired into CI, but this preparation
+branch must not record a pass until the Linux cell has run on the exact candidate
+commit.
 
 ## Standard Cashu custody boundary
 
@@ -877,6 +882,36 @@ all-relay attempts, nonzero partial failure, timeout and rejection of false,
 duplicate/unexpected/missing, non-text and oversized replies. They deliberately
 do not prove WebPKI, public relay policy, operator independence, or compatibility
 with relays that inject Ping/Pong control frames during the publish exchange.
+
+The full local script and Payment CI additionally select the real two-relay
+process topology explicitly (the test is ignored by ordinary package runs so
+`--quick` still starts no service process):
+
+```sh
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e -- --exact --ignored
+```
+
+It launches two copies of the repository's production
+`bitcoinpir-directory-relay` binary and covers separate
+config/SQLite/ports/runtimes, complete 16-shard signed readback, one relay
+offline, two independently valid but conflicting stale-head views with an exact
+split-view error, bounded-backoff lost-ACK readback plus idempotent retry, and
+independent restart recovery. The remote-authority full-mode cell also selects
+`three_authority_process::three_authority_real_process_topology_e2e`. That test
+spawns three authority child test harnesses which invoke production
+`rollback_authority::run` and three TLS-edge child harnesses; the parent process
+calls production ProviderStore/IssuerStore adapters directly. The
+deployment-set validator owns duplicate-pin/namespace rejection, raw clients
+own wrong-pin/client/cross-domain transport assertions, and the production
+adapters own crossed-provider, independently isolated provider- and
+issuer-authority outages, exact same-generation issuer recovery and stale-floor
+assertions. During each authority outage the other two business domains remain
+usable. It does not launch `unified_server`, `payment-issuer`, or installed
+binaries. These new commands require their first Linux CI run on the candidate
+commit; no passing result is claimed here, and same-host processes do not prove
+operational independence.
 
 The staging-only readback script resolves the lockfile-pinned `ws` dependency
 from `web/node_modules`, disables compression and redirects, and applies a

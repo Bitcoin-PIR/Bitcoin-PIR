@@ -44,7 +44,7 @@ struct AuthorityMaterial {
     client_verifying_key_hex: String,
 }
 
-struct HelperProcess {
+pub(super) struct HelperProcess {
     label: &'static str,
     child: Child,
     stdout_path: PathBuf,
@@ -81,7 +81,7 @@ impl HelperProcess {
         }
     }
 
-    fn wait_until_listening(&mut self, port: u16) {
+    pub(super) fn wait_until_listening(&mut self, port: u16) {
         let deadline = Instant::now() + PROCESS_START_TIMEOUT;
         loop {
             if let Some(status) = self.child.try_wait().expect("poll helper process") {
@@ -111,7 +111,11 @@ impl HelperProcess {
         }
     }
 
-    fn stop(mut self) -> (String, String) {
+    pub(super) fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub(super) fn stop(mut self) -> (String, String) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         (read_log(&self.stdout_path), read_log(&self.stderr_path))
@@ -134,7 +138,7 @@ impl Drop for HelperProcess {
 }
 
 #[test]
-#[ignore = "spawned only by remote_authority_real_process_tls_provider_e2e"]
+#[ignore = "spawned only by remote-authority process E2Es"]
 fn rollback_authority_subprocess() {
     if env::var_os(AUTHORITY_HELPER_MARKER).is_none() {
         return;
@@ -169,7 +173,7 @@ fn rollback_authority_subprocess() {
 }
 
 #[test]
-#[ignore = "spawned only by remote_authority_real_process_tls_provider_e2e"]
+#[ignore = "spawned only by remote-authority process E2Es"]
 fn rollback_authority_tls_edge_subprocess() {
     if env::var_os(TLS_HELPER_MARKER).is_none() {
         return;
@@ -599,9 +603,37 @@ fn spawn_authority(
     port: u16,
     generation: u8,
 ) -> HelperProcess {
-    HelperProcess::spawn(
+    spawn_authority_helper(
         root,
         "rollback-authority-process",
+        generation,
+        port,
+        AuthorityHelperFiles {
+            store: &material.authority_store,
+            secret: &material.authority_secret,
+            metadata: &material.authority_metadata,
+            verifying_key_hex: &material.authority_verifying_key_hex,
+        },
+    )
+}
+
+pub(super) struct AuthorityHelperFiles<'a> {
+    pub(super) store: &'a Path,
+    pub(super) secret: &'a Path,
+    pub(super) metadata: &'a Path,
+    pub(super) verifying_key_hex: &'a str,
+}
+
+pub(super) fn spawn_authority_helper(
+    root: &Path,
+    label: &'static str,
+    generation: u8,
+    port: u16,
+    files: AuthorityHelperFiles<'_>,
+) -> HelperProcess {
+    HelperProcess::spawn(
+        root,
+        label,
         generation,
         "remote_authority_process::rollback_authority_subprocess",
         &[
@@ -612,19 +644,19 @@ fn spawn_authority(
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_STORE",
-                material.authority_store.display().to_string(),
+                files.store.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_SECRET",
-                material.authority_secret.display().to_string(),
+                files.secret.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_METADATA",
-                material.authority_metadata.display().to_string(),
+                files.metadata.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_PUBLIC_KEY",
-                material.authority_verifying_key_hex.clone(),
+                files.verifying_key_hex.to_owned(),
             ),
         ],
     )
@@ -637,9 +669,29 @@ fn spawn_tls_edge(
     authority_port: u16,
     generation: u8,
 ) -> HelperProcess {
-    HelperProcess::spawn(
+    spawn_tls_edge_helper(
         root,
         "rollback-authority-tls-edge-process",
+        generation,
+        tls_port,
+        authority_port,
+        &material.leaf_certificate,
+        &material.leaf_private_key,
+    )
+}
+
+pub(super) fn spawn_tls_edge_helper(
+    root: &Path,
+    label: &'static str,
+    generation: u8,
+    tls_port: u16,
+    authority_port: u16,
+    leaf_certificate: &Path,
+    leaf_private_key: &Path,
+) -> HelperProcess {
+    HelperProcess::spawn(
+        root,
+        label,
         generation,
         "remote_authority_process::rollback_authority_tls_edge_subprocess",
         &[
@@ -651,11 +703,11 @@ fn spawn_tls_edge(
             ),
             (
                 "BITCOINPIR_TEST_TLS_CERT",
-                material.leaf_certificate.display().to_string(),
+                leaf_certificate.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_TLS_KEY",
-                material.leaf_private_key.display().to_string(),
+                leaf_private_key.display().to_string(),
             ),
         ],
     )

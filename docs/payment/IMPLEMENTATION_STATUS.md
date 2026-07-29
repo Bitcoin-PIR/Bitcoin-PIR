@@ -379,6 +379,26 @@ operator has activated the path with real money or public infrastructure.
       logging. Its current macOS library and binary unit suites passed 23/23;
       Linux clippy, installed shutdown/backup drills and public WSS behavior
       remain exact-commit/deployment evidence rather than source claims.
+- [x] A CI-wired, explicitly selected process test starts two copies of the
+      repository's production `bitcoinpir-directory-relay` binary with
+      independent config/SQLite/port/runtime state, publishes one signed
+      16-shard catalog to both and uses real WebSocket readback to fail closed
+      on offline/exact split-view errors, recover lost ACK by bounded-backoff
+      durable ID probe plus idempotent retry, and preserve heads across
+      independent restarts. A companion three-authority test separates provider
+      0, provider 1 and issuer DB/key/namespace/TLS material. It starts authority
+      and TLS-edge child test harnesses; each authority harness invokes
+      production `rollback_authority::run`, while the parent directly calls the
+      production ProviderStore/IssuerStore adapters. Deployment-set validation,
+      raw-client rejection and Store-adapter rejection are asserted at their
+      respective boundaries. Provider- and issuer-authority backends are stopped
+      independently while their TLS edges remain online; only the affected Store
+      fails closed, the other two domains remain usable, and the issuer recovers
+      the exact same generation and commitment from its original authority
+      database. It does not launch `unified_server`, `payment-issuer`, or
+      installed binaries. These are local topology tests, not claims of
+      operational independence; their first Linux CI execution remains
+      candidate-commit evidence.
 - [x] Browser relay fetching and encrypted IndexedDB directory state.
 - [x] A no-account, process-local NIP-01 fake-relay integration test closes the
       signed publisher-artifact to two-relay read path through all 16 shards,
@@ -522,17 +542,23 @@ operator has activated the path with real money or public infrastructure.
       `payment-issuer`, places a private WebPKI TLS edge with a signed leaf-SPKI
       pin in front of its redeem-only route, and launches a real paid
       `unified_server` plus an independently selected Free/Open peer. A BAT
-      redemption credits the authenticated provider's shared ledger exactly
-      once and creates exactly one provider-local delivery claim; provider
-      restart/replay cannot create a second grant. Wrong CA, wrong signed pin
-      and offline issuer all fail closed before issuer application handling and
-      create neither a local claim nor a provider account. The test also checks
-      that payout rows remain zero and server logs contain no invoice, payment
-      hash, preimage or raw BAT secret. The fake-Lightning issuer binary is
-      supplied only by an absolute, non-symlink path and the shared test feature
-      inherits the release-rejected WebPKI hook. This branch's first executable
-      proof is intentionally pending the Linux Payment CI run; implementation
-      and static formatting alone are not recorded as a pass.
+      redemption reaches a complete canonical issuer success, after which the
+      test edge drops one response. The provider fails closed without a local
+      delivery claim; restarting issuer and provider against their original
+      stores/floors and replaying the identical proof reproduces the same
+      canonical-body, request and idempotency-key digests, credits ledger
+      sequence one exactly once and creates exactly one local claim. A later
+      replay cannot create a second grant. The fixed-size digest transcript is
+      test-local and retains no raw envelope, credential, idempotency key, HTTP
+      metadata, peer address or timing. Wrong CA, wrong signed pin and offline
+      issuer all fail closed before issuer application handling and create
+      neither a local claim nor a provider account. The test also checks that
+      payout rows remain zero and server logs contain no invoice, payment hash,
+      preimage or raw BAT secret. The fake-Lightning issuer binary is supplied
+      only by an absolute, non-symlink path and the shared test feature inherits
+      the release-rejected WebPKI hook. This branch's first executable proof is
+      intentionally pending the Linux Payment CI run; implementation and static
+      formatting alone are not recorded as a pass.
 - [x] Web unit tests cover acquisition recovery, directory storage, vault
       locking and local pair-selection boundaries.
 - [x] A dedicated Playwright job runs the production browser vault and
