@@ -1,0 +1,164 @@
+{
+  "deployment_id": "replace-provider-v1",
+  "deployment_profile": "provider-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/unified_server",
+      "target_path": "/opt/bitcoinpir/unified-server/INVALID_REPLACE_WITH_UNIFIED_SERVER_SHA256/unified_server",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/unified-server.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/unified-server.sha256",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/cashu-bat.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/cashu-bat.key",
+      "uid": 62931
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/cashu-custody-epoch-1.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/cashu-custody-epoch-1.key",
+      "uid": 62931
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/cashu-recovery-epoch-1.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/cashu-recovery-epoch-1.key",
+      "uid": 62931
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/databases.toml",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/databases.toml",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/provider-clearing-signing.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/provider-clearing-signing.key",
+      "uid": 62931
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/provider-identity.cert",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/provider-identity.cert",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/provider-identity.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/provider-identity.key",
+      "uid": 62931
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/remote-rollback-authority.toml",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/remote-rollback-authority.toml",
+      "uid": 0
+    },
+    {
+      "class": "policy",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/service-policy.bin",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/service-policy.bin",
+      "uid": 0
+    },
+    {
+      "class": "policy",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/shared-clearing-approval.bin",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/shared-clearing-approval.bin",
+      "uid": 0
+    },
+    {
+      "class": "policy",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/shared-clearing-authorization.bin",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/shared-clearing-authorization.bin",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/shared-redeem-idempotency.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/shared-redeem-idempotency.key",
+      "uid": 62931
+    }
+  ],
+  "placeholders": {
+    "CASHU_MAX_UNSETTLED_NOTES": "INVALID_REPLACE_WITH_NOTE_LIMIT",
+    "CASHU_MAX_UNSETTLED_VALUE": "INVALID_REPLACE_WITH_VALUE_LIMIT",
+    "CASHU_MINT_ID_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_MINT_ID",
+    "HETZNER_OPERATOR_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_OPERATOR_KEY",
+    "HETZNER_POLICY_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_POLICY_KEY",
+    "HETZNER_PROVIDER_ID_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_PROVIDER_ID",
+    "HETZNER_PROVIDER_SERVER_ID": "INVALID_REPLACE_WITH_SERVER_ID",
+    "ISSUER_SETTLEMENT_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_SETTLEMENT_KEY",
+    "SHARED_MINIMUM_AUTHORIZATION_EPOCH": "INVALID_REPLACE_WITH_AUTHORIZATION_EPOCH",
+    "UNIFIED_SERVER_SHA256": "INVALID_REPLACE_WITH_UNIFIED_SERVER_SHA256"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-provider.service",
+      "uid": 0
+    }
+  ],
+  "schema_version": 1,
+  "service_identities": [
+    {
+      "gid": 62932,
+      "group_name": "bitcoinpir-provider",
+      "uid": 62931,
+      "unit_name": "bitcoinpir-provider.service",
+      "user_name": "bitcoinpir-provider"
+    }
+  ]
+}

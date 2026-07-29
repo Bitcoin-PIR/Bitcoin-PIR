@@ -42,19 +42,19 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/verify-layout.sh.in":
     "a3e3c9033bb0e258c2393117a4b3d17388002a21ae9b8259eed64b90bf2f57ea",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "50e86c87bf435c94d62265854e211abb93bb25d6f3c1636c6893a25be80a8df9",
+    "151835ac92bda1fa7ed0e79473229b20a3bdb7f03358b106a2ca139c6f3622b7",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
-    "119ed3ce7b9c48c68b85dc8a37325a8c8c35b6a5f45137859d9b4fbe3f35b9aa",
+    "c0a30b8460cd81d75be235fffe53a3ac00f62b1fdf8f6db78d8ac8f25b3f7d89",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "e0fa6b1213ae660f74a541d086a16f0c20b8b8eac91f7afe780ffb4ff67ed2ee",
+    "02e085d322b69b7d0bb785c2e2ea57402de1430b300b9f12e21efe4abb452e15",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "6f9a2d0079f13926fcd538dcd51415dbddfedc6e02e044a86f41d8b4a408f406",
+    "48536732029012911245f6e126d71a86f50138a9662dfc48d07d3e6eb137efc9",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
-    "1d0c19241d66bd14b261ad20408dcf0a7f2487ece19503e9d7dcccda37d8aedb",
+    "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
-    "c820e03d9f2dd1d39c82c8a90e5794a8439b7bfbfac22b6387898ddd8184491e",
+    "8e416e9010f11722cfdf21433c86b9a1bb3dab380988bb62af7af565666f9453",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in":
-    "392339c240062bfa301488ba50f5b05693bea5984d466f494303b9a1519ef074",
+    "f7cb021b605454861f5c52e2ddf11610b545227b8b343f19e0309ed07e753728",
 });
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
@@ -479,6 +479,7 @@ function validateHetznerProvider(text) {
   const label = "Hetzner provider template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
   ]);
   exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
   exactDirectiveKeys(
@@ -580,6 +581,7 @@ function validateHetznerIssuer(text) {
   const label = "Hetzner issuer template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
   ]);
@@ -687,6 +689,7 @@ function validateRollbackAuthority(text) {
   const label = "rollback-authority template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
   ]);
   exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
   exactDirectiveKeys(
@@ -757,6 +760,7 @@ function validateCoreLightningUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
     ],
@@ -844,6 +848,7 @@ function validateClnRpcGuardUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
     ],
@@ -948,6 +953,7 @@ function validateLightningPreflightUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
     ],
@@ -1028,6 +1034,7 @@ function validatePaymentEdgeUnit(text) {
   const label = "Payment V1 rollback-authority Caddy edge template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
     "/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
   ], { requireStateDirectoryMode: false });
@@ -1102,6 +1109,7 @@ function validatePublicPaymentEdgeUnit(text) {
   const label = "Payment V1 public Caddy edge template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
     "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
     "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
@@ -1166,6 +1174,7 @@ function validateSourceFairEdgeUnit(text) {
   const label = "Payment V1 HAProxy source-fair edge template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
     "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
   ], { requireStateDirectoryMode: false });
@@ -2236,6 +2245,7 @@ export function validateDeploymentTree(rootInput) {
   const relayLabel = "Hetzner directory relay template";
   const relayParsed = validateInactiveSystemdTemplate(relayUnit.text, relayLabel, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
   ]);
   exactDirectiveKeys(relayParsed, "Unit", BASIC_UNIT_KEYS, relayLabel);
