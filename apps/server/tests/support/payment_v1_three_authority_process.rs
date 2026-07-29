@@ -32,7 +32,7 @@ use pir_service_store::{RemoteProviderRollbackFloorAuthorityV1, StoreError as Pr
 use rollback_authority::{run as run_rollback_authority, Cli as RollbackAuthorityCli};
 
 use super::remote_authority_process::{
-    spawn_authority_helper, spawn_tls_edge_helper, HelperProcess,
+    spawn_authority_helper, spawn_tls_edge_helper, AuthorityHelperFiles, HelperProcess,
 };
 
 const TEST_ROOT_CERTIFICATE_PEM: &str = r#"-----BEGIN CERTIFICATE-----
@@ -743,10 +743,12 @@ fn spawn_authority(domain: &AuthorityDomain, root: &Path, generation: u8) -> Hel
         domain.label,
         generation,
         domain.authority_port,
-        &domain.authority_store,
-        &domain.authority_secret,
-        &domain.authority_metadata,
-        &domain.authority_verifying_key_hex,
+        AuthorityHelperFiles {
+            store: &domain.authority_store,
+            secret: &domain.authority_secret,
+            metadata: &domain.authority_metadata,
+            verifying_key_hex: &domain.authority_verifying_key_hex,
+        },
     );
     process.wait_until_listening(domain.authority_port);
     process

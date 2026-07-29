@@ -608,11 +608,20 @@ fn spawn_authority(
         "rollback-authority-process",
         generation,
         port,
-        &material.authority_store,
-        &material.authority_secret,
-        &material.authority_metadata,
-        &material.authority_verifying_key_hex,
+        AuthorityHelperFiles {
+            store: &material.authority_store,
+            secret: &material.authority_secret,
+            metadata: &material.authority_metadata,
+            verifying_key_hex: &material.authority_verifying_key_hex,
+        },
     )
+}
+
+pub(super) struct AuthorityHelperFiles<'a> {
+    pub(super) store: &'a Path,
+    pub(super) secret: &'a Path,
+    pub(super) metadata: &'a Path,
+    pub(super) verifying_key_hex: &'a str,
 }
 
 pub(super) fn spawn_authority_helper(
@@ -620,10 +629,7 @@ pub(super) fn spawn_authority_helper(
     label: &'static str,
     generation: u8,
     port: u16,
-    authority_store: &Path,
-    authority_secret: &Path,
-    authority_metadata: &Path,
-    authority_verifying_key_hex: &str,
+    files: AuthorityHelperFiles<'_>,
 ) -> HelperProcess {
     HelperProcess::spawn(
         root,
@@ -638,19 +644,19 @@ pub(super) fn spawn_authority_helper(
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_STORE",
-                authority_store.display().to_string(),
+                files.store.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_SECRET",
-                authority_secret.display().to_string(),
+                files.secret.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_METADATA",
-                authority_metadata.display().to_string(),
+                files.metadata.display().to_string(),
             ),
             (
                 "BITCOINPIR_TEST_AUTHORITY_PUBLIC_KEY",
-                authority_verifying_key_hex.to_owned(),
+                files.verifying_key_hex.to_owned(),
             ),
         ],
     )
