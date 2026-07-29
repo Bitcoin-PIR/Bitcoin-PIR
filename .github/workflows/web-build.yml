@@ -11,12 +11,12 @@ name: Web client build + tests
 #      wasm32 build (e.g., refactor that pulls a native-only API into
 #      shared code) merges silently and surfaces only at deploy time.
 #
-#   2. **TypeScript strict typecheck (`tsc`).** `web/package.json` has
-#      `build` = `tsc` and `build-web` = `vite build`. The deploy
-#      workflow runs `build-web` (esbuild bundler — permissive). `tsc`
-#      strict-mode errors (null-vs-undefined narrows, hand-written
-#      interface drift between `sdk-bridge.ts` and WASM-generated
-#      stubs, etc.) are never gated.
+#   2. **PR-time TypeScript strict typecheck (`tsc`).** `web/package.json`
+#      has `build` = `tsc` and `build-web` = `vite build`. The deploy
+#      workflow now also runs typecheck, unit and Chromium gates before a
+#      manual production render; this workflow gives the same strict-mode
+#      errors (null-vs-undefined narrows, hand-written interface drift between
+#      `sdk-bridge.ts` and WASM-generated stubs, etc.) a pre-merge signal.
 #
 #   3. **vitest unit tests.** `web/src/__tests__/` includes pure-helper
 #      TS-side analogs of the Kani harnesses plus the Payment V1 admission,
