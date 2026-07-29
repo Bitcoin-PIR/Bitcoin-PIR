@@ -864,6 +864,19 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those
       deterministic tests.
+- [x] The local, undeployed `integrated-existing-bhtm-caddy-v1` alternative is
+      renderable as a dependency-closed source-fair bundle plus an externally
+      approved overlay transaction plan. It appends only to the exact pinned
+      `bhtm-caddy.service` preimage, uses a content-addressed
+      `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
+      until an atomically published durable receipt, and includes deterministic
+      stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
+      health checks.
+      Mock failure-window tests and a real Linux helper test pass. This does
+      not harden the existing root Caddy global/admin/ACME/journal domain, does
+      not replace cold edge evidence, and is not deployable on the currently
+      inspected Hetzner network until a distinct RFC1918/ULA publisher route is
+      separately provisioned and approved.
 - [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
       checkpoint signed by a disposable test key. nos.lol and
       `relay.primal.net` each returned 16 positive matching OKs, then returned

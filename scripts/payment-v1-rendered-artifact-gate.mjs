@@ -109,6 +109,20 @@ const SYSTEMD_SERVICE_KEYS = Object.freeze([
 ]);
 
 const PROFILE_CATALOG = Object.freeze({
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    // The existing root Caddy process is deliberately not represented as a
+    // bundle-owned systemd unit. This profile closes and proves the HAProxy
+    // half of the composite overlay. The separate integrated-Caddy overlay
+    // plan binds the mutable Caddy preimage, managed block, unit, binary,
+    // process generation, TLS inputs, transaction, rollback and health proof.
+    templates: Object.freeze([
+      "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
@@ -254,6 +268,27 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
 export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze(["Conditions"]);
 
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-core-lightning.service",
@@ -386,6 +421,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "CLN_RPC_GUARD_SHA256",
   "DIRECTORY_PUBLISHER_PUBKEY_HEX",
   "HAPROXY_SHA256",
+  "OVERLAY_EXCHANGE_SHA256",
   "HETZNER_OPERATOR_PUBKEY_HEX",
   "HETZNER_POLICY_PUBKEY_HEX",
   "HETZNER_PROVIDER_ID_HEX",
@@ -1485,6 +1521,14 @@ function parseSystemdUnit(text, label) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -1582,6 +1626,8 @@ function validateProfileUnitPolicy(
     fail(`${label} must retain the exact global and profile-specific activation conditions`);
   }
   const privateRequestEdge =
+    (deploymentProfile === "integrated-existing-bhtm-caddy-v1" &&
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service") ||
     (deploymentProfile === "edge-hetzner-v1" &&
       new Set([
         "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
@@ -1714,6 +1760,24 @@ function hashBindingClass(artifactClass) {
 }
 
 function configManagedReferences(sourcePath, text) {
+  if (
+    sourcePath ===
+    "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs"
+  ) {
+    if (/@OVERLAY_EXCHANGE_SHA256@/u.test(text)) {
+      fail("rendered integrated-Caddy transaction executor retains its helper placeholder");
+    }
+    const binary = text.match(
+      /"(\/opt\/bitcoinpir\/payment-v1-rename-exchange\/[0-9a-f]{64}\/payment-v1-rename-exchange)"/u,
+    )?.[1];
+    const manifest = text.match(
+      /"(\/etc\/bitcoinpir\/payment-v1\/integrated-existing-bhtm-caddy\/rename-exchange\.sha256)"/u,
+    )?.[1];
+    if (binary === undefined || manifest === undefined) {
+      fail("rendered integrated-Caddy transaction executor does not close its exchange helper dependencies");
+    }
+    return [manifest, binary].sort(asciiCompare);
+  }
   const edgeReferences = {
     "deploy/payment-v1/edge/hetzner-public.Caddyfile.in": [
       "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
@@ -1843,6 +1907,11 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg");
       return;
+    case "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256":
+      oneExact(
+        `/opt/bitcoinpir/payment-v1-rename-exchange/${plan.placeholders.OVERLAY_EXCHANGE_SHA256}/payment-v1-rename-exchange`,
+      );
+      return;
     case "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256":
       oneExact(`/opt/bitcoinpir/payment-issuer/${plan.placeholders.PAYMENT_ISSUER_SHA256}/payment-issuer`);
       return;
@@ -1951,6 +2020,12 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
   const pathChecks = [
     ["CADDY_SHA256", "/opt/bitcoinpir/caddy/", "/caddy", true],
     ["HAPROXY_SHA256", "/opt/bitcoinpir/haproxy/", "/haproxy", true],
+    [
+      "OVERLAY_EXCHANGE_SHA256",
+      "/opt/bitcoinpir/payment-v1-rename-exchange/",
+      "/payment-v1-rename-exchange",
+      true,
+    ],
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
@@ -2428,12 +2503,17 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       uid: artifact.uid,
     }));
   const runtimePaths = [];
-  if (manifest.deployment_profile === "edge-hetzner-v1") {
+  if (
+    new Set([
+      "edge-hetzner-v1",
+      "integrated-existing-bhtm-caddy-v1",
+    ]).has(manifest.deployment_profile)
+  ) {
     const sourceFairIdentity = manifest.service_identities.find(
       (identity) => identity.unit_name === "bitcoinpir-payment-v1-source-fair-edge.service",
     );
     if (!sourceFairIdentity) {
-      fail("Hetzner edge runtime request is missing the source-fair service identity");
+      fail("Hetzner source-fair runtime request is missing its service identity");
     }
     runtimePaths.push({
       file_type: "directory",

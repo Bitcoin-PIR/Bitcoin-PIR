@@ -271,6 +271,21 @@ The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
 
+An undeployed `integrated-existing-bhtm-caddy-v1` alternative now models the
+actual existing `bhtm-caddy.service` edge without pretending it is the isolated
+stock-Caddy unit above. Its bundle closes the source-fair half and its separate
+plan pins the exact mutable preimage/process generation. Installation uses a
+content-addressed `renameat2(RENAME_EXCHANGE)` helper, keeps the swapped-out
+preimage until a terminal receipt is durably and atomically published with
+`RENAME_NOREPLACE`, and has deterministic digest-pair recovery. This closes
+ordinary read-to-rename, partial-final-receipt and crash windows, but expands
+the TCB to the existing root Caddy's global admin, ACME, journal, zero-RTT,
+plugin, site and resource configuration. The profile cannot erase that risk or
+substitute a warm reload receipt for cold stopped-edge/fresh-live evidence.
+It also retains the exact RFC1918/ULA private-publisher prerequisite; the
+currently inspected Hetzner host has no such route, so the profile is not yet
+deployable there.
+
 After source merge, an independent read-only audit of merge
 `49dc56bb735a6df6a1665c91f0636188d65a66b5` and exact Payment V1 source parent
 `4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4` found no P0/P1/P2 in the repository

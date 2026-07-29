@@ -1,0 +1,397 @@
+{
+  "deployment_profile": "integrated-existing-bhtm-caddy-v1",
+  "health_checks": [
+    {
+      "connect_ip": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP",
+      "expected_body_sha256": null,
+      "expected_status": 101,
+      "host": "INVALID_REPLACE_WITH_DIRECTORY_HOST",
+      "kind": "websocket-upgrade",
+      "lane": "directory-public",
+      "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "max_response_bytes": 16384,
+      "path": "/v1/directory",
+      "timeout_ms": 5000
+    },
+    {
+      "connect_ip": "INVALID_REPLACE_WITH_PUBLISHER_PRIVATE_BIND_IP",
+      "expected_body_sha256": null,
+      "expected_status": 101,
+      "host": "INVALID_REPLACE_WITH_PUBLISHER_HOST",
+      "kind": "websocket-upgrade",
+      "lane": "directory-publisher",
+      "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "max_response_bytes": 16384,
+      "path": "/v1/directory",
+      "timeout_ms": 5000
+    },
+    {
+      "connect_ip": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP",
+      "expected_body_sha256": "INVALID_REPLACE_WITH_EXACT_RESPONSE_BODY_SHA256",
+      "expected_status": 200,
+      "host": "INVALID_REPLACE_WITH_ISSUER_HOST",
+      "kind": "https-response",
+      "lane": "issuer",
+      "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "max_response_bytes": 65536,
+      "path": "/v1/quote-keys/current",
+      "timeout_ms": 5000
+    },
+    {
+      "connect_ip": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP",
+      "expected_body_sha256": null,
+      "expected_status": 101,
+      "host": "INVALID_REPLACE_WITH_PROVIDER_HOST",
+      "kind": "websocket-upgrade",
+      "lane": "provider",
+      "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "max_response_bytes": 16384,
+      "path": "/v1/pir",
+      "timeout_ms": 5000
+    }
+  ],
+  "managed_block": {
+    "candidate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+    "placeholders": {
+      "DIRECTORY_PUBLISHER_CLIENT_IP": "INVALID_REPLACE_WITH_PRIVATE_CLIENT_IP",
+      "DIRECTORY_PUBLISHER_HTTPS_HOST": "INVALID_REPLACE_WITH_PUBLISHER_HOST",
+      "DIRECTORY_PUBLISHER_PRIVATE_BIND": "INVALID_REPLACE_WITH_PUBLISHER_PRIVATE_BIND_IP",
+      "DIRECTORY_RELAY_WSS_HOST": "INVALID_REPLACE_WITH_DIRECTORY_HOST",
+      "PAYMENT_ISSUER_HTTPS_HOST": "INVALID_REPLACE_WITH_ISSUER_HOST",
+      "PROVIDER_WSS_HOST": "INVALID_REPLACE_WITH_PROVIDER_HOST",
+      "PUBLIC_HTTPS_BIND": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP"
+    },
+    "rendered_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+    "source_path": "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+    "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256"
+  },
+  "runtime": {
+    "exchange_helper": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/opt/bitcoinpir/payment-v1-rename-exchange/INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256/payment-v1-rename-exchange",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "exchange_manifest": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0444",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "executor": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "gate": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "managed_block": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0444",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "node_binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/node",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    }
+  },
+  "schema_version": 1,
+  "source_fair": {
+    "deployment_manifest_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+    "deployment_profile": "integrated-existing-bhtm-caddy-v1",
+    "haproxy_binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/opt/bitcoinpir/haproxy/INVALID_REPLACE_WITH_HAPROXY_SHA256/haproxy",
+      "sha256": "INVALID_REPLACE_WITH_HAPROXY_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "haproxy_config": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 62902,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0440",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "runtime_evidence_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+    "runtime_paths": [
+      {
+        "file_type": "directory",
+        "gid": 62902,
+        "mode": "0750",
+        "path": "/run/bitcoinpir-source-fair-edge",
+        "uid": 62902
+      },
+      {
+        "file_type": "socket",
+        "gid": 62902,
+        "mode": "0660",
+        "path": "/run/bitcoinpir-source-fair-edge/directory-public.sock",
+        "uid": 62902
+      },
+      {
+        "file_type": "socket",
+        "gid": 62902,
+        "mode": "0660",
+        "path": "/run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+        "uid": 62902
+      },
+      {
+        "file_type": "socket",
+        "gid": 62902,
+        "mode": "0660",
+        "path": "/run/bitcoinpir-source-fair-edge/issuer.sock",
+        "uid": 62902
+      },
+      {
+        "file_type": "socket",
+        "gid": 62902,
+        "mode": "0660",
+        "path": "/run/bitcoinpir-source-fair-edge/provider.sock",
+        "uid": 62902
+      }
+    ],
+    "unit_fragment": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0644",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit_generation": {
+      "active_enter_timestamp_monotonic": "INVALID_REPLACE_WITH_MONOTONIC_TIMESTAMP",
+      "active_state": "active",
+      "can_reload": "no",
+      "control_group": "/system.slice/bitcoinpir-payment-v1-source-fair-edge.service",
+      "invocation_id": "INVALID_REPLACE_WITH_LOWERCASE_UUID",
+      "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
+      "sub_state": "running",
+      "unit_name": "bitcoinpir-payment-v1-source-fair-edge.service"
+    }
+  },
+  "target": {
+    "binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/caddy",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "config_parent": {
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "path": "/etc/caddy",
+      "uid": 0
+    },
+    "config_preimage": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0644",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/caddy/Caddyfile",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit_fragment": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0644",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/systemd/system/bhtm-caddy.service",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit_generation": {
+      "active_enter_timestamp_monotonic": "INVALID_REPLACE_WITH_MONOTONIC_TIMESTAMP",
+      "active_state": "active",
+      "can_reload": "yes",
+      "control_group": "/system.slice/bhtm-caddy.service",
+      "invocation_id": "INVALID_REPLACE_WITH_LOWERCASE_UUID",
+      "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
+      "sub_state": "running",
+      "unit_name": "bhtm-caddy.service"
+    }
+  },
+  "tls_dependencies": [
+    {
+      "class": "certificate",
+      "parent": {
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0700",
+        "path": "/etc/bitcoinpir/payment-v1/edge",
+        "uid": 0
+      },
+      "pin": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0444",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+        "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      }
+    },
+    {
+      "class": "private-key",
+      "parent": {
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0700",
+        "path": "/etc/bitcoinpir/payment-v1/edge",
+        "uid": 0
+      },
+      "pin": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0400",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+        "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      }
+    }
+  ],
+  "transaction": {
+    "adapt_argv": [
+      "/usr/bin/caddy",
+      "adapt",
+      "--config",
+      "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",
+      "--adapter",
+      "caddyfile"
+    ],
+    "adapted_json_path": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/adapted/replace-integrated-existing-bhtm-caddy-v1.json",
+    "backup_mode": "exclusive-create-fsync-file-and-parent",
+    "backup_path": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/backups/replace-integrated-existing-bhtm-caddy-v1-INVALID_REPLACE_WITH_PREIMAGE_SHA256.Caddyfile",
+    "candidate_path": "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",
+    "installation_mode": "same-directory-renameat2-exchange-verify-swapped-preimage-and-live-candidate-parent-fsync",
+    "lock_path": "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock",
+    "reload_argv": [
+      "/usr/bin/systemctl",
+      "reload",
+      "bhtm-caddy.service"
+    ],
+    "receipt_path": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/receipts/replace-integrated-existing-bhtm-caddy-v1.json",
+    "receipt_pending_path": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/receipts/replace-integrated-existing-bhtm-caddy-v1.json.pending",
+    "require_same_active_enter_timestamp_monotonic": true,
+    "require_same_invocation_id": true,
+    "require_same_main_pid": true,
+    "restart_forbidden": true,
+    "rollback_mode": "same-directory-renameat2-exchange-verify-swapped-candidate-and-restored-preimage-parent-fsync-then-reload",
+    "rollback_on_any_post_install_failure": true,
+    "state_directory": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/transactions/replace-integrated-existing-bhtm-caddy-v1",
+    "validate_argv": [
+      "/usr/bin/caddy",
+      "validate",
+      "--config",
+      "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",
+      "--adapter",
+      "caddyfile"
+    ]
+  },
+  "transaction_id": "replace-integrated-existing-bhtm-caddy-v1",
+  "trust_acknowledgements": {
+    "append_only_cannot_disable_global_admin": true,
+    "append_only_cannot_disable_global_logging": true,
+    "append_only_cannot_disable_global_zero_rtt": true,
+    "existing_preimage_remains_authoritative": true,
+    "existing_root_caddy_retains_admin_acme_and_journal_trust": true,
+    "existing_root_caddy_expands_failure_domain": true,
+    "reload_does_not_refresh_cold_runtime_evidence": true
+  }
+}

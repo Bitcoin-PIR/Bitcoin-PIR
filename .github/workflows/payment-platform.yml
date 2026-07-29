@@ -37,6 +37,7 @@ on:
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -82,6 +83,7 @@ on:
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -451,11 +453,21 @@ jobs:
           node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
           node --check scripts/payment-v1-source-fair-edge.test.mjs
           node --test \
+            scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
+            scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
             scripts/payment-v1-rendered-artifact-gate.test.mjs \
             scripts/payment-v1-linux-runtime-evidence.test.mjs \
-            scripts/payment-v1-source-fair-edge.test.mjs
+            scripts/payment-v1-source-fair-edge.test.mjs \
+            scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+          sudo "$(command -v node)" --test \
+            scripts/payment-v1-integrated-caddy-lock.test.mjs
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

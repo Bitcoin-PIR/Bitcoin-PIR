@@ -569,6 +569,62 @@ PID namespace or systemd container. This closes ordinary reacquisition under
 the trusted-root/authentication-policy boundary, not a compromised root or new
 local-privilege exploit.
 
+### Alternative existing-Caddy overlay (not deployed)
+
+`integrated-existing-bhtm-caddy-v1` is an explicit alternative to
+`edge-hetzner-v1` for a host whose production edge is the existing root
+`bhtm-caddy.service` and `/etc/caddy/Caddyfile`. It is not a second edge to run
+beside `edge-hetzner-v1`. Its rendered bundle closes over the managed Caddy
+block, source-fair HAProxy config/unit, overlay gate/executor, a
+content-addressed Linux `renameat2(RENAME_EXCHANGE)` helper and the helper's
+one-entry hash manifest. A separate overlay plan pins the exact Caddyfile
+preimage, Caddy binary and unit fragment, active PID/InvocationID/control-group
+generation, rendered block, helper, Node/gate/executor, TLS inputs, HAProxy
+bundle/runtime evidence and all four health probes.
+
+This profile deliberately does **not** claim that appending a block hardens the
+existing root Caddy process. Existing global options, admin endpoint, ACME
+account/certificate state, journal/error path, zero-RTT choice, plugins,
+resource limits and every pre-existing site remain in the Payment V1 trust,
+privacy and failure domain. The overlay plan must acknowledge that wider domain
+explicitly. A successful reload receipt proves only the pinned generation,
+exact append, source-fair sockets and application health; it cannot turn warm
+reload evidence into the cold stopped-edge/fresh-start proof required above.
+
+The current inspected Hetzner host has only loopback plus its public interface;
+it has no reviewed RFC1918/ULA publisher bind/client route. The integrated
+profile therefore remains fail-closed and non-deployable there until a separate
+network change supplies either a narrow WireGuard route or an explicitly
+reviewed same-host veth/network-namespace private route. The private bind, sole
+client and public bind must be three distinct addresses; neither public nor
+loopback substitutions are accepted. Network provisioning is outside this
+profile and must precede render-plan approval.
+
+Before execution, create the overlay transaction parent directories as sealed
+root-owned `0700` directories, including `adapted`, `backups`, `receipts` and
+`transactions`; the executor creates only its unique transaction directory.
+Each transaction ID is single-use. The executor builds the candidate from the
+exact preimage and already rendered/pinned managed block, runs Caddy adapt and
+validate, durably writes the exact backup and an append-only phase record, then
+exchanges the candidate and live Caddyfile atomically. It verifies both the
+live candidate and swapped-out preimage before reload. The swapped-out preimage
+stays at the candidate path until a terminal receipt is atomically published
+and durable. Receipt bytes first reach an owner-only, fsynced `.pending` entry;
+the pinned helper then publishes that entry with `RENAME_NOREPLACE` and fsyncs
+the parent directory, so a crash cannot make a truncated final receipt
+authoritative.
+
+On any post-install failure, rollback uses the same exchange helper and verifies
+both restored preimage and swapped-out candidate before the second reload. The
+explicit `recover` command holds a boot-ID/PID/start-time lock and classifies
+only exact target/candidate digest pairs: preimage/candidate before install is
+cleaned without activation; candidate/preimage is exchanged back and reloaded;
+an interrupted rollback is reloaded and finalized; a valid durable committed
+receipt is finalized and never rolled back. Any unknown pair stops without
+overwriting either name. Health uses system WebPKI and hostname validation plus
+the approved leaf-certificate digest; WebSocket probes also verify the Upgrade,
+Connection and computed `Sec-WebSocket-Accept` proof.
+
 1. Freeze exact BitcoinPIR commit, binaries, policies, directory artifacts,
    authority metadata and key-role inventory.
 2. Complete the selected
