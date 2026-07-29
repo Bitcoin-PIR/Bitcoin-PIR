@@ -490,6 +490,168 @@ fn validate_inspector_results(
     Ok(())
 }
 
+/// Re-derive every input-dependent coordinate and decoded payload from the
+/// exact bins that will be Merkle-verified.  This is intentionally separate
+/// from the public/persisted split verifier: release-safe callers invoke it on
+/// the native results retained inside the same query call, never on JSON
+/// supplied by JavaScript.
+fn validate_inspector_semantics(
+    script_hashes: &[ScriptHash],
+    results: &[Option<QueryResult>],
+    db_info: &DatabaseInfo,
+) -> PirResult<()> {
+    if script_hashes.len() != results.len() {
+        return Err(PirError::MerkleVerificationFailed(format!(
+            "DPF verified inspector input/result length mismatch: {} != {}",
+            script_hashes.len(),
+            results.len(),
+        )));
+    }
+
+    for (query_index, (script_hash, result)) in script_hashes.iter().zip(results.iter()).enumerate()
+    {
+        let result = result.as_ref().ok_or_else(|| {
+            PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} is missing"
+            ))
+        })?;
+        let group = result.index_bins[0].pbc_group as usize;
+        if !pir_core::hash::derive_groups_3(script_hash, db_info.index_k as usize).contains(&group)
+        {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} INDEX group is not bound to its input"
+            )));
+        }
+        let expected_tag = pir_core::hash::compute_tag(db_info.tag_seed, script_hash);
+        let mut found: Option<(usize, u32, u32)> = None;
+
+        for (h, bin) in result.index_bins.iter().enumerate() {
+            let key = pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, group, h);
+            let expected_bin =
+                pir_core::hash::cuckoo_hash(script_hash, key, db_info.index_bins as usize) as u32;
+            if bin.bin_index != expected_bin {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} INDEX coordinate is not bound to its input"
+                )));
+            }
+            if let Some((start, count)) = find_entry_in_index_result(&bin.bin_content, expected_tag)
+            {
+                if found.is_some() {
+                    return Err(PirError::MerkleVerificationFailed(format!(
+                        "DPF verified inspector result {query_index} has duplicate INDEX matches"
+                    )));
+                }
+                found = Some((h, start, count));
+            }
+        }
+
+        if result.matched_index_idx != found.map(|(position, _, _)| position) {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} matched INDEX position is not bound to its input"
+            )));
+        }
+
+        let Some((_position, start_chunk_id, num_chunks)) = found else {
+            if !result.entries.is_empty()
+                || result.is_whale
+                || result.raw_chunk_data.is_some()
+                || !result.chunk_bins.is_empty()
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector absence result {query_index} carries unbound payload"
+                )));
+            }
+            continue;
+        };
+
+        let expected_whale = num_chunks == 0;
+        if result.is_whale != expected_whale {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} whale flag disagrees with INDEX"
+            )));
+        }
+        if expected_whale {
+            if !result.entries.is_empty()
+                || result.raw_chunk_data.is_some()
+                || !result.chunk_bins.is_empty()
+            {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector whale result {query_index} carries CHUNK payload"
+                )));
+            }
+            continue;
+        }
+
+        let expected_count = num_chunks as usize;
+        if result.chunk_bins.len() != expected_count {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} has {} CHUNK traces; expected {expected_count}",
+                result.chunk_bins.len(),
+            )));
+        }
+        let mut rebuilt = Vec::with_capacity(expected_count * pir_core::params::CHUNK_SIZE);
+        for (slot, bin) in result.chunk_bins.iter().enumerate() {
+            let chunk_id = start_chunk_id.checked_add(slot as u32).ok_or_else(|| {
+                PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} CHUNK id overflow"
+                ))
+            })?;
+            let chunk_group = bin.pbc_group as usize;
+            let candidate_groups =
+                pir_core::hash::derive_int_groups_3(chunk_id, db_info.chunk_k as usize);
+            if !candidate_groups.contains(&chunk_group) {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} CHUNK {slot} group is not bound to its id"
+                )));
+            }
+            let coordinate_matches = (0..CHUNK_CUCKOO_NUM_HASHES).any(|h| {
+                let key =
+                    pir_core::hash::derive_cuckoo_key(db_info.chunk_master_seed, chunk_group, h);
+                pir_core::hash::cuckoo_hash_int(chunk_id, key, db_info.chunk_bins as usize) as u32
+                    == bin.bin_index
+            });
+            if !coordinate_matches {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} CHUNK {slot} coordinate is not bound to its id"
+                )));
+            }
+            let data = find_chunk_in_result(&bin.bin_content, chunk_id).ok_or_else(|| {
+                PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} CHUNK {slot} is missing from its verified bin"
+                ))
+            })?;
+            if data.len() != pir_core::params::CHUNK_SIZE {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} CHUNK {slot} is truncated"
+                )));
+            }
+            rebuilt.extend_from_slice(data);
+        }
+        if rebuilt.len() != expected_count * pir_core::params::CHUNK_SIZE {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} CHUNK payload length mismatch"
+            )));
+        }
+        let decoded = decode_utxo_entries(&rebuilt)?;
+        if decoded != result.entries {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF verified inspector result {query_index} entries are not derived from verified CHUNK bins"
+            )));
+        }
+        match (&db_info.kind, &result.raw_chunk_data) {
+            (pir_sdk::DatabaseKind::Delta { .. }, Some(raw)) if raw == &rebuilt => {}
+            (pir_sdk::DatabaseKind::Full, None) => {}
+            _ => {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF verified inspector result {query_index} raw CHUNK payload is not bound to the database kind"
+                )))
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ─── DPF Client ─────────────────────────────────────────────────────────────
 
 /// DPF-PIR client for two-server PIR queries.
@@ -1528,7 +1690,12 @@ impl DpfClient {
             let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
                 match found_info {
                     Some((start, num, whale)) if num > 0 => {
-                        ((start..start + num as u32).collect(), whale, true)
+                        let end = start.checked_add(num as u32).ok_or_else(|| {
+                            PirError::MerkleVerificationFailed(format!(
+                                "DPF INDEX chunk range overflow for query {i}: start={start} count={num}"
+                            ))
+                        })?;
+                        ((start..end).collect(), whale, true)
                     }
                     Some((_start, _num, whale)) => {
                         // Whale: matched but `num_chunks == 0`. No real
@@ -1545,20 +1712,20 @@ impl DpfClient {
                 real_count,
             );
             let (chunk_data, chunk_bins) = self.query_chunk_level(&real_chunk_ids, db_info).await?;
-            q_traces.chunk_bins = chunk_bins;
 
-            // `chunk_data` holds exactly this scripthash's real chunks;
-            // `real_data_len` is its full length (the slice below is a
-            // defensive no-op unless the server dropped a chunk).
+            // `query_chunk_level` fails closed unless it recovered every
+            // expected slot in order, so no truncation/fallback is safe here.
             let real_data_len = real_count * pir_core::params::CHUNK_SIZE;
-            let real_data: Vec<u8> = if real_data_len <= chunk_data.len() {
-                chunk_data[..real_data_len].to_vec()
-            } else {
-                // Defensive: server failed to recover one of the real
-                // chunks. Fall back to whatever we got rather than panic;
-                // Merkle verification will catch the discrepancy.
-                chunk_data.clone()
-            };
+            if chunk_bins.len() != real_count || chunk_data.len() != real_data_len {
+                return Err(PirError::MerkleVerificationFailed(format!(
+                    "DPF CHUNK closure failed for query {i}: recovered {} traces / {} bytes, expected {real_count} / {real_data_len}",
+                    chunk_bins.len(),
+                    chunk_data.len(),
+                )));
+            }
+            q_traces.chunk_bins = chunk_bins;
+            let chunk_data_len = chunk_data.len();
+            let real_data = chunk_data;
 
             if !has_real_match {
                 // Not-found: no UTXO entries, `chunk_bins` empty.
@@ -1588,7 +1755,7 @@ impl DpfClient {
                     .collect();
                 eprintln!(
                     "[DBG_HEX] DPF query #{} real_count={} real_data_len={} (raw chunk_data_len={}) bytes[0..{}]={}",
-                    i, real_count, real_data.len(), chunk_data.len(), preview_len, preview,
+                    i, real_count, real_data.len(), chunk_data_len, preview_len, preview,
                 );
             }
 
@@ -2529,10 +2696,9 @@ impl DpfClient {
                     }
                 }
                 if !found_any {
-                    log::warn!(
-                        "[PIR-AUDIT] CHUNK MISSING: chunk_id={}, group={} (no cuckoo position matched)",
-                        chunk_id, group_id
-                    );
+                    return Err(PirError::MerkleVerificationFailed(format!(
+                        "DPF CHUNK missing: chunk_id={chunk_id}, group={group_id}"
+                    )));
                 }
             }
         }
@@ -2546,6 +2712,17 @@ impl DpfClient {
             if let Some(trace) = chunk_trace_map.remove(chunk_id) {
                 chunk_bins.push(trace);
             }
+        }
+
+        let expected_bytes = chunk_ids.len() * pir_core::params::CHUNK_SIZE;
+        if chunk_bins.len() != chunk_ids.len() || all_data.len() != expected_bytes {
+            return Err(PirError::MerkleVerificationFailed(format!(
+                "DPF CHUNK reassembly incomplete: recovered {} traces / {} bytes, expected {} / {}",
+                chunk_bins.len(),
+                all_data.len(),
+                chunk_ids.len(),
+                expected_bytes,
+            )));
         }
 
         Ok((all_data, chunk_bins))
@@ -2903,6 +3080,40 @@ impl DpfClient {
             .await?;
         let results = attach_inspector_traces(results, traces)?;
         validate_inspector_results(&results, &db_info)?;
+        Ok(results)
+    }
+
+    /// Release-safe inspector query. The input-dependent query, semantic
+    /// reconstruction, and Merkle verification all complete inside this one
+    /// native call; no unverified result is returned to the caller. The batch
+    /// is all-or-nothing so a single failed proof releases no sibling slot.
+    pub async fn query_batch_verified_with_inspector(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        db_id: u8,
+    ) -> PirResult<Vec<Option<QueryResult>>> {
+        let mut results = self
+            .query_batch_with_inspector(script_hashes, db_id)
+            .await?;
+        let db_info = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.get(db_id))
+            .ok_or(PirError::DatabaseNotFound(db_id))?
+            .clone();
+        validate_inspector_results(&results, &db_info)?;
+        validate_inspector_semantics(script_hashes, &results, &db_info)?;
+        let verdicts = self
+            .verify_merkle_batch_for_results(&results, db_id)
+            .await?;
+        if verdicts.len() != results.len() || verdicts.iter().any(|verdict| !verdict) {
+            return Err(PirError::MerkleVerificationFailed(
+                "DPF verified inspector batch contains a failed inclusion proof".into(),
+            ));
+        }
+        for result in results.iter_mut().flatten() {
+            result.merkle_verified = true;
+        }
         Ok(results)
     }
 
@@ -4351,6 +4562,114 @@ mod tests {
             matched_index_idx: None,
         };
         validate_inspector_results(&[Some(result)], &db_info).unwrap();
+    }
+
+    fn semantic_fixture(db_info: &DatabaseInfo, script_hash: ScriptHash) -> QueryResult {
+        let group = pir_core::hash::derive_groups_3(&script_hash, db_info.index_k as usize)[0];
+        let tag = pir_core::hash::compute_tag(db_info.tag_seed, &script_hash);
+        let nonmatch = tag.wrapping_add(1);
+        let mut index_bins = Vec::new();
+        for h in 0..INDEX_CUCKOO_NUM_HASHES {
+            let mut content = vec![0u8; INDEX_SLOT_SIZE * INDEX_SLOTS_PER_BIN];
+            for slot in 0..INDEX_SLOTS_PER_BIN {
+                let base = slot * INDEX_SLOT_SIZE;
+                content[base..base + TAG_SIZE].copy_from_slice(&nonmatch.to_le_bytes());
+            }
+            if h == 0 {
+                content[..TAG_SIZE].copy_from_slice(&tag.to_le_bytes());
+                content[TAG_SIZE..TAG_SIZE + 4].copy_from_slice(&5u32.to_le_bytes());
+                content[TAG_SIZE + 4] = 1;
+            }
+            let key = pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, group, h);
+            let bin_index =
+                pir_core::hash::cuckoo_hash(&script_hash, key, db_info.index_bins as usize) as u32;
+            index_bins.push(BucketRef {
+                pbc_group: group as u32,
+                bin_index,
+                bin_content: content,
+            });
+        }
+
+        let mut raw = Vec::new();
+        pir_core::codec::write_varint(1, &mut raw);
+        raw.extend_from_slice(&[0x44; 32]);
+        pir_core::codec::write_varint(2, &mut raw);
+        pir_core::codec::write_varint(9, &mut raw);
+        raw.resize(pir_core::params::CHUNK_SIZE, 0);
+        let chunk_id = 5;
+        let chunk_group =
+            pir_core::hash::derive_int_groups_3(chunk_id, db_info.chunk_k as usize)[0];
+        let chunk_key =
+            pir_core::hash::derive_cuckoo_key(db_info.chunk_master_seed, chunk_group, 0);
+        let chunk_bin_index =
+            pir_core::hash::cuckoo_hash_int(chunk_id, chunk_key, db_info.chunk_bins as usize)
+                as u32;
+        let mut chunk_content = vec![0u8; CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN];
+        chunk_content[..4].copy_from_slice(&chunk_id.to_le_bytes());
+        chunk_content[4..4 + pir_core::params::CHUNK_SIZE].copy_from_slice(&raw);
+
+        QueryResult {
+            entries: decode_utxo_entries(&raw).unwrap(),
+            is_whale: false,
+            merkle_verified: false,
+            raw_chunk_data: None,
+            index_bins,
+            chunk_bins: vec![BucketRef {
+                pbc_group: chunk_group as u32,
+                bin_index: chunk_bin_index,
+                bin_content: chunk_content,
+            }],
+            matched_index_idx: Some(0),
+        }
+    }
+
+    #[test]
+    fn verified_inspector_semantics_bind_input_entries_and_all_chunks() {
+        let db_info = tiny_db_info();
+        let script_hash = [0x31; 20];
+        let result = semantic_fixture(&db_info, script_hash);
+        validate_inspector_semantics(&[script_hash], &[Some(result.clone())], &db_info).unwrap();
+
+        let mut missing_chunk = result.clone();
+        missing_chunk.chunk_bins.clear();
+        let error = validate_inspector_semantics(&[script_hash], &[Some(missing_chunk)], &db_info)
+            .expect_err("INDEX-declared CHUNK omission must fail closed");
+        assert!(error.is_verification_failure(), "{error}");
+
+        let mut forged_entries = result.clone();
+        forged_entries.entries[0].amount_sats += 1;
+        let error = validate_inspector_semantics(&[script_hash], &[Some(forged_entries)], &db_info)
+            .expect_err("entries not decoded from verified bins must fail closed");
+        assert!(error.is_verification_failure(), "{error}");
+
+        let error = validate_inspector_semantics(&[[0x32; 20]], &[Some(result)], &db_info)
+            .expect_err("a result cannot be rebound to another input");
+        assert!(error.is_verification_failure(), "{error}");
+    }
+
+    #[tokio::test]
+    async fn malicious_dpf_provider_cannot_omit_an_expected_chunk() {
+        let db_info = tiny_db_info();
+        let empty_bin = vec![0u8; CHUNK_SLOT_SIZE * CHUNK_SLOTS_PER_BIN];
+        let frame = make_batch_response_frame(
+            RESP_CHUNK_BATCH,
+            0,
+            db_info.chunk_k as usize,
+            CHUNK_CUCKOO_NUM_HASHES,
+            &empty_bin,
+        );
+        let mut mock0 = MockTransport::new("wss://mock-0");
+        let mut mock1 = MockTransport::new("wss://mock-1");
+        mock0.enqueue_response(frame.clone());
+        mock1.enqueue_response(frame);
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(Box::new(mock0), Box::new(mock1));
+
+        let error = client
+            .query_chunk_level(&[5], &db_info)
+            .await
+            .expect_err("an intact frame that omits the requested CHUNK must fail closed");
+        assert!(error.is_verification_failure(), "{error}");
     }
 
     #[tokio::test]

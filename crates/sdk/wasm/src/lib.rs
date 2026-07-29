@@ -222,16 +222,16 @@ fn bucket_refs_to_json(refs: &[BucketRef]) -> serde_json::Value {
     )
 }
 
-/// Build a native `QueryResult` from a `serde_json::Value`. Shared by
-/// `WasmQueryResult::from_json` and the array-level parser used by
-/// `WasmDpfClient::verifyMerkleBatch` so both surfaces accept the same
-/// field-name conventions (camelCase, optional inspector state).
+/// Build a native `QueryResult` from a `serde_json::Value` for the generic
+/// `WasmQueryResult::from_json` compatibility surface. This parser is not a
+/// verification boundary: production DPF/Harmony release uses native-only
+/// `queryBatchVerified`, which never accepts caller-supplied JSON.
 ///
 /// Field semantics:
 /// * `entries` — required array. Missing or non-array is an error.
 /// * `isWhale` — optional bool, default `false`.
-/// * `merkleVerified` — optional bool, default `true`
-///   ("no failure detected"; matches `QueryResult::with_entries`).
+/// * `merkleVerified` — accepted for JSON-shape compatibility but never
+///   trusted; every deserialized result is forced to `false`.
 /// * `indexBins` / `chunkBins` — optional inspector-state arrays
 ///   (see `parse_bucket_refs`); missing ⇒ empty vec (legacy shape).
 /// * `matchedIndexIdx` — optional u64 ⇒ `Some(usize)`; missing ⇒ `None`.
@@ -267,11 +267,6 @@ pub(crate) fn parse_query_result_json(data: &serde_json::Value) -> Result<QueryR
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let merkle_verified = data
-        .get("merkleVerified")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
     let index_bins = parse_bucket_refs(data.get("indexBins"))?;
     let chunk_bins = parse_bucket_refs(data.get("chunkBins"))?;
     let matched_index_idx = data
@@ -294,7 +289,9 @@ pub(crate) fn parse_query_result_json(data: &serde_json::Value) -> Result<QueryR
     Ok(QueryResult {
         entries,
         is_whale,
-        merkle_verified,
+        // Caller-supplied JSON is data, not proof. Only native query/sync
+        // paths may construct a result carrying a positive release verdict.
+        merkle_verified: false,
         raw_chunk_data,
         index_bins,
         chunk_bins,
@@ -692,15 +689,19 @@ impl WasmQueryResult {
 
 #[wasm_bindgen]
 impl WasmQueryResult {
-    /// Create an empty result.
+    /// Create an empty, unverified result.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self {
-            inner: QueryResult::empty(),
-        }
+        let mut inner = QueryResult::empty();
+        inner.merkle_verified = false;
+        Self { inner }
     }
 
-    /// Create from JSON.
+    /// Create an unverified result from JSON.
+    ///
+    /// A caller-supplied `merkleVerified` property is ignored and the result
+    /// is always marked `false`. JSON import is a data-compatibility API, not
+    /// a proof or release boundary.
     #[wasm_bindgen(js_name = fromJson)]
     pub fn from_json(json: &JsValue) -> Result<WasmQueryResult, JsError> {
         let data: serde_json::Value = serde_wasm_bindgen::from_value(json.clone())
@@ -728,12 +729,13 @@ impl WasmQueryResult {
         self.inner.is_whale
     }
 
-    /// Whether the per-bucket Merkle proof verified for this result.
+    /// Whether a native query/sync path established a positive per-bucket
+    /// Merkle release verdict (or established that commitments are N/A).
     ///
-    /// `true` means the proof passed or the database doesn't publish
-    /// Merkle commitments (no failure detected). `false` means
-    /// verification was attempted and FAILED; the result should be
-    /// treated as untrusted.
+    /// `WasmQueryResult::new()` and `fromJson()` always return `false`; only
+    /// crate-internal `from_native` may preserve `true`. A `false` value means
+    /// unauthenticated/unreleased (including unverified, tainted, or failed),
+    /// so callers must never interpret it as merely an attempted failure.
     #[wasm_bindgen(getter, js_name = merkleVerified)]
     pub fn merkle_verified(&self) -> bool {
         self.inner.merkle_verified
@@ -758,7 +760,7 @@ impl WasmQueryResult {
     /// as a JSON array of `{pbcGroup, binIndex, binContent}` objects.
     ///
     /// Only non-empty for `QueryResult`s produced by the inspector path
-    /// (e.g. `WasmDpfClient.queryBatchRaw`). Populated for found,
+    /// (e.g. `WasmDpfClient.queryBatchVerified`). Populated for found,
     /// not-found, and whale alike — the item-count symmetry invariant
     /// guarantees this array always has `INDEX_CUCKOO_NUM_HASHES = 2`
     /// entries for an inspector-path result.
@@ -796,8 +798,7 @@ impl WasmQueryResult {
     /// `entries` already hold the canonical state — there is no
     /// second-layer merge to feed.
     ///
-    /// Populated natively by
-    /// `pir-sdk-client::DpfClient::query_batch_with_inspector`
+    /// Populated natively by the release-safe verified inspector query
     /// (when `db_info.kind.is_delta()`) and surfaced here as a
     /// `Uint8Array`. This getter is the only way the web client can
     /// obtain the bytes — `toJson()` emits them as a hex string so that
@@ -812,11 +813,10 @@ impl WasmQueryResult {
 
     /// Convert to JSON.
     ///
-    /// The emitted object is accepted by [`fromJson`] as a round-trip
-    /// input — including optional inspector fields (`indexBins`,
-    /// `chunkBins`, `matchedIndexIdx`), which lets callers persist an
-    /// inspector-path result (e.g. to localStorage) and later re-verify
-    /// it via `WasmDpfClient.verifyMerkleBatch`.
+    /// The emitted object is accepted by [`fromJson`] as a data round-trip,
+    /// including optional inspector fields (`indexBins`, `chunkBins`,
+    /// `matchedIndexIdx`). It is deliberately not accepted as proof input by
+    /// DPF/Harmony clients; a deserialized result has no release authority.
     #[wasm_bindgen(js_name = toJson)]
     pub fn to_json(&self) -> JsValue {
         let entries: Vec<serde_json::Value> = self
@@ -899,7 +899,9 @@ pub fn decode_delta_data(raw: &[u8]) -> Result<JsValue, JsError> {
 /// * `delta_raw` - Raw delta chunk data bytes
 ///
 /// # Returns
-/// A new WasmQueryResult with the delta applied.
+/// A new WasmQueryResult with the delta applied. Verification status is
+/// inherited from `snapshot`; therefore JSON-deserialized snapshots remain
+/// unverified and cannot be promoted by merging.
 #[wasm_bindgen(js_name = mergeDelta)]
 pub fn merge_delta(
     snapshot: &WasmQueryResult,
@@ -1178,15 +1180,41 @@ mod tests {
     #[test]
     fn parse_query_result_json_minimal() {
         // Minimal legacy shape: just `entries`. All inspector fields
-        // default to empty / None / true, matching pre-Session-2 callers.
+        // default to empty / None, while authentication fails closed.
         let json = serde_json::json!({ "entries": [] });
         let qr = parse_query_result_json(&json).unwrap();
         assert!(qr.entries.is_empty());
         assert!(!qr.is_whale);
-        assert!(qr.merkle_verified);
+        assert!(!qr.merkle_verified);
         assert!(qr.index_bins.is_empty());
         assert!(qr.chunk_bins.is_empty());
         assert!(qr.matched_index_idx.is_none());
+    }
+
+    #[test]
+    fn caller_json_cannot_claim_or_merge_into_a_positive_merkle_verdict() {
+        let json = serde_json::json!({
+            "entries": [],
+            "merkleVerified": true,
+        });
+        let parsed = parse_query_result_json(&json).unwrap();
+        assert!(
+            !parsed.merkle_verified,
+            "caller-supplied JSON cannot establish a release verdict"
+        );
+
+        let snapshot = WasmQueryResult { inner: parsed };
+        let merged = merge_delta(&snapshot, &[0, 0]).unwrap();
+        assert!(
+            !merged.inner.merkle_verified,
+            "mergeDelta must preserve deserialized taint"
+        );
+
+        let constructed = WasmQueryResult::new();
+        assert!(
+            !constructed.inner.merkle_verified,
+            "the public constructor must not mint a trusted result"
+        );
     }
 
     #[test]

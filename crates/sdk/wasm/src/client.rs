@@ -50,9 +50,7 @@ use crate::service::{
     WasmAcceptedRetainedServiceRedemptionV1, WasmAcceptedServicePolicyV1,
     WasmServicePowChallengeV1,
 };
-use crate::{
-    parse_query_result_json, to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult,
-};
+use crate::{to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
 
 // These symbols are only referenced from wasm32-gated bridges below, so
 // keep their imports gated too — on native we only compile recorder-impl
@@ -1977,19 +1975,12 @@ impl WasmDpfClient {
         Ok(())
     }
 
-    /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
-    /// but returns opaque [`WasmQueryResult`] handles whose
-    /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**. Every
-    /// returned raw handle reports `merkleVerified === false`; the separate
-    /// batch verifier's returned boolean is the release verdict and does not
-    /// mutate the original handle. Raw server/result defaults are never
-    /// treated as verification evidence.
-    ///
-    /// This is the pair-wise half of the split-verify flow: call this,
-    /// persist or inspect the results, then later call
-    /// [`verifyMerkleBatch`](Self::verify_merkle_batch) against the same
-    /// `db_id` to obtain the per-query verdicts.
+    /// Release-safe inspector batch query. Native Rust retains every raw
+    /// INDEX/CHUNK bin, re-derives coordinates and decoded payloads from the
+    /// exact input order, and completes Merkle verification before this
+    /// promise resolves. A single failed slot rejects the whole batch; JS
+    /// never receives an unverified entry or an independently forgeable JSON
+    /// proof object.
     ///
     /// Returns a JS `Array` of length `N` (the input scripthash count).
     /// Every slot is a non-null [`WasmQueryResult`] — not-found queries
@@ -2001,8 +1992,8 @@ impl WasmDpfClient {
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups), including when most queries are not-found — the
     /// wire-level batch is unchanged.
-    #[wasm_bindgen(js_name = queryBatchRaw)]
-    pub async fn query_batch_raw(
+    #[wasm_bindgen(js_name = queryBatchVerified)]
+    pub async fn query_batch_verified(
         &mut self,
         script_hashes: &Uint8Array,
         db_id: u8,
@@ -2011,77 +2002,22 @@ impl WasmDpfClient {
         let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
         let results = self
             .inner
-            .query_batch_with_inspector(&script_hashes, db_id)
+            .query_batch_verified_with_inspector(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
         for r in results {
             match r {
                 Some(qr) => {
+                    debug_assert!(qr.merkle_verified);
                     arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
                 }
                 None => {
-                    // `query_batch_with_inspector` synthesises `Some(empty)`
-                    // for not-found, so we shouldn't land here in practice;
-                    // forward `null` if the contract ever changes.
-                    arr.push(&JsValue::NULL);
+                    return Err(JsError::new(
+                        "queryBatchVerified: native verifier released a missing result",
+                    ));
                 }
             }
-        }
-        Ok(arr.into())
-    }
-
-    /// Standalone Merkle verifier — consumes inspector-populated
-    /// QueryResults (as JSON, typically produced by
-    /// [`queryBatchRaw`](Self::query_batch_raw) then
-    /// `WasmQueryResult.toJson()` and possibly round-tripped through
-    /// persistent storage) and returns one `bool` per input.
-    ///
-    /// # Arguments
-    /// * `results_json` — non-empty JS `Array` where every element is a
-    ///   complete `QueryResult` JSON object including exact `indexBins` /
-    ///   `chunkBins` / `matchedIndexIdx` proof state. `null`, an empty/default
-    ///   result, or malformed trace geometry fails closed with an error.
-    /// * `db_id` — database to verify against.
-    ///
-    /// # Returns
-    /// JS `Array` of `bool`:
-    /// * `true`  — every required Merkle item verified.
-    /// * `false` — at least one Merkle proof failed; callers should
-    ///   treat the slot as untrusted.
-    ///
-    /// Databases that don't publish a bucket-Merkle tree fail closed; the
-    /// split API never turns "Merkle not available" into a release verdict.
-    #[wasm_bindgen(js_name = verifyMerkleBatch)]
-    pub async fn verify_merkle_batch(
-        &mut self,
-        results_json: &JsValue,
-        db_id: u8,
-    ) -> Result<JsValue, JsError> {
-        let data: serde_json::Value = serde_wasm_bindgen::from_value(results_json.clone())
-            .map_err(|e| JsError::new(&format!("JSON parse error: {}", e)))?;
-        let items = data
-            .as_array()
-            .ok_or_else(|| JsError::new("verifyMerkleBatch: results must be an array"))?;
-
-        let mut parsed: Vec<Option<QueryResult>> = Vec::with_capacity(items.len());
-        for v in items {
-            if v.is_null() {
-                parsed.push(None);
-            } else {
-                parsed.push(Some(parse_query_result_json(v)?));
-            }
-        }
-
-        let verdicts = self
-            .inner
-            .verify_merkle_batch_for_results(&parsed, db_id)
-            .await
-            .map_err(err_to_js)?;
-
-        let arr = Array::new();
-        for ok in verdicts {
-            arr.push(&JsValue::from_bool(ok));
         }
         Ok(arr.into())
     }
@@ -2840,24 +2776,17 @@ impl WasmHarmonyClient {
         Ok(())
     }
 
-    /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
-    /// but returns opaque [`WasmQueryResult`] handles whose
-    /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**. Every
-    /// returned raw handle reports `merkleVerified === false`; the separate
-    /// batch verifier returns the release verdict without mutating that handle.
-    ///
-    /// See [`WasmDpfClient::query_batch_raw`] for the full split-verify
-    /// flow description. The Harmony wrapper exposes the same JS-facing
-    /// contract despite the different wire protocol underneath.
+    /// Release-safe inspector batch query. See
+    /// [`WasmDpfClient::query_batch_verified`] for the all-or-nothing
+    /// verification and JS-boundary contract.
     /// Empty input or a database without bucket-Merkle commitments fails
     /// before the private query phase.
     ///
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups) — padding lives in the native `HarmonyClient` query
     /// path that this wrapper delegates to.
-    #[wasm_bindgen(js_name = queryBatchRaw)]
-    pub async fn query_batch_raw(
+    #[wasm_bindgen(js_name = queryBatchVerified)]
+    pub async fn query_batch_verified(
         &mut self,
         script_hashes: &Uint8Array,
         db_id: u8,
@@ -2866,61 +2795,22 @@ impl WasmHarmonyClient {
         let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
         let results = self
             .inner
-            .query_batch_with_inspector(&script_hashes, db_id)
+            .query_batch_verified_with_inspector(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
         for r in results {
             match r {
                 Some(qr) => {
+                    debug_assert!(qr.merkle_verified);
                     arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
                 }
                 None => {
-                    // `query_batch_with_inspector` synthesises `Some(empty)`
-                    // for not-found; fall through to null if the contract
-                    // ever changes.
-                    arr.push(&JsValue::NULL);
+                    return Err(JsError::new(
+                        "queryBatchVerified: native verifier released a missing result",
+                    ));
                 }
             }
-        }
-        Ok(arr.into())
-    }
-
-    /// Standalone Merkle verifier over inspector-populated QueryResults.
-    /// See [`WasmDpfClient::verify_merkle_batch`] for the full argument
-    /// / return contract — the Harmony implementation uses the same
-    /// per-bucket machinery via the `HarmonySiblingQuerier` transport
-    /// path, so the JS-facing behaviour is identical.
-    #[wasm_bindgen(js_name = verifyMerkleBatch)]
-    pub async fn verify_merkle_batch(
-        &mut self,
-        results_json: &JsValue,
-        db_id: u8,
-    ) -> Result<JsValue, JsError> {
-        let data: serde_json::Value = serde_wasm_bindgen::from_value(results_json.clone())
-            .map_err(|e| JsError::new(&format!("JSON parse error: {}", e)))?;
-        let items = data
-            .as_array()
-            .ok_or_else(|| JsError::new("verifyMerkleBatch: results must be an array"))?;
-
-        let mut parsed: Vec<Option<QueryResult>> = Vec::with_capacity(items.len());
-        for v in items {
-            if v.is_null() {
-                parsed.push(None);
-            } else {
-                parsed.push(Some(parse_query_result_json(v)?));
-            }
-        }
-
-        let verdicts = self
-            .inner
-            .verify_merkle_batch_for_results(&parsed, db_id)
-            .await
-            .map_err(err_to_js)?;
-
-        let arr = Array::new();
-        for ok in verdicts {
-            arr.push(&JsValue::from_bool(ok));
         }
         Ok(arr.into())
     }
@@ -2934,7 +2824,7 @@ impl WasmHarmonyClient {
 
     /// Pin this client's hint state to `db_id`. If hints for a different
     /// db are currently loaded, invalidates them — the next
-    /// `sync`/`queryBatch`/`queryBatchRaw` will re-fetch (or restore
+    /// `sync`/`queryBatch`/`queryBatchVerified` will re-fetch (or restore
     /// from the hint cache if configured).
     ///
     /// Idempotent when `db_id` already matches the loaded state.

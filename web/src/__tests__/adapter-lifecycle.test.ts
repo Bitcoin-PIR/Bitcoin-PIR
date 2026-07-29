@@ -77,6 +77,20 @@ function decodedButUnverifiedWasmResult(): any {
   };
 }
 
+function verifiedWasmResult(amountSats = 9, txidByte = 1): any {
+  return {
+    entryCount: 1,
+    getEntry: () => ({ txid: txidByte.toString(16).padStart(2, '0').repeat(32), vout: 0, amountSats }),
+    totalBalance: BigInt(amountSats),
+    isWhale: false,
+    merkleVerified: true,
+    indexBins: () => [{ pbcGroup: 0, binIndex: 0, binContent: '00' }],
+    chunkBins: () => [],
+    matchedIndexIdx: () => 0,
+    rawChunkData: () => undefined,
+  };
+}
+
 const OPERATOR_PIN_0 = new Uint8Array(32).fill(0x41);
 const OPERATOR_PIN_1 = new Uint8Array(32).fill(0x42);
 const BINARY_0 = '51'.repeat(32);
@@ -188,7 +202,7 @@ describe('adapter WASM lifecycle', () => {
       strictVerification: false,
     });
     (dpf as any).wasmClient = {
-      queryBatchRaw: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+      queryBatchVerified: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
     };
     const dpfResults = await dpf.queryBatch([new Uint8Array(20)]);
     expect(dpfResults[0]?.merkleVerified).toBe(false);
@@ -200,21 +214,95 @@ describe('adapter WASM lifecycle', () => {
     });
     (harmony as any).hintsLoaded = true;
     (harmony as any).wasmClient = {
-      queryBatchRaw: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
+      queryBatchVerified: vi.fn(async () => [decodedButUnverifiedWasmResult()]),
     };
     const harmonyResults = await harmony.queryBatch(['00']);
     expect(harmonyResults.get(0)?.merkleVerified).toBe(false);
   });
 
-  it('scrubs DPF result data when inclusion verification returns false', async () => {
+  it('restores DPF fields from the verified native handle and consumes the batch once', async () => {
     const adapter = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',
       server1Url: 'wss://pir2.invalid',
       strictVerification: false,
     });
     (adapter as any).wasmClient = {
-      verifyMerkleBatch: vi.fn(async () => [false]),
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(9, 1)]),
     };
+    const result = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    result.entries = [{ txid: new Uint8Array(32).fill(0xff), vout: 7, amount: 999n }];
+    result.totalSats = 999n;
+    result.allIndexBins = undefined;
+
+    await expect(adapter.verifyMerkleBatch([result])).resolves.toEqual([true]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({ vout: 0, amount: 9n });
+    expect(result.entries[0].txid).toEqual(new Uint8Array(32).fill(1));
+    expect(result).toMatchObject({ totalSats: 9n, merkleVerified: true });
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/live verified batch/);
+  });
+
+  it('rejects reordered DPF results and invalidates the whole release batch', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(1, 1), verifiedWasmResult(2, 2)]),
+    };
+    const results = (await adapter.queryBatch([new Uint8Array(20), new Uint8Array(20)])) as any[];
+    await expect(adapter.verifyMerkleBatch([results[1], results[0]])).rejects.toThrow(/reordered/);
+    await expect(adapter.verifyMerkleBatch(results)).rejects.toThrow(/live verified batch/);
+  });
+
+  it('invalidates an older DPF release batch when a new query starts', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    let amount = 1;
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(amount++)]),
+    };
+    const oldResult = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    const newResult = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
+    await expect(adapter.verifyMerkleBatch([oldResult])).rejects.toThrow(/stale|another query/);
+    await expect(adapter.verifyMerkleBatch([newResult])).rejects.toThrow(/live verified batch/);
+  });
+
+  it('restores Harmony input metadata and payload from its verified native binding', async () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    adapter.hintsLoaded = true;
+    (adapter as any).wasmClient = {
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult(21, 3)]),
+    };
+    const result = (await adapter.queryBatch(['00'])).get(0)!;
+    const expectedScriptHash = result.scriptHash;
+    result.scriptHash = 'ff'.repeat(20);
+    result.scriptHashBytes = new Uint8Array(20).fill(0xff);
+    result.utxos = [{ txid: 'ff'.repeat(32), vout: 7, value: 999 }];
+
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).resolves.toEqual([true]);
+    expect(result.scriptHash).toBe(expectedScriptHash);
+    expect(result.scriptHashBytes).not.toEqual(new Uint8Array(20).fill(0xff));
+    expect(result.utxos).toHaveLength(1);
+    expect(result.utxos[0]).toMatchObject({ vout: 0, value: 21 });
+    expect(result.merkleVerified).toBe(true);
+  });
+
+  it('rejects and scrubs a DPF result without a live native handle', async () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = {};
     const result: any = {
       entries: [{ txid: new Uint8Array(32).fill(1), vout: 0, amount: 9n }],
       totalSats: 9n,
@@ -225,21 +313,19 @@ describe('adapter WASM lifecycle', () => {
       rawChunkData: new Uint8Array([7]),
       allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
     };
-    await expect(adapter.verifyMerkleBatch([result])).resolves.toEqual([false]);
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/live verified batch/);
     expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
     expect(result.rawChunkData).toBeUndefined();
     expect(result.allIndexBins).toBeUndefined();
   });
 
-  it('scrubs Harmony result data when inclusion verification returns false', async () => {
+  it('rejects and scrubs a Harmony result without a live native handle', async () => {
     const adapter = new HarmonyPirClientAdapter({
       hintServerUrl: 'wss://hint.invalid',
       queryServerUrl: 'wss://query.invalid',
       strictVerification: false,
     });
-    (adapter as any).wasmClient = {
-      verifyMerkleBatch: vi.fn(async () => [false]),
-    };
+    (adapter as any).wasmClient = {};
     const result: any = {
       address: 'fixture',
       scriptHash: '11'.repeat(20),
@@ -248,7 +334,7 @@ describe('adapter WASM lifecycle', () => {
       rawChunkData: new Uint8Array([7]),
       allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
     };
-    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).resolves.toEqual([false]);
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).rejects.toThrow(/live verified batch/);
     expect(result).toMatchObject({ utxos: [], merkleVerified: false });
     expect(result.rawChunkData).toBeUndefined();
     expect(result.allIndexBins).toBeUndefined();
@@ -1029,7 +1115,7 @@ describe('adapter WASM lifecycle', () => {
     const connected = [true, true];
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      queryBatchRaw: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      queryBatchVerified: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
       disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
       isServerConnected: vi.fn((index: number) => connected[index]),
     };
@@ -1037,7 +1123,7 @@ describe('adapter WASM lifecycle', () => {
     await adapter.prepareStrictAdmission(0);
 
     const pending = adapter.queryBatch([new Uint8Array(20)]);
-    expect(client.queryBatchRaw).toHaveBeenCalledOnce();
+    expect(client.queryBatchVerified).toHaveBeenCalledOnce();
     await adapter.disconnectLeg(1);
     resolveQuery([decodedButUnverifiedWasmResult()]);
 
@@ -1049,7 +1135,7 @@ describe('adapter WASM lifecycle', () => {
     const connected = [true, true];
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      queryBatchRaw: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
+      queryBatchVerified: vi.fn(() => new Promise<any[]>((resolve) => { resolveQuery = resolve; })),
       disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
       isProviderConnected: vi.fn((index: number) => connected[index]),
     };
@@ -1058,7 +1144,7 @@ describe('adapter WASM lifecycle', () => {
     await adapter.prepareStrictAdmission(0);
 
     const pending = adapter.queryBatch(['00']);
-    expect(client.queryBatchRaw).toHaveBeenCalledOnce();
+    expect(client.queryBatchVerified).toHaveBeenCalledOnce();
     await adapter.disconnectLeg(0);
     resolveQuery([decodedButUnverifiedWasmResult()]);
 
@@ -1066,63 +1152,36 @@ describe('adapter WASM lifecycle', () => {
     expect(adapter.lastInspectorData).toBeNull();
   });
 
-  it('scrubs a DPF result when a late verifier resolves after peer disconnect', async () => {
-    let resolveVerification!: (verdicts: boolean[]) => void;
+  it('rejects a previously verified DPF batch after peer disconnect', async () => {
     const connected = [true, true];
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      verifyMerkleBatch: vi.fn(() => new Promise<boolean[]>((resolve) => {
-        resolveVerification = resolve;
-      })),
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult()]),
       disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
       isServerConnected: vi.fn((index: number) => connected[index]),
     };
     const adapter = strictDpfPair(client);
     await adapter.prepareStrictAdmission(0);
-    const result: any = {
-      entries: [{ txid: new Uint8Array(32), vout: 0, amount: 9n }],
-      totalSats: 9n,
-      rawChunkData: new Uint8Array([7]),
-      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
-    };
-
-    const pending = adapter.verifyMerkleBatch([result]);
-    expect(client.verifyMerkleBatch).toHaveBeenCalledOnce();
+    const result = (await adapter.queryBatch([new Uint8Array(20)]))[0]!;
     await adapter.disconnectLeg(0);
-    resolveVerification([true]);
-
-    await expect(pending).rejects.toThrow(/invalidated|stale/);
-    expect(result).toMatchObject({ entries: [], totalSats: 0n, merkleVerified: false });
-    expect(result.rawChunkData).toBeUndefined();
+    await expect(adapter.verifyMerkleBatch([result])).rejects.toThrow(/not ready|invalidated|stale/);
+    expect(result.merkleVerified).toBe(false);
   });
 
-  it('scrubs a Harmony result when a late verifier resolves after peer disconnect', async () => {
-    let resolveVerification!: (verdicts: boolean[]) => void;
+  it('rejects a previously verified Harmony batch after peer disconnect', async () => {
     const connected = [true, true];
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      verifyMerkleBatch: vi.fn(() => new Promise<boolean[]>((resolve) => {
-        resolveVerification = resolve;
-      })),
+      queryBatchVerified: vi.fn(async () => [verifiedWasmResult()]),
       disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
       isProviderConnected: vi.fn((index: number) => connected[index]),
     };
     const adapter = strictHarmonyPair(client);
     adapter.hintsLoaded = true;
     await adapter.prepareStrictAdmission(0);
-    const result: any = {
-      utxos: [{ txid: '22'.repeat(32), vout: 0, value: 9 }],
-      rawChunkData: new Uint8Array([7]),
-      allIndexBins: [{ pbcGroup: 0, binIndex: 0, binContent: new Uint8Array([1]) }],
-    };
-
-    const pending = adapter.verifyMerkleBatch([result], undefined, 0);
-    expect(client.verifyMerkleBatch).toHaveBeenCalledOnce();
+    const result = (await adapter.queryBatch(['00'])).get(0)!;
     await adapter.disconnectLeg(1);
-    resolveVerification([true]);
-
-    await expect(pending).rejects.toThrow(/invalidated|stale/);
-    expect(result).toMatchObject({ utxos: [], merkleVerified: false });
-    expect(result.rawChunkData).toBeUndefined();
+    await expect(adapter.verifyMerkleBatch([result], undefined, 0)).rejects.toThrow(/not ready|invalidated|stale/);
+    expect(result.merkleVerified).toBe(false);
   });
 });

@@ -20,6 +20,8 @@ interface PirSdkWasm {
   WasmSyncPlan: WasmSyncPlan;
   WasmQueryResult: {
     new(): WasmQueryResult;
+    /** Data import only: caller `merkleVerified` is ignored and the returned
+     * handle is always unverified. */
     fromJson(json: any): WasmQueryResult;
   };
   // Native-WASM DPF client — used by `dpf-adapter.ts` to retire the pure-TS
@@ -757,8 +759,8 @@ export interface WasmDpfClient {
   upgradeToSecureChannel(pub0: Uint8Array, pub1: Uint8Array): Promise<void>;
   /** Upgrade one staged provider without touching the peer leg. */
   upgradeServerToSecureChannel(serverIndex: number, serverStaticPub: Uint8Array): Promise<void>;
-  /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
-   * (which go through `query_batch_with_inspector`) can resolve `db_id`
+  /** Populate the native-side catalog so subsequent `queryBatchVerified` calls
+   * can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   /** Fetch the catalog from one staged provider. The second catalog must be
@@ -840,14 +842,10 @@ export interface WasmDpfClient {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmServicePowChallengeV1>;
-  /** Inspector-path batch query. Returns an `Array<WasmQueryResult>` of
-   * length `N` (one per packed scripthash). Every slot is non-null —
-   * not-found queries are synthesised as empty inspector-populated
-   * results so absence-proof bins are preserved. */
-  queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
-  /** Standalone Merkle verifier — consumes inspector-populated results as
-   * JSON (typically `wqr.toJson()`-serialised). Returns `boolean[]`. */
-  verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
+  /** Release-safe inspector query. Native code binds each result to the
+   * exact input order and db, verifies every INDEX/CHUNK bin, and rejects
+   * the whole batch before exposing handles if any proof fails. */
+  queryBatchVerified(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
   /** Register a JS callback for every `ConnectionState` transition; the
    * callback receives a single string (`"connecting"` / `"connected"` /
    * `"disconnected"`). Replaces any previously registered listener. */
@@ -882,7 +880,7 @@ interface WasmSyncPlan {
  * constructor signature. Fields used by `harmonypir-adapter.ts`; the full
  * surface exposed by `crates/sdk/wasm/src/client.rs::WasmHarmonyClient` is a
  * superset (notably `queryBatch` + `fetchCatalog`, which the adapter doesn't
- * need because PIR rounds go through `queryBatchRaw`).
+ * need because PIR rounds go through `queryBatchVerified`).
  */
 export interface WasmHarmonyClient {
   free(): void;
@@ -1013,13 +1011,10 @@ export interface WasmHarmonyClient {
   /** Effective PRP backend selected by V2 hint setup. */
   cachePrpBackend(): number;
   setPrpBackend(backend: number): void;
-  /** Inspector-path batch query — populates `indexBins`/`chunkBins`
-   *  on every returned `WasmQueryResult`. Not-found slots are
-   *  synthesised as empty inspector-populated results (never null)
-   *  so Merkle absence proofs have something to verify against. */
-  queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
-  /** Standalone Merkle verifier (mirrors `WasmDpfClient.verifyMerkleBatch`). */
-  verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
+  /** Release-safe inspector query. Native code binds each result to the
+   *  exact input order and db, then completes all Merkle checks before
+   *  returning any handle. */
+  queryBatchVerified(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
   /** 16-byte fingerprint derived from `(masterKey, prpBackend, catalog.get(dbId))`.
    *  Embedded in `saveHints()` output; exposed here so the IndexedDB
    *  bridge can tag cache entries for debugging. */
@@ -1045,7 +1040,7 @@ export interface WasmHarmonyClient {
   /** Register a `ConnectionState` transition listener. */
   onStateChange(cb: (state: string) => void): void;
   /** Progress-reporting variant of `sync`; currently unused by the
-   *  adapter (queryBatchRaw is the primary path). */
+   *  adapter (`queryBatchVerified` is the primary path). */
   syncWithProgress(
     scriptHashes: Uint8Array,
     lastHeight: number | null | undefined,
@@ -1308,6 +1303,7 @@ export interface WasmQueryResult {
   readonly entryCount: number;
   readonly totalBalance: bigint;
   readonly isWhale: boolean;
+  /** Native release verdict. Constructor/fromJson handles always return false. */
   readonly merkleVerified: boolean;
   /** Returns `{txid: hexString, vout, amountSats}` or `null`. */
   getEntry(index: number): any;
