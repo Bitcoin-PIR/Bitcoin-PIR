@@ -8,6 +8,12 @@ description = "Provider-side shared issuer redemption adapter for BitcoinPIR adm
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
 
+[features]
+default = []
+# Non-default debug/test-only private WebPKI root injection. The underlying
+# strict HTTPS crate compile-errors if this feature reaches a release build.
+test-only-webpki-root = ["pir-strict-https/test-only-webpki-root"]
+
 [dependencies]
 ed25519-dalek = "2"
 getrandom = "0.2"

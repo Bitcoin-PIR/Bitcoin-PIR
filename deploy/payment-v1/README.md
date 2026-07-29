@@ -36,7 +36,10 @@ The templates divide responsibilities as follows:
   authenticated provider-balance lookup; payout-intent, payout and
   payout-status routes are not part of the V1 production product. Its command
   has no payout target, fee, or intent-TTL argument; the source gate rejects
-  reintroducing any of those flags.
+  reintroducing any of those flags. Every clearing authorization/approval pair
+  also names one distinct provider-request public-key file; this future
+  payout-recovery/status identity is never filled with the clearing key even
+  though current production serving is ledger-only.
 - `systemd/rollback-authority.service.in` is instantiated only on a separately
   administered authority host. Provider 0, Provider 1, and the issuer each need
   their own host, keys, database, TLS edge, administrator, logs, and backup

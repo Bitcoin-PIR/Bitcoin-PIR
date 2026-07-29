@@ -24,6 +24,8 @@ pub enum ServiceKeyRole {
     AnonymousTicketEd25519,
     /// Provider/issuer clearing Ed25519 key.
     ClearingEd25519,
+    /// Provider payout-recovery/status request Ed25519 key; never a clearing key.
+    ProviderRequestEd25519,
     /// Central directory Nostr BIP340 key.
     DirectoryNostr,
     /// BIP340 claim/recovery key (normally browser generated).
@@ -76,7 +78,8 @@ pub fn run(args: ServiceKeygenArgs) -> Result<crate::keygen::SecretWriteCompleti
             | ServiceKeyRole::QuoteEd25519
             | ServiceKeyRole::ReceiptEd25519
             | ServiceKeyRole::AnonymousTicketEd25519
-            | ServiceKeyRole::ClearingEd25519 => Some(hex::encode(
+            | ServiceKeyRole::ClearingEd25519
+            | ServiceKeyRole::ProviderRequestEd25519 => Some(hex::encode(
                 Ed25519SigningKey::from_bytes(&secret)
                     .verifying_key()
                     .to_bytes(),
@@ -184,6 +187,7 @@ mod tests {
             ServiceKeyRole::ReceiptEd25519,
             ServiceKeyRole::AnonymousTicketEd25519,
             ServiceKeyRole::ClearingEd25519,
+            ServiceKeyRole::ProviderRequestEd25519,
             ServiceKeyRole::DirectoryNostr,
             ServiceKeyRole::Bip340Claim,
             ServiceKeyRole::CashuBat,
@@ -235,7 +239,8 @@ mod tests {
                 | ServiceKeyRole::QuoteEd25519
                 | ServiceKeyRole::ReceiptEd25519
                 | ServiceKeyRole::AnonymousTicketEd25519
-                | ServiceKeyRole::ClearingEd25519 => {
+                | ServiceKeyRole::ClearingEd25519
+                | ServiceKeyRole::ProviderRequestEd25519 => {
                     let seed: [u8; 32] = bytes.try_into().unwrap();
                     Ed25519SigningKey::from_bytes(&seed);
                 }

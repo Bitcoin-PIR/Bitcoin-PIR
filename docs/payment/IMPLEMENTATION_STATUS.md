@@ -224,7 +224,14 @@ operator has activated the path with real money or public infrastructure.
       return `NotFound` before input decoding or store access in this mode. The
       settlement signing key remains necessary for redeem/balance signatures,
       and retained verifying keys remain available for exact committed redeem
-      and approval recovery after rotation. A private Rust unit-fixture
+      and approval recovery after rotation. Production registration now
+      requires a separate provider-request public key for every authorization;
+      startup rejects count mismatch, invalid keys and reuse with clearing,
+      operator or issuer-settlement roles. Offline `bpir-admin` builders create
+      and self-verify the operator authorization and independent issuer
+      approval, while `ProviderLedgerBalanceClientV1` reads the signed
+      auth-credit balance without inventing a payout registration or target.
+      A private Rust unit-fixture
       switch retains the raw loopback payout/status roundtrip solely to test the
       transport-neutral state machines, store reopen, exact response replay
       after authorization/registration expiry and provider request-key

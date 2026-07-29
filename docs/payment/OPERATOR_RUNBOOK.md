@@ -345,6 +345,16 @@ as needed), or publish a deliberately reviewed future protocol version with an
 authenticated policy-key succession proof.
 
 V1 also loads only one shared-issuer clearing authorization per provider.
+Create it with the offline provider-operator builder, transfer its printed
+digest independently, and have the issuer run the separate approval builder.
+Provision a fourth, raw provider-request public key in the same list position;
+it must differ from clearing, operator and issuer-settlement keys. Ledger-only
+balance reads use the clearing key and need no payout registration, but the
+issuer still persists the distinct request key so a future payout/status
+workflow cannot inherit collapsed signature domains. Rotation requires a
+strictly higher authorization epoch and a new issuer approval; retain an old
+issuer settlement public key only for exact historical recovery.
+
 Certificate-key rotation at the same issuer origin must use a newly
 operator-signed and issuer-approved two-pin overlap, followed by removal of the
 old pin in a later higher authorization epoch. Do not change the signed issuer

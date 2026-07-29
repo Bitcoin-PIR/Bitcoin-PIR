@@ -133,6 +133,27 @@ impl Fixture {
         )
         .expect("provider client")
     }
+
+    fn ledger_client<'a>(
+        &self,
+        current_issuer_settlement_key: VerifyingKey,
+        retained_issuer_settlement_keys: Vec<VerifyingKey>,
+        transport: &'a dyn ProviderSettlementTransportV1,
+    ) -> ProviderLedgerBalanceClientV1<'a> {
+        ProviderLedgerBalanceClientV1::new(
+            ProviderLedgerBalanceTrustV1 {
+                authorization: self.authorization.clone(),
+                issuer_approval: self.approval.clone(),
+                operator_verifying_key: self.operator.verifying_key(),
+                minimum_authorization_epoch: 1,
+                current_issuer_settlement_key,
+                retained_issuer_settlement_keys,
+            },
+            self.clearing.clone(),
+            transport,
+        )
+        .expect("provider ledger-only balance client")
+    }
 }
 
 #[derive(Default)]
@@ -742,6 +763,109 @@ impl PayoutStatusCompareAndSwapStoreV1 for AlwaysCommitStatus {
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
+}
+
+#[test]
+fn ledger_only_balance_client_needs_no_payout_registration_and_handles_key_rotation() {
+    let fixture = Fixture::new();
+    let issuer = FakeIssuer::new(&fixture);
+    issuer.commit_verified_redeem_credit(10, 9, 1);
+
+    let current = fixture.ledger_client(
+        fixture.issuer_settlement.verifying_key(),
+        Vec::new(),
+        &issuer,
+    );
+    assert_eq!(
+        current.authorized_issuer_endpoint(),
+        fixture.authorization.claims.redeem_endpoint
+    );
+    assert_eq!(
+        current.authorized_leaf_spki_sha256_pins(),
+        fixture.authorization.claims.redeem_leaf_spki_sha256_pins
+    );
+    let balance = current
+        .balance([0x48; 32], NOW)
+        .expect("signed ledger balance");
+    assert_eq!((balance.available_value, balance.reserved_value), (9, 0));
+
+    // During an issuer settlement-key rotation, an approval/response signed by
+    // the historical key remains verifiable only when that exact key is
+    // explicitly retained. No payout registration or provider-request key is
+    // synthesized for this read-only path.
+    let rotated = fixture.ledger_client(
+        fixture.rotated_issuer_settlement.verifying_key(),
+        vec![fixture.issuer_settlement.verifying_key()],
+        &issuer,
+    );
+    rotated
+        .balance([0x49; 32], NOW)
+        .expect("retained issuer key verifies signed balance");
+
+    issuer.corrupt_next_balance_response();
+    assert!(matches!(
+        rotated.balance([0x4a; 32], NOW),
+        Err(ProviderSettlementClientErrorV1::Protocol(_))
+    ));
+
+    assert!(matches!(
+        rotated.balance([0x4b; 32], 2_001),
+        Err(ProviderSettlementClientErrorV1::Protocol(_))
+    ));
+}
+
+#[test]
+fn ledger_only_balance_client_rejects_key_reuse_and_missing_rotation_pin() {
+    let fixture = Fixture::new();
+    let issuer = FakeIssuer::new(&fixture);
+    let trust = || ProviderLedgerBalanceTrustV1 {
+        authorization: fixture.authorization.clone(),
+        issuer_approval: fixture.approval.clone(),
+        operator_verifying_key: fixture.operator.verifying_key(),
+        minimum_authorization_epoch: 1,
+        current_issuer_settlement_key: fixture.issuer_settlement.verifying_key(),
+        retained_issuer_settlement_keys: Vec::new(),
+    };
+    assert!(
+        ProviderLedgerBalanceClientV1::new(trust(), fixture.operator.clone(), &issuer,).is_err()
+    );
+
+    let mut no_floor = trust();
+    no_floor.minimum_authorization_epoch = 0;
+    assert!(
+        ProviderLedgerBalanceClientV1::new(no_floor, fixture.clearing.clone(), &issuer).is_err()
+    );
+
+    let missing_old_key = ProviderLedgerBalanceTrustV1 {
+        current_issuer_settlement_key: fixture.rotated_issuer_settlement.verifying_key(),
+        ..trust()
+    };
+    assert!(
+        ProviderLedgerBalanceClientV1::new(missing_old_key, fixture.clearing.clone(), &issuer,)
+            .is_err()
+    );
+
+    let issuer_reuses_operator = ProviderLedgerBalanceTrustV1 {
+        current_issuer_settlement_key: fixture.operator.verifying_key(),
+        ..trust()
+    };
+    assert!(ProviderLedgerBalanceClientV1::new(
+        issuer_reuses_operator,
+        fixture.clearing.clone(),
+        &issuer,
+    )
+    .is_err());
+
+    let retained_reuses_operator = ProviderLedgerBalanceTrustV1 {
+        retained_issuer_settlement_keys: vec![fixture.operator.verifying_key()],
+        ..trust()
+    };
+    assert!(ProviderLedgerBalanceClientV1::new(
+        retained_reuses_operator,
+        fixture.clearing.clone(),
+        &issuer,
+    )
+    .is_err());
 }
 
 #[test]

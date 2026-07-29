@@ -289,7 +289,12 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
@@ -297,7 +302,7 @@ BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
     shared_issuer_real_process_tls_e2e -- --exact
 ```
 
-It launches a real `payment-issuer`, a redeem-only private WebPKI TLS edge, one
+It launches a real `payment-issuer`, a redeem/balance-only private WebPKI TLS edge, one
 real shared-BAT `unified_server`, and an independently selected Free/Open peer.
 After reading one complete canonical issuer HTTP 200 bound to the redeem request
 digest, the test edge persists a one-shot test marker and deliberately drops
@@ -309,13 +314,21 @@ request and idempotency-key SHA-256 digests, recover exactly one local grant and
 leave the issuer ledger at one credit/sequence; a later replay cannot create a
 second grant. The digest transcript is a fixed-size, test-local oracle and does
 not persist the raw envelope, credential, idempotency key, HTTP metadata, peer
-address or timing. Wrong CA, wrong signed pin and offline issuer fail before
-issuer HTTP application handling and create no local claim or ledger account.
-CI additionally denies warnings for the exact runtime/test targets and proves
-the test-only WebPKI feature cannot compile in a release profile. The current
-preparation branch has static source evidence only until that Linux CI cell
-passes; it is not public ingress, production rollback-authority, real Lightning
-or payout-executor evidence.
+address or timing. The same run uses `bpir-admin` to build both clearing
+artifacts and installs a distinct
+provider-request public key, verifies signed balances across issuer restart,
+then—after exact response-loss recovery reaches a known local-delivery
+result—rotates the authorization epoch and issuer settlement key with explicit
+old-key retention. Provider restart/replay after rotation cannot create a
+second grant. The test is not evidence for recovering an outcome-unknown
+operation across rotation; V1 requires a drain/reconciliation boundary. Wrong
+CA, wrong signed pin
+and offline issuer fail before issuer HTTP application handling and create no
+local claim or ledger account. CI additionally denies warnings for the exact
+runtime/test targets and proves the test-only WebPKI feature cannot compile in
+a release profile. The current preparation branch has static source evidence
+only until that Linux CI cell passes; it is not public ingress, production
+rollback-authority, real Lightning or payout-executor evidence.
 
 ### First-version executable path ledger
 

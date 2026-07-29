@@ -44,8 +44,9 @@ use pir_service_protocol::{
     ProviderPayoutIntentRequestV1, ProviderPayoutRequestV1, ProviderPayoutStatusEnvelopeV1,
     ProviderPayoutStatusRequestV1, ProviderRedeemRequestV1,
     ProviderSettlementRegistrationExpectationV1, ProviderSettlementRequestAuthV1,
-    ServiceProtocolError, SettlementDestinationV1, SettlementUnitV1, SharedIssuerProviderSecretV1,
-    VerificationMode, VerifiedPayoutSnapshotV1, MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
+    ServiceProtocolError, SettlementDestinationV1, SettlementModesV1, SettlementUnitV1,
+    SharedIssuerProviderSecretV1, VerificationMode, VerifiedPayoutSnapshotV1,
+    MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
 };
 use pir_service_store::{ProviderStore, StoreError};
 use sha2::{Digest, Sha256};
@@ -736,6 +737,213 @@ impl VerifiedProviderPayoutStateV1 {
                 .transpose()?,
             rollback_floor: self.rollback_floor(),
         })
+    }
+}
+
+/// Minimal trust bundle for the production ledger-only balance surface.
+///
+/// It deliberately contains no payout registration, payout target, or
+/// provider-request key. Balance requests are authenticated by the clearing
+/// key already authorized for ledger accrual. The distinct provider-request
+/// key remains reserved for payout recovery/status and is provisioned at the
+/// issuer even while payout routes are disabled.
+pub struct ProviderLedgerBalanceTrustV1 {
+    pub authorization: ProviderClearingAuthorizationV1,
+    pub issuer_approval: IssuerClearingApprovalV1,
+    pub operator_verifying_key: VerifyingKey,
+    pub minimum_authorization_epoch: u64,
+    pub current_issuer_settlement_key: VerifyingKey,
+    pub retained_issuer_settlement_keys: Vec<VerifyingKey>,
+}
+
+impl fmt::Debug for ProviderLedgerBalanceTrustV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderLedgerBalanceTrustV1")
+            .field("provider_id", &self.authorization.claims.provider_id)
+            .field("issuer_id", &self.authorization.claims.issuer_id)
+            .field(
+                "minimum_authorization_epoch",
+                &self.minimum_authorization_epoch,
+            )
+            .field(
+                "retained_issuer_settlement_key_count",
+                &self.retained_issuer_settlement_keys.len(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// Provider client for the production ledger-only signed balance route.
+///
+/// The transport must be constructed from the authorization's exact canonical
+/// HTTPS origin and signed leaf-SPKI pins. [`StrictHttpsProviderSettlementTransportV1`]
+/// provides that production adapter; tests may inject a transport-neutral
+/// implementation.
+pub struct ProviderLedgerBalanceClientV1<'a> {
+    trust: ProviderLedgerBalanceTrustV1,
+    clearing_signing_key: SigningKey,
+    transport: &'a dyn ProviderSettlementTransportV1,
+}
+
+impl fmt::Debug for ProviderLedgerBalanceClientV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderLedgerBalanceClientV1")
+            .field("trust", &self.trust)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ProviderLedgerBalanceClientV1<'a> {
+    pub fn new(
+        trust: ProviderLedgerBalanceTrustV1,
+        clearing_signing_key: SigningKey,
+        transport: &'a dyn ProviderSettlementTransportV1,
+    ) -> Result<Self, ProviderSettlementClientErrorV1> {
+        let claims = &trust.authorization.claims;
+        let clearing_key = clearing_signing_key.verifying_key().to_bytes();
+        let operator_key = trust.operator_verifying_key.to_bytes();
+        let current_issuer_key = trust.current_issuer_settlement_key.to_bytes();
+        let mut retained = std::collections::BTreeSet::new();
+        if trust.minimum_authorization_epoch == 0
+            || claims.clearing_verifying_key != clearing_key
+            || clearing_key == operator_key
+            || clearing_key == current_issuer_key
+            || operator_key == current_issuer_key
+            || trust.retained_issuer_settlement_keys.iter().any(|key| {
+                let bytes = key.to_bytes();
+                bytes == current_issuer_key
+                    || bytes == clearing_key
+                    || bytes == operator_key
+                    || !retained.insert(bytes)
+            })
+            || claims.rules.is_empty()
+            || claims.rules.iter().any(|rule| {
+                rule.unit != SettlementUnitV1::AuthCredit
+                    || rule.settlement_modes.bits() != SettlementModesV1::LEDGER_CREDIT
+                    || rule.blind_output_minimum_validity_seconds != 0
+                    || rule.blind_output_keyset.is_some()
+            })
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ProviderLedgerBalanceClientV1.trust",
+                reason: "ledger-only rules, rollback floor, or domain-separated keys mismatch",
+            }
+            .into());
+        }
+        let keyring = IssuerSettlementKeyringExpectationV1 {
+            issuer_id: &claims.issuer_id,
+            current_key: &trust.current_issuer_settlement_key,
+            retained_keys: &trust.retained_issuer_settlement_keys,
+        };
+        let approval_key = keyring.resolve_for_issuer(
+            &claims.issuer_id,
+            &trust.issuer_approval.issuer_settlement_key_id,
+        )?;
+        let validation_time = claims.not_before.max(trust.issuer_approval.approved_at);
+        trust.authorization.verify_for(
+            &claims.provider_id,
+            &claims.issuer_id,
+            &trust.operator_verifying_key,
+            validation_time,
+            trust.minimum_authorization_epoch,
+        )?;
+        trust.issuer_approval.verify_for(
+            &trust.authorization,
+            approval_key,
+            validation_time,
+            trust.minimum_authorization_epoch,
+        )?;
+        Ok(Self {
+            trust,
+            clearing_signing_key,
+            transport,
+        })
+    }
+
+    pub fn balance(
+        &self,
+        fresh_request_nonce: [u8; 32],
+        now_unix: u64,
+    ) -> Result<IssuerBalanceResponseV1, ProviderSettlementClientErrorV1> {
+        self.verify_authority_at(now_unix)?;
+        let authorization_digest = self.trust.authorization.authorization_digest()?;
+        let claims = &self.trust.authorization.claims;
+        let request = ProviderBalanceRequestV1 {
+            authorization_digest,
+            issuer_id: claims.issuer_id,
+            provider_id: claims.provider_id,
+            account_id: claims.settlement_account_id,
+            unit: SettlementUnitV1::AuthCredit,
+            idempotency_key: fresh_request_nonce,
+        };
+        let request_auth = ProviderClearingRequestAuthV1::sign(
+            authorization_digest,
+            request.request_digest()?,
+            &self.clearing_signing_key,
+        );
+        let body = ProviderBalanceEnvelopeV1 {
+            request: request.clone(),
+            request_auth,
+        }
+        .encode()?;
+        let bytes = self.transport.post(
+            ProviderSettlementHttpRequestV1 {
+                endpoint: PROVIDER_BALANCE_ENDPOINT_V1,
+                canonical_body: &body,
+            },
+            MAX_PROVIDER_SETTLEMENT_RESPONSE_BYTES_V1,
+        )?;
+        let response = decode_canonical_response(
+            &bytes,
+            IssuerBalanceResponseV1::decode,
+            IssuerBalanceResponseV1::encode,
+        )?;
+        let keyring = IssuerSettlementKeyringExpectationV1 {
+            issuer_id: &claims.issuer_id,
+            current_key: &self.trust.current_issuer_settlement_key,
+            retained_keys: &self.trust.retained_issuer_settlement_keys,
+        };
+        let response_key =
+            keyring.resolve_for_issuer(&claims.issuer_id, &response.issuer_settlement_key_id)?;
+        response.verify_for_exact_request(&request, response_key)?;
+        Ok(response)
+    }
+
+    fn verify_authority_at(&self, now_unix: u64) -> Result<(), ProviderSettlementClientErrorV1> {
+        let claims = &self.trust.authorization.claims;
+        let keyring = IssuerSettlementKeyringExpectationV1 {
+            issuer_id: &claims.issuer_id,
+            current_key: &self.trust.current_issuer_settlement_key,
+            retained_keys: &self.trust.retained_issuer_settlement_keys,
+        };
+        let approval_key = keyring.resolve_for_issuer(
+            &claims.issuer_id,
+            &self.trust.issuer_approval.issuer_settlement_key_id,
+        )?;
+        self.trust.authorization.verify_for(
+            &claims.provider_id,
+            &claims.issuer_id,
+            &self.trust.operator_verifying_key,
+            now_unix,
+            self.trust.minimum_authorization_epoch,
+        )?;
+        self.trust.issuer_approval.verify_for(
+            &self.trust.authorization,
+            approval_key,
+            now_unix,
+            self.trust.minimum_authorization_epoch,
+        )?;
+        Ok(())
+    }
+
+    pub fn authorized_issuer_endpoint(&self) -> &str {
+        &self.trust.authorization.claims.redeem_endpoint
+    }
+
+    pub fn authorized_leaf_spki_sha256_pins(&self) -> &[[u8; 32]] {
+        &self.trust.authorization.claims.redeem_leaf_spki_sha256_pins
     }
 }
 

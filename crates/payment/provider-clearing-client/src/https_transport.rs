@@ -57,6 +57,30 @@ impl StrictHttpsProviderSettlementTransportV1 {
         })
     }
 
+    /// Debug/test-only constructor for real-process tests behind a private CA.
+    /// The production release boundary is enforced again by `pir-strict-https`.
+    #[cfg(feature = "test-only-webpki-root")]
+    pub fn new_with_test_only_webpki_root_pem(
+        issuer_endpoint: String,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+        leaf_spki_sha256_pins: &[[u8; 32]],
+        test_only_root_pem: &[u8],
+    ) -> Result<Self, String> {
+        StrictHttpsClientV1::validate_base_endpoint(&issuer_endpoint)?;
+        let client =
+            StrictHttpsClientV1::new_with_leaf_spki_sha256_pins_and_test_only_webpki_root_pem(
+                connect_timeout,
+                io_timeout,
+                leaf_spki_sha256_pins,
+                test_only_root_pem,
+            )?;
+        Ok(Self {
+            issuer_endpoint,
+            client,
+        })
+    }
+
     pub fn issuer_endpoint(&self) -> &str {
         &self.issuer_endpoint
     }

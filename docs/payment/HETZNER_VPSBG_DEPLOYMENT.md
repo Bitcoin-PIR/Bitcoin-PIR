@@ -159,6 +159,18 @@ row in place: either initialize the first production ledger-only store with the
 reviewed sentinel-bearing build, or design and review a separate authenticated
 offline migration before preserving such a prototype store.
 
+The rendered issuer unit also requires
+`provider-request-verifying.key`, the raw public half of a provider-owned
+`provider-request-ed25519` key. It is deliberately separate from the online
+clearing, provider-operator and issuer-settlement keys. For each provider,
+install authorization, approval and request public key in the same CLI order;
+any count mismatch, invalid key or key reuse aborts startup. The provider keeps
+the request secret offline while V1 remains ledger-only. Authorization and
+approval bytes must come from the independent `bpir-admin payment-artifact
+clearing-authorization` and `clearing-approval` ceremonies; rotation advances
+the authorization epoch and retains only reviewed historical issuer settlement
+public keys.
+
 `BITCOINPIR_WEB_ORIGIN` is one complete canonical HTTPS origin. Every
 `*_PUBKEY_HEX` placeholder is public verification material, never a private
 seed. The renderer must type- and length-check these values and reject any

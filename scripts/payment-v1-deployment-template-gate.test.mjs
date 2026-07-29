@@ -211,6 +211,18 @@ test("production templates reject ARC, fake, local and proxied Free-IP flags", (
       /--clearing-approval/,
     );
   });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace(/^.*--clearing-provider-request-verifying-key.*\n/m, ""),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /--clearing-provider-request-verifying-key/,
+    );
+  });
 });
 
 test("issuer and authority origins must remain loopback", () => {

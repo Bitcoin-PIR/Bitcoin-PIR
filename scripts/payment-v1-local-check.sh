@@ -305,7 +305,12 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
