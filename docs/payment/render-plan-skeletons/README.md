@@ -19,6 +19,50 @@ Every skeleton is deliberately unusable:
 The gate must reject an untouched skeleton. Making one syntactically acceptable
 is not approval to install or activate it.
 
+The three provider skeletons are separate closed profiles, not optional-field
+variants. `provider-v1` retains its complete Standard Cashu inputs unchanged.
+`provider-no-standard-cashu-v1` uses a distinct unit, service identity, state
+directory, configuration root and activation sentinel. Its current policy must
+omit every Standard Cashu offer and stay within the profile's adapter
+material. The template and rendered gates reject retained-policy flags and
+payloads. Current method coverage therefore checks the only configured policy;
+there is no old-policy redemption route in this profile. Do not copy Cashu
+custody, recovery or exposure fields into this plan.
+`provider-direct-v1` has another distinct unit, identity, state/configuration
+root and sentinel. Its nine payloads contain only the unified-server binary and
+manifest, database config, provider identity key/certificate, signed policy,
+and the owner-only remote rollback-authority config, client-signing seed and
+value-root key. It has no BAT, Standard Cashu, shared-issuer,
+ARC or Free-IP material. Current acquisition routes are limited to Free open-
+best-effort, Free proof-of-work, provider-local Free anonymous tickets and direct
+BOLT11 receipts. In this checked-in zero-retained profile the gate rejects retained
+policies entirely. Startup method coverage rejects every other applicable
+current route.
+
+The three provider plans are mutually exclusive on one host. Each unit requires
+the other two profile sentinels to be absent when it starts. Because systemd
+conditions are not continuous revocation, a switch must stop and deauthorize
+the old unit, prove it inactive with no listener on `8191`, then create exactly
+one new profile sentinel and start only that unit.
+
+Separate state roots do not make economic state disposable. For the same
+logical provider, these zero-retained plans require issuance/admission to stop,
+the longest old capability/grace horizon to expire, Standard Cashu custody to
+be fully retired/reconciled, and all shared-issuer redeems to have known
+outcomes. A separately reviewed transition record must establish that drain;
+the static render plan cannot. Only then may a separately reviewed offline
+ProviderStore migration that preserves the stable server ID, operator key and
+derived provider ID, policy-signing key, provider identity certificate/key,
+store-instance identity, spend and replay history, remote authority
+instance/key, namespace, client-verifying-key identity, client-signing seed,
+value-root key and floor before the new unit may
+call `open_existing`. Re-render the TOML only with the new profile's canonical
+secret paths. Rotating any authority-identity field requires a separately
+reviewed migration ceremony; V1 has no online rebind or reset. If that
+continuity is unavailable, use a
+new provider/server identity and publish a distinct directory entry instead of
+initializing a blank store and calling it a switch.
+
 ## Closed skeleton set
 
 | File | Gate profile | Scope |
@@ -27,6 +71,8 @@ is not approval to install or activate it.
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
+| `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Direct receipt, provider-local BAT and shared issuer, without Standard Cashu. |
+| `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 
 There is intentionally no directory-relay plan. The gate's deployment profile

@@ -41,6 +41,10 @@ const EDGE_CONFIG = "deploy/payment-v1/edge/hetzner-public.Caddyfile.in";
 const SOURCE_FAIR_CONFIG = "deploy/payment-v1/edge/source-fair-haproxy.cfg.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
 const PROVIDER_UNIT = "deploy/payment-v1/systemd/hetzner-provider.service.in";
+const PROVIDER_NO_STANDARD_CASHU_UNIT =
+  "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in";
+const PROVIDER_DIRECT_UNIT =
+  "deploy/payment-v1/systemd/hetzner-provider-direct.service.in";
 const ISSUER_TEMPLATES = [
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
   "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -87,6 +91,7 @@ function temporaryRoots(t) {
 function payloadClass(targetPath) {
   const name = basename(targetPath).toLowerCase();
   if (targetPath.startsWith("/opt/bitcoinpir/")) return "binary";
+  if (name === "remote-rollback-authority.toml") return "secret";
   if (name.endsWith(".sha256")) return "hash-manifest";
   if (
     name.endsWith(".key") ||
@@ -336,7 +341,14 @@ function makeIssuerFixture(t) {
     "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin": "delegation\n",
     "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key": "quote-key\n",
     "/etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key": "redeem-key\n",
-    "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml": "profile = \"remote-v1\"\n",
+    "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml":
+      "schema = \"bitcoinpir_remote_rollback_authority_v1\"\n" +
+      "client_signing_seed_path = \"/etc/bitcoinpir/payment-v1/issuer/remote-rollback-client-signing.seed\"\n" +
+      "value_root_key_path = \"/etc/bitcoinpir/payment-v1/issuer/remote-rollback-value-root.key\"\n",
+    "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-client-signing.seed":
+      "rollback-signing-seed\n",
+    "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-value-root.key":
+      "rollback-value-root\n",
     "/etc/bitcoinpir/payment-v1/issuer/service-policy.bin": "policy\n",
     "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.json": "{}\n",
     "/etc/bitcoinpir/payment-v1/lightning/preflight.toml": "profile = \"signet-v1\"\n",
@@ -381,8 +393,10 @@ function makeIssuerFixture(t) {
     deployment_profile: "issuer-lightning-signet-v1",
     payload_artifacts: payloadContents.map(([target, bytes], index) => {
       const artifact = addPayload(fixture, target, bytes, index);
-      return artifact.class === "secret"
-        ? { ...artifact, gid: Number(placeholders.ISSUER_GID), mode: "0400", uid: Number(placeholders.ISSUER_UID) }
+      const remoteConfig = target ===
+        "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml";
+      return artifact.class === "secret" || remoteConfig
+        ? { ...artifact, class: "secret", gid: Number(placeholders.ISSUER_GID), mode: "0400", uid: Number(placeholders.ISSUER_UID) }
         : artifact;
     }),
     placeholders,
@@ -421,51 +435,86 @@ function makeIssuerFixture(t) {
   return { ...fixture, plan };
 }
 
-function makeProviderFixture(t) {
+function makeProviderFixture(t, { direct = false, noStandardCashu = false } = {}) {
   const fixture = temporaryRoots(t);
-  const source = PROVIDER_UNIT;
+  const source = direct
+    ? PROVIDER_DIRECT_UNIT
+    : noStandardCashu
+      ? PROVIDER_NO_STANDARD_CASHU_UNIT
+      : PROVIDER_UNIT;
+  const configRoot = direct
+    ? "/etc/bitcoinpir/payment-v1/provider-direct"
+    : noStandardCashu
+      ? "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu"
+      : "/etc/bitcoinpir/payment-v1/provider";
   copySource(fixture.sourceRoot, source);
   const binaryBytes = Buffer.from("reviewed-unified-server\n");
   const binarySha = hashBytes(binaryBytes);
   const binaryTarget = `/opt/bitcoinpir/unified-server/${binarySha}/unified_server`;
   const directFiles = {
-    "/etc/bitcoinpir/payment-v1/provider/cashu-bat.key": "bat\n",
-    "/etc/bitcoinpir/payment-v1/provider/cashu-custody-epoch-1.key": "custody\n",
-    "/etc/bitcoinpir/payment-v1/provider/cashu-recovery-epoch-1.key": "recovery\n",
-    "/etc/bitcoinpir/payment-v1/provider/databases.toml": "profile = \"provider-v1\"\n",
-    "/etc/bitcoinpir/payment-v1/provider/provider-clearing-signing.key": "clearing\n",
-    "/etc/bitcoinpir/payment-v1/provider/provider-identity.cert": "certificate\n",
-    "/etc/bitcoinpir/payment-v1/provider/provider-identity.key": "identity\n",
-    "/etc/bitcoinpir/payment-v1/provider/remote-rollback-authority.toml": "profile = \"remote-v1\"\n",
-    "/etc/bitcoinpir/payment-v1/provider/service-policy.bin": "policy\n",
-    "/etc/bitcoinpir/payment-v1/provider/shared-clearing-approval.bin": "approval\n",
-    "/etc/bitcoinpir/payment-v1/provider/shared-clearing-authorization.bin": "authorization\n",
-    "/etc/bitcoinpir/payment-v1/provider/shared-redeem-idempotency.key": "idempotency\n",
+    ...(!direct ? { [`${configRoot}/cashu-bat.key`]: "bat\n" } : {}),
+    ...(!noStandardCashu ? {
+      [`${configRoot}/cashu-custody-epoch-1.key`]: "custody\n",
+      [`${configRoot}/cashu-recovery-epoch-1.key`]: "recovery\n",
+    } : {}),
+    [`${configRoot}/databases.toml`]: `profile = "${direct ? "provider-direct-v1" : noStandardCashu ? "provider-no-standard-cashu-v1" : "provider-v1"}"\n`,
+    ...(!direct ? {
+      [`${configRoot}/provider-clearing-signing.key`]: "clearing\n",
+    } : {}),
+    [`${configRoot}/provider-identity.cert`]: "certificate\n",
+    [`${configRoot}/provider-identity.key`]: "identity\n",
+    [`${configRoot}/remote-rollback-authority.toml`]:
+      "schema = \"bitcoinpir_remote_rollback_authority_v1\"\n" +
+      `client_signing_seed_path = "${configRoot}/remote-rollback-client-signing.seed"\n` +
+      `value_root_key_path = "${configRoot}/remote-rollback-value-root.key"\n`,
+    [`${configRoot}/remote-rollback-client-signing.seed`]: "rollback-signing-seed\n",
+    [`${configRoot}/remote-rollback-value-root.key`]: "rollback-value-root\n",
+    [`${configRoot}/service-policy.bin`]: "policy\n",
+    ...(!direct ? {
+      [`${configRoot}/shared-clearing-approval.bin`]: "approval\n",
+      [`${configRoot}/shared-clearing-authorization.bin`]: "authorization\n",
+      [`${configRoot}/shared-redeem-idempotency.key`]: "idempotency\n",
+    } : {}),
   };
-  const manifestTarget = "/etc/bitcoinpir/payment-v1/provider/unified-server.sha256";
+  const manifestTarget = `${configRoot}/unified-server.sha256`;
   const contents = [
     [binaryTarget, binaryBytes],
     [manifestTarget, `${binarySha}  ${binaryTarget}\n`],
     ...Object.entries(directFiles),
   ].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   const placeholders = {
-    CASHU_MAX_UNSETTLED_NOTES: "1000",
-    CASHU_MAX_UNSETTLED_VALUE: "100000",
-    CASHU_MINT_ID_HEX: "3".repeat(64),
-    HETZNER_OPERATOR_PUBKEY_HEX: "4".repeat(64),
+    ...(!noStandardCashu ? {
+      CASHU_MAX_UNSETTLED_NOTES: "1000",
+      CASHU_MAX_UNSETTLED_VALUE: "100000",
+      CASHU_MINT_ID_HEX: "3".repeat(64),
+    } : {}),
+    ...(!direct ? {
+      HETZNER_OPERATOR_PUBKEY_HEX: "4".repeat(64),
+      ISSUER_SETTLEMENT_PUBKEY_HEX: "5".repeat(64),
+      SHARED_MINIMUM_AUTHORIZATION_EPOCH: "1",
+    } : {}),
     HETZNER_POLICY_PUBKEY_HEX: "e".repeat(64),
     HETZNER_PROVIDER_ID_HEX: "f".repeat(64),
     HETZNER_PROVIDER_SERVER_ID: "hetzner-pir-0",
-    ISSUER_SETTLEMENT_PUBKEY_HEX: "5".repeat(64),
-    SHARED_MINIMUM_AUTHORIZATION_EPOCH: "1",
     UNIFIED_SERVER_SHA256: binarySha,
   };
   const plan = {
-    deployment_id: "provider-v1-test",
-    deployment_profile: "provider-v1",
+    deployment_id: direct
+      ? "provider-direct-v1-test"
+      : noStandardCashu
+        ? "provider-no-standard-cashu-v1-test"
+        : "provider-v1-test",
+    deployment_profile: direct
+      ? "provider-direct-v1"
+      : noStandardCashu
+        ? "provider-no-standard-cashu-v1"
+        : "provider-v1",
     payload_artifacts: contents.map(([target, bytes], index) => {
       const artifact = addPayload(fixture, target, bytes, index);
-      return artifact.class === "secret" ? { ...artifact, gid: 741, mode: "0400", uid: 740 } : artifact;
+      const remoteConfig = target === `${configRoot}/remote-rollback-authority.toml`;
+      return artifact.class === "secret" || remoteConfig
+        ? { ...artifact, class: "secret", gid: 741, mode: "0400", uid: 740 }
+        : artifact;
     }),
     placeholders,
     rendered_artifacts: [{
@@ -473,13 +522,43 @@ function makeProviderFixture(t) {
       mode: "0644",
       source_path: source,
       source_sha256: hashFile(join(fixture.sourceRoot, source)),
-      target_path: "/etc/systemd/system/bitcoinpir-provider.service",
+      target_path: direct
+        ? "/etc/systemd/system/bitcoinpir-provider-direct.service"
+        : noStandardCashu
+          ? "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service"
+          : "/etc/systemd/system/bitcoinpir-provider.service",
       uid: 0,
     }],
     schema_version: 1,
-    service_identities: [{ gid: 741, group_name: "bitcoinpir-provider", uid: 740, unit_name: "bitcoinpir-provider.service", user_name: "bitcoinpir-provider" }],
+    service_identities: [{
+      gid: 741,
+      group_name: direct
+        ? "bitcoinpir-provider-direct"
+        : noStandardCashu
+          ? "bitcoinpir-provider-nocashu"
+          : "bitcoinpir-provider",
+      uid: 740,
+      unit_name: direct
+        ? "bitcoinpir-provider-direct.service"
+        : noStandardCashu
+          ? "bitcoinpir-provider-no-standard-cashu.service"
+          : "bitcoinpir-provider.service",
+      user_name: direct
+        ? "bitcoinpir-provider-direct"
+        : noStandardCashu
+          ? "bitcoinpir-provider-nocashu"
+          : "bitcoinpir-provider",
+    }],
   };
   return { ...fixture, plan };
+}
+
+function makeProviderNoStandardCashuFixture(t) {
+  return makeProviderFixture(t, { noStandardCashu: true });
+}
+
+function makeProviderDirectFixture(t) {
+  return makeProviderFixture(t, { direct: true, noStandardCashu: true });
 }
 
 function makeRollbackFixture(t) {
@@ -626,6 +705,19 @@ function updateTemplate(fixture, sourcePath, mutate) {
   fixture.plan.rendered_artifacts.find((entry) => entry.source_path === sourcePath).source_sha256 = hashFile(path);
 }
 
+function updatePayload(fixture, targetPath, mutate) {
+  const artifact = fixture.plan.payload_artifacts.find(
+    (entry) => entry.target_path === targetPath,
+  );
+  assert.ok(artifact, `missing payload fixture for ${targetPath}`);
+  const path = join(fixture.inputRoot, artifact.source_path);
+  const before = readFileSync(path, "utf8");
+  const after = mutate(before);
+  assert.notEqual(after, before);
+  writeFileSync(path, after);
+  artifact.expected_sha256 = hashFile(path);
+}
+
 function makeRuntimeEvidence(model) {
   return {
     collected_at_unix_seconds: 1_800_000_000,
@@ -638,7 +730,7 @@ function makeRuntimeEvidence(model) {
     },
     installed_files: clone(model.request.installed_files),
     manifest_sha256: model.manifestSha256,
-    schema_version: 3,
+    schema_version: 4,
     systemd_analyze_verify: {
       argv: clone(model.request.systemd_analyze_argv),
       exit_status: 0,
@@ -674,6 +766,9 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
+  assert.equal(first.request.schema_version, 4);
+  assert.deepEqual(first.request.busctl_unit_properties, ["Conditions"]);
+  assert.equal(first.request.systemctl_show_properties.includes("Conditions"), false);
   assert.deepEqual(
     first.request.runtime_paths.map(({ file_type, mode, target_path }) => ({ file_type, mode, target_path })),
     [
@@ -802,8 +897,305 @@ for (const directive of ["PrivateDevices", "ProtectClock", "ProtectHostname"]) {
   });
 }
 
+test("no-Standard-Cashu provider profile excludes mint custody material", (t) => {
+  const fixture = makeProviderNoStandardCashuFixture(t);
+  const model = renderFixture(fixture);
+  const targets = model.manifest.artifacts.map((artifact) => artifact.target_path);
+  const unit = readFileSync(
+    join(
+      fixture.bundleRoot,
+      "files/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service",
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    unit,
+    /--service-cashu-(?:recovery|custody|exposure)/u,
+  );
+  assert.equal(
+    targets.some((target) => /cashu-(?:recovery|custody)/u.test(target)),
+    false,
+  );
+  assert.deepEqual(
+    Object.keys(fixture.plan.placeholders).filter((name) => name.startsWith("CASHU_")),
+    [],
+  );
+  assert.match(unit, /--require-service-auth-v1/u);
+  assert.match(unit, /--service-bat-key/u);
+  assert.match(unit, /--service-shared-authorization/u);
+
+  const expanded = clone(fixture.plan);
+  expanded.payload_artifacts.push(addPayload(
+    fixture,
+    "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/cashu-custody-epoch-1.key",
+    "forbidden-custody\n",
+    99,
+    { class: "secret", gid: 741, mode: "0400", uid: 740 },
+  ));
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: approved(expanded),
+      inputRoot: fixture.inputRoot,
+      outputRoot: join(fixture.root, "forbidden-custody-bundle"),
+      plan: expanded,
+      sourceRoot: fixture.sourceRoot,
+    }),
+    /provider-no-standard-cashu-v1 payload targets/,
+  );
+});
+
+test("no-Standard-Cashu provider profile rejects reintroduced mint material", (t) => {
+  const fixture = makeProviderNoStandardCashuFixture(t);
+  updateTemplate(fixture, PROVIDER_NO_STANDARD_CASHU_UNIT, (text) =>
+    text.replace(
+      "    --max-connections 128",
+      "    --service-cashu-exposure-limit 11:sat:1:1 \\\n    --max-connections 128",
+    ),
+  );
+  assert.throws(
+    () => renderFixture(fixture),
+    /must not configure Standard Cashu custody, recovery or exposure material/,
+  );
+});
+
+for (const [label, factory, unit, freeIpKey] of [
+  [
+    "provider-v1",
+    makeProviderFixture,
+    PROVIDER_UNIT,
+    "/etc/bitcoinpir/payment-v1/provider/shared-redeem-idempotency.key",
+  ],
+  [
+    "provider-no-standard-cashu-v1",
+    makeProviderNoStandardCashuFixture,
+    PROVIDER_NO_STANDARD_CASHU_UNIT,
+    "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-redeem-idempotency.key",
+  ],
+]) {
+  for (const [route, flags] of [
+    ["ARC", "--allow-experimental-arc"],
+    [
+      "Free-IP",
+      `--service-free-ip-key ${freeIpKey} \\\n    --service-trust-direct-peer-ip`,
+    ],
+  ]) {
+    test(`${label} rendered profile rejects ${route} adapter reintroduction`, (t) => {
+      const fixture = factory(t);
+      updateTemplate(fixture, unit, (text) => text.replace(
+        "    --max-connections 128",
+        `    ${flags} \\\n    --max-connections 128`,
+      ));
+      assert.throws(
+        () => renderFixture(fixture),
+        /must keep production ARC and Free-IP adapters unavailable/,
+      );
+    });
+  }
+}
+
+test("checked-in no-Standard-Cashu skeleton is explicit and deliberately unusable", (t) => {
+  const fixture = temporaryRoots(t);
+  const plan = parseStrictJson(
+    readFileSync(
+      join(
+        REPOSITORY,
+        "docs/payment/render-plan-skeletons/provider-no-standard-cashu-v1.plan.json.example",
+      ),
+      "utf8",
+    ),
+    "no-Standard-Cashu skeleton",
+  );
+  assert.equal(plan.deployment_profile, "provider-no-standard-cashu-v1");
+  assert.equal(
+    plan.payload_artifacts.some((artifact) =>
+      /cashu-(?:recovery|custody)/u.test(artifact.target_path)),
+    false,
+  );
+  assert.deepEqual(
+    Object.keys(plan.placeholders).filter((name) => name.startsWith("CASHU_")),
+    [],
+  );
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: computeApprovedPlanSha256(plan),
+      inputRoot: fixture.inputRoot,
+      outputRoot: fixture.bundleRoot,
+      plan,
+      sourceRoot: REPOSITORY,
+    }),
+    /repository example marker|SHA-256|replacement marker/,
+  );
+});
+
+test("direct provider profile carries no optional payment adapter material", (t) => {
+  const fixture = makeProviderDirectFixture(t);
+  const model = renderFixture(fixture);
+  const targets = model.manifest.artifacts.map((artifact) => artifact.target_path);
+  const unit = readFileSync(
+    join(fixture.bundleRoot, "files/etc/systemd/system/bitcoinpir-provider-direct.service"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    unit,
+    /--service-(?:bat-key|cashu-[a-z-]+|shared-[a-z-]+|arc-key|free-ip-key|trust-direct-peer-ip)|--allow-experimental-arc/u,
+  );
+  assert.equal(fixture.plan.payload_artifacts.length, 9);
+  assert.equal(
+    targets.some((target) =>
+      /cashu|shared|clearing|idempotency/u.test(target)),
+    false,
+  );
+  assert.deepEqual(
+    Object.keys(fixture.plan.placeholders).sort(),
+    [
+      "HETZNER_POLICY_PUBKEY_HEX",
+      "HETZNER_PROVIDER_ID_HEX",
+      "HETZNER_PROVIDER_SERVER_ID",
+      "UNIFIED_SERVER_SHA256",
+    ],
+  );
+  assert.match(unit, /--require-service-auth-v1/u);
+  assert.match(unit, /--service-remote-rollback-authority-config/u);
+
+  const expanded = clone(fixture.plan);
+  expanded.payload_artifacts.push(addPayload(
+    fixture,
+    "/etc/bitcoinpir/payment-v1/provider-direct/cashu-bat.key",
+    "forbidden-bat\n",
+    99,
+    { class: "secret", gid: 741, mode: "0400", uid: 740 },
+  ));
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: approved(expanded),
+      inputRoot: fixture.inputRoot,
+      outputRoot: join(fixture.root, "forbidden-bat-bundle"),
+      plan: expanded,
+      sourceRoot: fixture.sourceRoot,
+    }),
+    /provider-direct-v1 payload targets/,
+  );
+});
+
+test("direct provider profile rejects reintroduced optional adapters", (t) => {
+  for (const [flag, expected] of [
+    [
+      "--service-bat-key /private/bat.key",
+      /must keep BAT, Standard Cashu, shared issuer, ARC and Free-IP adapters unavailable/,
+    ],
+    [
+      "--service-cashu-exposure-limit 11:sat:1:1",
+      /must keep BAT, Standard Cashu, shared issuer, ARC and Free-IP adapters unavailable/,
+    ],
+    [
+      "--service-shared-authorization /private/shared.bin",
+      /must keep BAT, Standard Cashu, shared issuer, ARC and Free-IP adapters unavailable/,
+    ],
+    [
+      "--allow-experimental-arc",
+      /must keep production ARC and Free-IP adapters unavailable/,
+    ],
+    [
+      "--service-free-ip-key /private/free-ip.key",
+      /must keep production ARC and Free-IP adapters unavailable/,
+    ],
+  ]) {
+    const fixture = makeProviderDirectFixture(t);
+    updateTemplate(fixture, PROVIDER_DIRECT_UNIT, (text) => text.replace(
+      "    --max-connections 128",
+      `    ${flag} \\\n    --max-connections 128`,
+    ));
+    assert.throws(
+      () => renderFixture(fixture),
+      expected,
+      flag,
+    );
+  }
+});
+
+for (const [profile, factory, unit, configRoot] of [
+  [
+    "provider-v1",
+    makeProviderFixture,
+    PROVIDER_UNIT,
+    "/etc/bitcoinpir/payment-v1/provider",
+  ],
+  [
+    "provider-no-standard-cashu-v1",
+    makeProviderNoStandardCashuFixture,
+    PROVIDER_NO_STANDARD_CASHU_UNIT,
+    "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
+  ],
+  [
+    "provider-direct-v1",
+    makeProviderDirectFixture,
+    PROVIDER_DIRECT_UNIT,
+    "/etc/bitcoinpir/payment-v1/provider-direct",
+  ],
+]) {
+  test(`${profile} rendered unit rejects retained-policy configuration`, (t) => {
+    const fixture = factory(t);
+    updateTemplate(fixture, unit, (text) => text.replace(
+      "    --max-connections 128",
+      `    --service-retained-policy ${configRoot}/retained-policy.bin \\\n    --max-connections 128`,
+    ));
+    assert.throws(
+      () => renderFixture(fixture),
+      /zero-retained closed profile.*--service-retained-policy/,
+    );
+  });
+
+  test(`${profile} render plan rejects retained-policy payload material`, (t) => {
+    const fixture = factory(t);
+    fixture.plan.payload_artifacts.push(addPayload(
+      fixture,
+      `${configRoot}/retained-policy.bin`,
+      "retained-policy\n",
+      99,
+    ));
+    assert.throws(
+      () => renderFixture(fixture),
+      /zero-retained closed profile.*retained-policy payload material/,
+    );
+  });
+}
+
+test("checked-in direct provider skeleton is explicit and deliberately unusable", (t) => {
+  const fixture = temporaryRoots(t);
+  const plan = parseStrictJson(
+    readFileSync(
+      join(REPOSITORY, "docs/payment/render-plan-skeletons/provider-direct-v1.plan.json.example"),
+      "utf8",
+    ),
+    "direct provider skeleton",
+  );
+  assert.equal(plan.deployment_profile, "provider-direct-v1");
+  assert.equal(plan.payload_artifacts.length, 9);
+  assert.equal(
+    plan.payload_artifacts.some((artifact) =>
+      /cashu|shared|clearing|idempotency/u.test(artifact.target_path)),
+    false,
+  );
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: computeApprovedPlanSha256(plan),
+      inputRoot: fixture.inputRoot,
+      outputRoot: fixture.bundleRoot,
+      plan,
+      sourceRoot: REPOSITORY,
+    }),
+    /repository example marker|SHA-256|replacement marker/,
+  );
+});
+
 for (const [label, factory, profile] of [
   ["provider", makeProviderFixture, "provider-v1"],
+  [
+    "provider without Standard Cashu",
+    makeProviderNoStandardCashuFixture,
+    "provider-no-standard-cashu-v1",
+  ],
+  ["direct provider", makeProviderDirectFixture, "provider-direct-v1"],
   ["rollback authority", makeRollbackFixture, "rollback-authority-v1"],
   ["rollback edge", makeRollbackEdgeFixture, "edge-rollback-authority-v1"],
 ]) {
@@ -825,7 +1217,7 @@ for (const [label, factory, profile] of [
           plan: changed,
           sourceRoot: fixture.sourceRoot,
         }),
-        /dependency is missing|references missing artifact/,
+        /dependency is missing|references missing artifact|provider-(?:v1|no-standard-cashu-v1|direct-v1) payload targets/,
         artifact.target_path,
       );
     }
@@ -876,11 +1268,98 @@ test("issuer profile rejects deletion of every referenced payload dependency", (
     changed.payload_artifacts = changed.payload_artifacts.filter((entry) => entry.target_path !== artifact.target_path);
     assert.throws(
       () => renderBundle({ approvedPlanSha256: approved(changed), inputRoot: fixture.inputRoot, outputRoot: join(fixture.root, `missing-payload-${hashBytes(artifact.target_path).slice(0, 12)}`), plan: changed, sourceRoot: fixture.sourceRoot }),
-      /dependency is missing|references missing artifact/,
+      /dependency is missing|references missing artifact|remote rollback .* payload is missing/,
       artifact.target_path,
     );
   }
 });
+
+for (const [profile, factory, configRoot] of [
+  ["issuer-lightning-signet-v1", makeIssuerFixture, "/etc/bitcoinpir/payment-v1/issuer"],
+  ["provider-v1", makeProviderFixture, "/etc/bitcoinpir/payment-v1/provider"],
+  [
+    "provider-no-standard-cashu-v1",
+    makeProviderNoStandardCashuFixture,
+    "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
+  ],
+  ["provider-direct-v1", makeProviderDirectFixture, "/etc/bitcoinpir/payment-v1/provider-direct"],
+]) {
+  test(`${profile} binds the complete owner-only remote rollback secret closure`, (t) => {
+    const configTarget = `${configRoot}/remote-rollback-authority.toml`;
+    const signingTarget = `${configRoot}/remote-rollback-client-signing.seed`;
+    const valueTarget = `${configRoot}/remote-rollback-value-root.key`;
+
+    const valid = factory(t);
+    const model = renderFixture(valid);
+    assert.deepEqual(
+      model.request.secret_files
+        .map((entry) => entry.target_path)
+        .filter((target) => target.startsWith(`${configRoot}/remote-rollback`))
+        .sort(),
+      [configTarget, signingTarget, valueTarget].sort(),
+    );
+
+    const publicConfig = factory(t);
+    const publicConfigArtifact = publicConfig.plan.payload_artifacts.find(
+      (entry) => entry.target_path === configTarget,
+    );
+    publicConfigArtifact.class = "config";
+    assert.throws(
+      () => renderFixture(publicConfig),
+      /target-derived class secret/,
+    );
+
+    const groupReadableConfig = factory(t);
+    const groupReadableArtifact = groupReadableConfig.plan.payload_artifacts.find(
+      (entry) => entry.target_path === configTarget,
+    );
+    groupReadableArtifact.uid = 0;
+    groupReadableArtifact.mode = "0440";
+    assert.throws(
+      () => renderFixture(groupReadableConfig),
+      /secret must be owned exclusively by/,
+    );
+
+    for (const missingTarget of [configTarget, signingTarget, valueTarget]) {
+      const missing = factory(t);
+      missing.plan.payload_artifacts = missing.plan.payload_artifacts.filter(
+        (entry) => entry.target_path !== missingTarget,
+      );
+      assert.throws(
+        () => renderFixture(missing),
+        /remote rollback .* payload is missing|provider-(?:v1|no-standard-cashu-v1|direct-v1) payload targets/,
+        missingTarget,
+      );
+    }
+
+    for (const [label, mutate, expected] of [
+      [
+        "wrong signing path",
+        (text) => text.replace(signingTarget, `${configRoot}/wrong-signing.seed`),
+        /must bind exact client_signing_seed_path=/,
+      ],
+      [
+        "wrong value-root path",
+        (text) => text.replace(valueTarget, `${configRoot}/wrong-value-root.key`),
+        /must bind exact value_root_key_path=/,
+      ],
+      [
+        "duplicate signing path",
+        (text) => `${text}client_signing_seed_path = "${signingTarget}"\n`,
+        /must bind exact client_signing_seed_path=/,
+      ],
+      [
+        "non-canonical newlines",
+        (text) => text.replaceAll("\n", "\r\n"),
+        /must use canonical LF text/,
+      ],
+    ]) {
+      const malformed = factory(t);
+      updatePayload(malformed, configTarget, mutate);
+      assert.throws(() => renderFixture(malformed), expected, label);
+    }
+  });
+}
 
 test("profile rejects extra, stale, and cross-profile targets", (t) => {
   const extra = makeEdgeFixture(t);
@@ -1055,6 +1534,46 @@ test("rendered profiles require exact profile-specific activation sentinels", (t
       sourcePath,
     );
   }
+
+  for (const [label, factory, unit, foreignSentinels] of [
+    [
+      "provider-v1",
+      makeProviderFixture,
+      PROVIDER_UNIT,
+      [
+        "PROVIDER-DIRECT-ACTIVATION-APPROVED",
+        "PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      ],
+    ],
+    [
+      "provider-no-standard-cashu-v1",
+      makeProviderNoStandardCashuFixture,
+      PROVIDER_NO_STANDARD_CASHU_UNIT,
+      ["PROVIDER-ACTIVATION-APPROVED", "PROVIDER-DIRECT-ACTIVATION-APPROVED"],
+    ],
+    [
+      "provider-direct-v1",
+      makeProviderDirectFixture,
+      PROVIDER_DIRECT_UNIT,
+      [
+        "PROVIDER-ACTIVATION-APPROVED",
+        "PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      ],
+    ],
+  ]) {
+    for (const sentinel of foreignSentinels) {
+      const provider = factory(t);
+      updateTemplate(provider, unit, (text) => text.replace(
+        `ConditionPathExists=!/etc/bitcoinpir/payment-v1/${sentinel}\n`,
+        "",
+      ));
+      assert.throws(
+        () => renderFixture(provider),
+        /profile-specific activation conditions/,
+        `${label} must fail closed without negative ${sentinel}`,
+      );
+    }
+  }
 });
 
 test("offline manifest verification rechecks profile-specific activation sentinels", (t) => {
@@ -1088,6 +1607,19 @@ test("offline manifest verification rechecks profile-specific activation sentine
       issuerManifest.runtime_units[index].unit_name,
     );
   }
+
+  const direct = renderFixture(makeProviderDirectFixture(t));
+  const directManifest = structuredClone(direct.manifest);
+  directManifest.runtime_units[0].conditions = directManifest.runtime_units[0].conditions.filter(
+    (condition) => !condition.includes("!/") || !condition.includes("PROVIDER-ACTIVATION-APPROVED"),
+  );
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      directManifest,
+      hashBytes(Buffer.from(canonicalJson(directManifest))),
+    ),
+    /profile-specific activation conditions/,
+  );
 });
 
 test("size, depth, ASCII path, source symlink, and hardlink limits fail closed", (t) => {

@@ -354,8 +354,16 @@ old recovery instance with its original immutable root/network/payee boundary.
 Never weaken delegation, network or payee checks to make an old quote fit a new
 instance.
 
-When already-issued credentials must survive a policy rotation, keep each
-canonical old policy in an immutable operator-controlled file and repeat:
+The runtime binary supports retained policies, but none of the three checked-in
+provider deployment profiles does: their source and rendered gates deliberately
+reject the flag and payload below. Do not add it ad hoc to those units. They
+require a complete credential/custody/redeem drain as documented in the
+deployment guide. The following contract applies only to a future, separately
+reviewed retention-capable profile.
+
+In such a future profile, when already-issued credentials must survive a policy
+rotation, keep each canonical old policy in an immutable operator-controlled
+file and repeat:
 
 ```text
 --service-retained-policy /absolute/path/to/old-policy.bin
@@ -535,18 +543,22 @@ exact issuer replay history: that would make an old signed success deliverable
 again.
 
 If no exact production Standard Cashu mint has been selected and approved,
-omit every mint-dependent Cashu offer from both current and retained policies.
+omit every mint-dependent Cashu offer from the current policy. The three
+checked-in provider profiles are zero-retained; a future separately reviewed
+retention-capable profile would also have to omit the offer from every retained
+policy.
 The disposable CDK fake-wallet mint is test evidence, not a production mint.
 The current closed `provider-v1` unit and render skeleton always carry
 Standard-Cashu custody/recovery/exposure inputs, so offer omission does not make
-that profile eligible to render or start. A mint-free provider needs a separate
-reviewed profile and negative tests; do not remove fields from `provider-v1`.
+that profile eligible to render or start. A mint-free provider must use the
+separately reviewed `provider-no-standard-cashu-v1` profile; do not remove
+fields from `provider-v1`.
 When a production mint is selected, its canonical origin, WebPKI/leaf pin set,
 unit, manifest, finite exposure caps, recovery/custody keys and outage/
 retirement procedure become required render-plan inputs.
 
-For every standard-Cashu mint/unit that remains in a current or retained
-policy, configure
+For every Standard Cashu mint/unit in the current policy—or in a retained
+policy of a future retention-capable profile—configure
 one exact finite value/note exposure cap plus distinct recovery and custody
 keyrings. Run `bpir-admin cashu-custody inventory` before activation and
 rehearse provider-bound recipient key generation, bounded export, exact replay,

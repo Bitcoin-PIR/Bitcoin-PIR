@@ -96,6 +96,14 @@ test("global activation never substitutes for a role-specific approval", () => {
       "PROVIDER-ACTIVATION-APPROVED",
     ],
     [
+      "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+      "PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+      "PROVIDER-DIRECT-ACTIVATION-APPROVED",
+    ],
+    [
       "deploy/payment-v1/systemd/rollback-authority.service.in",
       "ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
     ],
@@ -146,6 +154,67 @@ test("global activation never substitutes for a role-specific approval", () => {
     });
   }
 });
+
+test("provider profile sentinels are mutually exclusive at unit start", () => {
+  for (const [relativePath, forbiddenSentinels] of [
+    [
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      [
+        "PROVIDER-DIRECT-ACTIVATION-APPROVED",
+        "PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      ],
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+      [
+        "PROVIDER-ACTIVATION-APPROVED",
+        "PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      ],
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+      [
+        "PROVIDER-ACTIVATION-APPROVED",
+        "PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      ],
+    ],
+  ]) {
+    for (const forbiddenSentinel of forbiddenSentinels) {
+      withFixture((root) => {
+        mutate(root, relativePath, (text) => text.replace(
+          `ConditionPathExists=!/etc/bitcoinpir/payment-v1/${forbiddenSentinel}\n`,
+          "",
+        ));
+        assert.throws(
+          () => validateDeploymentTree(root),
+          /Unit\.ConditionPathExists must equal/,
+        );
+      });
+    }
+  }
+});
+
+for (const [profile, relativePath] of [
+  ["provider-v1", "deploy/payment-v1/systemd/hetzner-provider.service.in"],
+  [
+    "provider-no-standard-cashu-v1",
+    "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+  ],
+  ["provider-direct-v1", "deploy/payment-v1/systemd/hetzner-provider-direct.service.in"],
+]) {
+  test(`${profile} is an explicit zero-retained closed template`, () => {
+    withFixture((root) => {
+      mutate(root, relativePath, (text) => text.replace(
+        "    --max-connections 128",
+        "    --service-retained-policy /private/retained-policy.bin \\\n    --max-connections 128",
+      ));
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /zero-retained closed profile.*--service-retained-policy/,
+      );
+    });
+  });
+}
 
 test("provider enforcement, ledger-only issuer and remote rollback are mandatory", () => {
   withFixture((root) => {
@@ -217,6 +286,70 @@ test("provider enforcement, ledger-only issuer and remote rollback are mandatory
   });
 });
 
+test("no-Standard-Cashu provider is an explicit closed method profile", () => {
+  const provider =
+    "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in";
+  const source = readFileSync(join(REPOSITORY, provider), "utf8");
+  assert.match(source, /--require-service-auth-v1/u);
+  assert.match(source, /--service-bat-key/u);
+  assert.match(source, /--service-shared-authorization/u);
+  assert.doesNotMatch(
+    source,
+    /--service-cashu-(?:recovery|custody|exposure)/u,
+  );
+
+  for (const [mutation, expected] of [
+    [
+      (text) => text.replace(/^.*--service-bat-key.*\n/m, ""),
+      /--service-bat-key/,
+    ],
+    [
+      (text) => text.replace(/^.*--service-shared-idempotency-key.*\n/m, ""),
+      /--service-shared-idempotency-key/,
+    ],
+    [
+      (text) => text.replace(
+        "    --max-connections 128",
+        "    --service-cashu-exposure-limit 11:sat:1:1 \\\n    --max-connections 128",
+      ),
+      /--max-connections|ExecStart option set differs/,
+    ],
+  ]) {
+    withFixture((root) => {
+      mutate(root, provider, mutation);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
+test("direct provider excludes every optional payment adapter", () => {
+  const provider = "deploy/payment-v1/systemd/hetzner-provider-direct.service.in";
+  const source = readFileSync(join(REPOSITORY, provider), "utf8");
+  assert.match(source, /--require-service-auth-v1/u);
+  assert.match(source, /--service-remote-rollback-authority-config/u);
+  assert.doesNotMatch(
+    source,
+    /--service-(?:bat-key|cashu-[a-z-]+|shared-[a-z-]+|arc-key|free-ip-key|trust-direct-peer-ip)|--allow-experimental-arc/u,
+  );
+
+  for (const flag of [
+    "--service-bat-key /private/bat.key",
+    "--service-cashu-exposure-limit 11:sat:1:1",
+    "--service-shared-authorization /private/shared.bin",
+  ]) {
+    withFixture((root) => {
+      mutate(root, provider, (text) => text.replace(
+        "    --max-connections 128",
+        `    ${flag} \\\n    --max-connections 128`,
+      ));
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /--max-connections|ExecStart option set differs/,
+      );
+    });
+  }
+});
+
 test("production templates reject ARC, fake, local and proxied Free-IP flags", () => {
   const mutations = [
     ["--allow-experimental-arc", /experimental ARC/],
@@ -226,15 +359,21 @@ test("production templates reject ARC, fake, local and proxied Free-IP flags", (
     ["--service-trust-direct-peer-ip", /direct peer-IP trust/],
     ["--test-only-service-https-root-pem /private/test.pem", /test-only trust root/],
   ];
-  for (const [flag, expected] of mutations) {
-    withFixture((root) => {
-      mutate(
-        root,
-        "deploy/payment-v1/systemd/hetzner-provider.service.in",
-        (text) => text.replace("    --max-connections 128", `    ${flag} \\\n    --max-connections 128`),
-      );
-      assert.throws(() => validateDeploymentTree(root), expected);
-    });
+  for (const relativePath of [
+    "deploy/payment-v1/systemd/hetzner-provider.service.in",
+    "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+    "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+  ]) {
+    for (const [flag, expected] of mutations) {
+      withFixture((root) => {
+        mutate(
+          root,
+          relativePath,
+          (text) => text.replace("    --max-connections 128", `    ${flag} \\\n    --max-connections 128`),
+        );
+        assert.throws(() => validateDeploymentTree(root), expected);
+      });
+    }
   }
 
   withFixture((root) => {

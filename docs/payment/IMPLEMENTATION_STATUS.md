@@ -842,7 +842,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v3 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v4 accepts
       only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
       and `/etc/group`, and rejects UID/GID aliases or extra protected-group
       primary/explicit/effective members; a final snapshot confirmation closes
@@ -853,14 +853,34 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       capabilities, require Caddy-only `CAP_NET_BIND_SERVICE` and zero HAProxy
       capabilities, and re-confirm every
       MainPID/unit generation; runtime paths are rechecked after the scan. This
+      version reads systemd's structured `Conditions` property through a pinned
+      `/usr/bin/busctl` rather than accepting systemd 255's
+      `Conditions=[unprintable]`, and proves the exact evaluated condition set
+      plus current path truth before and after collection. Installed-file
+      content, independent SHA-256, stat, ACL, xattr and capability probes now
+      use one open descriptor, while initial and final `O_NOFOLLOW` path
+      descriptors must retain the same device/inode. Every secret's final parent
+      must also be consumer-EUID-owned mode `0700`, with each ancestor matching
+      the Linux `pir-private-files` DAC ownership/write/root-sticky policy;
+      readability alone is insufficient. The runtime collector separately
+      rejects named/default POSIX ACLs, xattrs and capabilities on every pinned
+      directory descriptor, which is deliberately stricter than the loader and
+      is not a claim that the loader audits Linux POSIX/NFSv4/FUSE ACLs. The
+      complete directory set and every secret file are revalidated after all
+      long external probes; only then does the final lightweight structured-
+      Conditions/unit-generation pass run immediately before evidence
+      construction. This
       is not an already-connected-FD proof. The stopped-edge evidence type
       therefore requires inactive/dead units, absent socket paths, locked
       non-login service accounts and an empty protected-credential closure
       before HAProxy may start, followed by Caddy and a fresh live proof in the
       host initial PID namespace. The current pinned Ubuntu 24.04,
-      HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete five-suite
-      deployment/rendered/live/source-fair/Nostr Node gate 154/154 with no skip,
-      including real `getent`, per-user `id -G`, and full procfs thread scans.
+      HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete
+      deployment/rendered/live/source-fair/Nostr Node gate, including real
+      `getent`, per-user `id -G`, full procfs thread scans and the
+      descriptor-bound installed-file and secret-directory ABA tests. Record a
+      fresh aggregate count from the final branch before activation rather than
+      reusing an older pre-race-test total.
       An Alpine procfs regression also passes for legal repeated `Groups:`
       entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those

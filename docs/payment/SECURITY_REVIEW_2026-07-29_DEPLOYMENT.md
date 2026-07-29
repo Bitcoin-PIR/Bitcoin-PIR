@@ -97,8 +97,21 @@ A post-merge independent deployment-plan review found one P1 ambiguity and six
 P2 documentation/gate drifts before activation. The current `provider-v1`
 profile was incorrectly described as renderable after omitting Standard-Cashu
 offers even though its closed unit requires Cashu custody/recovery/exposure
-material; it is now explicitly blocked until a production mint is selected, and
-a mint-free provider requires a separate reviewed profile. Private no-funds is
+material; it remains blocked until a production mint is selected. The separate
+closed `provider-no-standard-cashu-v1` profile now provides a no-Standard-Cashu path
+with its own unit, service identity, runtime/configuration paths, activation
+sentinel and render-plan skeleton. It retains BAT/shared-issuer material, omits
+all Standard-Cashu recovery/custody/exposure inputs, and relies on unchanged
+runtime Cashu-configuration checks to reject Standard Cashu in its current
+policy. The checked-in unit and render plan are zero-retained and reject old-
+policy flags or payloads. The still smaller closed
+`provider-direct-v1` profile has its own unit/account/paths/sentinel and exact
+nine-payload allowlist, including its owner-only remote rollback config,
+client-signing seed and value-root key. It carries no BAT or shared-issuer
+material either. The Cashu validator rejects Standard Cashu in the current
+policy; current method coverage rejects BAT, shared-issuer, ARC and every other route outside the
+built-in Free/direct material boundary. The unit independently omits Free-IP
+adapter material. Private no-funds is
 now edge-only for remote installation/live evidence, service start has its own
 bounded approval, and every closed service unit requires its exact
 profile-specific activation-sentinel set in addition to the global sentinel. The
@@ -119,7 +132,7 @@ must prove a successful zero-status completion in the current boot. Offline
 review is meaningful only with an independently transferred full evidence
 digest.
 
-Runtime-evidence v3 narrows NSS to a provable local-files profile: exactly
+Runtime-evidence v4 narrows NSS to a provable local-files profile: exactly
 `passwd: files`, `group: files`, and inherited group-based `initgroups`. Stable
 root-owned snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
 must agree around NSS enumeration, with the complete identity-relevant `getent`
@@ -132,7 +145,7 @@ UID/GID aliases and extra protected-group primary, explicit, or effective
 members fail closed. Remote/cached or optionally enumerable NSS providers are
 not accepted by this V1 claim.
 
-Runtime-evidence v3 also closes credentials and capabilities retained in the
+Runtime-evidence v4 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce
 the same protected-holder records, record all four active sets plus `CapBnd`,
 and fail on a reviewed dangerous active capability held by non-root. Each
@@ -143,6 +156,35 @@ master and worker are allowed only because both remain in its reviewed unit
 cgroup with the same reviewed credentials and zero capabilities. Only the
 Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
 set is checked against that exact systemd policy.
+
+Runtime-evidence v4 also stops treating systemd's structured `Conditions`
+property as printable `systemctl show` text. Ubuntu 24.04's systemd 255 renders
+that property as `[unprintable]`. The collector therefore pins `/usr/bin/busctl`
+in its trusted-command closure, parses the exact `a(sbbsi)` D-Bus shape, and
+requires the complete condition set, negation bits, evaluated-success result
+and current path truth to match the rendered unit before and after collection.
+On 2026-07-29 this was exercised against a temporary Ubuntu 24.04 arm64
+container running systemd `255.4-1ubuntu8.16`: an active transient unit with one
+existing positive path and one absent negated path produced
+`Conditions=[unprintable]` through `systemctl`, while `busctl --json=short`
+returned the exact two `a(sbbsi)` tuples with `result = 1` and
+`ConditionResult=yes`. The temporary container and derived test image were then
+removed.
+
+Runtime evidence also treats private-file loader compatibility as a distinct
+invariant from ordinary readability. Every secret's final parent is bound to
+the consumer EUID and exact mode `0700`; all ancestors follow the loader's
+Linux DAC ownership, write-bit and root-sticky rules. The live collector adds a
+separate, stricter rejection of named/default POSIX ACLs, xattrs and
+capabilities on descriptor-pinned directory components; the Rust loader itself
+does not claim a Linux POSIX/NFSv4/FUSE ACL audit. Installed-file content and
+extended metadata are collected against one opened inode, while parent paths
+are walked component-by-component from pinned descriptors. Both closures are
+revalidated after the long host probes. The final lightweight structured-
+Conditions and unit-generation pass runs only after those expensive secret
+commands finish, immediately before evidence construction. These checks prevent a
+green evidence record for files that would fail closed on the next service
+restart or for a pathname swapped between hashing and metadata collection.
 
 The scan does not prove ownership of an already-connected Unix socket FD after
 `SCM_RIGHTS` transfer. Source-fair activation consequently requires a cold
@@ -324,12 +366,38 @@ on one Hetzner host; arbitrary unmeasured limits are not safe defaults.
    build/upload/reboot, production-key installation/use, and mainnet/real-value
    operations each require a separate approval. No approval implies another.
 10. A Standard Cashu offer, or any other Cashu offer that depends on an
-    external mint, must be omitted from current and retained signed policies
-    until an exact production mint, WebPKI/pin set, unit, custody limits and
-    recovery/outage procedure have been selected and approved. Local CDK fake-
-    wallet evidence is not such a mint. Because the current closed
-    `provider-v1` profile always carries those inputs, omitting the offers also
-    blocks that profile rather than authorizing a mint-free render.
+    external mint, must be omitted from the current policy and, in any future
+    profile that permits retention, every retained signed-policy byte sequence
+    until an exact production mint, WebPKI/pin
+    set, unit, custody limits and recovery/outage procedure have been selected
+    and approved. Local CDK fake-
+    wallet evidence is not such a mint. The closed `provider-v1` profile always
+    carries those inputs and remains blocked when the offers are omitted. Use
+    only a separate no-Standard-Cashu profile in that case. The
+    `provider-no-standard-cashu-v1` current policy may use BAT/shared-issuer
+    routes; `provider-direct-v1` may not. All three checked-in provider plans
+    are zero-retained: their gates reject `--service-retained-policy` and any
+    retained-policy payload. Startup fails closed on any
+    unavailable applicable route. The three provider units
+    also require the other two provider sentinels to be absent at start. A
+    profile switch must stop and deauthorize the old unit, prove it inactive
+    with no `8191` listener, then authorize and start only the new unit; systemd
+    conditions are not continuous revocation. For the same logical provider,
+    this first requires new issuance/admission to stop, every old capability
+    and grace horizon to expire, Standard Cashu custody to be fully retired or
+    reconciled, and all shared-issuer redeems to have known outcomes. The static
+    render gate cannot prove that drain; separately reviewed transition
+    evidence is mandatory. Only then may a stopped migration preserve the
+    stable server ID, operator key and derived provider ID, policy-signing key,
+    provider identity certificate/key, ProviderStore/store-instance identity,
+    spent and replay history, remote authority instance/key, namespace, client-
+    verifying-key identity, client-signing seed, value-root key and floor. The TOML may be re-
+    rendered only with the new canonical secret paths. Rotating an authority-
+    identity field requires a separately reviewed migration ceremony because
+    V1 has no online rebind/reset; an empty
+    replacement store is forbidden. Without that continuity, the new
+    profile must use a new provider/server identity and distinct directory
+    entry.
 
 ## Required evidence before activation
 
@@ -372,4 +440,4 @@ independently verified artifacts. `UNSET` means the phase must not advance.
 | installed target evidence | stopped-edge and fresh-live full-file digests | `UNSET_BEFORE_REMOTE_DRILL` |
 | relay selection | resolved source/archive/lockfile/binary/config/key pins | `UNRESOLVED` |
 | Lightning network gate | approved default-Signet preflight record, or a future reviewed mainnet profile | `UNSET`; mainnet profile not implemented |
-| Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission | `UNSET`; omit mint-dependent offers and keep `provider-v1` blocked |
+| Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission bound to `provider-no-standard-cashu-v1` or `provider-direct-v1` | `UNSET`; omit mint-dependent offers, keep `provider-v1` blocked, and use only an exact separately approved no-Standard-Cashu profile |

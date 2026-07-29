@@ -383,9 +383,11 @@ shape (paths and caps are operator-specific):
 
 Repeat a key option to retain old epochs during rotation. The same epoch
 number in the two domains is allowed, but the raw key bytes must differ. Every
-configured cap must correspond to an exact current/retained policy manifest,
-and every referenced manifest must have exactly one cap; unused or missing
-entries fail startup.
+configured cap must correspond to the exact current policy manifest, and every
+referenced manifest must have exactly one cap; unused or missing entries fail
+startup. The three checked-in provider deployment profiles are zero-retained.
+In a future, separately reviewed retention-capable profile, the same one-cap
+rule would also apply to each retained policy manifest.
 
 Offline custody operations are grouped under:
 
