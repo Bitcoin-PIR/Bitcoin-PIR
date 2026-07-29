@@ -1416,7 +1416,7 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
       ),
     );
     assert.equal(
-      rejectedPublicStatus >= 300 && rejectedPublicStatus < 500,
+      rejectedPublicStatus >= 400 && rejectedPublicStatus < 500,
       true,
       `unexpected public status ${rejectedPublicStatus} for ${rejectedTarget}`,
     );
@@ -1479,7 +1479,7 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
       ),
     );
     assert.equal(
-      rejectedPublisherStatus >= 300 && rejectedPublisherStatus < 500,
+      rejectedPublisherStatus >= 400 && rejectedPublisherStatus < 500,
       true,
       `unexpected publisher status ${rejectedPublisherStatus} for ${rejectedTarget}`,
     );
