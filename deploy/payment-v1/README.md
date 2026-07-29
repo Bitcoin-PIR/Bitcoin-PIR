@@ -130,14 +130,15 @@ The public edge has a mandatory two-evidence cold-start ceremony. While Caddy
 and HAProxy are inactive/dead and every Unix listener is absent, run
 `collect-stopped-edge`. It proves the manifest-bound service accounts are
 password-locked and login-disabled, no process/thread retains a protected
-UID/GID, no non-root thread retains CAP_SETUID/CAP_SETGID, and the stopped unit
+UID/GID, no non-root thread retains a reviewed dangerous active capability,
+and the stopped unit
 and socket-absence snapshots remain stable around both procfs passes. Only then
 start HAProxy followed by Caddy and run `collect-live` against the new
 generation. Neither command permits caller-authored evidence or challenge
 material; offline verification requires the complete independently transferred
 evidence digest. A warm reload is not an accepted replacement.
 
-Runtime-evidence v2 accepts only a local-files NSS authority (`passwd: files`,
+Runtime-evidence v3 accepts only a local-files NSS authority (`passwd: files`,
 `group: files`, and no explicit `initgroups:` line). It snapshots the canonical
 root-owned `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group` around NSS
 enumeration and confirms the same files again at the end of live collection,
@@ -153,7 +154,10 @@ commit before running it; the evidence-file digest alone does not prove an
 honest collector.
 
 The same evidence performs two bounded scans of every numeric Linux process
-and thread and rejects a non-root CAP_SETUID/CAP_SETGID holder. A retained
+and thread, records all active capability sets plus `CapBnd`, and rejects a
+non-root holder of any reviewed dangerous active capability. Managed masks
+must be subsets of the rendered systemd policy: only Caddy may use
+`CAP_NET_BIND_SERVICE`, while HAProxy and business services must have zero. A retained
 protected service UID or GID is accepted only
 inside that service's exact current systemd cgroup with the full expected
 credential set; every long-running MainPID and the final unit generation are

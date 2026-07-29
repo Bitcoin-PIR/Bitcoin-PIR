@@ -19,6 +19,7 @@ import {
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
+  validateNonRootEdgeCapabilitiesV1,
   validateLiveRuntimeEvidence,
   validateStoppedEdgeActivationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
@@ -54,6 +55,17 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function capabilityRecord(overrides = {}) {
+  return {
+    ambient: "0000000000000000",
+    bounding: "0000000000000000",
+    effective: "0000000000000000",
+    inheritable: "0000000000000000",
+    permitted: "0000000000000000",
+    ...overrides,
+  };
+}
+
 function sortNssEvidence(nss) {
   for (const group of nss.groups) group.members.sort();
   for (const user of nss.users) user.supplementary_gids.sort((left, right) => left - right);
@@ -66,8 +78,19 @@ function execValue(command) {
   return `{ path=${command.split(" ", 1)[0]} ; argv[]=${command} ; ignore_errors=no ; start_time=[n/a] ; }`;
 }
 
-function protectedHolder({ controlGroup, gid, groups, ino, pid, startTime, uid, tid = pid }) {
+function protectedHolder({
+  capabilities = capabilityRecord(),
+  controlGroup,
+  gid,
+  groups,
+  ino,
+  pid,
+  startTime,
+  uid,
+  tid = pid,
+}) {
   return {
+    capabilities,
     control_group: controlGroup,
     gid: [gid, gid, gid, gid],
     groups: [...groups],
@@ -143,7 +166,7 @@ function fixture() {
       target_path: "/run/bitcoinpir-test/service.sock",
       uid: 730,
     }],
-    schema_version: 2,
+    schema_version: 3,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -265,6 +288,8 @@ function fixture() {
     main_pid: properties.MainPID,
   };
   const processIdentity = {
+    capabilities_after: capabilityRecord(),
+    capabilities_before: capabilityRecord(),
     gid_after: [731, 731, 731, 731],
     gid_before: [731, 731, 731, 731],
     groups_after: [731, 732],
@@ -381,7 +406,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 2,
+    schema_version: 3,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -478,7 +503,7 @@ function stoppedEdgeFixture() {
       [clone(socketAbsence)],
       [clone(socketAbsence)],
     ],
-    schema_version: 1,
+    schema_version: 2,
     stopped_unit_passes: [
       [clone(unitState)],
       [clone(unitState)],
@@ -632,6 +657,8 @@ function secretIsolationFixture() {
       clone(peerConfirmation),
     ],
     process_identity: {
+      capabilities_after: capabilityRecord(),
+      capabilities_before: capabilityRecord(),
       gid_after: [734, 734, 734, 734],
       gid_before: [734, 734, 734, 734],
       groups_after: [731, 734],
@@ -860,6 +887,7 @@ test("procfs status treats repeated supplementary GIDs as one kernel credential 
       "CapInh:\t0000000000000000",
       "CapPrm:\t0000000000000000",
       "CapEff:\t0000000000000000",
+      "CapBnd:\t0000000000000400",
       "CapAmb:\t0000000000000000",
       "",
     ].join("\n")),
@@ -867,6 +895,9 @@ test("procfs status treats repeated supplementary GIDs as one kernel credential 
     { expectedTgid: 42, label: "test proc status" },
   );
   assert.deepEqual(identity.groups, [731, 732]);
+  assert.deepEqual(identity.capabilities, capabilityRecord({
+    bounding: "0000000000000400",
+  }));
   assert.equal(identity.setidCapabilities, false);
 
   const setidIdentity = parseProcStatus(
@@ -879,6 +910,7 @@ test("procfs status treats repeated supplementary GIDs as one kernel credential 
       "CapInh:\t0000000000000000",
       "CapPrm:\t00000000000000c0",
       "CapEff:\t0000000000000000",
+      "CapBnd:\t00000000000000c0",
       "CapAmb:\t0000000000000000",
       "",
     ].join("\n")),
@@ -886,6 +918,64 @@ test("procfs status treats repeated supplementary GIDs as one kernel credential 
     { expectedTgid: 43, label: "setid proc status" },
   );
   assert.equal(setidIdentity.setidCapabilities, true);
+});
+
+test("non-root capability closure rejects file-permission and credential bypass powers", () => {
+  for (const [name, mask] of [
+    ["CAP_CHOWN", "0000000000000001"],
+    ["CAP_DAC_OVERRIDE", "0000000000000002"],
+    ["CAP_FOWNER", "0000000000000008"],
+    ["CAP_SETFCAP", "0000000080000000"],
+  ]) {
+    assert.throws(
+      () => validateNonRootEdgeCapabilitiesV1({
+        capabilities: capabilityRecord({ effective: mask }),
+        uid: [730, 730, 730, 730],
+      }, 42, 42),
+      /dangerous edge capabilities/,
+      name,
+    );
+  }
+  assert.equal(
+    validateNonRootEdgeCapabilitiesV1({
+      capabilities: capabilityRecord({
+        ambient: "0000000000000400",
+        bounding: "0000000000000400",
+        effective: "0000000000000400",
+        permitted: "0000000000000400",
+      }),
+      uid: [730, 730, 730, 730],
+    }, 43, 43),
+    true,
+  );
+
+  const caddy = fixture();
+  const caddyUnitName = "bitcoinpir-payment-v1-public-edge.service";
+  const caddyControlGroup = `/system.slice/${caddyUnitName}`;
+  caddy.request.units[0].unit_name = caddyUnitName;
+  caddy.request.units[0].hardening.AmbientCapabilities = ["CAP_NET_BIND_SERVICE"];
+  caddy.request.units[0].hardening.CapabilityBoundingSet = ["CAP_NET_BIND_SERVICE"];
+  caddy.request.service_identities[0].unit_name = caddyUnitName;
+  caddy.evidence.units[0].unit_name = caddyUnitName;
+  caddy.evidence.units[0].properties.ControlGroup = caddyControlGroup;
+  caddy.evidence.units[0].properties.AmbientCapabilities = "CAP_NET_BIND_SERVICE";
+  caddy.evidence.units[0].properties.CapabilityBoundingSet = "CAP_NET_BIND_SERVICE";
+  for (const confirmation of caddy.evidence.units[0].generation_confirmations) {
+    confirmation.control_group = caddyControlGroup;
+  }
+  const caddyCapabilities = capabilityRecord({
+    ambient: "0000000000000400",
+    bounding: "0000000000000400",
+    effective: "0000000000000400",
+    permitted: "0000000000000400",
+  });
+  caddy.evidence.units[0].process_identity.capabilities_before = clone(caddyCapabilities);
+  caddy.evidence.units[0].process_identity.capabilities_after = clone(caddyCapabilities);
+  for (const pass of caddy.evidence.protected_process_closure.passes) {
+    pass.holders[0].control_group = caddyControlGroup;
+    pass.holders[0].capabilities = clone(caddyCapabilities);
+  }
+  assert.equal(validate(caddy), true);
 });
 
 test("service-account policy requires pinned IDs, nologin shell, and a locked shadow password", () => {
@@ -956,6 +1046,10 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   legacy.evidence.protected_process_closure.enumeration_kind =
     "procfs-v2-all-thread-credentials-two-pass-v1";
   assert.throws(() => validateStopped(legacy), /closure is incomplete/);
+
+  const legacySchema = stoppedEdgeFixture();
+  legacySchema.evidence.schema_version = 1;
+  assert.throws(() => validateStopped(legacySchema), /evidence schema, collector/);
 });
 
 test("live verifier closes protected NSS primary, explicit, effective, UID, and GID aliases", () => {
@@ -1048,6 +1142,45 @@ test("live verifier closes stale protected UID/GID holders across every procfs t
   }
   assert.throws(() => validate(wrongUid), /protected holder UID/);
 
+  const dangerousHolder = fixture();
+  for (const pass of dangerousHolder.evidence.protected_process_closure.passes) {
+    pass.holders[0].capabilities.effective = "0000000000000002";
+  }
+  assert.throws(() => validate(dangerousHolder), /dangerous edge capabilities/);
+
+  const dangerousMain = fixture();
+  dangerousMain.evidence.units[0].process_identity.capabilities_before.effective =
+    "0000000000000008";
+  dangerousMain.evidence.units[0].process_identity.capabilities_after.effective =
+    "0000000000000008";
+  assert.throws(() => validate(dangerousMain), /dangerous edge capabilities/);
+
+  const unconfiguredNetBind = fixture();
+  for (const key of ["capabilities_before", "capabilities_after"]) {
+    unconfiguredNetBind.evidence.units[0].process_identity[key] = capabilityRecord({
+      bounding: "0000000000000400",
+      effective: "0000000000000400",
+      permitted: "0000000000000400",
+    });
+  }
+  assert.throws(() => validate(unconfiguredNetBind), /exceed the reviewed bounding set/);
+
+  const nonCaddyConfiguredNetBind = fixture();
+  nonCaddyConfiguredNetBind.request.units[0].hardening.AmbientCapabilities = [
+    "CAP_NET_BIND_SERVICE",
+  ];
+  nonCaddyConfiguredNetBind.request.units[0].hardening.CapabilityBoundingSet = [
+    "CAP_NET_BIND_SERVICE",
+  ];
+  nonCaddyConfiguredNetBind.evidence.units[0].properties.AmbientCapabilities =
+    "CAP_NET_BIND_SERVICE";
+  nonCaddyConfiguredNetBind.evidence.units[0].properties.CapabilityBoundingSet =
+    "CAP_NET_BIND_SERVICE";
+  assert.throws(
+    () => validate(nonCaddyConfiguredNetBind),
+    /not a reviewed Caddy capability-bearing unit/,
+  );
+
   const racedPass = fixture();
   racedPass.evidence.protected_process_closure.passes[1].holders[0].proc_directory_ino = "103";
   assert.throws(() => validate(racedPass), /holders changed between complete procfs passes/);
@@ -1136,11 +1269,11 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 1;
+  legacyEvidence.evidence.schema_version = 2;
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 1;
+  legacyRequest.request.schema_version = 2;
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
 
   const remoteBackend = fixture();

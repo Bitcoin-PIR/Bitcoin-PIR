@@ -34,13 +34,13 @@ import {
   runtimeRequestFromManifest,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v2";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v3";
 export const STOPPED_EDGE_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-edge-v1";
+  "bitcoinpir-payment-v1-linux-root-stopped-edge-v2";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE = "local-files-only-v1";
-const LIVE_SCHEMA_VERSION = 2;
-const STOPPED_EDGE_SCHEMA_VERSION = 1;
+const LIVE_SCHEMA_VERSION = 3;
+const STOPPED_EDGE_SCHEMA_VERSION = 2;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
@@ -61,7 +61,54 @@ const MAX_PROC_CREDENTIAL_SCAN_MILLISECONDS = 30_000;
 const MAX_PROC_CLOSURE_EVIDENCE_BYTES = 4 * 1024 * 1024;
 const PROC_SUPER_MAGIC = 0x9fa0;
 export const PROTECTED_PROCESS_ENUMERATION_KIND =
-  "procfs-v2-all-thread-protected-credentials-nonroot-setid-capabilities-two-pass-v2";
+  "procfs-v3-all-thread-protected-credentials-dangerous-capabilities-two-pass-v3";
+const CAPABILITY_RECORD_KEYS = Object.freeze([
+  "ambient",
+  "bounding",
+  "effective",
+  "inheritable",
+  "permitted",
+]);
+const CAPABILITY_HEX = /^[0-9a-f]{16}$/u;
+const CAP_NET_BIND_SERVICE_MASK = 1n << 10n;
+const NET_BIND_SERVICE_UNITS = new Set([
+  "bitcoinpir-payment-v1-edge.service",
+  "bitcoinpir-payment-v1-public-edge.service",
+]);
+const DANGEROUS_NONROOT_CAPABILITY_BITS = Object.freeze([
+  0, // CAP_CHOWN
+  1, // CAP_DAC_OVERRIDE
+  2, // CAP_DAC_READ_SEARCH
+  3, // CAP_FOWNER
+  4, // CAP_FSETID
+  5, // CAP_KILL
+  6, // CAP_SETGID
+  7, // CAP_SETUID
+  8, // CAP_SETPCAP
+  12, // CAP_NET_ADMIN
+  13, // CAP_NET_RAW
+  15, // CAP_IPC_OWNER
+  16, // CAP_SYS_MODULE
+  17, // CAP_SYS_RAWIO
+  19, // CAP_SYS_PTRACE
+  21, // CAP_SYS_ADMIN
+  23, // CAP_SYS_NICE
+  24, // CAP_SYS_RESOURCE
+  27, // CAP_MKNOD
+  30, // CAP_AUDIT_CONTROL
+  31, // CAP_SETFCAP
+  32, // CAP_MAC_OVERRIDE
+  33, // CAP_MAC_ADMIN
+  34, // CAP_SYSLOG
+  37, // CAP_AUDIT_READ
+  38, // CAP_PERFMON
+  39, // CAP_BPF
+  40, // CAP_CHECKPOINT_RESTORE
+]);
+const DANGEROUS_NONROOT_CAPABILITY_MASK = DANGEROUS_NONROOT_CAPABILITY_BITS.reduce(
+  (mask, bit) => mask | (1n << BigInt(bit)),
+  0n,
+);
 const LOCKED_SERVICE_ACCOUNT_SHELLS = Object.freeze([
   "/bin/false",
   "/usr/sbin/nologin",
@@ -1074,6 +1121,43 @@ function decodeProcText(bytes, label) {
   return text;
 }
 
+function validateCapabilityRecord(capabilities, label) {
+  exactKeys(capabilities, CAPABILITY_RECORD_KEYS, label);
+  for (const key of CAPABILITY_RECORD_KEYS) {
+    if (typeof capabilities[key] !== "string" || !CAPABILITY_HEX.test(capabilities[key])) {
+      fail(`${label}.${key} must be one canonical 64-bit lowercase hexadecimal mask`);
+    }
+  }
+  return capabilities;
+}
+
+function activeCapabilityMask(capabilities) {
+  validateCapabilityRecord(capabilities, "procfs capabilities");
+  return ["ambient", "effective", "inheritable", "permitted"].reduce(
+    (mask, key) => mask | BigInt(`0x${capabilities[key]}`),
+    0n,
+  );
+}
+
+export function validateNonRootEdgeCapabilitiesV1(identity, pid, tid = pid) {
+  if (
+    identity === null ||
+    typeof identity !== "object" ||
+    !Array.isArray(identity.uid) ||
+    identity.uid.some((uid) => !Number.isSafeInteger(uid) || uid < 0)
+  ) {
+    fail(`thread ${pid}/${tid} has malformed UID capability identity`);
+  }
+  const dangerous = activeCapabilityMask(identity.capabilities) &
+    DANGEROUS_NONROOT_CAPABILITY_MASK;
+  if (!identity.uid.includes(0) && dangerous !== 0n) {
+    fail(
+      `non-root thread ${pid}/${tid} retains dangerous edge capabilities 0x${dangerous.toString(16)}`,
+    );
+  }
+  return true;
+}
+
 function parseProcStat(bytes, pid, label = `/proc/${pid}/stat`) {
   const text = decodeProcText(bytes, label).trimEnd();
   const prefix = `${pid} (`;
@@ -1124,16 +1208,22 @@ export function parseProcStatus(
     if (!Number.isSafeInteger(gid) || gid < 0) fail(`${label} has out-of-range Groups: values`);
     return gid;
   });
-  const capabilityMask = ["CapInh", "CapPrm", "CapEff", "CapAmb"].reduce(
-    (mask, name) => {
-      const value = field(name);
-      if (!/^[0-9a-fA-F]{1,16}$/u.test(value)) fail(`${label} has malformed ${name}: value`);
-      return mask | BigInt(`0x${value}`);
-    },
-    0n,
-  );
-  const setidCapabilities = (capabilityMask & ((1n << 6n) | (1n << 7n))) !== 0n;
+  const capabilityField = (name) => {
+    const value = field(name);
+    if (!/^[0-9a-fA-F]{1,16}$/u.test(value)) fail(`${label} has malformed ${name}: value`);
+    return value.toLowerCase().padStart(16, "0");
+  };
+  const capabilities = {
+    ambient: capabilityField("CapAmb"),
+    bounding: capabilityField("CapBnd"),
+    effective: capabilityField("CapEff"),
+    inheritable: capabilityField("CapInh"),
+    permitted: capabilityField("CapPrm"),
+  };
+  const setidCapabilities =
+    (activeCapabilityMask(capabilities) & ((1n << 6n) | (1n << 7n))) !== 0n;
   return {
+    capabilities,
     gid: parseIds("Gid", 4),
     groups: [...new Set(groups)].sort((left, right) => left - right),
     setidCapabilities,
@@ -1256,11 +1346,10 @@ function collectStableProtectedTask(pid, tid, protectedUids, protectedGids) {
   if (cgroupAfter !== cgroupBefore) {
     fail(`thread ${pid}/${tid} changed control groups during credential collection`);
   }
-  if (snapshot.setidCapabilities && !snapshot.uid.includes(0)) {
-    fail(`non-root thread ${pid}/${tid} retains CAP_SETUID or CAP_SETGID`);
-  }
+  validateNonRootEdgeCapabilitiesV1(snapshot, pid, tid);
   if (!hasProtectedCredential(snapshot, protectedUids, protectedGids)) return null;
   return {
+    capabilities: snapshot.capabilities,
     control_group: cgroupAfter,
     gid: snapshot.gid,
     groups: snapshot.groups,
@@ -1310,9 +1399,7 @@ function collectProtectedCredentialProcessPass(protectedUids, protectedGids, dea
         if (isVanishedProcError(error)) continue;
         throw error;
       }
-      if (initial.setidCapabilities && !initial.uid.includes(0)) {
-        fail(`non-root thread ${pid}/${tid} retains CAP_SETUID or CAP_SETGID`);
-      }
+      validateNonRootEdgeCapabilitiesV1(initial, pid, tid);
       if (!hasProtectedCredential(initial, protectedUids, protectedGids)) continue;
       let holder;
       try {
@@ -1659,28 +1746,81 @@ function confirmUnitGeneration(unit, properties) {
   return confirmation;
 }
 
-function assertSnapshotIdentity(snapshot, expected, unitName) {
+function capabilityDirectiveMask(values, label) {
+  if (!Array.isArray(values) || values.length !== 1 || typeof values[0] !== "string") {
+    fail(`${label} must be one reviewed systemd capability directive`);
+  }
+  const tokens = values[0] === "" ? [] : values[0].split(/\s+/u);
+  if (new Set(tokens).size !== tokens.length) fail(`${label} contains duplicate capabilities`);
+  let mask = 0n;
+  for (const token of tokens) {
+    if (token !== "CAP_NET_BIND_SERVICE") {
+      fail(`${label} contains an unreviewed capability ${token}`);
+    }
+    mask |= CAP_NET_BIND_SERVICE_MASK;
+  }
+  return mask;
+}
+
+function allowedUnitCapabilityMasks(unit) {
+  const ambient = capabilityDirectiveMask(
+    unit.hardening.AmbientCapabilities,
+    `${unit.unit_name}.AmbientCapabilities`,
+  );
+  const bounding = capabilityDirectiveMask(
+    unit.hardening.CapabilityBoundingSet,
+    `${unit.unit_name}.CapabilityBoundingSet`,
+  );
+  if ((ambient & ~bounding) !== 0n) {
+    fail(`${unit.unit_name} ambient capabilities exceed its bounding set`);
+  }
+  if (
+    (ambient !== 0n || bounding !== 0n) &&
+    !NET_BIND_SERVICE_UNITS.has(unit.unit_name)
+  ) {
+    fail(`${unit.unit_name} is not a reviewed Caddy capability-bearing unit`);
+  }
+  return { ambient, bounding };
+}
+
+function validateManagedProcessCapabilities(capabilities, unit) {
+  validateCapabilityRecord(capabilities, `${unit.unit_name} procfs capabilities`);
+  const allowed = allowedUnitCapabilityMasks(unit);
+  for (const key of ["bounding", "effective", "inheritable", "permitted"]) {
+    const observed = BigInt(`0x${capabilities[key]}`);
+    if ((observed & ~allowed.bounding) !== 0n) {
+      fail(`${unit.unit_name} procfs ${key} capabilities exceed the reviewed bounding set`);
+    }
+  }
+  const ambient = BigInt(`0x${capabilities.ambient}`);
+  if ((ambient & ~allowed.ambient) !== 0n) {
+    fail(`${unit.unit_name} procfs ambient capabilities exceed the reviewed ambient set`);
+  }
+}
+
+function assertSnapshotIdentity(snapshot, expected, unit) {
   if (
     canonicalJson(snapshot.uid) !== canonicalJson([expected.uid, expected.uid, expected.uid, expected.uid]) ||
     canonicalJson(snapshot.gid) !== canonicalJson([expected.gid, expected.gid, expected.gid, expected.gid]) ||
-    canonicalJson(snapshot.groups) !== canonicalJson(expected.groups) ||
-    snapshot.setidCapabilities
+    canonicalJson(snapshot.groups) !== canonicalJson(expected.groups)
   ) {
-    fail(`running process identity differs from the reviewed unit identity: ${unitName}`);
+    fail(`running process identity differs from the reviewed unit identity: ${unit.unit_name}`);
   }
+  validateNonRootEdgeCapabilitiesV1(snapshot, unit.unit_name, "MainPID");
+  validateManagedProcessCapabilities(snapshot.capabilities, unit);
 }
 
 function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentities) {
   const pid = parseUnsignedDecimal(properties.MainPID, `${unit.unit_name}.MainPID`, { allowZero: false });
   const expected = resolveExpectedUnitProcessIdentity(unit, nss, serviceIdentities);
   const before = collectProcIdentitySnapshot(pid);
-  assertSnapshotIdentity(before, expected, unit.unit_name);
+  assertSnapshotIdentity(before, expected, unit);
   const firstConfirmation = confirmUnitGeneration(unit, properties);
   const middle = collectProcIdentitySnapshot(pid);
-  assertSnapshotIdentity(middle, expected, unit.unit_name);
+  assertSnapshotIdentity(middle, expected, unit);
   const secondConfirmation = confirmUnitGeneration(unit, properties);
   const after = collectProcIdentitySnapshot(pid);
-  assertSnapshotIdentity(after, expected, unit.unit_name);
+  assertSnapshotIdentity(after, expected, unit);
   for (const snapshot of [middle, after]) {
     if (
       snapshot.procDirectoryDev !== before.procDirectoryDev ||
@@ -1688,7 +1828,8 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
       snapshot.startTimeTicks !== before.startTimeTicks ||
       canonicalJson(snapshot.uid) !== canonicalJson(before.uid) ||
       canonicalJson(snapshot.gid) !== canonicalJson(before.gid) ||
-      canonicalJson(snapshot.groups) !== canonicalJson(before.groups)
+      canonicalJson(snapshot.groups) !== canonicalJson(before.groups) ||
+      canonicalJson(snapshot.capabilities) !== canonicalJson(before.capabilities)
     ) {
       fail(`running process restarted or changed credentials during live collection: ${unit.unit_name}`);
     }
@@ -1696,6 +1837,8 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
   return {
     confirmations: [firstConfirmation, secondConfirmation],
     evidence: {
+      capabilities_after: after.capabilities,
+      capabilities_before: before.capabilities,
       gid_after: after.gid,
       gid_before: before.gid,
       groups_after: after.groups,
@@ -1835,7 +1978,8 @@ function validateIdVector(value, expected, label) {
   }
 }
 
-function validateProcessIdentityEvidence(processIdentity, lifecycle, expectedIdentity, unitName) {
+function validateProcessIdentityEvidence(processIdentity, lifecycle, expectedIdentity, unit) {
+  const unitName = unit.unit_name;
   if (lifecycle.kind === "successful-oneshot") {
     if (processIdentity !== null) fail(`reviewed oneshot must not claim procfs process identity: ${unitName}`);
     return;
@@ -1843,6 +1987,8 @@ function validateProcessIdentityEvidence(processIdentity, lifecycle, expectedIde
   exactKeys(
     processIdentity,
     [
+      "capabilities_after",
+      "capabilities_before",
       "gid_after",
       "gid_before",
       "groups_after",
@@ -1905,9 +2051,19 @@ function validateProcessIdentityEvidence(processIdentity, lifecycle, expectedIde
   if (
     canonicalJson(processIdentity.uid_before) !== canonicalJson(processIdentity.uid_after) ||
     canonicalJson(processIdentity.gid_before) !== canonicalJson(processIdentity.gid_after) ||
-    canonicalJson(processIdentity.groups_before) !== canonicalJson(processIdentity.groups_after)
+    canonicalJson(processIdentity.groups_before) !== canonicalJson(processIdentity.groups_after) ||
+    canonicalJson(processIdentity.capabilities_before) !==
+      canonicalJson(processIdentity.capabilities_after)
   ) {
     fail(`procfs process credentials changed during collection: ${unitName}`);
+  }
+  for (const key of ["capabilities_before", "capabilities_after"]) {
+    validateNonRootEdgeCapabilitiesV1(
+      { capabilities: processIdentity[key], uid: processIdentity.uid_before },
+      unitName,
+      key,
+    );
+    validateManagedProcessCapabilities(processIdentity[key], unit);
   }
 }
 
@@ -1962,6 +2118,7 @@ function validateProtectedProcessClosure(closure, request, nss, units, lifecycle
     allowedByControlGroup.set(controlGroup, {
       identity,
       mainPid: lifecycle.mainPid,
+      unit,
       unitName: unit.unit_name,
     });
   }
@@ -1989,6 +2146,7 @@ function validateProtectedProcessClosure(closure, request, nss, units, lifecycle
       exactKeys(
         holder,
         [
+          "capabilities",
           "control_group",
           "gid",
           "groups",
@@ -2029,6 +2187,8 @@ function validateProtectedProcessClosure(closure, request, nss, units, lifecycle
       if (!allowed) {
         fail(`protected credential holder is outside every managed unit cgroup: ${holder.pid}/${holder.tid}`);
       }
+      validateNonRootEdgeCapabilitiesV1(holder, holder.pid, holder.tid);
+      validateManagedProcessCapabilities(holder.capabilities, allowed.unit);
       validateProtectedProcessIdVector(
         holder.uid,
         allowed.identity.uid,
@@ -3070,7 +3230,7 @@ export function validateLiveRuntimeEvidence({
       actualUnit?.process_identity,
       lifecycleByUnit.get(unit.unit_name),
       expectedProcessIdentity,
-      unit.unit_name,
+      unit,
     );
   }
   for (const entry of [...request.runtime_paths, ...request.secret_files]) {

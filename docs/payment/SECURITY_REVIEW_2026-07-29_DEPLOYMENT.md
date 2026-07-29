@@ -78,7 +78,7 @@ must prove a successful zero-status completion in the current boot. Offline
 review is meaningful only with an independently transferred full evidence
 digest.
 
-Runtime-evidence v2 narrows NSS to a provable local-files profile: exactly
+Runtime-evidence v3 narrows NSS to a provable local-files profile: exactly
 `passwd: files`, `group: files`, and inherited group-based `initgroups`. Stable
 root-owned snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
 must agree around NSS enumeration, with the complete identity-relevant `getent`
@@ -91,14 +91,17 @@ UID/GID aliases and extra protected-group primary, explicit, or effective
 members fail closed. Remote/cached or optionally enumerable NSS providers are
 not accepted by this V1 claim.
 
-Runtime-evidence v2 also closes credentials retained in the kernel after an NSS
-edit. Two bounded full process/thread scans must produce the same protected
-holder records and fail on any non-root CAP_SETUID/CAP_SETGID holder. Each
+Runtime-evidence v3 also closes credentials and capabilities retained in the
+kernel after an NSS edit. Two bounded full process/thread scans must produce
+the same protected-holder records, record all four active sets plus `CapBnd`,
+and fail on a reviewed dangerous active capability held by non-root. Each
 protected holder is bound by UID, all four GIDs, supplementary group
 set, PID/TID, inode, start time and exact current systemd cgroup; all managed
 MainPIDs and a post-scan unit generation confirmation are mandatory. HAProxy's
 master and worker are allowed only because both remain in its reviewed unit
-cgroup with the same reviewed credentials.
+cgroup with the same reviewed credentials and zero capabilities. Only the
+Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
+set is checked against that exact systemd policy.
 
 The scan does not prove ownership of an already-connected Unix socket FD after
 `SCM_RIGHTS` transfer. Source-fair activation consequently requires a cold
@@ -132,6 +135,14 @@ short-lived provider, issuer, directory-reader and directory-publisher source
 buckets. Every successful `track-sc` is checked explicitly, so full-table
 allocation failure rejects rather than admitting an unaccounted request. The
 business services receive only new source-free loopback connections.
+The Caddy source gate now closes exact per-site binds and the global upstream
+multiset, forbids imports/invokes/snippets/named routes, and accepts only PROXY
+v2. Pinned adapted-JSON tests bind the two listener/host/socket graphs and 404
+wrong-bind fallbacks. HAProxy owns the Unix sockets, so both pinned edge
+processes remain in the source-assertion TCB: a compromised HAProxy could
+self-connect and fabricate a preamble just as a compromised Caddy could send
+one. PROXY v2 and the duplicate source check are not authentication against
+either process.
 
 The source templates now enforce the following design requirements:
 

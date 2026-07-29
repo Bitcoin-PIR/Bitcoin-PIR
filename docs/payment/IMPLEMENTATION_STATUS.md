@@ -799,15 +799,21 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       checked in. The source gate freezes inactive templates and the unchanged
       VPSBG baseline. The rendered gate binds one externally approved plan to
       exact staged bytes, path/file classes and consuming service identities;
+      the Caddy gate closes exact bind/upstream sets and rejects imports,
+      invokes, snippets, named routes and non-v2 transports, while the pinned
+      adapted-JSON/socket test proves wrong-bind requests return 4xx without
+      touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v2 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v3 accepts
       only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
       and `/etc/group`, and rejects UID/GID aliases or extra protected-group
       primary/explicit/effective members; a final snapshot confirmation closes
       drift during the remainder of live collection. Two bounded
       all-process/all-thread passes additionally reject stale protected UID/GID
-      holders outside the exact current unit cgroups, reject every non-root
-      CAP_SETUID/CAP_SETGID holder, and re-confirm every
+      holders outside the exact current unit cgroups, record every active
+      capability set plus `CapBnd`, reject reviewed dangerous non-root
+      capabilities, require Caddy-only `CAP_NET_BIND_SERVICE` and zero HAProxy
+      capabilities, and re-confirm every
       MainPID/unit generation; runtime paths are rechecked after the scan. This
       is not an already-connected-FD proof. The stopped-edge evidence type
       therefore requires inactive/dead units, absent socket paths, locked
@@ -815,7 +821,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       before HAProxy may start, followed by Caddy and a fresh live proof in the
       host initial PID namespace. The current pinned Ubuntu 24.04,
       HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete four-suite
-      deployment/rendered/live/source-fair Node gate 139/139 with no skip,
+      deployment/rendered/live/source-fair Node gate 140/140 with no skip,
       including real `getent`, per-user `id -G`, and full procfs thread scans.
       An Alpine procfs regression also passes for legal repeated `Groups:`
       entries. The first root-only target Linux collection still

@@ -302,3 +302,12 @@
 		respond "" 404
 	}
 }
+
+# Explicit no-host fallbacks prevent Caddy's empty-route default from turning a
+# hostname presented on the wrong listener into a misleading 200 response.
+https://:443 {
+	bind @PUBLIC_HTTPS_BIND@
+	bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@
+	tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key
+	respond "" 404
+}

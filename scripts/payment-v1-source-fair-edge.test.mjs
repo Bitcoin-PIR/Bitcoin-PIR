@@ -540,6 +540,103 @@ function statusOf(response) {
   return Number(match[1]);
 }
 
+function laneRecordCounts(harness) {
+  return Object.fromEntries(
+    Object.entries(harness.lanes).map(([name, lane]) => [name, lane.records.length]),
+  );
+}
+
+function recursivelyCollect(value, predicate, collected = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) recursivelyCollect(item, predicate, collected);
+    return collected;
+  }
+  if (value === null || typeof value !== "object") return collected;
+  if (predicate(value)) collected.push(value);
+  for (const nested of Object.values(value)) {
+    recursivelyCollect(nested, predicate, collected);
+  }
+  return collected;
+}
+
+function assertRenderedCaddyJsonClosure(caddyfile, harness, edgePort) {
+  const adapted = spawnSync(CADDY, [
+    "adapt", "--config", caddyfile, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    adapted.status,
+    0,
+    `complete rendered Caddy lane config failed adaptation:\n${adapted.stdout}\n${adapted.stderr}`,
+  );
+  const configuration = JSON.parse(adapted.stdout);
+  assert.equal(
+    recursivelyCollect(
+      configuration,
+      (value) => Object.hasOwn(value, "named_routes"),
+    ).length,
+    0,
+    "adapted Caddy JSON must not contain named routes",
+  );
+
+  const servers = Object.values(configuration.apps?.http?.servers ?? {});
+  assert.equal(servers.length, 2, "adapted Caddy JSON must contain exactly two listeners");
+  const byListen = new Map(servers.map((server) => {
+    assert.equal(Array.isArray(server.listen), true);
+    assert.equal(server.listen.length, 1);
+    return [server.listen[0], server];
+  }));
+  assert.deepEqual(
+    [...byListen.keys()].sort(),
+    [`127.0.0.1:${edgePort}`, `127.0.0.2:${edgePort}`],
+  );
+
+  const expected = new Map([
+    [`127.0.0.1:${edgePort}`, {
+      hosts: ["directory.example.net", "pay.example.net", "pir.example.net"],
+      sockets: [
+        harness.sockets.directoryPublic,
+        ...Array(4).fill(harness.sockets.issuer),
+        harness.sockets.provider,
+      ],
+      static404s: 4,
+    }],
+    [`127.0.0.2:${edgePort}`, {
+      hosts: ["publisher.example.net"],
+      sockets: [harness.sockets.directoryPublisher],
+      static404s: 2,
+    }],
+  ]);
+  for (const [listener, expectedServer] of expected) {
+    const server = byListen.get(listener);
+    const hosts = recursivelyCollect(
+      server,
+      (value) => Array.isArray(value.host),
+    ).flatMap((value) => value.host);
+    assert.deepEqual([...new Set(hosts)].sort(), expectedServer.hosts);
+    assert.equal(
+      recursivelyCollect(
+        server,
+        (value) => value.handler === "static_response" && value.status_code === 404,
+      ).length,
+      expectedServer.static404s,
+    );
+    const handlers = recursivelyCollect(
+      server,
+      (value) => value.handler === "reverse_proxy",
+    );
+    const actualSockets = [];
+    for (const handler of handlers) {
+      assert.equal(handler.transport?.proxy_protocol, "v2");
+      assert.deepEqual(handler.headers?.request?.delete, ["*"]);
+      assert.equal(handler.upstreams?.length, 1);
+      const dial = handler.upstreams[0].dial;
+      assert.equal(dial.startsWith("unix/"), true, `unexpected Caddy dial ${dial}`);
+      actualSockets.push(dial.slice("unix/".length));
+    }
+    assert.deepEqual(actualSockets.sort(), [...expectedServer.sockets].sort());
+  }
+}
+
 async function createHarness(
   t,
   {
@@ -1176,6 +1273,7 @@ function renderedCaddyLaneHarnessConfig(
   const publisherHost = "publisher.example.net";
   let rendered = readFileSync(CADDY_TEMPLATE, "utf8")
     .replace("servers :443", `servers :${edgePort}`)
+    .replace("https://:443 {", `https://:${edgePort} {`)
     .replaceAll("@PUBLIC_HTTPS_BIND@", "127.0.0.1")
     .replaceAll("@DIRECTORY_PUBLISHER_PRIVATE_BIND@", "127.0.0.2")
     .replaceAll("@DIRECTORY_PUBLISHER_CLIENT_IP@", publisherClientIp)
@@ -1258,6 +1356,7 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     0,
     `complete rendered Caddy lane config failed validation:\n${validation.stdout}\n${validation.stderr}`,
   );
+  assertRenderedCaddyJsonClosure(caddyfile, harness, edgePort);
 
   const caddy = spawn(CADDY, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -1286,11 +1385,16 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     () => harness.lanes.directoryPublic.records.length === 1,
     "rendered public-directory backend request",
   );
-  assert.equal(harness.lanes.directoryPublic.records.length, 1);
-  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+  assert.deepEqual(laneRecordCounts(harness), {
+    directoryPublic: 1,
+    directoryPublisher: 0,
+    issuer: 0,
+    provider: 0,
+  });
 
   const publisherRequest = websocketDirectoryRequest("publisher.example.net");
-  statusOf(
+  let before = laneRecordCounts(harness);
+  const publicBindPublisherStatus = statusOf(
     await tlsHttpResponseHeaders(
       edgePort,
       publicClientIp,
@@ -1299,10 +1403,11 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
       "publisher.example.net",
     ),
   );
-  assert.equal(harness.lanes.directoryPublic.records.length, 1);
-  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+  assert.equal(publicBindPublisherStatus >= 400 && publicBindPublisherStatus < 500, true);
+  assert.deepEqual(laneRecordCounts(harness), before);
 
-  statusOf(
+  before = laneRecordCounts(harness);
+  const privateBindDirectoryStatus = statusOf(
     await tlsHttpResponseHeaders(
       edgePort,
       publisherClientIp,
@@ -1311,26 +1416,25 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
       "directory.example.net",
     ),
   );
-  assert.equal(harness.lanes.directoryPublic.records.length, 1);
-  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+  assert.equal(privateBindDirectoryStatus >= 400 && privateBindDirectoryStatus < 500, true);
+  assert.deepEqual(laneRecordCounts(harness), before);
 
   const spoofedPublisherRequest = websocketDirectoryRequest("publisher.example.net", [
     `Forwarded: for=${publisherClientIp}`,
     `X-Forwarded-For: ${publisherClientIp}`,
   ]);
-  assert.equal(
-    statusOf(
-      await tlsHttpResponseHeaders(
-        edgePort,
-        unauthorizedPublisherIp,
-        spoofedPublisherRequest,
-        "127.0.0.2",
-        "publisher.example.net",
-      ),
+  before = laneRecordCounts(harness);
+  const spoofedPublisherStatus = statusOf(
+    await tlsHttpResponseHeaders(
+      edgePort,
+      unauthorizedPublisherIp,
+      spoofedPublisherRequest,
+      "127.0.0.2",
+      "publisher.example.net",
     ),
-    404,
   );
-  assert.equal(harness.lanes.directoryPublisher.records.length, 0);
+  assert.equal(spoofedPublisherStatus >= 400 && spoofedPublisherStatus < 500, true);
+  assert.deepEqual(laneRecordCounts(harness), before);
 
   assert.equal(
     statusOf(
@@ -1348,7 +1452,11 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     () => harness.lanes.directoryPublisher.records.length === 1,
     "rendered publisher backend request",
   );
-  assert.equal(harness.lanes.directoryPublic.records.length, 1);
-  assert.equal(harness.lanes.directoryPublisher.records.length, 1);
+  assert.deepEqual(laneRecordCounts(harness), {
+    directoryPublic: 1,
+    directoryPublisher: 1,
+    issuer: 0,
+    provider: 0,
+  });
   await stopProcess(caddy);
 });
