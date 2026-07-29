@@ -67,7 +67,10 @@ standard-cashu-process-e2e = ["pir-strict-https/test-only-webpki-root"]
 # the exact Standard-Cashu private-root injection surface so `unified_server`
 # has only one test-only WebPKI escape hatch; `pir-strict-https` rejects that
 # hook in release builds.
-shared-issuer-process-e2e = ["standard-cashu-process-e2e"]
+shared-issuer-process-e2e = [
+  "standard-cashu-process-e2e",
+  "pir-provider-clearing-client/test-only-webpki-root",
+]
 # Privacy-dangerous query-detail logging for local tests only. The build script
 # rejects this feature outside Cargo's debug profile; normal dev/release
 # binaries do not compile or recognize its CLI switch.

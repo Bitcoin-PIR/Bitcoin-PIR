@@ -30,6 +30,10 @@ use pir_issuer_store::{
 };
 use pir_lightning_backend::FakeLightningNodeV1;
 use pir_payment_crypto::{cashu_hash_to_curve_v1, K256CashuMintKeyringV1};
+use pir_provider_clearing_client::{
+    ProviderLedgerBalanceClientV1, ProviderLedgerBalanceTrustV1,
+    StrictHttpsProviderSettlementTransportV1,
+};
 use pir_runtime_core::protocol::{BatchQuery, Request, Response};
 use pir_sdk_client::attest::{attest_with_eph_binding, SevStatus};
 use pir_sdk_client::channel::{establish, SecureChannelTransport};
@@ -43,10 +47,9 @@ use pir_service_protocol::{
     Bolt11QuoteKeyDelegationV1, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1,
     CredentialUnitV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
     FreeAuthorizationProofV1, FreeModeV1, IssuerClearingApprovalV1, LightningNetworkV1,
-    OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationClaimsV1,
-    ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1,
-    ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, SettlementModesV1,
-    SettlementRuleV1, SettlementUnitV1, VerificationMode, WorkloadId,
+    OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationV1,
+    ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1,
+    ServiceScopePolicyV1, ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
 };
 use pir_service_store::{
     ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions as ProviderStoreOptions,
@@ -93,11 +96,14 @@ enum ProviderMethod {
 }
 
 struct SharedProviderConfig {
+    authorization_epoch: u64,
     authorization_path: PathBuf,
     approval_path: PathBuf,
+    operator_key_path: PathBuf,
     operator_verifying_key: VerifyingKey,
     issuer_settlement_verifying_key: VerifyingKey,
     clearing_key_path: PathBuf,
+    provider_request_verifying_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     proof: BitcoinPirCashuBatProofV1,
     account_id: [u8; 32],
@@ -142,6 +148,7 @@ impl ProviderFixture {
 
 struct IssuerMaterial {
     binary: PathBuf,
+    admin_binary: PathBuf,
     issuer_id: [u8; 32],
     issuer_root: SigningKey,
     settlement_signing_key: SigningKey,
@@ -154,6 +161,7 @@ struct IssuerMaterial {
     fake_lightning_signing_key_path: PathBuf,
     fake_lightning_derivation_seed_path: PathBuf,
     issuer_settlement_signing_key_path: PathBuf,
+    retained_issuer_settlement_verifying_key_paths: Vec<PathBuf>,
     redeem_response_derivation_key_path: PathBuf,
     bat_keyring: Arc<K256CashuMintKeyringV1>,
 }
@@ -288,10 +296,10 @@ async fn shared_issuer_real_process_tls_e2e() {
     let edge_port = distinct_unused_port(&[issuer_port]);
     let offline_port = distinct_unused_port(&[issuer_port, edge_port]);
     let redeem_endpoint = format!("https://localhost:{edge_port}");
-    let issuer = build_issuer_material(root.path(), unix_now());
+    let mut issuer = build_issuer_material(root.path(), unix_now());
     let now = unix_now();
 
-    let paid = build_provider(
+    let mut paid = build_provider(
         root.path(),
         0,
         ProviderMethod::SharedIssuerBat,
@@ -346,7 +354,6 @@ async fn shared_issuer_real_process_tls_e2e() {
     // provider that can reach `/v1/redeems`. This also preserves the issuer
     // store invariant that one BAT public key has one immutable lineage.
     let shared_providers = [&paid];
-
     init_issuer_store(&issuer);
     let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &shared_providers);
     let forward_counter = root.path().join("tls-edge-forwarded.log");
@@ -410,12 +417,43 @@ async fn shared_issuer_real_process_tls_e2e() {
         .await
         .expect("peer provider must independently accept Free/Open");
 
+    let initial_balance = read_signed_ledger_balance(&paid, &tls.root, [0x11; 32], Vec::new());
+    assert_eq!(
+        (
+            initial_balance.available_value,
+            initial_balance.reserved_value
+        ),
+        (9, 0)
+    );
+
+    // A real issuer restart reopens the same rollback-protected store and the
+    // independently generated authorization/approval/request-key artifacts.
+    // The next balance is freshly signed and revalidated; no payout fixture or
+    // in-memory registration is accepted as a substitute.
+    let (issuer_stdout_first, issuer_stderr_first) = payment_issuer.stop();
+    assert!(issuer_stdout_first.contains("payment-issuer fake service listening"));
+    assert!(issuer_stdout_first.contains("issuer_store_startup_check=ok"));
+    assert!(!issuer_stderr_first.contains("secret_raw"));
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &[&paid]);
+    let restarted_balance = read_signed_ledger_balance(&paid, &tls.root, [0x12; 32], Vec::new());
+    assert_eq!(
+        (
+            restarted_balance.available_value,
+            restarted_balance.reserved_value
+        ),
+        (9, 0)
+    );
+
     let (paid_stdout_first, paid_stderr_first) = paid_server.stop();
     let (free_stdout, free_stderr) = free_server.stop();
     assert_server_log(&paid_stdout_first, &paid_stderr_first, paid_port, &paid);
     assert_server_log(&free_stdout, &free_stderr, free_port, &free);
     assert_provider_spend_inventory(&paid, 1);
-    assert_eq!(forwarded_request_count(&forward_counter), 2);
+    assert_eq!(
+        forwarded_request_count(&forward_counter),
+        4,
+        "two recovery redeems and two signed balance reads must reach the issuer"
+    );
     assert_private_regular_file(&transcript_path);
     assert_first_two_forwarded_requests_are_identical(&transcript_path);
 
@@ -436,8 +474,50 @@ async fn shared_issuer_real_process_tls_e2e() {
 
     let forwarded_after_replay = forwarded_request_count(&forward_counter);
     assert!(
-        (2..=3).contains(&forwarded_after_replay),
-        "loss recovery must forward twice; a later spent replay may be rejected locally or replayed at the issuer"
+        (4..=5).contains(&forwarded_after_replay),
+        "two identical recovery redeems and two signed balance reads must be forwarded; the later spent replay may be rejected locally or replayed at the issuer"
+    );
+
+    // Rotate both the authorization epoch and issuer settlement signing key.
+    // The issuer retains the old public key only for historical recovery, while
+    // the newly generated approval is bound to epoch 2 and the new key. The
+    // real provider restarts on those files; its already-spent credential
+    // remains spent and the signed ledger balance survives unchanged.
+    let (issuer_stdout_restart, issuer_stderr_restart) = payment_issuer.stop();
+    assert!(issuer_stdout_restart.contains("issuer_store_startup_check=ok"));
+    assert!(!issuer_stderr_restart.contains("secret_raw"));
+    let old_settlement_key = rotate_shared_clearing_artifacts(&mut issuer, &mut paid, unix_now());
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &[&paid]);
+    let rotated_balance =
+        read_signed_ledger_balance(&paid, &tls.root, [0x13; 32], vec![old_settlement_key]);
+    assert_eq!(
+        (
+            rotated_balance.available_value,
+            rotated_balance.reserved_value
+        ),
+        (9, 0)
+    );
+    assert_ne!(
+        initial_balance.issuer_settlement_key_id,
+        rotated_balance.issuer_settlement_key_id
+    );
+    let rotated_provider =
+        spawn_provider(root.path(), &db_path, &paid, paid_port, 2, Some(&tls.root));
+    let rotated_replay = authorize_only(paid_port, &paid, manifest_root)
+        .await
+        .expect_err("credential spent before clearing rotation must remain spent");
+    assert!(
+        rotated_replay.contains("invalid-or-spent"),
+        "unexpected rotated replay: {rotated_replay}"
+    );
+    let (rotated_stdout, rotated_stderr) = rotated_provider.stop();
+    assert_server_log(&rotated_stdout, &rotated_stderr, paid_port, &paid);
+    assert_provider_spend_inventory(&paid, 1);
+    let forwarded_after_rotation = forwarded_request_count(&forward_counter);
+    assert!(
+        (forwarded_after_replay + 1..=forwarded_after_replay + 2)
+            .contains(&forwarded_after_rotation),
+        "rotated signed balance must be forwarded once; rotated spent proof may be rejected locally or by the issuer"
     );
 
     // Every trust failure uses a fresh provider process/store. The signed
@@ -459,7 +539,7 @@ async fn shared_issuer_real_process_tls_e2e() {
         assert_provider_spend_inventory(fixture, 0);
         assert_eq!(
             forwarded_request_count(&forward_counter),
-            forwarded_after_replay,
+            forwarded_after_rotation,
             "TLS trust/offline failure must not reach the issuer HTTP application"
         );
     }
@@ -474,6 +554,7 @@ async fn shared_issuer_real_process_tls_e2e() {
 
 fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
     let binary = required_payment_issuer_binary();
+    let admin_binary = required_bpir_admin_binary();
     let issuer_root_dir = root.join("payment-issuer");
     let store_dir = issuer_root_dir.join("store-domain");
     let rollback_dir = issuer_root_dir.join("rollback-domain");
@@ -544,6 +625,7 @@ fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
 
     IssuerMaterial {
         binary,
+        admin_binary,
         issuer_id,
         issuer_root,
         settlement_signing_key,
@@ -556,6 +638,7 @@ fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
         fake_lightning_signing_key_path,
         fake_lightning_derivation_seed_path,
         issuer_settlement_signing_key_path,
+        retained_issuer_settlement_verifying_key_paths: Vec::new(),
         redeem_response_derivation_key_path,
         bat_keyring: Arc::new(
             K256CashuMintKeyringV1::from_secret_keys([bat_key])
@@ -669,47 +752,9 @@ fn build_provider(
                 .expect("known shared-issuer privacy flags"),
             };
             let clearing = SigningKey::from_bytes(&[0x80u8.wrapping_add(index); 32]);
+            let provider_request = SigningKey::from_bytes(&[0x90u8.wrapping_add(index); 32]);
             let idempotency_key = [0xa0u8.wrapping_add(index); 32];
             let account_id = [0xb0u8.wrapping_add(index); 32];
-            let authorization = ProviderClearingAuthorizationV1::sign(
-                ProviderClearingAuthorizationClaimsV1 {
-                    authorization_id: [0xd0u8.wrapping_add(index); 16],
-                    authorization_epoch: 1,
-                    provider_id,
-                    issuer_id: issuer.issuer_id,
-                    redeem_endpoint: redeem_endpoint.to_owned(),
-                    redeem_leaf_spki_sha256_pins: redeem_pins,
-                    settlement_account_id: account_id,
-                    clearing_verifying_key: clearing.verifying_key().to_bytes(),
-                    not_before: issued_at,
-                    not_after: expires_at,
-                    rules: vec![SettlementRuleV1 {
-                        credential_binding_digest: binding
-                            .binding_digest()
-                            .expect("shared BAT binding digest"),
-                        unit: SettlementUnitV1::AuthCredit,
-                        accepted_value: 10,
-                        provider_credit: 9,
-                        issuer_fee: 1,
-                        denomination_profile: 1,
-                        settlement_modes: SettlementModesV1::from_bits(
-                            SettlementModesV1::LEDGER_CREDIT,
-                        )
-                        .expect("ledger-credit-only settlement"),
-                        blind_output_minimum_validity_seconds: 0,
-                        blind_output_keyset: None,
-                    }],
-                },
-                &operator,
-            )
-            .expect("sign provider clearing authorization");
-            let approval = IssuerClearingApprovalV1::sign(
-                &authorization,
-                issued_at,
-                expires_at,
-                &issuer.settlement_signing_key,
-            )
-            .expect("sign issuer clearing approval");
             let secret_raw = [0xe0u8.wrapping_add(index); 32];
             let hashed = cashu_hash_to_curve_v1(&secret_raw).expect("hash BAT secret to curve");
             let signed = issuer
@@ -727,25 +772,129 @@ fn build_provider(
 
             let authorization_path = provider_root.join("clearing-authorization.bin");
             let approval_path = provider_root.join("issuer-approval.bin");
+            let operator_key_path = provider_root.join("operator.key");
+            let authorization_config_path = provider_root.join("clearing-authorization.toml");
             let clearing_key_path = provider_root.join("clearing.key");
+            let provider_request_verifying_key_path =
+                provider_root.join("provider-request-verifying.key");
             let idempotency_key_path = provider_root.join("redeem-idempotency.key");
-            write_public_file(
-                &authorization_path,
-                &authorization
-                    .encode()
-                    .expect("encode clearing authorization"),
-            );
-            write_public_file(&approval_path, &approval.encode());
+            write_private_file(&operator_key_path, &operator.to_bytes());
             write_private_file(&clearing_key_path, &clearing.to_bytes());
+            write_public_file(
+                &provider_request_verifying_key_path,
+                &provider_request.verifying_key().to_bytes(),
+            );
             write_private_file(&idempotency_key_path, &idempotency_key);
+            let authorization_config = format!(
+                "authorization_id_hex = \"{}\"\n\
+                 authorization_epoch = 1\n\
+                 provider_id_hex = \"{}\"\n\
+                 issuer_id_hex = \"{}\"\n\
+                 redeem_endpoint = \"{}\"\n\
+                 redeem_leaf_spki_sha256_pins_hex = [{}]\n\
+                 settlement_account_id_hex = \"{}\"\n\
+                 clearing_verifying_key_hex = \"{}\"\n\
+                 not_before = {}\n\
+                 not_after = {}\n\
+                 [[rules]]\n\
+                 credential_binding_digest_hex = \"{}\"\n\
+                 accepted_value = 10\n\
+                 provider_credit = 9\n\
+                 issuer_fee = 1\n\
+                 denomination_profile = 1\n",
+                hex::encode([0xd0u8.wrapping_add(index); 16]),
+                hex::encode(provider_id),
+                hex::encode(issuer.issuer_id),
+                redeem_endpoint,
+                redeem_pins
+                    .iter()
+                    .map(|pin| format!("\"{}\"", hex::encode(pin)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                hex::encode(account_id),
+                hex::encode(clearing.verifying_key().to_bytes()),
+                issued_at,
+                expires_at,
+                hex::encode(binding.binding_digest().expect("shared BAT binding digest")),
+            );
+            write_public_file(&authorization_config_path, authorization_config.as_bytes());
+            let authorization_output = Command::new(&issuer.admin_binary)
+                .args([
+                    OsString::from("payment-artifact"),
+                    OsString::from("clearing-authorization"),
+                    OsString::from("--operator-signing-key"),
+                    operator_key_path.as_os_str().to_owned(),
+                    OsString::from("--config"),
+                    authorization_config_path.as_os_str().to_owned(),
+                    OsString::from("--out"),
+                    authorization_path.as_os_str().to_owned(),
+                ])
+                .stdin(Stdio::null())
+                .output()
+                .expect("run bpir-admin clearing-authorization");
+            assert_command_success("bpir-admin clearing-authorization", &authorization_output);
+            let authorization = ProviderClearingAuthorizationV1::decode(
+                &fs::read(&authorization_path).expect("read generated clearing authorization"),
+            )
+            .expect("decode generated clearing authorization");
+            let approval_output = Command::new(&issuer.admin_binary)
+                .args([
+                    OsString::from("payment-artifact"),
+                    OsString::from("clearing-approval"),
+                    OsString::from("--authorization"),
+                    authorization_path.as_os_str().to_owned(),
+                    OsString::from("--issuer-settlement-signing-key"),
+                    issuer
+                        .issuer_settlement_signing_key_path
+                        .as_os_str()
+                        .to_owned(),
+                    OsString::from("--expected-authorization-digest-hex"),
+                    OsString::from(hex::encode(
+                        authorization
+                            .authorization_digest()
+                            .expect("generated authorization digest"),
+                    )),
+                    OsString::from("--expected-provider-id-hex"),
+                    OsString::from(hex::encode(provider_id)),
+                    OsString::from("--expected-issuer-id-hex"),
+                    OsString::from(hex::encode(issuer.issuer_id)),
+                    OsString::from("--expected-operator-key-hex"),
+                    OsString::from(hex::encode(operator.verifying_key().to_bytes())),
+                    OsString::from("--minimum-authorization-epoch"),
+                    OsString::from("1"),
+                    OsString::from("--approved-at"),
+                    OsString::from(issued_at.to_string()),
+                    OsString::from("--not-after"),
+                    OsString::from(expires_at.to_string()),
+                    OsString::from("--out"),
+                    approval_path.as_os_str().to_owned(),
+                ])
+                .stdin(Stdio::null())
+                .output()
+                .expect("run bpir-admin clearing-approval");
+            assert_command_success("bpir-admin clearing-approval", &approval_output);
+            IssuerClearingApprovalV1::decode(
+                &fs::read(&approval_path).expect("read generated clearing approval"),
+            )
+            .expect("decode generated clearing approval")
+            .verify_for(
+                &authorization,
+                &issuer.settlement_signing_key.verifying_key(),
+                issued_at,
+                1,
+            )
+            .expect("self-verified CLI clearing approval");
             (
                 offer,
                 Some(SharedProviderConfig {
+                    authorization_epoch: 1,
                     authorization_path,
                     approval_path,
+                    operator_key_path,
                     operator_verifying_key: operator.verifying_key(),
                     issuer_settlement_verifying_key: issuer.settlement_signing_key.verifying_key(),
                     clearing_key_path,
+                    provider_request_verifying_key_path,
                     idempotency_key_path,
                     proof,
                     account_id,
@@ -848,6 +997,163 @@ fn build_provider(
     }
 }
 
+fn rotate_shared_clearing_artifacts(
+    issuer: &mut IssuerMaterial,
+    fixture: &mut ProviderFixture,
+    now: u64,
+) -> VerifyingKey {
+    let shared = fixture.shared.as_mut().expect("shared provider config");
+    let old_settlement_key = issuer.settlement_signing_key.verifying_key();
+    assert_eq!(old_settlement_key, shared.issuer_settlement_verifying_key);
+    let old_authorization = ProviderClearingAuthorizationV1::decode(
+        &fs::read(&shared.authorization_path).expect("read old clearing authorization"),
+    )
+    .expect("decode old clearing authorization");
+    assert_eq!(old_authorization.claims.rules.len(), 1);
+    let old_rule = &old_authorization.claims.rules[0];
+
+    let issuer_root = issuer
+        .issuer_settlement_signing_key_path
+        .parent()
+        .expect("issuer settlement key parent");
+    let retained_path = issuer_root.join("settlement-verifying-v1.pub");
+    write_public_file(&retained_path, &old_settlement_key.to_bytes());
+    issuer
+        .retained_issuer_settlement_verifying_key_paths
+        .push(retained_path);
+    let rotated_settlement = SigningKey::from_bytes(&[0x39; 32]);
+    assert_ne!(
+        rotated_settlement.verifying_key().to_bytes(),
+        old_settlement_key.to_bytes()
+    );
+    let rotated_settlement_path = issuer_root.join("settlement-signing-v2.key");
+    write_private_file(&rotated_settlement_path, &rotated_settlement.to_bytes());
+
+    let provider_root = shared
+        .authorization_path
+        .parent()
+        .expect("provider authorization parent");
+    let config_path = provider_root.join("clearing-authorization-v2.toml");
+    let authorization_path = provider_root.join("clearing-authorization-v2.bin");
+    let approval_path = provider_root.join("issuer-approval-v2.bin");
+    let issued_at = now.saturating_sub(1);
+    let not_after = old_authorization.claims.not_after;
+    let config = format!(
+        "authorization_id_hex = \"{}\"\n\
+         authorization_epoch = 2\n\
+         provider_id_hex = \"{}\"\n\
+         issuer_id_hex = \"{}\"\n\
+         redeem_endpoint = \"{}\"\n\
+         redeem_leaf_spki_sha256_pins_hex = [{}]\n\
+         settlement_account_id_hex = \"{}\"\n\
+         clearing_verifying_key_hex = \"{}\"\n\
+         not_before = {}\n\
+         not_after = {}\n\
+         [[rules]]\n\
+         credential_binding_digest_hex = \"{}\"\n\
+         accepted_value = {}\n\
+         provider_credit = {}\n\
+         issuer_fee = {}\n\
+         denomination_profile = {}\n",
+        hex::encode([0xd2; 16]),
+        hex::encode(old_authorization.claims.provider_id),
+        hex::encode(old_authorization.claims.issuer_id),
+        old_authorization.claims.redeem_endpoint,
+        old_authorization
+            .claims
+            .redeem_leaf_spki_sha256_pins
+            .iter()
+            .map(|pin| format!("\"{}\"", hex::encode(pin)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        hex::encode(old_authorization.claims.settlement_account_id),
+        hex::encode(old_authorization.claims.clearing_verifying_key),
+        issued_at,
+        not_after,
+        hex::encode(old_rule.credential_binding_digest),
+        old_rule.accepted_value,
+        old_rule.provider_credit,
+        old_rule.issuer_fee,
+        old_rule.denomination_profile,
+    );
+    write_public_file(&config_path, config.as_bytes());
+    let authorization_output = Command::new(&issuer.admin_binary)
+        .args([
+            OsString::from("payment-artifact"),
+            OsString::from("clearing-authorization"),
+            OsString::from("--operator-signing-key"),
+            shared.operator_key_path.as_os_str().to_owned(),
+            OsString::from("--config"),
+            config_path.as_os_str().to_owned(),
+            OsString::from("--out"),
+            authorization_path.as_os_str().to_owned(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run rotated bpir-admin clearing-authorization");
+    assert_command_success(
+        "bpir-admin rotated clearing-authorization",
+        &authorization_output,
+    );
+    let authorization = ProviderClearingAuthorizationV1::decode(
+        &fs::read(&authorization_path).expect("read rotated clearing authorization"),
+    )
+    .expect("decode rotated clearing authorization");
+    let approval_output = Command::new(&issuer.admin_binary)
+        .args([
+            OsString::from("payment-artifact"),
+            OsString::from("clearing-approval"),
+            OsString::from("--authorization"),
+            authorization_path.as_os_str().to_owned(),
+            OsString::from("--issuer-settlement-signing-key"),
+            rotated_settlement_path.as_os_str().to_owned(),
+            OsString::from("--expected-authorization-digest-hex"),
+            OsString::from(hex::encode(
+                authorization
+                    .authorization_digest()
+                    .expect("rotated authorization digest"),
+            )),
+            OsString::from("--expected-provider-id-hex"),
+            OsString::from(hex::encode(fixture.provider_id)),
+            OsString::from("--expected-issuer-id-hex"),
+            OsString::from(hex::encode(issuer.issuer_id)),
+            OsString::from("--expected-operator-key-hex"),
+            OsString::from(hex::encode(shared.operator_verifying_key.to_bytes())),
+            OsString::from("--minimum-authorization-epoch"),
+            OsString::from("2"),
+            OsString::from("--approved-at"),
+            OsString::from(issued_at.to_string()),
+            OsString::from("--not-after"),
+            OsString::from(not_after.to_string()),
+            OsString::from("--out"),
+            approval_path.as_os_str().to_owned(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run rotated bpir-admin clearing-approval");
+    assert_command_success("bpir-admin rotated clearing-approval", &approval_output);
+    let approval = IssuerClearingApprovalV1::decode(
+        &fs::read(&approval_path).expect("read rotated issuer clearing approval"),
+    )
+    .expect("decode rotated issuer clearing approval");
+    approval
+        .verify_for(
+            &authorization,
+            &rotated_settlement.verifying_key(),
+            issued_at,
+            2,
+        )
+        .expect("verify rotated issuer clearing approval");
+
+    issuer.settlement_signing_key = rotated_settlement;
+    issuer.issuer_settlement_signing_key_path = rotated_settlement_path;
+    shared.authorization_epoch = 2;
+    shared.authorization_path = authorization_path;
+    shared.approval_path = approval_path;
+    shared.issuer_settlement_verifying_key = issuer.settlement_signing_key.verifying_key();
+    old_settlement_key
+}
+
 fn init_issuer_store(issuer: &IssuerMaterial) {
     let output = Command::new(&issuer.binary)
         .args([
@@ -921,6 +1227,12 @@ fn spawn_payment_issuer(
         OsString::from("--mutation-rate-per-minute"),
         OsString::from("1000"),
     ];
+    for retained_key_path in &issuer.retained_issuer_settlement_verifying_key_paths {
+        args.extend([
+            OsString::from("--retained-issuer-settlement-verifying-key"),
+            retained_key_path.as_os_str().to_owned(),
+        ]);
+    }
     for fixture in providers {
         let shared = fixture.shared.as_ref().expect("shared issuer provider");
         args.extend([
@@ -934,6 +1246,11 @@ fn spawn_payment_issuer(
             shared.authorization_path.as_os_str().to_owned(),
             OsString::from("--clearing-approval"),
             shared.approval_path.as_os_str().to_owned(),
+            OsString::from("--clearing-provider-request-verifying-key"),
+            shared
+                .provider_request_verifying_key_path
+                .as_os_str()
+                .to_owned(),
         ]);
     }
 
@@ -1017,7 +1334,7 @@ fn spawn_provider(
             "--service-shared-idempotency-key".to_owned(),
             shared.idempotency_key_path.to_string_lossy().into_owned(),
             "--service-shared-minimum-authorization-epoch".to_owned(),
-            "1".to_owned(),
+            shared.authorization_epoch.to_string(),
             "--test-only-service-https-root-pem".to_owned(),
             test_root.to_string_lossy().into_owned(),
         ]);
@@ -1357,6 +1674,53 @@ fn assert_issuer_ledger(
     assert_eq!(inventory.payout_rows, 0);
 }
 
+fn read_signed_ledger_balance(
+    fixture: &ProviderFixture,
+    test_root: &Path,
+    nonce: [u8; 32],
+    retained_issuer_settlement_keys: Vec<VerifyingKey>,
+) -> pir_service_protocol::IssuerBalanceResponseV1 {
+    let shared = fixture.shared.as_ref().expect("shared provider config");
+    let authorization_bytes = fs::read(&shared.authorization_path)
+        .expect("read generated provider clearing authorization");
+    let authorization = ProviderClearingAuthorizationV1::decode(&authorization_bytes)
+        .expect("decode generated provider clearing authorization");
+    assert_eq!(authorization.encode().unwrap(), authorization_bytes);
+    let approval_bytes =
+        fs::read(&shared.approval_path).expect("read generated issuer clearing approval");
+    let approval = IssuerClearingApprovalV1::decode(&approval_bytes)
+        .expect("decode generated issuer clearing approval");
+    assert_eq!(approval.encode(), approval_bytes);
+    let clearing_bytes: [u8; 32] = fs::read(&shared.clearing_key_path)
+        .expect("read provider clearing signing key")
+        .try_into()
+        .expect("provider clearing signing key length");
+    let transport = StrictHttpsProviderSettlementTransportV1::new_with_test_only_webpki_root_pem(
+        authorization.claims.redeem_endpoint.clone(),
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        &authorization.claims.redeem_leaf_spki_sha256_pins,
+        &fs::read(test_root).expect("read private test WebPKI root"),
+    )
+    .expect("construct pinned test-only ledger transport");
+    let client = ProviderLedgerBalanceClientV1::new(
+        ProviderLedgerBalanceTrustV1 {
+            authorization,
+            issuer_approval: approval,
+            operator_verifying_key: shared.operator_verifying_key,
+            minimum_authorization_epoch: shared.authorization_epoch,
+            current_issuer_settlement_key: shared.issuer_settlement_verifying_key,
+            retained_issuer_settlement_keys,
+        },
+        SigningKey::from_bytes(&clearing_bytes),
+        &transport,
+    )
+    .expect("construct ledger-only balance client from generated artifacts");
+    client
+        .balance(nonce, unix_now())
+        .expect("fetch and verify issuer-signed ledger balance")
+}
+
 fn assert_server_log(stdout: &str, stderr: &str, port: u16, fixture: &ProviderFixture) {
     assert!(stdout.contains(&format!("Listening on ws://127.0.0.1:{port}")));
     assert!(stdout.contains("Service admission V1: enforced"));
@@ -1496,7 +1860,17 @@ fn serve_one_tls_edge_request(
     let connection = ServerConnection::new(config).map_err(io::Error::other)?;
     let mut tls = StreamOwned::new(connection, socket);
     let request = read_bounded_http_request(&mut tls)?;
-    let transcript = validate_canonical_redeem_request(&request)?;
+    let is_redeem = request.starts_with(b"POST /v1/redeems HTTP/1.1\r\n");
+    let is_balance = request.starts_with(b"POST /v1/settlement/balance HTTP/1.1\r\n");
+    if !is_redeem && !is_balance {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS edge accepts only issuer redeem and signed balance routes",
+        ));
+    }
+    let transcript = is_redeem
+        .then(|| validate_canonical_redeem_request(&request))
+        .transpose()?;
 
     let mut upstream = TcpStream::connect_timeout(&upstream_address, TLS_IO_TIMEOUT)?;
     upstream.set_read_timeout(Some(TLS_IO_TIMEOUT))?;
@@ -1516,17 +1890,19 @@ fn serve_one_tls_edge_request(
             "issuer response is empty or exceeded the proxy bound",
         ));
     }
-    let canonical_success =
-        validate_canonical_redeem_success_response(&response, &transcript.request_digest)?;
-    append_redeem_transcript_digests(transcript_path, transcript)?;
-    if canonical_success && mark_drop_success_response_once(drop_success_once_path)? {
-        // The complete issuer success response proves the redeem commit escaped
-        // the application boundary. Drop the downstream TLS stream without
-        // forwarding one response, modeling an outcome-unknown network loss.
-        return Err(io::Error::new(
-            io::ErrorKind::ConnectionAborted,
-            "test-only committed issuer response loss",
-        ));
+    if let Some(transcript) = transcript {
+        let canonical_success =
+            validate_canonical_redeem_success_response(&response, &transcript.request_digest)?;
+        append_redeem_transcript_digests(transcript_path, transcript)?;
+        if canonical_success && mark_drop_success_response_once(drop_success_once_path)? {
+            // The complete issuer success response proves the redeem commit escaped
+            // the application boundary. Drop the downstream TLS stream without
+            // forwarding one response, modeling an outcome-unknown network loss.
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "test-only committed issuer response loss",
+            ));
+        }
     }
     tls.write_all(&response)?;
     tls.flush()?;
@@ -1848,6 +2224,23 @@ fn required_payment_issuer_binary() -> PathBuf {
         0,
         "payment-issuer is not executable"
     );
+    path
+}
+
+fn required_bpir_admin_binary() -> PathBuf {
+    let path = PathBuf::from(
+        env::var_os("BITCOINPIR_BPIR_ADMIN_BIN")
+            .expect("BITCOINPIR_BPIR_ADMIN_BIN must name a debug bpir-admin binary"),
+    );
+    assert!(
+        path.is_absolute(),
+        "BITCOINPIR_BPIR_ADMIN_BIN must be absolute"
+    );
+    let metadata = fs::symlink_metadata(&path)
+        .unwrap_or_else(|error| panic!("inspect bpir-admin binary {}: {error}", path.display()));
+    assert!(!metadata.file_type().is_symlink());
+    assert!(metadata.file_type().is_file());
+    assert_ne!(metadata.mode() & 0o111, 0, "bpir-admin is not executable");
     path
 }
 

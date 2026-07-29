@@ -345,6 +345,35 @@ as needed), or publish a deliberately reviewed future protocol version with an
 authenticated policy-key succession proof.
 
 V1 also loads only one shared-issuer clearing authorization per provider.
+Create it with the offline provider-operator builder, transfer its printed
+digest independently, and have the issuer run the separate approval builder.
+Provision a fourth, raw provider-request public key in the same list position;
+it must differ from clearing, operator and issuer-settlement keys. Ledger-only
+balance reads use the clearing key and need no payout registration, but the
+issuer still persists the distinct request key so a future payout/status
+workflow cannot inherit collapsed signature domains. Rotation requires a
+strictly higher authorization epoch and a new issuer approval; retain an old
+issuer settlement public key only for exact historical recovery.
+
+This retained issuer key is not a retained provider authorization. The shipped
+`unified_server` constructs one `SharedIssuerAdmissionCommitterV1` from the one
+current clearing authorization, approval and issuer endpoint/pin tuple; it has
+no keyring of old clearing authorizations and cannot reconstruct an
+outcome-unknown redeem made under an authorization that has since been
+replaced. The issuer can replay exact previously committed request bytes under
+their original idempotency key, but that server-side property is useful only
+while the provider can still reproduce and authenticate that exact request.
+Therefore V1 clearing-authorization, clearing-key or settlement-key rotation is
+a drain boundary: stop new shared-issuer admission, let every in-flight redeem
+reach a known local-delivery result, reconcile every ambiguous operation, and
+only then replace the authorization/approval and restart. If an outcome remains
+unknown, keep the old provider instance and complete its exact recovery before
+rotation or fail closed and handle it as an accounting incident. Do not claim
+that retained settlement keys make rolling shared-authorization rotation or
+cross-rotation provider recovery safe. A future retained-authorization client
+requires a separately reviewed bounded keyring, endpoint/pin lifetime rules and
+tests; V1 does not provide it.
+
 Certificate-key rotation at the same issuer origin must use a newly
 operator-signed and issuer-approved two-pin overlap, followed by removal of the
 old pin in a later higher authorization epoch. Do not change the signed issuer
