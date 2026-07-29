@@ -100,6 +100,27 @@ describe('strict PIR result release', () => {
     );
   });
 
+  it('freezes planner demand before offer selection and recomputes it at execution', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const prepare = html.slice(
+      html.indexOf('async function prepareProductAdmission'),
+      html.indexOf('async function runProductAdmissionQuery'),
+    );
+    const run = html.slice(
+      html.indexOf('async function runProductAdmissionQuery'),
+      html.indexOf('/** Pick n random elements'),
+    );
+    expect(prepare).toContain('installPreparedProductQueryShapes(kind, controller)');
+    expect(run).toContain('installPreparedProductQueryShapes(kind, controller)');
+    expect(run).toContain('currentProductQueryShapes(kind, controller)');
+    expect(run.indexOf('currentProductQueryShapes(kind, controller)')).toBeLessThan(
+      run.indexOf('query,\n'),
+    );
+    expect(run.indexOf('setAdmissionQueryControlsFrozen(kind, true)')).toBeLessThan(
+      run.indexOf('prepareProductAdmission(kind)'),
+    );
+  });
+
   it('rejects Onion/ORAM database selector drift before a paid operation starts', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const onion = html.slice(
