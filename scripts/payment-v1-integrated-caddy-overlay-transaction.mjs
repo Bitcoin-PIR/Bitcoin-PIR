@@ -736,6 +736,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
   let candidateSnapshot;
   let prepared = false;
   let exchanged = false;
+  let exchangedRecorded = false;
   let previousPhase = "prepared";
   let context;
   let durableCommitReceipt;
@@ -858,7 +859,6 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       plan,
     });
     exchanged = true;
-    previousPhase = "exchanged";
     const installation = installationRecord(plan);
     context.installation = installation;
     await writeState(
@@ -867,6 +867,8 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       stateRecord(plan, approvedPlanSha256, "exchanged", "prepared", { installation }),
       stateDirectorySeal,
     );
+    exchangedRecorded = true;
+    previousPhase = "exchanged";
 
     const reloadResult = await ops.run(plan.transaction.reload_argv, {
       captureStdout: false,
@@ -961,7 +963,6 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     );
     return receipt;
   } catch (error) {
-    if (error instanceof OverlayOutcomeUnknownError) throw error;
     if (durableCommitReceipt !== undefined) {
       throw new OverlayTransactionError(
         `committed receipt is durable; explicit recovery must finalize cleanup: ${error.message}`,
@@ -970,6 +971,13 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
           phase: "commit-finalization-failed",
           receipt: durableCommitReceipt,
         },
+      );
+    }
+    if (error instanceof OverlayOutcomeUnknownError) throw error;
+    if (exchanged && !exchangedRecorded) {
+      throw outcomeUnknown(
+        `installed Caddyfile pair has no durable exchanged phase; explicit recovery is required: ${error.message}`,
+        error,
       );
     }
     if (!exchanged) {
@@ -982,15 +990,16 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
             stateDirectorySeal,
           );
         } catch (abortFinalizationError) {
-          // Never remove the candidate when the abort record's publication
-          // cannot be classified. Preserve the initiating failure as primary
-          // and attach the recovery requirement as secondary evidence.
-          if (abortFinalizationError instanceof OverlayOutcomeUnknownError) {
+          // A durable prepared root requires either its exact candidate or a
+          // durable abort record. Preserve the candidate on every abort-state
+          // failure, even when publication is proven not to have happened, so
+          // explicit recovery can append the missing terminal phase.
+          try {
             error.abortFinalizationError = abortFinalizationError;
-            throw error;
+          } catch {
+            attachCleanupError(error, abortFinalizationError);
           }
-          // A proven-not-published abort record does not change the exact
-          // pre-install file pair, so candidate cleanup remains safe below.
+          throw error;
         }
       }
       if (candidateSnapshot !== undefined) {
@@ -1000,16 +1009,24 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
             candidateSnapshot,
             plan.target.config_parent,
           );
-        } catch {
-          // Never mask the primary failure or remove an entry that is no longer ours.
+        } catch (cleanupError) {
+          // Never mask the initiating failure, but retain exact evidence that
+          // recovery may still need to remove the transaction candidate.
+          attachCleanupError(error, cleanupError);
         }
       }
-      throw error instanceof OverlayTransactionError
+      const reported = error instanceof OverlayTransactionError
         ? error
         : new OverlayTransactionError(
             `integrated Caddy transaction aborted before installation: ${error.message}`,
             { cause: error, phase: "pre-install" },
           );
+      if (reported !== error) {
+        for (const cleanupError of error?.cleanupErrors ?? []) {
+          attachCleanupError(reported, cleanupError);
+        }
+      }
+      throw reported;
     }
     try {
       const receipt = await rollbackInstalled({
@@ -2519,10 +2536,24 @@ export function acquireFilesystemLock(
         );
       }
     } catch (error) {
-      const observed = realReadOptionalRegular(ownerPath);
-      if (observed === null || !observed.bytes.equals(ownerBytes)) throw error;
-      ownerOnlyRecordShape(observed.snapshot, ownerPath, "lock owner");
-      fsyncParent(ownerPath, lockDirectorySeal);
+      let observed;
+      try {
+        observed = realReadOptionalRegular(ownerPath);
+        if (observed === null) throw error;
+        if (!observed.bytes.equals(ownerBytes)) {
+          fail("visible lock owner bytes disagree after a failed atomic publication");
+        }
+        ownerOnlyRecordShape(observed.snapshot, ownerPath, "lock owner");
+        fsyncParent(ownerPath, lockDirectorySeal);
+      } catch (classificationError) {
+        if (classificationError === error) throw error;
+        const unknown = outcomeUnknown(
+          `lock owner publication outcome is unknown; explicit stale-lock recovery is required: ${classificationError.message}`,
+          error,
+        );
+        unknown.publicationClassificationError = classificationError;
+        throw unknown;
+      }
     }
     const published = realReadRegular(ownerPath, 64 * 1024);
     ownerOnlyRecordShape(published.snapshot, ownerPath, "published lock owner");

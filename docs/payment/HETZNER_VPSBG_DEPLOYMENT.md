@@ -620,7 +620,13 @@ fsync. Recovery treats a truncated pending inode as non-authoritative, validates
 the complete proposed predecessor chain before publishing a valid pending
 record, and first fsyncs and stably rereads all visible phase names before any
 of them can authorize a recovery mutation. Recovery is idempotent on later
-invocations. The lock owner is also
+invocations. Execution likewise does not permit an automatic rollback until
+the installed pair's `exchanged` predecessor is durable. If that phase cannot
+be published, the exact installed pair and candidate are left for explicit
+recovery to classify and journal. Any failure to publish
+`aborted-before-install` also preserves the candidate until recovery can append
+that terminal phase; cleanup errors remain attached to the initiating error.
+The lock owner is also
 published atomically from `owner.json.pending`; a live pending owner blocks
 recovery, while an exact dead process generation can be reclaimed. Mutable
 `adapted`, `backups`, `receipts`, `transactions` and per-transaction directory
@@ -639,6 +645,8 @@ unknown pair is `outcome-unknown`. That state forbids automatic rollback,
 terminal receipt creation and candidate cleanup and requires explicit recovery.
 Likewise, a final receipt that is merely visible after a reported publication
 error is not durable until a supplemental parent fsync and exact reread succeed.
+A durable committed receipt remains attached to any later phase-finalization
+error and therefore continues to prohibit rollback.
 
 On any post-install failure, rollback uses the same exchange helper and verifies
 both restored preimage and swapped-out candidate before the second reload. The

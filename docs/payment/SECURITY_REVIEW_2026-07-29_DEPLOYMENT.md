@@ -295,13 +295,20 @@ parent fsync. Recovery supplementally fsyncs and stably rereads the complete
 visible phase journal before it can authorize a file-pair mutation. A visible
 final receipt is not durable evidence until its parent
 fsync and root:root/mode-0400/single-link metadata are reconfirmed. Prepared
-state binds every mutable transaction directory identity across recovery. The
+state binds every mutable transaction directory identity across recovery.
+Automatic rollback is forbidden until the installed pair's `exchanged`
+predecessor is durable, and any failed abort-state publication preserves its
+candidate for explicit recovery. A durable committed receipt remains attached
+to later journal-finalization errors, while non-terminal cleanup errors remain
+secondary evidence rather than masking the initiating failure. The
 rename helper installs a parent-death signal before mutation; the tested delayed
 child cannot rename after its supervisor dies, while an already in-flight atomic
 rename remains subject to the exact-pair classification above. Real Linux fault
 tests cover open, partial/complete write,
 file fsync, rename, parent fsync, applied-then-error, parent death and repeated
-recovery boundaries. These are source/test properties, not host activation
+recovery boundaries. The root-only publication and lock suites run under the
+CI root invocation rather than being accepted as skipped tests. These are
+source/test properties, not host activation
 evidence.
 
 After source merge, an independent read-only audit of merge

@@ -90,7 +90,9 @@ class MockOverlayOps {
     this.failReceiptAfterPublish = false;
     this.failFsyncParentAlways = false;
     this.failFsyncParentPathSuffix = null;
+    this.failRemovePath = null;
     this.failStateAfterPublishPhase = null;
+    this.failStateBeforePublishPhase = null;
     this.raceTargetBeforeFirstExchange = false;
     this.raceTargetBeforeExchangeNumber = null;
     this.racedTargetSnapshot = null;
@@ -315,6 +317,10 @@ class MockOverlayOps {
   async removeIfExact(path, expected) {
     const file = this.files.get(path);
     if (!file) return;
+    if (path === this.failRemovePath) {
+      this.failRemovePath = null;
+      throw new Error(`mock exact removal failed: ${path}`);
+    }
     for (const key of ["device", "gid", "inode", "mode", "mtime_ns", "nlink", "sha256", "size", "uid"]) {
       assert.equal(file.snapshot[key], expected[key], `cleanup pin ${key}`);
     }
@@ -387,6 +393,11 @@ class MockOverlayOps {
   }
 
   async writeState(directory, filename, bytes) {
+    const phase = JSON.parse(Buffer.from(bytes).toString("utf8")).phase;
+    if (phase === this.failStateBeforePublishPhase) {
+      this.failStateBeforePublishPhase = null;
+      throw new Error(`mock phase ${phase} failed before publish`);
+    }
     const pendingName = `${filename}.pending`;
     if (this.state.has(filename) || this.state.has(pendingName)) {
       const error = new Error(`state exists: ${filename}`);
@@ -398,7 +409,6 @@ class MockOverlayOps {
     const finalPath = `${directory}/${filename}`;
     this.#store(pendingPath, bytes, "0400");
     await this.publishPendingState(pendingPath, finalPath);
-    const phase = JSON.parse(Buffer.from(bytes).toString("utf8")).phase;
     if (phase === this.failStateAfterPublishPhase) {
       throw new Error(`mock phase ${phase} helper failed after publish`);
     }
@@ -603,6 +613,156 @@ test("abort-finalization uncertainty preserves the initiating error and candidat
   assert.equal(ops.files.has(plan.transaction.candidate_path), true);
   assert.equal(ops.exchangeHistory.length, 0);
   assert.equal(ops.reloadCalls, 0);
+});
+
+test("a fail-before-publish exchanged phase defers rollback to idempotent recovery", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  ops.failStateBeforePublishPhase = "exchanged";
+
+  await assert.rejects(
+    executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
+    (error) => {
+      assert.equal(error.name, "OverlayOutcomeUnknownError");
+      assert.match(error.message, /installed Caddyfile pair has no durable exchanged phase/);
+      return true;
+    },
+  );
+
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.prepared), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.exchanged), false);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.files.has(plan.transaction.receipt_path), false);
+  assert.equal(
+    ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256,
+    plan.managed_block.candidate_sha256,
+  );
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const receipt = await recoverOverlayTransaction({ approvedPlanSha256, ops, plan });
+    assert.equal(receipt.outcome, "rolled-back", `attempt ${attempt}`);
+  }
+  assert.equal(ops.exchangeHistory.length, 2);
+  assert.equal(ops.reloadCalls, 1);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.exchanged), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rollbackExchanged), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rolledBack), true);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), false);
+});
+
+test("a fail-before-publish abort phase preserves its candidate for idempotent recovery", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  ops.failExchangeBeforeApplyNumber = 1;
+  ops.failStateBeforePublishPhase = "aborted-before-install";
+
+  await assert.rejects(
+    executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
+    (error) => {
+      assert.equal(error.phase, "install-exchange-not-applied");
+      assert.match(error.abortFinalizationError?.message ?? "", /failed before publish/);
+      return true;
+    },
+  );
+
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.prepared), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), false);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await recoverOverlayTransaction({ approvedPlanSha256, ops, plan });
+    assert.equal(result.outcome, "aborted-before-install", `attempt ${attempt}`);
+  }
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), true);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), false);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("a candidate cleanup failure remains attached to the initiating error", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  ops.failExchangeBeforeApplyNumber = 1;
+  ops.failRemovePath = plan.transaction.candidate_path;
+
+  await assert.rejects(
+    executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
+    (error) => {
+      assert.equal(error.phase, "install-exchange-not-applied");
+      assert.equal(error.cleanupErrors?.length, 1);
+      assert.match(error.cleanupErrors[0].message, /mock exact removal failed/);
+      return true;
+    },
+  );
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), true);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+
+  const result = await recoverOverlayTransaction({ approvedPlanSha256, ops, plan });
+  assert.equal(result.outcome, "aborted-before-install");
+  assert.equal(ops.files.has(plan.transaction.candidate_path), false);
+});
+
+test("a wrapped pre-install error retains its candidate cleanup failure", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  ops.failStateBeforePublishPhase = "prepared";
+  ops.failRemovePath = plan.transaction.candidate_path;
+
+  await assert.rejects(
+    executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
+    (error) => {
+      assert.equal(error.phase, "pre-install");
+      assert.equal(error.cleanupErrors?.length, 1);
+      assert.match(error.cleanupErrors[0].message, /mock exact removal failed/);
+      return true;
+    },
+  );
+  assert.equal(ops.state.size, 0);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+
+  const result = await recoverOverlayTransaction({ approvedPlanSha256, ops, plan });
+  assert.equal(result.outcome, "aborted-before-install");
+  assert.equal(ops.files.has(plan.transaction.candidate_path), false);
+});
+
+test("a durable committed receipt remains attached when terminal state durability is unknown", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  ops.failStateAfterPublishPhase = "committed";
+  ops.failFsyncParentPathSuffix = OVERLAY_STATE_FILES.committed;
+
+  await assert.rejects(
+    executeOverlayTransaction({ approvedPlanSha256, ops, plan }),
+    (error) => {
+      assert.equal(error.phase, "commit-finalization-failed");
+      assert.equal(error.receipt?.outcome, "committed");
+      assert.equal(error.cause?.name, "OverlayOutcomeUnknownError");
+      return true;
+    },
+  );
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 1);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), true);
+  assert.equal(ops.files.has(plan.transaction.receipt_path), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rolledBack), false);
+
+  ops.failStateAfterPublishPhase = null;
+  ops.failFsyncParentPathSuffix = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const receipt = await recoverOverlayTransaction({ approvedPlanSha256, ops, plan });
+    assert.equal(receipt.outcome, "committed", `attempt ${attempt}`);
+  }
+  assert.equal(ops.exchangeHistory.length, 1);
+  assert.equal(ops.reloadCalls, 1);
+  assert.equal(ops.files.has(plan.transaction.candidate_path), false);
 });
 
 test("post-install health failure exchanges back, reloads and writes rolled-back receipt", async () => {

@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
+import fs, {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -43,6 +45,28 @@ function regularPin(path) {
     size: stat.size.toString(),
     uid: Number(stat.uid),
   };
+}
+
+function compileHelper(root, name, definitions = []) {
+  const helper = join(root, name);
+  const compile = spawnSync(
+    process.env.CC ?? "cc",
+    [
+      "-std=c11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      ...definitions,
+      join(SCRIPT_DIRECTORY, "payment-v1-integrated-caddy-rename-exchange.c"),
+      "-o",
+      helper,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(compile.status, 0, compile.stderr);
+  chmodSync(helper, 0o555);
+  return helper;
 }
 
 test("filesystem lock distinguishes a live holder from an exact stale process generation", {
@@ -174,4 +198,84 @@ test("production lock owner uses the pinned no-replace helper", {
   assert.equal(existsSync(join(lock, "owner.json")), true);
   assert.equal(existsSync(join(lock, "owner.json.pending")), false);
   await release();
+});
+
+test("production lock owner classifies a helper error after atomic publication", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and renameat2 semantics are required",
+}, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-applied-error-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const helper = compileHelper(
+    root,
+    "payment-v1-rename-fail-after",
+    ["-DPAYMENT_V1_TEST_FAIL_AFTER_RENAME=1"],
+  );
+  const lock = join(root, "transaction.lock");
+  const release = acquireFilesystemLock(lock, {
+    helperPin: regularPin(helper),
+    recoverStale: false,
+    transactionId: "lock-applied-error-test",
+  });
+  assert.equal(existsSync(join(lock, "owner.json")), true);
+  assert.equal(existsSync(join(lock, "owner.json.pending")), false);
+  await release();
+});
+
+test("production lock owner fails closed when supplemental parent fsync is unprovable", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and renameat2 semantics are required",
+}, (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-fsync-error-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const helper = compileHelper(
+    root,
+    "payment-v1-rename-fail-after",
+    ["-DPAYMENT_V1_TEST_FAIL_AFTER_RENAME=1"],
+  );
+  const lock = join(root, "transaction.lock");
+  const originalFsyncSync = fs.fsyncSync;
+  let lockDirectoryFsyncs = 0;
+  fs.fsyncSync = (fd) => {
+    let descriptorPath = null;
+    try {
+      descriptorPath = readlinkSync(`/proc/self/fd/${fd}`);
+    } catch {
+      // Preserve the real fsync behavior for descriptors without procfs names.
+    }
+    if (descriptorPath === lock) {
+      lockDirectoryFsyncs += 1;
+      if (lockDirectoryFsyncs === 2) {
+        const error = new Error("injected supplemental lock parent fsync failure");
+        error.code = "EIO";
+        throw error;
+      }
+    }
+    return originalFsyncSync(fd);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => acquireFilesystemLock(lock, {
+        helperPin: regularPin(helper),
+        recoverStale: false,
+        transactionId: "lock-fsync-error-test",
+      }),
+      (error) => {
+        assert.equal(error.name, "OverlayOutcomeUnknownError");
+        assert.match(error.message, /lock owner publication outcome is unknown/);
+        assert.match(
+          error.publicationClassificationError?.message ?? "",
+          /injected supplemental lock parent fsync failure/,
+        );
+        return true;
+      },
+    );
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+    syncBuiltinESMExports();
+  }
+  assert.equal(lockDirectoryFsyncs, 2);
+  assert.equal(existsSync(join(lock, "owner.json")), true);
+  assert.equal(existsSync(join(lock, "owner.json.pending")), false);
 });

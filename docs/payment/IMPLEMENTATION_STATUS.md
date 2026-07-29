@@ -897,9 +897,16 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       fsync and stable exact-pair classification; unknown outcomes prohibit
       rollback, receipt terminalization and cleanup. Mutable transaction
       directory identities and final receipt ownership metadata are sealed
-      across recovery, and the helper is parent-death bound.
+      across recovery, and the helper is parent-death bound. An installed pair
+      cannot enter automatic rollback until its `exchanged` phase is durable;
+      failed abort publication preserves the candidate recovery witness;
+      cleanup failures remain attached to the primary error; and a durable
+      committed receipt remains attached through terminal-phase finalization
+      failure.
       Mock failure-window tests and real Linux open/write/fsync/rename,
       applied-then-error, SIGKILL/late-helper and repeated-recovery tests pass.
+      The root-only lock/publication suites are routed through the CI root
+      invocation so these cases cannot be silently skipped.
       This does
       not harden the existing root Caddy global/admin/ACME/journal domain, does
       not replace cold edge evidence, and is not deployable on the currently
