@@ -34,6 +34,13 @@ const SOURCE_FAIR_RUNTIME = "/run/bitcoinpir-source-fair-edge";
 const TARGET_UNIT = "bhtm-caddy.service";
 const TARGET_FRAGMENT = "/etc/systemd/system/bhtm-caddy.service";
 const TARGET_CONFIG = "/etc/caddy/Caddyfile";
+const ADMIN_UDS_PROFILE = "bhtm-caddy-admin-uds-v1";
+const ADMIN_UDS_ROOT = "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds";
+const ADMIN_UDS_LISTEN = "unix//run/bitcoinpir-caddy-admin/admin.sock|0200";
+const ADMIN_UDS_DIAL = "unix//run/bitcoinpir-caddy-admin/admin.sock";
+const ADMIN_UDS_PROBE =
+  "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs";
+const SETPRIV_BINARY = "/usr/bin/setpriv";
 const LOCK_PATH =
   "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock";
 const TRANSACTION_ROOT =
@@ -559,7 +566,14 @@ function validateSourceFair(value) {
 function validateTarget(value) {
   exactKeys(
     value,
-    ["binary", "config_parent", "config_preimage", "unit_fragment", "unit_generation"],
+    [
+      "admin_uds_hardening",
+      "binary",
+      "config_parent",
+      "config_preimage",
+      "unit_fragment",
+      "unit_generation",
+    ],
     "target",
   );
   validateRegularPin(value.binary, "target.binary", {
@@ -591,6 +605,86 @@ function validateTarget(value) {
     canReload: "yes",
     unitName: TARGET_UNIT,
   });
+  validateAdminUdsHardening(value.admin_uds_hardening, value);
+}
+
+function validateAdminUdsHardening(value, target) {
+  exactKeys(
+    value,
+    [
+      "admin_listen",
+      "all_service_uids_denied",
+      "approved_plan_sha256",
+      "binary_sha256",
+      "cold_new_generation",
+      "config_sha256",
+      "deployment_profile",
+      "plan",
+      "receipt",
+      "runtime_directory",
+      "runtime_directory_mode",
+      "setpriv_binary_sha256",
+      "service_uid_inventory_sha256",
+      "socket_mode",
+      "socket_path",
+      "tcp_admin_absent",
+      "transaction_id",
+      "unit_invocation_id",
+      "unit_sha256",
+    ],
+    "target.admin_uds_hardening",
+  );
+  if (value.deployment_profile !== ADMIN_UDS_PROFILE) {
+    fail(`target.admin_uds_hardening.deployment_profile must equal ${ADMIN_UDS_PROFILE}`);
+  }
+  validateSlug(value.transaction_id, "target.admin_uds_hardening.transaction_id");
+  validateSha256(value.approved_plan_sha256, "target.admin_uds_hardening.approved_plan_sha256");
+  validateSha256(
+    value.service_uid_inventory_sha256,
+    "target.admin_uds_hardening.service_uid_inventory_sha256",
+  );
+  validateSha256(
+    value.setpriv_binary_sha256,
+    "target.admin_uds_hardening.setpriv_binary_sha256",
+  );
+  const receiptPath = `${ADMIN_UDS_ROOT}/receipts/${value.transaction_id}.json`;
+  const planPath = `${ADMIN_UDS_ROOT}/plans/${value.transaction_id}.json`;
+  validateRegularPin(value.plan, "target.admin_uds_hardening.plan", {
+    paths: [planPath],
+    modes: ["0400"],
+  });
+  if (value.plan.sha256 !== value.approved_plan_sha256) {
+    fail("target.admin_uds_hardening.plan must equal the approved canonical plan digest");
+  }
+  validateRegularPin(value.receipt, "target.admin_uds_hardening.receipt", {
+    paths: [receiptPath],
+    modes: ["0400"],
+  });
+  for (const [key, expected] of [
+    ["binary_sha256", target.binary.sha256],
+    ["config_sha256", target.config_preimage.sha256],
+    ["unit_sha256", target.unit_fragment.sha256],
+    ["unit_invocation_id", target.unit_generation.invocation_id],
+  ]) {
+    if (value[key] !== expected) {
+      fail(`target.admin_uds_hardening.${key} must equal the overlay target preimage`);
+    }
+  }
+  const exact = {
+    admin_listen: ADMIN_UDS_LISTEN,
+    all_service_uids_denied: true,
+    cold_new_generation: true,
+    runtime_directory: "/run/bitcoinpir-caddy-admin",
+    runtime_directory_mode: "0700",
+    socket_mode: "0200",
+    socket_path: "/run/bitcoinpir-caddy-admin/admin.sock",
+    tcp_admin_absent: true,
+  };
+  for (const [key, expected] of Object.entries(exact)) {
+    if (value[key] !== expected) {
+      fail(`target.admin_uds_hardening.${key} must equal ${String(expected)}`);
+    }
+  }
 }
 
 function validateRuntime(value) {
@@ -599,15 +693,25 @@ function validateRuntime(value) {
     [
       "exchange_helper",
       "exchange_manifest",
+      "admin_probe",
       "executor",
       "gate",
       "managed_block",
       "node_binary",
+      "setpriv_binary",
     ],
     "runtime",
   );
   validateRegularPin(value.node_binary, "runtime.node_binary", {
     paths: ["/usr/bin/node"],
+    modes: ["0555", "0755"],
+  });
+  validateRegularPin(value.admin_probe, "runtime.admin_probe", {
+    paths: [ADMIN_UDS_PROBE],
+    modes: ["0555", "0755"],
+  });
+  validateRegularPin(value.setpriv_binary, "runtime.setpriv_binary", {
+    paths: [SETPRIV_BINARY],
     modes: ["0555", "0755"],
   });
   validateRegularPin(value.gate, "runtime.gate", {
@@ -650,13 +754,25 @@ function validateRuntime(value) {
 function validateManagedBlock(value) {
   exactKeys(
     value,
-    ["candidate_sha256", "placeholders", "rendered_sha256", "source_path", "source_sha256"],
+    [
+      "candidate_adapted_json_sha256",
+      "candidate_sha256",
+      "placeholders",
+      "rendered_sha256",
+      "source_path",
+      "source_sha256",
+    ],
     "managed_block",
   );
   if (value.source_path !== MANAGED_BLOCK_SOURCE) {
     fail(`managed_block.source_path must equal ${MANAGED_BLOCK_SOURCE}`);
   }
-  for (const key of ["source_sha256", "rendered_sha256", "candidate_sha256"]) {
+  for (const key of [
+    "source_sha256",
+    "rendered_sha256",
+    "candidate_sha256",
+    "candidate_adapted_json_sha256",
+  ]) {
     validateSha256(value[key], `managed_block.${key}`);
   }
   exactKeys(value.placeholders, PLACEHOLDER_NAMES, "managed_block.placeholders");
@@ -917,6 +1033,7 @@ function validateTrustAcknowledgements(value) {
     "existing_preimage_remains_authoritative",
     "existing_root_caddy_retains_admin_acme_and_journal_trust",
     "existing_root_caddy_expands_failure_domain",
+    "fresh_admin_runtime_probes_required_before_and_after_reload",
     "reload_does_not_refresh_cold_runtime_evidence",
   ];
   exactKeys(value, keys, "trust_acknowledgements");
@@ -953,6 +1070,12 @@ export function validateOverlayPlan(plan) {
   validateSourceFair(plan.source_fair);
   validateRuntime(plan.runtime);
   validateTarget(plan.target);
+  if (
+    plan.runtime.setpriv_binary.sha256 !==
+    plan.target.admin_uds_hardening.setpriv_binary_sha256
+  ) {
+    fail("overlay runtime setpriv binary must equal the approved hardening setpriv digest");
+  }
   validateManagedBlock(plan.managed_block);
   if (plan.runtime.managed_block.sha256 !== plan.managed_block.rendered_sha256) {
     fail("runtime managed block must equal the reviewed rendered block digest");
@@ -1146,12 +1269,218 @@ export function buildOverlayCandidate({
   };
 }
 
-function validateReceiptSnapshot(snapshot, label, plan, expectedConfigSha256) {
+function expectedCaddyEffectiveUnit(plan, environmentNames) {
+  const binary = plan.target.binary.path;
+  return {
+    dropin_paths: [],
+    environment_names: environmentNames,
+    environment_files: [],
+    exec_reload: {
+      argv: `${binary} reload --config ${TARGET_CONFIG} --adapter caddyfile --address ${ADMIN_UDS_DIAL}`,
+      ignore_errors: "no",
+      path: binary,
+    },
+    exec_start: {
+      argv: `${binary} run --config ${TARGET_CONFIG} --adapter caddyfile`,
+      ignore_errors: "no",
+      path: binary,
+    },
+    fragment_path: plan.target.unit_fragment.path,
+    group: "root",
+    need_daemon_reload: "no",
+    pass_environment: [],
+    runtime_directory: ["bitcoinpir-caddy-admin"],
+    runtime_directory_mode: "0700",
+    runtime_directory_preserve: "no",
+    umask: "0077",
+    unset_environment: ["CADDY_ADMIN"],
+    user: "root",
+  };
+}
+
+function validateCaddyEffectiveUnit(value, label, plan) {
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    !Array.isArray(value.environment_names) ||
+    value.environment_names.length > 512 ||
+    value.environment_names.includes("CADDY_ADMIN") ||
+    value.environment_names.some(
+      (name, index, names) =>
+        typeof name !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+        (index > 0 && names[index - 1] >= name),
+    )
+  ) {
+    fail(`${label}.environment_names is not a canonical CADDY_ADMIN-free inventory`);
+  }
+  if (
+    canonicalJson(value) !==
+    canonicalJson(expectedCaddyEffectiveUnit(plan, value.environment_names))
+  ) {
+    fail(`${label} drifted from the exact current hardened unit`);
+  }
+}
+
+function validateCaddyProcessRuntime(value, label, plan) {
   exactKeys(
-    snapshot,
-    ["binary", "config", "source_fair_generation", "target_generation", "unit_fragment"],
+    value,
+    [
+      "caddy_admin_environment_absent",
+      "cmdline_argv",
+      "effective_environment_names",
+      "main_pid",
+      "start_time_ticks",
+    ],
     label,
   );
+  const binary = plan.target.binary.path;
+  const expectedArgv = [binary, "run", "--config", TARGET_CONFIG, "--adapter", "caddyfile"];
+  if (
+    value.caddy_admin_environment_absent !== true ||
+    canonicalJson(value.cmdline_argv) !== canonicalJson(expectedArgv) ||
+    value.main_pid !== plan.target.unit_generation.main_pid ||
+    typeof value.start_time_ticks !== "string" ||
+    !/^[1-9][0-9]*$/u.test(value.start_time_ticks) ||
+    !Array.isArray(value.effective_environment_names) ||
+    value.effective_environment_names.length > 512 ||
+    value.effective_environment_names.includes("CADDY_ADMIN") ||
+    value.effective_environment_names.some(
+      (name, index, names) =>
+        typeof name !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+        (index > 0 && names[index - 1] >= name),
+    )
+  ) {
+    fail(`${label} did not bind the exact current Caddy argv and environment boundary`);
+  }
+}
+
+function validateCaddyRuntimeBoundary(value, label, plan, expectedBootId) {
+  exactKeys(value, ["boot_id", "effective_unit", "process", "unit_generation"], label);
+  if (value.boot_id !== expectedBootId) fail(`${label}.boot_id drifted`);
+  validateCaddyEffectiveUnit(value.effective_unit, `${label}.effective_unit`, plan);
+  validateCaddyProcessRuntime(value.process, `${label}.process`, plan);
+  if (canonicalJson(value.unit_generation) !== canonicalJson(plan.target.unit_generation)) {
+    fail(`${label}.unit_generation drifted`);
+  }
+}
+
+function validateAdminRuntimeEvidence(value, label, plan, expectedBootId) {
+  exactKeys(
+    value,
+    [
+      "boot_id",
+      "boundary",
+      "denied_service_uids",
+      "effective_unit",
+      "monotonic_end_ns",
+      "monotonic_start_ns",
+      "process",
+      "root_readback",
+      "runtime_directory",
+      "socket",
+      "tcp_admin",
+      "unit_generation",
+    ],
+    label,
+  );
+  if (
+    value.boot_id !== expectedBootId ||
+    value.boundary !== "capability-free-unprivileged-non-root-dac-only"
+  ) {
+    fail(`${label} boot or capability boundary drifted`);
+  }
+  validateCaddyEffectiveUnit(value.effective_unit, `${label}.effective_unit`, plan);
+  validateCaddyProcessRuntime(value.process, `${label}.process`, plan);
+  for (const [key, path, type, mode] of [
+    ["runtime_directory", "/run/bitcoinpir-caddy-admin", "directory", "0700"],
+    ["socket", "/run/bitcoinpir-caddy-admin/admin.sock", "socket", "0200"],
+  ]) {
+    const runtime = value[key];
+    exactKeys(
+      runtime,
+      ["ctime_ns", "device", "gid", "inode", "mode", "path", "type", "uid"],
+      `${label}.${key}`,
+    );
+    if (
+      runtime.path !== path || runtime.type !== type || runtime.mode !== mode ||
+      runtime.uid !== 0 || runtime.gid !== 0
+    ) {
+      fail(`${label}.${key} drifted from the exact DAC boundary`);
+    }
+    for (const decimal of ["ctime_ns", "device", "inode"]) {
+      validateDecimal(runtime[decimal], `${label}.${key}.${decimal}`);
+    }
+    if (runtime.inode === "0") fail(`${label}.${key}.inode must be positive`);
+  }
+  exactKeys(
+    value.root_readback,
+    ["body_sha256", "cap_eff", "error", "gid", "groups", "label", "listen", "path", "status", "transport", "uid"],
+    `${label}.root_readback`,
+  );
+  if (
+    value.root_readback.cap_eff !== "0000000000000000" ||
+    value.root_readback.error !== null || value.root_readback.gid !== 0 ||
+    canonicalJson(value.root_readback.groups) !== canonicalJson([0]) ||
+    value.root_readback.label !== "root" || value.root_readback.listen !== ADMIN_UDS_LISTEN ||
+    value.root_readback.path !== "/config/" || value.root_readback.status !== 200 ||
+    value.root_readback.transport !== "unix" || value.root_readback.uid !== 0
+  ) {
+    fail(`${label}.root_readback did not prove the active UDS config`);
+  }
+  validateSha256(value.root_readback.body_sha256, `${label}.root_readback.body_sha256`);
+  if (!Array.isArray(value.denied_service_uids) || value.denied_service_uids.length < 2) {
+    fail(`${label}.denied_service_uids is incomplete`);
+  }
+  const inventory = [];
+  for (const [index, denial] of value.denied_service_uids.entries()) {
+    exactKeys(denial, ["cap_eff", "error", "gid", "groups", "name", "uid"], `${label}.denied_service_uids[${index}]`);
+    validateSlug(denial.name, `${label}.denied_service_uids[${index}].name`);
+    validateUidGid(denial.uid, `${label}.denied_service_uids[${index}].uid`);
+    if (
+      denial.uid === 0 || denial.error !== "EACCES" ||
+      denial.cap_eff !== "0000000000000000" || denial.gid !== denial.uid ||
+      canonicalJson(denial.groups) !== canonicalJson([denial.uid])
+    ) {
+      fail(`${label}.denied_service_uids[${index}] is not an unprivileged EACCES proof`);
+    }
+    inventory.push({ name: denial.name, uid: denial.uid });
+  }
+  if (
+    sha256(Buffer.from(canonicalize(inventory), "utf8")) !==
+    plan.target.admin_uds_hardening.service_uid_inventory_sha256
+  ) {
+    fail(`${label}.denied_service_uids does not equal the complete approved inventory`);
+  }
+  const expectedTcp = ["127.0.0.1:2019", "[::1]:2019"];
+  if (
+    !Array.isArray(value.tcp_admin) || value.tcp_admin.length !== 2 ||
+    value.tcp_admin.some((probe, index) => {
+      exactKeys(probe, ["endpoint", "result"], `${label}.tcp_admin[${index}]`);
+      return probe.endpoint !== expectedTcp[index] || probe.result !== "connection-refused";
+    })
+  ) {
+    fail(`${label}.tcp_admin did not prove IPv4 and IPv6 refusal`);
+  }
+  if (canonicalJson(value.unit_generation) !== canonicalJson(plan.target.unit_generation)) {
+    fail(`${label}.unit_generation drifted`);
+  }
+  validateDecimal(value.monotonic_start_ns, `${label}.monotonic_start_ns`);
+  validateDecimal(value.monotonic_end_ns, `${label}.monotonic_end_ns`);
+  const start = BigInt(value.monotonic_start_ns);
+  const end = BigInt(value.monotonic_end_ns);
+  if (start === 0n || end < start || end - start > 60_000_000_000n) {
+    fail(`${label} monotonic probe window is invalid or exceeds 60 seconds`);
+  }
+}
+
+function validateReceiptSnapshot(snapshot, label, plan, expectedConfigSha256, expectedBootId) {
+  exactKeys(
+    snapshot,
+    ["admin_runtime", "binary", "config", "source_fair_generation", "target_generation", "unit_fragment"],
+    label,
+  );
+  validateAdminRuntimeEvidence(snapshot.admin_runtime, `${label}.admin_runtime`, plan, expectedBootId);
   for (const [key, expected] of [
     ["binary", plan.target.binary],
     ["unit_fragment", plan.target.unit_fragment],
@@ -1180,6 +1509,69 @@ function validateReceiptSnapshot(snapshot, label, plan, expectedConfigSha256) {
   if (canonicalJson(snapshot.target_generation) !== canonicalJson(plan.target.unit_generation)) {
     fail(`${label}.target_generation drifted`);
   }
+}
+
+export function validateOverlayPreparedContext({ approvedPlanSha256, context, plan }) {
+  validateOverlayPlan(plan);
+  validateSha256(approvedPlanSha256, "externally approved overlay plan SHA-256");
+  if (computeApprovedOverlayPlanSha256(plan) !== approvedPlanSha256) {
+    fail("receipt overlay plan does not match the externally approved SHA-256");
+  }
+  exactKeys(context, ["backup", "before", "host", "preparation"], "overlay prepared context");
+  exactKeys(context.host, ["boot_id", "machine_id_sha256"], "overlay receipt host");
+  validateUuid(context.host.boot_id, "overlay receipt host.boot_id");
+  validateSha256(context.host.machine_id_sha256, "overlay receipt host.machine_id_sha256");
+  validateReceiptSnapshot(
+    context.before,
+    "overlay receipt before",
+    plan,
+    plan.target.config_preimage.sha256,
+    context.host.boot_id,
+  );
+  exactKeys(
+    context.preparation,
+    ["adapt_argv", "adapt_exit_status", "adapted_json_sha256", "candidate_sha256", "managed_block_sha256", "preimage_sha256", "validate_argv", "validate_exit_status"],
+    "overlay receipt preparation",
+  );
+  for (const [key, expected] of [
+    ["adapt_argv", plan.transaction.adapt_argv],
+    ["validate_argv", plan.transaction.validate_argv],
+  ]) {
+    if (canonicalJson(context.preparation[key]) !== canonicalJson(expected)) {
+      fail(`overlay receipt preparation.${key} drifted`);
+    }
+  }
+  if (context.preparation.adapt_exit_status !== 0 || context.preparation.validate_exit_status !== 0) {
+    fail("overlay receipt candidate adapt/validate did not both succeed");
+  }
+  validateSha256(context.preparation.adapted_json_sha256, "overlay receipt adapted JSON SHA-256");
+  for (const [key, expected] of [
+    ["adapted_json_sha256", plan.managed_block.candidate_adapted_json_sha256],
+    ["candidate_sha256", plan.managed_block.candidate_sha256],
+    ["managed_block_sha256", plan.managed_block.rendered_sha256],
+    ["preimage_sha256", plan.target.config_preimage.sha256],
+  ]) {
+    if (context.preparation[key] !== expected) fail(`overlay receipt preparation.${key} drifted`);
+  }
+  exactKeys(
+    context.backup,
+    ["directory_fsync", "exclusive_create", "file_fsync", "gid", "mode", "nlink", "path", "sha256", "uid"],
+    "overlay receipt backup",
+  );
+  if (
+    context.backup.path !== plan.transaction.backup_path ||
+    context.backup.sha256 !== plan.target.config_preimage.sha256 ||
+    context.backup.uid !== 0 ||
+    context.backup.gid !== 0 ||
+    context.backup.mode !== "0400" ||
+    context.backup.nlink !== 1 ||
+    context.backup.exclusive_create !== true ||
+    context.backup.file_fsync !== true ||
+    context.backup.directory_fsync !== true
+  ) {
+    fail("overlay receipt backup is not one durable exclusive exact-preimage copy");
+  }
+  return true;
 }
 
 export function validateOverlayReceipt({
@@ -1219,57 +1611,16 @@ export function validateOverlayReceipt({
   if (receipt.collector !== OVERLAY_COLLECTOR) fail("overlay receipt collector is not reviewed");
   if (receipt.approved_plan_sha256 !== approvedPlanSha256) fail("overlay receipt does not bind its approved plan");
   if (receipt.transaction_id !== plan.transaction_id) fail("overlay receipt transaction_id drifted");
-  exactKeys(receipt.host, ["boot_id", "machine_id_sha256"], "overlay receipt host");
-  validateUuid(receipt.host.boot_id, "overlay receipt host.boot_id");
-  validateSha256(receipt.host.machine_id_sha256, "overlay receipt host.machine_id_sha256");
-  validateReceiptSnapshot(
-    receipt.before,
-    "overlay receipt before",
+  validateOverlayPreparedContext({
+    approvedPlanSha256,
+    context: {
+      backup: receipt.backup,
+      before: receipt.before,
+      host: receipt.host,
+      preparation: receipt.preparation,
+    },
     plan,
-    plan.target.config_preimage.sha256,
-  );
-  exactKeys(
-    receipt.preparation,
-    ["adapt_argv", "adapt_exit_status", "adapted_json_sha256", "candidate_sha256", "managed_block_sha256", "preimage_sha256", "validate_argv", "validate_exit_status"],
-    "overlay receipt preparation",
-  );
-  for (const [key, expected] of [
-    ["adapt_argv", plan.transaction.adapt_argv],
-    ["validate_argv", plan.transaction.validate_argv],
-  ]) {
-    if (canonicalJson(receipt.preparation[key]) !== canonicalJson(expected)) {
-      fail(`overlay receipt preparation.${key} drifted`);
-    }
-  }
-  if (receipt.preparation.adapt_exit_status !== 0 || receipt.preparation.validate_exit_status !== 0) {
-    fail("overlay receipt candidate adapt/validate did not both succeed");
-  }
-  validateSha256(receipt.preparation.adapted_json_sha256, "overlay receipt adapted JSON SHA-256");
-  for (const [key, expected] of [
-    ["candidate_sha256", plan.managed_block.candidate_sha256],
-    ["managed_block_sha256", plan.managed_block.rendered_sha256],
-    ["preimage_sha256", plan.target.config_preimage.sha256],
-  ]) {
-    if (receipt.preparation[key] !== expected) fail(`overlay receipt preparation.${key} drifted`);
-  }
-  exactKeys(
-    receipt.backup,
-    ["directory_fsync", "exclusive_create", "file_fsync", "gid", "mode", "nlink", "path", "sha256", "uid"],
-    "overlay receipt backup",
-  );
-  if (
-    receipt.backup.path !== plan.transaction.backup_path ||
-    receipt.backup.sha256 !== plan.target.config_preimage.sha256 ||
-    receipt.backup.uid !== 0 ||
-    receipt.backup.gid !== 0 ||
-    receipt.backup.mode !== "0400" ||
-    receipt.backup.nlink !== 1 ||
-    receipt.backup.exclusive_create !== true ||
-    receipt.backup.file_fsync !== true ||
-    receipt.backup.directory_fsync !== true
-  ) {
-    fail("overlay receipt backup is not one durable exclusive exact-preimage copy");
-  }
+  });
   exactKeys(
     receipt.installation,
     [
@@ -1296,7 +1647,7 @@ export function validateOverlayReceipt({
   }
   exactKeys(
     receipt.reload,
-    ["argv", "exit_status", "restart_invoked"],
+    ["argv", "exit_status", "restart_invoked", "runtime_before"],
     "overlay receipt reload",
   );
   if (
@@ -1304,6 +1655,16 @@ export function validateOverlayReceipt({
     receipt.reload.restart_invoked !== false
   ) {
     fail("overlay receipt must use only the exact reload command and no restart");
+  }
+  if (receipt.reload.runtime_before !== null) {
+    validateCaddyRuntimeBoundary(
+      receipt.reload.runtime_before,
+      "overlay receipt reload.runtime_before",
+      plan,
+      receipt.host.boot_id,
+    );
+  } else if (receipt.reload.exit_status !== null) {
+    fail("overlay receipt reload with an observed status lacks its current runtime boundary");
   }
   exactKeys(
     receipt.rollback,
@@ -1314,6 +1675,7 @@ export function validateOverlayReceipt({
       "exact_preimage_restored",
       "exchanged",
       "reload_exit_status",
+      "runtime_before",
     ],
     "overlay receipt rollback",
   );
@@ -1325,7 +1687,8 @@ export function validateOverlayReceipt({
       receipt.rollback.exact_candidate_swapped_out !== false ||
       receipt.rollback.exact_preimage_restored !== false ||
       receipt.rollback.exchanged !== false ||
-      receipt.rollback.reload_exit_status !== null
+      receipt.rollback.reload_exit_status !== null ||
+      receipt.rollback.runtime_before !== null
     ) {
       fail("committed overlay receipt has a contradictory rollback record");
     }
@@ -1358,10 +1721,17 @@ export function validateOverlayReceipt({
       receipt.rollback.exact_candidate_swapped_out !== true ||
       receipt.rollback.exact_preimage_restored !== true ||
       receipt.rollback.exchanged !== true ||
-      receipt.rollback.reload_exit_status !== 0
+      receipt.rollback.reload_exit_status !== 0 ||
+      receipt.rollback.runtime_before === null
     ) {
       fail("rolled-back overlay receipt does not prove exact durable preimage restoration and reload");
     }
+    validateCaddyRuntimeBoundary(
+      receipt.rollback.runtime_before,
+      "overlay receipt rollback.runtime_before",
+      plan,
+      receipt.host.boot_id,
+    );
     if (!Array.isArray(receipt.health_results) || receipt.health_results.length > plan.health_checks.length) {
       fail("rolled-back overlay receipt health result list is malformed");
     }
@@ -1371,7 +1741,19 @@ export function validateOverlayReceipt({
   const expectedFinalSha = receipt.outcome === "committed"
     ? plan.managed_block.candidate_sha256
     : plan.target.config_preimage.sha256;
-  validateReceiptSnapshot(receipt.after, "overlay receipt after", plan, expectedFinalSha);
+  validateReceiptSnapshot(
+    receipt.after,
+    "overlay receipt after",
+    plan,
+    expectedFinalSha,
+    receipt.host.boot_id,
+  );
+  if (
+    BigInt(receipt.after.admin_runtime.monotonic_start_ns) <
+    BigInt(receipt.before.admin_runtime.monotonic_end_ns)
+  ) {
+    fail("overlay receipt final admin runtime probe predates its initial probe");
+  }
   if (trustedReceiptSha256 !== undefined) {
     validateSha256(trustedReceiptSha256, "trusted overlay receipt SHA-256");
     if (sha256(Buffer.from(canonicalJson(receipt), "utf8")) !== trustedReceiptSha256) {

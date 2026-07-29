@@ -8,19 +8,28 @@ import {
   OverlayTransactionError,
   executeOverlayTransaction,
   recoverOverlayTransaction,
+  testOnlyNormalizeEffectiveUnitProperties,
   verifyWebSocketUpgrade,
 } from "./payment-v1-integrated-caddy-overlay-transaction.mjs";
 import {
   canonicalJson,
   computeApprovedOverlayPlanSha256,
 } from "./payment-v1-integrated-caddy-overlay-gate.mjs";
+import { canonicalJson as canonicalAdminUdsJson } from "./payment-v1-caddy-admin-uds-gate.mjs";
 import {
+  TEST_ADAPTED_JSON,
   TEST_PREIMAGE,
   TEST_REPOSITORY,
   makeIntegratedOverlayTestPlan,
   renderedManagedBlock,
+  testCaddyEffectiveUnit,
+  testCaddyProcessRuntime,
+  testHardeningPlanBytes,
+  testHardeningReceiptBytes,
   testSha256,
 } from "./payment-v1-integrated-caddy-overlay-test-fixture.mjs";
+
+let mockMonotonicNs = 9_000_000_000n;
 
 test("WebSocket health proof verifies every RFC 6455 upgrade binding", () => {
   const key = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -57,6 +66,34 @@ test("real health and command adapters are fail-closed in source", () => {
   assert.doesNotMatch(source, /rejectUnauthorized: false/u);
   assert.match(source, /killSignal: "SIGKILL"/u);
   assert.match(source, /sec-websocket-accept/iu);
+});
+
+test("systemd 255 effective-unit serialization normalizes without retaining Environment values", () => {
+  const normalized = testOnlyNormalizeEffectiveUnitProperties({
+    DropInPaths: "",
+    Environment: "HOME=/var/lib/caddy XDG_CONFIG_HOME=/var/lib/caddy/.config XDG_DATA_HOME=/var/lib/caddy/.local/share",
+    EnvironmentFiles: "",
+    ExecReload: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    ExecStart: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile ; ignore_errors=no ; start_time=[Wed 2026-06-24 17:19:40 CEST] ; stop_time=[n/a] ; pid=639667 ; code=(null) ; status=0/0 }",
+    FragmentPath: "/etc/systemd/system/bhtm-caddy.service",
+    Group: "root",
+    NeedDaemonReload: "no",
+    PassEnvironment: "",
+    RuntimeDirectory: "bitcoinpir-caddy-admin",
+    RuntimeDirectoryMode: "0700",
+    RuntimeDirectoryPreserve: "no",
+    UMask: "0077",
+    UnsetEnvironment: "CADDY_ADMIN",
+    User: "root",
+  });
+  assert.deepEqual(normalized.environment_names, ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]);
+  assert.deepEqual(normalized.exec_start, {
+    argv: "/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile",
+    ignore_errors: "no",
+    path: "/usr/local/bin/caddy",
+  });
+  assert.equal(normalized.exec_reload.argv.endsWith("unix//run/bitcoinpir-caddy-admin/admin.sock"), true);
+  assert.equal(JSON.stringify(normalized).includes("/var/lib/caddy"), false);
 });
 
 function clone(value) {
@@ -96,6 +133,21 @@ class MockOverlayOps {
     this.raceTargetBeforeFirstExchange = false;
     this.raceTargetBeforeExchangeNumber = null;
     this.racedTargetSnapshot = null;
+    this.adminDirectoryMode = "0700";
+    this.adminSocketMode = "0200";
+    this.adminTcpResult = "connection-refused";
+    this.adminUnexpectedReachableUid = null;
+    this.adminCapEff = "0000000000000000";
+    this.adminRootListen = "unix//run/bitcoinpir-caddy-admin/admin.sock|0200";
+    this.adminProbeApiCalls = 0;
+    this.adaptedJson = clone(TEST_ADAPTED_JSON);
+    this.effectiveUnit = testCaddyEffectiveUnit(plan);
+    this.processRuntime = testCaddyProcessRuntime(plan);
+    this.driftAdminAfterFirstReload = false;
+    this.driftBootDuringProbe = false;
+    this.driftGenerationDuringProbe = false;
+    this.hostIdentityCalls = 0;
+    this.targetGenerationReads = 0;
     this.mutableDirectories = new Map();
     for (const [index, path] of [...new Set([
       this.plan.transaction.adapted_json_path.slice(0, this.plan.transaction.adapted_json_path.lastIndexOf("/")),
@@ -126,16 +178,28 @@ class MockOverlayOps {
     );
     for (const pin of [
       plan.runtime.node_binary,
+      plan.runtime.setpriv_binary,
+      plan.runtime.admin_probe,
       plan.runtime.gate,
       plan.runtime.executor,
       plan.runtime.exchange_helper,
       plan.target.binary,
       plan.target.unit_fragment,
+      plan.target.admin_uds_hardening.plan,
+      plan.target.admin_uds_hardening.receipt,
       plan.source_fair.haproxy_binary,
       plan.source_fair.haproxy_config,
       plan.source_fair.unit_fragment,
       ...plan.tls_dependencies.map((entry) => entry.pin),
     ]) this.#putPin(pin);
+    this.#putPin(
+      plan.target.admin_uds_hardening.plan,
+      testHardeningPlanBytes(plan),
+    );
+    this.#putPin(
+      plan.target.admin_uds_hardening.receipt,
+      testHardeningReceiptBytes(plan),
+    );
     this.#putPin(plan.runtime.exchange_manifest, manifest);
     this.#putPin(plan.runtime.managed_block, renderedManagedBlock(plan));
     this.#putPin(plan.target.config_preimage, TEST_PREIMAGE);
@@ -238,9 +302,82 @@ class MockOverlayOps {
   }
 
   async hostIdentity() {
+    this.hostIdentityCalls += 1;
     return {
-      boot_id: "22345678-1234-4234-9234-123456789abc",
+      boot_id: this.driftBootDuringProbe && this.hostIdentityCalls >= 2
+        ? "32345678-1234-4234-9234-123456789abc"
+        : "22345678-1234-4234-9234-123456789abc",
       machine_id_sha256: "9".repeat(64),
+    };
+  }
+
+  async monotonicNowNs() {
+    mockMonotonicNs += 1n;
+    return mockMonotonicNs.toString();
+  }
+
+  async probeAdminApi({ expected, gid, label, uid }) {
+    this.adminProbeApiCalls += 1;
+    if (expected === "root-readback") {
+      return {
+        body_sha256: "b".repeat(64),
+        cap_eff: this.adminCapEff,
+        error: null,
+        gid,
+        groups: [gid],
+        label,
+        listen: this.adminRootListen,
+        path: "/config/",
+        status: 200,
+        transport: "unix",
+        uid,
+      };
+    }
+    if (uid === this.adminUnexpectedReachableUid) {
+      return {
+        body_sha256: "b".repeat(64),
+        cap_eff: this.adminCapEff,
+        error: null,
+        gid,
+        groups: [gid],
+        label,
+        listen: this.adminRootListen,
+        path: "/config/",
+        status: 200,
+        transport: "unix",
+        uid,
+      };
+    }
+    return {
+      body_sha256: null,
+      cap_eff: this.adminCapEff,
+      error: "EACCES",
+      gid,
+      groups: [gid],
+      label,
+      listen: null,
+      path: "/config/",
+      status: null,
+      transport: "unix",
+      uid,
+    };
+  }
+
+  async probeTcpAdmin() {
+    return this.adminTcpResult;
+  }
+
+  async readAdminRuntimePath(path) {
+    const directory = path === "/run/bitcoinpir-caddy-admin";
+    return {
+      ctime_ns: directory ? "1700000003000000000" : "1700000003000000001",
+      device: "2049",
+      gid: 0,
+      inode: directory ? "61001" : "61002",
+      mode: directory ? this.adminDirectoryMode : this.adminSocketMode,
+      path,
+      type: directory ? "directory" : "socket",
+      uid: 0,
     };
   }
 
@@ -281,6 +418,11 @@ class MockOverlayOps {
     throw new Error(`unknown directory ${path}`);
   }
 
+  async readEffectiveUnit(unitName) {
+    if (unitName !== "bhtm-caddy.service") throw new Error(`unknown effective unit ${unitName}`);
+    return clone(this.effectiveUnit);
+  }
+
   async readOptionalRegular(path) {
     const file = this.files.get(path);
     return file === undefined ? null : fileClone(file);
@@ -296,6 +438,13 @@ class MockOverlayOps {
     return fileClone(file);
   }
 
+  async readProcessRuntime(pid) {
+    if (pid !== this.plan.target.unit_generation.main_pid) {
+      throw new Error(`unknown process generation ${pid}`);
+    }
+    return clone(this.processRuntime);
+  }
+
   async readRuntimePath(path) {
     const value = this.plan.source_fair.runtime_paths.find((entry) => entry.path === path);
     if (!value) throw new Error(`unknown runtime path ${path}`);
@@ -307,6 +456,13 @@ class MockOverlayOps {
   }
 
   async readUnitGeneration(unitName) {
+    if (unitName === "bhtm-caddy.service") this.targetGenerationReads += 1;
+    if (unitName === "bhtm-caddy.service" && this.driftGenerationDuringProbe && this.targetGenerationReads >= 3) {
+      return {
+        ...clone(this.plan.target.unit_generation),
+        invocation_id: "32345678-1234-4234-9234-123456789abc",
+      };
+    }
     return clone(
       unitName === "bhtm-caddy.service"
         ? this.plan.target.unit_generation
@@ -332,13 +488,20 @@ class MockOverlayOps {
 
   async run(argv) {
     if (argv[1] === "adapt") {
-      return { status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from('{"apps":{}}\n') };
+      return {
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.from(`${canonicalJson(this.adaptedJson)}\n`),
+      };
     }
     if (argv[1] === "validate") {
       return { status: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) };
     }
     if (argv[1] === "reload") {
       this.reloadCalls += 1;
+      if (this.driftAdminAfterFirstReload) {
+        this.adminSocketMode = this.reloadCalls === 1 ? "0666" : "0200";
+      }
       return { status: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) };
     }
     throw new Error(`unexpected command ${argv.join(" ")}`);
@@ -427,6 +590,22 @@ async function successfulBaseline() {
   return { approvedPlanSha256, ops, plan, receipt };
 }
 
+async function rolledBackBaseline() {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.failHealthLane = "provider";
+  const approvedPlanSha256 = computeApprovedOverlayPlanSha256(plan);
+  let receipt;
+  try {
+    await executeOverlayTransaction({ approvedPlanSha256, ops, plan });
+    assert.fail("expected the fixture transaction to roll back");
+  } catch (error) {
+    assert.equal(error.phase, "rolled-back");
+    receipt = error.receipt;
+  }
+  return { approvedPlanSha256, ops, plan, receipt };
+}
+
 function recoveryOpsFromBaseline(baseline, { pair, phases, receipt = null }) {
   const ops = new MockOverlayOps(baseline.plan);
   ops.stateInitialized = true;
@@ -494,6 +673,277 @@ test("transaction commits only after verified exchange, health and durable recei
   assert.equal(ops.state.has(OVERLAY_STATE_FILES.committed), true);
   assert.equal(ops.reloadCalls, 1);
   assert.equal(ops.releaseCalls, 1);
+  assert.equal(ops.adminProbeApiCalls, 12, "four fresh runtime collections probe root and both service UIDs");
+});
+
+test("transaction refuses a pinned but non-committed admin UDS prerequisite", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const receipt = JSON.parse(testHardeningReceiptBytes(plan).toString("utf8"));
+  receipt.outcome = "outcome-unknown";
+  const bytes = Buffer.from(canonicalAdminUdsJson(receipt), "utf8");
+  plan.target.admin_uds_hardening.receipt.sha256 = testSha256(bytes);
+  plan.target.admin_uds_hardening.receipt.size = String(bytes.length);
+  const ops = new MockOverlayOps(plan);
+  ops.files.get(plan.target.admin_uds_hardening.receipt.path).bytes = bytes;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /only an exact committed hardening receipt is authoritative/u,
+  );
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.exchangeHistory.length, 0);
+});
+
+test("transaction rejects the former simplified hardening receipt before exchange", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const simplified = {
+    approved_plan_sha256: plan.target.admin_uds_hardening.approved_plan_sha256,
+    deployment_profile: "bhtm-caddy-admin-uds-v1",
+    outcome: "committed",
+    transaction_id: plan.target.admin_uds_hardening.transaction_id,
+  };
+  const bytes = Buffer.from(canonicalAdminUdsJson(simplified), "utf8");
+  plan.target.admin_uds_hardening.receipt.sha256 = testSha256(bytes);
+  plan.target.admin_uds_hardening.receipt.size = String(bytes.length);
+  const ops = new MockOverlayOps(plan);
+  ops.files.get(plan.target.admin_uds_hardening.receipt.path).bytes = bytes;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /hardening receipt keys must equal/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("transaction rejects a hardening plan and receipt from different approvals", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const hardeningPlan = JSON.parse(testHardeningPlanBytes(plan).toString("utf8"));
+  hardeningPlan.site_preservation.existing_site_inventory_sha256 = "f".repeat(64);
+  const bytes = Buffer.from(canonicalAdminUdsJson(hardeningPlan), "utf8");
+  plan.target.admin_uds_hardening.approved_plan_sha256 = testSha256(bytes);
+  plan.target.admin_uds_hardening.plan.sha256 = testSha256(bytes);
+  plan.target.admin_uds_hardening.plan.size = String(bytes.length);
+  const ops = new MockOverlayOps(plan);
+  ops.files.get(plan.target.admin_uds_hardening.plan.path).bytes = bytes;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /receipt does not bind the approved plan transaction/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+for (const [name, mutate, expected] of [
+  ["runtime directory mode drift", (ops) => { ops.adminDirectoryMode = "0755"; }, /runtime directory does not match/u],
+  ["socket mode drift", (ops) => { ops.adminSocketMode = "0666"; }, /admin socket does not match/u],
+  ["service UID reaches admin", (ops) => { ops.adminUnexpectedReachableUid = 62902; }, /did not receive exact EACCES/u],
+  ["TCP admin is reachable", (ops) => { ops.adminTcpResult = "connected"; }, /did not refuse the TCP admin probe/u],
+  ["probe retains capabilities", (ops) => { ops.adminCapEff = "0000000000000002"; }, /root did not read back/u],
+  ["root reads a different admin endpoint", (ops) => { ops.adminRootListen = "127.0.0.1:2019"; }, /root did not read back/u],
+  ["boot changes during probes", (ops) => { ops.driftBootDuringProbe = true; }, /boot drifted/u],
+  ["Caddy generation changes during probes", (ops) => { ops.driftGenerationDuringProbe = true; }, /process generation drifted/u],
+  ["effective FragmentPath drift", (ops) => { ops.effectiveUnit.fragment_path = "/run/systemd/transient/bhtm-caddy.service"; }, /effective systemd unit drifted/u],
+  ["effective drop-in drift", (ops) => { ops.effectiveUnit.dropin_paths = ["/run/systemd/system/bhtm-caddy.service.d/override.conf"]; }, /effective systemd unit drifted/u],
+  ["effective EnvironmentFile drift", (ops) => { ops.effectiveUnit.environment_files = ["/etc/default/caddy"]; }, /effective systemd unit drifted/u],
+  ["effective NeedDaemonReload drift", (ops) => { ops.effectiveUnit.need_daemon_reload = "yes"; }, /effective systemd unit drifted/u],
+  ["effective ExecStart drift", (ops) => { ops.effectiveUnit.exec_start.argv = "/bin/true"; }, /effective systemd unit drifted/u],
+  ["effective ExecReload drift", (ops) => { ops.effectiveUnit.exec_reload = { argv: "/bin/true", ignore_errors: "no", path: "/bin/true" }; }, /effective systemd unit drifted/u],
+  ["effective Environment drift", (ops) => { ops.effectiveUnit.environment_names = ["CADDY_ADMIN"]; }, /effective systemd unit drifted/u],
+  ["effective PassEnvironment drift", (ops) => { ops.effectiveUnit.pass_environment = ["CADDY_ADMIN"]; }, /effective systemd unit drifted/u],
+  ["effective UnsetEnvironment drift", (ops) => { ops.effectiveUnit.unset_environment = []; }, /effective systemd unit drifted/u],
+  ["effective RuntimeDirectory drift", (ops) => { ops.effectiveUnit.runtime_directory = ["other"]; }, /effective systemd unit drifted/u],
+  ["effective RuntimeDirectoryMode drift", (ops) => { ops.effectiveUnit.runtime_directory_mode = "0755"; }, /effective systemd unit drifted/u],
+  ["effective RuntimeDirectoryPreserve drift", (ops) => { ops.effectiveUnit.runtime_directory_preserve = "yes"; }, /effective systemd unit drifted/u],
+  ["effective UMask drift", (ops) => { ops.effectiveUnit.umask = "0022"; }, /effective systemd unit drifted/u],
+  ["effective User drift", (ops) => { ops.effectiveUnit.user = "caddy"; }, /effective systemd unit drifted/u],
+  ["effective Group drift", (ops) => { ops.effectiveUnit.group = "caddy"; }, /effective systemd unit drifted/u],
+  ["process cmdline drift", (ops) => { ops.processRuntime.cmdline_argv = ["/bin/true"]; }, /current \/proc identity/u],
+  ["process PID drift", (ops) => { ops.processRuntime.main_pid = "402"; }, /current \/proc identity/u],
+  ["process start-time drift", (ops) => { ops.processRuntime.start_time_ticks = "0"; }, /current \/proc identity/u],
+  ["process CADDY_ADMIN environment drift", (ops) => {
+    ops.processRuntime.caddy_admin_environment_absent = false;
+    ops.processRuntime.effective_environment_names.push("CADDY_ADMIN");
+    ops.processRuntime.effective_environment_names.sort();
+  }, /current \/proc identity/u],
+]) {
+  test(`transaction rejects ${name} before exchange`, async () => {
+    const plan = makeIntegratedOverlayTestPlan();
+    const ops = new MockOverlayOps(plan);
+    mutate(ops);
+    await assert.rejects(
+      executeOverlayTransaction({
+        approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+        ops,
+        plan,
+      }),
+      expected,
+    );
+    assert.equal(ops.exchangeHistory.length, 0);
+    assert.equal(ops.reloadCalls, 0);
+  });
+}
+
+test("recovery rejects current no-op ExecReload before file-pair mutation or reload", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+    ],
+  });
+  ops.effectiveUnit.exec_reload = {
+    argv: "/bin/true",
+    ignore_errors: "no",
+    path: "/bin/true",
+  };
+  const stateBefore = new Map([...ops.state].map(([name, bytes]) => [name, Buffer.from(bytes)]));
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /current effective systemd unit drifted/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+  assert.deepEqual(ops.state, stateBefore);
+});
+
+test("recovery rejects regressed persisted rollback probe time without normalization or side effects", async () => {
+  const baseline = await rolledBackBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+      OVERLAY_STATE_FILES.rollbackExchanged,
+      OVERLAY_STATE_FILES.rollbackReloaded,
+    ],
+  });
+  const record = JSON.parse(ops.state.get(OVERLAY_STATE_FILES.rollbackReloaded).toString("utf8"));
+  record.after.admin_runtime.monotonic_start_ns = "1";
+  record.after.admin_runtime.monotonic_end_ns = "2";
+  ops.state.set(OVERLAY_STATE_FILES.rollbackReloaded, Buffer.from(canonicalJson(record)));
+  const stateBefore = new Map([...ops.state].map(([name, bytes]) => [name, Buffer.from(bytes)]));
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /final admin runtime probe predates its initial probe/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+  assert.deepEqual(ops.state, stateBefore);
+});
+
+test("recovery rejects a pending regressed rollback probe before publishing the journal entry", async () => {
+  const baseline = await rolledBackBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+      OVERLAY_STATE_FILES.rollbackExchanged,
+    ],
+  });
+  const record = JSON.parse(
+    baseline.ops.state.get(OVERLAY_STATE_FILES.rollbackReloaded).toString("utf8"),
+  );
+  record.after.admin_runtime.monotonic_start_ns = "1";
+  record.after.admin_runtime.monotonic_end_ns = "2";
+  seedStatePending(
+    ops,
+    baseline.plan,
+    OVERLAY_STATE_FILES.rollbackReloaded,
+    Buffer.from(canonicalJson(record)),
+  );
+  const stateBefore = new Map([...ops.state].map(([name, bytes]) => [name, Buffer.from(bytes)]));
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /final admin runtime probe predates its initial probe/u,
+  );
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rollbackReloaded), false);
+  assert.equal(ops.state.has(`${OVERLAY_STATE_FILES.rollbackReloaded}.pending`), true);
+  assert.deepEqual(ops.state, stateBefore);
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("post-reload admin permission drift triggers exact rollback", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.driftAdminAfterFirstReload = true;
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    (error) => {
+      assert.match(error.message, /exact preimage was restored/u);
+      assert.equal(error.receipt?.outcome, "rolled-back");
+      return true;
+    },
+  );
+  assert.equal(ops.exchangeHistory.length, 2);
+  assert.equal(ops.reloadCalls, 2);
+});
+
+test("adapted JSON with the wrong admin endpoint is rejected before exchange", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.adaptedJson = { admin: { listen: "127.0.0.1:2019" }, apps: {} };
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /adapted Caddy JSON admin.listen/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("adapted JSON digest drift is rejected before exchange", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.adaptedJson = {
+    admin: { listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200" },
+    apps: { http: {} },
+  };
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /adapted JSON drifted from the approved candidate/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
 });
 
 test("an install exchange applied before helper error is re-synced and committed", async () => {

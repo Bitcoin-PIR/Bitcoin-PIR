@@ -20,6 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import tls from "node:tls";
+import { connect as netConnect } from "node:net";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -30,10 +31,22 @@ import {
   computeApprovedOverlayPlanSha256,
   parseStrictJson,
   validateOverlayPlan,
+  validateOverlayPreparedContext,
   validateOverlayReceipt,
 } from "./payment-v1-integrated-caddy-overlay-gate.mjs";
+import {
+  ADMIN_DIRECTORY,
+  ADMIN_DIAL,
+  ADMIN_LISTEN,
+  ADMIN_SOCKET,
+  DAC_BOUNDARY,
+  canonicalJson as canonicalAdminUdsJson,
+  computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,
+  validateCommittedReceipt as validateAdminUdsCommittedReceipt,
+} from "./payment-v1-caddy-admin-uds-gate.mjs";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 const TARGET_CONFIG = "/etc/caddy/Caddyfile";
 const TARGET_UNIT = "bhtm-caddy.service";
@@ -99,6 +112,131 @@ function exactGeneration(actual, expected, label) {
   if (!same(actual, expected)) fail(`${label} process generation drifted`);
 }
 
+function expectedCaddyEffectiveUnit(plan, environmentNames) {
+  const binary = plan.target.binary.path;
+  return {
+    dropin_paths: [],
+    environment_names: environmentNames,
+    environment_files: [],
+    exec_reload: {
+      argv: `${binary} reload --config ${TARGET_CONFIG} --adapter caddyfile --address ${ADMIN_DIAL}`,
+      ignore_errors: "no",
+      path: binary,
+    },
+    exec_start: {
+      argv: `${binary} run --config ${TARGET_CONFIG} --adapter caddyfile`,
+      ignore_errors: "no",
+      path: binary,
+    },
+    fragment_path: plan.target.unit_fragment.path,
+    group: "root",
+    need_daemon_reload: "no",
+    pass_environment: [],
+    runtime_directory: ["bitcoinpir-caddy-admin"],
+    runtime_directory_mode: "0700",
+    runtime_directory_preserve: "no",
+    umask: "0077",
+    unset_environment: ["CADDY_ADMIN"],
+    user: "root",
+  };
+}
+
+function assertEffectiveUnit(actual, plan, hardening, label) {
+  const environmentNames = [...hardening.receipt.activation.effective_environment_names].sort();
+  if (
+    environmentNames.includes("CADDY_ADMIN") ||
+    environmentNames.some(
+      (name, index) =>
+        typeof name !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+        (index > 0 && environmentNames[index - 1] === name),
+    )
+  ) {
+    fail(`${label} approved effective Environment name inventory is malformed`);
+  }
+  if (!same(actual, expectedCaddyEffectiveUnit(plan, environmentNames))) {
+    fail(`${label} current effective systemd unit drifted from the exact hardened profile`);
+  }
+}
+
+function assertCaddyProcessRuntime(actual, plan, label) {
+  exactKeys(
+    actual,
+    [
+      "caddy_admin_environment_absent",
+      "cmdline_argv",
+      "effective_environment_names",
+      "main_pid",
+      "start_time_ticks",
+    ],
+    label,
+  );
+  const expectedArgv = [
+    plan.target.binary.path,
+    "run",
+    "--config",
+    TARGET_CONFIG,
+    "--adapter",
+    "caddyfile",
+  ];
+  if (
+    actual.caddy_admin_environment_absent !== true ||
+    actual.main_pid !== plan.target.unit_generation.main_pid ||
+    !/^[1-9][0-9]*$/u.test(actual.start_time_ticks ?? "") ||
+    !same(actual.cmdline_argv, expectedArgv) ||
+    !Array.isArray(actual.effective_environment_names) ||
+    actual.effective_environment_names.length > 512 ||
+    actual.effective_environment_names.some(
+      (name, index, names) =>
+        typeof name !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+        (index > 0 && names[index - 1] >= name),
+    ) ||
+    actual.effective_environment_names.includes("CADDY_ADMIN")
+  ) {
+    fail(`${label} current /proc identity, argv or environment drifted from the hardened generation`);
+  }
+}
+
+function assertCaddyRuntimeBoundary(value, plan, hardening, label) {
+  exactKeys(
+    value,
+    ["boot_id", "effective_unit", "process", "unit_generation"],
+    label,
+  );
+  if (
+    value.boot_id !== hardening.receipt.host.boot_id ||
+    value.boot_id !== hardening.hardeningPlan.privileged_access_inventory.boot_id
+  ) {
+    fail(`${label} boot drifted from the approved privileged access evidence`);
+  }
+  exactGeneration(value.unit_generation, plan.target.unit_generation, `${label} Caddy`);
+  assertEffectiveUnit(value.effective_unit, plan, hardening, `${label} effective unit`);
+  assertCaddyProcessRuntime(value.process, plan, `${label} process`);
+}
+
+async function readCaddyRuntimeBoundary(plan, hardening, ops, label) {
+  const host = await ops.hostIdentity();
+  const unitGeneration = await ops.readUnitGeneration(TARGET_UNIT);
+  const effectiveUnit = await ops.readEffectiveUnit(TARGET_UNIT);
+  const process = await ops.readProcessRuntime(unitGeneration.main_pid);
+  const value = {
+    boot_id: host.boot_id,
+    effective_unit: effectiveUnit,
+    process,
+    unit_generation: unitGeneration,
+  };
+  assertCaddyRuntimeBoundary(value, plan, hardening, label);
+  return value;
+}
+
+async function collectStableCaddyRuntimeBoundary(plan, hardening, ops, label) {
+  const before = await readCaddyRuntimeBoundary(plan, hardening, ops, `${label} before`);
+  const after = await readCaddyRuntimeBoundary(plan, hardening, ops, `${label} after`);
+  if (!same(after, before)) fail(`${label} Caddy runtime changed across the action boundary`);
+  return before;
+}
+
 function assertRuntimePath(actual, expected, label) {
   if (!same(actual, expected)) fail(`${label} runtime path drifted`);
 }
@@ -140,9 +278,236 @@ function assertManifest(manifestBytes, helperPin) {
   }
 }
 
+function assertAdaptedAdminConfig(adapted) {
+  if (
+    adapted === null ||
+    typeof adapted !== "object" ||
+    Array.isArray(adapted) ||
+    adapted.admin === null ||
+    typeof adapted.admin !== "object" ||
+    Array.isArray(adapted.admin) ||
+    adapted.admin.listen !== ADMIN_LISTEN
+  ) {
+    fail(`adapted Caddy JSON admin.listen must equal ${ADMIN_LISTEN}`);
+  }
+}
+
+function parseCanonicalAdminUdsEvidence(bytes, label) {
+  const buffer = Buffer.from(bytes);
+  const value = parseStrictJson(buffer.toString("utf8"), label);
+  if (!buffer.equals(Buffer.from(canonicalAdminUdsJson(value), "utf8"))) {
+    fail(`${label} bytes must equal their canonical JSON encoding`);
+  }
+  return value;
+}
+
+function assertAdminUdsHardeningEvidence(planBytes, receiptBytes, summary, adminProbePin) {
+  const hardeningPlan = parseCanonicalAdminUdsEvidence(planBytes, "Caddy admin UDS plan");
+  const receipt = parseCanonicalAdminUdsEvidence(receiptBytes, "Caddy admin UDS receipt");
+  if (computeApprovedAdminUdsPlanSha256(hardeningPlan) !== summary.approved_plan_sha256) {
+    fail("Caddy admin UDS plan does not equal its externally approved digest");
+  }
+  validateAdminUdsCommittedReceipt({
+    approvedPlanSha256: summary.approved_plan_sha256,
+    plan: hardeningPlan,
+    receipt,
+    trustedReceiptSha256: summary.receipt.sha256,
+  });
+  if (
+    hardeningPlan.runtime.probe.sha256 !== adminProbePin.sha256 ||
+    hardeningPlan.runtime.probe.size !== adminProbePin.size ||
+    hardeningPlan.runtime.probe.path !== adminProbePin.path
+  ) {
+    fail("overlay admin probe does not equal the approved hardening probe");
+  }
+  if (
+    hardeningPlan.runtime.setpriv_binary.sha256 !== summary.setpriv_binary_sha256
+  ) {
+    fail("overlay setpriv pin does not equal the approved hardening setpriv binary");
+  }
+  if (
+    sha256(Buffer.from(canonicalAdminUdsJson(hardeningPlan.service_uid_inventory), "utf8")) !==
+    summary.service_uid_inventory_sha256
+  ) {
+    fail("overlay service UID inventory digest does not equal the complete hardening inventory");
+  }
+  for (const [key, expected] of [
+    [hardeningPlan.candidate.binary.sha256, summary.binary_sha256],
+    [hardeningPlan.candidate.config.sha256, summary.config_sha256],
+    [hardeningPlan.candidate.unit.sha256, summary.unit_sha256],
+    [receipt.activation.unit_generation.invocation_id, summary.unit_invocation_id],
+  ]) {
+    if (key !== expected) fail("Caddy admin UDS full evidence does not equal the overlay preimage summary");
+  }
+  return { hardeningPlan, receipt };
+}
+
+function requireMonotonicNs(value, label) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) {
+    fail(`${label} must be positive canonical monotonic nanoseconds`);
+  }
+  return BigInt(value);
+}
+
+function assertAdminRuntimePath(value, expected, label) {
+  exactKeys(
+    value,
+    ["ctime_ns", "device", "gid", "inode", "mode", "path", "type", "uid"],
+    label,
+  );
+  if (
+    value.path !== expected.path ||
+    value.type !== expected.type ||
+    value.mode !== expected.mode ||
+    value.uid !== 0 ||
+    value.gid !== 0 ||
+    !/^[1-9][0-9]*$/u.test(value.inode) ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(value.device) ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(value.ctime_ns)
+  ) {
+    fail(`${label} does not match the exact capability-free non-root DAC boundary`);
+  }
+}
+
+async function collectFreshAdminRuntime(plan, hardening, ops, label) {
+  const boundaryBefore = await readCaddyRuntimeBoundary(
+    plan,
+    hardening,
+    ops,
+    `${label} admin probe before`,
+  );
+  const monotonicStartNs = await ops.monotonicNowNs();
+  const directoryBefore = await ops.readAdminRuntimePath(ADMIN_DIRECTORY);
+  const socketBefore = await ops.readAdminRuntimePath(ADMIN_SOCKET);
+  assertAdminRuntimePath(
+    directoryBefore,
+    { mode: "0700", path: ADMIN_DIRECTORY, type: "directory" },
+    `${label} admin runtime directory`,
+  );
+  assertAdminRuntimePath(
+    socketBefore,
+    { mode: "0200", path: ADMIN_SOCKET, type: "socket" },
+    `${label} admin socket`,
+  );
+  const rootReadback = await ops.probeAdminApi({
+    expected: "root-readback",
+    gid: 0,
+    label: "root",
+    nodePin: plan.runtime.node_binary,
+    probePin: plan.runtime.admin_probe,
+    setprivPin: plan.runtime.setpriv_binary,
+    uid: 0,
+  });
+  exactKeys(
+    rootReadback,
+    ["body_sha256", "cap_eff", "error", "gid", "groups", "label", "listen", "path", "status", "transport", "uid"],
+    `${label} root admin readback`,
+  );
+  if (
+    !/^[0-9a-f]{64}$/u.test(rootReadback.body_sha256 ?? "") ||
+    rootReadback.cap_eff !== "0000000000000000" ||
+    rootReadback.error !== null ||
+    rootReadback.gid !== 0 ||
+    !same(rootReadback.groups, [0]) ||
+    rootReadback.label !== "root" ||
+    rootReadback.listen !== ADMIN_LISTEN ||
+    rootReadback.path !== "/config/" ||
+    rootReadback.status !== 200 ||
+    rootReadback.transport !== "unix" ||
+    rootReadback.uid !== 0
+  ) {
+    fail(`${label} root did not read back the exact active UDS admin config`);
+  }
+  const deniedServiceUids = [];
+  for (const service of hardening.hardeningPlan.service_uid_inventory) {
+    const denial = await ops.probeAdminApi({
+      expected: "EACCES",
+      gid: service.uid,
+      label: service.name,
+      nodePin: plan.runtime.node_binary,
+      probePin: plan.runtime.admin_probe,
+      setprivPin: plan.runtime.setpriv_binary,
+      uid: service.uid,
+    });
+    exactKeys(
+      denial,
+      ["body_sha256", "cap_eff", "error", "gid", "groups", "label", "listen", "path", "status", "transport", "uid"],
+      `${label} ${service.name} admin denial`,
+    );
+    if (
+      denial.body_sha256 !== null ||
+      denial.cap_eff !== "0000000000000000" ||
+      denial.error !== "EACCES" ||
+      denial.gid !== service.uid ||
+      !same(denial.groups, [service.uid]) ||
+      denial.label !== service.name ||
+      denial.listen !== null ||
+      denial.path !== "/config/" ||
+      denial.status !== null ||
+      denial.transport !== "unix" ||
+      denial.uid !== service.uid
+    ) {
+      fail(`${label} ${service.name} did not receive exact EACCES as its capability-free service UID`);
+    }
+    deniedServiceUids.push({
+      cap_eff: denial.cap_eff,
+      error: "EACCES",
+      gid: denial.gid,
+      groups: denial.groups,
+      name: service.name,
+      uid: service.uid,
+    });
+  }
+  const tcpAdmin = [];
+  for (const endpoint of ["127.0.0.1:2019", "[::1]:2019"]) {
+    const result = await ops.probeTcpAdmin(endpoint);
+    if (result !== "connection-refused") {
+      fail(`${label} ${endpoint} did not refuse the TCP admin probe`);
+    }
+    tcpAdmin.push({ endpoint, result });
+  }
+  const directoryAfter = await ops.readAdminRuntimePath(ADMIN_DIRECTORY);
+  const socketAfter = await ops.readAdminRuntimePath(ADMIN_SOCKET);
+  const monotonicEndNs = await ops.monotonicNowNs();
+  const boundaryAfter = await readCaddyRuntimeBoundary(
+    plan,
+    hardening,
+    ops,
+    `${label} admin probe after`,
+  );
+  if (
+    !same(directoryAfter, directoryBefore) ||
+    !same(socketAfter, socketBefore) ||
+    !same(boundaryAfter, boundaryBefore)
+  ) {
+    fail(`${label} admin runtime, boot, effective unit or Caddy process drifted during fresh probes`);
+  }
+  const start = requireMonotonicNs(monotonicStartNs, `${label} monotonic_start_ns`);
+  const end = requireMonotonicNs(monotonicEndNs, `${label} monotonic_end_ns`);
+  if (end < start || end - start > 60_000_000_000n) {
+    fail(`${label} admin runtime probe window is reversed or exceeds 60 seconds`);
+  }
+  return {
+    boot_id: boundaryBefore.boot_id,
+    boundary: DAC_BOUNDARY,
+    denied_service_uids: deniedServiceUids,
+    effective_unit: boundaryBefore.effective_unit,
+    monotonic_end_ns: monotonicEndNs,
+    monotonic_start_ns: monotonicStartNs,
+    root_readback: rootReadback,
+    runtime_directory: directoryBefore,
+    socket: socketBefore,
+    tcp_admin: tcpAdmin,
+    process: boundaryBefore.process,
+    unit_generation: boundaryBefore.unit_generation,
+  };
+}
+
 async function collectPinnedState(plan, ops, label, { requirePreimage = true } = {}) {
   const pins = [
     [plan.runtime.node_binary, `${label} Node runtime`],
+    [plan.runtime.setpriv_binary, `${label} setpriv runtime`],
+    [plan.runtime.admin_probe, `${label} Caddy admin UDS probe`],
     [plan.runtime.gate, `${label} overlay gate`],
     [plan.runtime.executor, `${label} overlay executor`],
     [plan.runtime.exchange_helper, `${label} rename-exchange helper`],
@@ -150,6 +515,14 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
     [plan.runtime.managed_block, `${label} rendered managed block`],
     [plan.target.binary, `${label} Caddy binary`],
     [plan.target.unit_fragment, `${label} Caddy unit fragment`],
+    [
+      plan.target.admin_uds_hardening.plan,
+      `${label} Caddy admin UDS hardening plan`,
+    ],
+    [
+      plan.target.admin_uds_hardening.receipt,
+      `${label} Caddy admin UDS hardening receipt`,
+    ],
     [plan.source_fair.haproxy_binary, `${label} HAProxy binary`],
     [plan.source_fair.haproxy_config, `${label} HAProxy config`],
     [plan.source_fair.unit_fragment, `${label} HAProxy unit fragment`],
@@ -167,12 +540,18 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
     snapshots.set(pin.path, observed.snapshot);
   }
   assertManifest(files.get(plan.runtime.exchange_manifest.path), plan.runtime.exchange_helper);
+  const hardening = assertAdminUdsHardeningEvidence(
+    files.get(plan.target.admin_uds_hardening.plan.path),
+    files.get(plan.target.admin_uds_hardening.receipt.path),
+    plan.target.admin_uds_hardening,
+    plan.runtime.admin_probe,
+  );
   const config = await ops.readRegular(plan.target.config_preimage.path);
   if (requirePreimage) {
     exactRegularSnapshot(config.snapshot, plan.target.config_preimage, `${label} Caddyfile preimage`);
   }
-  const caddyGeneration = await ops.readUnitGeneration(TARGET_UNIT);
-  exactGeneration(caddyGeneration, plan.target.unit_generation, `${label} Caddy`);
+  const adminRuntime = await collectFreshAdminRuntime(plan, hardening, ops, label);
+  const caddyGeneration = adminRuntime.unit_generation;
   const sourceFairGeneration = await ops.readUnitGeneration(SOURCE_FAIR_UNIT);
   exactGeneration(sourceFairGeneration, plan.source_fair.unit_generation, `${label} source-fair HAProxy`);
   for (const [index, expected] of plan.source_fair.runtime_paths.entries()) {
@@ -188,16 +567,34 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
   }
   const configParent = await ops.readDirectory(plan.target.config_parent.path);
   if (!same(configParent, plan.target.config_parent)) fail(`${label} Caddy config parent drifted`);
-  return { caddyGeneration, config, files, snapshots, sourceFairGeneration };
+  return {
+    adminRuntime,
+    caddyGeneration,
+    config,
+    files,
+    hardening,
+    snapshots,
+    sourceFairGeneration,
+  };
 }
 
 function receiptSnapshot(plan, state, configSnapshot) {
   return {
+    admin_runtime: state.adminRuntime,
     binary: state.snapshots.get(plan.target.binary.path),
     config: configSnapshot,
     source_fair_generation: state.sourceFairGeneration,
     target_generation: state.caddyGeneration,
     unit_fragment: state.snapshots.get(plan.target.unit_fragment.path),
+  };
+}
+
+function runtimeBoundaryFromAdminRuntime(adminRuntime) {
+  return {
+    boot_id: adminRuntime.boot_id,
+    effective_unit: adminRuntime.effective_unit,
+    process: adminRuntime.process,
+    unit_generation: adminRuntime.unit_generation,
   };
 }
 
@@ -241,6 +638,7 @@ function noRollback() {
     exact_preimage_restored: false,
     exchanged: false,
     reload_exit_status: null,
+    runtime_before: null,
   };
 }
 
@@ -640,6 +1038,7 @@ async function rollbackInstalled({
   approvedPlanSha256,
   candidateSnapshot,
   context,
+  hardening,
   ops,
   plan,
   previousPhase,
@@ -647,12 +1046,24 @@ async function rollbackInstalled({
   reload,
   stateDirectorySeal,
 }) {
+  await collectStableCaddyRuntimeBoundary(
+    plan,
+    hardening,
+    ops,
+    "pre-rollback-exchange",
+  );
   await exchangeInstalledPairForRollback(plan, ops, candidateSnapshot);
   await writeState(
     ops,
     plan,
     stateRecord(plan, approvedPlanSha256, "rollback-exchanged", previousPhase),
     stateDirectorySeal,
+  );
+  const rollbackRuntimeBefore = await collectStableCaddyRuntimeBoundary(
+    plan,
+    hardening,
+    ops,
+    "pre-rollback-reload",
   );
   const rollbackReload = await ops.run(plan.transaction.reload_argv, {
     captureStdout: false,
@@ -672,6 +1083,7 @@ async function rollbackInstalled({
     exact_preimage_restored: true,
     exchanged: true,
     reload_exit_status: rollbackReload.status,
+    runtime_before: rollbackRuntimeBefore,
   };
   const after = receiptSnapshot(plan, restoredState, finalConfig.snapshot);
   await writeState(
@@ -739,14 +1151,17 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
   let exchangedRecorded = false;
   let previousPhase = "prepared";
   let context;
+  let hardening;
   let durableCommitReceipt;
   let reload = {
     argv: structuredClone(plan.transaction.reload_argv),
     exit_status: null,
     restart_invoked: false,
+    runtime_before: null,
   };
   try {
     const initial = await collectPinnedState(plan, ops, "initial");
+    hardening = initial.hardening;
     const preimage = Buffer.from(initial.config.bytes);
     const before = receiptSnapshot(plan, initial, initial.config.snapshot);
     const candidate = buildOverlayCandidateFromRendered({
@@ -772,7 +1187,13 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
       throw new OverlayTransactionError("Caddy adapt failed before installation", { phase: "adapt" });
     }
     const adapted = parseStrictJson(Buffer.from(adapt.stdout).toString("utf8"), "Caddy adapted JSON");
+    assertAdaptedAdminConfig(adapted);
     const adaptedBytes = Buffer.from(canonicalJson(adapted), "utf8");
+    if (sha256(adaptedBytes) !== plan.managed_block.candidate_adapted_json_sha256) {
+      throw new OverlayTransactionError("Caddy adapted JSON drifted from the approved candidate", {
+        phase: "adapt",
+      });
+    }
     await ops.writeExclusive(
       plan.transaction.adapted_json_path,
       adaptedBytes,
@@ -851,6 +1272,12 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     );
     prepared = true;
 
+    await collectStableCaddyRuntimeBoundary(
+      plan,
+      hardening,
+      ops,
+      "pre-install-exchange",
+    );
     await exchangeAndClassify({
       candidateSnapshot,
       expectedAfter: "installed",
@@ -870,6 +1297,12 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     exchangedRecorded = true;
     previousPhase = "exchanged";
 
+    reload.runtime_before = await collectStableCaddyRuntimeBoundary(
+      plan,
+      hardening,
+      ops,
+      "pre-install-reload",
+    );
     const reloadResult = await ops.run(plan.transaction.reload_argv, {
       captureStdout: false,
       maxBytes: MAX_COMMAND_BYTES,
@@ -1033,6 +1466,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
         approvedPlanSha256,
         candidateSnapshot,
         context,
+        hardening,
         ops,
         plan,
         previousPhase,
@@ -1112,17 +1546,6 @@ function validateRecoveryCandidateSnapshot(snapshot, plan) {
   if (snapshot.inode === "0") fail("prepared state candidate snapshot inode must be positive");
 }
 
-function validationRollback() {
-  return {
-    attempted: true,
-    directory_fsync: true,
-    exact_candidate_swapped_out: true,
-    exact_preimage_restored: true,
-    exchanged: true,
-    reload_exit_status: 0,
-  };
-}
-
 function validateRecoveryReceiptComponents({
   after,
   approvedPlanSha256,
@@ -1196,18 +1619,15 @@ function loadRecoveryModel(records, plan, approvedPlanSha256) {
       "prepared recovery context",
     );
     validateRecordedDirectorySeals(prepared.context.directory_seals, plan);
-    validateRecoveryReceiptComponents({
-      after: prepared.context.before,
+    validateOverlayPreparedContext({
       approvedPlanSha256,
-      context: prepared.context,
-      installation: installationRecord(plan),
-      plan,
-      reload: {
-        argv: structuredClone(plan.transaction.reload_argv),
-        exit_status: 0,
-        restart_invoked: false,
+      context: {
+        backup: prepared.context.backup,
+        before: prepared.context.before,
+        host: prepared.context.host,
+        preparation: prepared.context.preparation,
       },
-      rollback: validationRollback(),
+      plan,
     });
   }
   const exchanged = byPhase.get("exchanged");
@@ -1216,11 +1636,19 @@ function loadRecoveryModel(records, plan, approvedPlanSha256) {
   }
   const reloaded = byPhase.get("reloaded");
   if (reloaded !== undefined) {
-    exactKeys(reloaded.reload, ["argv", "exit_status", "restart_invoked"], "reloaded state reload");
+    exactKeys(
+      reloaded.reload,
+      ["argv", "exit_status", "restart_invoked", "runtime_before"],
+      "reloaded state reload",
+    );
     if (
       !same(reloaded.reload.argv, plan.transaction.reload_argv) ||
       reloaded.reload.exit_status !== 0 ||
-      reloaded.reload.restart_invoked !== false
+      reloaded.reload.restart_invoked !== false ||
+      !same(
+        reloaded.reload.runtime_before,
+        runtimeBoundaryFromAdminRuntime(prepared.context.before.admin_runtime),
+      )
     ) {
       fail("durable reloaded state drifted");
     }
@@ -1237,6 +1665,7 @@ function loadRecoveryModel(records, plan, approvedPlanSha256) {
         argv: structuredClone(plan.transaction.reload_argv),
         exit_status: null,
         restart_invoked: false,
+        runtime_before: null,
       },
       rollback: rollbackReloaded.rollback,
     });
@@ -1596,6 +2025,11 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
       }
     }
   }
+  // Re-bind the currently loaded unit and the live Caddy process before any
+  // recovery classification can authorize target mutation, reload or cleanup.
+  const recoveryState = await collectPinnedState(plan, ops, "recovery initial", {
+    requirePreimage: false,
+  });
   const candidateSnapshot = model.prepared?.candidate_snapshot;
   const pair = await classifyDurablePair(
     plan,
@@ -1698,6 +2132,12 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
       );
       model.byPhase.set("exchanged", { installation });
     }
+    await collectStableCaddyRuntimeBoundary(
+      plan,
+      recoveryState.hardening,
+      ops,
+      "recovery pre-rollback-exchange",
+    );
     await exchangeInstalledPairForRollback(plan, ops, candidateSnapshot);
     if (!model.byPhase.has("rollback-exchanged")) {
       await writeState(
@@ -1739,7 +2179,14 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
     argv: structuredClone(plan.transaction.reload_argv),
     exit_status: null,
     restart_invoked: false,
+    runtime_before: null,
   };
+  const rollbackRuntimeBefore = await collectStableCaddyRuntimeBoundary(
+    plan,
+    recoveryState.hardening,
+    ops,
+    "recovery pre-rollback-reload",
+  );
   const rollbackReload = await ops.run(plan.transaction.reload_argv, {
     captureStdout: false,
     maxBytes: MAX_COMMAND_BYTES,
@@ -1758,6 +2205,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
     exact_preimage_restored: true,
     exchanged: true,
     reload_exit_status: rollbackReload.status,
+    runtime_before: rollbackRuntimeBefore,
   };
   const after = receiptSnapshot(plan, restoredState, finalConfig.snapshot);
   if (!model.byPhase.has("rollback-reloaded")) {
@@ -1984,6 +2432,16 @@ function realReadRegular(path, maxBytes = MAX_FILE_BYTES) {
   );
 }
 
+function pinnedReadLimit(path) {
+  if (
+    new Set(["/usr/bin/caddy", "/usr/bin/node", "/usr/bin/setpriv"]).has(path) ||
+    /^\/opt\/bitcoinpir\/(?:haproxy|payment-v1-rename-exchange)\/[0-9a-f]{64}\//u.test(path)
+  ) {
+    return MAX_EXECUTABLE_BYTES;
+  }
+  return MAX_FILE_BYTES;
+}
+
 function realReadOptionalRegular(path) {
   try {
     return realReadRegular(path);
@@ -2005,6 +2463,43 @@ function realReadDirectory(path) {
         inode: stat.ino.toString(),
         mode: modeString(stat),
         path,
+        uid: Number(stat.uid),
+      };
+    },
+    [() => parent.close()],
+  );
+}
+
+function realReadAdminRuntimePath(path) {
+  if (![ADMIN_DIRECTORY, ADMIN_SOCKET].includes(path)) {
+    fail(`unreviewed Caddy admin runtime path: ${path}`);
+  }
+  const parent = openSealedParent(
+    path === ADMIN_DIRECTORY ? `${ADMIN_DIRECTORY}/.directory-pin` : path,
+  );
+  return runWithSyncCleanups(
+    () => {
+      const stat = path === ADMIN_DIRECTORY
+        ? fstatSync(parent.fd, { bigint: true })
+        : lstatSync(parent.procPath, { bigint: true, throwIfNoEntry: true });
+      const type = stat.isDirectory() ? "directory" : stat.isSocket() ? "socket" : "other";
+      const expectedType = path === ADMIN_DIRECTORY ? "directory" : "socket";
+      if (type !== expectedType) fail(`${path} is not the required ${expectedType}`);
+      if (path === ADMIN_SOCKET) {
+        const pathStat = lstatSync(path, { bigint: true, throwIfNoEntry: true });
+        if (!pathStat.isSocket() || !sameInode(pathStat, stat)) {
+          fail(`${path} changed or became a symlink during the sealed runtime read`);
+        }
+      }
+      parent.confirm();
+      return {
+        ctime_ns: stat.ctimeNs.toString(),
+        device: stat.dev.toString(),
+        gid: Number(stat.gid),
+        inode: stat.ino.toString(),
+        mode: modeString(stat),
+        path,
+        type,
         uid: Number(stat.uid),
       };
     },
@@ -2216,6 +2711,185 @@ function commandResult(argv, { captureStdout, maxBytes, timeoutMs, extraFd } = {
   };
 }
 
+function pinnedDescriptorSnapshot(fd, pin, label, maxBytes) {
+  const stat = fstatSync(fd, { bigint: true });
+  if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes)) {
+    fail(`${label} is not one bounded single-link regular file`);
+  }
+  const snapshot = snapshotFromStat(pin.path, stat, readFileSync(fd));
+  exactRegularSnapshot(snapshot, pin, label);
+  return stat;
+}
+
+export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, setprivPin, uid }) {
+  if (!new Set(["EACCES", "root-readback"]).has(expected)) fail("unreviewed admin probe expectation");
+  if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(gid) || uid < 0 || gid < 0) {
+    fail("admin probe UID/GID is invalid");
+  }
+  const nodeParent = openSealedParent(nodePin.path);
+  const probeParent = openSealedParent(probePin.path);
+  const setprivParent = openSealedParent(setprivPin.path);
+  let nodeFd;
+  let probeFd;
+  let setprivFd;
+  return runWithSyncCleanups(
+    () => {
+      nodeFd = openSync(
+        nodeParent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      probeFd = openSync(
+        probeParent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      setprivFd = openSync(
+        setprivParent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      const nodeStat = pinnedDescriptorSnapshot(
+        nodeFd,
+        nodePin,
+        "admin probe Node binary",
+        MAX_EXECUTABLE_BYTES,
+      );
+      const probeStat = pinnedDescriptorSnapshot(
+        probeFd,
+        probePin,
+        "admin probe script",
+        MAX_FILE_BYTES,
+      );
+      const setprivStat = pinnedDescriptorSnapshot(
+        setprivFd,
+        setprivPin,
+        "admin probe setpriv binary",
+        MAX_EXECUTABLE_BYTES,
+      );
+      nodeParent.confirm();
+      probeParent.confirm();
+      setprivParent.confirm();
+      const result = spawnSync("/proc/self/fd/5", [
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        "--clear-groups",
+        "--no-new-privs",
+        "--bounding-set=-all",
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "/proc/self/fd/4",
+        "/proc/self/fd/3",
+      ], {
+        encoding: null,
+        env: {
+          BPIR_ADMIN_PROBE_FORMAT: "json",
+          BPIR_ADMIN_PROBE_LABEL: label,
+          BPIR_EXPECT_ADMIN_PROBE: expected,
+          LANG: "C",
+          LC_ALL: "C",
+          PATH: "/usr/sbin:/usr/bin:/sbin:/bin",
+        },
+        killSignal: "SIGKILL",
+        maxBuffer: 2 * 1024 * 1024,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe", probeFd, nodeFd, setprivFd],
+        timeout: 5_000,
+      });
+      for (const [fd, before, descriptorLabel] of [
+        [nodeFd, nodeStat, "Node binary"],
+        [probeFd, probeStat, "probe script"],
+        [setprivFd, setprivStat, "setpriv binary"],
+      ]) {
+        const after = fstatSync(fd, { bigint: true });
+        if (
+          !sameInode(after, before) || after.ctimeNs !== before.ctimeNs ||
+          after.mtimeNs !== before.mtimeNs || after.size !== before.size
+        ) {
+          fail(`admin probe ${descriptorLabel} drifted during descriptor execution`);
+        }
+      }
+      if (result.status !== 0) {
+        fail(`admin probe ${label} failed: ${(result.stderr ?? Buffer.alloc(0)).toString("utf8").trim()}`);
+      }
+      const stdout = result.stdout ?? Buffer.alloc(0);
+      if (!stdout.toString("utf8").endsWith("\n") || stdout.subarray(0, -1).includes(0x0a)) {
+        fail(`admin probe ${label} did not return one canonical JSON line`);
+      }
+      const value = parseStrictJson(stdout.subarray(0, -1).toString("utf8"), `admin probe ${label}`);
+      if (!stdout.subarray(0, -1).equals(Buffer.from(canonicalJson(value).slice(0, -1), "utf8"))) {
+        fail(`admin probe ${label} JSON was not canonical`);
+      }
+      nodeParent.confirm();
+      probeParent.confirm();
+      setprivParent.confirm();
+      return value;
+    },
+    [
+      () => { if (setprivFd !== undefined) closeSync(setprivFd); },
+      () => { if (probeFd !== undefined) closeSync(probeFd); },
+      () => { if (nodeFd !== undefined) closeSync(nodeFd); },
+      () => setprivParent.close(),
+      () => probeParent.close(),
+      () => nodeParent.close(),
+    ],
+  );
+}
+
+function tcpAdminRefusal(endpoint) {
+  const address = endpoint === "127.0.0.1:2019" ? "127.0.0.1" : endpoint === "[::1]:2019" ? "::1" : null;
+  if (address === null) fail(`unreviewed TCP admin endpoint ${endpoint}`);
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) rejectPromise(error);
+      else resolvePromise(value);
+    };
+    const socket = netConnect({ host: address, port: 2019 });
+    const timer = setTimeout(
+      () => finish(new Error(`TCP admin probe timed out for ${endpoint}`)),
+      3_000,
+    );
+    socket.once("connect", () => finish(new Error(`TCP admin remained reachable at ${endpoint}`)));
+    socket.once("error", (error) => {
+      if (error?.code === "ECONNREFUSED") finish(null, "connection-refused");
+      else finish(new Error(`TCP admin probe ${endpoint} failed with ${error?.code ?? error.message}`));
+    });
+  });
+}
+
+function systemctlShowProperties(unitName, properties, { optionalEmpty = [] } = {}) {
+  const result = commandResult(
+    [
+      "/usr/bin/systemctl",
+      "show",
+      unitName,
+      "--no-pager",
+      ...properties.map((property) => `--property=${property}`),
+    ],
+    { captureStdout: true, maxBytes: 256 * 1024, timeoutMs: 10_000 },
+  );
+  if (result.status !== 0 || result.stderr.length !== 0) {
+    fail(`systemctl show failed or wrote diagnostics for ${unitName}`);
+  }
+  const values = new Map();
+  for (const line of result.stdout.toString("utf8").trimEnd().split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator < 1) fail(`malformed systemctl show output for ${unitName}`);
+    const key = line.slice(0, separator);
+    if (values.has(key)) fail(`duplicate systemctl property ${key}`);
+    values.set(key, line.slice(separator + 1));
+  }
+  for (const key of optionalEmpty) {
+    if (!values.has(key)) values.set(key, "");
+  }
+  if (values.size !== properties.length || properties.some((key) => !values.has(key))) {
+    fail(`systemctl show omitted a property for ${unitName}`);
+  }
+  return values;
+}
+
 function unitGeneration(unitName) {
   const properties = [
     "ActiveEnterTimestampMonotonic",
@@ -2226,28 +2900,7 @@ function unitGeneration(unitName) {
     "MainPID",
     "SubState",
   ];
-  const result = commandResult(
-    [
-      "/usr/bin/systemctl",
-      "show",
-      unitName,
-      "--no-pager",
-      ...properties.map((property) => `--property=${property}`),
-    ],
-    { captureStdout: true, maxBytes: 64 * 1024, timeoutMs: 10_000 },
-  );
-  if (result.status !== 0) fail(`systemctl show failed for ${unitName}`);
-  const values = new Map();
-  for (const line of result.stdout.toString("utf8").trimEnd().split("\n")) {
-    const separator = line.indexOf("=");
-    if (separator < 1) fail(`malformed systemctl show output for ${unitName}`);
-    const key = line.slice(0, separator);
-    if (values.has(key)) fail(`duplicate systemctl property ${key}`);
-    values.set(key, line.slice(separator + 1));
-  }
-  if (values.size !== properties.length || properties.some((key) => !values.has(key))) {
-    fail(`systemctl show omitted a property for ${unitName}`);
-  }
+  const values = systemctlShowProperties(unitName, properties);
   return {
     active_enter_timestamp_monotonic: values.get("ActiveEnterTimestampMonotonic"),
     active_state: values.get("ActiveState"),
@@ -2257,6 +2910,156 @@ function unitGeneration(unitName) {
     main_pid: values.get("MainPID"),
     sub_state: values.get("SubState"),
     unit_name: unitName,
+  };
+}
+
+function splitSystemdLiteralWords(value, label) {
+  if (value === "") return [];
+  if (!/^[A-Za-z0-9_./:@+-]+(?:[\t ]+[A-Za-z0-9_./:@+-]+)*$/u.test(value)) {
+    fail(`${label} contains an unreviewed systemd word serialization`);
+  }
+  return value.split(/[\t ]+/u).sort();
+}
+
+function systemdEnvironmentNames(value, label) {
+  if (value === "") return [];
+  const names = [];
+  for (const assignment of value.split(/[\t ]+/u)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=[A-Za-z0-9_./:@%+,-]*$/u.exec(assignment);
+    if (match === null || names.includes(match[1])) {
+      fail(`${label} contains an unreviewed or duplicate assignment serialization`);
+    }
+    names.push(match[1]);
+  }
+  names.sort();
+  return names;
+}
+
+function extractSingleSystemdExec(value, label) {
+  const records = [...value.matchAll(/\{[^{}]*\}/gu)];
+  if (records.length !== 1 || records[0][0] !== value.trim()) {
+    fail(`${label} must contain exactly one systemd Exec command`);
+  }
+  const record = records[0][0];
+  const path = /(?:^\{[\t ]*|[\t ]*;[\t ]*)path=([^ ;]+)[\t ]*;/u.exec(record)?.[1];
+  const argv = /(?:^\{[\t ]*|[\t ]*;[\t ]*)argv\[\]=(.+?)[\t ]*;[\t ]*ignore_errors=/u.exec(record)?.[1]?.trim();
+  const ignoreErrors = /(?:^\{[\t ]*|[\t ]*;[\t ]*)ignore_errors=(yes|no)[\t ]*;/u.exec(record)?.[1];
+  if (
+    path === undefined || argv === undefined || ignoreErrors === undefined ||
+    !/^[A-Za-z0-9_./:@+=|-]+(?:[\t ]+[A-Za-z0-9_./:@+=|-]+)*$/u.test(argv)
+  ) {
+    fail(`${label} has an unreviewed systemd Exec serialization`);
+  }
+  return { argv, ignore_errors: ignoreErrors, path };
+}
+
+const EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
+  "DropInPaths",
+  "Environment",
+  "EnvironmentFiles",
+  "ExecReload",
+  "ExecStart",
+  "FragmentPath",
+  "Group",
+  "NeedDaemonReload",
+  "PassEnvironment",
+  "RuntimeDirectory",
+  "RuntimeDirectoryMode",
+  "RuntimeDirectoryPreserve",
+  "UMask",
+  "UnsetEnvironment",
+  "User",
+]);
+
+function normalizeEffectiveUnitProperties(values) {
+  if (values.get("DropInPaths") !== "") fail("effective Caddy unit has a drop-in");
+  if (values.get("EnvironmentFiles") !== "") fail("effective Caddy unit has an EnvironmentFile");
+  return {
+    dropin_paths: [],
+    environment_names: systemdEnvironmentNames(values.get("Environment"), "effective Caddy Environment"),
+    environment_files: [],
+    exec_reload: extractSingleSystemdExec(values.get("ExecReload"), "effective Caddy ExecReload"),
+    exec_start: extractSingleSystemdExec(values.get("ExecStart"), "effective Caddy ExecStart"),
+    fragment_path: values.get("FragmentPath"),
+    group: values.get("Group"),
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    pass_environment: splitSystemdLiteralWords(values.get("PassEnvironment"), "effective Caddy PassEnvironment"),
+    runtime_directory: splitSystemdLiteralWords(values.get("RuntimeDirectory"), "effective Caddy RuntimeDirectory"),
+    runtime_directory_mode: values.get("RuntimeDirectoryMode"),
+    runtime_directory_preserve: values.get("RuntimeDirectoryPreserve"),
+    umask: values.get("UMask"),
+    unset_environment: splitSystemdLiteralWords(values.get("UnsetEnvironment"), "effective Caddy UnsetEnvironment"),
+    user: values.get("User"),
+  };
+}
+
+export function testOnlyNormalizeEffectiveUnitProperties(properties) {
+  exactKeys(properties, EFFECTIVE_UNIT_PROPERTIES, "test effective-unit properties");
+  return normalizeEffectiveUnitProperties(new Map(Object.entries(properties)));
+}
+
+function effectiveUnitState(unitName) {
+  if (unitName !== TARGET_UNIT) fail(`unreviewed effective-unit target ${unitName}`);
+  const values = systemctlShowProperties(unitName, EFFECTIVE_UNIT_PROPERTIES, {
+    optionalEmpty: ["EnvironmentFiles"],
+  });
+  return normalizeEffectiveUnitProperties(values);
+}
+
+function nulTerminatedFields(bytes, label, maxBytes) {
+  if (bytes.length === 0 || bytes.length > maxBytes || bytes[bytes.length - 1] !== 0) {
+    fail(`${label} is not one bounded NUL-terminated vector`);
+  }
+  const fields = [];
+  let start = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0) continue;
+    if (index === start) fail(`${label} contains an empty member`);
+    fields.push(bytes.subarray(start, index));
+    start = index + 1;
+  }
+  return fields;
+}
+
+function processRuntime(pid) {
+  if (typeof pid !== "string" || !/^[1-9][0-9]*$/u.test(pid)) {
+    fail("Caddy MainPID is not a positive canonical decimal");
+  }
+  const cmdlineFields = nulTerminatedFields(
+    readFileSync(`/proc/${pid}/cmdline`),
+    `Caddy /proc/${pid}/cmdline`,
+    64 * 1024,
+  );
+  const cmdlineArgv = cmdlineFields.map((field) => {
+    const value = field.toString("utf8");
+    if (!Buffer.from(value, "utf8").equals(field) || !/^[\x20-\x7e]+$/u.test(value)) {
+      fail("Caddy cmdline contains a non-canonical argument");
+    }
+    return value;
+  });
+  const environmentNames = [];
+  for (const field of nulTerminatedFields(
+    readFileSync(`/proc/${pid}/environ`),
+    `Caddy /proc/${pid}/environ`,
+    1024 * 1024,
+  )) {
+    const separator = field.indexOf(0x3d);
+    if (separator < 1) fail("Caddy process environment contains a malformed assignment");
+    const nameBytes = field.subarray(0, separator);
+    const name = nameBytes.toString("ascii");
+    if (!Buffer.from(name, "ascii").equals(nameBytes) || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+      fail("Caddy process environment contains a non-canonical name");
+    }
+    if (environmentNames.includes(name)) fail("Caddy process environment contains a duplicate name");
+    environmentNames.push(name);
+  }
+  environmentNames.sort();
+  return {
+    caddy_admin_environment_absent: !environmentNames.includes("CADDY_ADMIN"),
+    cmdline_argv: cmdlineArgv,
+    effective_environment_names: environmentNames,
+    main_pid: pid,
+    start_time_ticks: processStartTicks(Number(pid)),
   };
 }
 
@@ -2732,14 +3535,32 @@ export function linuxOverlayOps() {
       }
       return observed;
     },
+    async monotonicNowNs() {
+      return process.hrtime.bigint().toString();
+    },
+    async probeAdminApi(options) {
+      return runPinnedAdminProbe(options);
+    },
+    async probeTcpAdmin(endpoint) {
+      return tcpAdminRefusal(endpoint);
+    },
+    async readAdminRuntimePath(path) {
+      return realReadAdminRuntimePath(path);
+    },
     async readDirectory(path) {
       return realReadDirectory(path);
+    },
+    async readEffectiveUnit(unitName) {
+      return effectiveUnitState(unitName);
     },
     async readOptionalRegular(path) {
       return realReadOptionalRegular(path);
     },
     async readRegular(path) {
-      return realReadRegular(path);
+      return realReadRegular(path, pinnedReadLimit(path));
+    },
+    async readProcessRuntime(pid) {
+      return processRuntime(pid);
     },
     async readRuntimePath(path) {
       return runtimePath(path);

@@ -569,6 +569,44 @@ PID namespace or systemd container. This closes ordinary reacquisition under
 the trusted-root/authentication-policy boundary, not a compromised root or new
 local-privilege exploit.
 
+### Existing-Caddy admin UDS prerequisite (not deployed)
+
+The existing root `bhtm-caddy.service` currently requires a separate cold
+maintenance prerequisite before it is eligible for the integrated overlay.
+`bhtm-caddy-admin-uds-v1` deterministically changes only the global admin
+endpoint to `unix//run/bitcoinpir-caddy-admin/admin.sock|0200` and the reviewed
+unit directives needed for a root-owned `0700` `RuntimeDirectory`, `UMask=0077`,
+an explicit UDS `ExecReload`, final `UnsetEnvironment=CADDY_ADMIN`, and an exact
+non-`--environ` `ExecStart`. It rejects drop-ins, every `PassEnvironment`,
+environment-file ambiguity, all Caddy imports and environment substitutions,
+quoted `import`/`admin` directive tokens, and all 21 Unicode White_Space
+separators outside the canonical subset. The exact v2.11.4 adapter regression
+demonstrates why those closed-profile lexer exclusions are required.
+All unrelated Caddyfile and unit bytes, existing sites, and ACME storage
+location remain unchanged.
+
+This cannot be performed by appending a Caddy site block or by reloading the
+old process: systemd creates the new runtime directory only for a new cold
+generation. The profile therefore requires exact old/new Caddyfile and unit
+pins, the exact independently inventoried production Caddy `v2.11.4` binary,
+exact Node `v22.22.2`, probe and `setpriv` pins, a same-boot privileged
+process/capability inventory, and complete service-UID/site inventories,
+stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
+and a new `InvocationID`. Committed evidence must include root API readback over
+the UDS, root:root `0700`/`0200` directory/socket metadata, `EACCES` for every
+approved non-root service UID (including `pir` and `cloudflared`), disappearance
+of IPv4 and IPv6 TCP port 2019, zero effective capabilities and cleared
+supplementary groups for each denial probe, and all before/after site probes.
+
+Any unclassified file pair remains stopped. Once a start has been requested,
+an ambiguous systemctl result, generation, UDS readback or receipt publication
+is `outcome-unknown`; automatic rollback is forbidden until explicit recovery
+classifies the active generation. Safe rollback restores the exact old
+Caddyfile **and** exact old unit, fsyncs both parents, daemon-reloads, starts a
+new old-config generation and re-runs old health checks. The checked-in gate is
+read-only and no transaction executor is yet approved. See
+[CADDY_ADMIN_UDS_HARDENING.md](CADDY_ADMIN_UDS_HARDENING.md).
+
 ### Alternative existing-Caddy overlay (not deployed)
 
 `integrated-existing-bhtm-caddy-v1` is an explicit alternative to
@@ -582,9 +620,28 @@ preimage, Caddy binary and unit fragment, active PID/InvocationID/control-group
 generation, rendered block, helper, Node/gate/executor, TLS inputs, HAProxy
 bundle/runtime evidence and all four health probes.
 
-This profile deliberately does **not** claim that appending a block hardens the
-existing root Caddy process. Existing global options, admin endpoint, ACME
-account/certificate state, journal/error path, zero-RTT choice, plugins,
+This profile deliberately does **not** claim that appending a block performs
+the admin migration or otherwise hardens the existing root Caddy process. It
+now requires a canonical owner-only committed
+`bhtm-caddy-admin-uds-v1` receipt and requires its target binary, Caddyfile,
+unit and active `InvocationID` to equal that receipt's hardened generation.
+The overlay executor revalidates the complete canonical hardening plan and
+receipt, not a summary subset. Before exchange and again after validation,
+reload and application health, it freshly seals the runtime directory/socket,
+performs descriptor-pinned `setpriv` root and service-UID probes, requires both
+TCP-2019 endpoints refused, and binds the same boot and Caddy generation. It
+also binds the current effective fragment, absence of drop-ins/environment
+files, explicit environment-name policy, `ExecStart`, UDS `ExecReload`,
+`NeedDaemonReload=no`, runtime-directory/identity/umask settings, and exact
+MainPID argv/start ticks with no process `CADDY_ADMIN`. Environment values are
+not retained. Stable snapshots are repeated immediately before each exchange
+or reload, and recovery validates saved monotonic windows without rewriting
+them; corrupt historical evidence fails before any mutation. The executor also
+accepts only the approved canonical adapted-JSON digest with the exact UDS
+admin listener; any drift before exchange aborts, while post-exchange drift
+enters the exact rollback transaction.
+Existing global options, ACME account/certificate state, journal/error path,
+zero-RTT choice, plugins,
 resource limits and every pre-existing site remain in the Payment V1 trust,
 privacy and failure domain. The overlay plan must acknowledge that wider domain
 explicitly. A successful reload receipt proves only the pinned generation,

@@ -51,6 +51,7 @@
     }
   ],
   "managed_block": {
+    "candidate_adapted_json_sha256": "INVALID_REPLACE_WITH_CANONICAL_ADAPTED_JSON_SHA256",
     "candidate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
     "placeholders": {
       "DIRECTORY_PUBLISHER_CLIENT_IP": "INVALID_REPLACE_WITH_PRIVATE_CLIENT_IP",
@@ -66,6 +67,19 @@
     "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256"
   },
   "runtime": {
+    "admin_probe": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+      "sha256": "INVALID_REPLACE_WITH_ADMIN_PROBE_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
     "exchange_helper": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -141,6 +155,19 @@
       "nlink": 1,
       "path": "/usr/bin/node",
       "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "setpriv_binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/setpriv",
+      "sha256": "INVALID_REPLACE_WITH_ADMIN_HARDENING_SETPRIV_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
     }
@@ -238,6 +265,51 @@
     }
   },
   "target": {
+    "admin_uds_hardening": {
+      "admin_listen": "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+      "all_service_uids_denied": true,
+      "approved_plan_sha256": "INVALID_REPLACE_WITH_APPROVED_ADMIN_UDS_PLAN_SHA256",
+      "binary_sha256": "INVALID_REPLACE_WITH_HARDENED_CADDY_BINARY_SHA256",
+      "cold_new_generation": true,
+      "config_sha256": "INVALID_REPLACE_WITH_HARDENED_CADDYFILE_SHA256",
+      "deployment_profile": "bhtm-caddy-admin-uds-v1",
+      "plan": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0400",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/plans/INVALID_REPLACE_WITH_ADMIN_UDS_TRANSACTION_ID.json",
+        "sha256": "INVALID_REPLACE_WITH_APPROVED_ADMIN_UDS_PLAN_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      },
+      "receipt": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0400",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/receipts/INVALID_REPLACE_WITH_ADMIN_UDS_TRANSACTION_ID.json",
+        "sha256": "INVALID_REPLACE_WITH_TRUSTED_ADMIN_UDS_RECEIPT_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      },
+      "runtime_directory": "/run/bitcoinpir-caddy-admin",
+      "runtime_directory_mode": "0700",
+      "service_uid_inventory_sha256": "INVALID_REPLACE_WITH_COMPLETE_SERVICE_UID_INVENTORY_SHA256",
+      "setpriv_binary_sha256": "INVALID_REPLACE_WITH_ADMIN_HARDENING_SETPRIV_SHA256",
+      "socket_mode": "0200",
+      "socket_path": "/run/bitcoinpir-caddy-admin/admin.sock",
+      "tcp_admin_absent": true,
+      "transaction_id": "INVALID_REPLACE_WITH_ADMIN_UDS_TRANSACTION_ID",
+      "unit_invocation_id": "INVALID_REPLACE_WITH_HARDENED_UNIT_INVOCATION_ID",
+      "unit_sha256": "INVALID_REPLACE_WITH_HARDENED_UNIT_SHA256"
+    },
     "binary": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -392,6 +464,7 @@
     "existing_preimage_remains_authoritative": true,
     "existing_root_caddy_retains_admin_acme_and_journal_trust": true,
     "existing_root_caddy_expands_failure_domain": true,
+    "fresh_admin_runtime_probes_required_before_and_after_reload": true,
     "reload_does_not_refresh_cold_runtime_evidence": true
   }
 }

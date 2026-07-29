@@ -9,6 +9,7 @@ import {
   MANAGED_BLOCK_SOURCE,
   OVERLAY_COLLECTOR,
   buildOverlayCandidate,
+  canonicalJson,
   computeApprovedOverlayPlanSha256,
   validateOverlayPlan,
   validateOverlayReceipt,
@@ -90,6 +91,10 @@ function makePlan() {
   const exchangeManifest = Buffer.from(`${exchangeSha}  ${exchangePath}\n`);
   const preimageSha = sha256(PREIMAGE);
   const transactionId = "integrated-caddy-test-1";
+  const targetGeneration = generation("bhtm-caddy.service", {
+    canReload: "yes",
+    pid: "4343",
+  });
   const plan = {
     deployment_profile: "integrated-existing-bhtm-caddy-v1",
     health_checks: [
@@ -143,6 +148,7 @@ function makePlan() {
       },
     ],
     managed_block: {
+      candidate_adapted_json_sha256: "0".repeat(64),
       candidate_sha256: sha256(candidate),
       placeholders,
       rendered_sha256: sha256(rendered),
@@ -150,6 +156,11 @@ function makePlan() {
       source_sha256: sha256(SOURCE),
     },
     runtime: {
+      admin_probe: pin(
+        "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+        "e".repeat(64),
+        "0555",
+      ),
       exchange_helper: pin(exchangePath, exchangeSha, "0555"),
       exchange_manifest: pin(
         "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256",
@@ -174,6 +185,7 @@ function makePlan() {
         { size: String(rendered.length) },
       ),
       node_binary: pin("/usr/bin/node", "f".repeat(64), "0755"),
+      setpriv_binary: pin("/usr/bin/setpriv", "4".repeat(64), "0755"),
     },
     schema_version: 1,
     source_fair: {
@@ -223,6 +235,40 @@ function makePlan() {
       ),
     },
     target: {
+      admin_uds_hardening: {
+        admin_listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+        all_service_uids_denied: true,
+        approved_plan_sha256: "9".repeat(64),
+        binary_sha256: "5".repeat(64),
+        cold_new_generation: true,
+        config_sha256: preimageSha,
+        deployment_profile: "bhtm-caddy-admin-uds-v1",
+        plan: pin(
+          "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/plans/caddy-admin-uds-test-1.json",
+          "9".repeat(64),
+          "0400",
+        ),
+        receipt: pin(
+          "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/receipts/caddy-admin-uds-test-1.json",
+          "d".repeat(64),
+          "0400",
+        ),
+        runtime_directory: "/run/bitcoinpir-caddy-admin",
+        runtime_directory_mode: "0700",
+        setpriv_binary_sha256: "4".repeat(64),
+        service_uid_inventory_sha256: sha256(
+          Buffer.from(canonicalJson([
+            { name: "cloudflared", uid: 62901 },
+            { name: "pir", uid: 62902 },
+          ]).slice(0, -1)),
+        ),
+        socket_mode: "0200",
+        socket_path: "/run/bitcoinpir-caddy-admin/admin.sock",
+        tcp_admin_absent: true,
+        transaction_id: "caddy-admin-uds-test-1",
+        unit_invocation_id: targetGeneration.invocation_id,
+        unit_sha256: "6".repeat(64),
+      },
       binary: pin("/usr/bin/caddy", "5".repeat(64), "0755"),
       config_parent: {
         device: "2049",
@@ -243,10 +289,7 @@ function makePlan() {
         "6".repeat(64),
         "0644",
       ),
-      unit_generation: generation("bhtm-caddy.service", {
-        canReload: "yes",
-        pid: "4343",
-      }),
+      unit_generation: targetGeneration,
     },
     tls_dependencies: [
       {
@@ -332,6 +375,7 @@ function makePlan() {
       existing_preimage_remains_authoritative: true,
       existing_root_caddy_retains_admin_acme_and_journal_trust: true,
       existing_root_caddy_expands_failure_domain: true,
+      fresh_admin_runtime_probes_required_before_and_after_reload: true,
       reload_does_not_refresh_cold_runtime_evidence: true,
     },
   };
@@ -349,10 +393,103 @@ function afterConfig(plan, digest) {
   };
 }
 
+function adminRuntime(plan, start) {
+  const binary = plan.target.binary.path;
+  return {
+    boot_id: "22345678-1234-4234-9234-123456789abc",
+    boundary: "capability-free-unprivileged-non-root-dac-only",
+    denied_service_uids: [
+      { cap_eff: "0000000000000000", error: "EACCES", gid: 62901, groups: [62901], name: "cloudflared", uid: 62901 },
+      { cap_eff: "0000000000000000", error: "EACCES", gid: 62902, groups: [62902], name: "pir", uid: 62902 },
+    ],
+    effective_unit: {
+      dropin_paths: [],
+      environment_names: [],
+      environment_files: [],
+      exec_reload: {
+        argv: `${binary} reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock`,
+        ignore_errors: "no",
+        path: binary,
+      },
+      exec_start: {
+        argv: `${binary} run --config /etc/caddy/Caddyfile --adapter caddyfile`,
+        ignore_errors: "no",
+        path: binary,
+      },
+      fragment_path: plan.target.unit_fragment.path,
+      group: "root",
+      need_daemon_reload: "no",
+      pass_environment: [],
+      runtime_directory: ["bitcoinpir-caddy-admin"],
+      runtime_directory_mode: "0700",
+      runtime_directory_preserve: "no",
+      umask: "0077",
+      unset_environment: ["CADDY_ADMIN"],
+      user: "root",
+    },
+    monotonic_end_ns: String(start + 100),
+    monotonic_start_ns: String(start),
+    process: {
+      caddy_admin_environment_absent: true,
+      cmdline_argv: [binary, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"],
+      effective_environment_names: ["HOME", "PATH"],
+      main_pid: plan.target.unit_generation.main_pid,
+      start_time_ticks: "987654",
+    },
+    root_readback: {
+      body_sha256: "b".repeat(64),
+      cap_eff: "0000000000000000",
+      error: null,
+      gid: 0,
+      groups: [0],
+      label: "root",
+      listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+      path: "/config/",
+      status: 200,
+      transport: "unix",
+      uid: 0,
+    },
+    runtime_directory: {
+      ctime_ns: "1700000003000000000",
+      device: "2049",
+      gid: 0,
+      inode: "61001",
+      mode: "0700",
+      path: "/run/bitcoinpir-caddy-admin",
+      type: "directory",
+      uid: 0,
+    },
+    socket: {
+      ctime_ns: "1700000003000000001",
+      device: "2049",
+      gid: 0,
+      inode: "61002",
+      mode: "0200",
+      path: "/run/bitcoinpir-caddy-admin/admin.sock",
+      type: "socket",
+      uid: 0,
+    },
+    tcp_admin: [
+      { endpoint: "127.0.0.1:2019", result: "connection-refused" },
+      { endpoint: "[::1]:2019", result: "connection-refused" },
+    ],
+    unit_generation: clone(plan.target.unit_generation),
+  };
+}
+
 function makeReceipt(plan, outcome = "committed") {
   const committed = outcome === "committed";
+  const beforeAdminRuntime = adminRuntime(plan, 3_000_000);
+  const afterAdminRuntime = adminRuntime(plan, 4_000_000);
+  const runtimeBefore = {
+    boot_id: beforeAdminRuntime.boot_id,
+    effective_unit: clone(beforeAdminRuntime.effective_unit),
+    process: clone(beforeAdminRuntime.process),
+    unit_generation: clone(beforeAdminRuntime.unit_generation),
+  };
   const receipt = {
     after: {
+      admin_runtime: afterAdminRuntime,
       binary: clone(plan.target.binary),
       config: afterConfig(
         plan,
@@ -377,6 +514,7 @@ function makeReceipt(plan, outcome = "committed") {
       uid: 0,
     },
     before: {
+      admin_runtime: beforeAdminRuntime,
       binary: clone(plan.target.binary),
       config: clone(plan.target.config_preimage),
       source_fair_generation: clone(plan.source_fair.unit_generation),
@@ -410,7 +548,7 @@ function makeReceipt(plan, outcome = "committed") {
     preparation: {
       adapt_argv: clone(plan.transaction.adapt_argv),
       adapt_exit_status: 0,
-      adapted_json_sha256: "a".repeat(64),
+      adapted_json_sha256: plan.managed_block.candidate_adapted_json_sha256,
       candidate_sha256: plan.managed_block.candidate_sha256,
       managed_block_sha256: plan.managed_block.rendered_sha256,
       preimage_sha256: plan.target.config_preimage.sha256,
@@ -421,6 +559,7 @@ function makeReceipt(plan, outcome = "committed") {
       argv: clone(plan.transaction.reload_argv),
       exit_status: committed ? 0 : 1,
       restart_invoked: false,
+      runtime_before: clone(runtimeBefore),
     },
     rollback: committed
       ? {
@@ -430,6 +569,7 @@ function makeReceipt(plan, outcome = "committed") {
           exact_preimage_restored: false,
           exchanged: false,
           reload_exit_status: null,
+          runtime_before: null,
         }
       : {
           attempted: true,
@@ -438,6 +578,7 @@ function makeReceipt(plan, outcome = "committed") {
           exact_preimage_restored: true,
           exchanged: true,
           reload_exit_status: 0,
+          runtime_before: clone(runtimeBefore),
         },
     schema_version: 1,
     transaction_id: plan.transaction_id,
@@ -491,6 +632,26 @@ for (const [label, mutate, expected] of [
     "Caddy cannot reload",
     (plan) => { plan.target.unit_generation.can_reload = "no"; },
     /can_reload must equal yes/,
+  ],
+  [
+    "missing committed admin UDS prerequisite",
+    (plan) => { plan.target.admin_uds_hardening.tcp_admin_absent = false; },
+    /tcp_admin_absent must equal true/,
+  ],
+  [
+    "admin UDS preimage digest drift",
+    (plan) => { plan.target.admin_uds_hardening.unit_sha256 = "a".repeat(64); },
+    /unit_sha256 must equal the overlay target preimage/,
+  ],
+  [
+    "world-readable admin UDS receipt",
+    (plan) => { plan.target.admin_uds_hardening.receipt.mode = "0444"; },
+    /receipt mode must be one of \["0400"\]/,
+  ],
+  [
+    "setpriv digest differs from hardening evidence",
+    (plan) => { plan.runtime.setpriv_binary.sha256 = "3".repeat(64); },
+    /setpriv binary must equal the approved hardening setpriv digest/,
   ],
   [
     "HAProxy manifest profile drift",
@@ -556,6 +717,7 @@ test("candidate rejects changed preimage, duplicate marker and changed source", 
   const markedPlan = makePlan();
   markedPlan.target.config_preimage.sha256 = sha256(marked);
   markedPlan.target.config_preimage.size = String(marked.length);
+  markedPlan.target.admin_uds_hardening.config_sha256 = sha256(marked);
   markedPlan.transaction.backup_path =
     `/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/backups/${markedPlan.transaction_id}-${sha256(marked)}.Caddyfile`;
   markedPlan.managed_block.candidate_sha256 = sha256(
@@ -611,6 +773,40 @@ for (const [label, mutate, expected] of [
     "failed health check",
     (receipt) => { receipt.health_results[0].success = false; },
     /failed or drifted/,
+  ],
+  [
+    "capability-bearing admin denial",
+    (receipt) => { receipt.after.admin_runtime.denied_service_uids[0].cap_eff = "0000000000000002"; },
+    /not an unprivileged EACCES proof/,
+  ],
+  [
+    "effective unit drop-in",
+    (receipt) => { receipt.after.admin_runtime.effective_unit.dropin_paths.push("/run/systemd/system/bhtm-caddy.service.d/override.conf"); },
+    /effective_unit drifted/,
+  ],
+  [
+    "effective ExecReload drift",
+    (receipt) => { receipt.reload.runtime_before.effective_unit.exec_reload = { argv: "/bin/true", ignore_errors: "no", path: "/bin/true" }; },
+    /effective_unit drifted/,
+  ],
+  [
+    "NeedDaemonReload drift",
+    (receipt) => { receipt.before.admin_runtime.effective_unit.need_daemon_reload = "yes"; },
+    /effective_unit drifted/,
+  ],
+  [
+    "CADDY_ADMIN process environment",
+    (receipt) => {
+      receipt.after.admin_runtime.process.caddy_admin_environment_absent = false;
+      receipt.after.admin_runtime.process.effective_environment_names.push("CADDY_ADMIN");
+      receipt.after.admin_runtime.process.effective_environment_names.sort();
+    },
+    /environment boundary/,
+  ],
+  [
+    "reload without a runtime boundary",
+    (receipt) => { receipt.reload.runtime_before = null; },
+    /lacks its current runtime boundary/,
   ],
 ]) {
   test(`committed receipt rejects ${label}`, () => {

@@ -38,6 +38,7 @@ on:
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-integrated-caddy-*'
+      - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -84,6 +85,7 @@ on:
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-integrated-caddy-*'
+      - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -437,11 +439,13 @@ jobs:
           sudo apt-get install --yes --no-install-recommends haproxy
           /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
           /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
-          caddy_container="$(docker create caddy@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794)"
+          caddy_container="$(docker create caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)"
           docker cp "$caddy_container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
           docker rm "$caddy_container"
           chmod 0555 "$RUNNER_TEMP/caddy"
-          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.3'
+          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.4'
+          test "$(sha256sum "$RUNNER_TEMP/caddy" | awk '{print $1}')" = 'b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9'
+          sudo install -o root -g root -m 0555 "$RUNNER_TEMP/caddy" /usr/bin/caddy
           echo 'BPIR_HAPROXY_BIN=/usr/sbin/haproxy' >> "$GITHUB_ENV"
           echo "BPIR_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
       - name: Validate non-activating Payment V1 deployment templates
@@ -458,6 +462,11 @@ jobs:
           node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
           node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
           node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-gate.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
+          node scripts/payment-v1-caddy-admin-uds-gate.mjs --help >/dev/null
           node --check scripts/payment-v1-source-fair-edge.test.mjs
           node --test \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
@@ -465,9 +474,22 @@ jobs:
             scripts/payment-v1-rendered-artifact-gate.test.mjs \
             scripts/payment-v1-linux-runtime-evidence.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs
+          node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          systemd-analyze verify scripts/fixtures/payment-v1-caddy-admin-uds-hardened.service
           sudo "$(command -v node)" --test \
             scripts/payment-v1-integrated-caddy-lock.test.mjs \
             scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
+            node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
+          scripts/payment-v1-caddy-admin-uds-process.test.sh
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

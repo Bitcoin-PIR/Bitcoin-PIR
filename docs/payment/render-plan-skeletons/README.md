@@ -75,6 +75,19 @@ initializing a blank store and calling it a switch.
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 
+The separate `bhtm-caddy-admin-uds-v1.plan.json.example` is not a rendered
+service profile and is not part of `payment-v1-rendered-artifact-gate.mjs`.
+It describes one stopped-service maintenance transaction for the exact existing
+root `bhtm-caddy.service`. Its dedicated read-only gate deterministically
+derives a hardened Caddyfile and unit from their exact preimages. It neither
+renders an install bundle nor executes the cold stop/start. See
+[`../CADDY_ADMIN_UDS_HARDENING.md`](../CADDY_ADMIN_UDS_HARDENING.md).
+Its runtime closure includes the exact Node, probe and `setpriv` binaries plus a
+same-boot privileged process/capability inventory. The integrated-existing-Caddy
+overlay skeleton separately pins both this canonical plan and its complete
+committed receipt, the canonical adapted-JSON digest, and the fresh runtime
+probe executables; a receipt summary alone is not sufficient.
+
 There is intentionally no directory-relay plan. The gate's deployment profile
 catalog does not contain one. A source template existing in the repository does
 not authorize inventing a profile or bypassing dependency closure.

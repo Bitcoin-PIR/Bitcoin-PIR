@@ -1279,13 +1279,26 @@ review.
 
 ## Source-fair cold-activation evidence
 
-The pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
+The historical pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
 five deployment, rendered-artifact, runtime-evidence, source-fair and Nostr
 readback suites 154/154 with no skip. This includes real Linux `getent`, `id -G`, procfs
 all-thread scanning, all active capability sets plus `CapBnd`, rejection tests
 for CHOWN/DAC_OVERRIDE/FOWNER/SETFCAP and managed-unit capability expansion,
 locked service-account policy validation, the stopped-edge evidence validator,
 pinned Caddy adapted-JSON closure, and 4xx/no-backend cross-bind probes.
+That Caddy version is no longer production evidence. Current edge CI resolves
+the exact Caddy 2.11.4 OCI index/binary. The separate existing-Caddy admin-UDS
+process test also runs Caddy 2.11.4 with Node 22.22.2, proves root API readback,
+non-root service-UID `EACCES` after descriptor-pinned `setpriv` clears
+capabilities and supplementary groups, exact root-owned DAC metadata, absent
+TCP 2019, a real import-override regression, permission-drift rejection, and a
+same-process reload through the UDS. The exact adapter suite also proves all 21
+non-canonical Unicode whitespace separators and both quoted `admin` directive
+forms can change the real adapted listener and are rejected by the gate. This
+does not isolate UID 0 or `CAP_DAC_OVERRIDE`. A current-tree pinned Ubuntu 24.04 /
+HAProxy 2.8.16 / Caddy 2.11.4 targeted run passed the 15 source-fair template
+and real-process tests with no skip. A fresh complete aggregate using the final
+branch remains required before activation.
 
 This is deterministic compatibility evidence, not target-host activation. The
 actual candidate must first collect an independently digest-pinned

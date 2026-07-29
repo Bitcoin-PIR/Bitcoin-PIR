@@ -271,6 +271,21 @@ The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
 
+A follow-up non-activating `bhtm-caddy-admin-uds-v1` maintenance gate addresses
+one part of the existing-root-Caddy TCB: its admin endpoint. It derives only an
+exact config/unit candidate from exact old bytes, rejects Caddy imports and
+environment indirection, strips `--environ`, pins the independently inventoried
+production Caddy v2.11.4 binary plus Node v22.22.2, probe and `setpriv`, and
+requires a cold new systemd generation before a root-owned `0700` runtime
+directory can exist. The isolation claim covers only capability-free
+unprivileged non-root processes; UID 0 and `CAP_DAC_OVERRIDE` remain trusted.
+Committed evidence requires root readback through a mode-`0200` UDS, `CapEff=0`,
+cleared groups and `EACCES` for the complete approved non-root service-UID inventory, absent IPv4
+and IPv6 TCP 2019, and unchanged site health. A mixed or unknown config/unit
+pair stays stopped; an ambiguous start is outcome-unknown and prohibits
+automatic rollback. This gate does not yet include an executor and is not host
+or deployment evidence.
+
 An undeployed `integrated-existing-bhtm-caddy-v1` alternative now models the
 actual existing `bhtm-caddy.service` edge without pretending it is the isolated
 stock-Caddy unit above. Its bundle closes the source-fair half and its separate
@@ -279,9 +294,22 @@ content-addressed `renameat2(RENAME_EXCHANGE)` helper, keeps the swapped-out
 preimage until a terminal receipt is durably and atomically published with
 `RENAME_NOREPLACE`, and has deterministic digest-pair recovery. This closes
 ordinary read-to-rename, partial-final-receipt and crash windows, but expands
-the TCB to the existing root Caddy's global admin, ACME, journal, zero-RTT,
-plugin, site and resource configuration. The profile cannot erase that risk or
-substitute a warm reload receipt for cold stopped-edge/fresh-live evidence.
+the TCB to the existing root Caddy's remaining global options, ACME, journal,
+zero-RTT, plugin, site and resource configuration. The overlay now requires a
+canonical committed admin-UDS receipt whose hardened binary/config/unit and
+InvocationID equal its target preimage; it cannot perform that cold migration
+itself. Its executor now revalidates the full canonical hardening plan/receipt,
+pins canonical adapted JSON, and repeats fresh descriptor-sealed UDS/root/UID/
+TCP/boot/generation probes before exchange and after reload/health. It also
+binds current effective unit properties (including no drop-ins, the approved
+`ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
+runtime-directory/identity/umask settings) plus exact MainPID argv/start ticks
+and absence of process `CADDY_ADMIN`; environment values are not retained.
+Stable runtime boundaries are repeated immediately before exchange and reload.
+Recovery validates persisted monotonic windows unchanged, so corrupt evidence
+cannot be made acceptable by in-memory timestamp normalization. The profile
+cannot erase the remaining risk or substitute a warm reload receipt for cold
+stopped-edge/fresh-live evidence.
 It also retains the exact RFC1918/ULA private-publisher prerequisite; the
 currently inspected Hetzner host has no such route, so the profile is not yet
 deployable there.
