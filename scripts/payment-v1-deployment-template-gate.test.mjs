@@ -709,6 +709,11 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
     ],
     [
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*path/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
       (text) => `(extra_public_bind) {\n\tbind @PUBLIC_HTTPS_BIND@\n}\nimport extra_public_bind\n${text}`,
       /import\/invoke expansion|snippet or named route/,
     ],
@@ -773,6 +778,14 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       (text) => text.replace("    no log\n", "    log stdout format raw local0\n"),
       /no log|logging|persistent/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "http-request deny deny_status 404 unless { path -m str / }",
+        "http-request deny deny_status 404 unless { path -m str /v1/directory }",
+      ),
+      /exact origin-root path/,
     ],
     [
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",

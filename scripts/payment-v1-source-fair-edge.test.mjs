@@ -733,7 +733,7 @@ const providerRequest =
 const quoteRequest =
   "POST /v1/quotes/bolt11 HTTP/1.1\r\nHost: pay.example.net\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const directoryPublisherRequest =
-  "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
+  "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
 
 test("HAProxy enforces per-source upgraded-connection slots without cross-source starvation", {
   skip: HAPROXY === undefined,
@@ -1063,7 +1063,7 @@ http://:${port} {
   @publisher {
     remote_ip 127.0.0.1
     method GET
-    path /v1/directory
+    path /
     header Host publisher.example.net
   }
   handle @publisher {
@@ -1092,7 +1092,7 @@ http://:${port} {
   await waitForTcpListener(port, caddy, () => output);
 
   const request =
-    "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
   const unauthorizedAddress = nonLoopbackIpv4Address();
   assert.ok(unauthorizedAddress, "test host has no non-loopback IPv4 address");
   assert.equal(
@@ -1315,7 +1315,7 @@ function renderedCaddyLaneHarnessConfig(
 
 function websocketDirectoryRequest(host, extraHeaders = []) {
   return [
-    "GET /v1/directory HTTP/1.1",
+    "GET / HTTP/1.1",
     `Host: ${host}`,
     "Connection: Upgrade",
     "Upgrade: websocket",
@@ -1404,8 +1404,25 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     provider: 0,
   });
 
-  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
+  const legacyPathPublicRequest = publicRequest.replace(
+    "GET / HTTP/1.1",
+    "GET /v1/directory HTTP/1.1",
+  );
   let before = laneRecordCounts(harness);
+  const legacyPathPublicStatus = statusOf(
+    await tlsHttpResponseHeaders(
+      edgePort,
+      publicClientIp,
+      legacyPathPublicRequest,
+      "127.0.0.1",
+      "directory.example.net",
+    ),
+  );
+  assert.equal(legacyPathPublicStatus >= 400 && legacyPathPublicStatus < 500, true);
+  assert.deepEqual(laneRecordCounts(harness), before);
+
+  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
+  before = laneRecordCounts(harness);
   const publicBindPublisherStatus = statusOf(
     await tlsHttpResponseHeaders(
       edgePort,
@@ -1446,6 +1463,26 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     ),
   );
   assert.equal(spoofedPublisherStatus >= 400 && spoofedPublisherStatus < 500, true);
+  assert.deepEqual(laneRecordCounts(harness), before);
+
+  const legacyPathPublisherRequest = publisherRequest.replace(
+    "GET / HTTP/1.1",
+    "GET /v1/directory HTTP/1.1",
+  );
+  before = laneRecordCounts(harness);
+  const legacyPathPublisherStatus = statusOf(
+    await tlsHttpResponseHeaders(
+      edgePort,
+      publisherClientIp,
+      legacyPathPublisherRequest,
+      "127.0.0.2",
+      "publisher.example.net",
+    ),
+  );
+  assert.equal(
+    legacyPathPublisherStatus >= 400 && legacyPathPublisherStatus < 500,
+    true,
+  );
   assert.deepEqual(laneRecordCounts(harness), before);
 
   assert.equal(
