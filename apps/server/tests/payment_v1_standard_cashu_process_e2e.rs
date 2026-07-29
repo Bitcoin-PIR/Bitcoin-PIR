@@ -748,6 +748,7 @@ async fn open_strict_dpf_pair(
     client
         .install_verified_database_roots(VerifiedDatabaseRoots {
             db_id: 0,
+            manifest_root: [0; 32],
             build_kind: BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],
