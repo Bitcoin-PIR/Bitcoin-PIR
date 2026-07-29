@@ -279,8 +279,19 @@ export class OramPirClientAdapter {
       if (!this.secureChannelEstablished) {
         throw new Error('V1 service admission requires a verified secure channel');
       }
-      if (!this.config.expectedServerPin?.binarySha256Hex || this.attestation.pinStatus !== 'match') {
-        throw new Error('V1 service admission requires a matching binary pin');
+      if (
+        this.attestation.state !== 'verified-vcek'
+        || this.attestation.sevStatus !== 'reportDataMatch'
+        || this.attestation.vcekChain !== 'pass'
+      ) {
+        throw new Error('V1 service admission requires hardware-backed VCEK attestation');
+      }
+      if (
+        !this.config.expectedServerPin?.measurementHex
+        || !this.config.expectedServerPin.binarySha256Hex
+        || this.attestation.pinStatus !== 'match'
+      ) {
+        throw new Error('V1 service admission requires matching measurement and binary pins');
       }
       if (
         this.config.verifyOperatorIdentity !== true
@@ -527,6 +538,7 @@ export class OramPirClientAdapter {
         const proof = verifiedDatabaseProofFromWasm(proofHandle);
         status = verifyDatabaseProofAgainstPin(proof, pin);
         if (status.state === 'verified') {
+          this.assertAttestedManifestRoot(pin.dbId, proof.manifestRootHex ?? '');
           const moved = proofHandle;
           proofHandle = null;
           client.installVerifiedDatabaseProof(moved);
@@ -558,6 +570,24 @@ export class OramPirClientAdapter {
 
   private isStrictVerification(): boolean {
     return this.config.strictVerification === true;
+  }
+
+  private assertAttestedManifestRoot(dbId: number, proofManifestRootHex: string): void {
+    if (!this.isStrictVerification()) return;
+    const databases = this.catalog?.databases ?? [];
+    const position = databases.findIndex((database) => database.dbId === dbId);
+    const roots = this.attestation.manifestRootsHex;
+    if (position < 0 || !roots || roots.length !== databases.length) {
+      throw new Error('strict ORAM attestation did not bind the complete database catalog');
+    }
+    const attested = roots[position]?.toLowerCase();
+    const proven = proofManifestRootHex.toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(attested ?? '') || /^0{64}$/.test(attested ?? '')) {
+      throw new Error(`strict ORAM attestation has no manifest root for db ${dbId}`);
+    }
+    if (attested !== proven) {
+      throw new Error(`strict ORAM attested manifest root mismatch for db ${dbId}`);
+    }
   }
 
   private resetSessionTrust(): void {
@@ -630,7 +660,9 @@ export class OramPirClientAdapter {
       this.attestation = summary;
       this.config.onAttestation?.(summary);
 
-      const channelReady = summary.state === 'verified' || summary.state === 'verified-vcek';
+      const channelReady = this.isStrictVerification()
+        ? summary.state === 'verified-vcek'
+        : summary.state === 'verified' || summary.state === 'verified-vcek';
       if (channelReady && att) {
         try {
           await this.wasmClient.upgradeToSecureChannel(att.serverStaticPub);
@@ -674,7 +706,7 @@ export class OramPirClientAdapter {
     const allZero = att.serverStaticPub.every((b) => b === 0);
     const matched = att.sevStatus === 'reportDataMatch';
     const noSev = att.sevStatus === 'noSevHost';
-    const channelOk = matched || noSev;
+    const channelOk = matched || (!this.isStrictVerification() && noSev);
     let state: ServerAttestation['state'];
     if (allZero) state = 'plaintext';
     else if (!channelOk) state = 'mismatch';
@@ -687,6 +719,9 @@ export class OramPirClientAdapter {
       binarySha256Hex: att.binarySha256Hex,
       gitRev: att.gitRev,
       launchMeasurementHex: att.launchMeasurementHex,
+      manifestRootsHex: matched && Array.isArray(att.manifestRootsHex)
+        ? att.manifestRootsHex.map((root) => root.toLowerCase())
+        : undefined,
     };
 
     if (state === 'verified' && matched && att.hasVcekChain) {
@@ -708,7 +743,23 @@ export class OramPirClientAdapter {
       result.vcekChain = 'skipped';
     }
 
+    if (this.isStrictVerification() && result.state !== 'verified-vcek') {
+      result.state = 'mismatch';
+      if (!result.vcekChainError) {
+        result.vcekChainError = expectedArkFp
+          ? 'strict ORAM requires a complete AMD VCEK chain and valid report signature'
+          : 'strict ORAM requires a pinned AMD ARK fingerprint';
+      }
+    }
+
     const pin = this.config.expectedServerPin;
+    if (this.isStrictVerification()
+        && (!pin?.measurementHex || !pin.binarySha256Hex)) {
+      result.state = 'mismatch';
+      result.pinStatus = !pin?.measurementHex ? 'measurement-mismatch' : 'binary-mismatch';
+      result.pinError = 'strict ORAM requires both launch measurement and binary sha256 pins';
+      return result;
+    }
     if (pin) {
       const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
       if (stateOk) {

@@ -122,6 +122,8 @@ export interface ServerAttestation {
    *  + the loaded UKI bytes. Empty when not on a SEV-SNP host.
    *  Hardware-backed iff `sevStatus === 'reportDataMatch'`. */
   launchMeasurementHex?: string;
+  /** Manifest roots committed by the same attested runtime, in catalog order. */
+  manifestRootsHex?: string[];
   /** When VCEK chain validation was attempted: 'pass' / 'fail' /
    *  'skipped' (server didn't bundle a chain — pre-Slice-D.2 server
    *  or `--vcek-dir` unset). Filled in by the adapter after the

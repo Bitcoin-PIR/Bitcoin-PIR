@@ -268,6 +268,64 @@ describe('ORAM adapter', () => {
     });
   });
 
+  it('requires hardware VCEK verification and both runtime pins in strict mode', () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      strictVerification: true,
+      expectedServerPin: {
+        binarySha256Hex: '11'.repeat(32),
+        measurementHex: '22'.repeat(48),
+      },
+    });
+    const base = {
+      serverStaticPub: new Uint8Array(32).fill(1),
+      serverStaticPubHex: '01'.repeat(32),
+      binarySha256Hex: '11'.repeat(32),
+      gitRev: 'test',
+      launchMeasurementHex: '22'.repeat(48),
+      manifestRootsHex: ['33'.repeat(32)],
+      verifyFull: vi.fn(),
+    };
+
+    expect((adapter as any).summariseAttestation({
+      ...base, sevStatus: 'noSevHost', hasVcekChain: false,
+    }, new Uint8Array(32), {})).toMatchObject({ state: 'mismatch' });
+    expect((adapter as any).summariseAttestation({
+      ...base, sevStatus: 'reportDataMatch', hasVcekChain: false,
+    }, new Uint8Array(32), {})).toMatchObject({
+      state: 'mismatch',
+      vcekChain: 'skipped',
+    });
+    expect((adapter as any).summariseAttestation({
+      ...base, sevStatus: 'reportDataMatch', hasVcekChain: true,
+    }, new Uint8Array(32), {})).toMatchObject({
+      state: 'verified-vcek',
+      vcekChain: 'pass',
+      pinStatus: 'match',
+      manifestRootsHex: ['33'.repeat(32)],
+    });
+  });
+
+  it('binds each strict database proof to the same attested manifest list', () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      strictVerification: true,
+    });
+    const internal = adapter as any;
+    internal.catalog = { databases: [{ dbId: 0 }, { dbId: 3 }] };
+    internal.attestation = {
+      state: 'verified-vcek',
+      manifestRootsHex: ['11'.repeat(32), '22'.repeat(32)],
+    };
+
+    expect(() => internal.assertAttestedManifestRoot(3, '22'.repeat(32))).not.toThrow();
+    expect(() => internal.assertAttestedManifestRoot(3, '33'.repeat(32)))
+      .toThrow('attested manifest root mismatch');
+    internal.attestation.manifestRootsHex = ['11'.repeat(32)];
+    expect(() => internal.assertAttestedManifestRoot(0, '11'.repeat(32)))
+      .toThrow('complete database catalog');
+  });
+
   it('owns no second clear diagnostic WebSocket and clears strict proof state', () => {
     const adapter = new OramPirClientAdapter({ serverUrl: 'wss://oram.example' });
     const internal = adapter as any;
