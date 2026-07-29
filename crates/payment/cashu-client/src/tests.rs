@@ -1211,10 +1211,31 @@ fn concurrent_callers_issue_one_swap_and_one_grant() {
             .count(),
         1
     );
+    // The durable PREPARED -> SUBMITTED transition intentionally happens
+    // before the sole NUT-03 call. A concurrent observer may therefore reach
+    // NUT-09/NUT-07 before the winning call has committed at the mint and get
+    // a transient, fail-closed RecoveryPending result. It must never submit a
+    // second output set, and it converges through the persisted intent after
+    // the winner completes.
     assert!(results.iter().all(|result| matches!(
         result,
-        CashuSwapProgressV1::Grant(_) | CashuSwapProgressV1::AlreadyGranted { .. }
+        CashuSwapProgressV1::Grant(_)
+            | CashuSwapProgressV1::AlreadyGranted { .. }
+            | CashuSwapProgressV1::RecoveryPending { .. }
     )));
+    assert_eq!(mint.calls().0, 1);
+    assert!(matches!(
+        client(store.as_ref(), &mint, &cipher)
+            .resume_swap(
+                &fixture.spend,
+                &fixture.checked,
+                &fixture.verified_offer(),
+                &fixture.manifest,
+                200,
+            )
+            .unwrap(),
+        CashuSwapProgressV1::AlreadyGranted { .. }
+    ));
     assert_eq!(mint.calls().0, 1);
 }
 
