@@ -32,6 +32,7 @@ import {
   NSS_ENUMERATION_KIND,
   PROTECTED_PROCESS_ENUMERATION_KIND,
   collectInstalledFileForTestV1,
+  confirmInstalledFileAcrossCollectionsForTestV1,
   collectSecretParentDirectoryForTestV1,
   confirmSecretParentDirectoryAcrossCollectionsForTestV1,
   collectProtectedCredentialProcessClosureV1,
@@ -44,6 +45,7 @@ import {
   parseProcStatus,
   systemdUnitObjectPathV1,
   readOneLinkRegular,
+  readOneLinkRegularForTestV1,
   validateNonRootEdgeCapabilitiesV1,
   validateLiveRuntimeEvidence,
   validateStoppedEdgeActivationEvidence,
@@ -79,6 +81,7 @@ const INSTALLED_FILE_PROBE_COMMANDS = [
   "/usr/bin/getfattr",
   "/usr/bin/sha256sum",
   "/usr/bin/stat",
+  "/usr/bin/touch",
   "/usr/sbin/getcap",
 ];
 const CAN_EXERCISE_INSTALLED_FILE_PROBES =
@@ -93,15 +96,34 @@ function clone(value) {
 }
 
 function installedFileExpectation(path, bytes) {
-  const stat = lstatSync(path);
+  const stat = lstatSync(path, { bigint: true });
   return {
-    gid: stat.gid,
-    mode: (stat.mode & 0o7777).toString(8).padStart(4, "0"),
-    nlink: stat.nlink,
+    gid: Number(stat.gid),
+    mode: Number(stat.mode & 0o7777n).toString(8).padStart(4, "0"),
+    nlink: Number(stat.nlink),
     sha256: hash(bytes),
     target_path: path,
-    uid: stat.uid,
+    uid: Number(stat.uid),
   };
+}
+
+function createExactTimestampReference(root, target) {
+  const reference = join(root, "timestamp-reference");
+  writeFileSync(reference, "timestamp reference\n", { mode: 0o600 });
+  const result = spawnSync("/usr/bin/touch", ["-r", target, "--", reference], {
+    encoding: "utf8",
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return reference;
+}
+
+function restoreExactTimestamps(reference, target) {
+  const result = spawnSync("/usr/bin/touch", ["-r", reference, "--", target], {
+    encoding: "utf8",
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
 }
 
 function createExactDirectory(path, mode = 0o700) {
@@ -1253,6 +1275,99 @@ test("final NSS policy confirmation rejects identity or policy drift after enume
 });
 
 test(
+  "Linux one-link reader seals a transient same-inode rewrite before its final descriptor read",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+          afterFirstRead: () => {
+            writeFileSync(target, replacement);
+            writeFileSync(target, bytes);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+            assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+for (const phase of ["afterOpen", "afterFirstRead", "afterFinalPathOpen"]) {
+  test(
+    `Linux one-link reader rejects pathname replacement ${phase}`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-path-")));
+      try {
+        const target = join(root, "artifact");
+        const replacement = join(root, "replacement");
+        const parked = join(root, "parked");
+        const bytes = Buffer.from("same-content-and-metadata\n");
+        for (const path of [target, replacement]) {
+          writeFileSync(path, bytes, { mode: 0o640 });
+          chmodSync(path, 0o640);
+        }
+        assert.throws(
+          () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+            [phase]: () => {
+              renameSync(target, parked);
+              renameSync(replacement, target);
+            },
+          }),
+          /changed precise metadata|do not name the same stable file/,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+for (const [label, mutation] of [
+  ["truncation", Buffer.from("short\n")],
+  ["growth", Buffer.from("descriptor-bound-original-with-growth\n")],
+]) {
+  test(
+    `Linux one-link reader rejects descriptor ${label}`,
+    { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-one-link-size-")));
+      try {
+        const target = join(root, "artifact");
+        const bytes = Buffer.from("descriptor-bound-original\n");
+        writeFileSync(target, bytes, { mode: 0o640 });
+        chmodSync(target, 0o640);
+        assert.throws(
+          () => readOneLinkRegularForTestV1(target, "test artifact", 4096, {
+            afterFirstRead: () => writeFileSync(target, mutation),
+          }),
+          /changed precise metadata|do not name the same stable file|final descriptor read/,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+test(
   "Linux installed-file probes bind content and metadata to one open descriptor",
   { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
   () => {
@@ -1264,7 +1379,7 @@ test(
       chmodSync(target, 0o640);
       const expected = installedFileExpectation(target, bytes);
       const observed = collectInstalledFileForTestV1(expected, {});
-      const stat = lstatSync(target);
+      const stat = lstatSync(target, { bigint: true });
 
       assert.equal(observed.dev, stat.dev.toString());
       assert.equal(observed.ino, stat.ino.toString());
@@ -1290,7 +1405,13 @@ test(
   },
 );
 
-for (const phase of ["afterOpen", "afterMetadataProbe"]) {
+for (const phase of [
+  "afterOpen",
+  "afterFirstRead",
+  "afterMetadataProbe",
+  "beforeFinalPathOpen",
+  "afterFinalPathOpen",
+]) {
   test(
     `Linux installed-file binding rejects same-metadata pathname replacement ${phase}`,
     { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
@@ -1320,7 +1441,7 @@ for (const phase of ["afterOpen", "afterMetadataProbe"]) {
               renameSync(replacement, target);
             },
           }),
-          /opened descriptor and final path descriptor do not name the same stable file/,
+          /changed precise metadata|do not name the same stable file/,
         );
       } finally {
         rmSync(root, { force: true, recursive: true });
@@ -1328,6 +1449,138 @@ for (const phase of ["afterOpen", "afterMetadataProbe"]) {
     },
   );
 }
+
+test(
+  "Linux installed-file binding rejects a same-inode content rewrite after metadata probes",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-inplace-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            writeFileSync(target, replacement);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+          },
+        }),
+        /content changed during descriptor reread|changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux installed-file binding seals ctime across a transient same-inode rewrite",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-ctime-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            writeFileSync(target, replacement);
+            writeFileSync(target, bytes);
+            chmodSync(target, 0o640);
+            restoreExactTimestamps(timestampReference, target);
+            const restored = lstatSync(target, { bigint: true });
+            assert.equal(restored.mtimeNs, initial.mtimeNs);
+            assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux installed-file binding seals transient hardlink creation and removal",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-nlink-")));
+    try {
+      const target = join(root, "artifact");
+      const alias = join(root, "transient-hardlink");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+
+      assert.throws(
+        () => collectInstalledFileForTestV1(expected, {
+          afterMetadataProbe: () => {
+            linkSync(target, alias);
+            unlinkSync(alias);
+          },
+        }),
+        /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux repeated installed-file collections retain a private precise fingerprint",
+  { skip: !CAN_EXERCISE_INSTALLED_FILE_PROBES },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-installed-cross-pass-")));
+    try {
+      const target = join(root, "artifact");
+      const bytes = Buffer.from("descriptor-bound-original\n");
+      const replacement = Buffer.from("descriptor-bound-replaced\n");
+      assert.equal(replacement.length, bytes.length);
+      writeFileSync(target, bytes, { mode: 0o640 });
+      chmodSync(target, 0o640);
+      const expected = installedFileExpectation(target, bytes);
+      const timestampReference = createExactTimestampReference(root, target);
+      const initial = lstatSync(target, { bigint: true });
+
+      assert.throws(
+        () => confirmInstalledFileAcrossCollectionsForTestV1(expected, () => {
+          writeFileSync(target, replacement);
+          writeFileSync(target, bytes);
+          chmodSync(target, 0o640);
+          restoreExactTimestamps(timestampReference, target);
+          const restored = lstatSync(target, { bigint: true });
+          assert.equal(restored.mtimeNs, initial.mtimeNs);
+          assert.notEqual(restored.ctimeNs, initial.ctimeNs);
+        }),
+        /metadata or content changed between test collections/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
 
 test(
   "Linux secret-parent evidence walks and probes one descriptor-bound directory chain",

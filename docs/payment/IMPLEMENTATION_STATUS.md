@@ -514,6 +514,27 @@ operator has activated the path with real money or public infrastructure.
       App token; credential governance and mutable repository/environment
       policy remain deployment gates. No deployment was triggered or
       authorized here.
+- [x] A repository-wide workflow supply-chain gate parses every workflow with
+      the locked YAML parser, rejects anchors/aliases/merge keys, permits only
+      reviewed action-name/40-hex-commit pairs, and requires every checkout to
+      use the YAML boolean `persist-credentials: false`. It rejects the
+      higher-priority `web/npm-shrinkwrap.json` before installing or importing
+      the parser, leaving `web/package-lock.json` as the only npm parser lock.
+      The SDK, generated-proof, audit and build-determinism workflows now use
+      those exact pins. The lightweight pir-core determinism job no longer
+      restores a Cargo/target cache, uses `--locked --offline` for every Cargo
+      command, and is retriggered by its root manifest, lockfile, toolchain,
+      Cargo configuration and vendored-source inputs. Updating an action still
+      requires a reviewed allowlist change in the same checked revision. Its PR
+      trigger is intentionally path-unfiltered and it handles merge groups, so
+      a future required check reports for every protected-main PR and merge-
+      queue candidate instead of remaining Pending.
+      A read-only 2026-07-29 recheck still found no classic branch protection or
+      repository ruleset on `main`; that is an external governance blocker, not
+      something this source change can close. Until a required-check/no-direct-
+      push rule is installed, this in-repository gate can be rewritten or
+      deleted and a push failure is only post-merge detection. It also does not
+      replace GitHub token/PAT/App governance.
 
 ## What the tests currently prove
 
