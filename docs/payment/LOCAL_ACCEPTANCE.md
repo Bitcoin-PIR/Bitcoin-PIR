@@ -591,11 +591,16 @@ a listener.
 The direct-receipt test covers cleartext backend rejection, ephemeral-bound
 attestation exchange, secure-channel upgrade, exact signed manifest-root
 policy verification, encrypted pre-authorization rejection, provider-specific
-direct-receipt authorization, a valid DPF request/response, signed one-frame
-limit rejection, and durable replay rejection after provider 0 is restarted.
-The exact provider-1 receipt is first rejected by provider 0 and then succeeds
-at provider 1, proving that the wrong-provider rejection neither burns it nor
-consults a shared cross-provider spent set.
+and workload-specific direct-receipt authorization, a valid DPF
+request/response, and a complete four-frame K-padded Harmony INDEX/CHUNK query
+through the real handler. DPF and Harmony use distinct signed scopes, globally
+unique offer IDs and credential keys. A DPF receipt rejected at the Harmony
+scope remains usable for DPF; a completed Harmony DFA is terminal; both DPF
+and Harmony spends remain rejected after provider 0 restarts. The exact
+provider-1 DPF receipt is first rejected by provider 0 and then succeeds at
+provider 1, proving that the wrong-provider rejection neither burns it nor
+consults a shared cross-provider spent set. No hint server is configured or
+named by this query-provider test.
 
 The method-adapter test repeats the real wire and DPF execution boundary for
 Free open, durable provider-local IP quota, provider-local Cashu BAT and
@@ -611,10 +616,10 @@ V1 gate, not production server identity, binary pinning, hardware attestation,
 production database proof/trusted-root pinning, Merkle tree-top/inclusion
 verification, or an attested build. Its receipt is constructed from public
 deterministic fixture keys: no issuer process, browser, wallet, Lightning node,
-external Cashu mint, Nostr relay or real funds participate. Only the DPF
-backend is executed through the first two multi-provider process tests. The five-method x
-five-workload in-process matrix remains the process-independent coverage for
-Standard Cashu, Harmony query, Onion and TEE-ORAM. The third process test
+external Cashu mint, Nostr relay or real funds participate. The direct-receipt
+test executes both DPF and Harmony query backends; the method-adapter test
+executes DPF. The five-method x five-workload in-process matrix remains the
+process-independent coverage for Standard Cashu, Onion and TEE-ORAM. The third process test
 launches one real Harmony V2Full hint provider with a private disk pool and
 checks invalid-proof non-consumption, pre-dispatch disconnect restoration,
 first-dispatch durable consumption, matching-marker restart and replaced-inode
@@ -1184,9 +1189,9 @@ At minimum, a release candidate needs evidence for:
   connection/auth limits, or tree-top bandwidth overload at the edge;
 - production identity/binary pins, remote servers, hardware attestation,
   production database proofs/trusted roots, or production databases;
-- process-level Harmony query, Onion or TEE-ORAM execution (their canonical
-  gate states are covered in-process; Harmony V2Full hint lifecycle now has a
-  dedicated local real-provider-process boundary);
+- process-level Onion or TEE-ORAM execution (their canonical gate states are
+  covered in-process; Harmony query and V2Full hint lifecycle now have distinct
+  local real-provider-process boundaries);
 - a deployed browser-to-issuer-to-provider main-page network E2E (the visible
   main-page controller is covered by unit tests; the local Chromium harness
   reaches two real issuers and two real providers and executes a DPF query with
