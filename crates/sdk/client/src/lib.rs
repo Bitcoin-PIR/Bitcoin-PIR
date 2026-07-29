@@ -73,6 +73,7 @@ mod onion_merkle;
 mod oram;
 mod platform_time;
 mod protocol;
+mod query_plan;
 pub mod service;
 pub mod strict_pair;
 mod transport;
@@ -97,6 +98,11 @@ pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
+pub use query_plan::{
+    plan_dpf_service_query_v1, plan_harmony_service_hint_v1,
+    plan_harmony_service_query_v1, ProductBackendV1, ProductQueryLowerBoundsV1,
+    ProductQueryOmissionsV1, ProductQueryShapeV1, ProductWorkloadV1,
+};
 pub use service::{
     accept_pow_challenge_response_v1, accept_retained_service_policy_response_v1,
     accept_service_policy_response_v1, build_pow_challenge_request_v1,

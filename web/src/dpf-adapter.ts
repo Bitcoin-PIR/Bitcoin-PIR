@@ -70,6 +70,10 @@ import {
   assertLiveOperatorIdentityV1,
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
+import {
+  canonicalProductQueryShapeV1,
+  type ProductQueryShapeV1,
+} from './service-entitlement.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -1145,6 +1149,20 @@ export class BatchPirClientAdapter {
   }
 
   // ── Query paths ───────────────────────────────────────────────────────
+
+  /**
+   * Compute provider-local Payment-V1 demand before capability acquisition.
+   * The WASM method is synchronous and transport-free; canonicalization strips
+   * its diagnostic fields into the common product contract.
+   */
+  planServiceQuery(
+    scriptHashes: Uint8Array[],
+    dbId: number = 0,
+  ): ProductQueryShapeV1 {
+    if (!this.wasmClient) throw new Error('Not connected');
+    const plan = this.wasmClient.planServiceQuery(packScriptHashes(scriptHashes), dbId);
+    return canonicalProductQueryShapeV1(plan, 'DPF planned query shape');
+  }
 
   /**
    * Full-snapshot batch query. `scriptHashes` is an array of 20-byte

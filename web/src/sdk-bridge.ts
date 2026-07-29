@@ -721,6 +721,31 @@ export interface WasmServicePowChallengeV1 {
   solveChunk(startNonce: bigint, maxAttempts: number): Uint8Array;
 }
 
+/** Diagnostic superset returned by the transport-free native PBC planner. */
+export interface WasmProductQueryPlanV1 {
+  backend: 'dpf-pir' | 'harmony-pir';
+  workload: 'dpf-query' | 'harmony-query' | 'harmony-hint';
+  lowerBounds: {
+    logicalInputs: number;
+    frames: number;
+    workUnits?: string;
+    hintGroups?: number;
+    concurrentSockets?: number;
+  };
+  /** Exact PBC INDEX job count; absent for the hint workload. */
+  pbcRounds?: number;
+  /** Exact INDEX frames at this provider; excludes CHUNK/Merkle. */
+  exactIndexFrames?: number;
+  /** Counters intentionally not estimated by the pre-query planner. */
+  omitted: Array<
+    | 'requestBytes'
+    | 'responseBytes'
+    | 'merkleFrames'
+    | 'dataDependentAdditionalChunkFrames'
+    | 'siblingHintGroups'
+  >;
+}
+
 export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
@@ -845,6 +870,8 @@ export interface WasmDpfClient {
    * not-found queries are synthesised as empty inspector-populated
    * results so absence-proof bins are preserved. */
   queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
+  /** Pure zero-network plan over packed `20*N` script-hash bytes. */
+  planServiceQuery(scriptHashes: Uint8Array, dbId: number): WasmProductQueryPlanV1;
   /** Standalone Merkle verifier — consumes inspector-populated results as
    * JSON (typically `wqr.toJson()`-serialised). Returns `boolean[]`. */
   verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
@@ -1018,6 +1045,10 @@ export interface WasmHarmonyClient {
    *  synthesised as empty inspector-populated results (never null)
    *  so Merkle absence proofs have something to verify against. */
   queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
+  /** Query-provider plan including mandatory CHUNK-presence traffic. */
+  planServiceQuery(scriptHashes: Uint8Array, dbId: number): WasmProductQueryPlanV1;
+  /** Separate cold-cache hint-provider main-group lower bound. */
+  planServiceHint(dbId: number): WasmProductQueryPlanV1;
   /** Standalone Merkle verifier (mirrors `WasmDpfClient.verifyMerkleBatch`). */
   verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
   /** 16-byte fingerprint derived from `(masterKey, prpBackend, catalog.get(dbId))`.

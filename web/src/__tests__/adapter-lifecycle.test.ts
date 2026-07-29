@@ -181,6 +181,112 @@ describe('adapter WASM lifecycle', () => {
     policyFree.mockClear();
   });
 
+  it('exposes one canonical zero-network product planner contract', () => {
+    const dpfPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
+      backend: 'dpf-pir',
+      workload: 'dpf-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 3,
+        workUnits: '470',
+        concurrentSockets: 1,
+      },
+      pbcRounds: 1,
+      exactIndexFrames: 1,
+      omitted: ['requestBytes', 'responseBytes', 'merkleFrames'],
+    }));
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (dpf as any).wasmClient = { planServiceQuery: dpfPlan };
+    const hash0 = new Uint8Array(20).fill(1);
+    const hash1 = new Uint8Array(20).fill(2);
+    expect(dpf.planServiceQuery([hash0, hash1], 7)).toEqual({
+      backend: 'dpf-pir',
+      workload: 'dpf-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 3,
+        workUnits: '470',
+        concurrentSockets: 1,
+      },
+    });
+    expect(dpfPlan).toHaveBeenCalledOnce();
+    expect(dpfPlan.mock.calls[0][0]).toEqual(
+      new Uint8Array([...hash0, ...hash1]),
+    );
+    expect(dpfPlan.mock.calls[0][1]).toBe(7);
+
+    const harmonyQueryPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
+      backend: 'harmony-pir',
+      workload: 'harmony-query',
+      lowerBounds: { logicalInputs: 1, frames: 4, workUnits: '900', concurrentSockets: 1 },
+      pbcRounds: 1,
+      exactIndexFrames: 2,
+      omitted: ['dataDependentAdditionalChunkFrames'],
+    }));
+    const harmonyHintPlan = vi.fn((_dbId: number) => ({
+      backend: 'harmony-pir',
+      workload: 'harmony-hint',
+      lowerBounds: {
+        logicalInputs: 0,
+        frames: 1,
+        workUnits: '155',
+        hintGroups: 155,
+        concurrentSockets: 1,
+      },
+      omitted: ['siblingHintGroups'],
+    }));
+    const harmony = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: 'wss://query.invalid',
+      strictVerification: false,
+    });
+    (harmony as any).wasmClient = {
+      planServiceQuery: harmonyQueryPlan,
+      planServiceHint: harmonyHintPlan,
+    };
+    expect(harmony.planServiceQuery([hash0], 8)).toEqual({
+      backend: 'harmony-pir',
+      workload: 'harmony-query',
+      lowerBounds: {
+        logicalInputs: 1,
+        frames: 4,
+        workUnits: '900',
+        concurrentSockets: 1,
+      },
+    });
+    expect(harmony.planServiceHint(8)).toEqual({
+      backend: 'harmony-pir',
+      workload: 'harmony-hint',
+      lowerBounds: {
+        logicalInputs: 0,
+        frames: 1,
+        workUnits: '155',
+        hintGroups: 155,
+        concurrentSockets: 1,
+      },
+    });
+    expect(harmonyQueryPlan).toHaveBeenCalledWith(hash0, 8);
+    expect(harmonyHintPlan).toHaveBeenCalledWith(8);
+  });
+
+  it('rejects malformed planner hashes before entering WASM', () => {
+    const planServiceQuery = vi.fn();
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+    });
+    (adapter as any).wasmClient = { planServiceQuery };
+    expect(() => adapter.planServiceQuery([new Uint8Array(19)])).toThrow(
+      'scriptHash[0] must be 20 bytes',
+    );
+    expect(planServiceQuery).not.toHaveBeenCalled();
+  });
+
   it('never inherits a native merkleVerified default before explicit verification', async () => {
     const dpf = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',

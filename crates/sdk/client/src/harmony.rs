@@ -878,6 +878,43 @@ impl HarmonyClient {
         }
     }
 
+    /// Compute query-provider Payment-V1 admission lower bounds using the
+    /// cached catalog and the exact live INDEX PBC planner. No network or hint
+    /// state is touched.
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &[ScriptHash],
+        db_id: u8,
+    ) -> PirResult<crate::query_plan::ProductQueryShapeV1> {
+        let db_info = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?
+            .get(db_id)
+            .ok_or_else(|| {
+                PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
+            })?;
+        crate::query_plan::plan_harmony_service_query_v1(script_hashes, db_info)
+    }
+
+    /// Compute the catalog-known main-group lower bound for a cold-cache
+    /// Harmony hint entitlement. Authenticated sibling hints remain explicitly
+    /// omitted until verified tree-top preflight supplies their geometry.
+    pub fn plan_service_hint(
+        &self,
+        db_id: u8,
+    ) -> PirResult<crate::query_plan::ProductQueryShapeV1> {
+        let db_info = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?
+            .get(db_id)
+            .ok_or_else(|| {
+                PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
+            })?;
+        crate::query_plan::plan_harmony_service_hint_v1(db_info)
+    }
+
     /// Configure one independently selected Harmony role before connecting it.
     /// A connected role is immutable so a policy/grant cannot be moved to a
     /// different provider URL inside the same browser attempt.
@@ -4118,11 +4155,8 @@ impl HarmonyClient {
         let n = script_hashes.len();
 
         // PBC plan over each scripthash's three candidate groups.
-        let candidate_groups: Vec<[usize; NUM_HASHES]> = script_hashes
-            .iter()
-            .map(|sh| pir_core::hash::derive_groups_3(sh, k_index))
-            .collect();
-        let rounds = pir_core::pbc::pbc_plan_rounds(&candidate_groups, k_index, NUM_HASHES, 500);
+        let (rounds, _) =
+            crate::dpf::plan_index_pbc_rounds_for_hashes(script_hashes, k_index)?;
 
         // Build a placement view for downstream decode + Merkle traces.
         // Each scripthash's INDEX query (and its INDEX Merkle items)

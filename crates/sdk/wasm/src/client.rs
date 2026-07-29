@@ -40,7 +40,7 @@ use pir_sdk_client::{
     verify_database_proof_response as verify_database_proof_response_payload,
     verify_database_proof_v2_response as verify_database_proof_v2_response_payload,
     DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, RootPolicy, VerifiedDatabaseRoots,
-    PRP_FASTPRP, PRP_HMR12,
+    ProductQueryShapeV1, PRP_FASTPRP, PRP_HMR12,
 };
 use wasm_bindgen::prelude::*;
 
@@ -140,6 +140,82 @@ fn take_attest_seed(slots: &mut AttestSeedSlots, server_index: usize) -> Option<
 /// error-taxonomy placeholder in the SDK roadmap.
 fn err_to_js(e: pir_sdk::PirError) -> JsError {
     JsError::new(&e.to_string())
+}
+
+/// Serialize a native transport-free service plan to the JS diagnostic shape.
+/// Optional lower-bound counters are omitted, never emitted as `null`, so the
+/// strict TypeScript canonicalizer cannot confuse "unknown" with zero.
+fn product_query_plan_json(plan: &ProductQueryShapeV1) -> serde_json::Value {
+    let mut lower_bounds = serde_json::Map::new();
+    lower_bounds.insert(
+        "logicalInputs".into(),
+        serde_json::Value::from(plan.lower_bounds.logical_inputs),
+    );
+    lower_bounds.insert(
+        "frames".into(),
+        serde_json::Value::from(plan.lower_bounds.frames),
+    );
+    if let Some(work_units) = plan.lower_bounds.work_units {
+        // ProductQueryShapeV1 represents u64 counters as canonical decimal
+        // strings so JavaScript never loses integer precision.
+        lower_bounds.insert(
+            "workUnits".into(),
+            serde_json::Value::String(work_units.to_string()),
+        );
+    }
+    if let Some(hint_groups) = plan.lower_bounds.hint_groups {
+        lower_bounds.insert(
+            "hintGroups".into(),
+            serde_json::Value::from(hint_groups),
+        );
+    }
+    if let Some(concurrent_sockets) = plan.lower_bounds.concurrent_sockets {
+        lower_bounds.insert(
+            "concurrentSockets".into(),
+            serde_json::Value::from(concurrent_sockets),
+        );
+    }
+
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "backend".into(),
+        serde_json::Value::String(plan.backend.as_str().into()),
+    );
+    root.insert(
+        "workload".into(),
+        serde_json::Value::String(plan.workload.as_str().into()),
+    );
+    root.insert(
+        "lowerBounds".into(),
+        serde_json::Value::Object(lower_bounds),
+    );
+    if let Some(pbc_rounds) = plan.pbc_rounds {
+        root.insert("pbcRounds".into(), serde_json::Value::from(pbc_rounds));
+    }
+    if let Some(exact_index_frames) = plan.exact_index_frames {
+        root.insert(
+            "exactIndexFrames".into(),
+            serde_json::Value::from(exact_index_frames),
+        );
+    }
+
+    let omitted = [
+        (plan.omitted.request_bytes, "requestBytes"),
+        (plan.omitted.response_bytes, "responseBytes"),
+        (plan.omitted.merkle_frames, "merkleFrames"),
+        (
+            plan.omitted.additional_chunk_frames,
+            "dataDependentAdditionalChunkFrames",
+        ),
+        (plan.omitted.sibling_hint_groups, "siblingHintGroups"),
+    ]
+    .into_iter()
+    .filter_map(|(is_omitted, label)| {
+        is_omitted.then_some(serde_json::Value::String(label.into()))
+    })
+    .collect();
+    root.insert("omitted".into(), serde_json::Value::Array(omitted));
+    serde_json::Value::Object(root)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -2031,6 +2107,25 @@ impl WasmDpfClient {
         Ok(arr.into())
     }
 
+    /// Plan the complete provider-local query transcript lower bound without
+    /// opening a socket or emitting a PIR frame. The cached verified catalog
+    /// supplies `dbId` geometry; the INDEX round count comes from the same PBC
+    /// planner as `queryBatchRaw`.
+    #[wasm_bindgen(js_name = planServiceQuery)]
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &Uint8Array,
+        db_id: u8,
+    ) -> Result<JsValue, JsError> {
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let plan = self
+            .inner
+            .plan_service_query(&script_hashes, db_id)
+            .map_err(err_to_js)?;
+        Ok(to_js_object(&product_query_plan_json(&plan)))
+    }
+
     /// Standalone Merkle verifier — consumes inspector-populated
     /// QueryResults (as JSON, typically produced by
     /// [`queryBatchRaw`](Self::query_batch_raw) then
@@ -2886,6 +2981,32 @@ impl WasmHarmonyClient {
         Ok(arr.into())
     }
 
+    /// Query-provider counterpart of `WasmDpfClient.planServiceQuery`.
+    /// Reports `2R` exact INDEX frames plus the mandatory two-frame batched
+    /// CHUNK-presence round; Merkle and extra real-chunk rounds remain omitted.
+    #[wasm_bindgen(js_name = planServiceQuery)]
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &Uint8Array,
+        db_id: u8,
+    ) -> Result<JsValue, JsError> {
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let plan = self
+            .inner
+            .plan_service_query(&script_hashes, db_id)
+            .map_err(err_to_js)?;
+        Ok(to_js_object(&product_query_plan_json(&plan)))
+    }
+
+    /// Plan the catalog-known cold-cache hint lower bound. This is a separate
+    /// provider/workload from the query plan and never inspects query inputs.
+    #[wasm_bindgen(js_name = planServiceHint)]
+    pub fn plan_service_hint(&self, db_id: u8) -> Result<JsValue, JsError> {
+        let plan = self.inner.plan_service_hint(db_id).map_err(err_to_js)?;
+        Ok(to_js_object(&product_query_plan_json(&plan)))
+    }
+
     /// Standalone Merkle verifier over inspector-populated QueryResults.
     /// See [`WasmDpfClient::verify_merkle_batch`] for the full argument
     /// / return contract — the Harmony implementation uses the same
@@ -3576,6 +3697,27 @@ pub fn prp_fastprp() -> u8 {
 mod tests {
     use super::*;
 
+    fn planner_db(index_k: u8, chunk_k: u8) -> pir_sdk::DatabaseInfo {
+        pir_sdk::DatabaseInfo {
+            db_id: 0,
+            kind: pir_sdk::DatabaseKind::Full,
+            name: "wasm-planner".into(),
+            height: 1,
+            index_bins: 1_024,
+            chunk_bins: 2_048,
+            index_k,
+            chunk_k,
+            tag_seed: 1,
+            dpf_n_index: 10,
+            dpf_n_chunk: 11,
+            has_bucket_merkle: true,
+            index_master_seed: 2,
+            chunk_master_seed: 3,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
     #[test]
     fn failed_reattest_clears_the_previous_handshake_seed() {
         let mut slots: AttestSeedSlots = [Some([0x11; 32]), Some([0x22; 32])];
@@ -3710,6 +3852,48 @@ mod tests {
         assert!(unpack_script_hashes(&buf).is_err());
         let buf = vec![0u8; 41];
         assert!(unpack_script_hashes(&buf).is_err());
+    }
+
+    #[test]
+    fn service_query_plan_json_preserves_u64_and_omission_semantics() {
+        let hashes = vec![[0_u8; 20], [1_u8; 20], [2_u8; 20], [3_u8; 20]];
+        let plan = pir_sdk_client::plan_dpf_service_query_v1(&hashes, &planner_db(3, 3))
+            .expect("transport-free DPF plan");
+        let json = product_query_plan_json(&plan);
+
+        assert_eq!(json["backend"], "dpf-pir");
+        assert_eq!(json["workload"], "dpf-query");
+        assert_eq!(json["lowerBounds"]["logicalInputs"], 2);
+        assert_eq!(json["lowerBounds"]["frames"], 6);
+        assert_eq!(json["lowerBounds"]["workUnits"], "36");
+        assert_eq!(json["lowerBounds"]["concurrentSockets"], 1);
+        assert!(json["lowerBounds"].get("hintGroups").is_none());
+        assert_eq!(json["pbcRounds"], 2);
+        assert_eq!(json["exactIndexFrames"], 2);
+        assert!(json["omitted"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::String("merkleFrames".into())));
+        assert!(json.get("requestBytes").is_none());
+    }
+
+    #[test]
+    fn harmony_hint_plan_json_is_a_separate_product_workload() {
+        let plan = pir_sdk_client::plan_harmony_service_hint_v1(&planner_db(75, 80))
+            .expect("transport-free hint plan");
+        let json = product_query_plan_json(&plan);
+
+        assert_eq!(json["backend"], "harmony-pir");
+        assert_eq!(json["workload"], "harmony-hint");
+        assert_eq!(json["lowerBounds"]["logicalInputs"], 0);
+        assert_eq!(json["lowerBounds"]["frames"], 1);
+        assert_eq!(json["lowerBounds"]["hintGroups"], 155);
+        assert_eq!(json["lowerBounds"]["workUnits"], "155");
+        assert!(json.get("pbcRounds").is_none());
+        assert!(json["omitted"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::String("siblingHintGroups".into())));
     }
 
     #[test]

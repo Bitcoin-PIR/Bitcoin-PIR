@@ -140,6 +140,9 @@ pub(crate) struct IndexPlanSlot {
     pub pbc_group: usize,
 }
 
+pub(crate) type IndexPbcRound = Vec<(usize, usize)>;
+pub(crate) type IndexPbcPlan = (Vec<IndexPbcRound>, Vec<IndexPlanSlot>);
+
 /// Plan a multi-round INDEX PBC layout for a batch of scripthashes.
 ///
 /// Wraps `pir_core::pbc::pbc_plan_rounds` over each scripthash's three
@@ -162,7 +165,7 @@ pub(crate) struct IndexPlanSlot {
 pub(crate) fn plan_index_pbc_rounds(
     candidate_groups: &[[usize; NUM_HASHES]],
     k: usize,
-) -> (Vec<Vec<(usize, usize)>>, Vec<IndexPlanSlot>) {
+) -> IndexPbcPlan {
     let rounds = pir_core::pbc::pbc_plan_rounds(candidate_groups, k, NUM_HASHES, 500);
     let mut placement = vec![
         IndexPlanSlot {
@@ -180,6 +183,31 @@ pub(crate) fn plan_index_pbc_rounds(
         }
     }
     (rounds, placement)
+}
+
+/// Script-hash entry point shared by the live DPF/Harmony query paths and the
+/// transport-free service-entitlement planner. Keeping candidate derivation
+/// here prevents a browser-side cost preview from drifting away from the
+/// exact PBC placement the subsequent private query will use.
+pub(crate) fn plan_index_pbc_rounds_for_hashes(
+    script_hashes: &[ScriptHash],
+    k: usize,
+) -> PirResult<IndexPbcPlan> {
+    if script_hashes.is_empty() {
+        return Err(PirError::InvalidState(
+            "INDEX PBC planner requires at least one script hash".into(),
+        ));
+    }
+    if k < NUM_HASHES {
+        return Err(PirError::InvalidState(format!(
+            "INDEX PBC planner requires k >= {NUM_HASHES}, got {k}"
+        )));
+    }
+    let candidate_groups: Vec<[usize; NUM_HASHES]> = script_hashes
+        .iter()
+        .map(|script_hash| pir_core::hash::derive_groups_3(script_hash, k))
+        .collect();
+    Ok(plan_index_pbc_rounds(&candidate_groups, k))
 }
 
 /// Build the `K × INDEX_CUCKOO_NUM_HASHES` alpha matrix for ONE PBC round
@@ -590,6 +618,26 @@ impl DpfClient {
             verified_roots: VerifiedRootState::default(),
             verified_tree_tops: HashMap::new(),
         }
+    }
+
+    /// Compute provider-local Payment-V1 admission lower bounds using the
+    /// cached catalog and the exact live INDEX PBC planner. This method is
+    /// pure with respect to transport state: it never connects, fetches, or
+    /// sends a backend frame.
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &[ScriptHash],
+        db_id: u8,
+    ) -> PirResult<crate::query_plan::ProductQueryShapeV1> {
+        let db_info = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?
+            .get(db_id)
+            .ok_or_else(|| {
+                PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
+            })?;
+        crate::query_plan::plan_dpf_service_query_v1(script_hashes, db_info)
     }
 
     /// Configure one independently selected provider before its transport is
@@ -2138,11 +2186,7 @@ impl DpfClient {
         // each scripthash's `(round_id, pbc_group)` so we know which
         // round's response to read and which group its Merkle items
         // inherit; the rounds view is what the alpha matrix needs.
-        let candidate_groups: Vec<[usize; NUM_HASHES]> = script_hashes
-            .iter()
-            .map(|sh| pir_core::hash::derive_groups_3(sh, k))
-            .collect();
-        let (rounds, placement) = plan_index_pbc_rounds(&candidate_groups, k);
+        let (rounds, placement) = plan_index_pbc_rounds_for_hashes(script_hashes, k)?;
 
         log::info!(
             "[PIR-AUDIT] INDEX batched query: {} queries planned into {} PBC round(s) (K={})",

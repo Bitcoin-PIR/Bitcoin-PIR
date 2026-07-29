@@ -105,6 +105,10 @@ import {
   type ServiceAdmissionPortV1,
 } from './service-admission.js';
 import {
+  canonicalProductQueryShapeV1,
+  type ProductQueryShapeV1,
+} from './service-entitlement.js';
+import {
   buildCacheKey,
   deleteHints as idbDeleteHints,
   fingerprintToHex,
@@ -1507,6 +1511,26 @@ export class HarmonyPirClientAdapter {
   }
 
   // ══ Query path ═══════════════════════════════════════════════════════
+
+  /** Zero-network query-provider demand from the native PBC planner. */
+  planServiceQuery(
+    scriptHashes: Uint8Array[],
+    dbId: number = this.dbId,
+  ): ProductQueryShapeV1 {
+    if (!this.wasmClient) throw new Error('Not connected');
+    const plan = this.wasmClient.planServiceQuery(packScriptHashes(scriptHashes), dbId);
+    return canonicalProductQueryShapeV1(plan, 'Harmony planned query shape');
+  }
+
+  /**
+   * Separate cold-cache hint-provider lower bound. It covers catalog-known
+   * main groups; authenticated sibling groups remain explicitly unknown.
+   */
+  planServiceHint(dbId: number = this.dbId): ProductQueryShapeV1 {
+    if (!this.wasmClient) throw new Error('Not connected');
+    const plan = this.wasmClient.planServiceHint(dbId);
+    return canonicalProductQueryShapeV1(plan, 'Harmony planned hint shape');
+  }
 
   /**
    * Batch query. Accepts Bitcoin addresses or raw-hex scriptPubKeys,
