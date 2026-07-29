@@ -862,6 +862,54 @@ describe('adapter WASM lifecycle', () => {
     );
   });
 
+  it('invalidates DPF acquisition binding when either prepared peer disconnects', async () => {
+    const connected = [true, true];
+    const verifyServicePolicySession = vi.fn();
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyServicePolicySession,
+      disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
+      isServerConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictDpfPair(client);
+    const survivingPort = adapter.serviceAdmissionPort(0, 0);
+    const policy = { marker: 'signed-policy' } as any;
+
+    await adapter.prepareStrictAdmission(0);
+    survivingPort.assertSessionBinding(policy);
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+
+    await adapter.disconnectLeg(1);
+    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
+      'requires prepared strict admission',
+    );
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates Harmony acquisition binding when either prepared peer disconnects', async () => {
+    const connected = [true, true];
+    const verifyServicePolicySession = vi.fn();
+    const client = {
+      preflightDatabase: vi.fn(async () => {}),
+      verifyServicePolicySession,
+      disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
+      isProviderConnected: vi.fn((index: number) => connected[index]),
+    };
+    const adapter = strictHarmonyPair(client);
+    const survivingPort = adapter.hintServiceAdmissionPort(0);
+    const policy = { marker: 'signed-policy' } as any;
+
+    await adapter.prepareStrictAdmission(0);
+    survivingPort.assertSessionBinding(policy);
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+
+    await adapter.disconnectLeg(1);
+    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
+      'requires prepared strict admission',
+    );
+    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+  });
+
   it('rechecks distinct operator pins at the final DPF pair gate', async () => {
     const preflightDatabase = vi.fn(async () => {});
     const adapter = strictDpfPair({ preflightDatabase });

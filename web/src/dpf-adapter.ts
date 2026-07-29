@@ -1060,9 +1060,9 @@ export class BatchPirClientAdapter {
         nowUnix,
       ),
       assertSessionBinding: (policy) =>
-        client().verifyServicePolicySession(serverIndex, policy),
+        authorizedClient().verifyServicePolicySession(serverIndex, policy),
       assertRetainedSessionBinding: (policy, nowUnix) =>
-        client().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
+        authorizedClient().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>

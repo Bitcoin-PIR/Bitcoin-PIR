@@ -1298,9 +1298,9 @@ export class HarmonyPirClientAdapter {
       ) => client().fetchRetainedServiceRedemption(
         0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
-      assertSessionBinding: (policy) => client().verifyServicePolicySession(0, policy),
+      assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(0, policy),
       assertRetainedSessionBinding: (policy, nowUnix) =>
-        client().verifyRetainedServiceSession(0, policy, nowUnix),
+        authorizedClient().verifyRetainedServiceSession(0, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeHintService(dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
@@ -1327,9 +1327,9 @@ export class HarmonyPirClientAdapter {
       ) => client().fetchRetainedServiceRedemption(
         1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
-      assertSessionBinding: (policy) => client().verifyServicePolicySession(1, policy),
+      assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(1, policy),
       assertRetainedSessionBinding: (policy, nowUnix) =>
-        client().verifyRetainedServiceSession(1, policy, nowUnix),
+        authorizedClient().verifyRetainedServiceSession(1, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeQueryService(dbId, policy, scopeId, offerId, proof),
       authorizeRetained: (policy, proof, nowUnix) =>
