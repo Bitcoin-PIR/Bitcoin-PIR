@@ -443,7 +443,7 @@ test("issuer and authority origins must remain loopback", () => {
   });
 });
 
-test("VPSBG fragment remains service-auth-only, Free-PoW-only and remote-authority-only", () => {
+test("VPSBG fragment remains service-auth-only, exact-pinned and storeless Free-PoW-only", () => {
   for (const flag of [
     "--serve-hints",
     "--service-bat-key /home/pir/data/bat.key",
@@ -456,7 +456,28 @@ test("VPSBG fragment remains service-auth-only, Free-PoW-only and remote-authori
         "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
         (text) => `${text}\n${flag}\n`,
       );
-      assert.throws(() => validateDeploymentTree(root), /unreviewed|canonical order/);
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /unreviewed|canonical order|forbidden Free IP/,
+      );
+    });
+  }
+
+  for (const forbidden of [
+    "--service-store /home/pir/data/provider.sqlite3",
+    "--service-remote-rollback-authority-config /home/pir/data/authority.toml",
+    "--service-free-ip-key /home/pir/data/free-ip.key",
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
+        (text) => `${text}\n${forbidden}\n`,
+      );
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /unreviewed|canonical order|forbidden Free IP/,
+      );
     });
   }
 

@@ -23,9 +23,10 @@ use pir_runtime_core::service_admission::{
     ServiceWireRequestV1,
 };
 use pir_runtime_core::service_policy_runtime::{
-    activate_retained_service_policy_v1, activate_service_policy_v1,
-    validate_policy_method_coverage_v1, validate_retained_policy_method_coverage_v1,
-    ActivatedRetainedServicePolicyV1, ActivatedServicePolicyV1,
+    activate_exact_storeless_free_pow_policy_v1, activate_retained_service_policy_v1,
+    activate_service_policy_v1, validate_policy_method_coverage_v1,
+    validate_retained_policy_method_coverage_v1, ActivatedRetainedServicePolicyV1,
+    ActivatedServicePolicyV1,
 };
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
@@ -273,6 +274,11 @@ struct CliArgs {
     /// live; V1 deliberately has no unauthenticated historical-key list.
     service_provider_id_hex: Option<String>,
     service_policy_key_hex: Option<String>,
+    /// Exact canonical ServicePolicyV1 digest for the measured, storeless
+    /// Free-PoW-only deployment mode. The pin must be part of the measured
+    /// launch configuration; it replaces durable policy rollback state only
+    /// for this deliberately narrow policy shape.
+    service_storeless_free_pow_policy_digest_hex: Option<String>,
     /// Existing provider spend database. The rollback authority must be exactly
     /// one local development/test SQLite file or one production remote config;
     /// startup never creates or silently substitutes either.
@@ -537,6 +543,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut service_retained_policy_paths: Vec<PathBuf> = Vec::new();
     let mut service_provider_id_hex: Option<String> = None;
     let mut service_policy_key_hex: Option<String> = None;
+    let mut service_storeless_free_pow_policy_digest_hex: Option<String> = None;
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
     let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
@@ -730,6 +737,23 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--service-policy-key-hex" => {
                 service_policy_key_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-storeless-free-pow-policy-digest-hex" => {
+                if service_storeless_free_pow_policy_digest_hex.is_some() {
+                    fatal_cli(
+                        "--service-storeless-free-pow-policy-digest-hex must not be repeated",
+                    );
+                }
+                service_storeless_free_pow_policy_digest_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-free-pow-policy-digest-hex requires a digest",
+                            )
+                        })
+                        .clone(),
+                );
                 i += 1;
             }
             "--service-store" => {
@@ -1090,6 +1114,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         service_retained_policy_paths,
         service_provider_id_hex,
         service_policy_key_hex,
+        service_storeless_free_pow_policy_digest_hex,
         service_store_path,
         service_rollback_authority_path,
         service_remote_rollback_authority_config_path,
@@ -4017,7 +4042,10 @@ struct UnifiedServerData {
 struct StrictServiceAdmissionRuntimeV1 {
     policy: ActivatedServicePolicyV1,
     retained_policies: BTreeMap<[u8; 32], ActivatedRetainedServicePolicyV1>,
-    provider_store: ProviderStore,
+    /// Absent only for the exact-digest-pinned, Free-PoW-only measured mode.
+    /// Every durable quota, credential, payment, Cashu, ARC, retained-policy,
+    /// or shared-issuer route requires this store at startup.
+    provider_store: Option<ProviderStore>,
     free_rate_limits: Arc<FreeRateLimitStateV1>,
     free_ip_subject_key: Option<FreeIpSubjectKeyV1>,
     trust_direct_peer_ip: bool,
@@ -4284,28 +4312,33 @@ impl StrictServiceAdmissionRuntimeV1 {
 
     fn supports(&self, route: AdmissionMethodRouteV1) -> bool {
         match route {
-            AdmissionMethodRouteV1::FreeOpenBestEffort
-            | AdmissionMethodRouteV1::FreeProofOfWork
-            | AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
-            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => true,
+            AdmissionMethodRouteV1::FreeOpenBestEffort => self.provider_store.is_some(),
+            AdmissionMethodRouteV1::FreeProofOfWork => true,
+            AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
+            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => {
+                self.provider_store.is_some()
+            }
             AdmissionMethodRouteV1::FreeIpRateLimited => {
                 self.free_ip_subject_key.is_some()
                     && self.trust_direct_peer_ip
                     && self.free_rate_limits.is_persistent()
             }
-            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => self.bat_keyring.is_some(),
+            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => {
+                self.provider_store.is_some() && self.bat_keyring.is_some()
+            }
             AdmissionMethodRouteV1::ArcProviderLocalExperimental => {
-                self.experimental_arc_keyring.is_some()
+                self.provider_store.is_some() && self.experimental_arc_keyring.is_some()
             }
             AdmissionMethodRouteV1::StandardCashuMintOnline => {
-                self.cashu_recovery_cipher.is_some()
+                self.provider_store.is_some()
+                    && self.cashu_recovery_cipher.is_some()
                     && self.cashu_custody_cipher.is_some()
                     && !self.cashu_exposure_limits.is_empty()
             }
             AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
             | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
-                self.shared_issuer.is_some()
+                self.provider_store.is_some() && self.shared_issuer.is_some()
             }
         }
     }
@@ -7378,6 +7411,7 @@ fn load_strict_service_admission_v1(
         || !args.service_retained_policy_paths.is_empty()
         || args.service_provider_id_hex.is_some()
         || args.service_policy_key_hex.is_some()
+        || args.service_storeless_free_pow_policy_digest_hex.is_some()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
         || args.service_remote_rollback_authority_config_path.is_some()
@@ -7450,6 +7484,54 @@ fn load_strict_service_admission_v1(
         SERVICE_CONFIG_FILE_LIMIT_V1,
         "signed service policy",
     )?;
+    let storeless_free_pow_policy_digest = args
+        .service_storeless_free_pow_policy_digest_hex
+        .as_deref()
+        .map(|value| {
+            decode_fixed_hex_v1::<32>(value, "--service-storeless-free-pow-policy-digest-hex")
+        })
+        .transpose()?;
+    if storeless_free_pow_policy_digest.is_some()
+        && (!args.service_retained_policy_paths.is_empty()
+            || args.arc_key_path.is_some()
+            || !args.cashu_keysets.is_empty()
+            || args.service_store_path.is_some()
+            || args.service_rollback_authority_path.is_some()
+            || args.service_remote_rollback_authority_config_path.is_some()
+            || args.allow_local_service_rollback_authority_dev
+            || args.service_free_ip_key_path.is_some()
+            || args.service_trust_direct_peer_ip
+            || !args.service_bat_key_paths.is_empty()
+            || !args.service_arc_key_specs.is_empty()
+            || args.allow_experimental_arc
+            || !args.service_cashu_recovery_key_specs.is_empty()
+            || args.service_cashu_recovery_active_epoch.is_some()
+            || !args.service_cashu_custody_key_specs.is_empty()
+            || args.service_cashu_custody_active_epoch.is_some()
+            || !args.service_cashu_exposure_limit_specs.is_empty()
+            || args.service_shared_authorization_path.is_some()
+            || args.service_shared_issuer_approval_path.is_some()
+            || args.service_shared_operator_key_hex.is_some()
+            || args.service_shared_issuer_settlement_key_hex.is_some()
+            || args.service_shared_clearing_key_path.is_some()
+            || args.service_shared_idempotency_key_path.is_some()
+            || args.service_shared_minimum_authorization_epoch.is_some()
+            || {
+                #[cfg(feature = "standard-cashu-process-e2e")]
+                {
+                    test_only_service_https_configured
+                }
+                #[cfg(not(feature = "standard-cashu-process-e2e"))]
+                {
+                    false
+                }
+            })
+    {
+        return Err(
+            "storeless Free-PoW mode forbids retained policies, stores, rollback authorities, Free IP quota, credential/payment keys, legacy or V1 Cashu/ARC, shared issuer, and test HTTPS configuration"
+                .to_owned(),
+        );
+    }
     let mut experimental_arc_usage =
         inspect_experimental_arc_policy_v1(&signed_policy, "signed service policy")?;
     let mut retained_policy_inputs = Vec::with_capacity(args.service_retained_policy_paths.len());
@@ -7475,55 +7557,64 @@ fn load_strict_service_admission_v1(
             "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE PINNED DRAFT-01 IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
         );
     }
-    let provider_store_path = args
-        .service_store_path
-        .as_deref()
-        .ok_or_else(|| "--service-store is required".to_owned())?;
-    let rollback_source = service_rollback_authority_source_v1(
-        args.service_rollback_authority_path.as_deref(),
-        args.service_remote_rollback_authority_config_path
-            .as_deref(),
-        args.allow_local_service_rollback_authority_dev,
-    )?;
-    let canonical_store =
-        validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
+    let provider_store = if storeless_free_pow_policy_digest.is_some() {
+        None
+    } else {
+        let provider_store_path = args
+            .service_store_path
+            .as_deref()
+            .ok_or_else(|| "--service-store is required".to_owned())?;
+        let rollback_source = service_rollback_authority_source_v1(
+            args.service_rollback_authority_path.as_deref(),
+            args.service_remote_rollback_authority_config_path
+                .as_deref(),
+            args.allow_local_service_rollback_authority_dev,
+        )?;
+        let canonical_store =
+            validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
 
-    let options = StoreOptions::default();
-    let store_startup_check_started = Instant::now();
-    let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
-        ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
-            let canonical_rollback =
-                validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
-            if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
-                return Err(
-                    "provider store and rollback authority must be different files/inodes"
-                        .to_owned(),
+        let options = StoreOptions::default();
+        let store_startup_check_started = Instant::now();
+        let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
+            ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
+                let canonical_rollback =
+                    validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
+                if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
+                    return Err(
+                        "provider store and rollback authority must be different files/inodes"
+                            .to_owned(),
+                    );
+                }
+                eprintln!(
+                    "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
                 );
-            }
-            eprintln!(
-                "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
-            );
-            Arc::new(
-                SqliteRollbackFloorAuthorityV1::open_existing(
-                    &canonical_rollback,
-                    options.busy_timeout,
+                Arc::new(
+                    SqliteRollbackFloorAuthorityV1::open_existing(
+                        &canonical_rollback,
+                        options.busy_timeout,
+                    )
+                    .map_err(|error| format!("failed to open rollback authority: {error}"))?,
                 )
-                .map_err(|error| format!("failed to open rollback authority: {error}"))?,
-            )
-        }
-        ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
-            open_remote_service_rollback_authority_v1(provider_id, path)?
-        }
+            }
+            ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
+                open_remote_service_rollback_authority_v1(provider_id, path)?
+            }
+        };
+        let store = ProviderStore::open_existing(
+            &canonical_store,
+            provider_id,
+            options,
+            rollback_authority,
+        )
+        .map_err(|error| format!("failed to open provider spend store: {error}"))?;
+        let _store_inventory = store.operational_inventory().map_err(|error| {
+            format!("failed to read provider store operational inventory: {error}")
+        })?;
+        let startup_line =
+            provider_store_startup_log_line_v1(store_startup_check_started.elapsed().as_millis());
+        println!("{startup_line}");
+        Some(store)
     };
-    let provider_store =
-        ProviderStore::open_existing(&canonical_store, provider_id, options, rollback_authority)
-            .map_err(|error| format!("failed to open provider spend store: {error}"))?;
-    let _store_inventory = provider_store
-        .operational_inventory()
-        .map_err(|error| format!("failed to read provider store operational inventory: {error}"))?;
-    let startup_line =
-        provider_store_startup_log_line_v1(store_startup_check_started.elapsed().as_millis());
-    println!("{startup_line}");
 
     let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
         Some(path) => Some(
@@ -7781,7 +7872,12 @@ fn load_strict_service_admission_v1(
             )
             .map_err(|error| format!("shared issuer HTTPS trust is invalid: {error}"))?;
         shared
-            .committer(&provider_store, &http_transport)
+            .committer(
+                provider_store.as_ref().ok_or_else(|| {
+                    "shared issuer configuration requires a provider store".to_owned()
+                })?,
+                &http_transport,
+            )
             .map_err(|error| format!("shared issuer clearing configuration is invalid: {error}"))?;
         shared
             .authorization
@@ -7804,16 +7900,27 @@ fn load_strict_service_admission_v1(
             .map_err(|error| format!("issuer clearing approval is not current: {error}"))?;
     }
 
-    let policy = activate_service_policy_v1(
-        &signed_policy,
-        provider_id,
-        verifying_key,
-        &provider_store,
-        now_unix,
-        experimental_arc_keyring
-            .as_ref()
-            .map(|keyring| keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1),
-    )
+    let policy = match storeless_free_pow_policy_digest {
+        Some(expected_digest) => activate_exact_storeless_free_pow_policy_v1(
+            &signed_policy,
+            provider_id,
+            verifying_key,
+            expected_digest,
+            now_unix,
+        ),
+        None => activate_service_policy_v1(
+            &signed_policy,
+            provider_id,
+            verifying_key,
+            provider_store
+                .as_ref()
+                .ok_or_else(|| "provider store is unavailable".to_owned())?,
+            now_unix,
+            experimental_arc_keyring
+                .as_ref()
+                .map(|keyring| keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1),
+        ),
+    }
     .map_err(|error| format!("failed to activate signed service policy: {error}"))?;
     let mut retained_policies = BTreeMap::new();
     for (retained_path, retained_bytes) in retained_policy_inputs {
@@ -7834,10 +7941,15 @@ fn load_strict_service_admission_v1(
             ));
         }
     }
-    let free_rate_limits = Arc::new(FreeRateLimitStateV1::provider_store(
-        provider_store.clone(),
-        pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
-    ));
+    let free_rate_limits = Arc::new(match provider_store.as_ref() {
+        Some(store) => FreeRateLimitStateV1::provider_store(
+            store.clone(),
+            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+        ),
+        None => FreeRateLimitStateV1::new(
+            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+        ),
+    });
     let runtime = StrictServiceAdmissionRuntimeV1 {
         policy,
         retained_policies,
@@ -7888,6 +8000,8 @@ fn load_strict_service_admission_v1(
                     })?;
                 let readiness = runtime
                     .provider_store
+                    .as_ref()
+                    .ok_or_else(|| "retained policy requires a provider store".to_owned())?
                     .verify_existing_verified_offer_namespace_v1(
                         &verified_offer,
                         retained.policy().issued_at,
@@ -8039,6 +8153,8 @@ fn validate_cashu_runtime_configuration_v1(
             })?;
         let inventory = runtime
             .provider_store
+            .as_ref()
+            .ok_or_else(|| "standard Cashu requires a provider store".to_owned())?
             .cashu_custody_inventory_v1(mint_id, unit)
             .map_err(|error| {
                 format!(
@@ -9444,6 +9560,11 @@ async fn main() {
         if runtime.trust_direct_peer_ip {
             println!("  Free IP quotas: direct TCP peer explicitly trusted");
         }
+        if runtime.provider_store.is_none() {
+            println!(
+                "  Storeless Free-PoW: exact policy digest pin active; no provider store or rollback authority"
+            );
+        }
         AdmissionEnforcementV1::Enforced
     } else {
         println!(
@@ -10602,26 +10723,29 @@ async fn main() {
                                                     },
                                                 )
                                             } else {
-                                                let mut provider_local = ProviderStoreBearerCommitterV1::new(
-                                                    &runtime.provider_store,
-                                                    runtime
-                                                        .bat_keyring
-                                                        .as_ref()
-                                                        .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
-                                                );
-                                                if let Some(keyring) =
-                                                    runtime.experimental_arc_keyring.as_ref()
-                                                {
-                                                    provider_local = provider_local
-                                                        .with_arc_adapter_v1(keyring);
-                                                }
+                                                let provider_local = runtime.provider_store.as_ref().map(|store| {
+                                                    let committer = ProviderStoreBearerCommitterV1::new(
+                                                        store,
+                                                        runtime
+                                                            .bat_keyring
+                                                            .as_ref()
+                                                            .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
+                                                    );
+                                                    match runtime.experimental_arc_keyring.as_ref() {
+                                                        Some(keyring) => committer.with_arc_adapter_v1(keyring),
+                                                        None => committer,
+                                                    }
+                                                });
                                                 let mut composite =
-                                                    CompositeAdmissionMethodCommitterV1::new()
-                                                        .with_provider_local(&provider_local);
+                                                    CompositeAdmissionMethodCommitterV1::new();
+                                                if let Some(committer) = provider_local.as_ref() {
+                                                    composite = composite.with_provider_local(committer);
+                                                }
                                                 if let Some(free) = free_admission.as_ref() {
                                                     composite = composite.with_free(free);
                                                 }
                                                 let standard_cashu = match (
+                                                    runtime.provider_store.as_ref(),
                                                     runtime.cashu_recovery_cipher.as_ref(),
                                                     runtime.cashu_custody_cipher.as_ref(),
                                                     verified_offer
@@ -10630,6 +10754,7 @@ async fn main() {
                                                         .as_ref(),
                                                 ) {
                                                     (
+                                                        Some(store),
                                                         Some(recovery),
                                                         Some(custody),
                                                         Some(manifest),
@@ -10643,7 +10768,7 @@ async fn main() {
                                                         .map(|limits| {
                                                             StandardCashuAdmissionCommitterV1::new(
                                                                 StandardCashuClientV1::new(
-                                                                    &runtime.provider_store,
+                                                                    store,
                                                                     &runtime.http_transport,
                                                                     recovery,
                                                                     custody,
@@ -10660,10 +10785,11 @@ async fn main() {
                                                 let shared_issuer = runtime
                                                     .shared_issuer
                                                     .as_ref()
-                                                    .and_then(|config| {
+                                                    .zip(runtime.provider_store.as_ref())
+                                                    .and_then(|(config, store)| {
                                                         config
                                                             .committer(
-                                                                &runtime.provider_store,
+                                                                store,
                                                                 &runtime.http_transport,
                                                             )
                                                             .ok()
@@ -13308,6 +13434,20 @@ mod service_admission_dispatch_tests {
             "3".to_owned(),
         ]);
         assert_eq!(args.service_max_concurrent_online_v2full_auth, Some(3));
+    }
+
+    #[test]
+    fn cli_parser_accepts_exact_storeless_free_pow_policy_digest() {
+        let digest = "42".repeat(32);
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--service-storeless-free-pow-policy-digest-hex".to_owned(),
+            digest.clone(),
+        ]);
+        assert_eq!(
+            args.service_storeless_free_pow_policy_digest_hex.as_deref(),
+            Some(digest.as_str())
+        );
     }
 
     #[cfg(feature = "test-only-unsafe-query-logging")]

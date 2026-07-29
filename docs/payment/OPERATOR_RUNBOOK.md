@@ -263,13 +263,23 @@ container images, CI artifacts or directory events.
 
 ## 3. Persistence and backup domains
 
-Every logical provider has its own ProviderStore. Independent providers must
+Every stateful logical provider has its own ProviderStore. Independent providers must
 not share the database, WAL, spent set or remote spend service. Replicas sharing
 one `provider_id` and keysets are one logical provider and need one linearizable
 spend authority. Payment V1 does not support independent ProviderStore
 databases as active/active replicas. A common external rollback-floor CAS can
 fence an exact cloned-state race to one winner, but it is not detailed-state
 replication and does not make the losing database safe to serve.
+
+The sole V1 exception is a measured, exact-digest-pinned storeless profile whose
+signed policy contains only provider-local Free proof-of-work offers. It creates
+no ProviderStore, WAL/SHM, rollback client or retained-policy surface. Its exact
+domain-separated signed-policy digest, provider ID and policy verification key
+must be compiled into the measured UKI launch inputs. Any policy renewal or
+change requires a new UKI and client measurement/pin ceremony; do not edit the
+host policy or append an unmeasured digest argument. Adding any stateful quota,
+credential, payment or retained method exits this exception and requires the
+ordinary independent store/authority ceremony before startup.
 
 The provider/issuer SQLite database and its rollback-floor authority must be in
 **independent backup and restore domains**. Merely using two filenames on one
