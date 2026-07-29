@@ -33,6 +33,13 @@ export interface StrictDatabaseProofOptions {
   client: StrictDatabaseProofClient;
   pins: readonly DatabaseProofPin[];
   onStatus?: DatabaseProofStatusCallback;
+  /**
+   * Re-check the transport/session owner around every asynchronous boundary.
+   * A staged leg passes a closure bound to its generation, WASM client and
+   * configured endpoint.  If disconnect/replacement wins the race, the proof
+   * handle is freed before it can be installed and no late status is emitted.
+   */
+  assertCurrent?: () => void;
 }
 
 /** Proof material that has passed the Rust verifier, matched the browser's
@@ -110,7 +117,8 @@ function operationFailureStatus(
 export async function verifyAndInstallDatabaseProofs(
   options: StrictDatabaseProofOptions,
 ): Promise<InstalledDatabaseProof[]> {
-  const { client, pins, onStatus } = options;
+  const { client, pins, onStatus, assertCurrent } = options;
+  assertCurrent?.();
   if (pins.length === 0) {
     throw new Error('strict database verification requires at least one pinned database proof');
   }
@@ -127,6 +135,7 @@ export async function verifyAndInstallDatabaseProofs(
         pin.builderGitCommit,
       );
     } catch (error) {
+      assertCurrent?.();
       const status = databaseProofUnavailable(pin, error);
       onStatus?.(pin.dbId, status);
       throw new Error(
@@ -136,7 +145,9 @@ export async function verifyAndInstallDatabaseProofs(
     }
 
     try {
+      assertCurrent?.();
       const proof = verifiedDatabaseProofFromWasm(proofHandle);
+      assertCurrent?.();
       const status = verifyDatabaseProofAgainstPin(proof, pin);
       if (status.state !== 'verified') {
         onStatus?.(pin.dbId, status);
@@ -149,10 +160,13 @@ export async function verifyAndInstallDatabaseProofs(
         // wasm-bindgen consumes by-value arguments before entering Rust. Clear
         // our local ownership first, because even a Rust-side install error
         // leaves the JavaScript handle destroyed.
+        assertCurrent?.();
         const movedProof = proofHandle;
         proofHandle = null;
         client.installVerifiedDatabaseProof(movedProof);
+        assertCurrent?.();
       } catch (error) {
+        assertCurrent?.();
         const failure = operationFailureStatus(pin, proof, 'install', error);
         onStatus?.(pin.dbId, failure);
         throw new Error(
@@ -177,12 +191,16 @@ export async function preflightInstalledDatabaseProofs(
   client: Pick<StrictDatabaseProofClient, 'preflightDatabase'>,
   installed: readonly InstalledDatabaseProof[],
   onStatus?: DatabaseProofStatusCallback,
+  assertCurrent?: () => void,
 ): Promise<DatabaseProofStatus[]> {
   const verified: DatabaseProofStatus[] = [];
+  assertCurrent?.();
   for (const item of installed) {
     try {
       await client.preflightDatabase(item.pin.dbId);
+      assertCurrent?.();
     } catch (error) {
+      assertCurrent?.();
       const failure = operationFailureStatus(item.pin, item.proof, 'preflight', error);
       onStatus?.(item.pin.dbId, failure);
       throw new Error(
@@ -201,7 +219,62 @@ export async function verifyInstallAndPreflightDatabaseProofs(
   options: StrictDatabaseProofOptions,
 ): Promise<DatabaseProofStatus[]> {
   const installed = await verifyAndInstallDatabaseProofs(options);
-  return preflightInstalledDatabaseProofs(options.client, installed, options.onStatus);
+  options.assertCurrent?.();
+  return preflightInstalledDatabaseProofs(
+    options.client,
+    installed,
+    options.onStatus,
+    options.assertCurrent,
+  );
+}
+
+/** Validate and defensively copy one operator pin. */
+export function exactOperatorPinV1(field: string, value: Uint8Array | undefined): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.length !== 32) {
+    throw new Error(`${field} must be exactly 32 bytes`);
+  }
+  if (value.every((byte) => byte === 0)) throw new Error(`${field} must be non-zero`);
+  return value.slice();
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+}
+
+/**
+ * Local-only two-provider independence gate.  It deliberately consumes no
+ * server identity or endpoint and therefore never reveals the peer choice.
+ */
+export function assertIndependentOperatorPinsV1(options: {
+  first?: Uint8Array;
+  second?: Uint8Array;
+}): readonly [Uint8Array, Uint8Array] {
+  const first = exactOperatorPinV1('first operator pin', options.first);
+  const second = exactOperatorPinV1('second operator pin', options.second);
+  if (equalBytes(first, second)) {
+    throw new Error('strict two-provider verification requires distinct operator pins');
+  }
+  return [first, second];
+}
+
+/** Resolve strict independent pins or the legacy advisory shared fallback. */
+export function resolveIndependentOperatorPinsV1(options: {
+  strictVerification: boolean;
+  first?: Uint8Array;
+  second?: Uint8Array;
+  legacyShared?: Uint8Array;
+}): readonly [Uint8Array, Uint8Array] {
+  if (options.strictVerification) return assertIndependentOperatorPinsV1(options);
+  const fallback = options.legacyShared;
+  return [
+    exactOperatorPinV1('first operator pin', options.first ?? fallback),
+    exactOperatorPinV1('second operator pin', options.second ?? fallback),
+  ];
 }
 
 export interface StrictAttestationSummary {
@@ -231,6 +304,8 @@ export interface StrictTransportOptions {
     StrictOperatorIdentitySummary,
     StrictOperatorIdentitySummary,
   ];
+  /** Browser-local pins only; never serialized to either provider. */
+  operatorPins?: readonly [Uint8Array | undefined, Uint8Array | undefined];
 }
 
 function configured(value: string | undefined): boolean {
@@ -240,6 +315,14 @@ function configured(value: string | undefined): boolean {
 /** Return every reason the strict transport gate would reject the session. */
 export function collectStrictTransportFailures(options: StrictTransportOptions): string[] {
   const failures: string[] = [];
+  try {
+    assertIndependentOperatorPinsV1({
+      first: options.operatorPins?.[0],
+      second: options.operatorPins?.[1],
+    });
+  } catch (error) {
+    failures.push((error as Error)?.message ?? String(error));
+  }
   if (!options.secureChannelEstablished) {
     failures.push('secure-channel upgrade did not complete');
   }
@@ -369,6 +452,8 @@ export interface StrictServerLegOptions {
   expectedServerId?: string;
   requireOperatorIdentity?: boolean;
   operatorIdentity?: StrictOperatorIdentitySummary;
+  /** Browser-local pin for this exact leg. */
+  operatorPin?: Uint8Array;
 }
 
 /** Validate one provider before its policy or capability is requested. This
@@ -376,6 +461,11 @@ export interface StrictServerLegOptions {
 export function collectStrictServerLegFailures(options: StrictServerLegOptions): string[] {
   const failures: string[] = [];
   const prefix = `server ${options.serverIndex}`;
+  try {
+    exactOperatorPinV1(`${prefix} operator pin`, options.operatorPin);
+  } catch (error) {
+    failures.push((error as Error)?.message ?? String(error));
+  }
   if (!options.secureChannelEstablished) {
     failures.push(`${prefix}: secure-channel upgrade did not complete`);
   }
