@@ -345,6 +345,7 @@ records:
 
 - a full 40-hex source commit;
 - source archive and Cargo.lock SHA-256;
+- canonical reproducible-build manifest SHA-256;
 - exact binary SHA-256 and `--version` output;
 - exact bounded config SHA-256; and
 - the pinned directory publisher public key.
@@ -359,12 +360,16 @@ application listeners to loopback, use the same-host WSS edge, disable
 access/event/body/IP logging, disable NIP-42 for the current publisher, retain
 the NIP-01 addressable-event replacement ordering, and enforce the
 BitcoinPIR bounds: 262,176-byte outer EVENT message, 192 KiB content, kind
-30078, and a deployment-config size no greater than 16 KiB. At least two relay
-hostnames are still required for directory use; two aliases on one Hetzner host
-do not provide operator or failure independence.
+30078, and a deployment-config size no greater than 16 KiB. The current default
+browser/publisher contract requires `2..8` distinct WSS relay origins, so under
+that default a second origin remains a blocker; two aliases for one origin do
+not satisfy it. A separately reviewed, explicit centralized-single-relay
+browser opt-in may later implement the user's accepted centralized-directory
+mode, but this stopped profile neither supplies that opt-in nor permits an
+automatic fallback from `2..8` to one.
 
 The reviewed process interface is intentionally narrow: exactly
-`bitcoinpir-directory-relay --config /absolute/owner-only.toml`, with no CLI
+`bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`, with no CLI
 overrides. The TOML must declare `profile = "bitcoinpir-directory-relay-v1"` and
 contain exactly `public_listen`, `publisher_listen`, `database`,
 `directory_pubkey_hex`, the four global connection/operation/rate/egress caps,
@@ -375,8 +380,12 @@ equal each global cap, `max_egress_bytes_per_connection`, `max_archive_events`, 
 `egress_timeout_seconds`; unknown fields and missing fields fail closed.
 `deploy/payment-v1/directory-relay.toml.example` fixes the database below the
 unit's only writable StateDirectory at
-`/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The config must be mode
-0400 or 0600 under a private parent directory.
+`/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The loader accepts only an
+effective-UID-owned mode 0400 or 0600 file under a private parent directory;
+the reviewed deployment shape is specifically UID 62951, GID 62952, mode 0400
+and never root-owned/group-readable 0440. Its final parent must be owned by UID
+62951 with exact mode 0700; the stopped collector probes readability as the
+real service EUID and seals the descriptor-bound ancestor chain.
 
 The relay has separate public-read and private-publisher accept loops and
 acquires a lane reservation before a shared global reservation. The public
@@ -404,13 +413,73 @@ The source gate/readback suite passed 80/80, the relay library/binary suite
 passed 24/24 in Linux Docker, and the exact-head CI exercised the real
 two-relay process topology. This closes only the implementation-audit item.
 Relay selection remains unresolved until the exact source archive, Cargo.lock,
-Linux binary, bounded config and publisher public-key pins are recorded, two
-genuinely independent relay failure domains are approved, and target-host
-runtime/fault evidence passes.
+Linux binary, bounded config and publisher public-key pins are recorded,
+target-host runtime/fault evidence passes, and either the default contract's
+second independent relay origin is approved or a separately reviewed explicit
+centralized-single-relay browser opt-in is selected.
 
 Accordingly, no public relay service or catalog publication belongs in a
 rendered plan today. The locally held publisher key, if any, is not relay
 selection evidence and its installation/use requires its own approval.
+
+The repository now has one stopped-only `directory-relay-v1` render skeleton.
+It renders the bounded config plus the blocked unit only; it carries no binary
+payload and cannot pass the live collector. This closes offline preparation
+shape, not relay selection or installation authority. The only applicable
+Linux runtime command is `collect-stopped-relay`, followed by independently
+pinned `verify-stopped-relay-offline`; both reject any non-false `ExecStart`,
+any pre-start command, installed-file/fragment/effective-unit drift, a failed
+`systemd-analyze verify`, any requested runtime socket, or any live evidence.
+The v2 stopped-relay schema reads systemd Conditions only through busctl's
+typed `a(sbbsi)` value, requires the unresolved selection sentinel to be
+absent, binds the private config to its real consumer and 0700 final parent,
+and seals both file and descriptor-walk fingerprints before the final
+Conditions/stopped-generation pass. For the inactive/dead unit, systemd 255
+evidence records the dynamic
+`MemorySwapCurrent=[not set]` while the configured and effective
+`MemorySwapMax=0` remains mandatory.
+
+For a future selection, run `scripts/build-payment-v1-directory-relay.sh` from
+the frozen reviewed source. Its pinned Linux-amd64 container runs with network
+disabled and performs two independent empty builds from a canonical full-commit
+Git archive. Commit resolution, archive and lockfile generation, and Git/Tar
+version capture all occur inside that digest-pinned container; host Git/Tar
+bytes are not trusted as build inputs. The source proof copies only Git object
+bytes into a temporary minimal bare database and does not import replace refs,
+grafts, shallow state, repository config, uncommitted attributes or alternate
+object stores. Then run
+`scripts/payment-v1-directory-relay-artifact-gate.mjs verify-selection`; it
+recomputes the archive, proves its embedded `Cargo.lock` matches the commit,
+requires both clean binaries and the selected binary to be byte-identical,
+rechecks the recorded Git/Tar versions, independently rebuilds the already
+verified archive twice from gate-private snapshots, reads `--version` only
+from the verified binary's private snapshot, and hashes the exact `config.toml`
+bytes. The resulting build-manifest digest is a selection field. None of those
+steps authorizes installing the binary, changing `/usr/bin/false`, using the
+publisher key, opening a listener, routing traffic or publishing an event.
+The verifier seals the artifact-root parent chain across long rebuilds. The
+recipe applies host-side `SIGKILL` timeouts to every Docker operation, reseals
+the output-parent chain immediately before publication, and publishes with
+`renameat2(RENAME_NOREPLACE)`; unsupported kernels and every destination type
+fail closed.
+The source-proof and recipe build phases use writable bind mounts and therefore
+reject a root host UID or GID instead of silently running their containers as
+root. Verifier-only rebuilds and binary-version execution have no writable bind
+mounts and always run as fixed unprivileged UID/GID 65532 with owner-matched
+private tmpfs workspaces, regardless of the invoking operator.
+The verifier additionally requires an effective-UID-owned mode-0700 artifact
+root, rejects Docker mount-source commas/control bytes, bounds Docker and
+binary-version execution time/resources, and rechecks repository/object-store
+inodes plus source-archive bytes after the long builds. The recipe atomically
+publishes the completed directory with `RENAME_NOREPLACE`, so a concurrently
+created output file, directory or symlink blocks publication instead of
+receiving or replacing any artifact path.
+
+The recipe and verifier's clean builds on one Docker daemon establish local
+determinism only; the daemon and its host remain a trusted execution boundary.
+Before relay selection becomes `RESOLVED`, an independent operator on a clean,
+separately administered host must reproduce the same archive, lockfile,
+Git/Tar-version, build-manifest and binary digests.
 
 ## VPSBG minimal change
 
@@ -648,6 +717,12 @@ For a future `RESOLVED` relay it checks canonical metadata shape and source-unit
 binding only; it does not fetch the claimed commit or recompute an archive,
 `Cargo.lock`, binary, config, policy or publisher-key digest. Repeated-digit
 test hashes are accepted only inside negative/shape fixtures.
+
+The separate directory-relay artifact gate supplies that missing byte proof;
+both gates are required. It accepts neither a metadata-only claim nor a build
+manifest without the canonical archive, archive-contained lockfile, two clean
+binaries, pinned Git/Tar version records, executable version output and exact
+config bytes available for independent recomputation.
 
 `scripts/payment-v1-rendered-artifact-gate.mjs` now renders and verifies one
 closed profile from an externally digest-approved plan. It recomputes every

@@ -38,10 +38,13 @@ import {
 export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
 export const STOPPED_EDGE_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
+export const STOPPED_RELAY_EVIDENCE_KIND =
+  "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE = "local-files-only-v1";
 const LIVE_SCHEMA_VERSION = 4;
 const STOPPED_EDGE_SCHEMA_VERSION = 3;
+const STOPPED_RELAY_SCHEMA_VERSION = 2;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
@@ -180,16 +183,53 @@ function validateUuid(value, label) {
   }
 }
 
-function readOneLinkRegular(path, label, maxBytes = MAX_JSON_BYTES) {
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+export function readOneLinkRegular(path, label, maxBytes = MAX_JSON_BYTES) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
     fail(`${label} must be a one-link regular file: ${path}`);
   }
-  if (realpathSync(path) !== path) fail(`${label} resolves through a symlink: ${path}`);
-  if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > maxBytes) {
-    fail(`${label} exceeds its size limit: ${path}`);
+  try {
+    const before = fstatSync(fd);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      !Number.isSafeInteger(before.size) ||
+      before.size < 0 ||
+      before.size > maxBytes
+    ) {
+      fail(`${label} must be a bounded one-link regular file: ${path}`);
+    }
+    const bytes = readFileSync(fd);
+    const after = fstatSync(fd);
+    let pathStat;
+    try {
+      pathStat = lstatSync(path);
+    } catch {
+      fail(`${label} changed while it was read: ${path}`);
+    }
+    if (
+      !pathStat.isFile() ||
+      pathStat.isSymbolicLink() ||
+      pathStat.nlink !== 1 ||
+      realpathSync(path) !== path ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      after.dev !== pathStat.dev ||
+      after.ino !== pathStat.ino ||
+      after.size !== pathStat.size ||
+      after.nlink !== pathStat.nlink ||
+      bytes.length !== after.size
+    ) {
+      fail(`${label} changed while it was read or is not canonical: ${path}`);
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
   }
-  return readFileSync(path);
 }
 
 function strictJsonBytes(bytes, label) {
@@ -996,12 +1036,12 @@ function collectAbsentRuntimeSocket(expected) {
   };
 }
 
-function collectAbsentRuntimeSockets(request) {
+function collectAbsentRuntimeSockets(request, { allowEmpty = false } = {}) {
   const sockets = request.runtime_paths
     .filter((entry) => entry.file_type === "socket")
     .map(collectAbsentRuntimeSocket)
     .sort((left, right) => left.target_path < right.target_path ? -1 : left.target_path > right.target_path ? 1 : 0);
-  if (sockets.length < 1) fail("edge runtime request has no socket listener to prove absent");
+  if (!allowEmpty && sockets.length < 1) fail("edge runtime request has no socket listener to prove absent");
   return sockets;
 }
 
@@ -1948,6 +1988,8 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "InaccessiblePaths",
   "LimitCORE",
   "LimitCORESoft",
+  "LimitNOFILE",
+  "LimitNOFILESoft",
   "LockPersonality",
   "MemoryDenyWriteExecute",
   "MemoryMax",
@@ -2150,6 +2192,50 @@ function validateEffectiveConditions(unit, conditions) {
   }
 }
 
+function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
+  if (!Array.isArray(conditions)) {
+    fail(`stopped effective conditions are missing: ${unit.unit_name}`);
+  }
+  const expected = expectedEffectiveConditions(unit);
+  if (conditions.length !== expected.length) {
+    fail(`stopped effective condition count drift: ${unit.unit_name}`);
+  }
+  let unresolvedSelectionObserved = false;
+  for (let index = 0; index < expected.length; index += 1) {
+    const actual = conditions[index];
+    const definition = expected[index];
+    exactKeys(
+      actual,
+      ["negate", "parameter", "path_exists", "result", "trigger", "type"],
+      `${unit.unit_name}.stopped_conditions[${index}]`,
+    );
+    if (
+      actual.negate !== definition.negate ||
+      actual.parameter !== definition.parameter ||
+      actual.trigger !== definition.trigger ||
+      actual.type !== definition.type
+    ) {
+      fail(`stopped effective condition identity drift: ${unit.unit_name}`);
+    }
+    const conditionPassed = actual.negate !== actual.path_exists;
+    if (actual.result !== -1 && actual.result !== (conditionPassed ? 1 : 0)) {
+      fail(`stopped effective condition result is incoherent: ${unit.unit_name}`);
+    }
+    if (
+      actual.parameter ===
+      "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED"
+    ) {
+      if (actual.negate || actual.path_exists || !new Set([-1, 0]).has(actual.result)) {
+        fail("stopped directory-relay selection condition is not unresolved");
+      }
+      unresolvedSelectionObserved = true;
+    }
+  }
+  if (!unresolvedSelectionObserved || properties.ConditionResult !== "no") {
+    fail(`stopped effective conditions do not prove an unresolved relay: ${unit.unit_name}`);
+  }
+}
+
 export function assertEffectiveConditionSnapshotUnchangedV1(
   expected,
   actual,
@@ -2256,12 +2342,11 @@ function validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds) {
   return { kind: "long-running", mainPid };
 }
 
-function validateEffectiveUnitProperties(unit, properties, conditions, uptimeFinishedMilliseconds) {
+function validateEffectiveUnitStaticProperties(unit, properties) {
   exactKeys(properties, effectivePropertyNames(), `effective properties for ${unit.unit_name}`);
   if (properties.FragmentPath !== unit.fragment_path) fail(`FragmentPath drift: ${unit.unit_name}`);
   if (properties.DropInPaths !== "") fail(`systemd drop-ins are forbidden: ${unit.unit_name}`);
   if (properties.LoadState !== "loaded") fail(`unit is not loaded: ${unit.unit_name}`);
-  validateEffectiveConditions(unit, conditions);
   for (const forbidden of [
     "ExecStartPost",
     "ExecCondition",
@@ -2302,6 +2387,23 @@ function validateEffectiveUnitProperties(unit, properties, conditions, uptimeFin
   if (unit.hardening.LimitCORE !== undefined && properties.LimitCORESoft !== "0") {
     fail(`effective LimitCORESoft drift: ${unit.unit_name}`);
   }
+  if (
+    unit.hardening.LimitNOFILE !== undefined &&
+    properties.LimitNOFILESoft !== unit.hardening.LimitNOFILE[0]
+  ) {
+    fail(`effective LimitNOFILESoft drift: ${unit.unit_name}`);
+  }
+  return true;
+}
+
+function validateEffectiveUnitProperties(
+  unit,
+  properties,
+  conditions,
+  uptimeFinishedMilliseconds,
+) {
+  validateEffectiveUnitStaticProperties(unit, properties);
+  validateEffectiveConditions(unit, conditions);
   if (
     unit.hardening.MemorySwapMax !== undefined &&
     properties.MemorySwapCurrent !== "0"
@@ -2346,6 +2448,52 @@ function collectStoppedUnitState(unit) {
 
 function collectStoppedUnitStates(request) {
   return request.units.map(collectStoppedUnitState);
+}
+
+function collectStoppedUnitConfiguration(unit) {
+  const conditions = collectEffectiveConditions(unit.unit_name);
+  const properties = Object.create(null);
+  for (const property of effectivePropertyNames()) {
+    properties[property] = collectSystemctlValue(unit.unit_name, property);
+  }
+  validateEffectiveUnitStaticProperties(unit, properties);
+  validateStoppedEffectiveConditionsV2(unit, properties, conditions);
+  if (
+    properties.ActiveState !== "inactive" ||
+    properties.SubState !== "dead" ||
+    properties.MainPID !== "0" ||
+    properties.ControlGroup !== "" ||
+    !new Set(["", "0".repeat(32)]).has(properties.InvocationID)
+  ) {
+    fail(`stopped unit effective configuration is not inactive: ${unit.unit_name}`);
+  }
+  if (
+    unit.hardening.MemorySwapMax !== undefined &&
+    properties.MemorySwapCurrent !== "[not set]"
+  ) {
+    fail(`stopped unit has an unreviewed MemorySwapCurrent value: ${unit.unit_name}`);
+  }
+  const fragmentBytes = readOneLinkRegular(
+    unit.fragment_path,
+    `stopped systemd fragment ${unit.unit_name}`,
+    2 * 1024 * 1024,
+  );
+  const confirmedConditions = collectEffectiveConditions(unit.unit_name);
+  assertEffectiveConditionSnapshotUnchangedV1(
+    conditions,
+    confirmedConditions,
+    unit.unit_name,
+  );
+  return {
+    conditions,
+    fragment_sha256: hashBytes(fragmentBytes),
+    properties,
+    unit_name: unit.unit_name,
+  };
+}
+
+function collectStoppedUnitConfigurations(request) {
+  return request.units.map(collectStoppedUnitConfiguration);
 }
 
 function confirmUnitGeneration(unit, properties) {
@@ -3128,12 +3276,242 @@ function validateStoppedUnitPasses(passes, request) {
   }
 }
 
-function validateRuntimeSocketAbsencePasses(passes, request) {
+function validateStoppedInstalledFileSet(files, request, label) {
+  if (!Array.isArray(files) || files.length !== request.installed_files.length) {
+    fail(`${label} installed-file evidence is incomplete`);
+  }
+  for (let index = 0; index < request.installed_files.length; index += 1) {
+    const expected = request.installed_files[index];
+    const actual = files[index];
+    exactKeys(
+      actual,
+      [
+        "acl_sha256",
+        "capability_sha256",
+        "dev",
+        "expected_type",
+        "file_type",
+        "gid",
+        "ino",
+        "mode",
+        "nlink",
+        "sha256",
+        "sha256_command_sha256",
+        "size",
+        "stat_command_sha256",
+        "target_path",
+        "uid",
+        "xattr_sha256",
+      ],
+      `${label} installed_files[${index}]`,
+    );
+    for (const key of ["file_type", "gid", "mode", "nlink", "sha256", "target_path", "uid"]) {
+      if (actual[key] !== expected[key]) {
+        fail(`${label} installed-file ${key} drift: ${expected.target_path}`);
+      }
+    }
+    for (const key of [
+      "acl_sha256",
+      "capability_sha256",
+      "sha256_command_sha256",
+      "stat_command_sha256",
+      "xattr_sha256",
+    ]) {
+      validateDigest(actual[key], `${label} installed-file ${key}`);
+    }
+  }
+}
+
+function validateStoppedInstalledFilePasses(passes, request) {
+  if (!Array.isArray(passes) || passes.length !== 2) {
+    fail("stopped directory-relay installed-file evidence requires two complete passes");
+  }
+  for (const [index, pass] of passes.entries()) {
+    validateStoppedInstalledFileSet(pass, request, `stopped directory-relay pass[${index}]`);
+  }
+  if (canonicalJson(passes[0]) !== canonicalJson(passes[1])) {
+    fail("stopped directory-relay installed files changed during collection");
+  }
+}
+
+function validateStoppedUnitConfigurationPasses(passes, request) {
+  if (!Array.isArray(passes) || passes.length !== 2) {
+    fail("stopped directory-relay effective-unit evidence requires two complete passes");
+  }
+  for (const [passIndex, pass] of passes.entries()) {
+    if (!Array.isArray(pass) || pass.length !== request.units.length) {
+      fail(`stopped directory-relay effective-unit pass[${passIndex}] is incomplete`);
+    }
+    for (const [index, actual] of pass.entries()) {
+      const expected = request.units[index];
+      exactKeys(
+        actual,
+        ["conditions", "fragment_sha256", "properties", "unit_name"],
+        `stopped directory-relay effective-unit pass[${passIndex}][${index}]`,
+      );
+      const fragment = request.installed_files.find(
+        (file) => file.target_path === expected.fragment_path,
+      );
+      if (
+        actual.unit_name !== expected.unit_name ||
+        fragment === undefined ||
+        actual.fragment_sha256 !== fragment.sha256
+      ) {
+        fail(`stopped directory-relay fragment binding drift: ${expected.unit_name}`);
+      }
+      validateEffectiveUnitStaticProperties(expected, actual.properties);
+      validateStoppedEffectiveConditionsV2(
+        expected,
+        actual.properties,
+        actual.conditions,
+      );
+      if (
+        actual.properties.ActiveState !== "inactive" ||
+        actual.properties.SubState !== "dead" ||
+        actual.properties.MainPID !== "0" ||
+        actual.properties.ControlGroup !== "" ||
+        !new Set(["", "0".repeat(32)]).has(actual.properties.InvocationID)
+      ) {
+        fail(`stopped directory-relay effective unit is not inactive: ${expected.unit_name}`);
+      }
+      if (
+        expected.hardening.MemorySwapMax !== undefined &&
+        actual.properties.MemorySwapCurrent !== "[not set]"
+      ) {
+        fail(`stopped directory-relay has an unreviewed MemorySwapCurrent value: ${expected.unit_name}`);
+      }
+    }
+  }
+  if (canonicalJson(passes[0]) !== canonicalJson(passes[1])) {
+    fail("stopped directory-relay effective unit changed during collection");
+  }
+}
+
+function validateStoppedPrivateLoaderEvidenceV2(evidence, request) {
+  const expectedParentPaths = secretParentPaths(request.secret_files);
+  if (
+    !Array.isArray(evidence.secret_parent_directories) ||
+    evidence.secret_parent_directories.length !== expectedParentPaths.length
+  ) {
+    fail("stopped private-loader parent directory evidence is incomplete");
+  }
+  for (let index = 0; index < expectedParentPaths.length; index += 1) {
+    const actual = evidence.secret_parent_directories[index];
+    const expectedPath = expectedParentPaths[index];
+    exactKeys(
+      actual,
+      [
+        "acl_sha256",
+        "capability_sha256",
+        "dev",
+        "expected_type",
+        "file_type",
+        "gid",
+        "ino",
+        "mode",
+        "nlink",
+        "size",
+        "stat_command_sha256",
+        "target_path",
+        "uid",
+        "xattr_sha256",
+      ],
+      `stopped private-loader parent[${index}]`,
+    );
+    if (
+      actual.target_path !== expectedPath ||
+      actual.file_type !== "directory" ||
+      actual.expected_type !== "directory"
+    ) {
+      fail(`stopped private-loader parent path/type drift: ${expectedPath}`);
+    }
+    validateSecretParentDirectoryEvidenceMetadata(actual, expectedPath);
+    for (const key of [
+      "acl_sha256",
+      "capability_sha256",
+      "stat_command_sha256",
+      "xattr_sha256",
+    ]) {
+      validateDigest(actual[key], `stopped private-loader parent ${key}`);
+    }
+  }
+  validateSecretParentDirectoryPolicyV1(
+    request.secret_files,
+    request.service_identities,
+    evidence.secret_parent_directories,
+  );
+
+  const expectedAccessCount =
+    request.secret_files.length * request.service_identities.length;
+  if (
+    !Array.isArray(evidence.secret_access_checks) ||
+    evidence.secret_access_checks.length !== expectedAccessCount
+  ) {
+    fail("stopped private-loader access probes are incomplete");
+  }
+  let accessIndex = 0;
+  for (const secret of request.secret_files) {
+    for (const identity of request.service_identities) {
+      const unit = request.units.find(
+        (entry) => entry.unit_name === identity.unit_name,
+      );
+      const expectedIdentity = resolveExpectedUnitProcessIdentity(
+        unit,
+        evidence.nss,
+        request.service_identities,
+      );
+      const expectedReadable = identity.unit_name === secret.consumer_unit_name;
+      const actual = evidence.secret_access_checks[accessIndex];
+      exactKeys(
+        actual,
+        [
+          "argv",
+          "exit_status",
+          "expected_readable",
+          "stderr",
+          "stdout",
+          "target_path",
+          "unit_name",
+        ],
+        `stopped private-loader access[${accessIndex}]`,
+      );
+      if (
+        actual.unit_name !== identity.unit_name ||
+        actual.target_path !== secret.target_path ||
+        actual.expected_readable !== expectedReadable ||
+        actual.exit_status !== (expectedReadable ? 0 : 1) ||
+        actual.stdout !== "" ||
+        actual.stderr !== "" ||
+        canonicalJson(actual.argv) !==
+          canonicalJson(secretProbeArgv(expectedIdentity, secret.target_path))
+      ) {
+        fail(
+          `stopped private-loader access isolation failed: ${identity.unit_name} -> ${secret.target_path}`,
+        );
+      }
+      accessIndex += 1;
+    }
+  }
+}
+
+function validateSystemdAnalyzeEvidence(evidence, request, label) {
+  exactKeys(evidence, ["argv", "exit_status", "stderr", "stdout"], `${label} systemd-analyze`);
+  if (
+    evidence.exit_status !== 0 ||
+    evidence.stdout !== "" ||
+    evidence.stderr !== "" ||
+    canonicalJson(evidence.argv) !== canonicalJson(request.systemd_analyze_argv)
+  ) {
+    fail(`${label} systemd-analyze verify evidence failed`);
+  }
+}
+
+function validateRuntimeSocketAbsencePasses(passes, request, { allowEmpty = false } = {}) {
   const expectedPaths = request.runtime_paths
     .filter((entry) => entry.file_type === "socket")
     .map((entry) => entry.target_path)
     .sort();
-  if (expectedPaths.length < 1 || !Array.isArray(passes) || passes.length !== 2) {
+  if ((!allowEmpty && expectedPaths.length < 1) || !Array.isArray(passes) || passes.length !== 2) {
     fail("stopped-edge socket absence evidence is incomplete");
   }
   for (const [passIndex, pass] of passes.entries()) {
@@ -3197,7 +3575,13 @@ function validateStoppedAccountPolicy(policy, request, nss) {
   }
 }
 
-function validateStoppedHost(host, request, expectedMachineIdSha256, expectedBootId) {
+function validateStoppedHost(
+  host,
+  request,
+  expectedMachineIdSha256,
+  expectedBootId,
+  expectedProfile = "edge-hetzner-v1",
+) {
   exactKeys(
     host,
     [
@@ -3227,7 +3611,7 @@ function validateStoppedHost(host, request, expectedMachineIdSha256, expectedBoo
     !Number.isSafeInteger(host.uptime_started_milliseconds) ||
     !Number.isSafeInteger(host.uptime_finished_milliseconds) ||
     host.uptime_finished_milliseconds < host.uptime_started_milliseconds ||
-    request.deployment_profile !== "edge-hetzner-v1" ||
+    request.deployment_profile !== expectedProfile ||
     host.core_pattern !== "|/usr/bin/false"
   ) {
     fail("stopped-edge host, boot, PID namespace, or core policy is not approved");
@@ -3330,6 +3714,173 @@ export function validateStoppedEdgeActivationEvidence({
   return true;
 }
 
+export function validateStoppedRelayPreparationEvidence({
+  evidence,
+  request,
+  expectedMachineIdSha256,
+  expectedBootId,
+  nowUnixSeconds,
+  maxAgeSeconds = 120,
+}) {
+  const relayUnit = request.units?.[0];
+  const relayIdentity = request.service_identities?.[0];
+  const relayConfigPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const relayFragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const relayInstalledTargets = request.installed_files?.map((file) => file.target_path);
+  exactKeys(
+    evidence,
+    [
+      "account_policy",
+      "approved_plan_sha256",
+      "challenge_hex",
+      "collected_finished_unix_seconds",
+      "collected_started_unix_seconds",
+      "collector",
+      "collector_process",
+      "evidence_kind",
+      "host",
+      "installed_file_passes",
+      "manifest_sha256",
+      "nss",
+      "protected_process_closure",
+      "runtime_socket_absence_passes",
+      "schema_version",
+      "secret_access_checks",
+      "secret_parent_directories",
+      "stopped_unit_passes",
+      "systemd_analyze_verify",
+      "trusted_commands",
+      "unit_configuration_passes",
+    ],
+    "stopped directory-relay preparation evidence",
+  );
+  if (
+    evidence.schema_version !== STOPPED_RELAY_SCHEMA_VERSION ||
+    evidence.evidence_kind !== STOPPED_RELAY_EVIDENCE_KIND ||
+    evidence.collector !== RUNTIME_COLLECTOR ||
+    request.schema_version !== LIVE_SCHEMA_VERSION ||
+    request.collector !== RUNTIME_COLLECTOR ||
+    request.deployment_profile !== "directory-relay-v1" ||
+    evidence.manifest_sha256 !== request.manifest_sha256 ||
+    evidence.approved_plan_sha256 !== request.approved_plan_sha256 ||
+    request.units.length !== 1 ||
+    request.service_identities.length !== 1 ||
+    relayUnit.unit_name !== "bitcoinpir-directory-relay.service" ||
+    relayUnit.fragment_path !== relayFragmentPath ||
+    relayIdentity.unit_name !== relayUnit.unit_name ||
+    relayIdentity.uid !== 62951 ||
+    relayIdentity.gid !== 62952 ||
+    canonicalJson(relayUnit.exec_start) !== canonicalJson(["/usr/bin/false"]) ||
+    relayUnit.exec_start_pre.length !== 0 ||
+    canonicalJson(relayUnit.conditions) !== canonicalJson([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]) ||
+    canonicalJson(relayInstalledTargets) !== canonicalJson([
+      relayConfigPath,
+      relayFragmentPath,
+    ]) ||
+    request.installed_files[0].file_type !== "regular" ||
+    request.installed_files[0].uid !== relayIdentity.uid ||
+    request.installed_files[0].gid !== relayIdentity.gid ||
+    request.installed_files[0].mode !== "0400" ||
+    request.installed_files[0].nlink !== 1 ||
+    request.installed_files[1].file_type !== "regular" ||
+    request.installed_files[1].uid !== 0 ||
+    request.installed_files[1].gid !== 0 ||
+    request.installed_files[1].mode !== "0644" ||
+    request.installed_files[1].nlink !== 1 ||
+    canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
+      "/usr/bin/systemd-analyze",
+      "verify",
+      relayFragmentPath,
+    ]) ||
+    canonicalJson(request.systemctl_show_properties) !== canonicalJson(
+      RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+    ) ||
+    canonicalJson(request.busctl_unit_properties) !== canonicalJson(
+      RUNTIME_BUSCTL_UNIT_PROPERTIES,
+    ) ||
+    request.runtime_paths.length !== 0 ||
+    request.secret_files.length !== 1 ||
+    request.secret_files[0].consumer_unit_name !== relayUnit.unit_name ||
+    request.secret_files[0].target_path !== relayConfigPath ||
+    request.secret_files[0].uid !== relayIdentity.uid ||
+    request.secret_files[0].gid !== relayIdentity.gid ||
+    request.secret_files[0].mode !== "0400" ||
+    request.tmpfiles_directories.length !== 0
+  ) {
+    fail("stopped directory-relay evidence schema, collector, profile, or blocked-unit binding is not reviewed");
+  }
+  for (const [key, expected] of [
+    ["LimitCORE", "0"],
+    ["LimitNOFILE", "4096"],
+    ["MemoryMax", "536870912"],
+    ["MemorySwapMax", "0"],
+    ["TasksMax", "128"],
+    ["StandardError", "null"],
+    ["StandardOutput", "null"],
+    ["ProtectClock", "true"],
+    ["ProtectHostname", "true"],
+    ["Restart", "no"],
+  ]) {
+    if (canonicalJson(relayUnit.hardening[key] ?? []) !== canonicalJson([expected])) {
+      fail(`stopped directory-relay request hardening drift: ${key}`);
+    }
+  }
+  if (
+    typeof evidence.challenge_hex !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(evidence.challenge_hex) ||
+    /^0{64}$/u.test(evidence.challenge_hex)
+  ) {
+    fail("stopped directory-relay challenge must be an internally random 256-bit value");
+  }
+  const start = evidence.collected_started_unix_seconds;
+  const finish = evidence.collected_finished_unix_seconds;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(finish) ||
+    finish < start ||
+    finish - start > MAX_COLLECTION_SECONDS ||
+    !Number.isSafeInteger(nowUnixSeconds) ||
+    nowUnixSeconds < finish ||
+    nowUnixSeconds - finish > maxAgeSeconds
+  ) {
+    fail("stopped directory-relay evidence collection window is stale or invalid");
+  }
+  exactKeys(evidence.collector_process, ["egid", "euid", "pid"], "stopped directory-relay collector process");
+  if (evidence.collector_process.euid !== 0 || evidence.collector_process.egid !== 0) {
+    fail("stopped directory-relay collector was not root");
+  }
+  validateStoppedHost(
+    evidence.host,
+    request,
+    expectedMachineIdSha256,
+    expectedBootId,
+    "directory-relay-v1",
+  );
+  validateTrustedCommandClosure(evidence.trusted_commands, "stopped directory-relay evidence");
+  const expectedProtected = validateStoppedNssEvidence(evidence.nss, request);
+  validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
+  validateStoppedInstalledFilePasses(evidence.installed_file_passes, request);
+  validateStoppedPrivateLoaderEvidenceV2(evidence, request);
+  validateStoppedUnitPasses(evidence.stopped_unit_passes, request);
+  validateStoppedUnitConfigurationPasses(evidence.unit_configuration_passes, request);
+  validateSystemdAnalyzeEvidence(
+    evidence.systemd_analyze_verify,
+    request,
+    "stopped directory-relay",
+  );
+  validateRuntimeSocketAbsencePasses(
+    evidence.runtime_socket_absence_passes,
+    request,
+    { allowEmpty: true },
+  );
+  validateStoppedProtectedClosure(evidence.protected_process_closure, expectedProtected);
+  return true;
+}
+
 export function validateLiveRuntimeEvidence({
   evidence,
   request,
@@ -3338,6 +3889,9 @@ export function validateLiveRuntimeEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  if (request.deployment_profile === "directory-relay-v1") {
+    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+  }
   exactKeys(
     evidence,
     [
@@ -3988,19 +4542,28 @@ function sameHostGeneration(started, finished) {
   );
 }
 
-export function collectStoppedEdgeActivationEvidence({
+function collectStoppedPreparationEvidence({
   bundleRoot,
   approvedManifestSha256,
   approvedPlanSha256,
   expectedMachineIdSha256,
+}, {
+  command,
+  evidenceKind,
+  profile,
+  schemaVersion,
+  allowEmptyRuntimeSockets,
+  includeInstalledShape = false,
+  includePrivateLoaderShape = false,
+  validate,
 }) {
-  assertRootLinuxCollector("collect-stopped-edge");
+  assertRootLinuxCollector(command);
   validateDigest(approvedManifestSha256, "approved manifest SHA-256");
   validateDigest(approvedPlanSha256, "approved plan SHA-256");
   validateDigest(expectedMachineIdSha256, "expected machine-id SHA-256");
   const { request } = readPinnedBundle(bundleRoot, approvedManifestSha256, approvedPlanSha256);
-  if (request.deployment_profile !== "edge-hetzner-v1") {
-    fail("collect-stopped-edge only accepts the reviewed Hetzner public-edge profile");
+  if (request.deployment_profile !== profile) {
+    fail(`${command} only accepts the reviewed ${profile} profile`);
   }
   const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);
@@ -4012,11 +4575,69 @@ export function collectStoppedEdgeActivationEvidence({
   const nss = collectNss();
   const accountPolicyStarted = collectLockedServiceAccountPolicy(request, nss);
   const stoppedUnitStarted = collectStoppedUnitStates(request);
-  const runtimeSocketAbsenceStarted = collectAbsentRuntimeSockets(request);
+  const installedFilesStarted = includeInstalledShape
+    ? request.installed_files.map(collectInstalledFile)
+    : null;
+  const secretParentDirectoryBundle = includePrivateLoaderShape
+    ? collectSecretParentDirectories(request.secret_files)
+    : null;
+  const secretParentDirectories = secretParentDirectoryBundle?.evidence ?? null;
+  const secretAccessChecks = includePrivateLoaderShape
+    ? collectSecretAccessChecks(request, nss)
+    : null;
+  if (includePrivateLoaderShape) {
+    confirmSecretFilesUnchanged(
+      installedFilesStarted,
+      request,
+      "around stopped-loader access probes",
+    );
+    confirmSecretParentDirectoriesUnchanged(
+      secretParentDirectoryBundle,
+      request,
+      "around stopped-loader access probes",
+    );
+  }
+  const unitConfigurationStarted = includeInstalledShape
+    ? collectStoppedUnitConfigurations(request)
+    : null;
+  const analyze = includeInstalledShape
+    ? runAbsolute(request.systemd_analyze_argv[0], request.systemd_analyze_argv.slice(1), {
+      allowOutput: false,
+      timeout: 30_000,
+    })
+    : null;
+  if (analyze !== null && analyze.exit_status !== 0) {
+    fail("stopped directory-relay systemd-analyze verify failed");
+  }
+  const runtimeSocketAbsenceStarted = collectAbsentRuntimeSockets(request, {
+    allowEmpty: allowEmptyRuntimeSockets,
+  });
   const protectedProcessClosure = collectProtectedCredentialProcessClosureV1(
     protectedCredentialsForRequest(request, nss),
   );
-  const runtimeSocketAbsenceFinished = collectAbsentRuntimeSockets(request);
+  const runtimeSocketAbsenceFinished = collectAbsentRuntimeSockets(request, {
+    allowEmpty: allowEmptyRuntimeSockets,
+  });
+  const installedFilesFinished = includeInstalledShape
+    ? request.installed_files.map(collectInstalledFile)
+    : null;
+  if (includePrivateLoaderShape) {
+    confirmSecretFilesUnchanged(
+      installedFilesStarted,
+      request,
+      "at the stopped-loader final seal",
+    );
+    confirmSecretParentDirectoriesUnchanged(
+      secretParentDirectoryBundle,
+      request,
+      "at the stopped-loader final seal",
+    );
+  }
+  // Typed Conditions and the stopped generation are deliberately collected
+  // after the final private-loader seal.
+  const unitConfigurationFinished = includeInstalledShape
+    ? collectStoppedUnitConfigurations(request)
+    : null;
   const stoppedUnitFinished = collectStoppedUnitStates(request);
   const accountPolicyFinished = collectLockedServiceAccountPolicy(request, nss);
   if (canonicalJson(accountPolicyStarted) !== canonicalJson(accountPolicyFinished)) {
@@ -4036,7 +4657,7 @@ export function collectStoppedEdgeActivationEvidence({
     collected_started_unix_seconds: started,
     collector: RUNTIME_COLLECTOR,
     collector_process: { egid: process.getegid(), euid: process.geteuid(), pid: process.pid },
-    evidence_kind: STOPPED_EDGE_EVIDENCE_KIND,
+    evidence_kind: evidenceKind,
     host: {
       boot_id: hostStarted.boot_id,
       collector_pid_namespace: hostStarted.collector_pid_namespace,
@@ -4050,6 +4671,9 @@ export function collectStoppedEdgeActivationEvidence({
       uptime_finished_milliseconds: hostFinished.uptime_milliseconds,
       uptime_started_milliseconds: hostStarted.uptime_milliseconds,
     },
+    ...(includeInstalledShape ? {
+      installed_file_passes: [installedFilesStarted, installedFilesFinished],
+    } : {}),
     manifest_sha256: approvedManifestSha256,
     nss,
     protected_process_closure: protectedProcessClosure,
@@ -4057,11 +4681,21 @@ export function collectStoppedEdgeActivationEvidence({
       runtimeSocketAbsenceStarted,
       runtimeSocketAbsenceFinished,
     ],
-    schema_version: STOPPED_EDGE_SCHEMA_VERSION,
+    schema_version: schemaVersion,
+    ...(includePrivateLoaderShape ? {
+      secret_access_checks: secretAccessChecks,
+      secret_parent_directories: secretParentDirectories,
+    } : {}),
     stopped_unit_passes: [stoppedUnitStarted, stoppedUnitFinished],
+    ...(includeInstalledShape ? {
+      systemd_analyze_verify: analyze,
+    } : {}),
     trusted_commands: trustedCommands,
+    ...(includeInstalledShape ? {
+      unit_configuration_passes: [unitConfigurationStarted, unitConfigurationFinished],
+    } : {}),
   };
-  validateStoppedEdgeActivationEvidence({
+  validate({
     evidence,
     expectedBootId: hostStarted.boot_id,
     expectedMachineIdSha256,
@@ -4099,12 +4733,39 @@ function confirmSecretParentDirectoriesUnchanged(
   );
 }
 
+export function collectStoppedEdgeActivationEvidence(options) {
+  return collectStoppedPreparationEvidence(options, {
+    allowEmptyRuntimeSockets: false,
+    command: "collect-stopped-edge",
+    evidenceKind: STOPPED_EDGE_EVIDENCE_KIND,
+    profile: "edge-hetzner-v1",
+    schemaVersion: STOPPED_EDGE_SCHEMA_VERSION,
+    validate: validateStoppedEdgeActivationEvidence,
+  });
+}
+
+export function collectStoppedRelayPreparationEvidence(options) {
+  return collectStoppedPreparationEvidence(options, {
+    allowEmptyRuntimeSockets: true,
+    command: "collect-stopped-relay",
+    evidenceKind: STOPPED_RELAY_EVIDENCE_KIND,
+    includeInstalledShape: true,
+    includePrivateLoaderShape: true,
+    profile: "directory-relay-v1",
+    schemaVersion: STOPPED_RELAY_SCHEMA_VERSION,
+    validate: validateStoppedRelayPreparationEvidence,
+  });
+}
+
 export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256, approvedPlanSha256, expectedMachineIdSha256 }) {
   assertRootLinuxCollector("collect-live");
   validateDigest(approvedManifestSha256, "approved manifest SHA-256");
   validateDigest(approvedPlanSha256, "approved plan SHA-256");
   validateDigest(expectedMachineIdSha256, "expected machine-id SHA-256");
   const { request } = readPinnedBundle(bundleRoot, approvedManifestSha256, approvedPlanSha256);
+  if (request.deployment_profile === "directory-relay-v1") {
+    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+  }
   const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
@@ -4232,10 +4893,12 @@ function parseCli(argv) {
   if (![
     "collect-live",
     "collect-stopped-edge",
+    "collect-stopped-relay",
     "verify-offline",
     "verify-stopped-edge-offline",
+    "verify-stopped-relay-offline",
   ].includes(command)) {
-    fail("usage: payment-v1-linux-runtime-evidence.mjs <collect-live|collect-stopped-edge|verify-offline|verify-stopped-edge-offline> --bundle ABS --approved-manifest-sha256 HEX --approved-plan-sha256 HEX --expected-machine-id-sha256 HEX --output ABS | --evidence ABS --trusted-evidence-sha256 HEX --expected-boot-id UUID");
+    fail("usage: payment-v1-linux-runtime-evidence.mjs <collect-live|collect-stopped-edge|collect-stopped-relay|verify-offline|verify-stopped-edge-offline|verify-stopped-relay-offline> --bundle ABS --approved-manifest-sha256 HEX --approved-plan-sha256 HEX --expected-machine-id-sha256 HEX --output ABS | --evidence ABS --trusted-evidence-sha256 HEX --expected-boot-id UUID");
   }
   const values = Object.create(null);
   const allowed = new Set([
@@ -4294,11 +4957,18 @@ function runCli(argv) {
     if (realpathSync(dirname(values["--output"])) !== dirname(values["--output"])) {
       fail(`${command} output parent must be canonical`);
     }
-    const evidence = command === "collect-live"
-      ? collectLiveRuntimeEvidence(common)
-      : collectStoppedEdgeActivationEvidence(common);
+    const collectors = {
+      "collect-live": collectLiveRuntimeEvidence,
+      "collect-stopped-edge": collectStoppedEdgeActivationEvidence,
+      "collect-stopped-relay": collectStoppedRelayPreparationEvidence,
+    };
+    const evidence = collectors[command](common);
     writeFileSync(values["--output"], canonicalJson(evidence), { flag: "wx", mode: 0o600 });
-    const label = command === "collect-live" ? "live" : "stopped-edge";
+    const label = {
+      "collect-live": "live",
+      "collect-stopped-edge": "stopped-edge",
+      "collect-stopped-relay": "stopped-directory-relay",
+    }[command];
     process.stdout.write(`payment-v1-linux-runtime-evidence: ${label} PASS challenge=${evidence.challenge_hex}\n`);
     return;
   }
@@ -4308,9 +4978,12 @@ function runCli(argv) {
     fail("offline evidence does not match the out-of-band trusted SHA-256 pin");
   }
   const evidence = strictJsonBytes(evidenceBytes, "offline live evidence");
-  const validate = command === "verify-offline"
-    ? validateLiveRuntimeEvidence
-    : validateStoppedEdgeActivationEvidence;
+  const validators = {
+    "verify-offline": validateLiveRuntimeEvidence,
+    "verify-stopped-edge-offline": validateStoppedEdgeActivationEvidence,
+    "verify-stopped-relay-offline": validateStoppedRelayPreparationEvidence,
+  };
+  const validate = validators[command];
   validate({
     evidence,
     expectedBootId: values["--expected-boot-id"],
@@ -4319,7 +4992,11 @@ function runCli(argv) {
     nowUnixSeconds: evidence.collected_finished_unix_seconds,
     request,
   });
-  const label = command === "verify-offline" ? "live" : "stopped-edge";
+  const label = {
+    "verify-offline": "live",
+    "verify-stopped-edge-offline": "stopped-edge",
+    "verify-stopped-relay-offline": "stopped-directory-relay",
+  }[command];
   process.stdout.write(`payment-v1-linux-runtime-evidence: offline trusted-pin ${label} structure PASS\n`);
 }
 

@@ -45,6 +45,8 @@ const PROVIDER_NO_STANDARD_CASHU_UNIT =
   "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in";
 const PROVIDER_DIRECT_UNIT =
   "deploy/payment-v1/systemd/hetzner-provider-direct.service.in";
+const RELAY_UNIT = "deploy/payment-v1/systemd/hetzner-directory-relay.service.in";
+const RELAY_CONFIG = "deploy/payment-v1/directory-relay.toml.example";
 const ISSUER_TEMPLATES = [
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
   "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -672,6 +674,47 @@ function makeRollbackEdgeFixture(t) {
   return { ...fixture, plan };
 }
 
+function makeDirectoryRelayFixture(t) {
+  const fixture = temporaryRoots(t);
+  copySource(fixture.sourceRoot, RELAY_CONFIG);
+  copySource(fixture.sourceRoot, RELAY_UNIT);
+  const plan = {
+    deployment_id: "directory-relay-v1-stopped-test",
+    deployment_profile: "directory-relay-v1",
+    payload_artifacts: [],
+    placeholders: {
+      DIRECTORY_PUBLISHER_PUBKEY_HEX: "8".repeat(64),
+    },
+    rendered_artifacts: [
+      {
+        gid: 62952,
+        mode: "0400",
+        source_path: RELAY_CONFIG,
+        source_sha256: hashFile(join(fixture.sourceRoot, RELAY_CONFIG)),
+        target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+        uid: 62951,
+      },
+      {
+        gid: 0,
+        mode: "0644",
+        source_path: RELAY_UNIT,
+        source_sha256: hashFile(join(fixture.sourceRoot, RELAY_UNIT)),
+        target_path: "/etc/systemd/system/bitcoinpir-directory-relay.service",
+        uid: 0,
+      },
+    ],
+    schema_version: 1,
+    service_identities: [{
+      gid: 62952,
+      group_name: "bitcoinpir-directory-relay",
+      uid: 62951,
+      unit_name: "bitcoinpir-directory-relay.service",
+      user_name: "bitcoinpir-directory-relay",
+    }],
+  };
+  return { ...fixture, plan };
+}
+
 function approved(plan) {
   return computeApprovedPlanSha256(plan);
 }
@@ -1189,6 +1232,7 @@ test("checked-in direct provider skeleton is explicit and deliberately unusable"
 });
 
 for (const [label, factory, profile] of [
+  ["stopped directory relay", makeDirectoryRelayFixture, "directory-relay-v1"],
   ["provider", makeProviderFixture, "provider-v1"],
   [
     "provider without Standard Cashu",
@@ -1223,6 +1267,76 @@ for (const [label, factory, profile] of [
     }
   });
 }
+
+test("directory relay profile renders only blocked unit and bounded config", (t) => {
+  const fixture = makeDirectoryRelayFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(model.manifest.deployment_profile, "directory-relay-v1");
+  assert.deepEqual(
+    model.manifest.artifacts.map((artifact) => artifact.target_path),
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+      "/etc/systemd/system/bitcoinpir-directory-relay.service",
+    ],
+  );
+  assert.equal(model.request.units.length, 1);
+  assert.equal(model.request.units[0].exec_start[0], "/usr/bin/false");
+  assert.deepEqual(model.request.units[0].exec_start_pre, []);
+  assert.deepEqual(model.request.runtime_paths, []);
+  assert.deepEqual(model.request.secret_files, [{
+    consumer_unit_name: "bitcoinpir-directory-relay.service",
+    gid: 62952,
+    mode: "0400",
+    target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+    uid: 62951,
+  }]);
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+});
+
+test("directory relay profile rejects activation, pre-start commands, weak hardening and payload smuggling", (t) => {
+  const active = makeDirectoryRelayFixture(t);
+  updateTemplate(active, RELAY_UNIT, (text) => text.replace("ExecStart=/usr/bin/false", "ExecStart=/usr/bin/true"));
+  assert.throws(() => renderFixture(active), /stopped-only/);
+
+  const preStart = makeDirectoryRelayFixture(t);
+  updateTemplate(preStart, RELAY_UNIT, (text) => text.replace("ExecStart=/usr/bin/false", "ExecStartPre=/usr/bin/true\nExecStart=/usr/bin/false"));
+  assert.throws(() => renderFixture(preStart), /stopped-only/);
+
+  const journal = makeDirectoryRelayFixture(t);
+  updateTemplate(journal, RELAY_UNIT, (text) => text.replace("StandardOutput=null", "StandardOutput=journal"));
+  assert.throws(() => renderFixture(journal), /StandardOutput=null/);
+
+  const payload = makeDirectoryRelayFixture(t);
+  payload.plan.payload_artifacts.push(addPayload(
+    payload,
+    "/etc/bitcoinpir/payment-v1/directory-relay/unreviewed.toml",
+    "unreviewed\n",
+    0,
+    { class: "config", gid: 751, mode: "0440", uid: 0 },
+  ));
+  assert.throws(() => renderFixture(payload), /not reachable from the closed deployment profile/);
+});
+
+test("directory relay config is bound to the real loader's exact owner-only metadata", (t) => {
+  for (const [mutate, expected] of [
+    [(artifact) => { artifact.uid = 0; }, /0400 for one owner|relay-owned UID 62951/u],
+    [(artifact) => { artifact.gid = 0; }, /relay-owned UID 62951 GID 62952 mode 0400/u],
+    [(artifact) => { artifact.mode = "0440"; }, /mode must be one of \["0400"\]|relay-owned UID 62951 GID 62952 mode 0400/u],
+  ]) {
+    const fixture = makeDirectoryRelayFixture(t);
+    mutate(fixture.plan.rendered_artifacts[0]);
+    assert.throws(() => renderFixture(fixture), expected);
+  }
+});
+
+test("directory relay profile cannot use the generic live runtime evidence gate", (t) => {
+  const fixture = makeDirectoryRelayFixture(t);
+  const model = renderFixture(fixture);
+  assert.throws(
+    () => validateRuntimeEvidence({ model, evidence: {} }),
+    /stopped-only/,
+  );
+});
 
 test("Hetzner edge rejects deletion of every template and payload dependency", (t) => {
   const fixture = makeEdgeFixture(t);

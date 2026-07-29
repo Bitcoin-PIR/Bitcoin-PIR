@@ -282,11 +282,17 @@ egress_timeout_seconds = 1
             render("127.0.0.1:8080", "127.0.0.1:8081", &"01".repeat(32)),
         )
         .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
         assert!(RelayConfig::try_from(Cli {
             config: path.clone()
         })
         .is_ok());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o440)).unwrap();
+        assert!(RelayConfig::try_from(Cli {
+            config: path.clone()
+        })
+        .is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(
             &path,
             render("0.0.0.0:8080", "127.0.0.1:8081", &"01".repeat(32)),
