@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertEffectiveConditionSnapshotUnchangedV1,
+  assertCompleteNssSnapshotUnchangedV2,
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
@@ -444,6 +445,7 @@ function fixture() {
     NoNewPrivileges: "yes",
     PrivateDevices: "yes",
     PrivateTmp: "yes",
+    ProcSubset: "all",
     ProtectClock: "",
     ProtectControlGroups: "yes",
     ProtectHome: "yes",
@@ -451,6 +453,7 @@ function fixture() {
     ProtectKernelLogs: "yes",
     ProtectKernelModules: "yes",
     ProtectKernelTunables: "yes",
+    ProtectProc: "default",
     ProtectSystem: "strict",
     ReadOnlyPaths: "/etc/bitcoinpir/payment-v1/test",
     ReadWritePaths: "",
@@ -750,8 +753,8 @@ function stoppedRelayFixture() {
   const value = stoppedEdgeFixture();
   const previousUid = value.request.service_identities[0].uid;
   const previousGid = value.request.service_identities[0].gid;
-  const relayUid = 62951;
-  const relayGid = 62952;
+  const relayUid = 52951;
+  const relayGid = 52952;
   value.request.deployment_profile = "directory-relay-v1";
   value.request.runtime_paths = [];
   value.request.secret_files = [];
@@ -776,6 +779,8 @@ function stoppedRelayFixture() {
     MemorySwapMax: ["0"],
     ProtectClock: ["true"],
     ProtectHostname: ["true"],
+    ProtectProc: ["invisible"],
+    ProcSubset: ["pid"],
     Restart: ["no"],
     StandardError: ["null"],
     StandardOutput: ["null"],
@@ -867,6 +872,8 @@ function stoppedRelayFixture() {
     MemorySwapCurrent: "[not set]",
     ProtectClock: "yes",
     ProtectHostname: "yes",
+    ProtectProc: "invisible",
+    ProcSubset: "pid",
     SubState: "dead",
   });
   const conditions = value.request.units[0].conditions.map((condition) => ({
@@ -928,6 +935,251 @@ function stoppedRelayFixture() {
     target_path: relayConfigPath,
     unit_name: "bitcoinpir-directory-relay.service",
   }];
+  return value;
+}
+
+function resolvedStoppedRelayFixture() {
+  const value = stoppedRelayFixture();
+  const binarySha256 = hash("resolved-relay-binary");
+  const binaryPath =
+    `/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay`;
+  const binaryManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const configManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const configPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const fragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const unit = value.request.units[0];
+  unit.exec_start = [
+    `${binaryPath} --config ${configPath}`,
+  ];
+  unit.exec_start_pre = [
+    `/usr/bin/sha256sum --check --strict ${binaryManifestPath}`,
+    `/usr/bin/sha256sum --check --strict ${configManifestPath}`,
+  ];
+  unit.hardening.Restart = ["on-failure"];
+  unit.hardening.RestartSec = ["5"];
+  unit.hardening.ReadOnlyPaths = [
+    `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
+  ];
+  value.request.installed_files = [
+    { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("binary-manifest"), target_path: binaryManifestPath, uid: 0 },
+    { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("config-manifest"), target_path: configManifestPath, uid: 0 },
+    { file_type: "regular", gid: 52952, mode: "0400", nlink: 1, sha256: hash("relay-config"), target_path: configPath, uid: 52951 },
+    { file_type: "regular", gid: 0, mode: "0644", nlink: 1, sha256: hash("resolved-relay-fragment"), target_path: fragmentPath, uid: 0 },
+    { file_type: "regular", gid: 0, mode: "0555", nlink: 1, sha256: binarySha256, target_path: binaryPath, uid: 0 },
+  ];
+  const richPrototype = value.evidence.installed_file_passes[0][0];
+  const richInstalled = value.request.installed_files.map((expected, index) => ({
+    ...clone(richPrototype),
+    ...expected,
+    ino: String(1100 + index),
+    size: 300 + index,
+  }));
+  value.evidence.installed_file_passes = [clone(richInstalled), clone(richInstalled)];
+  const effective = value.evidence.unit_configuration_passes[0][0];
+  effective.fragment_sha256 = hash("resolved-relay-fragment");
+  effective.properties.ExecStart = execValue(unit.exec_start[0]);
+  effective.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  effective.properties.ReadOnlyPaths = unit.hardening.ReadOnlyPaths[0];
+  effective.properties.Restart = "on-failure";
+  value.evidence.unit_configuration_passes = [
+    [clone(effective)],
+    [clone(effective)],
+  ];
+  return value;
+}
+
+function resolvedLiveRelayFixture() {
+  const value = fixture();
+  const relayUid = 52951;
+  const relayGid = 52952;
+  const binarySha256 = hash("resolved-relay-live-binary");
+  const binaryPath =
+    `/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay`;
+  const binaryManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const configManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const configPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const fragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const unit = value.request.units[0];
+  value.request.deployment_profile = "directory-relay-v1";
+  unit.unit_name = "bitcoinpir-directory-relay.service";
+  unit.fragment_path = fragmentPath;
+  unit.conditions = [
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+  ];
+  unit.exec_start = [`${binaryPath} --config ${configPath}`];
+  unit.exec_start_pre = [
+    `/usr/bin/sha256sum --check --strict ${binaryManifestPath}`,
+    `/usr/bin/sha256sum --check --strict ${configManifestPath}`,
+  ];
+  Object.assign(unit.hardening, {
+    Group: ["bitcoinpir-directory-relay"],
+    IPAddressAllow: ["localhost"],
+    IPAddressDeny: ["any"],
+    InaccessiblePaths: ["/run/bitcoinpir-source-fair-edge"],
+    LimitCORE: ["0"],
+    LimitNOFILE: ["4096"],
+    MemoryMax: ["536870912"],
+    MemorySwapMax: ["0"],
+    ProtectClock: ["true"],
+    ProtectHostname: ["true"],
+    ProtectProc: ["invisible"],
+    ProcSubset: ["pid"],
+    ReadOnlyPaths: [
+      `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
+    ],
+    ReadWritePaths: ["/var/lib/bitcoinpir-directory-relay"],
+    Restart: ["on-failure"],
+    RestartSec: ["5"],
+    RestrictAddressFamilies: ["AF_UNIX", "AF_INET", "AF_INET6"],
+    StateDirectory: ["bitcoinpir-directory-relay"],
+    StateDirectoryMode: ["0700"],
+    TasksMax: ["128"],
+    User: ["bitcoinpir-directory-relay"],
+    WorkingDirectory: ["/var/lib/bitcoinpir-directory-relay"],
+  });
+  delete unit.hardening.SupplementaryGroups;
+  value.request.service_identities = [{
+    gid: relayGid,
+    group_name: "bitcoinpir-directory-relay",
+    uid: relayUid,
+    unit_name: unit.unit_name,
+    user_name: "bitcoinpir-directory-relay",
+  }];
+  value.request.installed_files = [
+    { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("live-binary-manifest"), target_path: binaryManifestPath, uid: 0 },
+    { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("live-config-manifest"), target_path: configManifestPath, uid: 0 },
+    { file_type: "regular", gid: relayGid, mode: "0400", nlink: 1, sha256: hash("live-relay-config"), target_path: configPath, uid: relayUid },
+    { file_type: "regular", gid: 0, mode: "0644", nlink: 1, sha256: hash("live-relay-fragment"), target_path: fragmentPath, uid: 0 },
+    { file_type: "regular", gid: 0, mode: "0555", nlink: 1, sha256: binarySha256, target_path: binaryPath, uid: 0 },
+  ];
+  value.request.runtime_paths = [];
+  value.request.tmpfiles_directories = [];
+  value.request.secret_files = [{
+    consumer_unit_name: unit.unit_name,
+    gid: relayGid,
+    mode: "0400",
+    target_path: configPath,
+    uid: relayUid,
+  }];
+  value.request.systemd_analyze_argv = [
+    "/usr/bin/systemd-analyze",
+    "verify",
+    fragmentPath,
+  ];
+
+  const user = value.evidence.nss.users.find((entry) => entry.uid === 730);
+  user.name = "bitcoinpir-directory-relay";
+  user.uid = relayUid;
+  user.primary_gid = relayGid;
+  user.supplementary_gids = [relayGid];
+  const group = value.evidence.nss.groups.find((entry) => entry.gid === 731);
+  group.name = "bitcoinpir-directory-relay";
+  group.gid = relayGid;
+  value.evidence.nss.groups.find((entry) => entry.gid === 732).members = [];
+  sortNssEvidence(value.evidence.nss);
+  const richPrototype = value.evidence.installed_files[0];
+  value.evidence.installed_files = value.request.installed_files.map((expected, index) => ({
+    ...clone(richPrototype),
+    ...expected,
+    ino: String(1200 + index),
+    size: 400 + index,
+  }));
+  value.evidence.runtime_directories = [];
+  value.evidence.runtime_paths = [];
+  const relayParents = [
+    "/",
+    "/etc",
+    "/etc/bitcoinpir",
+    "/etc/bitcoinpir/payment-v1",
+    "/etc/bitcoinpir/payment-v1/directory-relay",
+  ];
+  value.evidence.secret_parent_directories = relayParents.map((target, index) => ({
+    acl_sha256: hash(`live-relay-parent-acl-${index}`),
+    capability_sha256: hash(""),
+    dev: "1",
+    expected_type: "directory",
+    file_type: "directory",
+    gid: index === relayParents.length - 1 ? relayGid : 0,
+    ino: String(1250 + index),
+    mode: index === relayParents.length - 1 ? "0700" : "0755",
+    nlink: 2,
+    size: 40,
+    stat_command_sha256: hash(`live-relay-parent-stat-${index}`),
+    target_path: target,
+    uid: index === relayParents.length - 1 ? relayUid : 0,
+    xattr_sha256: hash(`live-relay-parent-xattr-${index}`),
+  }));
+  value.evidence.secret_access_checks = [{
+    argv: testProbeArgv(
+      { gid: relayGid, groups: [relayGid], uid: relayUid },
+      configPath,
+    ),
+    exit_status: 0,
+    expected_readable: true,
+    stderr: "",
+    stdout: "",
+    target_path: configPath,
+    unit_name: unit.unit_name,
+  }];
+  value.evidence.systemd_analyze_verify.argv = clone(value.request.systemd_analyze_argv);
+  const evidenceUnit = value.evidence.units[0];
+  evidenceUnit.unit_name = unit.unit_name;
+  evidenceUnit.fragment_sha256 = hash("live-relay-fragment");
+  evidenceUnit.conditions = unit.conditions.map((condition) => ({
+    negate: false,
+    parameter: condition.slice("ConditionPathExists=".length),
+    path_exists: true,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  }));
+  Object.assign(evidenceUnit.properties, {
+    ControlGroup: `/system.slice/${unit.unit_name}`,
+    ExecStart: execValue(unit.exec_start[0]),
+    ExecStartPre: unit.exec_start_pre.map(execValue).join(" ; "),
+    FragmentPath: fragmentPath,
+    Group: "bitcoinpir-directory-relay",
+    IPAddressAllow: "localhost",
+    IPAddressDeny: "any",
+    InaccessiblePaths: "/run/bitcoinpir-source-fair-edge",
+    MemoryMax: "536870912",
+    ProtectClock: "yes",
+    ProtectHostname: "yes",
+    ProtectProc: "invisible",
+    ProcSubset: "pid",
+    ReadOnlyPaths: unit.hardening.ReadOnlyPaths[0],
+    ReadWritePaths: "/var/lib/bitcoinpir-directory-relay",
+    Restart: "on-failure",
+    RestrictAddressFamilies: "AF_INET AF_INET6 AF_UNIX",
+    SupplementaryGroups: "",
+    User: "bitcoinpir-directory-relay",
+    WorkingDirectory: "/var/lib/bitcoinpir-directory-relay",
+  });
+  for (const confirmation of evidenceUnit.generation_confirmations) {
+    confirmation.control_group = evidenceUnit.properties.ControlGroup;
+  }
+  const process = evidenceUnit.process_identity;
+  process.uid_before = [relayUid, relayUid, relayUid, relayUid];
+  process.uid_after = clone(process.uid_before);
+  process.gid_before = [relayGid, relayGid, relayGid, relayGid];
+  process.gid_after = clone(process.gid_before);
+  process.groups_before = [relayGid];
+  process.groups_after = clone(process.groups_before);
+  value.evidence.protected_process_closure.protected_uids = [relayUid];
+  value.evidence.protected_process_closure.protected_gids = [relayGid];
+  for (const pass of value.evidence.protected_process_closure.passes) {
+    const holder = pass.holders[0];
+    holder.control_group = evidenceUnit.properties.ControlGroup;
+    holder.uid = [relayUid, relayUid, relayUid, relayUid];
+    holder.gid = [relayGid, relayGid, relayGid, relayGid];
+    holder.groups = [relayGid];
+  }
   return value;
 }
 
@@ -1187,6 +1439,49 @@ function secretIsolationFixture() {
 
 test("valid live evidence binds challenge, host, boot, files, NSS, units, and command TCB", () => {
   assert.equal(validate(fixture()), true);
+
+  const dynamicIdentity = fixture();
+  dynamicIdentity.request.service_identities[0].uid = 61_184;
+  assert.throws(() => validate(dynamicIdentity), /static service uid\/gid.*DynamicUser/u);
+});
+
+test("resolved directory relay can produce live evidence only for its closed artifact shape", () => {
+  const value = resolvedLiveRelayFixture();
+  assert.equal(validate(value), true);
+
+  const missingConfigManifest = resolvedLiveRelayFixture();
+  missingConfigManifest.request.installed_files.splice(1, 1);
+  assert.throws(
+    () => validate(missingConfigManifest),
+    /artifact or identity closure/,
+  );
+
+  const publisherKey = resolvedLiveRelayFixture();
+  publisherKey.request.installed_files.push({
+    file_type: "regular",
+    gid: 52952,
+    mode: "0400",
+    nlink: 1,
+    sha256: hash("publisher-private-key"),
+    target_path: "/etc/bitcoinpir/payment-v1/directory-relay/publisher-private.key",
+    uid: 52951,
+  });
+  assert.throws(() => validate(publisherKey), /artifact or identity closure/);
+
+  const weakRequestProc = resolvedLiveRelayFixture();
+  weakRequestProc.request.units[0].hardening.ProtectProc = ["default"];
+  assert.throws(
+    () => validate(weakRequestProc),
+    /unresolved directory-relay-v1|artifact or identity closure/u,
+  );
+
+  const weakEffectiveProc = resolvedLiveRelayFixture();
+  weakEffectiveProc.evidence.units[0].properties.ProtectProc = "default";
+  assert.throws(() => validate(weakEffectiveProc), /effective ProtectProc drift/u);
+
+  const fullEffectiveProc = resolvedLiveRelayFixture();
+  fullEffectiveProc.evidence.units[0].properties.ProcSubset = "all";
+  assert.throws(() => validate(fullEffectiveProc), /effective ProcSubset drift/u);
 });
 
 test("complete NSS parsers retain every primary GID and canonicalize ASCII names and members", () => {
@@ -1226,7 +1521,7 @@ test("complete NSS parsers reject ambiguous, noncanonical, or duplicate enumerat
   }
 });
 
-test("NSS policy accepts only local files with inherited initgroups", () => {
+test("NSS policy accepts only reviewed files-authoritative source sequences", () => {
   assert.deepEqual(
     parseLocalFilesNsswitchV1([
       "passwd: files",
@@ -1240,9 +1535,30 @@ test("NSS policy accepts only local files with inherited initgroups", () => {
       passwd: ["files"],
     },
   );
+  assert.deepEqual(
+    parseLocalFilesNsswitchV1([
+      "passwd: files systemd",
+      "group: files systemd # Ubuntu's reviewed fallback sequence",
+      "hosts: files dns",
+      "",
+    ].join("\n")),
+    {
+      group: ["files", "systemd"],
+      initgroups: "inherits-group",
+      passwd: ["files", "systemd"],
+    },
+  );
   for (const input of [
     "passwd: files systemd\ngroup: files\n",
+    "passwd: files\ngroup: files systemd\n",
+    "passwd: systemd files\ngroup: systemd files\n",
+    "passwd: systemd\ngroup: systemd\n",
+    "passwd: files systemd systemd\ngroup: files systemd systemd\n",
     "passwd: files\ngroup: files sss\n",
+    "passwd: files ldap\ngroup: files ldap\n",
+    "passwd: files dns\ngroup: files dns\n",
+    "passwd: files winbind\ngroup: files winbind\n",
+    "passwd: files nis\ngroup: files nis\n",
     "passwd: files\ngroup: files\ninitgroups: files\n",
     "passwd: files\npasswd: files\ngroup: files\n",
     "passwd: files\ngroup: files [SUCCESS=merge] systemd\n",
@@ -1250,7 +1566,7 @@ test("NSS policy accepts only local files with inherited initgroups", () => {
   ]) {
     assert.throws(
       () => parseLocalFilesNsswitchV1(input),
-      /local-files-only|repeats|simple local profile/,
+      /files-only or files-then-systemd|inherit group|repeats|simple local profile/,
     );
   }
 });
@@ -1271,6 +1587,33 @@ test("final NSS policy confirmation rejects identity or policy drift after enume
   assert.throws(
     () => assertLocalFilesNssPolicyUnchanged(nss, changedIdentity),
     /changed after complete enumeration/,
+  );
+});
+
+test("final NSS snapshot confirmation repeats the complete getent and id projection", () => {
+  const nss = fixture().evidence.nss;
+  assert.equal(assertCompleteNssSnapshotUnchangedV2(nss, clone(nss)), true);
+
+  const changedPasswdProjection = clone(nss);
+  changedPasswdProjection.passwd_stdout_sha256 = hash("changed-passwd-projection");
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedPasswdProjection),
+    /complete getent\/id projection changed/,
+  );
+
+  const changedGroups = clone(nss);
+  changedGroups.users[0].supplementary_gids = [731];
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedGroups),
+    /complete getent\/id projection changed/,
+  );
+
+  const changedFallback = clone(nss);
+  changedFallback.sources.passwd = ["files", "systemd"];
+  changedFallback.sources.group = ["files", "systemd"];
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedFallback),
+    /complete getent\/id projection changed/,
   );
 });
 
@@ -1871,11 +2214,29 @@ test("service-account policy requires pinned IDs, nologin shell, and a locked sh
     ),
     /login-disabled, and password-locked/,
   );
+
+  for (const id of [60_001, 61_184, 65_519, 65_534]) {
+    const outsideStaticRange = clone(identities);
+    outsideStaticRange[0].uid = id;
+    assert.throws(
+      () => parseLockedServiceAccountPolicyV1(
+        `bitcoinpir-test:x:${id}:731::/nonexistent:/usr/sbin/nologin\n`,
+        "bitcoinpir-test:!:1:0:99999:7:::\n",
+        outsideStaticRange,
+      ),
+      /static service uid\/gid.*DynamicUser/u,
+    );
+  }
 });
 
 test("stopped-edge activation evidence closes units, sockets, identities, and login reacquisition", () => {
   const value = stoppedEdgeFixture();
   assert.equal(validateStopped(value), true);
+
+  const reviewedSystemdFallback = stoppedEdgeFixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validateStopped(reviewedSystemdFallback), true);
 
   const active = stoppedEdgeFixture();
   active.evidence.stopped_unit_passes[1][0].active_state = "active";
@@ -1919,21 +2280,40 @@ test("stopped directory-relay preparation is closed and can never become live ev
   const value = stoppedRelayFixture();
   assert.equal(validateStoppedRelay(value), true);
 
+  const reviewedSystemdFallback = stoppedRelayFixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validateStoppedRelay(reviewedSystemdFallback), true);
+
   const active = stoppedRelayFixture();
   active.evidence.stopped_unit_passes[1][0].active_state = "active";
   assert.throws(() => validateStoppedRelay(active), /not fully stopped/);
 
   const executable = stoppedRelayFixture();
   executable.request.units[0].exec_start = ["/usr/bin/true"];
-  assert.throws(() => validateStoppedRelay(executable), /blocked-unit binding/);
+  assert.throws(() => validateStoppedRelay(executable), /unit binding/);
 
   const preStart = stoppedRelayFixture();
   preStart.request.units[0].exec_start_pre = ["/usr/bin/true"];
-  assert.throws(() => validateStoppedRelay(preStart), /blocked-unit binding/);
+  assert.throws(() => validateStoppedRelay(preStart), /unit binding/);
+
+  const weakRequestProc = stoppedRelayFixture();
+  weakRequestProc.request.units[0].hardening.ProtectProc = ["default"];
+  assert.throws(
+    () => validateStoppedRelay(weakRequestProc),
+    /request hardening drift: ProtectProc/u,
+  );
+
+  const fullEffectiveProc = stoppedRelayFixture();
+  fullEffectiveProc.evidence.unit_configuration_passes[1][0].properties.ProcSubset = "all";
+  assert.throws(
+    () => validateStoppedRelay(fullEffectiveProc),
+    /effective ProcSubset drift/u,
+  );
 
   const wrongConfigOwner = stoppedRelayFixture();
   wrongConfigOwner.request.installed_files[0].uid = 0;
-  assert.throws(() => validateStoppedRelay(wrongConfigOwner), /blocked-unit binding/);
+  assert.throws(() => validateStoppedRelay(wrongConfigOwner), /unit binding/);
 
   const runtimeSocket = stoppedRelayFixture();
   runtimeSocket.request.runtime_paths = [{
@@ -1943,7 +2323,7 @@ test("stopped directory-relay preparation is closed and can never become live ev
     target_path: "/run/bitcoinpir-directory-relay/relay.sock",
     uid: 730,
   }];
-  assert.throws(() => validateStoppedRelay(runtimeSocket), /blocked-unit binding/);
+  assert.throws(() => validateStoppedRelay(runtimeSocket), /unit binding/);
 
   const installedTamper = stoppedRelayFixture();
   installedTamper.evidence.installed_file_passes[1][0].sha256 = hash("tampered-config");
@@ -1963,7 +2343,7 @@ test("stopped directory-relay preparation is closed and can never become live ev
   }
   assert.throws(
     () => validateStoppedRelay(resolvedSelection),
-    /selection condition is not unresolved/,
+    /selection activation sentinel is present/,
   );
 
   const untypedCondition = stoppedRelayFixture();
@@ -2007,7 +2387,25 @@ test("stopped directory-relay preparation is closed and can never become live ev
 
   const live = fixture();
   live.request.deployment_profile = "directory-relay-v1";
-  assert.throws(() => validate(live), /stopped-only/);
+  assert.throws(() => validate(live), /unresolved directory-relay-v1/);
+});
+
+test("resolved directory-relay has stopped preparation evidence before sentinels exist", () => {
+  const value = resolvedStoppedRelayFixture();
+  assert.equal(validateStoppedRelay(value), true);
+
+  const missingManifest = resolvedStoppedRelayFixture();
+  missingManifest.request.installed_files.shift();
+  assert.throws(() => validateStoppedRelay(missingManifest), /unit binding/);
+
+  const weakBinary = resolvedStoppedRelayFixture();
+  weakBinary.request.installed_files.at(-1).mode = "0755";
+  assert.throws(() => validateStoppedRelay(weakBinary), /unit binding/);
+
+  const wrongPreflight = resolvedStoppedRelayFixture();
+  wrongPreflight.request.units[0].exec_start_pre[0] =
+    "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  assert.throws(() => validateStoppedRelay(wrongPreflight), /unit binding/);
 });
 
 test("runtime evidence regular-file reads use no-follow one-link fd semantics", (t) => {
@@ -2267,9 +2665,27 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   foreignBusctlSchema.request.busctl_unit_properties = ["Conditions", "Triggers"];
   assert.throws(() => validate(foreignBusctlSchema), /busctl property schema/);
 
+  const reviewedSystemdFallback = fixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validate(reviewedSystemdFallback), true);
+
+  const legacyNssProfile = fixture();
+  legacyNssProfile.evidence.nss.backend_profile = "local-files-only-v1";
+  assert.throws(() => validate(legacyNssProfile), /files-authoritative backend/);
+
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
-  assert.throws(() => validate(remoteBackend), /local-files-only profile/);
+  assert.throws(() => validate(remoteBackend), /files-only or files-then-systemd/);
+
+  const mixedFallback = fixture();
+  mixedFallback.evidence.nss.sources.passwd.push("systemd");
+  assert.throws(() => validate(mixedFallback), /files-only or files-then-systemd/);
+
+  const wrongFallbackOrder = fixture();
+  wrongFallbackOrder.evidence.nss.sources.passwd = ["systemd", "files"];
+  wrongFallbackOrder.evidence.nss.sources.group = ["systemd", "files"];
+  assert.throws(() => validate(wrongFallbackOrder), /files-only or files-then-systemd/);
 
   const writablePolicy = fixture();
   writablePolicy.evidence.nss.nsswitch_file.mode = "0664";

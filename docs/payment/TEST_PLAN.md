@@ -272,17 +272,19 @@ same-event publisher-lane retry, and verifies both listeners return after each
 independent process restart. The test deliberately does not infer relay-operator
 or host independence from local process separation.
 
-Payment CI also runs the stopped-only artifact recipe itself in a dedicated
-Ubuntu job. The job pulls the exact digest-pinned Rust image, archives the
-checked-out commit, completes both clean builds, atomically publishes the
+Payment CI also runs the directory-relay artifact recipe in a dedicated Ubuntu
+job. The job pulls the exact digest-pinned Rust image, validates the selection,
+uses full Git history to archive `selection.source_commit` rather than assuming
+workflow `HEAD`, completes both clean builds, atomically publishes the
 owner-only temporary artifact, and exercises both independent-rebuild gates.
 `create-manifest` performs two clean rebuilds before publication; after the
 atomic rename, `verify-build` performs two more clean rebuilds against the
 published path before the final seal. The recipe therefore performs six
-empty-target builds in total. The artifact stays under the ephemeral runner
-directory and is neither uploaded nor installed; a passing job does not resolve
-`relay-selection.toml`, replace `/usr/bin/false`, open a listener, or activate
-the relay.
+empty-target builds in total. When selection is resolved, the job additionally
+runs `verify-selection` against the exact config and selection bytes. The
+artifact stays under the ephemeral runner directory and is neither uploaded nor
+installed; a passing job does not create a sentinel, open a listener, route
+traffic or activate the relay.
 
 Directory mode tests additionally require all of the following across the
 publisher CLI, staging readback, WASM and Web adapter:
@@ -898,11 +900,19 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
-- runtime-evidence accepts only the exact local-files NSS profile and checks
-  stable root-owned policy snapshots, identity-relevant `getent` projections,
-  every user's `id -G`, UID/GID uniqueness and protected-group closure;
-- a final policy snapshot detects `/etc/nsswitch.conf`, `/etc/passwd` or
-  `/etc/group` drift during later live checks;
+- runtime-evidence accepts only exact paired `files` or paired
+  `files systemd` NSS sources for passwd/group, with files first and inherited
+  initgroups; mixed/reversed sequences, action brackets and every other source
+  fail closed. It checks stable root-owned policy snapshots,
+  identity-relevant `getent` projections, every user's `id -G`, UID/GID
+  uniqueness and protected-group closure;
+- render plans, runtime service-account policy, and the Caddy service-UID
+  inventory reject IDs outside static `1..60000`, including systemd
+  `DynamicUser` `61184..65519` and `nobody` `65534`; checked-in Payment V1
+  examples contain no former `629xx` service identity;
+- a final complete policy/getent/id snapshot detects `/etc/nsswitch.conf`,
+  `/etc/passwd`, `/etc/group`, enumeration or supplementary-group drift during
+  later live and stopped checks;
 - two bounded full `/proc/<pid>/task/<tid>` scans must produce identical
   protected UID/GID holder records, record `CapInh`, `CapPrm`, `CapEff`,
   `CapAmb`, and `CapBnd`, and reject reviewed dangerous active capabilities on
@@ -927,6 +937,9 @@ remain separate acceptance gates.
   stopped-edge evidence digest before any listener, recreates the volatile
   listeners in HAProxy-before-Caddy order, collects a fresh live digest, and
   independently proves execution in the host initial PID namespace;
+- directory-relay source/render/stopped/live gates reject either
+  `ProtectProc` weaker than `invisible` or `ProcSubset` other than `pid`, and
+  effective `systemctl show` evidence must equal both values;
 - public and publisher relay listeners reject deliberate wrong-lane EVENTs and
   prove their exact event IDs absent before a correct-lane publication.
 - Caddy source validation rejects additive binds/upstreams, imports, invokes,

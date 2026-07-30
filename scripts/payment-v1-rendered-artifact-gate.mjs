@@ -26,6 +26,8 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
+
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVIDENCE_SCHEMA_VERSION = 4;
@@ -40,6 +42,14 @@ const MAX_TREE_ENTRIES = 4096;
 const MAX_PATH_COMPONENTS = 24;
 const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const DIRECTORY_RELAY_SELECTION_SOURCE =
+  "deploy/payment-v1/relay-selection.toml.example";
+
+export const SERVICE_IDENTITY_MIN = 1;
+export const SERVICE_IDENTITY_MAX = 60_000;
+export const SYSTEMD_DYNAMIC_ID_MIN = 61_184;
+export const SYSTEMD_DYNAMIC_ID_MAX = 65_519;
+export const NOBODY_ID = 65_534;
 
 const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "AmbientCapabilities",
@@ -57,6 +67,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -64,6 +75,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -240,6 +252,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -247,6 +260,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -849,6 +863,21 @@ function validateUidGid(value, label, { allowRoot = true } = {}) {
   }
 }
 
+export function validateServiceIdentityId(value, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < SERVICE_IDENTITY_MIN ||
+    value > SERVICE_IDENTITY_MAX
+  ) {
+    fail(
+      `${label} must be a static service uid/gid in ` +
+      `[${SERVICE_IDENTITY_MIN}, ${SERVICE_IDENTITY_MAX}], outside systemd DynamicUser ` +
+      `[${SYSTEMD_DYNAMIC_ID_MIN}, ${SYSTEMD_DYNAMIC_ID_MAX}] and nobody ${NOBODY_ID}`,
+    );
+  }
+  return value;
+}
+
 function validateSafeAscii(value, label, maxLength = 256) {
   if (
     typeof value !== "string" ||
@@ -959,7 +988,13 @@ function validatePlaceholderValue(name, value) {
     return;
   }
   if (UID_GID_PLACEHOLDERS.has(name)) {
-    parseUnsignedDecimal(value, label, 1n, 4_294_967_294n);
+    parseUnsignedDecimal(
+      value,
+      label,
+      BigInt(SERVICE_IDENTITY_MIN),
+      BigInt(SERVICE_IDENTITY_MAX),
+    );
+    validateServiceIdentityId(Number(value), label);
     return;
   }
   if (POSITIVE_SERVICE_VALUE_PLACEHOLDERS.has(name)) {
@@ -1246,27 +1281,149 @@ function validateProviderPayloadClosure(plan) {
   }
 }
 
+function directoryRelaySelectionFromSource(sourceRoot, plan) {
+  const sourcePath = resolveUnder(
+    sourceRoot,
+    DIRECTORY_RELAY_SELECTION_SOURCE,
+    "directory relay selection source",
+  );
+  const bytes = readRegularSingleLinkFile(
+    sourcePath,
+    "directory relay selection source",
+    MAX_TEMPLATE_BYTES,
+  );
+  const digest = sha256(bytes);
+  if (digest !== plan.relay_selection_sha256) {
+    fail("directory relay selection source hash does not match the approved render plan");
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail("directory relay selection source is not valid UTF-8");
+  }
+  return validateRelaySelection(text);
+}
+
+function validateDirectoryRelayPayloadClosure({
+  artifacts,
+  fileBytes,
+  plan,
+  runtimeUnits,
+  selection,
+}) {
+  if (plan.deployment_profile !== "directory-relay-v1") return;
+  const payloads = artifacts.filter((artifact) => artifact.source_kind === "payload");
+  if (selection.status === "UNRESOLVED") {
+    if (payloads.length !== 0) {
+      fail("unresolved directory-relay-v1 must not contain payload artifacts");
+    }
+    return;
+  }
+
+  const binaryTarget =
+    `/opt/bitcoinpir/directory-relay/${selection.binarySha256}/` +
+    "bitcoinpir-directory-relay";
+  const binaryManifestTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const configManifestTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const configTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  assertSameStringSet(
+    new Set(payloads.map((artifact) => artifact.target_path)),
+    new Set([binaryManifestTarget, configManifestTarget, binaryTarget]),
+    "resolved directory-relay-v1 payload targets",
+  );
+
+  const byTarget = new Map(artifacts.map((artifact) => [artifact.target_path, artifact]));
+  const binary = byTarget.get(binaryTarget);
+  if (
+    binary?.artifact_class !== "binary" ||
+    binary.rendered_sha256 !== selection.binarySha256 ||
+    binary.uid !== 0 ||
+    binary.gid !== 0 ||
+    binary.mode !== "0555"
+  ) {
+    fail("resolved directory relay binary is not the selected root-owned content-addressed executable");
+  }
+  const config = byTarget.get(configTarget);
+  if (
+    config?.artifact_class !== "config" ||
+    config.rendered_sha256 !== selection.configSha256 ||
+    config.uid !== 52951 ||
+    config.gid !== 52952 ||
+    config.mode !== "0400"
+  ) {
+    fail("resolved directory relay config does not match the selection and owner-only loader binding");
+  }
+
+  for (const [manifestTarget, dependencyTarget, dependencySha256] of [
+    [binaryManifestTarget, binaryTarget, selection.binarySha256],
+    [configManifestTarget, configTarget, selection.configSha256],
+  ]) {
+    const manifest = byTarget.get(manifestTarget);
+    if (
+      manifest?.artifact_class !== "hash-manifest" ||
+      manifest.uid !== 0 ||
+      manifest.gid !== 0 ||
+      manifest.mode !== "0444"
+    ) {
+      fail(`resolved directory relay hash manifest metadata is invalid: ${manifestTarget}`);
+    }
+    const entries = parseHashManifest(
+      fileBytes.get(manifest.bundle_path),
+      `resolved directory relay hash manifest ${manifestTarget}`,
+    );
+    if (
+      entries.length !== 1 ||
+      entries[0].target_path !== dependencyTarget ||
+      entries[0].sha256 !== dependencySha256
+    ) {
+      fail(`resolved directory relay hash manifest does not bind exactly ${dependencyTarget}`);
+    }
+  }
+
+  if (runtimeUnits.length !== 1) {
+    fail("resolved directory-relay-v1 must contain exactly one runtime unit");
+  }
+  const unit = runtimeUnits[0];
+  const expectedExecStart =
+    `${binaryTarget} --config ${configTarget}`;
+  if (
+    canonicalize(unit.exec_start) !== canonicalize([expectedExecStart]) ||
+    canonicalize(unit.exec_start_pre) !== canonicalize([
+      `/usr/bin/sha256sum --check --strict ${binaryManifestTarget}`,
+      `/usr/bin/sha256sum --check --strict ${configManifestTarget}`,
+    ])
+  ) {
+    fail("resolved directory relay unit does not execute and preflight the selected artifact closure");
+  }
+}
+
 function validateDirectoryRelayConfigOwnerBinding(document) {
   if (document.deployment_profile !== "directory-relay-v1") return;
   const identities = document.service_identities ?? [];
   if (
     identities.length !== 1 ||
     identities[0].unit_name !== "bitcoinpir-directory-relay.service" ||
-    identities[0].uid !== 62951 ||
-    identities[0].gid !== 62952
+    identities[0].uid !== 52951 ||
+    identities[0].gid !== 52952
   ) {
-    fail("directory-relay-v1 must bind the reviewed relay UID 62951 and GID 62952");
+    fail("directory-relay-v1 must bind the reviewed relay UID 52951 and GID 52952");
   }
   const artifacts = document.rendered_artifacts ?? document.artifacts ?? [];
   const config = artifacts.find(
     (artifact) => artifact.target_path === "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
   );
-  if (!config || config.uid !== 62951 || config.gid !== 62952 || config.mode !== "0400") {
-    fail("directory-relay-v1 config must be relay-owned UID 62951 GID 62952 mode 0400");
+  if (!config || config.uid !== 52951 || config.gid !== 52952 || config.mode !== "0400") {
+    fail("directory-relay-v1 config must be relay-owned UID 52951 GID 52952 mode 0400");
   }
 }
 
 function validatePlan(plan) {
+  if (!isPlainObject(plan)) fail("render plan must be an object");
+  const directoryRelay = plan.deployment_profile === "directory-relay-v1";
   exactKeys(
     plan,
     [
@@ -1277,6 +1434,7 @@ function validatePlan(plan) {
       "rendered_artifacts",
       "schema_version",
       "service_identities",
+      ...(directoryRelay ? ["relay_selection_sha256"] : []),
     ],
     "render plan",
   );
@@ -1295,6 +1453,12 @@ function validatePlan(plan) {
   if (typeof plan.deployment_profile !== "string" || !PROFILE_CATALOG[plan.deployment_profile]) {
     fail(
       `render plan deployment_profile must be one of ${JSON.stringify(Object.keys(PROFILE_CATALOG).sort(asciiCompare))}`,
+    );
+  }
+  if (directoryRelay) {
+    validateSha256(
+      plan.relay_selection_sha256,
+      "render plan relay_selection_sha256",
     );
   }
   if (!isPlainObject(plan.placeholders)) fail("render plan placeholders must be an object");
@@ -1322,9 +1486,8 @@ function validatePlan(plan) {
         fail(`${label}.${key} is not a reviewed BitcoinPIR NSS name`);
       }
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must bind a non-root service identity`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(plan.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("render plan service_identities must be unique and bytewise sorted by unit_name");
     }
@@ -1681,6 +1844,41 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
   }),
 });
 
+export function isResolvedDirectoryRelayRuntimeRequest(request) {
+  if (
+    request?.deployment_profile !== "directory-relay-v1" ||
+    !Array.isArray(request.units) ||
+    request.units.length !== 1
+  ) {
+    return false;
+  }
+  const unit = request.units[0];
+  const command = unit?.exec_start?.[0];
+  const match =
+    /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay --config \/etc\/bitcoinpir\/payment-v1\/directory-relay\/config\.toml$/u.exec(
+      command ?? "",
+    );
+  return (
+    unit.unit_name === "bitcoinpir-directory-relay.service" &&
+    unit.fragment_path === "/etc/systemd/system/bitcoinpir-directory-relay.service" &&
+    unit.exec_start.length === 1 &&
+    match !== null &&
+    canonicalize(unit.exec_start_pre ?? []) === canonicalize([
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+    ]) &&
+    canonicalize(unit.conditions ?? []) === canonicalize([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]) &&
+    canonicalize(unit.hardening?.Restart ?? []) === canonicalize(["on-failure"]) &&
+    canonicalize(unit.hardening?.RestartSec ?? []) === canonicalize(["5"]) &&
+    canonicalize(unit.hardening?.ProcSubset ?? []) === canonicalize(["pid"]) &&
+    canonicalize(unit.hardening?.ProtectProc ?? []) === canonicalize(["invisible"])
+  );
+}
+
 function validateProfileUnitPolicy(
   deploymentProfile,
   fragmentPath,
@@ -1698,11 +1896,22 @@ function validateProfileUnitPolicy(
     fail(`${label} must retain the exact global and profile-specific activation conditions`);
   }
   if (deploymentProfile === "directory-relay-v1") {
-    if (
-      canonicalize(execStart) !== canonicalize(["/usr/bin/false"]) ||
-      canonicalize(execStartPre) !== canonicalize([])
-    ) {
-      fail(`${label} directory-relay-v1 must remain stopped-only with ExecStart=/usr/bin/false`);
+    const blocked =
+      canonicalize(execStart) === canonicalize(["/usr/bin/false"]) &&
+      canonicalize(execStartPre) === canonicalize([]);
+    const commandMatch =
+      /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay --config \/etc\/bitcoinpir\/payment-v1\/directory-relay\/config\.toml$/u.exec(
+        execStart[0] ?? "",
+      );
+    const resolved =
+      execStart.length === 1 &&
+      commandMatch !== null &&
+      canonicalize(execStartPre) === canonicalize([
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      ]);
+    if (!blocked && !resolved) {
+      fail(`${label} directory-relay-v1 must be either the exact blocked unit or exact resolved unit`);
     }
     for (const [key, expected] of [
       ["LimitCORE", "0"],
@@ -1714,11 +1923,28 @@ function validateProfileUnitPolicy(
       ["StandardOutput", "null"],
       ["ProtectClock", "true"],
       ["ProtectHostname", "true"],
-      ["Restart", "no"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
+      ["Restart", resolved ? "on-failure" : "no"],
     ]) {
       if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
         fail(`${label} must keep directory-relay-v1 ${key}=${expected}`);
       }
+    }
+    if (resolved) {
+      if (canonicalize(hardening.RestartSec ?? []) !== canonicalize(["5"])) {
+        fail(`${label} must keep resolved directory-relay-v1 RestartSec=5`);
+      }
+      const binaryRoot = dirname(execStart[0].split(" ", 1)[0]);
+      if (
+        canonicalize(hardening.ReadOnlyPaths ?? []) !== canonicalize([
+          `/etc/bitcoinpir/payment-v1/directory-relay ${binaryRoot}`,
+        ])
+      ) {
+        fail(`${label} must bind resolved directory-relay-v1 read-only config and binary roots`);
+      }
+    } else if (hardening.RestartSec !== undefined) {
+      fail(`${label} blocked directory-relay-v1 must not configure RestartSec`);
     }
   }
   const privateRequestEdge =
@@ -1911,7 +2137,7 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "2dd2c136a31edb952c0c095bef7c2f796d9591a787333921999ed361e158a3a4",
+  adminGate: "d400c5979c4fabdae82f7773081619626a4174b4077f580d5778da1e84f96c57",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
   overlayGate: "6c9db37516596974ba6468235a31655f0301781744a0dea46352ab8b4f712f9c",
   overlayTransaction: "2c2276ee9306b37e7db7d87c89d443e1fc1306cba077555f12c05b4a33723ba1",
@@ -2275,6 +2501,21 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/provider-direct/unified-server.sha256":
       oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
       return;
+    case "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256": {
+      const binaries = plan.payload_artifacts.filter((artifact) =>
+        artifact.class === "binary" &&
+        /^\/opt\/bitcoinpir\/directory-relay\/[0-9a-f]{64}\/bitcoinpir-directory-relay$/u.test(
+          artifact.target_path,
+        ));
+      if (binaries.length !== 1) {
+        fail(`hash manifest ${manifestPath} requires one content-addressed directory relay binary`);
+      }
+      oneExact(binaries[0].target_path);
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/directory-relay/config.toml");
+      return;
     case "/etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256":
       oneExact(`/opt/bitcoinpir/rollback-authority/${plan.placeholders.ROLLBACK_AUTHORITY_SHA256}/rollback-authority`);
       return;
@@ -2348,12 +2589,27 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
       fail(`${placeholder} must equal the selected single-file binary digest`);
     }
   }
+  if (plan.deployment_profile === "directory-relay-v1") {
+    for (const artifact of plan.payload_artifacts.filter((entry) => entry.class === "binary")) {
+      const match =
+        /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay$/u.exec(
+          artifact.target_path,
+        );
+      if (!match || artifact.expected_sha256 !== match[1]) {
+        fail("directory relay binary target digest must equal its exact payload digest");
+      }
+    }
+  }
 }
 
 function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   const canonicalSourceRoot = requireCanonicalRoot(sourceRoot, "source root");
   const canonicalInputRoot = requireCanonicalRoot(inputRoot, "payload input root");
   validatePlan(plan);
+  const directoryRelaySelection =
+    plan.deployment_profile === "directory-relay-v1"
+      ? directoryRelaySelectionFromSource(canonicalSourceRoot, plan)
+      : undefined;
   const approvedPlanDigest = requireApprovedPlan(plan, approvedPlanSha256);
 
   const selectedTemplates = [];
@@ -2528,6 +2784,13 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   artifacts.sort((left, right) => asciiCompare(left.target_path, right.target_path));
   runtimeUnits.sort((left, right) => asciiCompare(left.unit_name, right.unit_name));
   validateRuntimeServiceIdentities(plan, runtimeUnits);
+  validateDirectoryRelayPayloadClosure({
+    artifacts,
+    fileBytes,
+    plan,
+    runtimeUnits,
+    selection: directoryRelaySelection,
+  });
   enforceDependencyClosure({ artifacts, fileBytes, initialReferences, plan });
   const hashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
   for (const artifact of artifacts) {
@@ -2607,9 +2870,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["group_name", "user_name"]) {
       if (!/^bitcoinpir-[a-z0-9-]+$/u.test(identity[key])) fail(`${label}.${key} is malformed`);
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must be non-root`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(manifest.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("rendered manifest service_identities must be unique and bytewise sorted");
     }
@@ -3038,8 +3300,11 @@ function canonicalEqual(actual, expected, label) {
 }
 
 export function validateRuntimeEvidence({ model, evidence }) {
-  if (model.manifest.deployment_profile === "directory-relay-v1") {
-    fail("directory-relay-v1 is stopped-only and requires the Linux stopped-relay evidence gate");
+  if (
+    model.manifest.deployment_profile === "directory-relay-v1" &&
+    !isResolvedDirectoryRelayRuntimeRequest(model.request)
+  ) {
+    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
   }
   exactKeys(
     evidence,

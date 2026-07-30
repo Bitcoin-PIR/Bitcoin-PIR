@@ -277,12 +277,12 @@ docker run --rm \
   -ec 'exec node /probe.mjs < /gate.mjs'
 
 for identity in \
-  cloudflared:62901 \
-  directory:62903 \
-  issuer:62904 \
-  pir:62902 \
-  provider:62905 \
-  source-fair:62906
+  cloudflared:52901 \
+  directory:52903 \
+  issuer:52904 \
+  pir:52902 \
+  provider:52905 \
+  source-fair:52906
 do
   name=${identity%:*}
   uid=${identity#*:}

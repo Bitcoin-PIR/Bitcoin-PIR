@@ -68,43 +68,43 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/cashu-bat.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/cashu-bat.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/credential-derivation.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/credential-derivation.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/direct-receipt-signing.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/direct-receipt-signing.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/issuer-settlement-signing.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/provider-clearing-approval.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin",
@@ -113,7 +113,7 @@
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/provider-clearing-authorization.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin",
@@ -122,16 +122,16 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/provider-request-verifying.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/quote-delegation.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin",
@@ -140,52 +140,52 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/quote-signing.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/redeem-response-derivation.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/remote-rollback-authority.toml",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/remote-rollback-client-signing.seed",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-client-signing.seed",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/remote-rollback-value-root.key",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-value-root.key",
-      "uid": 62926
+      "uid": 52926
     },
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62927,
+      "gid": 52927,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/service-policy.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/service-policy.bin",
@@ -194,7 +194,7 @@
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62925,
+      "gid": 52925,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/backup-receipt.json",
       "target_path": "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.json",
@@ -203,7 +203,7 @@
     {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62925,
+      "gid": 52925,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/preflight.toml",
       "target_path": "/etc/bitcoinpir/payment-v1/lightning/preflight.toml",
@@ -302,19 +302,19 @@
     "CLN_GUARD_MAX_INVOICE_MSAT": "INVALID_REPLACE_WITH_MAX_INVOICE_MSAT",
     "CLN_GUARD_MAX_INVOICES_PER_MINUTE": "INVALID_REPLACE_WITH_PER_MINUTE_LIMIT",
     "CLN_GUARD_MAX_INVOICES_PER_RUNTIME": "INVALID_REPLACE_WITH_RUNTIME_LIMIT",
-    "CLN_GUARD_UID": "62921",
+    "CLN_GUARD_UID": "52921",
     "CLN_P2P_ANNOUNCE_ADDR": "INVALID_REPLACE_WITH_ANNOUNCE_HOST_PORT",
     "CLN_P2P_BIND_ADDR": "INVALID_REPLACE_WITH_BIND_HOST_PORT",
     "CLN_RPC_GUARD_SHA256": "INVALID_REPLACE_WITH_CLN_RPC_GUARD_SHA256",
     "HETZNER_POLICY_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_PUBLIC_KEY",
-    "ISSUER_GID": "62927",
-    "ISSUER_UID": "62926",
-    "LIGHTNING_GID": "62922",
+    "ISSUER_GID": "52927",
+    "ISSUER_UID": "52926",
+    "LIGHTNING_GID": "52922",
     "LIGHTNING_NETWORK": "INVALID_REPLACE_WITH_SIGNET",
-    "LIGHTNING_UID": "62923",
+    "LIGHTNING_UID": "52923",
     "PAYMENT_ISSUER_SHA256": "INVALID_REPLACE_WITH_PAYMENT_ISSUER_SHA256",
-    "PREFLIGHT_GID": "62925",
-    "PREFLIGHT_UID": "62924"
+    "PREFLIGHT_GID": "52925",
+    "PREFLIGHT_UID": "52924"
   },
   "rendered_artifacts": [
     {
@@ -326,7 +326,7 @@
       "uid": 0
     },
     {
-      "gid": 62922,
+      "gid": 52922,
       "mode": "0440",
       "source_path": "deploy/payment-v1/lightning/lightningd.conf.in",
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
@@ -377,30 +377,30 @@
   "schema_version": 1,
   "service_identities": [
     {
-      "gid": 62922,
+      "gid": 52922,
       "group_name": "bitcoinpir-cln-guard",
-      "uid": 62921,
+      "uid": 52921,
       "unit_name": "bitcoinpir-cln-rpc-guard.service",
       "user_name": "bitcoinpir-cln-rpc-guard"
     },
     {
-      "gid": 62922,
+      "gid": 52922,
       "group_name": "bitcoinpir-cln-guard",
-      "uid": 62923,
+      "uid": 52923,
       "unit_name": "bitcoinpir-core-lightning.service",
       "user_name": "bitcoinpir-lightning"
     },
     {
-      "gid": 62925,
+      "gid": 52925,
       "group_name": "bitcoinpir-lightning-preflight",
-      "uid": 62924,
+      "uid": 52924,
       "unit_name": "bitcoinpir-lightning-preflight.service",
       "user_name": "bitcoinpir-lightning-preflight"
     },
     {
-      "gid": 62927,
+      "gid": 52927,
       "group_name": "bitcoinpir-issuer",
-      "uid": 62926,
+      "uid": 52926,
       "unit_name": "bitcoinpir-payment-issuer.service",
       "user_name": "bitcoinpir-issuer"
     }

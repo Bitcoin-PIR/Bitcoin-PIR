@@ -31,8 +31,10 @@ import {
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
   canonicalJson,
+  isResolvedDirectoryRelayRuntimeRequest,
   parseStrictJson,
   runtimeRequestFromManifest,
+  validateServiceIdentityId,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
 export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
@@ -41,7 +43,8 @@ export const STOPPED_EDGE_EVIDENCE_KIND =
 export const STOPPED_RELAY_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
-export const NSS_BACKEND_PROFILE = "local-files-only-v1";
+export const NSS_BACKEND_PROFILE =
+  "local-files-authoritative-reviewed-systemd-fallback-v2";
 const LIVE_SCHEMA_VERSION = 4;
 const STOPPED_EDGE_SCHEMA_VERSION = 3;
 const STOPPED_RELAY_SCHEMA_VERSION = 2;
@@ -117,6 +120,18 @@ const LOCKED_SERVICE_ACCOUNT_SHELLS = Object.freeze([
   "/bin/false",
   "/usr/sbin/nologin",
 ]);
+const REVIEWED_NSS_SOURCE_PROFILES = Object.freeze([
+  Object.freeze({
+    group: Object.freeze(["files"]),
+    initgroups: "inherits-group",
+    passwd: Object.freeze(["files"]),
+  }),
+  Object.freeze({
+    group: Object.freeze(["files", "systemd"]),
+    initgroups: "inherits-group",
+    passwd: Object.freeze(["files", "systemd"]),
+  }),
+]);
 const REVIEWED_ONESHOT_UNIT = "bitcoinpir-lightning-preflight.service";
 const REVIEWED_ONESHOT_FRAGMENT = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
 const REQUIRED_COMMANDS = Object.freeze([
@@ -160,6 +175,21 @@ function exactKeys(value, keys, label) {
   if (canonicalJson(actual) !== canonicalJson(expected)) {
     fail(`${label} keys must equal ${JSON.stringify(expected)}`);
   }
+}
+
+function assertReviewedNssSources(sources, label = "NSS sources") {
+  exactKeys(sources, ["group", "initgroups", "passwd"], label);
+  const encoded = canonicalJson(sources);
+  if (
+    !REVIEWED_NSS_SOURCE_PROFILES.some(
+      (profile) => canonicalJson(profile) === encoded,
+    )
+  ) {
+    fail(
+      `${label} must be exactly files-only or files-then-systemd for both passwd and group with inherited initgroups`,
+    );
+  }
+  return sources;
 }
 
 function validateAbsolutePath(value, label) {
@@ -866,14 +896,12 @@ export function parseLockedServiceAccountPolicyV1(
     if (
       expectedByName.has(userName) ||
       !Number.isSafeInteger(identity.uid) ||
-      identity.uid < 1 ||
-      identity.uid > 0xffff_ffff ||
-      !Number.isSafeInteger(identity.gid) ||
-      identity.gid < 1 ||
-      identity.gid > 0xffff_ffff
+      !Number.isSafeInteger(identity.gid)
     ) {
       fail("service identity account binding is duplicated or malformed");
     }
+    validateServiceIdentityId(identity.uid, `service identity policy[${index}].uid`);
+    validateServiceIdentityId(identity.gid, `service identity policy[${index}].gid`);
     expectedByName.set(userName, identity);
   }
 
@@ -1008,18 +1036,18 @@ export function parseLocalFilesNsswitchV1(text) {
     }
     databases.set(database, sources);
   }
-  if (
-    canonicalJson(databases.get("passwd")) !== canonicalJson(["files"]) ||
-    canonicalJson(databases.get("group")) !== canonicalJson(["files"]) ||
-    databases.has("initgroups")
-  ) {
-    fail("NSS backend is not the reviewed local-files-only profile");
+  if (!databases.has("passwd") || !databases.has("group")) {
+    fail("NSS backend must define both passwd and group sources");
   }
-  return {
-    group: ["files"],
+  const sources = {
+    group: databases.get("group"),
     initgroups: "inherits-group",
-    passwd: ["files"],
+    passwd: databases.get("passwd"),
   };
+  if (databases.has("initgroups")) {
+    fail("NSS backend must inherit group sources for initgroups");
+  }
+  return assertReviewedNssSources(sources, "NSS backend sources");
 }
 
 function collectLocalFilesNssPolicy() {
@@ -1138,8 +1166,17 @@ export function assertLocalFilesNssPolicyUnchanged(nss, currentPolicy) {
   return true;
 }
 
-function confirmLocalFilesNssPolicyUnchanged(nss) {
-  return assertLocalFilesNssPolicyUnchanged(nss, collectLocalFilesNssPolicy());
+export function assertCompleteNssSnapshotUnchangedV2(expected, actual) {
+  if (canonicalJson(expected) !== canonicalJson(actual)) {
+    fail(
+      "local NSS policy, identity files, or complete getent/id projection changed after complete enumeration",
+    );
+  }
+  return true;
+}
+
+function confirmCompleteNssSnapshotUnchanged(nss) {
+  return assertCompleteNssSnapshotUnchangedV2(nss, collectNss());
 }
 
 function collectLockedServiceAccountPolicy(request, nss) {
@@ -1755,6 +1792,10 @@ function resolveExpectedUnitProcessIdentity(unit, nss, serviceIdentities) {
   const user = usersByName.get(userName);
   const group = groupsByName.get(groupName);
   const pinned = serviceIdentities.find((identity) => identity.unit_name === unit.unit_name);
+  if (pinned) {
+    validateServiceIdentityId(pinned.uid, `${unit.unit_name} service uid`);
+    validateServiceIdentityId(pinned.gid, `${unit.unit_name} service gid`);
+  }
   if (
     !user ||
     !group ||
@@ -2230,6 +2271,7 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -2237,6 +2279,7 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -2432,7 +2475,7 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
   if (conditions.length !== expected.length) {
     fail(`stopped effective condition count drift: ${unit.unit_name}`);
   }
-  let unresolvedSelectionObserved = false;
+  let absentSelectionActivationSentinelObserved = false;
   for (let index = 0; index < expected.length; index += 1) {
     const actual = conditions[index];
     const definition = expected[index];
@@ -2458,13 +2501,13 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
       "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED"
     ) {
       if (actual.negate || actual.path_exists || !new Set([-1, 0]).has(actual.result)) {
-        fail("stopped directory-relay selection condition is not unresolved");
+        fail("stopped directory-relay selection activation sentinel is present");
       }
-      unresolvedSelectionObserved = true;
+      absentSelectionActivationSentinelObserved = true;
     }
   }
-  if (!unresolvedSelectionObserved || properties.ConditionResult !== "no") {
-    fail(`stopped effective conditions do not prove an unresolved relay: ${unit.unit_name}`);
+  if (!absentSelectionActivationSentinelObserved || properties.ConditionResult !== "no") {
+    fail(`stopped effective conditions do not prove an inactive relay: ${unit.unit_name}`);
   }
 }
 
@@ -3281,15 +3324,11 @@ function validateStoppedNssEvidence(nss, request) {
   );
   if (
     nss.backend_profile !== NSS_BACKEND_PROFILE ||
-    nss.enumeration_kind !== NSS_ENUMERATION_KIND ||
-    canonicalJson(nss.sources) !== canonicalJson({
-      group: ["files"],
-      initgroups: "inherits-group",
-      passwd: ["files"],
-    })
+    nss.enumeration_kind !== NSS_ENUMERATION_KIND
   ) {
-    fail("stopped-edge NSS evidence is not the reviewed complete local-files profile");
+    fail("stopped-edge NSS evidence is not the reviewed files-authoritative profile");
   }
+  assertReviewedNssSources(nss.sources, "stopped-edge NSS sources");
   validatePolicyFileEvidence(nss.nsswitch_file, "/etc/nsswitch.conf", "stopped-edge nsswitch file");
   validatePolicyFileEvidence(nss.passwd_file, "/etc/passwd", "stopped-edge passwd file");
   validatePolicyFileEvidence(nss.group_file, "/etc/group", "stopped-edge group file");
@@ -3870,6 +3909,16 @@ function validateTrustedCommandClosure(commands, label) {
   }
 }
 
+function validateRuntimeServiceIdentityIds(serviceIdentities, label) {
+  if (!Array.isArray(serviceIdentities) || serviceIdentities.length < 1) {
+    fail(`${label} service identity bindings are missing`);
+  }
+  for (const [index, identity] of serviceIdentities.entries()) {
+    validateServiceIdentityId(identity?.uid, `${label} service identity[${index}].uid`);
+    validateServiceIdentityId(identity?.gid, `${label} service identity[${index}].gid`);
+  }
+}
+
 export function validateStoppedEdgeActivationEvidence({
   evidence,
   request,
@@ -3912,6 +3961,7 @@ export function validateStoppedEdgeActivationEvidence({
   ) {
     fail("stopped-edge evidence schema, collector, profile, or artifact binding is not reviewed");
   }
+  validateRuntimeServiceIdentityIds(request.service_identities, "stopped-edge request");
   if (
     typeof evidence.challenge_hex !== "string" ||
     !/^[0-9a-f]{64}$/u.test(evidence.challenge_hex) ||
@@ -3954,11 +4004,59 @@ export function validateStoppedRelayPreparationEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  validateRuntimeServiceIdentityIds(
+    request.service_identities,
+    "stopped directory-relay request",
+  );
   const relayUnit = request.units?.[0];
   const relayIdentity = request.service_identities?.[0];
   const relayConfigPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
   const relayFragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const relayBinaryManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const relayConfigManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
   const relayInstalledTargets = request.installed_files?.map((file) => file.target_path);
+  const resolvedRelay = isResolvedDirectoryRelayRuntimeRequest(request);
+  const blockedRelay =
+    canonicalJson(relayUnit?.exec_start) === canonicalJson(["/usr/bin/false"]) &&
+    canonicalJson(relayUnit?.exec_start_pre) === canonicalJson([]);
+  const relayBinaryPath = resolvedRelay
+    ? relayUnit.exec_start[0].split(" ", 1)[0]
+    : undefined;
+  const expectedInstalledTargets = resolvedRelay
+    ? [
+        relayBinaryManifestPath,
+        relayConfigManifestPath,
+        relayConfigPath,
+        relayFragmentPath,
+        relayBinaryPath,
+      ]
+    : [relayConfigPath, relayFragmentPath];
+  const expectedInstalledMetadata = new Map([
+    [relayConfigPath, { gid: 52952, mode: "0400", uid: 52951 }],
+    [relayFragmentPath, { gid: 0, mode: "0644", uid: 0 }],
+    ...(resolvedRelay
+      ? [
+          [relayBinaryManifestPath, { gid: 0, mode: "0444", uid: 0 }],
+          [relayConfigManifestPath, { gid: 0, mode: "0444", uid: 0 }],
+          [relayBinaryPath, { gid: 0, mode: "0555", uid: 0 }],
+        ]
+      : []),
+  ]);
+  const installedShapeMatches =
+    canonicalJson(relayInstalledTargets) === canonicalJson(expectedInstalledTargets) &&
+    request.installed_files?.every((file) => {
+      const expected = expectedInstalledMetadata.get(file.target_path);
+      return (
+        expected !== undefined &&
+        file.file_type === "regular" &&
+        file.uid === expected.uid &&
+        file.gid === expected.gid &&
+        file.mode === expected.mode &&
+        file.nlink === 1
+      );
+    });
   exactKeys(
     evidence,
     [
@@ -4000,29 +4098,15 @@ export function validateStoppedRelayPreparationEvidence({
     relayUnit.unit_name !== "bitcoinpir-directory-relay.service" ||
     relayUnit.fragment_path !== relayFragmentPath ||
     relayIdentity.unit_name !== relayUnit.unit_name ||
-    relayIdentity.uid !== 62951 ||
-    relayIdentity.gid !== 62952 ||
-    canonicalJson(relayUnit.exec_start) !== canonicalJson(["/usr/bin/false"]) ||
-    relayUnit.exec_start_pre.length !== 0 ||
+    relayIdentity.uid !== 52951 ||
+    relayIdentity.gid !== 52952 ||
+    (!blockedRelay && !resolvedRelay) ||
     canonicalJson(relayUnit.conditions) !== canonicalJson([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
     ]) ||
-    canonicalJson(relayInstalledTargets) !== canonicalJson([
-      relayConfigPath,
-      relayFragmentPath,
-    ]) ||
-    request.installed_files[0].file_type !== "regular" ||
-    request.installed_files[0].uid !== relayIdentity.uid ||
-    request.installed_files[0].gid !== relayIdentity.gid ||
-    request.installed_files[0].mode !== "0400" ||
-    request.installed_files[0].nlink !== 1 ||
-    request.installed_files[1].file_type !== "regular" ||
-    request.installed_files[1].uid !== 0 ||
-    request.installed_files[1].gid !== 0 ||
-    request.installed_files[1].mode !== "0644" ||
-    request.installed_files[1].nlink !== 1 ||
+    !installedShapeMatches ||
     canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
       "/usr/bin/systemd-analyze",
       "verify",
@@ -4043,7 +4127,7 @@ export function validateStoppedRelayPreparationEvidence({
     request.secret_files[0].mode !== "0400" ||
     request.tmpfiles_directories.length !== 0
   ) {
-    fail("stopped directory-relay evidence schema, collector, profile, or blocked-unit binding is not reviewed");
+    fail("stopped directory-relay evidence schema, collector, profile, or unit binding is not reviewed");
   }
   for (const [key, expected] of [
     ["LimitCORE", "0"],
@@ -4055,11 +4139,27 @@ export function validateStoppedRelayPreparationEvidence({
     ["StandardOutput", "null"],
     ["ProtectClock", "true"],
     ["ProtectHostname", "true"],
-    ["Restart", "no"],
+    ["ProtectProc", "invisible"],
+    ["ProcSubset", "pid"],
+    ["Restart", resolvedRelay ? "on-failure" : "no"],
   ]) {
     if (canonicalJson(relayUnit.hardening[key] ?? []) !== canonicalJson([expected])) {
       fail(`stopped directory-relay request hardening drift: ${key}`);
     }
+  }
+  if (
+    resolvedRelay &&
+    (
+      canonicalJson(relayUnit.hardening.RestartSec ?? []) !== canonicalJson(["5"]) ||
+      canonicalJson(relayUnit.hardening.ReadOnlyPaths ?? []) !== canonicalJson([
+        `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(relayBinaryPath)}`,
+      ])
+    )
+  ) {
+    fail("stopped resolved directory-relay request hardening drift");
+  }
+  if (!resolvedRelay && relayUnit.hardening.RestartSec !== undefined) {
+    fail("stopped blocked directory-relay request must not configure RestartSec");
   }
   if (
     typeof evidence.challenge_hex !== "string" ||
@@ -4113,6 +4213,70 @@ export function validateStoppedRelayPreparationEvidence({
   return true;
 }
 
+function validateResolvedDirectoryRelayLiveRequestShape(request) {
+  if (!isResolvedDirectoryRelayRuntimeRequest(request)) {
+    fail("live directory relay request is not the exact resolved profile");
+  }
+  const unit = request.units[0];
+  const identity = request.service_identities?.[0];
+  const binaryPath = unit.exec_start[0].split(" ", 1)[0];
+  const configPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const fragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const expected = new Map([
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      { gid: 0, mode: "0444", uid: 0 },
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      { gid: 0, mode: "0444", uid: 0 },
+    ],
+    [configPath, { gid: 52952, mode: "0400", uid: 52951 }],
+    [fragmentPath, { gid: 0, mode: "0644", uid: 0 }],
+    [binaryPath, { gid: 0, mode: "0555", uid: 0 }],
+  ]);
+  const files = request.installed_files ?? [];
+  const fileShapeMatches =
+    canonicalJson(files.map((file) => file.target_path)) ===
+      canonicalJson([...expected.keys()]) &&
+    files.every((file) => {
+      const metadata = expected.get(file.target_path);
+      return (
+        metadata !== undefined &&
+        file.file_type === "regular" &&
+        file.gid === metadata.gid &&
+        file.mode === metadata.mode &&
+        file.nlink === 1 &&
+        file.uid === metadata.uid
+      );
+    });
+  if (
+    request.service_identities?.length !== 1 ||
+    identity?.unit_name !== unit.unit_name ||
+    identity.uid !== 52951 ||
+    identity.gid !== 52952 ||
+    !fileShapeMatches ||
+    canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
+      "/usr/bin/systemd-analyze",
+      "verify",
+      fragmentPath,
+    ]) ||
+    request.runtime_paths?.length !== 0 ||
+    request.tmpfiles_directories?.length !== 0 ||
+    request.secret_files?.length !== 1 ||
+    request.secret_files[0].consumer_unit_name !== unit.unit_name ||
+    request.secret_files[0].target_path !== configPath ||
+    request.secret_files[0].uid !== 52951 ||
+    request.secret_files[0].gid !== 52952 ||
+    request.secret_files[0].mode !== "0400" ||
+    canonicalJson(unit.hardening.ReadOnlyPaths ?? []) !== canonicalJson([
+      `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
+    ])
+  ) {
+    fail("live resolved directory-relay request artifact or identity closure is not reviewed");
+  }
+}
+
 export function validateLiveRuntimeEvidence({
   evidence,
   request,
@@ -4121,8 +4285,14 @@ export function validateLiveRuntimeEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  if (
+    request.deployment_profile === "directory-relay-v1" &&
+    !isResolvedDirectoryRelayRuntimeRequest(request)
+  ) {
+    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
+  }
   if (request.deployment_profile === "directory-relay-v1") {
-    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+    validateResolvedDirectoryRelayLiveRequestShape(request);
   }
   exactKeys(
     evidence,
@@ -4172,6 +4342,7 @@ export function validateLiveRuntimeEvidence({
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
   }
+  validateRuntimeServiceIdentityIds(request.service_identities, "live runtime request");
   if (evidence.manifest_sha256 !== request.manifest_sha256 || evidence.approved_plan_sha256 !== request.approved_plan_sha256) {
     fail("live evidence is not bound to the approved manifest and plan");
   }
@@ -4466,21 +4637,12 @@ export function validateLiveRuntimeEvidence({
     "live NSS evidence",
   );
   if (evidence.nss.backend_profile !== NSS_BACKEND_PROFILE) {
-    fail("live NSS evidence does not use the reviewed local-files-only backend");
+    fail("live NSS evidence does not use the reviewed files-authoritative backend");
   }
   if (evidence.nss.enumeration_kind !== NSS_ENUMERATION_KIND) {
     fail("live NSS evidence does not use the reviewed complete-enumeration profile");
   }
-  exactKeys(evidence.nss.sources, ["group", "initgroups", "passwd"], "live NSS sources");
-  if (
-    canonicalJson(evidence.nss.sources) !== canonicalJson({
-      group: ["files"],
-      initgroups: "inherits-group",
-      passwd: ["files"],
-    })
-  ) {
-    fail("live NSS sources are not the reviewed local-files-only profile");
-  }
+  assertReviewedNssSources(evidence.nss.sources, "live NSS sources");
   for (const [key, path] of [
     ["nsswitch_file", "/etc/nsswitch.conf"],
     ["passwd_file", "/etc/passwd"],
@@ -4875,7 +5037,7 @@ function collectStoppedPreparationEvidence({
   if (canonicalJson(accountPolicyStarted) !== canonicalJson(accountPolicyFinished)) {
     fail("service account login policy changed during stopped-edge collection");
   }
-  confirmLocalFilesNssPolicyUnchanged(nss);
+  confirmCompleteNssSnapshotUnchanged(nss);
   const hostFinished = readHostBinding();
   const finished = Math.floor(Date.now() / 1000);
   if (!sameHostGeneration(hostStarted, hostFinished)) {
@@ -4993,8 +5155,14 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   validateDigest(approvedPlanSha256, "approved plan SHA-256");
   validateDigest(expectedMachineIdSha256, "expected machine-id SHA-256");
   const { request } = readPinnedBundle(bundleRoot, approvedManifestSha256, approvedPlanSha256);
+  if (
+    request.deployment_profile === "directory-relay-v1" &&
+    !isResolvedDirectoryRelayRuntimeRequest(request)
+  ) {
+    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
+  }
   if (request.deployment_profile === "directory-relay-v1") {
-    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+    validateResolvedDirectoryRelayLiveRequestShape(request);
   }
   const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);
@@ -5036,7 +5204,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (canonicalJson(runtimePaths) !== canonicalJson(finalRuntimePaths)) {
     fail("runtime path metadata changed during protected process collection");
   }
-  confirmLocalFilesNssPolicyUnchanged(nss);
+  confirmCompleteNssSnapshotUnchanged(nss);
   const hostFinished = readHostBinding();
   if (!sameHostGeneration(hostStarted, hostFinished)) {
     fail("host or boot identity changed during live collection");

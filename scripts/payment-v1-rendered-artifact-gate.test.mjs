@@ -57,6 +57,7 @@ const PROVIDER_DIRECT_UNIT =
   "deploy/payment-v1/systemd/hetzner-provider-direct.service.in";
 const RELAY_UNIT = "deploy/payment-v1/systemd/hetzner-directory-relay.service.in";
 const RELAY_CONFIG = "deploy/payment-v1/directory-relay.toml.example";
+const RELAY_SELECTION = "deploy/payment-v1/relay-selection.toml.example";
 const ISSUER_TEMPLATES = [
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
   "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -832,6 +833,72 @@ function makeDirectoryRelayFixture(t) {
   const fixture = temporaryRoots(t);
   copySource(fixture.sourceRoot, RELAY_CONFIG);
   copySource(fixture.sourceRoot, RELAY_UNIT);
+  copySource(fixture.sourceRoot, RELAY_SELECTION);
+  const publisherPubkey =
+    "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c";
+  writeFileSync(
+    join(fixture.sourceRoot, RELAY_CONFIG),
+    readFileSync(join(fixture.sourceRoot, RELAY_CONFIG), "utf8").replace(
+      publisherPubkey,
+      "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
+    ),
+  );
+  let unresolvedSelection = readFileSync(
+    join(fixture.sourceRoot, RELAY_SELECTION),
+    "utf8",
+  );
+  unresolvedSelection = replaceRelaySelectionField(
+    unresolvedSelection,
+    "status",
+    "UNRESOLVED",
+  );
+  for (const field of [
+    "directory_mode",
+    "implementation",
+    "source_repository",
+    "source_commit",
+    "source_archive_sha256",
+    "cargo_lock_sha256",
+    "build_manifest_sha256",
+    "binary_sha256",
+    "binary_version_output",
+    "config_sha256",
+    "publisher_pubkey_hex",
+  ]) {
+    unresolvedSelection = replaceRelaySelectionField(
+      unresolvedSelection,
+      field,
+      "UNRESOLVED",
+    );
+  }
+  writeFileSync(join(fixture.sourceRoot, RELAY_SELECTION), unresolvedSelection);
+  const resolvedBinarySha256 =
+    "77571e6266ca2908483d7172d0cf5c542c16f818dad09767426439f0358e7eb8";
+  writeFileSync(
+    join(fixture.sourceRoot, RELAY_UNIT),
+    readFileSync(join(fixture.sourceRoot, RELAY_UNIT), "utf8")
+      .replace(
+        "# BitcoinPIR Payment V1 deployment template; selection is resolved but activation is separate.",
+        "# BitcoinPIR Payment V1 deployment template; relay selection is not resolved.",
+      )
+      .replace(
+        "Description=BitcoinPIR Hetzner directory-only relay (resolved, sentinel-gated)",
+        "Description=BitcoinPIR Hetzner directory-only relay (blocked template)",
+      )
+      .replace(/^ExecStartPre=.*\n/gmu, "")
+      .replace(
+        new RegExp(
+          `^ExecStart=/opt/bitcoinpir/directory-relay/${resolvedBinarySha256}/bitcoinpir-directory-relay.*$`,
+          "mu",
+        ),
+        "ExecStart=/usr/bin/false",
+      )
+      .replace("Restart=on-failure\nRestartSec=5", "Restart=no")
+      .replace(
+        `ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay /opt/bitcoinpir/directory-relay/${resolvedBinarySha256}`,
+        "ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay",
+      ),
+  );
   const plan = {
     deployment_id: "directory-relay-v1-stopped-test",
     deployment_profile: "directory-relay-v1",
@@ -841,12 +908,12 @@ function makeDirectoryRelayFixture(t) {
     },
     rendered_artifacts: [
       {
-        gid: 62952,
+        gid: 52952,
         mode: "0400",
         source_path: RELAY_CONFIG,
         source_sha256: hashFile(join(fixture.sourceRoot, RELAY_CONFIG)),
         target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-        uid: 62951,
+        uid: 52951,
       },
       {
         gid: 0,
@@ -857,16 +924,90 @@ function makeDirectoryRelayFixture(t) {
         uid: 0,
       },
     ],
+    relay_selection_sha256: hashFile(join(fixture.sourceRoot, RELAY_SELECTION)),
     schema_version: 1,
     service_identities: [{
-      gid: 62952,
+      gid: 52952,
       group_name: "bitcoinpir-directory-relay",
-      uid: 62951,
+      uid: 52951,
       unit_name: "bitcoinpir-directory-relay.service",
       user_name: "bitcoinpir-directory-relay",
     }],
   };
   return { ...fixture, plan };
+}
+
+function replaceRelaySelectionField(text, field, value) {
+  const expression = new RegExp(`^${field}\\s*=.*$`, "mu");
+  assert.match(text, expression);
+  return text.replace(expression, `${field} = ${JSON.stringify(value)}`);
+}
+
+function makeResolvedDirectoryRelayFixture(t) {
+  const fixture = makeDirectoryRelayFixture(t);
+  const publisherPubkey =
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  const binaryBytes = Buffer.from("reviewed-directory-relay-linux-amd64\n");
+  const binarySha256 = hashBytes(binaryBytes);
+  updateTemplate(fixture, RELAY_CONFIG, (text) =>
+    text.replace("@DIRECTORY_PUBLISHER_PUBKEY_HEX@", publisherPubkey));
+  const configSha256 = hashFile(join(fixture.sourceRoot, RELAY_CONFIG));
+  updateTemplate(fixture, RELAY_UNIT, (text) =>
+    text
+      .replace(
+        "ExecStart=/usr/bin/false",
+        `ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\n` +
+        `ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\n` +
+        `ExecStart=/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`,
+      )
+      .replace("Restart=no", "Restart=on-failure\nRestartSec=5")
+      .replace(
+        "ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay",
+        `ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay /opt/bitcoinpir/directory-relay/${binarySha256}`,
+      ));
+  let selection = readFileSync(join(fixture.sourceRoot, RELAY_SELECTION), "utf8");
+  for (const [field, value] of Object.entries({
+    status: "RESOLVED",
+    directory_mode: "centralized-single-relay",
+    implementation: "bitcoinpir-directory-only",
+    source_repository: "https://github.com/Bitcoin-PIR/Bitcoin-PIR.git",
+    source_commit: "1".repeat(40),
+    source_archive_sha256: "2".repeat(64),
+    cargo_lock_sha256: "3".repeat(64),
+    build_manifest_sha256: "4".repeat(64),
+    binary_sha256: binarySha256,
+    binary_version_output: "bitcoinpir-directory-relay 0.1.0",
+    config_sha256: configSha256,
+    publisher_pubkey_hex: publisherPubkey,
+  })) {
+    selection = replaceRelaySelectionField(selection, field, value);
+  }
+  writeFileSync(join(fixture.sourceRoot, RELAY_SELECTION), selection);
+  fixture.plan.deployment_id = "directory-relay-v1-resolved-test";
+  fixture.plan.placeholders = {};
+  fixture.plan.relay_selection_sha256 = hashFile(
+    join(fixture.sourceRoot, RELAY_SELECTION),
+  );
+  const binaryTarget =
+    `/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay`;
+  fixture.plan.payload_artifacts = [
+    addPayload(fixture, binaryTarget, binaryBytes, 0),
+    addPayload(
+      fixture,
+      "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      Buffer.from(`${binarySha256}  ${binaryTarget}\n`),
+      1,
+    ),
+    addPayload(
+      fixture,
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      Buffer.from(
+        `${configSha256}  /etc/bitcoinpir/payment-v1/directory-relay/config.toml\n`,
+      ),
+      2,
+    ),
+  ];
+  return fixture;
 }
 
 function approved(plan) {
@@ -983,6 +1124,33 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   assert.deepEqual(
     readdirSync(fixture.bundleRoot, { recursive: true }).sort(),
     readdirSync(secondRoot, { recursive: true }).sort(),
+  );
+});
+
+test("service identities and numeric identity placeholders stay below systemd DynamicUser space", (t) => {
+  for (const id of [60_001, 61_184, 65_519, 65_534]) {
+    const fixture = makeEdgeFixture(t);
+    fixture.plan.service_identities[0].uid = id;
+    assert.throws(
+      () => renderFixture(fixture),
+      /static service uid\/gid.*DynamicUser/u,
+    );
+  }
+
+  const placeholder = makeIssuerFixture(t);
+  placeholder.plan.placeholders.ISSUER_UID = "61184";
+  assert.throws(
+    () => renderFixture(placeholder),
+    /placeholder ISSUER_UID must be in \[1, 60000\]/u,
+  );
+
+  const manifestFixture = makeEdgeFixture(t);
+  const model = renderFixture(manifestFixture);
+  const manifest = clone(model.manifest);
+  manifest.service_identities[0].gid = 65_534;
+  assert.throws(
+    () => runtimeRequestFromManifest(manifest, model.manifestSha256),
+    /static service uid\/gid.*DynamicUser/u,
   );
 });
 
@@ -1642,8 +1810,50 @@ test("checked-in direct provider skeleton is explicit and deliberately unusable"
   );
 });
 
+test("checked-in resolved directory-relay skeleton is explicit and deliberately unusable", (t) => {
+  const fixture = temporaryRoots(t);
+  const plan = parseStrictJson(
+    readFileSync(
+      join(REPOSITORY, "docs/payment/render-plan-skeletons/directory-relay-v1.plan.json.example"),
+      "utf8",
+    ),
+    "resolved directory-relay skeleton",
+  );
+  const binarySha256 =
+    "77571e6266ca2908483d7172d0cf5c542c16f818dad09767426439f0358e7eb8";
+  const binaryTarget =
+    `/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay`;
+  assert.equal(plan.deployment_profile, "directory-relay-v1");
+  assert.deepEqual(Object.keys(plan.placeholders), []);
+  assert.deepEqual(
+    plan.payload_artifacts.map((artifact) => artifact.target_path),
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      binaryTarget,
+    ],
+  );
+  assert.equal(plan.payload_artifacts[2].expected_sha256, binarySha256);
+  assert.equal(
+    plan.payload_artifacts.some((artifact) =>
+      /private|secret|publisher.*key/iu.test(`${artifact.source_path}\n${artifact.target_path}`)),
+    false,
+  );
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: computeApprovedPlanSha256(plan),
+      inputRoot: fixture.inputRoot,
+      outputRoot: fixture.bundleRoot,
+      plan,
+      sourceRoot: REPOSITORY,
+    }),
+    /repository example marker|SHA-256|replacement marker/,
+  );
+});
+
 for (const [label, factory, profile] of [
   ["stopped directory relay", makeDirectoryRelayFixture, "directory-relay-v1"],
+  ["resolved directory relay", makeResolvedDirectoryRelayFixture, "directory-relay-v1"],
   ["provider", makeProviderFixture, "provider-v1"],
   [
     "provider without Standard Cashu",
@@ -1672,7 +1882,7 @@ for (const [label, factory, profile] of [
           plan: changed,
           sourceRoot: fixture.sourceRoot,
         }),
-        /dependency is missing|references missing artifact|provider-(?:v1|no-standard-cashu-v1|direct-v1) payload targets/,
+        /dependency is missing|references missing artifact|resolved directory-relay-v1 payload targets|provider-(?:v1|no-standard-cashu-v1|direct-v1) payload targets/,
         artifact.target_path,
       );
     }
@@ -1693,13 +1903,15 @@ test("directory relay profile renders only blocked unit and bounded config", (t)
   assert.equal(model.request.units.length, 1);
   assert.equal(model.request.units[0].exec_start[0], "/usr/bin/false");
   assert.deepEqual(model.request.units[0].exec_start_pre, []);
+  assert.deepEqual(model.request.units[0].hardening.ProtectProc, ["invisible"]);
+  assert.deepEqual(model.request.units[0].hardening.ProcSubset, ["pid"]);
   assert.deepEqual(model.request.runtime_paths, []);
   assert.deepEqual(model.request.secret_files, [{
     consumer_unit_name: "bitcoinpir-directory-relay.service",
-    gid: 62952,
+    gid: 52952,
     mode: "0400",
     target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-    uid: 62951,
+    uid: 52951,
   }]);
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
 });
@@ -1707,15 +1919,25 @@ test("directory relay profile renders only blocked unit and bounded config", (t)
 test("directory relay profile rejects activation, pre-start commands, weak hardening and payload smuggling", (t) => {
   const active = makeDirectoryRelayFixture(t);
   updateTemplate(active, RELAY_UNIT, (text) => text.replace("ExecStart=/usr/bin/false", "ExecStart=/usr/bin/true"));
-  assert.throws(() => renderFixture(active), /stopped-only/);
+  assert.throws(() => renderFixture(active), /exact blocked unit or exact resolved unit/);
 
   const preStart = makeDirectoryRelayFixture(t);
   updateTemplate(preStart, RELAY_UNIT, (text) => text.replace("ExecStart=/usr/bin/false", "ExecStartPre=/usr/bin/true\nExecStart=/usr/bin/false"));
-  assert.throws(() => renderFixture(preStart), /stopped-only/);
+  assert.throws(() => renderFixture(preStart), /exact blocked unit or exact resolved unit/);
 
   const journal = makeDirectoryRelayFixture(t);
   updateTemplate(journal, RELAY_UNIT, (text) => text.replace("StandardOutput=null", "StandardOutput=journal"));
   assert.throws(() => renderFixture(journal), /StandardOutput=null/);
+
+  const visibleProc = makeDirectoryRelayFixture(t);
+  updateTemplate(visibleProc, RELAY_UNIT, (text) =>
+    text.replace("ProtectProc=invisible", "ProtectProc=default"));
+  assert.throws(() => renderFixture(visibleProc), /ProtectProc=invisible/);
+
+  const fullProc = makeDirectoryRelayFixture(t);
+  updateTemplate(fullProc, RELAY_UNIT, (text) =>
+    text.replace("ProcSubset=pid", "ProcSubset=all"));
+  assert.throws(() => renderFixture(fullProc), /ProcSubset=pid/);
 
   const payload = makeDirectoryRelayFixture(t);
   payload.plan.payload_artifacts.push(addPayload(
@@ -1725,14 +1947,70 @@ test("directory relay profile rejects activation, pre-start commands, weak harde
     0,
     { class: "config", gid: 751, mode: "0440", uid: 0 },
   ));
-  assert.throws(() => renderFixture(payload), /not reachable from the closed deployment profile/);
+  assert.throws(
+    () => renderFixture(payload),
+    /must not contain payload artifacts|not reachable from the closed deployment profile/,
+  );
+});
+
+test("resolved directory relay binds selection, binary, manifests, config and unit", (t) => {
+  const fixture = makeResolvedDirectoryRelayFixture(t);
+  const model = renderFixture(fixture);
+  const binary = fixture.plan.payload_artifacts.find((artifact) => artifact.class === "binary");
+  assert.deepEqual(
+    model.manifest.artifacts.map((artifact) => artifact.target_path),
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+      "/etc/systemd/system/bitcoinpir-directory-relay.service",
+      binary.target_path,
+    ],
+  );
+  assert.match(model.request.units[0].exec_start[0], new RegExp(`^${binary.target_path}`));
+  assert.deepEqual(model.request.units[0].exec_start_pre, [
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+  ]);
+  assert.deepEqual(model.request.units[0].hardening.ProtectProc, ["invisible"]);
+  assert.deepEqual(model.request.units[0].hardening.ProcSubset, ["pid"]);
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+});
+
+test("resolved directory relay rejects selection and hash-manifest drift", (t) => {
+  const selectionDrift = makeResolvedDirectoryRelayFixture(t);
+  selectionDrift.plan.relay_selection_sha256 = "f".repeat(64);
+  assert.throws(() => renderFixture(selectionDrift), /selection source hash/);
+
+  const binaryManifest = makeResolvedDirectoryRelayFixture(t);
+  const manifest = binaryManifest.plan.payload_artifacts.find((artifact) =>
+    artifact.target_path.endsWith("/binary.sha256"));
+  writeFileSync(
+    join(binaryManifest.inputRoot, manifest.source_path),
+    `${"a".repeat(64)}  /opt/bitcoinpir/directory-relay/${"a".repeat(64)}/bitcoinpir-directory-relay\n`,
+  );
+  manifest.expected_sha256 = hashFile(join(binaryManifest.inputRoot, manifest.source_path));
+  assert.throws(
+    () => renderFixture(binaryManifest),
+    /does not bind exactly|wrong digest|references missing artifact/,
+  );
+
+  const privateKey = makeResolvedDirectoryRelayFixture(t);
+  privateKey.plan.payload_artifacts.push(addPayload(
+    privateKey,
+    "/etc/bitcoinpir/payment-v1/directory-relay/publisher-private.key",
+    "forbidden\n",
+    9,
+    { class: "secret", gid: 52952, mode: "0400", uid: 52951 },
+  ));
+  assert.throws(() => renderFixture(privateKey), /payload targets/);
 });
 
 test("directory relay config is bound to the real loader's exact owner-only metadata", (t) => {
   for (const [mutate, expected] of [
-    [(artifact) => { artifact.uid = 0; }, /0400 for one owner|relay-owned UID 62951/u],
-    [(artifact) => { artifact.gid = 0; }, /relay-owned UID 62951 GID 62952 mode 0400/u],
-    [(artifact) => { artifact.mode = "0440"; }, /mode must be one of \["0400"\]|relay-owned UID 62951 GID 62952 mode 0400/u],
+    [(artifact) => { artifact.uid = 0; }, /0400 for one owner|relay-owned UID 52951/u],
+    [(artifact) => { artifact.gid = 0; }, /relay-owned UID 52951 GID 52952 mode 0400/u],
+    [(artifact) => { artifact.mode = "0440"; }, /mode must be one of \["0400"\]|relay-owned UID 52951 GID 52952 mode 0400/u],
   ]) {
     const fixture = makeDirectoryRelayFixture(t);
     mutate(fixture.plan.rendered_artifacts[0]);
@@ -1745,7 +2023,16 @@ test("directory relay profile cannot use the generic live runtime evidence gate"
   const model = renderFixture(fixture);
   assert.throws(
     () => validateRuntimeEvidence({ model, evidence: {} }),
-    /stopped-only/,
+    /unresolved directory-relay-v1/,
+  );
+});
+
+test("resolved directory relay reaches the generic live runtime evidence schema", (t) => {
+  const fixture = makeResolvedDirectoryRelayFixture(t);
+  const model = renderFixture(fixture);
+  assert.throws(
+    () => validateRuntimeEvidence({ model, evidence: {} }),
+    /runtime evidence keys must equal/,
   );
 });
 

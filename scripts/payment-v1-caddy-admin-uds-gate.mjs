@@ -47,6 +47,11 @@ const CONFIG_EDIT_MODES = new Set([
   "prepend-new-global-options",
 ]);
 const REJECTED_RUNTIME_LOG_HANDLERS = new Set(["log_append", "log_name"]);
+const SERVICE_IDENTITY_MIN = 1;
+const SERVICE_IDENTITY_MAX = 60_000;
+const SYSTEMD_DYNAMIC_ID_MIN = 61_184;
+const SYSTEMD_DYNAMIC_ID_MAX = 65_519;
+const NOBODY_ID = 65_534;
 
 function fail(message) {
   throw new Error(message);
@@ -282,6 +287,20 @@ export function normalizeSystemdInvocationId(
 function validateUid(value, label, { nonRoot = false } = {}) {
   if (!Number.isSafeInteger(value) || value < (nonRoot ? 1 : 0) || value > 4_294_967_294) {
     fail(`${label} is outside the reviewed UID range`);
+  }
+}
+
+function validateServiceIdentityId(value, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < SERVICE_IDENTITY_MIN ||
+    value > SERVICE_IDENTITY_MAX
+  ) {
+    fail(
+      `${label} must be a static service uid/gid in ` +
+      `[${SERVICE_IDENTITY_MIN}, ${SERVICE_IDENTITY_MAX}], outside systemd DynamicUser ` +
+      `[${SYSTEMD_DYNAMIC_ID_MIN}, ${SYSTEMD_DYNAMIC_ID_MAX}] and nobody ${NOBODY_ID}`,
+    );
   }
 }
 
@@ -1060,7 +1079,7 @@ function validateServiceUidInventory(value) {
   for (const [index, entry] of value.entries()) {
     exactKeys(entry, ["name", "uid"], `service_uid_inventory[${index}]`);
     validateSlug(entry.name, `service_uid_inventory[${index}].name`);
-    validateUid(entry.uid, `service_uid_inventory[${index}].uid`, { nonRoot: true });
+    validateServiceIdentityId(entry.uid, `service_uid_inventory[${index}].uid`);
     const key = `${entry.name}:${String(entry.uid).padStart(10, "0")}`;
     if (key <= previous) fail("service_uid_inventory must use canonical name/UID order");
     previous = key;

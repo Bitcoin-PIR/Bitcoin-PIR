@@ -205,7 +205,7 @@
     "haproxy_config": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
-      "gid": 62902,
+      "gid": 52902,
       "inode": "INVALID_REPLACE_WITH_INODE",
       "mode": "0440",
       "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
@@ -219,38 +219,38 @@
     "runtime_paths": [
       {
         "file_type": "directory",
-        "gid": 62902,
+        "gid": 52902,
         "mode": "0750",
         "path": "/run/bitcoinpir-source-fair-edge",
-        "uid": 62902
+        "uid": 52902
       },
       {
         "file_type": "socket",
-        "gid": 62902,
+        "gid": 52902,
         "mode": "0660",
         "path": "/run/bitcoinpir-source-fair-edge/directory-public.sock",
-        "uid": 62902
+        "uid": 52902
       },
       {
         "file_type": "socket",
-        "gid": 62902,
+        "gid": 52902,
         "mode": "0660",
         "path": "/run/bitcoinpir-source-fair-edge/directory-publisher.sock",
-        "uid": 62902
+        "uid": 52902
       },
       {
         "file_type": "socket",
-        "gid": 62902,
+        "gid": 52902,
         "mode": "0660",
         "path": "/run/bitcoinpir-source-fair-edge/issuer.sock",
-        "uid": 62902
+        "uid": 52902
       },
       {
         "file_type": "socket",
-        "gid": 62902,
+        "gid": 52902,
         "mode": "0660",
         "path": "/run/bitcoinpir-source-fair-edge/provider.sock",
-        "uid": 62902
+        "uid": 52902
       }
     ],
     "unit_fragment": {

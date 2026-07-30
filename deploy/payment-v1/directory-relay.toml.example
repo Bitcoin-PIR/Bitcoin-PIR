@@ -7,7 +7,7 @@ profile = "bitcoinpir-directory-relay-v1"
 public_listen = "127.0.0.1:8080"
 publisher_listen = "127.0.0.1:8081"
 database = "/var/lib/bitcoinpir-directory-relay/relay.sqlite3"
-directory_pubkey_hex = "@DIRECTORY_PUBLISHER_PUBKEY_HEX@"
+directory_pubkey_hex = "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c"
 
 # These are relay abuse/capacity limits, not commercial policy. The cumulative
 # connection budget intentionally does not permit count and event-size maxima

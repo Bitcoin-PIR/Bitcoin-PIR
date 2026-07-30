@@ -83,6 +83,26 @@ function resolvedRelaySelection(text, overrides = {}) {
   return output;
 }
 
+function unresolvedRelaySelection(text) {
+  let output = replaceRelayField(text, "status", "UNRESOLVED");
+  for (const field of [
+    "directory_mode",
+    "implementation",
+    "source_repository",
+    "source_commit",
+    "source_archive_sha256",
+    "cargo_lock_sha256",
+    "build_manifest_sha256",
+    "binary_sha256",
+    "binary_version_output",
+    "config_sha256",
+    "publisher_pubkey_hex",
+  ]) {
+    output = replaceRelayField(output, field, "UNRESOLVED");
+  }
+  return output;
+}
+
 test("repository deployment preparation passes its fail-closed gate", () => {
   assert.equal(validateDeploymentTree(REPOSITORY), true);
 });
@@ -422,6 +442,7 @@ test("production templates reject ARC, fake, local and proxied Free-IP flags", (
       /--clearing-provider-request-verifying-key/,
     );
   });
+
 });
 
 test("issuer and authority origins must remain loopback", () => {
@@ -591,6 +612,20 @@ test("systemd hardening values and relay environment are exact", () => {
       /Service\.Environment must equal/,
     );
   });
+
+  for (const [before, after, expected] of [
+    ["ProtectProc=invisible", "ProtectProc=default", /Service\.ProtectProc must equal/u],
+    ["ProcSubset=pid", "ProcSubset=all", /Service\.ProcSubset must equal/u],
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+        (text) => text.replace(before, after),
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
 });
 
 test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
@@ -1037,11 +1072,19 @@ test("reviewed edge and Lightning source bytes are frozen", () => {
   }
 });
 
-test("relay selection defaults to unresolved and rejects unsafe implementations", () => {
-  const unresolved = readFileSync(
+test("relay selection is explicitly resolved and rejects unsafe implementations", () => {
+  const checkedIn = readFileSync(
     join(REPOSITORY, "deploy/payment-v1/relay-selection.toml.example"),
     "utf8",
   );
+  const resolved = validateRelaySelection(checkedIn);
+  assert.equal(resolved.status, "RESOLVED");
+  assert.equal(resolved.directoryMode, "centralized-single-relay");
+  assert.equal(
+    resolved.sourceCommit,
+    "d60d5b5f0949d64a6e8350d80b8ed385d5dbb26d",
+  );
+  const unresolved = unresolvedRelaySelection(checkedIn);
   assert.deepEqual(validateRelaySelection(unresolved), { status: "UNRESOLVED" });
 
   assert.throws(
@@ -1100,10 +1143,11 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
 });
 
 test("a future directory-only exact-hash relay selection is accepted", () => {
-  const unresolved = readFileSync(
+  const checkedIn = readFileSync(
     join(REPOSITORY, "deploy/payment-v1/relay-selection.toml.example"),
     "utf8",
   );
+  const unresolved = unresolvedRelaySelection(checkedIn);
   assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
     status: "RESOLVED",
     directoryMode: "strict-multi-relay",
@@ -1117,60 +1161,17 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
     publisherPubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   });
 
-  withFixture((root) => {
-    mutate(
-      root,
-      "deploy/payment-v1/relay-selection.toml.example",
-      (text) => resolvedRelaySelection(text),
-    );
-    mutate(
-      root,
-      "deploy/payment-v1/directory-relay.toml.example",
-      (text) =>
-        text.replace(
-          "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        ),
-    );
-    mutate(
-      root,
-      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
-      (text) =>
-        text
-          .replace(
-            "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`,
-          )
-          .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
-    );
-    assert.equal(validateDeploymentTree(root), true);
-  });
+  withFixture((root) => assert.equal(validateDeploymentTree(root), true));
 
   withFixture((root) => {
     mutate(
       root,
-      "deploy/payment-v1/relay-selection.toml.example",
-      (text) => resolvedRelaySelection(text),
-    );
-    mutate(
-      root,
-      "deploy/payment-v1/directory-relay.toml.example",
-      (text) =>
-        text.replace(
-          "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        ),
-    );
-    mutate(
-      root,
       "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
       (text) =>
-        text
-          .replace(
-            "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml --listen 0.0.0.0:8080`,
-          )
-          .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
+        text.replace(
+          " --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+          " --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml --listen 0.0.0.0:8080",
+        ),
     );
     assert.throws(() => validateDeploymentTree(root), /only the pinned binary and one absolute --config path/);
   });
