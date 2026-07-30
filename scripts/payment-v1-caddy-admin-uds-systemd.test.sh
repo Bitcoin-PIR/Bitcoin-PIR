@@ -94,7 +94,7 @@ run_root systemctl daemon-reload
 
 wait_live() {
   attempt=0
-  while ! systemctl is-active --quiet "$unit_name" || ! test -S "$admin_socket"; do
+  while ! systemctl is-active --quiet "$unit_name" || ! run_root test -S "$admin_socket"; do
     attempt=$((attempt + 1))
     if test "$attempt" -ge 100; then
       run_root systemctl status "$unit_name" --no-pager >&2 || true
