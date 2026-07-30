@@ -239,7 +239,10 @@ This source-template gate is not proof of installed bytes. Use
 `scripts/payment-v1-rendered-artifact-gate.mjs` to render one closed deployment
 profile from an externally digest-approved plan, recompute every referenced
 artifact/hash manifest, and reject placeholders, extra files, symlinks and
-cross-profile dependencies. For the issuer Lightning profile it additionally
+cross-profile dependencies. Render-plan and manifest schema v2 bind the exact
+first line `systemd 255 (255.4-1ubuntu8.15)`; the derived schema-v8 runtime
+request and collected host must match it, with no acceptance of an abbreviated
+or otherwise different build. For the issuer Lightning profile it additionally
 pins `preflight.toml` to root:`PREFLIGHT_GID` mode `0440`, binds its CLI reader
 UID/GID to the preflight service identity, and rejects any rendered/static
 backup-receipt payload or manifest; that receipt lives only as service-owned
@@ -256,9 +259,13 @@ check or a stale lease file cannot keep either downstream service active.
 Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,
-capabilities, boot and host identity to that manifest. The Hetzner edge request
-also binds the live runtime directory and all four socket types, owners, groups,
-and modes. Edge live evidence additionally requires hard/soft core limits of
+capabilities, boot and host identity to that manifest. Standalone typed D-Bus
+`t` properties are emitted as canonical decimal strings parsed losslessly from
+raw busctl JSON. Watchdog text/typed pairs are lifecycle-specific: inactive
+never-run is `infinity`/uint64-max, ordinary live is `0`/`0`, and live
+preflight is `1min 30s`/`90000000` with a fresh timestamp. The Hetzner edge
+request also binds the live runtime directory and all four socket types,
+owners, groups, and modes. Edge live evidence additionally requires hard/soft core limits of
 zero, zero current/max cgroup swap, and the host-wide
 `kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
 that exact root-owned, canonical, one-link, non-writable handler.
@@ -416,7 +423,7 @@ stable passes over every manifest-bound installed file and effective unit
 property, strict typed `a(sbbsi)` systemd Conditions proving that
 `RELAY-SELECTION-RESOLVED` is absent, successful `systemd-analyze verify`, no
 runtime socket request, and no protected service-account credential holder.
-The v2 stopped-relay evidence also descriptor-binds the config's complete
+The v4 stopped-relay evidence also descriptor-binds the config's complete
 parent chain, proves the exact consumer EUID can read it, requires its final
 parent to be consumer-owned mode `0700`, and performs a final private-input
 seal before the last Conditions/generation pass. This stopped evidence is not

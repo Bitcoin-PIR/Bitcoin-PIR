@@ -32,6 +32,8 @@ import {
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+  REVIEWED_SYSTEMD_MANAGER_VERSION,
+  REVIEWED_SYSTEMD_VERSION,
   canonicalJson,
   isResolvedDirectoryRelayRuntimeRequest,
   parseStrictJson,
@@ -39,17 +41,17 @@ import {
   validateServiceIdentityId,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v7";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v8";
 export const STOPPED_EDGE_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-edge-v4";
+  "bitcoinpir-payment-v1-linux-root-stopped-edge-v5";
 export const STOPPED_RELAY_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v3";
+  "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v4";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE =
   "local-files-authoritative-reviewed-systemd-fallback-v2";
-const LIVE_SCHEMA_VERSION = 7;
-const STOPPED_EDGE_SCHEMA_VERSION = 4;
-const STOPPED_RELAY_SCHEMA_VERSION = 3;
+const LIVE_SCHEMA_VERSION = 8;
+const STOPPED_EDGE_SCHEMA_VERSION = 5;
+const STOPPED_RELAY_SCHEMA_VERSION = 4;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
@@ -68,6 +70,8 @@ const MAX_PROC_PROCESSES = 65_536;
 const MAX_PROC_THREADS = 262_144;
 const MAX_PROC_CREDENTIAL_SCAN_MILLISECONDS = 30_000;
 const MAX_PROC_CLOSURE_EVIDENCE_BYTES = 4 * 1024 * 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
+const UINT64_MAX_DECIMAL = UINT64_MAX.toString(10);
 const PROC_SUPER_MAGIC = 0x9fa0;
 export const PROTECTED_PROCESS_ENUMERATION_KIND =
   "procfs-v3-all-thread-protected-credentials-dangerous-capabilities-two-pass-v3";
@@ -2355,6 +2359,7 @@ const EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES = Object.freeze({
 
 function effectiveBusctlServicePropertyNames() {
   const local = [
+    "ExecStartEx",
     "ExecStartPreEx",
     ...Object.keys(EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES),
     "TimeoutStopUSec",
@@ -2368,7 +2373,7 @@ function effectiveBusctlServicePropertyNames() {
 }
 
 function effectiveBusctlManagerPropertyNames() {
-  const local = ["ServiceWatchdogs"];
+  const local = ["ServiceWatchdogs", "Version"];
   if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_MANAGER_PROPERTIES)) {
     fail("collector and rendered runtime busctl manager property schemas diverged");
   }
@@ -2376,6 +2381,9 @@ function effectiveBusctlManagerPropertyNames() {
 }
 
 function validateRuntimePropertyRequestSchema(request, label) {
+  if (request.systemd_version !== REVIEWED_SYSTEMD_VERSION) {
+    fail(`${label} systemd_version is not the exact reviewed build`);
+  }
   if (
     !Array.isArray(request.systemctl_show_properties) ||
     canonicalJson(request.systemctl_show_properties) !==
@@ -2617,16 +2625,39 @@ export function parseBusctlUnsignedJsonV1(text, label = "systemd unsigned proper
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
     fail(`${label} is not bounded busctl JSON`);
   }
-  const parsed = parseStrictJson(text, label);
-  exactKeys(parsed, ["data", "type"], label);
-  if (
-    parsed.type !== "t" ||
-    !Number.isSafeInteger(parsed.data) ||
-    parsed.data < 0
-  ) {
-    fail(`${label} does not have one reviewed finite t value`);
+  // Parse the raw integer token before JSON.parse can round UINT64_MAX.
+  // The two alternatives are the only accepted exact-key object orderings.
+  const patterns = [
+    /^[\t\n\r ]*\{[\t\n\r ]*"type"[\t\n\r ]*:[\t\n\r ]*"t"[\t\n\r ]*,[\t\n\r ]*"data"[\t\n\r ]*:[\t\n\r ]*(0|[1-9][0-9]*)[\t\n\r ]*\}[\t\n\r ]*$/u,
+    /^[\t\n\r ]*\{[\t\n\r ]*"data"[\t\n\r ]*:[\t\n\r ]*(0|[1-9][0-9]*)[\t\n\r ]*,[\t\n\r ]*"type"[\t\n\r ]*:[\t\n\r ]*"t"[\t\n\r ]*\}[\t\n\r ]*$/u,
+  ];
+  let decimal;
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match !== null) {
+      decimal = match[1];
+      break;
+    }
   }
-  return parsed.data;
+  if (decimal === undefined) {
+    fail(`${label} does not have one strict raw-number t object`);
+  }
+  validateCanonicalUint64DecimalV1(decimal, label);
+  return decimal;
+}
+
+function validateCanonicalUint64DecimalV1(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9][0-9]{0,19})$/u.test(value)
+  ) {
+    fail(`${label} is not a canonical uint64 decimal string`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > UINT64_MAX) {
+    fail(`${label} is outside the uint64 range`);
+  }
+  return parsed;
 }
 
 export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property") {
@@ -2641,9 +2672,25 @@ export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property
   return { signature: "b", value: parsed.data };
 }
 
-export function parseBusctlExecStartPreExJsonV1(
+export function parseBusctlStringJsonV1(text, label = "systemd string property") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (
+    parsed.type !== "s" ||
+    typeof parsed.data !== "string" ||
+    !/^[\x20-\x7e]{1,256}$/u.test(parsed.data)
+  ) {
+    fail(`${label} does not have one reviewed printable s value`);
+  }
+  return { signature: "s", value: parsed.data };
+}
+
+export function parseBusctlExecCommandExJsonV1(
   text,
-  label = "systemd ExecStartPreEx",
+  label = "systemd ExecCommandEx",
 ) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 256 * 1024) {
     fail(`${label} is not bounded busctl JSON`);
@@ -2667,7 +2714,7 @@ export function parseBusctlExecStartPreExJsonV1(
       resolve(tuple[0]) !== tuple[0] ||
       !Array.isArray(tuple[1]) ||
       tuple[1].length < 1 ||
-      tuple[1].length > 64 ||
+      tuple[1].length > 256 ||
       tuple[1][0] !== tuple[0] ||
       tuple[1].some((argument) =>
         typeof argument !== "string" ||
@@ -2688,6 +2735,13 @@ export function parseBusctlExecStartPreExJsonV1(
       path: tuple[0],
     };
   });
+}
+
+export function parseBusctlExecStartPreExJsonV1(
+  text,
+  label = "systemd ExecStartPreEx",
+) {
+  return parseBusctlExecCommandExJsonV1(text, label);
 }
 
 function collectBusctlPropertyV1(unitName, interfaceName, property, parser) {
@@ -2747,11 +2801,17 @@ function collectEffectiveServicePropertiesV1(unitName) {
     fail("runtime busctl service property set is not closed");
   }
   return {
+    ExecStartEx: collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Service",
+      "ExecStartEx",
+      parseBusctlExecCommandExJsonV1,
+    ),
     ExecStartPreEx: collectBusctlPropertyV1(
       unitName,
       "org.freedesktop.systemd1.Service",
       "ExecStartPreEx",
-      parseBusctlExecStartPreExJsonV1,
+      parseBusctlExecCommandExJsonV1,
     ),
     TimeoutStopUSec: collectBusctlPropertyV1(
       unitName,
@@ -2803,26 +2863,27 @@ function collectEffectiveCredentialProperties(unitName) {
 
 function collectSystemdManagerPropertiesV1() {
   const properties = effectiveBusctlManagerPropertyNames();
-  if (canonicalJson(properties) !== canonicalJson(["ServiceWatchdogs"])) {
+  if (canonicalJson(properties) !== canonicalJson(["ServiceWatchdogs", "Version"])) {
     fail("runtime busctl manager property set is not closed");
   }
-  const record = runAbsolute("/usr/bin/busctl", [
-    "--system",
-    "--json=short",
-    "get-property",
-    "org.freedesktop.systemd1",
-    "/org/freedesktop/systemd1",
-    "org.freedesktop.systemd1.Manager",
-    "ServiceWatchdogs",
-  ]);
-  if (record.exit_status !== 0 || record.stderr !== "") {
-    fail("busctl ServiceWatchdogs failed for systemd manager");
-  }
+  const collect = (property, parse) => {
+    const record = runAbsolute("/usr/bin/busctl", [
+      "--system",
+      "--json=short",
+      "get-property",
+      "org.freedesktop.systemd1",
+      "/org/freedesktop/systemd1",
+      "org.freedesktop.systemd1.Manager",
+      property,
+    ]);
+    if (record.exit_status !== 0 || record.stderr !== "") {
+      fail(`busctl ${property} failed for systemd manager`);
+    }
+    return parse(record.stdout, `systemd-manager.${property}`);
+  };
   return {
-    ServiceWatchdogs: parseBusctlBooleanJsonV1(
-      record.stdout,
-      "systemd-manager.ServiceWatchdogs",
-    ),
+    ServiceWatchdogs: collect("ServiceWatchdogs", parseBusctlBooleanJsonV1),
+    Version: collect("Version", parseBusctlStringJsonV1),
   };
 }
 
@@ -2875,22 +2936,88 @@ function expectedTimeoutStopUsecV1(unit) {
   ) {
     fail(`rendered TimeoutStopSec is not one positive integer: ${unit.unit_name}`);
   }
-  const seconds = Number(values[0]);
-  const usec = seconds * 1_000_000;
-  if (!Number.isSafeInteger(usec)) {
+  const usec = BigInt(values[0]) * 1_000_000n;
+  if (usec > UINT64_MAX) {
     fail(`rendered TimeoutStopSec is outside the reviewed range: ${unit.unit_name}`);
   }
-  return usec;
+  return usec.toString(10);
 }
 
-function validateEffectiveServicePropertiesV1(
-  unit,
-  properties,
-  uptimeMilliseconds,
-) {
+function validateReviewedTypedExecPolicyV2(unit) {
+  const privilegedApprovalByUnit = new Map([
+    [
+      "bitcoinpir-cln-rpc-guard.service",
+      {
+        argv: [
+          "/usr/bin/unlink",
+          "--",
+          "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
+        ],
+        flags: ["privileged"],
+        path: "/usr/bin/unlink",
+      },
+    ],
+    [
+      "bitcoinpir-lightning-preflight.service",
+      {
+        argv: [
+          "/usr/bin/unlink",
+          "--",
+          "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
+        ],
+        flags: ["privileged"],
+        path: "/usr/bin/unlink",
+      },
+    ],
+  ]);
+  for (const [typedKey, textKey] of [
+    ["exec_start_ex", "exec_start"],
+    ["exec_start_pre_ex", "exec_start_pre"],
+  ]) {
+    const typed = unit[typedKey];
+    const text = unit[textKey];
+    if (!Array.isArray(typed) || !Array.isArray(text) || typed.length !== text.length) {
+      fail(`${unit.unit_name}.${typedKey} does not exactly cover ${textKey}`);
+    }
+    for (const [index, command] of typed.entries()) {
+      exactKeys(command, ["argv", "flags", "path"], `${unit.unit_name}.${typedKey}[${index}]`);
+      validateAbsolutePath(command.path, `${unit.unit_name}.${typedKey}[${index}].path`);
+      if (
+        !Array.isArray(command.argv) ||
+        command.argv.length < 1 ||
+        command.argv.length > 256 ||
+        command.argv[0] !== command.path ||
+        command.argv.some((argument) =>
+          typeof argument !== "string" ||
+          argument.length < 1 ||
+          argument.length > 4096 ||
+          /[\s\0\r\n]/u.test(argument)) ||
+        !Array.isArray(command.flags) ||
+        canonicalJson(command.argv.join(" ")) !== canonicalJson(text[index])
+      ) {
+        fail(`${unit.unit_name}.${typedKey}[${index}] is not a canonical approved command`);
+      }
+      const approvedPrivileged =
+        typedKey === "exec_start_pre_ex" && index === 0
+          ? privilegedApprovalByUnit.get(unit.unit_name)
+          : undefined;
+      if (
+        canonicalJson(command.flags) !==
+          canonicalJson(approvedPrivileged?.flags ?? []) ||
+        (approvedPrivileged !== undefined &&
+          canonicalJson(command) !== canonicalJson(approvedPrivileged))
+      ) {
+        fail(`${unit.unit_name}.${typedKey}[${index}] has unapproved exec flags`);
+      }
+    }
+  }
+}
+
+function validateEffectiveServiceStaticPropertiesV2(unit, properties) {
   exactKeys(
     properties,
     [
+      "ExecStartEx",
       "ExecStartPreEx",
       "TimeoutStopUSec",
       "WatchdogTimestampMonotonic",
@@ -2898,49 +3025,104 @@ function validateEffectiveServicePropertiesV1(
     ],
     `${unit.unit_name}.service_properties`,
   );
+  validateReviewedTypedExecPolicyV2(unit);
+  if (canonicalJson(properties.ExecStartEx) !== canonicalJson(unit.exec_start_ex)) {
+    fail(`effective ExecStartEx drift: ${unit.unit_name}`);
+  }
   if (canonicalJson(properties.ExecStartPreEx) !== canonicalJson(unit.exec_start_pre_ex)) {
     fail(`effective ExecStartPreEx drift: ${unit.unit_name}`);
   }
-  if (
-    !Number.isSafeInteger(properties.TimeoutStopUSec) ||
-    properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)
-  ) {
+  validateCanonicalUint64DecimalV1(
+    properties.TimeoutStopUSec,
+    `${unit.unit_name}.TimeoutStopUSec`,
+  );
+  validateCanonicalUint64DecimalV1(
+    properties.WatchdogTimestampMonotonic,
+    `${unit.unit_name}.WatchdogTimestampMonotonic`,
+  );
+  validateCanonicalUint64DecimalV1(
+    properties.WatchdogUSec,
+    `${unit.unit_name}.WatchdogUSec`,
+  );
+  if (properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)) {
     fail(`effective TimeoutStopUSec drift: ${unit.unit_name}`);
   }
+}
+
+function validateEffectiveServicePropertiesV1(
+  unit,
+  properties,
+  uptimeMilliseconds,
+) {
+  validateEffectiveServiceStaticPropertiesV2(unit, properties);
   const preflight = unit.unit_name === "bitcoinpir-lightning-preflight.service";
+  const expectedWatchdogUsec = preflight ? "90000000" : "0";
+  if (properties.WatchdogUSec !== expectedWatchdogUsec) {
+    fail(`effective typed watchdog interval drift: ${unit.unit_name}`);
+  }
   if (!preflight) {
-    if (properties.WatchdogUSec !== 0 || properties.WatchdogTimestampMonotonic !== 0) {
+    if (properties.WatchdogTimestampMonotonic !== "0") {
       fail(`effective typed watchdog is unreviewed: ${unit.unit_name}`);
     }
     return;
   }
-  if (properties.WatchdogUSec !== 90_000_000) {
-    fail(`effective typed watchdog interval drift: ${unit.unit_name}`);
-  }
   if (!Number.isSafeInteger(uptimeMilliseconds) || uptimeMilliseconds < 0) {
     fail(`watchdog freshness uptime is invalid: ${unit.unit_name}`);
   }
-  const uptimeUsec = uptimeMilliseconds * 1000;
-  const timestamp = properties.WatchdogTimestampMonotonic;
+  const uptimeUsec = BigInt(uptimeMilliseconds) * 1000n;
+  const timestamp = validateCanonicalUint64DecimalV1(
+    properties.WatchdogTimestampMonotonic,
+    `${unit.unit_name}.WatchdogTimestampMonotonic`,
+  );
+  const watchdogUsec = validateCanonicalUint64DecimalV1(
+    properties.WatchdogUSec,
+    `${unit.unit_name}.WatchdogUSec`,
+  );
   if (
-    !Number.isSafeInteger(uptimeUsec) ||
-    !Number.isSafeInteger(timestamp) ||
-    timestamp <= 0 ||
+    timestamp === 0n ||
     timestamp > uptimeUsec ||
-    uptimeUsec - timestamp >= 90_000_000
+    uptimeUsec - timestamp >= watchdogUsec
   ) {
     fail(`effective watchdog timestamp is not fresh in this boot: ${unit.unit_name}`);
   }
 }
 
+function validateStoppedEffectiveServicePropertiesV2(unit, properties) {
+  validateEffectiveServiceStaticPropertiesV2(unit, properties);
+  if (properties.WatchdogUSec !== UINT64_MAX_DECIMAL) {
+    fail(`stopped typed watchdog interval is not infinity: ${unit.unit_name}`);
+  }
+  if (properties.WatchdogTimestampMonotonic !== "0") {
+    fail(`stopped typed watchdog timestamp is not zero: ${unit.unit_name}`);
+  }
+}
+
 function validateSystemdManagerPropertiesV1(properties, label) {
-  exactKeys(properties, ["ServiceWatchdogs"], label);
+  exactKeys(properties, ["ServiceWatchdogs", "Version"], label);
   exactKeys(properties.ServiceWatchdogs, ["signature", "value"], `${label}.ServiceWatchdogs`);
   if (
     properties.ServiceWatchdogs.signature !== "b" ||
     properties.ServiceWatchdogs.value !== true
   ) {
     fail(`${label}.ServiceWatchdogs must be typed b true`);
+  }
+  exactKeys(properties.Version, ["signature", "value"], `${label}.Version`);
+  if (
+    properties.Version.signature !== "s" ||
+    properties.Version.value !== REVIEWED_SYSTEMD_MANAGER_VERSION
+  ) {
+    fail(
+      `${label}.Version must be typed s ${REVIEWED_SYSTEMD_MANAGER_VERSION}`,
+    );
+  }
+}
+
+function validateSystemdManagerPassesV1(passes, label) {
+  if (!Array.isArray(passes) || passes.length !== 2) {
+    fail(`${label} property passes are incomplete`);
+  }
+  for (const [index, properties] of passes.entries()) {
+    validateSystemdManagerPropertiesV1(properties, `${label} pass[${index}]`);
   }
 }
 
@@ -2955,18 +3137,24 @@ export function assertEffectiveSystemdPolicySnapshotUnchangedV1(
   const actualTimestamp = actualServiceProperties?.WatchdogTimestampMonotonic;
   const expectedStatic = expectedServiceProperties === undefined ? undefined : {
     ...expectedServiceProperties,
-    WatchdogTimestampMonotonic: 0,
+    WatchdogTimestampMonotonic: "0",
   };
   const actualStatic = actualServiceProperties === undefined ? undefined : {
     ...actualServiceProperties,
-    WatchdogTimestampMonotonic: 0,
+    WatchdogTimestampMonotonic: "0",
   };
+  const expectedTimestampValue = validateCanonicalUint64DecimalV1(
+    expectedTimestamp,
+    `${unitName}.expected WatchdogTimestampMonotonic`,
+  );
+  const actualTimestampValue = validateCanonicalUint64DecimalV1(
+    actualTimestamp,
+    `${unitName}.actual WatchdogTimestampMonotonic`,
+  );
   if (
     canonicalJson(actualDependencies) !== canonicalJson(expectedDependencies) ||
     canonicalJson(actualStatic) !== canonicalJson(expectedStatic) ||
-    !Number.isSafeInteger(expectedTimestamp) ||
-    !Number.isSafeInteger(actualTimestamp) ||
-    actualTimestamp < expectedTimestamp
+    actualTimestampValue < expectedTimestampValue
   ) {
     fail(`systemd dependency or service policy changed during live collection: ${unitName}`);
   }
@@ -2981,6 +3169,7 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
   if (conditions.length !== expected.length) {
     fail(`stopped effective condition count drift: ${unit.unit_name}`);
   }
+  let absentGlobalActivationSentinelObserved = false;
   let absentSelectionActivationSentinelObserved = false;
   for (let index = 0; index < expected.length; index += 1) {
     const actual = conditions[index];
@@ -3004,6 +3193,15 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
     }
     if (
       actual.parameter ===
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED"
+    ) {
+      if (actual.negate || actual.path_exists || !new Set([-1, 0]).has(actual.result)) {
+        fail(`stopped global activation sentinel is present: ${unit.unit_name}`);
+      }
+      absentGlobalActivationSentinelObserved = true;
+    }
+    if (
+      actual.parameter ===
       "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED"
     ) {
       if (actual.negate || actual.path_exists || !new Set([-1, 0]).has(actual.result)) {
@@ -3012,8 +3210,13 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
       absentSelectionActivationSentinelObserved = true;
     }
   }
-  if (!absentSelectionActivationSentinelObserved || properties.ConditionResult !== "no") {
-    fail(`stopped effective conditions do not prove an inactive relay: ${unit.unit_name}`);
+  if (
+    !absentGlobalActivationSentinelObserved ||
+    (unit.unit_name === "bitcoinpir-directory-relay.service" &&
+      !absentSelectionActivationSentinelObserved) ||
+    properties.ConditionResult !== "no"
+  ) {
+    fail(`stopped effective conditions do not prove an inactive unit: ${unit.unit_name}`);
   }
 }
 
@@ -3045,14 +3248,190 @@ function expectedWords(values) {
   return values.flatMap((value) => value.split(/\s+/u)).sort();
 }
 
-function extractExecArgv(value, label) {
-  if (value === "") return [];
-  const result = [];
-  for (const match of value.matchAll(/(?:^|\s*;\s*)\{[^{}]*?argv\[\]=(.+?)\s*;\s*ignore_errors=/gu)) {
-    result.push(match[1].trim());
+function expectedEffectiveWords(key, values) {
+  const words = expectedWords(values);
+  if (key === "IPAddressAllow" && words.includes("localhost")) {
+    return words
+      .filter((word) => word !== "localhost")
+      .concat(["127.0.0.0/8", "::1/128"])
+      .sort();
   }
-  if (result.length === 0) fail(`${label} has an unreviewed systemctl Exec serialization`);
+  if (key === "IPAddressDeny" && words.includes("any")) {
+    return words
+      .filter((word) => word !== "any")
+      .concat(["0.0.0.0/0", "::/0"])
+      .sort();
+  }
+  return words;
+}
+
+export function parseSystemctlExecArgvV1(value, label = "systemd Exec property") {
+  if (value === "") return [];
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value, "utf8") > 256 * 1024 ||
+    /[\r\0]/u.test(value)
+  ) {
+    fail(`${label} has an unreviewed systemctl Exec serialization`);
+  }
+  const expectedFields = [
+    "argv[]",
+    "code",
+    "ignore_errors",
+    "path",
+    "pid",
+    "start_time",
+    "status",
+    "stop_time",
+  ];
+  const result = [];
+  const recordPattern = /\{[^{}\r\n]*\}/gu;
+  let cursor = 0;
+  for (const match of value.matchAll(recordPattern)) {
+    const separator = value.slice(cursor, match.index);
+    if (
+      (cursor === 0 && separator !== "") ||
+      (cursor !== 0 && separator !== "\n")
+    ) {
+      fail(`${label} has an unreviewed systemctl Exec serialization`);
+    }
+    const serializedFields = match[0].slice(1, -1).split(";");
+    const fields = {};
+    for (const rawField of serializedFields) {
+      const field = rawField.trim();
+      const parsed = /^([A-Za-z][A-Za-z0-9_]*(?:\[\])?)=(.*)$/u.exec(field);
+      if (parsed === null || !expectedFields.includes(parsed[1])) {
+        fail(`${label} has an unknown systemctl Exec field`);
+      }
+      if (Object.hasOwn(fields, parsed[1])) {
+        fail(`${label} repeats systemctl Exec field ${parsed[1]}`);
+      }
+      fields[parsed[1]] = parsed[2];
+    }
+    exactKeys(fields, expectedFields, `${label} systemctl Exec record`);
+
+    const path = fields.path;
+    const argv = fields["argv[]"];
+    if (
+      !/^\/[^\s;{}=]{0,4094}$/u.test(path) ||
+      argv === "" ||
+      argv.trim() !== argv ||
+      /[;{}\r\n\0]/u.test(argv)
+    ) {
+      fail(`${label} has malformed systemctl Exec path or argv`);
+    }
+    const argv0 = /^(\S+)(?:\s|$)/u.exec(argv)?.[1];
+    if (argv0 !== path) {
+      fail(`${label} systemctl Exec path does not match argv[0]`);
+    }
+    if (fields.ignore_errors !== "no") {
+      fail(`${label} permits systemctl Exec ignore_errors`);
+    }
+    for (const timeField of ["start_time", "stop_time"]) {
+      if (!/^\[[^\[\]{};\r\n\0]{1,256}\]$/u.test(fields[timeField])) {
+        fail(`${label} has malformed systemctl Exec ${timeField}`);
+      }
+    }
+    if (!/^(?:0|[1-9][0-9]{0,19})$/u.test(fields.pid)) {
+      fail(`${label} has malformed systemctl Exec pid`);
+    }
+    if (!new Set(["(null)", "dumped", "exited", "killed"]).has(fields.code)) {
+      fail(`${label} has malformed systemctl Exec code`);
+    }
+    if (!/^(?:0|[1-9][0-9]{0,9})(?:\/(?:0|[1-9][0-9]{0,9}|[A-Z][A-Z0-9_-]{0,63}))?$/u.test(fields.status)) {
+      fail(`${label} has malformed systemctl Exec status`);
+    }
+    result.push({
+      argv,
+      code: fields.code,
+      ignore_errors: fields.ignore_errors,
+      path,
+      pid: fields.pid,
+      start_time: fields.start_time,
+      status: fields.status,
+      stop_time: fields.stop_time,
+    });
+    cursor = match.index + match[0].length;
+  }
+  if (result.length === 0 || cursor !== value.length) {
+    fail(`${label} has an unreviewed systemctl Exec serialization`);
+  }
   return result;
+}
+
+function reviewedExecPolicy(commands, label) {
+  if (!Array.isArray(commands)) fail(`${label} is not an argv list`);
+  return commands.map((argv, index) => {
+    if (
+      typeof argv !== "string" ||
+      argv === "" ||
+      argv.trim() !== argv ||
+      /[;{}\r\n\0]/u.test(argv)
+    ) {
+      fail(`${label}[${index}] is not a reviewed literal argv`);
+    }
+    const path = /^(\S+)(?:\s|$)/u.exec(argv)?.[1];
+    if (!/^\/[^\s;{}=]{0,4094}$/u.test(path ?? "")) {
+      fail(`${label}[${index}] has an unreviewed executable path`);
+    }
+    return { argv, ignore_errors: "no", path };
+  });
+}
+
+function effectiveExecPolicy(records, label) {
+  return records.map((record, index) => {
+    const argv0 = /^(\S+)(?:\s|$)/u.exec(record.argv)?.[1];
+    if (record.ignore_errors !== "no" || argv0 !== record.path) {
+      fail(`${label}[${index}] has an unreviewed execution policy`);
+    }
+    return {
+      argv: record.argv,
+      ignore_errors: record.ignore_errors,
+      path: record.path,
+    };
+  });
+}
+
+function validateSystemctlExecRuntimeMetadataV2(
+  records,
+  { active, kind, mainPid, label },
+) {
+  for (const [index, record] of records.entries()) {
+    const recordLabel = `${label}[${index}]`;
+    if (!active) {
+      if (
+        record.code !== "(null)" ||
+        record.pid !== "0" ||
+        record.start_time !== "[n/a]" ||
+        record.stop_time !== "[n/a]" ||
+        record.status !== "0/0"
+      ) {
+        fail(`${recordLabel} is not an unexecuted stopped command`);
+      }
+      continue;
+    }
+    if (kind === "start") {
+      if (
+        record.code !== "(null)" ||
+        record.pid !== mainPid ||
+        record.start_time === "[n/a]" ||
+        record.stop_time !== "[n/a]" ||
+        record.status !== "0/0"
+      ) {
+        fail(`${recordLabel} is not the reviewed running ExecStart`);
+      }
+      continue;
+    }
+    if (
+      record.code !== "exited" ||
+      !/^[1-9][0-9]{0,19}$/u.test(record.pid) ||
+      record.start_time === "[n/a]" ||
+      record.stop_time === "[n/a]" ||
+      record.status !== "0"
+    ) {
+      fail(`${recordLabel} is not a successful completed ExecStartPre`);
+    }
+  }
 }
 
 function parseUnsignedDecimal(value, label, { allowZero = true } = {}) {
@@ -3124,10 +3503,39 @@ function validateEffectiveUnitStaticProperties(
   ]) {
     if (properties[forbidden] !== "") fail(`effective ${forbidden} is forbidden: ${unit.unit_name}`);
   }
-  const actualStart = extractExecArgv(properties.ExecStart, `${unit.unit_name}.ExecStart`);
-  const actualPre = extractExecArgv(properties.ExecStartPre, `${unit.unit_name}.ExecStartPre`);
-  if (canonicalJson(actualStart) !== canonicalJson(unit.exec_start)) fail(`effective ExecStart drift: ${unit.unit_name}`);
-  if (canonicalJson(actualPre) !== canonicalJson(unit.exec_start_pre)) fail(`effective ExecStartPre drift: ${unit.unit_name}`);
+  const parsedStart = parseSystemctlExecArgvV1(
+    properties.ExecStart,
+    `${unit.unit_name}.ExecStart`,
+  );
+  const parsedPre = parseSystemctlExecArgvV1(
+    properties.ExecStartPre,
+    `${unit.unit_name}.ExecStartPre`,
+  );
+  const active = properties.ActiveState === "active";
+  validateSystemctlExecRuntimeMetadataV2(parsedStart, {
+    active,
+    kind: "start",
+    label: `${unit.unit_name}.ExecStart`,
+    mainPid: properties.MainPID,
+  });
+  validateSystemctlExecRuntimeMetadataV2(parsedPre, {
+    active,
+    kind: "pre",
+    label: `${unit.unit_name}.ExecStartPre`,
+    mainPid: properties.MainPID,
+  });
+  const actualStart = effectiveExecPolicy(
+    parsedStart,
+    `${unit.unit_name}.ExecStart`,
+  );
+  const actualPre = effectiveExecPolicy(
+    parsedPre,
+    `${unit.unit_name}.ExecStartPre`,
+  );
+  const approvedStart = reviewedExecPolicy(unit.exec_start, `${unit.unit_name}.exec_start`);
+  const approvedPre = reviewedExecPolicy(unit.exec_start_pre, `${unit.unit_name}.exec_start_pre`);
+  if (canonicalJson(actualStart) !== canonicalJson(approvedStart)) fail(`effective ExecStart drift: ${unit.unit_name}`);
+  if (canonicalJson(actualPre) !== canonicalJson(approvedPre)) fail(`effective ExecStartPre drift: ${unit.unit_name}`);
   if (canonicalJson(splitLiteralWords(properties.Environment)) !== canonicalJson([...unit.environment].sort())) {
     fail(`effective Environment drift: ${unit.unit_name}`);
   }
@@ -3144,14 +3552,24 @@ function validateEffectiveUnitStaticProperties(
       if (properties[key] !== "") fail(`effective ${key} drift: ${unit.unit_name}`);
       continue;
     }
-    if (canonicalJson(splitLiteralWords(properties[key])) !== canonicalJson(expectedWords(expected))) {
+    if (
+      canonicalJson(splitLiteralWords(properties[key])) !==
+      canonicalJson(expectedEffectiveWords(key, expected))
+    ) {
       fail(`effective ${key} drift: ${unit.unit_name}`);
     }
   }
   const watchdog = unit.hardening.WatchdogSec;
-  if (watchdog === undefined) {
+  if (!new Set(["active", "inactive"]).has(properties.ActiveState)) {
+    fail(`effective watchdog lifecycle is unreviewed: ${unit.unit_name}`);
+  }
+  if (properties.ActiveState === "inactive") {
+    if (properties.WatchdogUSec !== "infinity") {
+      fail(`stopped scalar watchdog interval is not infinity: ${unit.unit_name}`);
+    }
+  } else if (watchdog === undefined) {
     if (properties.WatchdogUSec !== "0") {
-      fail(`effective watchdog is unreviewed: ${unit.unit_name}`);
+      fail(`live scalar watchdog interval is not zero: ${unit.unit_name}`);
     }
   } else if (
     canonicalJson(watchdog) !== canonicalJson(["90"]) ||
@@ -3234,12 +3652,14 @@ function collectStoppedUnitStates(request) {
 function collectStoppedUnitConfiguration(unit) {
   const conditions = collectEffectiveConditions(unit.unit_name);
   const credentialProperties = collectEffectiveCredentialProperties(unit.unit_name);
+  const serviceProperties = collectEffectiveServicePropertiesV1(unit.unit_name);
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
   }
   validateEffectiveUnitStaticProperties(unit, properties, credentialProperties);
   validateStoppedEffectiveConditionsV2(unit, properties, conditions);
+  validateStoppedEffectiveServicePropertiesV2(unit, serviceProperties);
   if (
     properties.ActiveState !== "inactive" ||
     properties.SubState !== "dead" ||
@@ -3279,6 +3699,7 @@ function collectStoppedUnitConfiguration(unit) {
     credential_properties: credentialProperties,
     fragment_sha256: hashBytes(fragmentBytes),
     properties,
+    service_properties: serviceProperties,
     unit_name: unit.unit_name,
   };
 }
@@ -3535,6 +3956,10 @@ function readHostBinding() {
   if (kernel.exit_status !== 0 || kernel.stderr !== "" || systemd.exit_status !== 0 || systemd.stderr !== "") {
     fail("host version collection failed");
   }
+  const systemdVersion = systemd.stdout.split("\n", 1)[0];
+  if (systemdVersion !== REVIEWED_SYSTEMD_VERSION) {
+    fail("host systemd build is not the reviewed exact version");
+  }
   const pidNamespace = readPidNamespaceBinding();
   return {
     boot_id: bootId,
@@ -3542,7 +3967,7 @@ function readHostBinding() {
     kernel_release: kernel.stdout.trim(),
     machine_id_sha256: hashBytes(machineId),
     ...pidNamespace,
-    systemd_version: systemd.stdout.split("\n", 1)[0],
+    systemd_version: systemdVersion,
     uptime_milliseconds: uptimeMilliseconds,
   };
 }
@@ -4167,6 +4592,7 @@ function validateStoppedUnitConfigurationPasses(passes, request) {
           "credential_properties",
           "fragment_sha256",
           "properties",
+          "service_properties",
           "unit_name",
         ],
         `stopped directory-relay effective-unit pass[${passIndex}][${index}]`,
@@ -4190,6 +4616,10 @@ function validateStoppedUnitConfigurationPasses(passes, request) {
         expected,
         actual.properties,
         actual.conditions,
+      );
+      validateStoppedEffectiveServicePropertiesV2(
+        expected,
+        actual.service_properties,
       );
       if (
         actual.properties.ActiveState !== "inactive" ||
@@ -4438,6 +4868,7 @@ function validateStoppedHost(
     !Number.isSafeInteger(host.uptime_finished_milliseconds) ||
     host.uptime_finished_milliseconds < host.uptime_started_milliseconds ||
     request.deployment_profile !== expectedProfile ||
+    host.systemd_version !== request.systemd_version ||
     host.core_pattern !== "|/usr/bin/false"
   ) {
     fail("stopped-edge host, boot, PID namespace, or core policy is not approved");
@@ -4500,7 +4931,9 @@ export function validateStoppedEdgeActivationEvidence({
       "runtime_socket_absence_passes",
       "schema_version",
       "stopped_unit_passes",
+      "systemd_manager_passes",
       "trusted_commands",
+      "unit_configuration_passes",
     ],
     "stopped-edge activation evidence",
   );
@@ -4546,7 +4979,12 @@ export function validateStoppedEdgeActivationEvidence({
   validateTrustedCommandClosure(evidence.trusted_commands, "stopped-edge evidence");
   const expectedProtected = validateStoppedNssEvidence(evidence.nss, request);
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "stopped-edge systemd manager",
+  );
   validateStoppedUnitPasses(evidence.stopped_unit_passes, request);
+  validateStoppedUnitConfigurationPasses(evidence.unit_configuration_passes, request);
   validateRuntimeSocketAbsencePasses(evidence.runtime_socket_absence_passes, request);
   validateStoppedProtectedClosure(evidence.protected_process_closure, expectedProtected);
   return true;
@@ -4639,6 +5077,7 @@ export function validateStoppedRelayPreparationEvidence({
       "secret_parent_directories",
       "stopped_unit_passes",
       "systemd_analyze_verify",
+      "systemd_manager_passes",
       "trusted_commands",
       "unit_configuration_passes",
     ],
@@ -4751,6 +5190,10 @@ export function validateStoppedRelayPreparationEvidence({
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
   validateStoppedInstalledFilePasses(evidence.installed_file_passes, request);
   validateStoppedPrivateLoaderEvidenceV2(evidence, request);
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "stopped directory-relay systemd manager",
+  );
   validateStoppedUnitPasses(evidence.stopped_unit_passes, request);
   validateStoppedUnitConfigurationPasses(evidence.unit_configuration_passes, request);
   validateSystemdAnalyzeEvidence(
@@ -4934,6 +5377,9 @@ export function validateLiveRuntimeEvidence({
   ) {
     fail("live evidence is not bound to its visible systemd PID namespace root");
   }
+  if (evidence.host.systemd_version !== request.systemd_version) {
+    fail("live evidence systemd build is not the reviewed request build");
+  }
   if (
     new Set(["edge-hetzner-v1", "edge-rollback-authority-v1"]).has(
       request.deployment_profile,
@@ -4947,18 +5393,10 @@ export function validateLiveRuntimeEvidence({
     !Number.isSafeInteger(evidence.host.uptime_finished_milliseconds) ||
     evidence.host.uptime_finished_milliseconds < evidence.host.uptime_started_milliseconds
   ) fail("live evidence uptime binding is invalid");
-  if (
-    !Array.isArray(evidence.systemd_manager_passes) ||
-    evidence.systemd_manager_passes.length !== 2
-  ) {
-    fail("live systemd manager property passes are incomplete");
-  }
-  for (const [index, properties] of evidence.systemd_manager_passes.entries()) {
-    validateSystemdManagerPropertiesV1(
-      properties,
-      `live systemd manager pass[${index}]`,
-    );
-  }
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "live systemd manager",
+  );
 
   if (!Array.isArray(evidence.trusted_commands) || evidence.trusted_commands.length !== REQUIRED_COMMANDS.length + 1) {
     fail("live evidence does not bind the complete command TCB");
@@ -5540,6 +5978,7 @@ function sameHostGeneration(started, finished) {
     finished.collector_pid_namespace === started.collector_pid_namespace &&
     finished.pid1_pid_namespace === started.pid1_pid_namespace &&
     finished.pid1_name === started.pid1_name &&
+    finished.systemd_version === started.systemd_version &&
     canonicalJson(finished.pid1_nspid) === canonicalJson(started.pid1_nspid)
   );
 }
@@ -5573,6 +6012,11 @@ function collectStoppedPreparationEvidence({
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) {
     fail("collector is running on an unapproved host");
   }
+  const systemdManagerStarted = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerStarted,
+    "initial stopped systemd manager properties",
+  );
   const challengeHex = randomBytes(32).toString("hex");
   const nss = collectNss();
   const accountPolicyStarted = collectLockedServiceAccountPolicy(request, nss);
@@ -5599,9 +6043,7 @@ function collectStoppedPreparationEvidence({
       "around stopped-loader access probes",
     );
   }
-  const unitConfigurationStarted = includeInstalledShape
-    ? collectStoppedUnitConfigurations(request)
-    : null;
+  const unitConfigurationStarted = collectStoppedUnitConfigurations(request);
   const analyze = includeInstalledShape
     ? runAbsolute(request.systemd_analyze_argv[0], request.systemd_analyze_argv.slice(1), {
       allowOutput: false,
@@ -5648,10 +6090,13 @@ function collectStoppedPreparationEvidence({
   // properties, Conditions and stopped-unit generation. It follows every
   // account, NSS, host and private-loader probe and immediately precedes the
   // timestamp/evidence object.
-  const unitConfigurationFinished = includeInstalledShape
-    ? collectStoppedUnitConfigurations(request)
-    : null;
+  const unitConfigurationFinished = collectStoppedUnitConfigurations(request);
   const stoppedUnitFinished = collectStoppedUnitStates(request);
+  const systemdManagerFinished = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerFinished,
+    "final stopped systemd manager properties",
+  );
   const finished = Math.floor(Date.now() / 1000);
   const evidence = {
     account_policy: accountPolicyFinished,
@@ -5694,10 +6139,9 @@ function collectStoppedPreparationEvidence({
     ...(includeInstalledShape ? {
       systemd_analyze_verify: analyze,
     } : {}),
+    systemd_manager_passes: [systemdManagerStarted, systemdManagerFinished],
     trusted_commands: trustedCommands,
-    ...(includeInstalledShape ? {
-      unit_configuration_passes: [unitConfigurationStarted, unitConfigurationFinished],
-    } : {}),
+    unit_configuration_passes: [unitConfigurationStarted, unitConfigurationFinished],
   };
   validate({
     evidence,

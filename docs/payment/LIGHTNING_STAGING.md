@@ -349,7 +349,7 @@ deadman without a fresh ceremony.
 
 Target-host live evidence reads the manager's typed D-Bus `After`, `Before`,
 `BindsTo` and `Requires` arrays, initial/final typed
-`ServiceWatchdogs`, `ExecStartPreEx`, `WatchdogUSec` and
+`ServiceWatchdogs`, `ExecStartEx`, `ExecStartPreEx`, `WatchdogUSec` and
 `WatchdogTimestampMonotonic`, and requires every relationship rendered from
 the reviewed units to remain present; implicit systemd dependencies are
 allowed. Each watchdog property pass records the immediately following boot
@@ -359,6 +359,22 @@ nondecreasing timestamps between passes. It also requires the typed
 `TimeoutStopSec`, and repeats both snapshots in the final lightweight sealing
 pass. Therefore an installed new unit with a stale, not-yet-reloaded manager
 definition cannot satisfy activation evidence.
+
+The typed `t` values are canonical decimal strings parsed directly from raw
+busctl JSON integers, never JavaScript numbers. The active preflight's scalar
+`WatchdogUSec=1min 30s` must pair with typed `90000000` and a fresh nonzero
+typed monotonic timestamp. Ordinary active units instead require scalar and
+typed zero; never-run inactive evidence requires scalar `infinity`, typed
+uint64 max (`18446744073709551615`) and timestamp zero. Cross-lifecycle pairs,
+rounded unsafe integers and the old numeric evidence shape fail closed.
+
+The runtime request and host are also bound to the exact first line
+`systemd 255 (255.4-1ubuntu8.15)`. Typed start/pre-start commands must match the
+rendered path, argv and flags exactly; `ExecStart` is never privileged, while
+only the exact guard and preflight generation-token unlink precommands carry
+the `privileged` flag. Printable command records remain strict redundancy and
+must show the live start under `MainPID` and every pre-start completed with
+zero status.
 
 The config owner is fixed to UID 0 in V1. `--config-expected-gid` pins the
 dedicated read-only service group and `--config-reader-expected-uid` pins the

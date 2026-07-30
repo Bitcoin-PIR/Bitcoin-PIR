@@ -900,14 +900,31 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
-- runtime-evidence v7 binds exact Unit-, Service- and Manager-interface busctl
-  property lists. `Conditions` must be typed `a(sbbsi)`;
+- runtime-evidence v8 binds render-plan schema v2, manifest schema v2, the
+  runtime request and collected host to the exact first line
+  `systemd 255 (255.4-1ubuntu8.15)`, and binds exact Unit-, Service- and
+  Manager-interface busctl property lists. `Conditions` must be typed
+  `a(sbbsi)`; `ExecStartEx` and `ExecStartPreEx` must be typed
+  `a(sasasttttuii)` and exactly reproduce each approved path, argv vector and
+  flag vector. `ExecStart` flags are always empty; only the exact guard and
+  preflight approval-token unlink commands may carry `privileged`;
   `ImportCredential` must be an empty `as` array; `LoadCredential` and
   `LoadCredentialEncrypted` must be empty `a(ss)` arrays; `SetCredential` and
   `SetCredentialEncrypted` must be empty `a(say)` arrays. Wrong signatures,
-  non-arrays, every non-empty value, missing/extra properties, literal
-  `[unprintable]`, schema downgrade and snapshot drift fail in live,
-  stopped-edge and stopped-relay validation;
+  argv boundaries, flags, non-arrays, every non-empty credential value,
+  missing/extra properties, literal `[unprintable]`, another systemd build,
+  schema downgrade and snapshot drift fail in live, stopped-edge and
+  stopped-relay validation. The scalar `systemctl show` command records remain
+  strict redundancy: exactly one newline separates records, live `ExecStart`
+  is running under `MainPID`, live `ExecStartPre` is successfully completed,
+  and stopped records are unexecuted. Every typed D-Bus `t` property is parsed
+  from its raw JSON integer into a canonical decimal string without a
+  JavaScript `Number` conversion; duplicate/extra keys, leading zeros,
+  exponents, quoted values, unsafe rounding and values above uint64 fail.
+  Scalar and typed watchdog values must describe the same lifecycle: a never-
+  run stopped unit is `infinity` / `18446744073709551615`, an ordinary live
+  unit is `0` / `0`, and the live preflight is `1min 30s` / `90000000` with a
+  fresh nonzero monotonic timestamp;
 - release tests close the runtime collector's three local script files to the
   collector, rendered-artifact gate and deployment-template gate, in that
   import order; exact-match every static local and `node:` specifier; and
@@ -1032,7 +1049,7 @@ The default-Signet staging preflight focused suite additionally requires:
   evidence must use typed D-Bus arrays to prove the manager actually loaded every rendered
   `After`/`Before`/`BindsTo`/`Requires` edge, use typed `TimeoutStopUSec` to
   prove the stop bound, require two typed manager `ServiceWatchdogs=true`
-  passes, and bind each typed `ExecStartPreEx`, `WatchdogUSec`, and
+  passes, and bind each typed `ExecStartEx`, `ExecStartPreEx`, `WatchdogUSec`, and
   `WatchdogTimestampMonotonic` pass to its immediately following boot uptime.
   It must reject stale/future/rolled-back watchdog timestamps and dependency or
   timeout changes between the initial and final sealing passes;

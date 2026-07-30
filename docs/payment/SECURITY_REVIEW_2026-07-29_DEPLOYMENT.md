@@ -167,11 +167,11 @@ preflight is now a live `Type=notify` supervisor with a short lease bound to
 one exact CLN InvocationID, and runtime evidence requires its MainPID,
 `NotifyAccess=main`, exact watchdog, typed dependency graph and typed stop
 timeout, with a final snapshot that rejects stale manager state. These additions
-were introduced before the current runtime-evidence v7; the discussion below
-records the earlier reviewed baseline that v7 retains. Offline review is meaningful only with
+were introduced before runtime-evidence v7; the discussion below records the
+earlier reviewed baseline that the current v8 retains. Offline review is meaningful only with
 an independently transferred full evidence digest.
 
-Runtime-evidence v7 retains the files-authoritative NSS closed set: both
+Runtime-evidence v8 retains the files-authoritative NSS closed set: both
 `passwd` and `group` must use exactly `files`, or both must use exactly
 `files systemd`, with inherited group-based `initgroups`. Only the latter exact
 Ubuntu fallback sequence is accepted; mixed sequences, reversed order, action
@@ -189,7 +189,7 @@ remote/cached or optionally enumerable NSS providers are not accepted by this
 V1 claim; the sole reviewed systemd fallback passes only while its complete
 enumeration projection remains exactly the local-files projection.
 
-Runtime-evidence v7 also closes credentials and capabilities retained in the
+Runtime-evidence v8 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce
 the same protected-holder records, record all four active sets plus `CapBnd`,
 and fail on a reviewed dangerous active capability held by non-root. Each
@@ -201,8 +201,9 @@ cgroup with the same reviewed credentials and zero capabilities. Only the
 Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
 set is checked against that exact systemd policy.
 
-Runtime-evidence v7 also stops treating systemd's structured `Conditions`
-property as printable `systemctl show` text. Ubuntu 24.04's systemd 255 renders
+Runtime-evidence v8 also retains v7's rule that systemd's structured
+`Conditions` property is not treated as printable `systemctl show` text.
+Ubuntu 24.04's systemd 255 renders
 that property as `[unprintable]`. The collector therefore pins `/usr/bin/busctl`
 in its trusted-command closure, parses the exact `a(sbbsi)` D-Bus shape, and
 requires the complete condition set, negation bits, evaluated-success result
@@ -223,12 +224,41 @@ systemd 255 host, `systemctl show --value` returned `[unprintable]` for
 The [upstream systemd v255 Service D-Bus vtable](https://github.com/systemd/systemd/blob/v255/src/core/dbus-execute.c#L1043-L1047)
 also exposes `ImportCredential` as typed `as`; its target-host scalar rendering
 was not part of that observation.
-V7 therefore removes the four Load/Set fields from the scalar systemctl schema,
-keeps all five credential fields in the combined typed Service-interface request list,
+V7 therefore removed the four Load/Set fields from the scalar systemctl schema.
+V8 retains that split, keeps all five credential fields in the combined typed
+Service-interface request list,
 and accepts only the exact typed empty arrays. The typed snapshots are included
 in live, stopped-edge and stopped-relay evidence and are repeated during final
 sealing. `[unprintable]` is never special-cased as empty. This schema change
-invalidates v6 live/runtime requests, v3 stopped-edge and v2 stopped-relay evidence.
+invalidated v6 live/runtime requests, v3 stopped-edge and v2 stopped-relay evidence.
+
+Runtime-evidence v8 additionally closes the systemd command representation.
+Render-plan and manifest schema v2, the schema-v8 runtime request, and collected
+host evidence all bind the exact first line
+`systemd 255 (255.4-1ubuntu8.15)`; a different Ubuntu revision or abbreviated
+`systemd 255` is not accepted. Both `ExecStartEx` and `ExecStartPreEx` are read
+through the Service interface with the exact `a(sasasttttuii)` signature and
+must reproduce every approved absolute path, argv vector and flag vector in
+both initial and final passes. `ExecStart` flags are always empty. The only
+approved privileged commands are the first pre-start commands of the guard and
+preflight units, each the exact unlink of its own root-only generation token.
+The printable `systemctl show` representation is retained only as strict
+redundancy: records use exactly one newline as delimiter; a live start is
+running under the unit's `MainPID`; every live pre-start has completed with
+`code=exited` and status zero; and stopped records remain unexecuted. Live v8,
+stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
+stopped-relay v3 evidence rather than upgrading it in place.
+
+V8 also stores every standalone typed D-Bus `t` value as a canonical decimal
+string. Its parser extracts the raw JSON integer before any JavaScript
+`Number` conversion, rejects duplicate or extra object keys and noncanonical
+number syntax, and bounds the value by uint64. This preserves systemd's
+`18446744073709551615` infinity sentinel exactly. Watchdog text and typed
+evidence are one lifecycle invariant: an inactive never-run unit must report
+`infinity` and uint64 max, an ordinary active unit must report zero in both
+forms, and the active preflight must report `1min 30s` and `90000000` with a
+fresh nonzero monotonic timestamp. Mixing values from different lifecycle
+states or retaining the old numeric evidence shape fails closed.
 
 Runtime evidence also treats private-file loader compatibility as a distinct
 invariant from ordinary readability. Every secret's final parent is bound to

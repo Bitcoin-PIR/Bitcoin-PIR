@@ -43,14 +43,17 @@ import {
   parseGroupEnumerationV2,
   parseBusctlConditionsJsonV1,
   parseBusctlBooleanJsonV1,
+  parseBusctlExecCommandExJsonV1,
   parseBusctlExecStartPreExJsonV1,
   parseBusctlEmptyCredentialJsonV1,
+  parseBusctlStringJsonV1,
   parseBusctlUnitNamesJsonV1,
   parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
+  parseSystemctlExecArgvV1,
   systemdCredentialBusctlArgvV1,
   systemdUnitObjectPathV1,
   readOneLinkRegular,
@@ -61,6 +64,8 @@ import {
   validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  REVIEWED_SYSTEMD_MANAGER_VERSION,
+  REVIEWED_SYSTEMD_VERSION,
   RUNTIME_BUSCTL_MANAGER_PROPERTIES,
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
@@ -77,6 +82,12 @@ const RENDERED_GATE = join(
 const TEMPLATE_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-deployment-template-gate.mjs",
+);
+const UINT64_MAX_DECIMAL = "18446744073709551615";
+assert.equal(
+  REVIEWED_SYSTEMD_VERSION,
+  `systemd 255 (${REVIEWED_SYSTEMD_MANAGER_VERSION})`,
+  "systemctl client and PID 1 manager build pins must remain coherent",
 );
 const COMMANDS = [
   "/usr/bin/busctl",
@@ -436,11 +447,53 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       JSON.stringify({ data: 30_000_000, type: "t" }),
       "TimeoutStopUSec",
     ),
-    30_000_000,
+    "30000000",
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":18446744073709551615}',
+      "inactive WatchdogUSec",
+    ),
+    UINT64_MAX_DECIMAL,
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      '{"data":18446744073709551614,"type":"t"}',
+      "max minus one",
+    ),
+    "18446744073709551614",
+  );
+  assert.notEqual(
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":9007199254740992}',
+      "safe boundary plus one",
+    ),
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":9007199254740993}',
+      "unsafe adjacent integer",
+    ),
   );
   assert.deepEqual(
     parseBusctlBooleanJsonV1(JSON.stringify({ data: true, type: "b" })),
     { signature: "b", value: true },
+  );
+  assert.deepEqual(
+    parseBusctlStringJsonV1(JSON.stringify({
+      data: REVIEWED_SYSTEMD_MANAGER_VERSION,
+      type: "s",
+    })),
+    { signature: "s", value: REVIEWED_SYSTEMD_MANAGER_VERSION },
+  );
+  assert.deepEqual(
+    parseBusctlExecCommandExJsonV1(
+      '{"type":"a(sasasttttuii)","data":[["/usr/bin/sleep",["/usr/bin/sleep","infinity"],[],1,0,0,0,4242,0,0]]}',
+      "ExecStartEx",
+    ),
+    [{
+      argv: ["/usr/bin/sleep", "infinity"],
+      flags: [],
+      path: "/usr/bin/sleep",
+    }],
   );
   const execTuple = [
     "/usr/bin/unlink",
@@ -490,9 +543,21 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
     );
   }
   for (const [label, value] of [
+    ["wrong string type", { data: REVIEWED_SYSTEMD_MANAGER_VERSION, type: "as" }],
+    ["nonstring", { data: 255, type: "s" }],
+    ["control character", { data: "255.4\nforeign", type: "s" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlStringJsonV1(JSON.stringify(value), label),
+      /printable s value/,
+      label,
+    );
+  }
+  for (const [label, value] of [
     ["wrong exec signature", { data: [execTuple], type: "a(sas)" }],
     ["foreign exec flag", { data: [[...execTuple.slice(0, 2), ["ambient"], ...execTuple.slice(3)]], type: "a(sasasttttuii)" }],
     ["path argv mismatch", { data: [["/usr/bin/test", ...execTuple.slice(1)]], type: "a(sasasttttuii)" }],
+    ["oversized argv", { data: [["/usr/bin/test", Array(257).fill("x").with(0, "/usr/bin/test"), [], 0, 0, 0, 0, 0, 0, 0]], type: "a(sasasttttuii)" }],
   ]) {
     assert.throws(
       () => parseBusctlExecStartPreExJsonV1(JSON.stringify(value), label),
@@ -514,15 +579,21 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       label,
     );
   }
-  for (const [label, value] of [
-    ["wrong unsigned type", { data: 30_000_000, type: "u" }],
-    ["negative unsigned", { data: -1, type: "t" }],
-    ["infinite unsigned", { data: Number.MAX_VALUE, type: "t" }],
-    ["missing unsigned", { type: "t" }],
+  for (const [label, raw] of [
+    ["wrong unsigned type", '{"data":30000000,"type":"u"}'],
+    ["negative unsigned", '{"data":-1,"type":"t"}'],
+    ["uint64 max plus one", '{"type":"t","data":18446744073709551616}'],
+    ["Number-rounded uint64 max", '{"type":"t","data":18446744073709552000}'],
+    ["leading-zero unsigned", '{"type":"t","data":01}'],
+    ["exponent unsigned", '{"type":"t","data":1e3}'],
+    ["quoted unsigned", '{"type":"t","data":"0"}'],
+    ["duplicate data", '{"type":"t","data":0,"data":0}'],
+    ["extra key", '{"type":"t","data":0,"extra":0}'],
+    ["missing unsigned", '{"type":"t"}'],
   ]) {
     assert.throws(
-      () => parseBusctlUnsignedJsonV1(JSON.stringify(value), label),
-      /finite|keys|reviewed/,
+      () => parseBusctlUnsignedJsonV1(raw, label),
+      /raw-number|uint64|reviewed/,
       label,
     );
   }
@@ -534,10 +605,11 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
     Requires: [],
   };
   const service = {
+    ExecStartEx: [],
     ExecStartPreEx: [],
-    TimeoutStopUSec: 30_000_000,
-    WatchdogTimestampMonotonic: 0,
-    WatchdogUSec: 0,
+    TimeoutStopUSec: "30000000",
+    WatchdogTimestampMonotonic: "0",
+    WatchdogUSec: "0",
   };
   assert.equal(
     assertEffectiveSystemdPolicySnapshotUnchangedV1(
@@ -548,6 +620,34 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       "test",
     ),
     true,
+  );
+  const unsafeEarlier = {
+    ...service,
+    WatchdogTimestampMonotonic: "9007199254740992",
+  };
+  const unsafeLater = {
+    ...service,
+    WatchdogTimestampMonotonic: "9007199254740993",
+  };
+  assert.equal(
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      unsafeEarlier,
+      unsafeLater,
+      "unsafe monotonic timestamp",
+    ),
+    true,
+  );
+  assert.throws(
+    () => assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      unsafeLater,
+      unsafeEarlier,
+      "unsafe monotonic timestamp rollback",
+    ),
+    /policy changed during live collection/u,
   );
   const changed = clone(dependencies);
   changed.After = ["basic.target"];
@@ -561,6 +661,82 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
     ),
     /policy changed during live collection/,
   );
+});
+
+test("systemctl Exec serialization accepts the real systemd 255 multi-command delimiter", () => {
+  const firstCommand =
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const secondCommand =
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const first =
+    `{ path=/usr/bin/sha256sum ; argv[]=${firstCommand} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  const second =
+    `{ path=/usr/bin/sha256sum ; argv[]=${secondCommand} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+
+  assert.deepEqual(
+    parseSystemctlExecArgvV1(`${first}\n${second}`, "real systemd 255 ExecStartPre"),
+    [
+      {
+        argv: firstCommand,
+        code: "(null)",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+        pid: "0",
+        start_time: "[n/a]",
+        status: "0/0",
+        stop_time: "[n/a]",
+      },
+      {
+        argv: secondCommand,
+        code: "(null)",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+        pid: "0",
+        start_time: "[n/a]",
+        status: "0/0",
+        stop_time: "[n/a]",
+      },
+    ],
+  );
+  assert.deepEqual(parseSystemctlExecArgvV1("", "empty ExecStartPre"), []);
+
+  for (const malformed of [
+    `${first}\n\n${second}`,
+    `${first} ; ${second}`,
+    `${first} ${second}`,
+    `unreviewed-prefix${first}`,
+    `${first}\r\n${second}`,
+    `${first}\0`,
+    `${first}\n${second}\n`,
+  ]) {
+    assert.throws(
+      () => parseSystemctlExecArgvV1(malformed, "malformed ExecStartPre"),
+      /unreviewed systemctl Exec serialization/,
+    );
+  }
+});
+
+test("systemctl Exec serialization rejects unreviewed record metadata", () => {
+  const command = "/usr/bin/sha256sum --check /tmp/reviewed.sha256";
+  const record =
+    `{ path=/usr/bin/sha256sum ; argv[]=${command} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  for (const [label, malformed, pattern] of [
+    ["path drift", record.replace("path=/usr/bin/sha256sum", "path=/usr/bin/true"), /path does not match argv\[0\]/],
+    ["ignore errors", record.replace("ignore_errors=no", "ignore_errors=yes"), /permits systemctl Exec ignore_errors/],
+    ["unknown field", record.replace("status=0/0", "status=0/0 ; unreviewed=yes"), /unknown systemctl Exec field/],
+    ["duplicate field", record.replace("status=0/0", "status=0/0 ; path=/usr/bin/sha256sum"), /repeats systemctl Exec field path/],
+    ["missing field", record.replace(" ; stop_time=[n/a]", ""), /keys must equal/],
+    ["argv/path mismatch", record.replace(`argv[]=${command}`, "argv[]=/usr/bin/true"), /path does not match argv\[0\]/],
+  ]) {
+    assert.throws(
+      () => parseSystemctlExecArgvV1(malformed, label),
+      pattern,
+      label,
+    );
+  }
 });
 
 test("systemd credential properties require the five reviewed typed empty arrays", () => {
@@ -818,8 +994,26 @@ function sortNssEvidence(nss) {
   return nss;
 }
 
-function execValue(command) {
-  return `{ path=${command.split(" ", 1)[0]} ; argv[]=${command} ; ignore_errors=no ; start_time=[n/a] ; }`;
+function execValue(command, { pid = "0", state = "unrun" } = {}) {
+  const metadata = {
+    completed:
+      `start_time=[Wed 2026-07-29 09:00:00 UTC] ; ` +
+      `stop_time=[Wed 2026-07-29 09:00:01 UTC] ; pid=${pid} ; code=exited ; status=0`,
+    running:
+      `start_time=[Wed 2026-07-29 09:00:01 UTC] ; ` +
+      `stop_time=[n/a] ; pid=${pid} ; code=(null) ; status=0/0`,
+    unrun: "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0",
+  }[state];
+  assert.notEqual(metadata, undefined);
+  return (
+    `{ path=${command.split(" ", 1)[0]} ; argv[]=${command} ; ignore_errors=no ; ` +
+    `${metadata} }`
+  );
+}
+
+function execCommandEx(command, flags = []) {
+  const argv = command.split(/\s+/u);
+  return { argv, flags: [...flags], path: argv[0] };
 }
 
 function protectedHolder({
@@ -855,6 +1049,11 @@ function fixture() {
     environment: ["RUST_LOG=error"],
     environment_files: [],
     exec_start: [`${binaryPath} serve --config /etc/bitcoinpir/payment-v1/test/config.toml`],
+    exec_start_ex: [{
+      argv: [binaryPath, "serve", "--config", "/etc/bitcoinpir/payment-v1/test/config.toml"],
+      flags: [],
+      path: binaryPath,
+    }],
     exec_start_pre: ["/usr/bin/test -x /opt/bitcoinpir/test/check"],
     exec_start_pre_ex: [{
       argv: ["/usr/bin/test", "-x", "/opt/bitcoinpir/test/check"],
@@ -924,7 +1123,7 @@ function fixture() {
       uid: 730,
     }],
     busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
-    schema_version: 7,
+    schema_version: 8,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -936,6 +1135,7 @@ function fixture() {
     busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     systemd_analyze_argv: ["/usr/bin/systemd-analyze", "verify", fragmentPath],
     tmpfiles_directories: [
       { group_name: "bitcoinpir-shared", mode: "0710", target_path: "/run/bitcoinpir-test", user_name: "bitcoinpir-test" },
@@ -957,9 +1157,9 @@ function fixture() {
     ExecCondition: "",
     ExecMainCode: "0",
     ExecMainStatus: "0",
-    ExecStart: execValue(unit.exec_start[0]),
+    ExecStart: execValue(unit.exec_start[0], { pid: "4242", state: "running" }),
     ExecStartPost: "",
-    ExecStartPre: execValue(unit.exec_start_pre[0]),
+    ExecStartPre: execValue(unit.exec_start_pre[0], { pid: "4241", state: "completed" }),
     FragmentPath: fragmentPath,
     Group: "bitcoinpir-test",
     IPAddressAllow: "",
@@ -1086,7 +1286,7 @@ function fixture() {
       pid1_name: "systemd",
       pid1_nspid: [1],
       pid1_pid_namespace: "pid:[4026531836]",
-      systemd_version: "systemd 257",
+      systemd_version: REVIEWED_SYSTEMD_VERSION,
       uptime_finished_milliseconds: 5010,
       uptime_started_milliseconds: 5000,
     },
@@ -1169,7 +1369,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 7,
+    schema_version: 8,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -1180,6 +1380,7 @@ function fixture() {
     },
     systemd_manager_passes: [0, 1].map(() => ({
       ServiceWatchdogs: { signature: "b", value: true },
+      Version: { signature: "s", value: REVIEWED_SYSTEMD_MANAGER_VERSION },
     })),
     trusted_commands: COMMANDS.map((path, index) => ({
       gid: 0,
@@ -1210,10 +1411,11 @@ function fixture() {
       service_property_passes: [0, 1].map((index) => ({
         observed_uptime_milliseconds: 5000 + (index * 10),
         properties: {
+          ExecStartEx: clone(unit.exec_start_ex),
           ExecStartPreEx: clone(unit.exec_start_pre_ex),
-          TimeoutStopUSec: 30_000_000,
-          WatchdogTimestampMonotonic: 0,
-          WatchdogUSec: 0,
+          TimeoutStopUSec: "30000000",
+          WatchdogTimestampMonotonic: "0",
+          WatchdogUSec: "0",
         },
       })),
       unit_dependencies: {
@@ -1258,6 +1460,40 @@ function stoppedEdgeFixture() {
     path: "/etc/shadow",
     sha256: hash("shadow-policy"),
   };
+  const stoppedProperties = clone(live.evidence.units[0].properties);
+  Object.assign(stoppedProperties, {
+    ActiveEnterTimestampMonotonic: "0",
+    ActiveState: "inactive",
+    ConditionResult: "no",
+    ControlGroup: "",
+    ExecStart: execValue(live.request.units[0].exec_start[0]),
+    ExecStartPre: live.request.units[0].exec_start_pre.map((command) =>
+      execValue(command)).join("\n"),
+    InvocationID: "",
+    MainPID: "0",
+    MemorySwapCurrent: "[not set]",
+    SubState: "dead",
+    WatchdogUSec: "infinity",
+  });
+  const stoppedConditions = clone(live.evidence.units[0].conditions);
+  const globalActivation = stoppedConditions.find((condition) =>
+    condition.parameter === "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED");
+  globalActivation.path_exists = false;
+  globalActivation.result = 0;
+  const stoppedConfiguration = {
+    conditions: stoppedConditions,
+    credential_properties: emptyCredentialProperties(),
+    fragment_sha256: hash("fragment"),
+    properties: stoppedProperties,
+    service_properties: {
+      ExecStartEx: clone(live.request.units[0].exec_start_ex),
+      ExecStartPreEx: clone(live.request.units[0].exec_start_pre_ex),
+      TimeoutStopUSec: "30000000",
+      WatchdogTimestampMonotonic: "0",
+      WatchdogUSec: UINT64_MAX_DECIMAL,
+    },
+    unit_name: live.request.units[0].unit_name,
+  };
   const evidence = {
     account_policy: {
       accounts: [{
@@ -1294,12 +1530,17 @@ function stoppedEdgeFixture() {
       [clone(socketAbsence)],
       [clone(socketAbsence)],
     ],
-    schema_version: 4,
+    schema_version: 5,
     stopped_unit_passes: [
       [clone(unitState)],
       [clone(unitState)],
     ],
+    systemd_manager_passes: clone(live.evidence.systemd_manager_passes),
     trusted_commands: clone(live.evidence.trusted_commands),
+    unit_configuration_passes: [
+      [clone(stoppedConfiguration)],
+      [clone(stoppedConfiguration)],
+    ],
   };
   return { ...live, evidence };
 }
@@ -1322,7 +1563,13 @@ function stoppedRelayFixture() {
   value.request.units[0].unit_name = "bitcoinpir-directory-relay.service";
   value.request.units[0].fragment_path = relayFragmentPath;
   value.request.units[0].exec_start = ["/usr/bin/false"];
+  value.request.units[0].exec_start_ex = [{
+    argv: ["/usr/bin/false"],
+    flags: [],
+    path: "/usr/bin/false",
+  }];
   value.request.units[0].exec_start_pre = [];
+  value.request.units[0].exec_start_pre_ex = [];
   value.request.units[0].conditions = [
     "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
     "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
@@ -1392,7 +1639,7 @@ function stoppedRelayFixture() {
     relayFragmentPath,
   ];
   value.evidence.evidence_kind = STOPPED_RELAY_EVIDENCE_KIND;
-  value.evidence.schema_version = 3;
+  value.evidence.schema_version = 4;
   value.evidence.runtime_socket_absence_passes = [[], []];
   for (const pass of value.evidence.stopped_unit_passes) {
     pass[0].unit_name = "bitcoinpir-directory-relay.service";
@@ -1431,6 +1678,7 @@ function stoppedRelayFixture() {
     ProtectProc: "invisible",
     ProcSubset: "pid",
     SubState: "dead",
+    WatchdogUSec: "infinity",
   });
   const conditions = value.request.units[0].conditions.map((condition) => ({
     negate: false,
@@ -1445,6 +1693,13 @@ function stoppedRelayFixture() {
     credential_properties: emptyCredentialProperties(),
     fragment_sha256: value.request.installed_files[1].sha256,
     properties,
+    service_properties: {
+      ExecStartEx: clone(value.request.units[0].exec_start_ex),
+      ExecStartPreEx: [],
+      TimeoutStopUSec: "30000000",
+      WatchdogTimestampMonotonic: "0",
+      WatchdogUSec: UINT64_MAX_DECIMAL,
+    },
     unit_name: "bitcoinpir-directory-relay.service",
   };
   value.evidence.unit_configuration_passes = [
@@ -1510,10 +1765,14 @@ function resolvedStoppedRelayFixture() {
   unit.exec_start = [
     `${binaryPath} --config ${configPath}`,
   ];
+  unit.exec_start_ex = unit.exec_start.map((command) => execCommandEx(command));
   unit.exec_start_pre = [
     `/usr/bin/sha256sum --check --strict ${binaryManifestPath}`,
     `/usr/bin/sha256sum --check --strict ${configManifestPath}`,
   ];
+  unit.exec_start_pre_ex = unit.exec_start_pre.map((command) => execCommandEx(command));
+  unit.hardening.IPAddressAllow = ["localhost"];
+  unit.hardening.IPAddressDeny = ["any"];
   unit.hardening.Restart = ["on-failure"];
   unit.hardening.RestartSec = ["5"];
   unit.hardening.ReadOnlyPaths = [
@@ -1537,7 +1796,12 @@ function resolvedStoppedRelayFixture() {
   const effective = value.evidence.unit_configuration_passes[0][0];
   effective.fragment_sha256 = hash("resolved-relay-fragment");
   effective.properties.ExecStart = execValue(unit.exec_start[0]);
-  effective.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  effective.properties.ExecStartPre = unit.exec_start_pre.map((command) =>
+    execValue(command)).join("\n");
+  effective.service_properties.ExecStartEx = clone(unit.exec_start_ex);
+  effective.service_properties.ExecStartPreEx = clone(unit.exec_start_pre_ex);
+  effective.properties.IPAddressAllow = "127.0.0.0/8 ::1/128";
+  effective.properties.IPAddressDeny = "::/0 0.0.0.0/0";
   effective.properties.ReadOnlyPaths = unit.hardening.ReadOnlyPaths[0];
   effective.properties.Restart = "on-failure";
   value.evidence.unit_configuration_passes = [
@@ -1570,10 +1834,12 @@ function resolvedLiveRelayFixture() {
     "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
   ];
   unit.exec_start = [`${binaryPath} --config ${configPath}`];
+  unit.exec_start_ex = unit.exec_start.map((command) => execCommandEx(command));
   unit.exec_start_pre = [
     `/usr/bin/sha256sum --check --strict ${binaryManifestPath}`,
     `/usr/bin/sha256sum --check --strict ${configManifestPath}`,
   ];
+  unit.exec_start_pre_ex = unit.exec_start_pre.map((command) => execCommandEx(command));
   Object.assign(unit.hardening, {
     Group: ["bitcoinpir-directory-relay"],
     IPAddressAllow: ["localhost"],
@@ -1698,12 +1964,13 @@ function resolvedLiveRelayFixture() {
   }));
   Object.assign(evidenceUnit.properties, {
     ControlGroup: `/system.slice/${unit.unit_name}`,
-    ExecStart: execValue(unit.exec_start[0]),
-    ExecStartPre: unit.exec_start_pre.map(execValue).join(" ; "),
+    ExecStart: execValue(unit.exec_start[0], { pid: "4242", state: "running" }),
+    ExecStartPre: unit.exec_start_pre.map((command, index) =>
+      execValue(command, { pid: String(4400 + index), state: "completed" })).join("\n"),
     FragmentPath: fragmentPath,
     Group: "bitcoinpir-directory-relay",
-    IPAddressAllow: "localhost",
-    IPAddressDeny: "any",
+    IPAddressAllow: "127.0.0.0/8 ::1/128",
+    IPAddressDeny: "::/0 0.0.0.0/0",
     InaccessiblePaths: "/run/bitcoinpir-source-fair-edge",
     MemoryMax: "536870912",
     ProtectClock: "yes",
@@ -1718,6 +1985,10 @@ function resolvedLiveRelayFixture() {
     User: "bitcoinpir-directory-relay",
     WorkingDirectory: "/var/lib/bitcoinpir-directory-relay",
   });
+  for (const pass of evidenceUnit.service_property_passes) {
+    pass.properties.ExecStartEx = clone(unit.exec_start_ex);
+    pass.properties.ExecStartPreEx = clone(unit.exec_start_pre_ex);
+  }
   for (const confirmation of evidenceUnit.generation_confirmations) {
     confirmation.control_group = evidenceUnit.properties.ControlGroup;
   }
@@ -1826,7 +2097,8 @@ function preflightLeaseFixture() {
   actual.properties.Type = "notify";
   actual.properties.NotifyAccess = "main";
   actual.properties.WatchdogUSec = "1min 30s";
-  actual.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  actual.properties.ExecStartPre = unit.exec_start_pre.map((command, index) =>
+    execValue(command, { pid: String(4300 + index), state: "completed" })).join("\n");
   actual.conditions.push({
     negate: false,
     parameter: approvalPath,
@@ -1840,19 +2112,21 @@ function preflightLeaseFixture() {
     {
       observed_uptime_milliseconds: 5000,
       properties: {
+        ExecStartEx: clone(unit.exec_start_ex),
         ExecStartPreEx: clone(unit.exec_start_pre_ex),
-        TimeoutStopUSec: 30_000_000,
-        WatchdogTimestampMonotonic: 4_500_000,
-        WatchdogUSec: 90_000_000,
+        TimeoutStopUSec: "30000000",
+        WatchdogTimestampMonotonic: "4500000",
+        WatchdogUSec: "90000000",
       },
     },
     {
       observed_uptime_milliseconds: 5010,
       properties: {
+        ExecStartEx: clone(unit.exec_start_ex),
         ExecStartPreEx: clone(unit.exec_start_pre_ex),
-        TimeoutStopUSec: 30_000_000,
-        WatchdogTimestampMonotonic: 4_900_000,
-        WatchdogUSec: 90_000_000,
+        TimeoutStopUSec: "30000000",
+        WatchdogTimestampMonotonic: "4900000",
+        WatchdogUSec: "90000000",
       },
     },
   ];
@@ -1928,6 +2202,7 @@ function secretIsolationFixture() {
   const peerProperties = {
     ...clone(value.evidence.units[0].properties),
     ControlGroup: `/system.slice/${peerUnit.unit_name}`,
+    ExecStart: execValue(peerUnit.exec_start[0], { pid: "4243", state: "running" }),
     FragmentPath: peerUnit.fragment_path,
     Group: "bitcoinpir-z-peer",
     InvocationID: "b".repeat(32),
@@ -2058,6 +2333,80 @@ test("valid live evidence binds challenge, host, boot, files, NSS, units, and co
   const dynamicIdentity = fixture();
   dynamicIdentity.request.service_identities[0].uid = 61_184;
   assert.throws(() => validate(dynamicIdentity), /static service uid\/gid.*DynamicUser/u);
+
+  const privilegedStartRequest = fixture();
+  privilegedStartRequest.request.units[0].exec_start_ex[0].flags = ["privileged"];
+  assert.throws(() => validate(privilegedStartRequest), /unapproved exec flags/u);
+
+  const typedStartPathDrift = fixture();
+  typedStartPathDrift.evidence.units[0].service_property_passes[0]
+    .properties.ExecStartEx[0].path = "/usr/bin/true";
+  assert.throws(() => validate(typedStartPathDrift), /ExecStartEx drift/u);
+});
+
+test("systemd 255 text redundancy accepts one running start and completed pre-start", () => {
+  const value = fixture();
+  assert.match(value.evidence.units[0].properties.ExecStart, /code=\(null\) ; status=0\/0/u);
+  assert.match(value.evidence.units[0].properties.ExecStartPre, /code=exited ; status=0/u);
+  assert.equal(validate(value), true);
+});
+
+test("systemd 255 watchdog text and typed uint64 agree with each lifecycle", () => {
+  const ordinary = fixture();
+  assert.equal(ordinary.evidence.units[0].properties.WatchdogUSec, "0");
+  assert.equal(
+    ordinary.evidence.units[0].service_property_passes[0].properties.WatchdogUSec,
+    "0",
+  );
+  assert.equal(validate(ordinary), true);
+
+  const stopped = stoppedEdgeFixture();
+  assert.equal(
+    stopped.evidence.unit_configuration_passes[0][0].properties.WatchdogUSec,
+    "infinity",
+  );
+  assert.equal(
+    stopped.evidence.unit_configuration_passes[0][0]
+      .service_properties.WatchdogUSec,
+    UINT64_MAX_DECIMAL,
+  );
+  assert.equal(validateStopped(stopped), true);
+
+  const preflight = preflightLeaseFixture();
+  assert.equal(preflight.evidence.units[0].properties.WatchdogUSec, "1min 30s");
+  assert.equal(
+    preflight.evidence.units[0].service_property_passes[0].properties.WatchdogUSec,
+    "90000000",
+  );
+  assert.equal(validate(preflight), true);
+
+  const ordinaryTextMismatch = fixture();
+  ordinaryTextMismatch.evidence.units[0].properties.WatchdogUSec = "infinity";
+  assert.throws(() => validate(ordinaryTextMismatch), /live scalar watchdog interval/u);
+
+  const ordinaryTypedMismatch = fixture();
+  ordinaryTypedMismatch.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogUSec = UINT64_MAX_DECIMAL;
+  assert.throws(() => validate(ordinaryTypedMismatch), /typed watchdog interval/u);
+
+  const stoppedTextMismatch = stoppedEdgeFixture();
+  stoppedTextMismatch.evidence.unit_configuration_passes[0][0]
+    .properties.WatchdogUSec = "0";
+  assert.throws(() => validateStopped(stoppedTextMismatch), /stopped scalar watchdog interval/u);
+
+  const stoppedTypedMismatch = stoppedEdgeFixture();
+  stoppedTypedMismatch.evidence.unit_configuration_passes[0][0]
+    .service_properties.WatchdogUSec = "0";
+  assert.throws(() => validateStopped(stoppedTypedMismatch), /stopped typed watchdog interval/u);
+
+  const preflightTextMismatch = preflightLeaseFixture();
+  preflightTextMismatch.evidence.units[0].properties.WatchdogUSec = "0";
+  assert.throws(() => validate(preflightTextMismatch), /watchdog lease drift/u);
+
+  const preflightTypedMismatch = preflightLeaseFixture();
+  preflightTypedMismatch.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogUSec = "0";
+  assert.throws(() => validate(preflightTypedMismatch), /typed watchdog interval/u);
 });
 
 test("resolved directory relay can produce live evidence only for its closed artifact shape", () => {
@@ -2877,9 +3226,30 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   socket.evidence.runtime_socket_absence_passes[1][0].parent_ino = "201";
   assert.throws(() => validateStopped(socket), /absence changed/);
 
+  const stoppedTypedStartDrift = stoppedEdgeFixture();
+  stoppedTypedStartDrift.evidence.unit_configuration_passes[1][0]
+    .service_properties.ExecStartEx[0].argv[0] = "/usr/bin/true";
+  assert.throws(() => validateStopped(stoppedTypedStartDrift), /ExecStartEx drift/u);
+
+  const stoppedForeignManager = stoppedEdgeFixture();
+  stoppedForeignManager.evidence.systemd_manager_passes[1].Version.value =
+    "255.4-1ubuntu8.14";
+  assert.throws(
+    () => validateStopped(stoppedForeignManager),
+    /Version must be typed s 255\.4-1ubuntu8\.15/u,
+  );
+
   const namespace = stoppedEdgeFixture();
   namespace.evidence.host.collector_pid_namespace = "pid:[4026539999]";
   assert.throws(() => validateStopped(namespace), /PID namespace/);
+
+  const stoppedHostVersion = stoppedEdgeFixture();
+  stoppedHostVersion.evidence.host.systemd_version = "systemd 255";
+  assert.throws(() => validateStopped(stoppedHostVersion), /systemd|host, boot/u);
+
+  const stoppedRequestVersion = stoppedEdgeFixture();
+  stoppedRequestVersion.request.systemd_version = "systemd 255";
+  assert.throws(() => validateStopped(stoppedRequestVersion), /systemd_version/u);
 
   const legacy = stoppedEdgeFixture();
   legacy.evidence.protected_process_closure.enumeration_kind =
@@ -2887,17 +3257,17 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   assert.throws(() => validateStopped(legacy), /closure is incomplete/);
 
   const legacySchema = stoppedEdgeFixture();
-  legacySchema.evidence.schema_version = 3;
+  legacySchema.evidence.schema_version = 4;
   legacySchema.evidence.evidence_kind =
-    "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
+    "bitcoinpir-payment-v1-linux-root-stopped-edge-v4";
   legacySchema.evidence.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(() => validateStopped(legacySchema), /evidence schema, collector/);
 
   const legacyRequest = stoppedEdgeFixture();
-  legacyRequest.request.schema_version = 6;
+  legacyRequest.request.schema_version = 7;
   legacyRequest.request.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(() => validateStopped(legacyRequest), /evidence schema, collector/);
 
   const missingCredentialRequestClosure = stoppedEdgeFixture();
@@ -3007,6 +3377,30 @@ test("stopped directory-relay preparation is closed and can never become live ev
     execValue("/usr/bin/true");
   assert.throws(() => validateStoppedRelay(effectiveStart), /effective ExecStart drift/);
 
+  const forgedEffectiveStartPath = stoppedRelayFixture();
+  forgedEffectiveStartPath.evidence.unit_configuration_passes[1][0]
+    .properties.ExecStart = forgedEffectiveStartPath.evidence
+      .unit_configuration_passes[1][0].properties.ExecStart.replace(
+        /\{ path=[^ ]+/u,
+        "{ path=/usr/bin/true",
+      );
+  assert.throws(
+    () => validateStoppedRelay(forgedEffectiveStartPath),
+    /path does not match argv\[0\]/,
+  );
+
+  const ignoredEffectiveFailure = stoppedRelayFixture();
+  ignoredEffectiveFailure.evidence.unit_configuration_passes[1][0]
+    .properties.ExecStart = ignoredEffectiveFailure.evidence
+      .unit_configuration_passes[1][0].properties.ExecStart.replace(
+        "ignore_errors=no",
+        "ignore_errors=yes",
+      );
+  assert.throws(
+    () => validateStoppedRelay(ignoredEffectiveFailure),
+    /permits systemctl Exec ignore_errors/,
+  );
+
   const resolvedSelection = stoppedRelayFixture();
   for (const pass of resolvedSelection.evidence.unit_configuration_passes) {
     const selection = pass[0].conditions.find((condition) =>
@@ -3049,21 +3443,29 @@ test("stopped directory-relay preparation is closed and can never become live ev
     /unreviewed MemorySwapCurrent/,
   );
 
+  const foreignManager = stoppedRelayFixture();
+  foreignManager.evidence.systemd_manager_passes[0].Version.value =
+    "255.4-1ubuntu8.14";
+  assert.throws(
+    () => validateStoppedRelay(foreignManager),
+    /Version must be typed s 255\.4-1ubuntu8\.15/u,
+  );
+
   const legacyRelaySchema = stoppedRelayFixture();
-  legacyRelaySchema.evidence.schema_version = 2;
+  legacyRelaySchema.evidence.schema_version = 3;
   legacyRelaySchema.evidence.evidence_kind =
-    "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
+    "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v3";
   legacyRelaySchema.evidence.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(
     () => validateStoppedRelay(legacyRelaySchema),
     /schema, collector, profile/,
   );
 
   const legacyRelayRequest = stoppedRelayFixture();
-  legacyRelayRequest.request.schema_version = 6;
+  legacyRelayRequest.request.schema_version = 7;
   legacyRelayRequest.request.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(
     () => validateStoppedRelay(legacyRelayRequest),
     /schema, collector, profile/,
@@ -3087,6 +3489,15 @@ test("stopped directory-relay preparation is closed and can never become live ev
 test("resolved directory-relay has stopped preparation evidence before sentinels exist", () => {
   const value = resolvedStoppedRelayFixture();
   assert.equal(validateStoppedRelay(value), true);
+
+  const unexpandedAddressAlias = resolvedStoppedRelayFixture();
+  for (const pass of unexpandedAddressAlias.evidence.unit_configuration_passes) {
+    pass[0].properties.IPAddressAllow = "localhost";
+  }
+  assert.throws(
+    () => validateStoppedRelay(unexpandedAddressAlias),
+    /effective IPAddressAllow drift/,
+  );
 
   const missingManifest = resolvedStoppedRelayFixture();
   missingManifest.request.installed_files.shift();
@@ -3337,18 +3748,26 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 6;
+  legacyEvidence.evidence.schema_version = 7;
   legacyEvidence.evidence.evidence_kind =
-    "bitcoinpir-payment-v1-linux-root-live-v6";
+    "bitcoinpir-payment-v1-linux-root-live-v7";
   legacyEvidence.evidence.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 6;
+  legacyRequest.request.schema_version = 7;
   legacyRequest.request.collector =
-    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
+
+  const foreignSystemdRequest = fixture();
+  foreignSystemdRequest.request.systemd_version = "systemd 255";
+  assert.throws(() => validate(foreignSystemdRequest), /systemd_version/u);
+
+  const foreignSystemdEvidence = fixture();
+  foreignSystemdEvidence.evidence.host.systemd_version = "systemd 255";
+  assert.throws(() => validate(foreignSystemdEvidence), /systemd build/u);
 
   const legacySystemctlConditions = fixture();
   legacySystemctlConditions.request.systemctl_show_properties = [
@@ -3462,19 +3881,21 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = []; }, /effective BindsTo dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.Requires = []; }, /effective Requires dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = ["bitcoinpir-core-lightning-lookalike.service"]; }, /effective BindsTo dependency drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift|service policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /canonical uint64 decimal string/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = "31000000"; }, /TimeoutStopUSec drift|service policy changed/],
     [(value) => { value.evidence.units[0].service_property_passes[0].properties.ExecStartPreEx[0].flags = []; }, /ExecStartPreEx drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = 0; }, /typed watchdog interval drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 0; }, /timestamp is not fresh/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 5_000_001; }, /timestamp is not fresh/],
-    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = 4_499_999; }, /policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = "0"; }, /typed watchdog interval drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = "0"; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = "5000001"; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = "4499999"; }, /policy changed/],
     [(value) => { value.evidence.units[0].service_property_passes[0].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
     [(value) => { value.evidence.units[0].service_property_passes[1].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
     [(value) => { value.evidence.systemd_manager_passes[0].ServiceWatchdogs.value = false; }, /typed b true/],
     [(value) => { value.evidence.systemd_manager_passes[1].ServiceWatchdogs.signature = "u"; }, /typed b true/],
+    [(value) => { value.evidence.systemd_manager_passes[0].Version.value = "255.4-1ubuntu8.14"; }, /Version must be typed s 255\.4-1ubuntu8\.15/],
+    [(value) => { value.evidence.systemd_manager_passes[1].Version.signature = "as"; }, /Version must be typed s 255\.4-1ubuntu8\.15/],
     [(value) => { value.evidence.units[0].properties.SubState = "exited"; }, /no active MainPID/],
-    [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
+    [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /reviewed running ExecStart/],
     [(value) => { value.evidence.units[0].properties.ActiveEnterTimestampMonotonic = "6000000"; }, /not bound to this boot/],
     [(value) => { value.evidence.units[0].properties.InvocationID = "0".repeat(32); }, /InvocationID/],
   ]) {
@@ -3493,9 +3914,9 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
   refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
     .observed_uptime_milliseconds = 5006;
   refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
-    .properties.WatchdogTimestampMonotonic = 5_005_000;
+    .properties.WatchdogTimestampMonotonic = "5005000";
   refreshedAfterHostStart.evidence.units[0].service_property_passes[1]
-    .properties.WatchdogTimestampMonotonic = 5_009_000;
+    .properties.WatchdogTimestampMonotonic = "5009000";
   assert.equal(validate(refreshedAfterHostStart), true);
 
   const staleAfterFalseToTrue = preflightLeaseFixture();
@@ -3506,9 +3927,9 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
     .observed_uptime_milliseconds = 100_010;
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
-    .properties.WatchdogTimestampMonotonic = 10_000_000;
+    .properties.WatchdogTimestampMonotonic = "10000000";
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
-    .properties.WatchdogTimestampMonotonic = 10_000_000;
+    .properties.WatchdogTimestampMonotonic = "10000000";
   assert.throws(() => validate(staleAfterFalseToTrue), /timestamp is not fresh/);
 });
 
@@ -3587,7 +4008,12 @@ for (const [label, mutate, expected] of [
   ["drop-in", (f) => { f.evidence.units[0].properties.DropInPaths = "/etc/systemd/system/x.d/evil.conf"; }, /drop-in/],
   ["foreign PID namespace", (f) => { f.evidence.host.collector_pid_namespace = "pid:[4026532557]"; }, /visible systemd PID namespace root/],
   ["non-systemd PID 1", (f) => { f.evidence.host.pid1_name = "sh"; }, /visible systemd PID namespace root/],
-  ["ExecStart reset", (f) => { f.evidence.units[0].properties.ExecStart = execValue("/usr/bin/true"); }, /ExecStart drift/],
+  ["ExecStart reset", (f) => {
+    f.evidence.units[0].properties.ExecStart = execValue(
+      "/usr/bin/true",
+      { pid: "4242", state: "running" },
+    );
+  }, /ExecStart drift/],
   ["ExecStartPost", (f) => { f.evidence.units[0].properties.ExecStartPost = execValue("/usr/bin/true"); }, /ExecStartPost/],
   ["EnvironmentFile", (f) => { f.evidence.units[0].properties.EnvironmentFiles = "/tmp/evil"; }, /EnvironmentFiles/],
   ["credential", (f) => { f.evidence.units[0].credential_properties.LoadCredential.data = [["secret", "/tmp/evil"]]; }, /LoadCredential/],
@@ -3599,7 +4025,7 @@ for (const [label, mutate, expected] of [
   ["tmpfiles evidence type", (f) => { f.evidence.runtime_directories[0].expected_type = "socket"; }, /tmpfiles directory drift/],
   ["runtime socket mode", (f) => { f.evidence.runtime_paths[0].mode = "0666"; }, /runtime path mode drift/],
   ["unexpected issuer group", (f) => { f.evidence.nss.users[0].supplementary_gids.push(999); }, /unexpected supplementary group|reverse group membership/],
-  ["inactive unit", (f) => { f.evidence.units[0].properties.ActiveState = "inactive"; }, /not active/],
+  ["inactive unit", (f) => { f.evidence.units[0].properties.ActiveState = "inactive"; }, /unexecuted stopped command/],
   ["missing effective condition", (f) => { f.evidence.units[0].conditions = []; }, /effective condition drift/],
   ["extra effective condition", (f) => { f.evidence.units[0].conditions.push({
     negate: true,
@@ -3615,7 +4041,7 @@ for (const [label, mutate, expected] of [
   ["condition result not passed", (f) => { f.evidence.units[0].conditions[0].result = 0; }, /effective condition drift/],
   ["trigger condition drift", (f) => { f.evidence.units[0].conditions[0].trigger = true; }, /effective condition drift/],
   ["ControlGroup drift", (f) => { f.evidence.units[0].properties.ControlGroup = "/system.slice/evil.service"; }, /reviewed system\.slice control group/],
-  ["zero MainPID", (f) => { f.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
+  ["zero MainPID", (f) => { f.evidence.units[0].properties.MainPID = "0"; }, /reviewed running ExecStart/],
   ["effective Restart drift", (f) => { f.evidence.units[0].properties.Restart = "on-failure"; }, /Restart drift/],
   ["effective LimitCORE drift", (f) => { f.evidence.units[0].properties.LimitCORE = "infinity"; }, /LimitCORE drift/],
   ["effective LimitCORESoft drift", (f) => { f.evidence.units[0].properties.LimitCORESoft = "infinity"; }, /LimitCORESoft drift/],

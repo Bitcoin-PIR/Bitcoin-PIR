@@ -120,7 +120,8 @@
       "uid": 0
     }
   ],
-  "schema_version": 1,
+  "schema_version": 2,
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)",
   "service_identities": [
     {
       "gid": 52901,
