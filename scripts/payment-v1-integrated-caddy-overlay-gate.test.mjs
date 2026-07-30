@@ -264,8 +264,8 @@ function makePlan() {
         setpriv_binary_sha256: "4".repeat(64),
         service_uid_inventory_sha256: sha256(
           Buffer.from(canonicalJson([
-            { name: "cloudflared", uid: 62901 },
-            { name: "pir", uid: 62902 },
+            { name: "cloudflared", uid: 52901 },
+            { name: "pir", uid: 52902 },
           ]).slice(0, -1)),
         ),
         socket_mode: "0200",
@@ -405,8 +405,8 @@ function adminRuntime(plan, start, adaptedJsonSha256) {
     boot_id: "22345678-1234-4234-9234-123456789abc",
     boundary: "capability-free-unprivileged-non-root-dac-only",
     denied_service_uids: [
-      { cap_eff: "0000000000000000", error: "EACCES", gid: 62901, groups: [62901], name: "cloudflared", uid: 62901 },
-      { cap_eff: "0000000000000000", error: "EACCES", gid: 62902, groups: [62902], name: "pir", uid: 62902 },
+      { cap_eff: "0000000000000000", error: "EACCES", gid: 52901, groups: [52901], name: "cloudflared", uid: 52901 },
+      { cap_eff: "0000000000000000", error: "EACCES", gid: 52902, groups: [52902], name: "pir", uid: 52902 },
     ],
     effective_unit: {
       dropin_paths: [],

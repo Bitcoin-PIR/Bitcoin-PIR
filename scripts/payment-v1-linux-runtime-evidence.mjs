@@ -34,6 +34,7 @@ import {
   isResolvedDirectoryRelayRuntimeRequest,
   parseStrictJson,
   runtimeRequestFromManifest,
+  validateServiceIdentityId,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
 export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
@@ -895,14 +896,12 @@ export function parseLockedServiceAccountPolicyV1(
     if (
       expectedByName.has(userName) ||
       !Number.isSafeInteger(identity.uid) ||
-      identity.uid < 1 ||
-      identity.uid > 0xffff_ffff ||
-      !Number.isSafeInteger(identity.gid) ||
-      identity.gid < 1 ||
-      identity.gid > 0xffff_ffff
+      !Number.isSafeInteger(identity.gid)
     ) {
       fail("service identity account binding is duplicated or malformed");
     }
+    validateServiceIdentityId(identity.uid, `service identity policy[${index}].uid`);
+    validateServiceIdentityId(identity.gid, `service identity policy[${index}].gid`);
     expectedByName.set(userName, identity);
   }
 
@@ -1793,6 +1792,10 @@ function resolveExpectedUnitProcessIdentity(unit, nss, serviceIdentities) {
   const user = usersByName.get(userName);
   const group = groupsByName.get(groupName);
   const pinned = serviceIdentities.find((identity) => identity.unit_name === unit.unit_name);
+  if (pinned) {
+    validateServiceIdentityId(pinned.uid, `${unit.unit_name} service uid`);
+    validateServiceIdentityId(pinned.gid, `${unit.unit_name} service gid`);
+  }
   if (
     !user ||
     !group ||
@@ -2268,6 +2271,7 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -2275,6 +2279,7 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -3904,6 +3909,16 @@ function validateTrustedCommandClosure(commands, label) {
   }
 }
 
+function validateRuntimeServiceIdentityIds(serviceIdentities, label) {
+  if (!Array.isArray(serviceIdentities) || serviceIdentities.length < 1) {
+    fail(`${label} service identity bindings are missing`);
+  }
+  for (const [index, identity] of serviceIdentities.entries()) {
+    validateServiceIdentityId(identity?.uid, `${label} service identity[${index}].uid`);
+    validateServiceIdentityId(identity?.gid, `${label} service identity[${index}].gid`);
+  }
+}
+
 export function validateStoppedEdgeActivationEvidence({
   evidence,
   request,
@@ -3946,6 +3961,7 @@ export function validateStoppedEdgeActivationEvidence({
   ) {
     fail("stopped-edge evidence schema, collector, profile, or artifact binding is not reviewed");
   }
+  validateRuntimeServiceIdentityIds(request.service_identities, "stopped-edge request");
   if (
     typeof evidence.challenge_hex !== "string" ||
     !/^[0-9a-f]{64}$/u.test(evidence.challenge_hex) ||
@@ -3988,6 +4004,10 @@ export function validateStoppedRelayPreparationEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  validateRuntimeServiceIdentityIds(
+    request.service_identities,
+    "stopped directory-relay request",
+  );
   const relayUnit = request.units?.[0];
   const relayIdentity = request.service_identities?.[0];
   const relayConfigPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
@@ -4014,7 +4034,7 @@ export function validateStoppedRelayPreparationEvidence({
       ]
     : [relayConfigPath, relayFragmentPath];
   const expectedInstalledMetadata = new Map([
-    [relayConfigPath, { gid: 62952, mode: "0400", uid: 62951 }],
+    [relayConfigPath, { gid: 52952, mode: "0400", uid: 52951 }],
     [relayFragmentPath, { gid: 0, mode: "0644", uid: 0 }],
     ...(resolvedRelay
       ? [
@@ -4078,8 +4098,8 @@ export function validateStoppedRelayPreparationEvidence({
     relayUnit.unit_name !== "bitcoinpir-directory-relay.service" ||
     relayUnit.fragment_path !== relayFragmentPath ||
     relayIdentity.unit_name !== relayUnit.unit_name ||
-    relayIdentity.uid !== 62951 ||
-    relayIdentity.gid !== 62952 ||
+    relayIdentity.uid !== 52951 ||
+    relayIdentity.gid !== 52952 ||
     (!blockedRelay && !resolvedRelay) ||
     canonicalJson(relayUnit.conditions) !== canonicalJson([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -4119,6 +4139,8 @@ export function validateStoppedRelayPreparationEvidence({
     ["StandardOutput", "null"],
     ["ProtectClock", "true"],
     ["ProtectHostname", "true"],
+    ["ProtectProc", "invisible"],
+    ["ProcSubset", "pid"],
     ["Restart", resolvedRelay ? "on-failure" : "no"],
   ]) {
     if (canonicalJson(relayUnit.hardening[key] ?? []) !== canonicalJson([expected])) {
@@ -4209,7 +4231,7 @@ function validateResolvedDirectoryRelayLiveRequestShape(request) {
       "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
       { gid: 0, mode: "0444", uid: 0 },
     ],
-    [configPath, { gid: 62952, mode: "0400", uid: 62951 }],
+    [configPath, { gid: 52952, mode: "0400", uid: 52951 }],
     [fragmentPath, { gid: 0, mode: "0644", uid: 0 }],
     [binaryPath, { gid: 0, mode: "0555", uid: 0 }],
   ]);
@@ -4231,8 +4253,8 @@ function validateResolvedDirectoryRelayLiveRequestShape(request) {
   if (
     request.service_identities?.length !== 1 ||
     identity?.unit_name !== unit.unit_name ||
-    identity.uid !== 62951 ||
-    identity.gid !== 62952 ||
+    identity.uid !== 52951 ||
+    identity.gid !== 52952 ||
     !fileShapeMatches ||
     canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
       "/usr/bin/systemd-analyze",
@@ -4244,8 +4266,8 @@ function validateResolvedDirectoryRelayLiveRequestShape(request) {
     request.secret_files?.length !== 1 ||
     request.secret_files[0].consumer_unit_name !== unit.unit_name ||
     request.secret_files[0].target_path !== configPath ||
-    request.secret_files[0].uid !== 62951 ||
-    request.secret_files[0].gid !== 62952 ||
+    request.secret_files[0].uid !== 52951 ||
+    request.secret_files[0].gid !== 52952 ||
     request.secret_files[0].mode !== "0400" ||
     canonicalJson(unit.hardening.ReadOnlyPaths ?? []) !== canonicalJson([
       `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
@@ -4320,6 +4342,7 @@ export function validateLiveRuntimeEvidence({
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
   }
+  validateRuntimeServiceIdentityIds(request.service_identities, "live runtime request");
   if (evidence.manifest_sha256 !== request.manifest_sha256 || evidence.approved_plan_sha256 !== request.approved_plan_sha256) {
     fail("live evidence is not bound to the approved manifest and plan");
   }

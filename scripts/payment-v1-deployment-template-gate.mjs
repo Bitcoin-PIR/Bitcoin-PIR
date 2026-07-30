@@ -333,6 +333,8 @@ const COMMON_SERVICE_KEYS = new Set([
   "ProtectControlGroups",
   "ProtectClock",
   "ProtectHostname",
+  "ProtectProc",
+  "ProcSubset",
   "LockPersonality",
   "MemoryDenyWriteExecute",
   "RestrictSUIDSGID",
@@ -2544,7 +2546,8 @@ export function validateDeploymentTree(rootInput) {
       "StandardOutput", "StandardError",
       "NoNewPrivileges", "PrivateTmp", "PrivateDevices", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
-      "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality", "MemoryDenyWriteExecute",
+      "ProtectControlGroups", "ProtectClock", "ProtectHostname", "ProtectProc", "ProcSubset",
+      "LockPersonality", "MemoryDenyWriteExecute",
       "RestrictSUIDSGID", "RestrictNamespaces", "RestrictRealtime",
       "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
       "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths",
@@ -2582,6 +2585,8 @@ export function validateDeploymentTree(rootInput) {
   exactDirectiveValues(relayParsed, "Service", "StandardError", ["null"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ProtectClock", ["true"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ProtectHostname", ["true"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProtectProc", ["invisible"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProcSubset", ["pid"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressDeny", ["any"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressAllow", ["localhost"], relayLabel);
   exactDirectiveValues(

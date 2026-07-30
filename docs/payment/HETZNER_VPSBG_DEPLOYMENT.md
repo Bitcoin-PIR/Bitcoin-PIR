@@ -398,7 +398,10 @@ fallback.
 
 The reviewed process interface is intentionally narrow: exactly
 `bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`, with no CLI
-overrides. The TOML must declare `profile = "bitcoinpir-directory-relay-v1"` and
+overrides. The unit and both stopped/live evidence paths also require effective
+`ProtectProc=invisible` and `ProcSubset=pid`, limiting a compromised relay's
+view of co-located process and TCP metadata. The TOML must declare
+`profile = "bitcoinpir-directory-relay-v1"` and
 contain exactly `public_listen`, `publisher_listen`, `database`,
 `directory_pubkey_hex`, the four global connection/operation/rate/egress caps,
 matching `max_public_*` and `max_publisher_*` reservations whose exact sums
@@ -410,9 +413,9 @@ equal each global cap, `max_egress_bytes_per_connection`, `max_archive_events`, 
 unit's only writable StateDirectory at
 `/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The loader accepts only an
 effective-UID-owned mode 0400 or 0600 file under a private parent directory;
-the reviewed deployment shape is specifically UID 62951, GID 62952, mode 0400
+the reviewed deployment shape is specifically UID 52951, GID 52952, mode 0400
 and never root-owned/group-readable 0440. Its final parent must be owned by UID
-62951 with exact mode 0700; the stopped collector probes readability as the
+52951 with exact mode 0700; the stopped collector probes readability as the
 real service EUID and seals the descriptor-bound ancestor chain.
 
 The relay has separate public-read and private-publisher accept loops and
@@ -675,6 +678,12 @@ projection and requires the second snapshot to equal the first byte-for-byte.
 This closed-set change uses the single
 `local-files-authoritative-reviewed-systemd-fallback-v2` backend tag; evidence
 carrying the older `local-files-only-v1` tag is rejected and must be recollected.
+Every manifest-bound service UID and primary GID must also be a static integer
+in `1..60000`. This deliberately stays below systemd's recycled `DynamicUser`
+range `61184..65519` and excludes `nobody` `65534`; a render plan, Caddy
+service-UID inventory, or runtime request outside that range fails closed.
+The checked-in Payment V1 examples reserve `52901..52952`, but target-host NSS
+and numeric-owner absence must still be proved before installation.
 The live pass hash-binds but does not semantically compare password, GECOS,
 home, shell and group-password fields. The mandatory stopped-edge pass also
 reads stable `/etc/passwd` and `/etc/shadow` snapshots and requires every

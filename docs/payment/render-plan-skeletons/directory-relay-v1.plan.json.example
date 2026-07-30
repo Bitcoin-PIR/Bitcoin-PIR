@@ -33,12 +33,12 @@
   "placeholders": {},
   "rendered_artifacts": [
     {
-      "gid": 62952,
+      "gid": 52952,
       "mode": "0400",
       "source_path": "deploy/payment-v1/directory-relay.toml.example",
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "target_path": "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-      "uid": 62951
+      "uid": 52951
     },
     {
       "gid": 0,
@@ -53,9 +53,9 @@
   "schema_version": 1,
   "service_identities": [
     {
-      "gid": 62952,
+      "gid": 52952,
       "group_name": "bitcoinpir-directory-relay",
-      "uid": 62951,
+      "uid": 52951,
       "unit_name": "bitcoinpir-directory-relay.service",
       "user_name": "bitcoinpir-directory-relay"
     }

@@ -23,16 +23,16 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/cashu-bat.key",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/cashu-bat.key",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/databases.toml",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/databases.toml",
@@ -41,16 +41,16 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/provider-clearing-signing.key",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-clearing-signing.key",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/provider-identity.cert",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-identity.cert",
@@ -59,43 +59,43 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/provider-identity.key",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-identity.key",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-authority.toml",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-authority.toml",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-client-signing.seed",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-client-signing.seed",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-value-root.key",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-value-root.key",
-      "uid": 62933
+      "uid": 52933
     },
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/service-policy.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/service-policy.bin",
@@ -104,7 +104,7 @@
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/shared-clearing-approval.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-clearing-approval.bin",
@@ -113,7 +113,7 @@
     {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/shared-clearing-authorization.bin",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-clearing-authorization.bin",
@@ -122,11 +122,11 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62934,
+      "gid": 52934,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/shared-redeem-idempotency.key",
       "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-redeem-idempotency.key",
-      "uid": 62933
+      "uid": 52933
     }
   ],
   "placeholders": {
@@ -151,9 +151,9 @@
   "schema_version": 1,
   "service_identities": [
     {
-      "gid": 62934,
+      "gid": 52934,
       "group_name": "bitcoinpir-provider-nocashu",
-      "uid": 62933,
+      "uid": 52933,
       "unit_name": "bitcoinpir-provider-no-standard-cashu.service",
       "user_name": "bitcoinpir-provider-nocashu"
     }

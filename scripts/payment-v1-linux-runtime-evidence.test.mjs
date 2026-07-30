@@ -445,6 +445,7 @@ function fixture() {
     NoNewPrivileges: "yes",
     PrivateDevices: "yes",
     PrivateTmp: "yes",
+    ProcSubset: "all",
     ProtectClock: "",
     ProtectControlGroups: "yes",
     ProtectHome: "yes",
@@ -452,6 +453,7 @@ function fixture() {
     ProtectKernelLogs: "yes",
     ProtectKernelModules: "yes",
     ProtectKernelTunables: "yes",
+    ProtectProc: "default",
     ProtectSystem: "strict",
     ReadOnlyPaths: "/etc/bitcoinpir/payment-v1/test",
     ReadWritePaths: "",
@@ -751,8 +753,8 @@ function stoppedRelayFixture() {
   const value = stoppedEdgeFixture();
   const previousUid = value.request.service_identities[0].uid;
   const previousGid = value.request.service_identities[0].gid;
-  const relayUid = 62951;
-  const relayGid = 62952;
+  const relayUid = 52951;
+  const relayGid = 52952;
   value.request.deployment_profile = "directory-relay-v1";
   value.request.runtime_paths = [];
   value.request.secret_files = [];
@@ -777,6 +779,8 @@ function stoppedRelayFixture() {
     MemorySwapMax: ["0"],
     ProtectClock: ["true"],
     ProtectHostname: ["true"],
+    ProtectProc: ["invisible"],
+    ProcSubset: ["pid"],
     Restart: ["no"],
     StandardError: ["null"],
     StandardOutput: ["null"],
@@ -868,6 +872,8 @@ function stoppedRelayFixture() {
     MemorySwapCurrent: "[not set]",
     ProtectClock: "yes",
     ProtectHostname: "yes",
+    ProtectProc: "invisible",
+    ProcSubset: "pid",
     SubState: "dead",
   });
   const conditions = value.request.units[0].conditions.map((condition) => ({
@@ -959,7 +965,7 @@ function resolvedStoppedRelayFixture() {
   value.request.installed_files = [
     { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("binary-manifest"), target_path: binaryManifestPath, uid: 0 },
     { file_type: "regular", gid: 0, mode: "0444", nlink: 1, sha256: hash("config-manifest"), target_path: configManifestPath, uid: 0 },
-    { file_type: "regular", gid: 62952, mode: "0400", nlink: 1, sha256: hash("relay-config"), target_path: configPath, uid: 62951 },
+    { file_type: "regular", gid: 52952, mode: "0400", nlink: 1, sha256: hash("relay-config"), target_path: configPath, uid: 52951 },
     { file_type: "regular", gid: 0, mode: "0644", nlink: 1, sha256: hash("resolved-relay-fragment"), target_path: fragmentPath, uid: 0 },
     { file_type: "regular", gid: 0, mode: "0555", nlink: 1, sha256: binarySha256, target_path: binaryPath, uid: 0 },
   ];
@@ -986,8 +992,8 @@ function resolvedStoppedRelayFixture() {
 
 function resolvedLiveRelayFixture() {
   const value = fixture();
-  const relayUid = 62951;
-  const relayGid = 62952;
+  const relayUid = 52951;
+  const relayGid = 52952;
   const binarySha256 = hash("resolved-relay-live-binary");
   const binaryPath =
     `/opt/bitcoinpir/directory-relay/${binarySha256}/bitcoinpir-directory-relay`;
@@ -1022,6 +1028,8 @@ function resolvedLiveRelayFixture() {
     MemorySwapMax: ["0"],
     ProtectClock: ["true"],
     ProtectHostname: ["true"],
+    ProtectProc: ["invisible"],
+    ProcSubset: ["pid"],
     ReadOnlyPaths: [
       `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
     ],
@@ -1143,6 +1151,8 @@ function resolvedLiveRelayFixture() {
     MemoryMax: "536870912",
     ProtectClock: "yes",
     ProtectHostname: "yes",
+    ProtectProc: "invisible",
+    ProcSubset: "pid",
     ReadOnlyPaths: unit.hardening.ReadOnlyPaths[0],
     ReadWritePaths: "/var/lib/bitcoinpir-directory-relay",
     Restart: "on-failure",
@@ -1429,6 +1439,10 @@ function secretIsolationFixture() {
 
 test("valid live evidence binds challenge, host, boot, files, NSS, units, and command TCB", () => {
   assert.equal(validate(fixture()), true);
+
+  const dynamicIdentity = fixture();
+  dynamicIdentity.request.service_identities[0].uid = 61_184;
+  assert.throws(() => validate(dynamicIdentity), /static service uid\/gid.*DynamicUser/u);
 });
 
 test("resolved directory relay can produce live evidence only for its closed artifact shape", () => {
@@ -1445,14 +1459,29 @@ test("resolved directory relay can produce live evidence only for its closed art
   const publisherKey = resolvedLiveRelayFixture();
   publisherKey.request.installed_files.push({
     file_type: "regular",
-    gid: 62952,
+    gid: 52952,
     mode: "0400",
     nlink: 1,
     sha256: hash("publisher-private-key"),
     target_path: "/etc/bitcoinpir/payment-v1/directory-relay/publisher-private.key",
-    uid: 62951,
+    uid: 52951,
   });
   assert.throws(() => validate(publisherKey), /artifact or identity closure/);
+
+  const weakRequestProc = resolvedLiveRelayFixture();
+  weakRequestProc.request.units[0].hardening.ProtectProc = ["default"];
+  assert.throws(
+    () => validate(weakRequestProc),
+    /unresolved directory-relay-v1|artifact or identity closure/u,
+  );
+
+  const weakEffectiveProc = resolvedLiveRelayFixture();
+  weakEffectiveProc.evidence.units[0].properties.ProtectProc = "default";
+  assert.throws(() => validate(weakEffectiveProc), /effective ProtectProc drift/u);
+
+  const fullEffectiveProc = resolvedLiveRelayFixture();
+  fullEffectiveProc.evidence.units[0].properties.ProcSubset = "all";
+  assert.throws(() => validate(fullEffectiveProc), /effective ProcSubset drift/u);
 });
 
 test("complete NSS parsers retain every primary GID and canonicalize ASCII names and members", () => {
@@ -2185,6 +2214,19 @@ test("service-account policy requires pinned IDs, nologin shell, and a locked sh
     ),
     /login-disabled, and password-locked/,
   );
+
+  for (const id of [60_001, 61_184, 65_519, 65_534]) {
+    const outsideStaticRange = clone(identities);
+    outsideStaticRange[0].uid = id;
+    assert.throws(
+      () => parseLockedServiceAccountPolicyV1(
+        `bitcoinpir-test:x:${id}:731::/nonexistent:/usr/sbin/nologin\n`,
+        "bitcoinpir-test:!:1:0:99999:7:::\n",
+        outsideStaticRange,
+      ),
+      /static service uid\/gid.*DynamicUser/u,
+    );
+  }
 });
 
 test("stopped-edge activation evidence closes units, sockets, identities, and login reacquisition", () => {
@@ -2254,6 +2296,20 @@ test("stopped directory-relay preparation is closed and can never become live ev
   const preStart = stoppedRelayFixture();
   preStart.request.units[0].exec_start_pre = ["/usr/bin/true"];
   assert.throws(() => validateStoppedRelay(preStart), /unit binding/);
+
+  const weakRequestProc = stoppedRelayFixture();
+  weakRequestProc.request.units[0].hardening.ProtectProc = ["default"];
+  assert.throws(
+    () => validateStoppedRelay(weakRequestProc),
+    /request hardening drift: ProtectProc/u,
+  );
+
+  const fullEffectiveProc = stoppedRelayFixture();
+  fullEffectiveProc.evidence.unit_configuration_passes[1][0].properties.ProcSubset = "all";
+  assert.throws(
+    () => validateStoppedRelay(fullEffectiveProc),
+    /effective ProcSubset drift/u,
+  );
 
   const wrongConfigOwner = stoppedRelayFixture();
   wrongConfigOwner.request.installed_files[0].uid = 0;

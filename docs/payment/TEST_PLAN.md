@@ -906,6 +906,10 @@ remain separate acceptance gates.
   fail closed. It checks stable root-owned policy snapshots,
   identity-relevant `getent` projections, every user's `id -G`, UID/GID
   uniqueness and protected-group closure;
+- render plans, runtime service-account policy, and the Caddy service-UID
+  inventory reject IDs outside static `1..60000`, including systemd
+  `DynamicUser` `61184..65519` and `nobody` `65534`; checked-in Payment V1
+  examples contain no former `629xx` service identity;
 - a final complete policy/getent/id snapshot detects `/etc/nsswitch.conf`,
   `/etc/passwd`, `/etc/group`, enumeration or supplementary-group drift during
   later live and stopped checks;
@@ -933,6 +937,9 @@ remain separate acceptance gates.
   stopped-edge evidence digest before any listener, recreates the volatile
   listeners in HAProxy-before-Caddy order, collects a fresh live digest, and
   independently proves execution in the host initial PID namespace;
+- directory-relay source/render/stopped/live gates reject either
+  `ProtectProc` weaker than `invisible` or `ProcSubset` other than `pid`, and
+  effective `systemctl show` evidence must equal both values;
 - public and publisher relay listeners reject deliberate wrong-lane EVENTs and
   prove their exact event IDs absent before a correct-lane publication.
 - Caddy source validation rejects additive binds/upstreams, imports, invokes,

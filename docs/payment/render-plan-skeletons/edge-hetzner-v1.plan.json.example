@@ -50,7 +50,7 @@
     {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62901,
+      "gid": 52901,
       "mode": "0440",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/edge/directory-publisher-server.crt",
       "target_path": "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
@@ -59,11 +59,11 @@
     {
       "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 62901,
+      "gid": 52901,
       "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/edge/directory-publisher-server.key",
       "target_path": "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
-      "uid": 62901
+      "uid": 52901
     },
     {
       "class": "hash-manifest",
@@ -88,7 +88,7 @@
   },
   "rendered_artifacts": [
     {
-      "gid": 62901,
+      "gid": 52901,
       "mode": "0440",
       "source_path": "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
@@ -104,7 +104,7 @@
       "uid": 0
     },
     {
-      "gid": 62902,
+      "gid": 52902,
       "mode": "0440",
       "source_path": "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
@@ -123,16 +123,16 @@
   "schema_version": 1,
   "service_identities": [
     {
-      "gid": 62901,
+      "gid": 52901,
       "group_name": "bitcoinpir-payment-edge",
-      "uid": 62901,
+      "uid": 52901,
       "unit_name": "bitcoinpir-payment-v1-public-edge.service",
       "user_name": "bitcoinpir-payment-edge"
     },
     {
-      "gid": 62902,
+      "gid": 52902,
       "group_name": "bitcoinpir-source-fair-edge",
-      "uid": 62902,
+      "uid": 52902,
       "unit_name": "bitcoinpir-payment-v1-source-fair-edge.service",
       "user_name": "bitcoinpir-source-fair-edge"
     }

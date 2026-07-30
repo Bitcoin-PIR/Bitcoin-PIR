@@ -238,8 +238,8 @@ function fixture() {
     },
     schema_version: 1,
     service_uid_inventory: [
-      { name: "cloudflared", uid: 62901 },
-      { name: "pir", uid: 62902 },
+      { name: "cloudflared", uid: 52901 },
+      { name: "pir", uid: 52902 },
     ],
     site_preservation: {
       acme_storage_migration: "none",
@@ -694,7 +694,10 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.supply_chain.caddy.version = "v2.11.3"; }, /must equal v2\.11\.4/u],
     [(plan) => { plan.supply_chain.node.version = "v24.18.0"; }, /must equal v22\.22\.2/u],
     [(plan) => { plan.runtime.setpriv_binary.path = "/usr/local/bin/setpriv"; }, /must equal \/usr\/bin\/setpriv/u],
-    [(plan) => { plan.service_uid_inventory = [{ name: "pir", uid: 62902 }]; }, /2\.\.128/u],
+    [(plan) => { plan.service_uid_inventory = [{ name: "pir", uid: 52902 }]; }, /2\.\.128/u],
+    [(plan) => { plan.service_uid_inventory[0].uid = 60_001; }, /static service uid\/gid.*DynamicUser/u],
+    [(plan) => { plan.service_uid_inventory[0].uid = 61_184; }, /static service uid\/gid.*DynamicUser/u],
+    [(plan) => { plan.service_uid_inventory[0].uid = 65_534; }, /static service uid\/gid.*DynamicUser/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "123e4567-e89b-42d3-a456-426614174000"; }, /32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
@@ -743,7 +746,7 @@ test("receipt rejects warm generation, non-root access, TCP admin, socket drift 
       /not an exact EACCES proof/u,
     ],
     [
-      (receipt) => { receipt.admin.denied_service_uids[0].groups = [0, 62901]; },
+      (receipt) => { receipt.admin.denied_service_uids[0].groups = [0, 52901]; },
       /not an exact EACCES proof/u,
     ],
     [

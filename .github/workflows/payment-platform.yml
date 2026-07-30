@@ -519,6 +519,10 @@ jobs:
           echo "BPIR_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
       - name: Validate non-activating Payment V1 deployment templates
         run: |
+          if git grep -nE '(^|[^0-9A-Za-z])629[0-9]{2}([^0-9A-Za-z]|$)' -- deploy/payment-v1 docs/payment 'scripts/payment-v1-*'; then
+            echo 'former Payment V1 629xx service identities are forbidden'
+            exit 1
+          fi
           node --check scripts/payment-v1-deployment-template-gate.mjs
           node --test scripts/payment-v1-deployment-template-gate.test.mjs
           node scripts/payment-v1-deployment-template-gate.mjs

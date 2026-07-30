@@ -150,18 +150,21 @@ The templates divide responsibilities as follows:
   existing strict SPKI-pinned client, and requires a separate private-ingress
   sentinel. It does not pretend that server-only mTLS is deployable before the
   client also has reviewed certificate/key support.
-- `systemd/hetzner-directory-relay.service.in` is deliberately blocked while
-  `relay-selection.toml.example` is `UNRESOLVED`. It is a deployment contract
-  for the repository's directory-only relay, not a generic Nostr relay unit.
-  A future resolved service may pass only one absolute owner-only TOML path via
-  `--config`; that path is fixed as
+- `systemd/hetzner-directory-relay.service.in` is a deployment contract for the
+  repository's directory-only relay, not a generic Nostr relay unit. The
+  checked-in selection is now explicitly `RESOLVED` in degraded
+  `centralized-single-relay` mode. Its stopped render carries the exact
+  content-addressed relay binary plus one-entry binary/config manifests, and
+  the unit invokes that binary only after both manifests pass. It accepts only
+  one absolute owner-only TOML path via `--config`; that path is fixed as
   `/etc/bitcoinpir/payment-v1/directory-relay/config.toml` and direct
-  command-line overrides remain forbidden. The current stopped-only render
-  profile carries no binary payload and the unit remains `/usr/bin/false`.
-  Its config is installed for the actual loader as UID `62951`, GID `62952`,
+  command-line overrides remain forbidden. Resolution is not activation: all
+  three approval/selection sentinels remain mandatory, the unit has no
+  `[Install]` section, and the publisher private key is never installed here.
+  Its config is installed for the actual loader as UID `52951`, GID `52952`,
   mode `0400`; root-owned/group-readable `0440` is deliberately rejected. The
   config is a private loader input: its final parent must be owned by UID
-  `62951` with mode `0700`, and stopped evidence must prove readability through
+  `52951` with mode `0700`, and stopped evidence must prove readability through
   that service's real effective UID.
 - `systemd/payment-v1-source-fair-edge.service.in` runs pinned HAProxy 2.8
   without a StateDirectory, logs, peers, stats, or persisted source state. It

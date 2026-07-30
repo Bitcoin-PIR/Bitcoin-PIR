@@ -47,15 +47,15 @@ if (mode === "good") {
   const denied = runPinnedAdminProbe({
     expected: "EACCES",
     gatePin,
-    gid: 62902,
+    gid: 52902,
     label: "pir-real-adapter",
     nodePin,
     probePin,
     setprivPin,
-    uid: 62902,
+    uid: 52902,
   });
   assert.equal(denied.cap_eff, "0000000000000000");
-  assert.deepEqual(denied.groups, [62902]);
+  assert.deepEqual(denied.groups, [52902]);
   assert.equal(denied.error, "EACCES");
   process.stdout.write("caddy-admin-uds-real-adapter=PASS mode=good setpriv=descriptor-pinned caps=zero groups=cleared\n");
 } else if (mode === "permission-drift") {
@@ -63,12 +63,12 @@ if (mode === "good") {
     () => runPinnedAdminProbe({
       expected: "EACCES",
       gatePin,
-      gid: 62902,
+      gid: 52902,
       label: "pir-real-adapter-drift",
       nodePin,
       probePin,
       setprivPin,
-      uid: 62902,
+      uid: 52902,
     }),
     /unexpectedly reached the admin API/u,
   );

@@ -15,7 +15,9 @@ Every skeleton is deliberately unusable:
 - binary target paths retain an invalid digest marker except the resolved
   directory-relay selection, whose reviewed binary digest is already fixed; and
 - numeric service identities are documentation examples and must be replaced
-  with the exact approved NSS values on the target host.
+  with the exact approved NSS values on the target host. Every service UID/GID
+  must be in the static range `1..60000`; the render gates reject systemd's
+  `DynamicUser` range `61184..65519`, `nobody` `65534`, and all larger IDs.
 
 The gate must reject an untouched skeleton. Making one syntactically acceptable
 is not approval to install or activate it.
@@ -74,7 +76,7 @@ initializing a blank store and calling it a switch.
 
 | File | Gate profile | Scope |
 | --- | --- | --- |
-| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One resolved, still sentinel-gated relay: config fixed to UID 62951/GID 62952/mode 0400, exact content-addressed binary, and two root-owned one-entry hash manifests. V2 stopped evidence still precedes activation; no publisher private key, start or publication authority. |
+| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One resolved, still sentinel-gated relay: config fixed to UID 52951/GID 52952/mode 0400, exact content-addressed binary, two root-owned one-entry hash manifests, and effective `ProtectProc=invisible` plus `ProcSubset=pid`. V2 stopped evidence still precedes activation; no publisher private key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |

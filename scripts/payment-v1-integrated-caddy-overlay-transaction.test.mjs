@@ -881,7 +881,7 @@ test("transaction rejects current admin UDS gate file drift before exchange", as
 for (const [name, mutate, expected] of [
   ["runtime directory mode drift", (ops) => { ops.adminDirectoryMode = "0755"; }, /runtime directory does not match/u],
   ["socket mode drift", (ops) => { ops.adminSocketMode = "0666"; }, /admin socket does not match/u],
-  ["service UID reaches admin", (ops) => { ops.adminUnexpectedReachableUid = 62902; }, /did not receive exact EACCES/u],
+  ["service UID reaches admin", (ops) => { ops.adminUnexpectedReachableUid = 52902; }, /did not receive exact EACCES/u],
   ["TCP admin is reachable", (ops) => { ops.adminTcpResult = "connected"; }, /did not refuse the TCP admin probe/u],
   ["probe retains capabilities", (ops) => { ops.adminCapEff = "0000000000000002"; }, /root did not read back/u],
   ["root reads a different admin endpoint", (ops) => { ops.adminRootListen = "127.0.0.1:2019"; }, /root did not read back/u],

@@ -45,6 +45,12 @@ const EMPTY_SHA256 =
 const DIRECTORY_RELAY_SELECTION_SOURCE =
   "deploy/payment-v1/relay-selection.toml.example";
 
+export const SERVICE_IDENTITY_MIN = 1;
+export const SERVICE_IDENTITY_MAX = 60_000;
+export const SYSTEMD_DYNAMIC_ID_MIN = 61_184;
+export const SYSTEMD_DYNAMIC_ID_MAX = 65_519;
+export const NOBODY_ID = 65_534;
+
 const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "AmbientCapabilities",
   "CapabilityBoundingSet",
@@ -61,6 +67,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -68,6 +75,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -244,6 +252,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -251,6 +260,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -853,6 +863,21 @@ function validateUidGid(value, label, { allowRoot = true } = {}) {
   }
 }
 
+export function validateServiceIdentityId(value, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < SERVICE_IDENTITY_MIN ||
+    value > SERVICE_IDENTITY_MAX
+  ) {
+    fail(
+      `${label} must be a static service uid/gid in ` +
+      `[${SERVICE_IDENTITY_MIN}, ${SERVICE_IDENTITY_MAX}], outside systemd DynamicUser ` +
+      `[${SYSTEMD_DYNAMIC_ID_MIN}, ${SYSTEMD_DYNAMIC_ID_MAX}] and nobody ${NOBODY_ID}`,
+    );
+  }
+  return value;
+}
+
 function validateSafeAscii(value, label, maxLength = 256) {
   if (
     typeof value !== "string" ||
@@ -963,7 +988,13 @@ function validatePlaceholderValue(name, value) {
     return;
   }
   if (UID_GID_PLACEHOLDERS.has(name)) {
-    parseUnsignedDecimal(value, label, 1n, 4_294_967_294n);
+    parseUnsignedDecimal(
+      value,
+      label,
+      BigInt(SERVICE_IDENTITY_MIN),
+      BigInt(SERVICE_IDENTITY_MAX),
+    );
+    validateServiceIdentityId(Number(value), label);
     return;
   }
   if (POSITIVE_SERVICE_VALUE_PLACEHOLDERS.has(name)) {
@@ -1320,8 +1351,8 @@ function validateDirectoryRelayPayloadClosure({
   if (
     config?.artifact_class !== "config" ||
     config.rendered_sha256 !== selection.configSha256 ||
-    config.uid !== 62951 ||
-    config.gid !== 62952 ||
+    config.uid !== 52951 ||
+    config.gid !== 52952 ||
     config.mode !== "0400"
   ) {
     fail("resolved directory relay config does not match the selection and owner-only loader binding");
@@ -1376,17 +1407,17 @@ function validateDirectoryRelayConfigOwnerBinding(document) {
   if (
     identities.length !== 1 ||
     identities[0].unit_name !== "bitcoinpir-directory-relay.service" ||
-    identities[0].uid !== 62951 ||
-    identities[0].gid !== 62952
+    identities[0].uid !== 52951 ||
+    identities[0].gid !== 52952
   ) {
-    fail("directory-relay-v1 must bind the reviewed relay UID 62951 and GID 62952");
+    fail("directory-relay-v1 must bind the reviewed relay UID 52951 and GID 52952");
   }
   const artifacts = document.rendered_artifacts ?? document.artifacts ?? [];
   const config = artifacts.find(
     (artifact) => artifact.target_path === "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
   );
-  if (!config || config.uid !== 62951 || config.gid !== 62952 || config.mode !== "0400") {
-    fail("directory-relay-v1 config must be relay-owned UID 62951 GID 62952 mode 0400");
+  if (!config || config.uid !== 52951 || config.gid !== 52952 || config.mode !== "0400") {
+    fail("directory-relay-v1 config must be relay-owned UID 52951 GID 52952 mode 0400");
   }
 }
 
@@ -1455,9 +1486,8 @@ function validatePlan(plan) {
         fail(`${label}.${key} is not a reviewed BitcoinPIR NSS name`);
       }
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must bind a non-root service identity`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(plan.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("render plan service_identities must be unique and bytewise sorted by unit_name");
     }
@@ -1843,7 +1873,9 @@ export function isResolvedDirectoryRelayRuntimeRequest(request) {
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
     ]) &&
     canonicalize(unit.hardening?.Restart ?? []) === canonicalize(["on-failure"]) &&
-    canonicalize(unit.hardening?.RestartSec ?? []) === canonicalize(["5"])
+    canonicalize(unit.hardening?.RestartSec ?? []) === canonicalize(["5"]) &&
+    canonicalize(unit.hardening?.ProcSubset ?? []) === canonicalize(["pid"]) &&
+    canonicalize(unit.hardening?.ProtectProc ?? []) === canonicalize(["invisible"])
   );
 }
 
@@ -1891,6 +1923,8 @@ function validateProfileUnitPolicy(
       ["StandardOutput", "null"],
       ["ProtectClock", "true"],
       ["ProtectHostname", "true"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
       ["Restart", resolved ? "on-failure" : "no"],
     ]) {
       if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
@@ -2103,7 +2137,7 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "2dd2c136a31edb952c0c095bef7c2f796d9591a787333921999ed361e158a3a4",
+  adminGate: "d400c5979c4fabdae82f7773081619626a4174b4077f580d5778da1e84f96c57",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
   overlayGate: "6c9db37516596974ba6468235a31655f0301781744a0dea46352ab8b4f712f9c",
   overlayTransaction: "2c2276ee9306b37e7db7d87c89d443e1fc1306cba077555f12c05b4a33723ba1",
@@ -2836,9 +2870,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["group_name", "user_name"]) {
       if (!/^bitcoinpir-[a-z0-9-]+$/u.test(identity[key])) fail(`${label}.${key} is malformed`);
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must be non-root`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(manifest.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("rendered manifest service_identities must be unique and bytewise sorted");
     }

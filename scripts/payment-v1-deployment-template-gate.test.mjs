@@ -442,6 +442,7 @@ test("production templates reject ARC, fake, local and proxied Free-IP flags", (
       /--clearing-provider-request-verifying-key/,
     );
   });
+
 });
 
 test("issuer and authority origins must remain loopback", () => {
@@ -611,6 +612,20 @@ test("systemd hardening values and relay environment are exact", () => {
       /Service\.Environment must equal/,
     );
   });
+
+  for (const [before, after, expected] of [
+    ["ProtectProc=invisible", "ProtectProc=default", /Service\.ProtectProc must equal/u],
+    ["ProcSubset=pid", "ProcSubset=all", /Service\.ProcSubset must equal/u],
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+        (text) => text.replace(before, after),
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
 });
 
 test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {

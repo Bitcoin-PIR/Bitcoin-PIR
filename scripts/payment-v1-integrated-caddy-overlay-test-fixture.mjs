@@ -212,8 +212,8 @@ function makeHardeningEvidence(targetGeneration) {
     { size: String(HARDENING_UNIT_PREIMAGE.length), inode: "52003" },
   );
   const serviceUidInventory = [
-    { name: "cloudflared", uid: 62901 },
-    { name: "pir", uid: 62902 },
+    { name: "cloudflared", uid: 52901 },
+    { name: "pir", uid: 52902 },
   ];
   const probeBytes = Buffer.from("reviewed Caddy admin probe fixture\n");
   const plan = {

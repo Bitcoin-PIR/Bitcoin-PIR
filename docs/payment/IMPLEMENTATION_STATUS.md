@@ -879,7 +879,10 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `files systemd` (the latter only as the same second-position fallback for
       both passwd and group), binds `/etc/nsswitch.conf`, `/etc/passwd` and
       `/etc/group`, and rejects UID/GID aliases or extra protected-group
-      primary/explicit/effective members. A final complete getent/id enumeration,
+      primary/explicit/effective members. All manifest-bound service IDs and
+      Caddy denial-inventory IDs are restricted to static `1..60000`, outside
+      systemd's recycled `DynamicUser` range and `nobody`; the checked-in
+      examples now reserve `52901..52952`. A final complete getent/id enumeration,
       not merely another policy-file stat, closes identity drift during the
       remainder of live collection. Two bounded
       all-process/all-thread passes additionally reject stale protected UID/GID
@@ -925,6 +928,11 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those
       deterministic tests.
+- [x] The directory relay unit, source gate, rendered request, stopped
+      preparation evidence and fresh-live evidence bind
+      `ProtectProc=invisible` and `ProcSubset=pid`. This narrows a compromised
+      relay's `/proc` view of co-located processes and network metadata; it does
+      not replace host separation or the PIR non-collusion assumption.
 - [x] A local, undeployed `bhtm-caddy-admin-uds-v1` maintenance gate now
       derives the complete candidate Caddyfile and `bhtm-caddy.service` unit
       only from exact preimages. It moves the global admin listener to

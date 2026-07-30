@@ -908,12 +908,12 @@ function makeDirectoryRelayFixture(t) {
     },
     rendered_artifacts: [
       {
-        gid: 62952,
+        gid: 52952,
         mode: "0400",
         source_path: RELAY_CONFIG,
         source_sha256: hashFile(join(fixture.sourceRoot, RELAY_CONFIG)),
         target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-        uid: 62951,
+        uid: 52951,
       },
       {
         gid: 0,
@@ -927,9 +927,9 @@ function makeDirectoryRelayFixture(t) {
     relay_selection_sha256: hashFile(join(fixture.sourceRoot, RELAY_SELECTION)),
     schema_version: 1,
     service_identities: [{
-      gid: 62952,
+      gid: 52952,
       group_name: "bitcoinpir-directory-relay",
-      uid: 62951,
+      uid: 52951,
       unit_name: "bitcoinpir-directory-relay.service",
       user_name: "bitcoinpir-directory-relay",
     }],
@@ -1124,6 +1124,33 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   assert.deepEqual(
     readdirSync(fixture.bundleRoot, { recursive: true }).sort(),
     readdirSync(secondRoot, { recursive: true }).sort(),
+  );
+});
+
+test("service identities and numeric identity placeholders stay below systemd DynamicUser space", (t) => {
+  for (const id of [60_001, 61_184, 65_519, 65_534]) {
+    const fixture = makeEdgeFixture(t);
+    fixture.plan.service_identities[0].uid = id;
+    assert.throws(
+      () => renderFixture(fixture),
+      /static service uid\/gid.*DynamicUser/u,
+    );
+  }
+
+  const placeholder = makeIssuerFixture(t);
+  placeholder.plan.placeholders.ISSUER_UID = "61184";
+  assert.throws(
+    () => renderFixture(placeholder),
+    /placeholder ISSUER_UID must be in \[1, 60000\]/u,
+  );
+
+  const manifestFixture = makeEdgeFixture(t);
+  const model = renderFixture(manifestFixture);
+  const manifest = clone(model.manifest);
+  manifest.service_identities[0].gid = 65_534;
+  assert.throws(
+    () => runtimeRequestFromManifest(manifest, model.manifestSha256),
+    /static service uid\/gid.*DynamicUser/u,
   );
 });
 
@@ -1876,13 +1903,15 @@ test("directory relay profile renders only blocked unit and bounded config", (t)
   assert.equal(model.request.units.length, 1);
   assert.equal(model.request.units[0].exec_start[0], "/usr/bin/false");
   assert.deepEqual(model.request.units[0].exec_start_pre, []);
+  assert.deepEqual(model.request.units[0].hardening.ProtectProc, ["invisible"]);
+  assert.deepEqual(model.request.units[0].hardening.ProcSubset, ["pid"]);
   assert.deepEqual(model.request.runtime_paths, []);
   assert.deepEqual(model.request.secret_files, [{
     consumer_unit_name: "bitcoinpir-directory-relay.service",
-    gid: 62952,
+    gid: 52952,
     mode: "0400",
     target_path: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-    uid: 62951,
+    uid: 52951,
   }]);
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
 });
@@ -1899,6 +1928,16 @@ test("directory relay profile rejects activation, pre-start commands, weak harde
   const journal = makeDirectoryRelayFixture(t);
   updateTemplate(journal, RELAY_UNIT, (text) => text.replace("StandardOutput=null", "StandardOutput=journal"));
   assert.throws(() => renderFixture(journal), /StandardOutput=null/);
+
+  const visibleProc = makeDirectoryRelayFixture(t);
+  updateTemplate(visibleProc, RELAY_UNIT, (text) =>
+    text.replace("ProtectProc=invisible", "ProtectProc=default"));
+  assert.throws(() => renderFixture(visibleProc), /ProtectProc=invisible/);
+
+  const fullProc = makeDirectoryRelayFixture(t);
+  updateTemplate(fullProc, RELAY_UNIT, (text) =>
+    text.replace("ProcSubset=pid", "ProcSubset=all"));
+  assert.throws(() => renderFixture(fullProc), /ProcSubset=pid/);
 
   const payload = makeDirectoryRelayFixture(t);
   payload.plan.payload_artifacts.push(addPayload(
@@ -1933,6 +1972,8 @@ test("resolved directory relay binds selection, binary, manifests, config and un
     "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
     "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
   ]);
+  assert.deepEqual(model.request.units[0].hardening.ProtectProc, ["invisible"]);
+  assert.deepEqual(model.request.units[0].hardening.ProcSubset, ["pid"]);
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
 });
 
@@ -1960,16 +2001,16 @@ test("resolved directory relay rejects selection and hash-manifest drift", (t) =
     "/etc/bitcoinpir/payment-v1/directory-relay/publisher-private.key",
     "forbidden\n",
     9,
-    { class: "secret", gid: 62952, mode: "0400", uid: 62951 },
+    { class: "secret", gid: 52952, mode: "0400", uid: 52951 },
   ));
   assert.throws(() => renderFixture(privateKey), /payload targets/);
 });
 
 test("directory relay config is bound to the real loader's exact owner-only metadata", (t) => {
   for (const [mutate, expected] of [
-    [(artifact) => { artifact.uid = 0; }, /0400 for one owner|relay-owned UID 62951/u],
-    [(artifact) => { artifact.gid = 0; }, /relay-owned UID 62951 GID 62952 mode 0400/u],
-    [(artifact) => { artifact.mode = "0440"; }, /mode must be one of \["0400"\]|relay-owned UID 62951 GID 62952 mode 0400/u],
+    [(artifact) => { artifact.uid = 0; }, /0400 for one owner|relay-owned UID 52951/u],
+    [(artifact) => { artifact.gid = 0; }, /relay-owned UID 52951 GID 52952 mode 0400/u],
+    [(artifact) => { artifact.mode = "0440"; }, /mode must be one of \["0400"\]|relay-owned UID 52951 GID 52952 mode 0400/u],
   ]) {
     const fixture = makeDirectoryRelayFixture(t);
     mutate(fixture.plan.rendered_artifacts[0]);
