@@ -492,16 +492,22 @@ function validatePublisherUnit(unit) {
   ];
   if (JSON.stringify(tokens.slice(0, 3)) !== JSON.stringify(wantedPrefix))
     fail(`${label} has an unexpected executable/subcommand`);
-  if (tokens.filter((token) => token === "--artifact").length !== 3 ||
-      tokens.filter((token) => token === "--relay").length !== 1 ||
-      tokens.filter((token) => token === "--centralized-single-relay").length !== 1 ||
-      tokens.filter((token) => token === "--directory-pubkey-hex").length !== 1 ||
-      tokens.filter((token) => token === "--now-unix").length !== 1 ||
-      tokens.filter((token) => token === "--relay-timeout-seconds").length !== 1) {
-    fail(`${label} has an unreviewed publication argv shape`);
-  }
+  const wantedTokens = [
+    ...wantedPrefix,
+    "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_0_ENTRY_ARTIFACT@",
+    "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_1_ENTRY_ARTIFACT@",
+    "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@CHECKPOINT_ARTIFACT@",
+    "--relay", "wss://@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+    "--centralized-single-relay",
+    "--directory-pubkey-hex", "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
+    "--now-unix", "@DIRECTORY_PUBLISH_NOW_UNIX@",
+    "--relay-timeout-seconds", "60",
+  ];
   reject(command, /(?:signing|private|secret)[-_]key|--validate-only|--force/iu,
     `${label} must not read a key or alter explicit publication semantics`);
+  if (JSON.stringify(tokens) !== JSON.stringify(wantedTokens)) {
+    fail(`${label} has an unreviewed publication argv shape`);
+  }
   reject(unit, /Restart=(?!no)|StartLimit|OnFailure|ExecStartPost/u,
     `${label} must not introduce retry/restart orchestration`);
   exactValues(unit, "StandardOutput", ["null"], label);
