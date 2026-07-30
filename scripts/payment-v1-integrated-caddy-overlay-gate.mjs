@@ -590,7 +590,7 @@ function validateTarget(value) {
     "target",
   );
   validateRegularPin(value.binary, "target.binary", {
-    paths: ["/usr/bin/caddy", "/usr/local/bin/caddy"],
+    paths: ["/usr/local/bin/caddy"],
     modes: ["0555", "0755"],
   });
   validateRegularPin(value.unit_fragment, "target.unit_fragment", {

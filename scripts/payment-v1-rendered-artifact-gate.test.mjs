@@ -45,6 +45,8 @@ const CADDY_ADMIN_UDS_GATE =
   "scripts/payment-v1-caddy-admin-uds-gate.mjs";
 const CADDY_ADMIN_UDS_PROBE =
   "scripts/payment-v1-caddy-admin-uds-probe.mjs";
+const CADDY_ADMIN_UDS_TRANSACTION =
+  "scripts/payment-v1-caddy-admin-uds-transaction.mjs";
 const INTEGRATED_CADDY_TRANSACTION =
   "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
 const INTEGRATED_CADDY_BLOCK =
@@ -285,6 +287,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
   copySource(fixture.sourceRoot, SOURCE_FAIR_CONFIG);
   copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
   copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
@@ -386,6 +389,15 @@ function makeIntegratedCaddySourceFairFixture(t) {
         source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE)),
         target_path:
           "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: CADDY_ADMIN_UDS_TRANSACTION,
+        source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_TRANSACTION)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs",
         uid: 0,
       },
       {
@@ -1166,6 +1178,26 @@ test("integrated admin probe rejects comment-separated dynamic, same-line static
       injection,
     );
   }
+});
+
+test("integrated cold executor rejects source drift even when the render-plan source hash is updated", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const executorPath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_TRANSACTION);
+  writeFileSync(
+    executorPath,
+    readFileSync(executorPath, "utf8").replace(
+      'const SYSTEMD_VERSION = "255";',
+      'const SYSTEMD_VERSION = "256";',
+    ),
+  );
+  const executor = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_TRANSACTION,
+  );
+  executor.source_sha256 = hashFile(executorPath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /cold transaction executor does not equal its exact reviewed source/u,
+  );
 });
 
 test("integrated transaction closes both local gate imports", (t) => {

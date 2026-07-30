@@ -275,7 +275,7 @@ function makePlan() {
         unit_invocation_id: targetGeneration.invocation_id,
         unit_sha256: "6".repeat(64),
       },
-      binary: pin("/usr/bin/caddy", "5".repeat(64), "0755"),
+      binary: pin("/usr/local/bin/caddy", "5".repeat(64), "0755"),
       config_parent: {
         device: "2049",
         gid: 0,
@@ -333,7 +333,7 @@ function makePlan() {
     ],
     transaction: {
       adapt_argv: [
-        "/usr/bin/caddy",
+        "/usr/local/bin/caddy",
         "adapt",
         "--config",
         `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,
@@ -365,7 +365,7 @@ function makePlan() {
       state_directory:
         `/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/transactions/${transactionId}`,
       validate_argv: [
-        "/usr/bin/caddy",
+        "/usr/local/bin/caddy",
         "validate",
         "--config",
         `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,
@@ -652,6 +652,15 @@ for (const [label, mutate, expected] of [
     "Caddy cannot reload",
     (plan) => { plan.target.unit_generation.can_reload = "no"; },
     /can_reload must equal yes/,
+  ],
+  [
+    "legacy /usr/bin/caddy path",
+    (plan) => {
+      plan.target.binary.path = "/usr/bin/caddy";
+      plan.transaction.adapt_argv[0] = "/usr/bin/caddy";
+      plan.transaction.validate_argv[0] = "/usr/bin/caddy";
+    },
+    /target.binary.path is outside its exact reviewed target set/u,
   ],
   [
     "missing committed admin UDS prerequisite",

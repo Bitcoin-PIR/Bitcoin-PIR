@@ -5,7 +5,7 @@
     "binary": {
       "gid": 0,
       "mode": "0755",
-      "path": "/usr/bin/caddy",
+      "path": "/usr/local/bin/caddy",
       "sha256": "INVALID_REPLACE_WITH_EXACT_PRODUCTION_CADDY_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
@@ -46,6 +46,8 @@
   "config_edit_mode": "INVALID_REPLACE_WITH_ONE_REVIEWED_CONFIG_EDIT_MODE",
   "deployment_profile": "bhtm-caddy-admin-uds-v1",
   "preimage": {
+    "adapted_json_sha256": "INVALID_REPLACE_WITH_CANONICAL_PREIMAGE_ADAPTED_JSON_SHA256",
+    "adapted_json_size": "INVALID_REPLACE_WITH_CANONICAL_PREIMAGE_ADAPTED_JSON_SIZE",
     "admin": {
       "kind": "tcp",
       "listen": "127.0.0.1:2019"
@@ -58,7 +60,7 @@
       "mode": "0755",
       "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
       "nlink": 1,
-      "path": "/usr/bin/caddy",
+      "path": "/usr/local/bin/caddy",
       "sha256": "INVALID_REPLACE_WITH_EXACT_PRODUCTION_CADDY_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
@@ -108,6 +110,19 @@
     "scope": "capability-free-unprivileged-non-root-dac-only"
   },
   "runtime": {
+    "executor": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs",
+      "sha256": "INVALID_REPLACE_WITH_EXECUTOR_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
     "gate": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -160,7 +175,8 @@
       "sha256": "INVALID_REPLACE_WITH_SETPRIV_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
-    }
+    },
+    "systemd_version": "255"
   },
   "schema_version": 1,
   "service_uid_inventory": [
@@ -177,7 +193,9 @@
     "acme_storage_migration": "none",
     "existing_site_inventory_sha256": "INVALID_REPLACE_WITH_COMPLETE_SITE_INVENTORY_SHA256",
     "probe_ids": [
-      "INVALID_REPLACE_WITH_SORTED_EXISTING_SITE_PROBE_ID"
+      "direct-upstream-health",
+      "public-https-health",
+      "public-tls-leaf"
     ]
   },
   "supply_chain": {
@@ -222,6 +240,7 @@
     "lock_path": "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
     "new_invocation_required": true,
     "outcome_unknown_conditions": [
+      "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
       "systemctl-command-error-after-start-request",
       "unclassified-config-unit-digest-pair",
       "active-generation-with-unproven-admin-readback",
