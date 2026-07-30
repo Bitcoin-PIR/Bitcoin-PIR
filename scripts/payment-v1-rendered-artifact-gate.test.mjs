@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_COLLECTOR,
   canonicalJson,
   computeApprovedPlanSha256,
@@ -78,6 +79,16 @@ function hashFile(path) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function emptyCredentialProperties() {
+  return {
+    ImportCredential: { data: [], type: "as" },
+    LoadCredential: { data: [], type: "a(ss)" },
+    LoadCredentialEncrypted: { data: [], type: "a(ss)" },
+    SetCredential: { data: [], type: "a(say)" },
+    SetCredentialEncrypted: { data: [], type: "a(say)" },
+  };
 }
 
 function writeParent(path, bytes, mode = 0o600) {
@@ -1068,7 +1079,7 @@ function makeRuntimeEvidence(model) {
     },
     installed_files: clone(model.request.installed_files),
     manifest_sha256: model.manifestSha256,
-    schema_version: 4,
+    schema_version: 5,
     systemd_analyze_verify: {
       argv: clone(model.request.systemd_analyze_argv),
       exit_status: 0,
@@ -1078,6 +1089,7 @@ function makeRuntimeEvidence(model) {
     units: model.request.units.map((unit) => ({
       active_state: "inactive",
       conditions: clone(unit.conditions),
+      credential_properties: emptyCredentialProperties(),
       drop_in_paths: [],
       environment: clone(unit.environment),
       environment_files: clone(unit.environment_files),
@@ -1104,9 +1116,23 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 4);
+  assert.equal(first.request.schema_version, 5);
+  assert.deepEqual(first.request.busctl_service_properties, [
+    "ImportCredential",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
+  ]);
   assert.deepEqual(first.request.busctl_unit_properties, ["Conditions"]);
   assert.equal(first.request.systemctl_show_properties.includes("Conditions"), false);
+  for (const property of RUNTIME_BUSCTL_SERVICE_PROPERTIES) {
+    assert.equal(first.request.systemctl_show_properties.includes(property), false);
+  }
+  assert.deepEqual(
+    first.request.busctl_service_properties,
+    RUNTIME_BUSCTL_SERVICE_PROPERTIES,
+  );
   assert.deepEqual(
     first.request.runtime_paths.map(({ file_type, mode, target_path }) => ({ file_type, mode, target_path })),
     [
@@ -2205,8 +2231,11 @@ for (const [directive, value] of [
   ["ExecStartPost", "/usr/bin/true"],
   ["ExecCondition", "/usr/bin/true"],
   ["EnvironmentFile", "/tmp/evil.env"],
+  ["ImportCredential", "secret.*"],
   ["LoadCredential", "secret:/tmp/secret"],
+  ["LoadCredentialEncrypted", "secret:/tmp/secret"],
   ["SetCredential", "secret:evil"],
+  ["SetCredentialEncrypted", "secret:evil"],
   ["BindPaths", "/tmp:/etc"],
   ["BindReadOnlyPaths", "/tmp:/etc"],
   ["RootDirectory", "/tmp/root"],
@@ -2523,6 +2552,21 @@ test("runtime structure remains manifest-bound and rejects drop-ins, reset effec
     const evidence = makeRuntimeEvidence(model);
     mutate(evidence);
     assert.throws(() => validateRuntimeEvidence({ evidence, model }), expected, label);
+  }
+
+  for (const property of RUNTIME_BUSCTL_SERVICE_PROPERTIES) {
+    const evidence = makeRuntimeEvidence(model);
+    evidence.units[0].credential_properties[property].data =
+      property === "ImportCredential"
+        ? ["secret.*"]
+        : property.startsWith("Load")
+        ? [["secret", "/tmp/secret"]]
+        : [["secret", [1, 2, 3]]];
+    assert.throws(
+      () => validateRuntimeEvidence({ evidence, model }),
+      new RegExp(property),
+      property,
+    );
   }
 });
 

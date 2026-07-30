@@ -27,6 +27,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
@@ -37,17 +38,17 @@ import {
   validateServiceIdentityId,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v5";
 export const STOPPED_EDGE_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
+  "bitcoinpir-payment-v1-linux-root-stopped-edge-v4";
 export const STOPPED_RELAY_EVIDENCE_KIND =
-  "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
+  "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v3";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE =
   "local-files-authoritative-reviewed-systemd-fallback-v2";
-const LIVE_SCHEMA_VERSION = 4;
-const STOPPED_EDGE_SCHEMA_VERSION = 3;
-const STOPPED_RELAY_SCHEMA_VERSION = 2;
+const LIVE_SCHEMA_VERSION = 5;
+const STOPPED_EDGE_SCHEMA_VERSION = 4;
+const STOPPED_RELAY_SCHEMA_VERSION = 3;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
@@ -2318,13 +2319,11 @@ const EFFECTIVE_BASE_PROPERTIES = Object.freeze([
   "ExecStartPre",
   "FragmentPath",
   "InvocationID",
-  "LoadCredential",
   "LoadState",
   "MainPID",
   "Result",
   "RootDirectory",
   "RootImage",
-  "SetCredential",
   "SubState",
 ]);
 
@@ -2342,6 +2341,46 @@ function effectiveBusctlPropertyNames() {
     fail("collector and rendered runtime busctl property schemas diverged");
   }
   return [...RUNTIME_BUSCTL_UNIT_PROPERTIES];
+}
+
+const EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES = Object.freeze({
+  ImportCredential: "as",
+  LoadCredential: "a(ss)",
+  LoadCredentialEncrypted: "a(ss)",
+  SetCredential: "a(say)",
+  SetCredentialEncrypted: "a(say)",
+});
+
+function effectiveBusctlServicePropertyNames() {
+  const local = Object.keys(EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES).sort();
+  if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)) {
+    fail("collector and rendered runtime busctl service property schemas diverged");
+  }
+  return [...RUNTIME_BUSCTL_SERVICE_PROPERTIES];
+}
+
+function validateRuntimePropertyRequestSchema(request, label) {
+  if (
+    !Array.isArray(request.systemctl_show_properties) ||
+    canonicalJson(request.systemctl_show_properties) !==
+      canonicalJson(RUNTIME_SYSTEMCTL_SHOW_PROPERTIES)
+  ) {
+    fail(`${label} systemctl property schema is not the reviewed closed set`);
+  }
+  if (
+    !Array.isArray(request.busctl_unit_properties) ||
+    canonicalJson(request.busctl_unit_properties) !==
+      canonicalJson(RUNTIME_BUSCTL_UNIT_PROPERTIES)
+  ) {
+    fail(`${label} busctl Unit property schema is not the reviewed closed set`);
+  }
+  if (
+    !Array.isArray(request.busctl_service_properties) ||
+    canonicalJson(request.busctl_service_properties) !==
+      canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)
+  ) {
+    fail(`${label} busctl Service property schema is not the reviewed closed set`);
+  }
 }
 
 function compareEffectiveConditionRecords(left, right) {
@@ -2431,6 +2470,82 @@ export function parseBusctlConditionsJsonV1(text, label = "systemd Conditions") 
   return records;
 }
 
+export function parseBusctlEmptyCredentialJsonV1(
+  text,
+  property,
+  label = `systemd ${property}`,
+) {
+  if (
+    typeof property !== "string" ||
+    !Object.hasOwn(EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES, property)
+  ) {
+    fail(`${label} is not a reviewed credential property`);
+  }
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  const expectedType = EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES[property];
+  if (parsed.type !== expectedType || !Array.isArray(parsed.data)) {
+    fail(`${label} does not have the reviewed ${expectedType} shape`);
+  }
+  if (parsed.data.length !== 0) {
+    fail(`${label} must be the typed empty credential array`);
+  }
+  return { data: [], type: expectedType };
+}
+
+export function systemdCredentialBusctlArgvV1(unitName, property) {
+  if (
+    typeof property !== "string" ||
+    !Object.hasOwn(EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES, property)
+  ) {
+    fail("systemd credential busctl property is not reviewed");
+  }
+  return [
+    "--json=short",
+    "get-property",
+    "org.freedesktop.systemd1",
+    systemdUnitObjectPathV1(unitName),
+    "org.freedesktop.systemd1.Service",
+    property,
+  ];
+}
+
+function validateEffectiveCredentialProperties(unitName, credentialProperties) {
+  exactKeys(
+    credentialProperties,
+    effectiveBusctlServicePropertyNames(),
+    `effective credential properties for ${unitName}`,
+  );
+  for (const property of effectiveBusctlServicePropertyNames()) {
+    const expectedType = EFFECTIVE_CREDENTIAL_PROPERTY_SIGNATURES[property];
+    const value = credentialProperties[property];
+    exactKeys(value, ["data", "type"], `${unitName}.${property}`);
+    if (
+      value.type !== expectedType ||
+      !Array.isArray(value.data) ||
+      value.data.length !== 0
+    ) {
+      fail(`effective ${property} is forbidden: ${unitName}`);
+    }
+  }
+}
+
+export function assertEffectiveCredentialSnapshotUnchangedV1(
+  initial,
+  confirmation,
+  unitName,
+) {
+  validateEffectiveCredentialProperties(unitName, initial);
+  validateEffectiveCredentialProperties(unitName, confirmation);
+  if (canonicalJson(initial) !== canonicalJson(confirmation)) {
+    fail(`credential properties changed during runtime collection: ${unitName}`);
+  }
+  return true;
+}
+
 function collectEffectiveConditions(unitName) {
   const propertyNames = effectiveBusctlPropertyNames();
   if (canonicalJson(propertyNames) !== canonicalJson(["Conditions"])) {
@@ -2451,6 +2566,27 @@ function collectEffectiveConditions(unitName) {
     ...condition,
     path_exists: existsSync(condition.parameter),
   }));
+}
+
+function collectEffectiveCredentialProperties(unitName) {
+  const propertyNames = effectiveBusctlServicePropertyNames();
+  const credentialProperties = Object.create(null);
+  for (const property of propertyNames) {
+    const record = runAbsolute(
+      "/usr/bin/busctl",
+      systemdCredentialBusctlArgvV1(unitName, property),
+    );
+    if (record.exit_status !== 0 || record.stderr !== "") {
+      fail(`busctl credential property failed for ${unitName}.${property}`);
+    }
+    credentialProperties[property] = parseBusctlEmptyCredentialJsonV1(
+      record.stdout,
+      property,
+      `${unitName}.${property}`,
+    );
+  }
+  validateEffectiveCredentialProperties(unitName, credentialProperties);
+  return credentialProperties;
 }
 
 function validateEffectiveConditions(unit, conditions) {
@@ -2617,8 +2753,13 @@ function validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds) {
   return { kind: "long-running", mainPid };
 }
 
-function validateEffectiveUnitStaticProperties(unit, properties) {
+function validateEffectiveUnitStaticProperties(
+  unit,
+  properties,
+  credentialProperties,
+) {
   exactKeys(properties, effectivePropertyNames(), `effective properties for ${unit.unit_name}`);
+  validateEffectiveCredentialProperties(unit.unit_name, credentialProperties);
   if (properties.FragmentPath !== unit.fragment_path) fail(`FragmentPath drift: ${unit.unit_name}`);
   if (properties.DropInPaths !== "") fail(`systemd drop-ins are forbidden: ${unit.unit_name}`);
   if (properties.LoadState !== "loaded") fail(`unit is not loaded: ${unit.unit_name}`);
@@ -2630,8 +2771,6 @@ function validateEffectiveUnitStaticProperties(unit, properties) {
     "RootImage",
     "BindPaths",
     "BindReadOnlyPaths",
-    "LoadCredential",
-    "SetCredential",
   ]) {
     if (properties[forbidden] !== "") fail(`effective ${forbidden} is forbidden: ${unit.unit_name}`);
   }
@@ -2674,10 +2813,11 @@ function validateEffectiveUnitStaticProperties(unit, properties) {
 function validateEffectiveUnitProperties(
   unit,
   properties,
+  credentialProperties,
   conditions,
   uptimeFinishedMilliseconds,
 ) {
-  validateEffectiveUnitStaticProperties(unit, properties);
+  validateEffectiveUnitStaticProperties(unit, properties, credentialProperties);
   validateEffectiveConditions(unit, conditions);
   if (
     unit.hardening.MemorySwapMax !== undefined &&
@@ -2698,6 +2838,7 @@ function collectStoppedUnitState(unit) {
   const state = {
     active_state: collectSystemctlValue(unit.unit_name, "ActiveState"),
     control_group: collectSystemctlValue(unit.unit_name, "ControlGroup"),
+    credential_properties: collectEffectiveCredentialProperties(unit.unit_name),
     drop_in_paths: collectSystemctlValue(unit.unit_name, "DropInPaths"),
     fragment_path: collectSystemctlValue(unit.unit_name, "FragmentPath"),
     invocation_id: collectSystemctlValue(unit.unit_name, "InvocationID"),
@@ -2727,11 +2868,12 @@ function collectStoppedUnitStates(request) {
 
 function collectStoppedUnitConfiguration(unit) {
   const conditions = collectEffectiveConditions(unit.unit_name);
+  const credentialProperties = collectEffectiveCredentialProperties(unit.unit_name);
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
   }
-  validateEffectiveUnitStaticProperties(unit, properties);
+  validateEffectiveUnitStaticProperties(unit, properties, credentialProperties);
   validateStoppedEffectiveConditionsV2(unit, properties, conditions);
   if (
     properties.ActiveState !== "inactive" ||
@@ -2753,6 +2895,14 @@ function collectStoppedUnitConfiguration(unit) {
     `stopped systemd fragment ${unit.unit_name}`,
     2 * 1024 * 1024,
   );
+  const confirmedCredentialProperties = collectEffectiveCredentialProperties(
+    unit.unit_name,
+  );
+  assertEffectiveCredentialSnapshotUnchangedV1(
+    credentialProperties,
+    confirmedCredentialProperties,
+    unit.unit_name,
+  );
   const confirmedConditions = collectEffectiveConditions(unit.unit_name);
   assertEffectiveConditionSnapshotUnchangedV1(
     conditions,
@@ -2761,6 +2911,7 @@ function collectStoppedUnitConfiguration(unit) {
   );
   return {
     conditions,
+    credential_properties: credentialProperties,
     fragment_sha256: hashBytes(fragmentBytes),
     properties,
     unit_name: unit.unit_name,
@@ -2905,6 +3056,7 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
 
 function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
   const conditions = collectEffectiveConditions(unit.unit_name);
+  const credentialProperties = collectEffectiveCredentialProperties(unit.unit_name);
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
@@ -2912,6 +3064,7 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
   const lifecycle = validateEffectiveUnitProperties(
     unit,
     properties,
+    credentialProperties,
     conditions,
     uptimeFinishedMilliseconds,
   );
@@ -2925,6 +3078,14 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     generationConfirmations = [confirmUnitGeneration(unit, properties), confirmUnitGeneration(unit, properties)];
     processIdentity = null;
   }
+  const confirmedCredentialProperties = collectEffectiveCredentialProperties(
+    unit.unit_name,
+  );
+  assertEffectiveCredentialSnapshotUnchangedV1(
+    credentialProperties,
+    confirmedCredentialProperties,
+    unit.unit_name,
+  );
   const confirmedConditions = collectEffectiveConditions(unit.unit_name);
   assertEffectiveConditionSnapshotUnchangedV1(
     conditions,
@@ -2934,6 +3095,7 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
   const fragmentBytes = readOneLinkRegular(unit.fragment_path, `systemd fragment ${unit.unit_name}`, 2 * 1024 * 1024);
   return {
     conditions,
+    credential_properties: credentialProperties,
     fragment_sha256: hashBytes(fragmentBytes),
     generation_confirmations: generationConfirmations,
     process_identity: processIdentity,
@@ -3517,6 +3679,7 @@ function validateStoppedUnitPasses(passes, request) {
         [
           "active_state",
           "control_group",
+          "credential_properties",
           "drop_in_paths",
           "fragment_path",
           "invocation_id",
@@ -3526,6 +3689,10 @@ function validateStoppedUnitPasses(passes, request) {
           "unit_name",
         ],
         `stopped-edge unit pass[${passIndex}][${index}]`,
+      );
+      validateEffectiveCredentialProperties(
+        expected.unit_name,
+        state.credential_properties,
       );
       if (
         state.unit_name !== expected.unit_name ||
@@ -3617,7 +3784,13 @@ function validateStoppedUnitConfigurationPasses(passes, request) {
       const expected = request.units[index];
       exactKeys(
         actual,
-        ["conditions", "fragment_sha256", "properties", "unit_name"],
+        [
+          "conditions",
+          "credential_properties",
+          "fragment_sha256",
+          "properties",
+          "unit_name",
+        ],
         `stopped directory-relay effective-unit pass[${passIndex}][${index}]`,
       );
       const fragment = request.installed_files.find(
@@ -3630,7 +3803,11 @@ function validateStoppedUnitConfigurationPasses(passes, request) {
       ) {
         fail(`stopped directory-relay fragment binding drift: ${expected.unit_name}`);
       }
-      validateEffectiveUnitStaticProperties(expected, actual.properties);
+      validateEffectiveUnitStaticProperties(
+        expected,
+        actual.properties,
+        actual.credential_properties,
+      );
       validateStoppedEffectiveConditionsV2(
         expected,
         actual.properties,
@@ -3961,6 +4138,7 @@ export function validateStoppedEdgeActivationEvidence({
   ) {
     fail("stopped-edge evidence schema, collector, profile, or artifact binding is not reviewed");
   }
+  validateRuntimePropertyRequestSchema(request, "stopped-edge request");
   validateRuntimeServiceIdentityIds(request.service_identities, "stopped-edge request");
   if (
     typeof evidence.challenge_hex !== "string" ||
@@ -4004,6 +4182,10 @@ export function validateStoppedRelayPreparationEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  validateRuntimePropertyRequestSchema(
+    request,
+    "stopped directory-relay request",
+  );
   validateRuntimeServiceIdentityIds(
     request.service_identities,
     "stopped directory-relay request",
@@ -4112,12 +4294,6 @@ export function validateStoppedRelayPreparationEvidence({
       "verify",
       relayFragmentPath,
     ]) ||
-    canonicalJson(request.systemctl_show_properties) !== canonicalJson(
-      RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
-    ) ||
-    canonicalJson(request.busctl_unit_properties) !== canonicalJson(
-      RUNTIME_BUSCTL_UNIT_PROPERTIES,
-    ) ||
     request.runtime_paths.length !== 0 ||
     request.secret_files.length !== 1 ||
     request.secret_files[0].consumer_unit_name !== relayUnit.unit_name ||
@@ -4327,18 +4503,7 @@ export function validateLiveRuntimeEvidence({
     fail("runtime evidence request schema or collector is not reviewed");
   }
   if (evidence.collector !== RUNTIME_COLLECTOR) fail("live runtime collector identity mismatch");
-  if (
-    !Array.isArray(request.systemctl_show_properties) ||
-    canonicalJson(request.systemctl_show_properties) !== canonicalJson(RUNTIME_SYSTEMCTL_SHOW_PROPERTIES)
-  ) {
-    fail("runtime request systemctl property schema is not the reviewed closed set");
-  }
-  if (
-    !Array.isArray(request.busctl_unit_properties) ||
-    canonicalJson(request.busctl_unit_properties) !== canonicalJson(RUNTIME_BUSCTL_UNIT_PROPERTIES)
-  ) {
-    fail("runtime request busctl property schema is not the reviewed closed set");
-  }
+  validateRuntimePropertyRequestSchema(request, "runtime request");
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
   }
@@ -4591,16 +4756,28 @@ export function validateLiveRuntimeEvidence({
     const actual = evidence.units[index];
     exactKeys(
       actual,
-      ["conditions", "fragment_sha256", "generation_confirmations", "process_identity", "properties", "unit_name"],
+      [
+        "conditions",
+        "credential_properties",
+        "fragment_sha256",
+        "generation_confirmations",
+        "process_identity",
+        "properties",
+        "unit_name",
+      ],
       `live units[${index}]`,
     );
     if (actual.unit_name !== expected.unit_name || actual.properties.FragmentPath !== expected.fragment_path) {
       fail(`live systemd unit identity drift: ${expected.unit_name}`);
     }
     if (actual.properties.DropInPaths !== "") fail(`live systemd drop-in detected: ${expected.unit_name}`);
-    for (const key of ["ExecStartPost", "ExecCondition", "EnvironmentFiles", "RootDirectory", "RootImage", "BindPaths", "BindReadOnlyPaths", "LoadCredential", "SetCredential"]) {
+    for (const key of ["ExecStartPost", "ExecCondition", "EnvironmentFiles", "RootDirectory", "RootImage", "BindPaths", "BindReadOnlyPaths"]) {
       if (actual.properties[key] !== "") fail(`live systemd ${key} is forbidden: ${expected.unit_name}`);
     }
+    validateEffectiveCredentialProperties(
+      expected.unit_name,
+      actual.credential_properties,
+    );
     const fragment = request.installed_files.find((file) => file.target_path === expected.fragment_path);
     if (!fragment || actual.fragment_sha256 !== fragment.sha256) {
       fail(`live systemd fragment hash drift: ${expected.unit_name}`);
@@ -4608,6 +4785,7 @@ export function validateLiveRuntimeEvidence({
     const lifecycle = validateEffectiveUnitProperties(
       expected,
       actual.properties,
+      actual.credential_properties,
       actual.conditions,
       evidence.host.uptime_finished_milliseconds,
     );
@@ -5015,6 +5193,15 @@ function collectStoppedPreparationEvidence({
   const installedFilesFinished = includeInstalledShape
     ? request.installed_files.map(collectInstalledFile)
     : null;
+  const accountPolicyFinished = collectLockedServiceAccountPolicy(request, nss);
+  if (canonicalJson(accountPolicyStarted) !== canonicalJson(accountPolicyFinished)) {
+    fail("service account login policy changed during stopped-edge collection");
+  }
+  confirmCompleteNssSnapshotUnchanged(nss);
+  const hostFinished = readHostBinding();
+  if (!sameHostGeneration(hostStarted, hostFinished)) {
+    fail("host or boot identity changed during stopped-edge collection");
+  }
   if (includePrivateLoaderShape) {
     confirmSecretFilesUnchanged(
       installedFilesStarted,
@@ -5027,22 +5214,15 @@ function collectStoppedPreparationEvidence({
       "at the stopped-loader final seal",
     );
   }
-  // Typed Conditions and the stopped generation are deliberately collected
-  // after the final private-loader seal.
+  // The final external-state pass is deliberately limited to typed credential
+  // properties, Conditions and stopped-unit generation. It follows every
+  // account, NSS, host and private-loader probe and immediately precedes the
+  // timestamp/evidence object.
   const unitConfigurationFinished = includeInstalledShape
     ? collectStoppedUnitConfigurations(request)
     : null;
   const stoppedUnitFinished = collectStoppedUnitStates(request);
-  const accountPolicyFinished = collectLockedServiceAccountPolicy(request, nss);
-  if (canonicalJson(accountPolicyStarted) !== canonicalJson(accountPolicyFinished)) {
-    fail("service account login policy changed during stopped-edge collection");
-  }
-  confirmCompleteNssSnapshotUnchanged(nss);
-  const hostFinished = readHostBinding();
   const finished = Math.floor(Date.now() / 1000);
-  if (!sameHostGeneration(hostStarted, hostFinished)) {
-    fail("host or boot identity changed during stopped-edge collection");
-  }
   const evidence = {
     account_policy: accountPolicyFinished,
     approved_plan_sha256: approvedPlanSha256,
@@ -5226,10 +5406,18 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   // The final external-state pass is deliberately lightweight and comes after
   // the expensive secret commands. Per-unit checks inside collectUnit are not
   // enough: a profile sentinel or unit generation could otherwise change while
-  // later probes run. Recheck structured Conditions and bind each same unit
-  // generation here; nothing below this loop probes external state before the
-  // evidence object is constructed and returned.
+  // later probes run. Recheck structured credential properties and Conditions,
+  // then bind each same unit generation here; nothing below this loop probes
+  // external state before the evidence object is constructed and returned.
   for (let index = 0; index < request.units.length; index += 1) {
+    const finalCredentialProperties = collectEffectiveCredentialProperties(
+      request.units[index].unit_name,
+    );
+    assertEffectiveCredentialSnapshotUnchangedV1(
+      units[index].credential_properties,
+      finalCredentialProperties,
+      request.units[index].unit_name,
+    );
     const finalConditions = collectEffectiveConditions(request.units[index].unit_name);
     assertEffectiveConditionSnapshotUnchangedV1(
       units[index].conditions,

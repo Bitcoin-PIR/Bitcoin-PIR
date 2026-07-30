@@ -30,9 +30,9 @@ import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mj
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 4;
+const EVIDENCE_SCHEMA_VERSION = 5;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v4";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v5";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -241,7 +241,6 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "LimitCORESoft",
   "LimitNOFILE",
   "LimitNOFILESoft",
-  "LoadCredential",
   "LoadState",
   "LockPersonality",
   "MainPID",
@@ -273,7 +272,6 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "Result",
   "RootDirectory",
   "RootImage",
-  "SetCredential",
   "StandardError",
   "StandardOutput",
   "SubState",
@@ -290,6 +288,27 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
 // `[unprintable]`, so the root collector must read it through busctl's strict
 // JSON mode instead of pretending it is one of the scalar show properties.
 export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze(["Conditions"]);
+
+// On the reviewed systemd 255 host, systemctl renders the four structured
+// Load/Set credential properties as `[unprintable]`. The same v255 Service
+// interface also exposes ImportCredential as typed `as`; its scalar rendering
+// was not part of that host observation. Bind the complete five-property
+// Service credential surface so the root collector requires typed emptiness.
+export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
+  "ImportCredential",
+  "LoadCredential",
+  "LoadCredentialEncrypted",
+  "SetCredential",
+  "SetCredentialEncrypted",
+]);
+
+const RUNTIME_BUSCTL_SERVICE_PROPERTY_SIGNATURES = Object.freeze({
+  ImportCredential: "as",
+  LoadCredential: "a(ss)",
+  LoadCredentialEncrypted: "a(ss)",
+  SetCredential: "a(say)",
+  SetCredentialEncrypted: "a(say)",
+});
 
 const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
@@ -3138,6 +3157,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     schema_version: EVIDENCE_SCHEMA_VERSION,
     secret_files: secretFiles,
     service_identities: manifest.service_identities,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: systemdAnalyzeArgv,
@@ -3299,6 +3319,22 @@ function canonicalEqual(actual, expected, label) {
   }
 }
 
+function validateRuntimeCredentialProperties(properties, label) {
+  exactKeys(properties, RUNTIME_BUSCTL_SERVICE_PROPERTIES, label);
+  for (const property of RUNTIME_BUSCTL_SERVICE_PROPERTIES) {
+    const expectedType = RUNTIME_BUSCTL_SERVICE_PROPERTY_SIGNATURES[property];
+    const value = properties[property];
+    exactKeys(value, ["data", "type"], `${label}.${property}`);
+    if (
+      value.type !== expectedType ||
+      !Array.isArray(value.data) ||
+      value.data.length !== 0
+    ) {
+      fail(`${label}.${property} must be the reviewed typed empty array`);
+    }
+  }
+}
+
 export function validateRuntimeEvidence({ model, evidence }) {
   if (
     model.manifest.deployment_profile === "directory-relay-v1" &&
@@ -3380,6 +3416,7 @@ export function validateRuntimeEvidence({ model, evidence }) {
       [
         "active_state",
         "conditions",
+        "credential_properties",
         "drop_in_paths",
         "environment",
         "environment_files",
@@ -3399,6 +3436,10 @@ export function validateRuntimeEvidence({ model, evidence }) {
     if (!Array.isArray(actual.drop_in_paths) || actual.drop_in_paths.length !== 0) {
       fail(`${label}.drop_in_paths must be empty`);
     }
+    validateRuntimeCredentialProperties(
+      actual.credential_properties,
+      `${label}.credential_properties`,
+    );
     for (const key of [
       "conditions",
       "environment",

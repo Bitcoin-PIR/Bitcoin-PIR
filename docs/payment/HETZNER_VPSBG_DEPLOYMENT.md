@@ -472,11 +472,23 @@ including a publisher private key, fail closed.
 requires the unit to remain inactive/dead and the
 `RELAY-SELECTION-RESOLVED` activation sentinel to be absent; for a resolved
 unit it additionally seals the binary, both manifests, config and fragment.
-The v2 stopped-relay schema reads systemd Conditions only through busctl's
-typed `a(sbbsi)` value, binds the private config to its real consumer and 0700
-final parent, and seals both file and descriptor-walk fingerprints before the
-final Conditions/stopped-generation pass. Only an exact resolved unit may use
-the live collector. Its `ExecStartPre` runs `sha256sum --check --strict` over
+The v3 stopped-relay schema reads systemd Conditions only through busctl's
+typed `a(sbbsi)` value. It also reads `ImportCredential` as an exact empty `as`
+array, `LoadCredential` and `LoadCredentialEncrypted` as exact empty `a(ss)`
+arrays, and `SetCredential` and `SetCredentialEncrypted` as exact empty
+`a(say)` arrays, from `org.freedesktop.systemd1.Service`. A missing property,
+wrong interface/type, non-empty array or literal `[unprintable]` fails closed.
+The five properties are intentionally absent from the scalar `systemctl show`
+schema: Ubuntu systemd 255 prints at least the four structured Load/Set
+properties as `[unprintable]` even when their typed D-Bus arrays are empty;
+systemd 255's Service interface additionally exposes `ImportCredential` as
+typed `as`, so the reviewed closed set includes it too. The request binds both
+the Unit and Service property lists, and initial/final snapshots must agree.
+This schema also binds the private
+config to its real consumer and 0700 final parent, and seals both file and
+descriptor-walk fingerprints before the final typed-credential,
+Conditions/stopped-generation pass. Only an exact resolved unit may use the
+live collector. Its `ExecStartPre` runs `sha256sum --check --strict` over
 the two closed manifests before the sole pinned-binary `--config` command.
 For an inactive/dead unit, systemd 255 evidence records the dynamic
 `MemorySwapCurrent=[not set]` while configured and effective
@@ -697,7 +709,7 @@ complete; such a backend needs an authoritative backend-specific generation/
 completeness proof.
 
 Because removing a user from NSS does not revoke credentials already held by a
-Linux thread, the v4 collector also executes two bounded full `/proc` PID/TID
+Linux thread, the v5 collector also executes two bounded full `/proc` PID/TID
 passes and records `CapInh`, `CapPrm`, `CapEff`, `CapAmb`, and `CapBnd`. It
 rejects every non-root thread with a reviewed dangerous active capability; for
 managed processes, every mask must be a subset of the rendered systemd policy,
@@ -990,6 +1002,38 @@ bytes, NSS, ACLs, xattrs, capabilities and `systemd-analyze verify`. Until that
 live evidence passes, these inputs remain deployment preparation rather than
 an activatable bundle.
 
+The runtime collector is not a standalone file. Its reviewed local import
+closure is exactly three sibling scripts from one frozen commit:
+`payment-v1-linux-runtime-evidence.mjs` imports
+`payment-v1-rendered-artifact-gate.mjs`, which imports
+`payment-v1-deployment-template-gate.mjs`. The release test also exact-matches
+every static `node:` builtin and rejects dynamic, CommonJS and worker loader
+entry points. Transfer and independently hash all three into the same
+root-owned, non-group/world-writable directory; copying a new collector beside
+an older gate, or copying only the collector, is forbidden. Runtime-evidence
+v5 invalidates v4 runtime requests; live v5,
+stopped-edge v4 and stopped-relay v3 invalidate v4 live, v3 stopped-edge and
+v2 stopped-relay receipts respectively. Rerender the bundle and recollect
+evidence rather than editing JSON.
+
+For collection, create a canonical owner-only evidence directory outside the
+closed rendered bundle and outside the three-script source directory, then use
+a new path such as
+`/root/bitcoinpir-evidence/<deployment-id>/stopped-directory-relay-v3.json` for
+`--output`. The collector requests mode `0600`, uses no-overwrite creation and
+refuses an existing path; the operator must then confirm a root-owned,
+single-link regular file at exact mode `0600`. Hash the complete file
+immediately, transfer that digest out of band, and run the matching offline
+verifier against the same v5 request. Do
+not place the receipt inside the rendered bundle, where it would violate the
+closed bundle tree, and do not reuse a failed or partial output pathname.
+
+Both stopped-edge and stopped-relay evidence require the host-wide exact
+`kernel.core_pattern=|/usr/bin/false`; this is not merely a live-edge check.
+The collector only observes and rejects drift—it never changes that sysctl.
+Changing the host-wide core policy therefore remains its own reviewed host
+mutation and rollback decision before collecting a production receipt.
+
 For each manifest secret, the final installed parent must be owned by its
 consumer EUID at exact mode `0700`, and every ancestor must satisfy the same
 Linux DAC ownership, write-bit and root-sticky policy as `pir-private-files`;
@@ -999,16 +1043,17 @@ directory descriptor, a stricter runtime rule that does not turn the Rust
 loader into a Linux POSIX/NFSv4/FUSE ACL auditor. It also binds file content and
 extended metadata to one opened inode, walks every parent component relative to
 the previously pinned directory descriptor, and repeats both closures after
-all long probes. A final lightweight structured-Conditions and unit-generation
-pass then runs immediately before evidence construction; no expensive metadata
-command follows that pass.
+all long probes. A final lightweight typed-credential, structured-Conditions
+and unit-generation pass then runs immediately before evidence construction;
+no expensive metadata command follows that pass.
 
 The live file is trusted-root operational evidence, not hardware attestation.
-Before collection, independently verify the collector script from the frozen
-commit and its exact Node/helper environment. The out-of-band evidence digest
-detects later handoff changes but cannot establish that the target root or the
-collector was honest; the current manifest does not self-attest those script
-bytes.
+Before collection, independently verify the three-script import closure from
+the frozen commit, including each exact `node:` builtin import and the absence
+of alternate dynamic/CommonJS/worker loaders, plus its exact Node/helper
+environment. The out-of-band evidence digest detects later handoff changes but
+cannot establish that the target root or the collector was honest; the current
+manifest does not self-attest those script bytes.
 
 ## Failure and rollback
 

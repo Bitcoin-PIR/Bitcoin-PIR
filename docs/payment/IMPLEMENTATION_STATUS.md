@@ -874,7 +874,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v4 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v5 retains
       only the closed files-authoritative NSS sequences `files` and
       `files systemd` (the latter only as the same second-position fallback for
       both passwd and group), binds `/etc/nsswitch.conf`, `/etc/passwd` and
@@ -894,7 +894,17 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       version reads systemd's structured `Conditions` property through a pinned
       `/usr/bin/busctl` rather than accepting systemd 255's
       `Conditions=[unprintable]`, and proves the exact evaluated condition set
-      plus current path truth before and after collection. Installed-file
+      plus current path truth before and after collection. It separately reads
+      `ImportCredential`, `LoadCredential`, `LoadCredentialEncrypted`,
+      `SetCredential` and `SetCredentialEncrypted` from the Service interface
+      and requires the exact empty `as`, `a(ss)`, `a(ss)`, `a(say)` and
+      `a(say)` arrays. All five are request-bound and repeated in live,
+      stopped-edge and stopped-relay final sealing; systemd 255's
+      `[unprintable]` text is never treated as empty.
+      The release closure is the collector, rendered gate and
+      deployment-template gate from one frozen commit; tests exact-match all
+      local and `node:` specifiers and reject alternate dynamic, CommonJS and
+      worker loaders. Installed-file
       content, independent SHA-256, stat, ACL, xattr and capability probes now
       use one open descriptor, while initial and final `O_NOFOLLOW` path
       descriptors must retain the same device/inode. Every secret's final parent
@@ -905,9 +915,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       directory descriptor, which is deliberately stricter than the loader and
       is not a claim that the loader audits Linux POSIX/NFSv4/FUSE ACLs. The
       complete directory set and every secret file are revalidated after all
-      long external probes; only then does the final lightweight structured-
-      Conditions/unit-generation pass run immediately before evidence
-      construction. This
+      long external probes; only then does the final lightweight typed-
+      credential/Conditions/unit-generation pass run immediately before
+      evidence construction. This
       is not an already-connected-FD proof. The stopped-edge evidence type
       therefore requires inactive/dead units, absent socket paths, locked
       non-login service accounts and an empty protected-credential closure

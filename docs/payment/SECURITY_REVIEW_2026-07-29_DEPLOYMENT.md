@@ -132,7 +132,7 @@ must prove a successful zero-status completion in the current boot. Offline
 review is meaningful only with an independently transferred full evidence
 digest.
 
-Runtime-evidence v4 narrows NSS to a files-authoritative closed set: both
+Runtime-evidence v5 retains v4's files-authoritative NSS closed set: both
 `passwd` and `group` must use exactly `files`, or both must use exactly
 `files systemd`, with inherited group-based `initgroups`. Only the latter exact
 Ubuntu fallback sequence is accepted; mixed sequences, reversed order, action
@@ -150,7 +150,7 @@ remote/cached or optionally enumerable NSS providers are not accepted by this
 V1 claim; the sole reviewed systemd fallback passes only while its complete
 enumeration projection remains exactly the local-files projection.
 
-Runtime-evidence v4 also closes credentials and capabilities retained in the
+Runtime-evidence v5 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce
 the same protected-holder records, record all four active sets plus `CapBnd`,
 and fail on a reviewed dangerous active capability held by non-root. Each
@@ -162,7 +162,7 @@ cgroup with the same reviewed credentials and zero capabilities. Only the
 Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
 set is checked against that exact systemd policy.
 
-Runtime-evidence v4 also stops treating systemd's structured `Conditions`
+Runtime-evidence v5 also stops treating systemd's structured `Conditions`
 property as printable `systemctl show` text. Ubuntu 24.04's systemd 255 renders
 that property as `[unprintable]`. The collector therefore pins `/usr/bin/busctl`
 in its trusted-command closure, parses the exact `a(sbbsi)` D-Bus shape, and
@@ -176,6 +176,21 @@ returned the exact two `a(sbbsi)` tuples with `result = 1` and
 `ConditionResult=yes`. The temporary container and derived test image were then
 removed.
 
+The same printable-text failure affects service credentials. On the target
+systemd 255 host, `systemctl show --value` returned `[unprintable]` for
+`LoadCredential`, `LoadCredentialEncrypted`, `SetCredential` and
+`SetCredentialEncrypted`, while typed Service-interface reads returned empty
+`a(ss)`, empty `a(ss)`, empty `a(say)` and empty `a(say)` values respectively.
+The [upstream systemd v255 Service D-Bus vtable](https://github.com/systemd/systemd/blob/v255/src/core/dbus-execute.c#L1043-L1047)
+also exposes `ImportCredential` as typed `as`; its target-host scalar rendering
+was not part of that observation.
+V5 therefore removes the four Load/Set fields from the scalar systemctl schema,
+keeps all five credential fields in a separate Service-interface request list,
+and accepts only the exact typed empty arrays. The typed snapshots are included
+in live, stopped-edge and stopped-relay evidence and are repeated during final
+sealing. `[unprintable]` is never special-cased as empty. This schema change
+invalidates earlier v4 live, v3 stopped-edge and v2 stopped-relay evidence.
+
 Runtime evidence also treats private-file loader compatibility as a distinct
 invariant from ordinary readability. Every secret's final parent is bound to
 the consumer EUID and exact mode `0700`; all ancestors follow the loader's
@@ -185,11 +200,12 @@ capabilities on descriptor-pinned directory components; the Rust loader itself
 does not claim a Linux POSIX/NFSv4/FUSE ACL audit. Installed-file content and
 extended metadata are collected against one opened inode, while parent paths
 are walked component-by-component from pinned descriptors. Both closures are
-revalidated after the long host probes. The final lightweight structured-
-Conditions and unit-generation pass runs only after those expensive secret
-commands finish, immediately before evidence construction. These checks prevent a
-green evidence record for files that would fail closed on the next service
-restart or for a pathname swapped between hashing and metadata collection.
+revalidated after the long host probes. The final lightweight typed-credential,
+structured-Conditions and unit-generation pass runs only after those expensive
+secret commands finish, immediately before evidence construction. These checks
+prevent a green evidence record for files that would fail closed on the next
+service restart or for a pathname swapped between hashing and metadata
+collection.
 
 The scan does not prove ownership of an already-connected Unix socket FD after
 `SCM_RIGHTS` transfer. Source-fair activation consequently requires a cold
@@ -208,7 +224,12 @@ These gates are source and staging controls, not hardware attestation. Their
 first real systemd/Linux execution on the target Hetzner staging host remains
 mandatory.
 
-The collector is also part of the trusted-root TCB. The evidence digest binds
+The collector and its two local imports are also part of the trusted-root TCB.
+The exact closure is the runtime collector, rendered-artifact gate and
+deployment-template gate from one frozen commit. Release tests exact-match all
+static local and `node:` specifiers and reject alternate dynamic, CommonJS and
+worker loaders; all three scripts must be transferred and hash-verified
+together. The evidence digest binds
 the transferred result, not the honesty of target root or the script that
 created it. The activation ceremony must independently verify and run the
 collector bytes from the frozen commit; adding the collector script itself to
