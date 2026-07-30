@@ -42,8 +42,12 @@ loader closure: that libpq still resolves `libssl.so.3`, `libcrypto.so.3`,
 ABI. The current runtime-evidence schema does not inspect `/proc/<pid>/maps` or
 bind a mapped inode to the selected file. Production activation of CLN is
 therefore blocked until a later evidence schema proves that exact mapping and
-the host ABI trust is approved. CLI tools and `lightningd` live below `bin/`;
-the eight
+the host ABI trust is approved. The core unit deliberately does not require
+`CLN-LOADER-MAPS-APPROVED`, so a no-funds generation can run to collect that
+evidence. The preflight, guard and issuer units all require it. The sentinel
+must not be provisioned until a separately reviewed evidence-schema PR exists,
+the exact maps/inode/digest evidence passes, and the host ABI trust is approved.
+CLI tools and `lightningd` live below `bin/`; the eight
 mandatory subdaemons retain the upstream `libexec/c-lightning/` layout that
 `lightningd` resolves relative to its own executable. `lightning_dualopend` and
 `lightning_websocketd` are deliberately absent: the closed config enables
@@ -58,12 +62,14 @@ and live `plugin list` preflight provide those independent checks. Pinned CLN
 v26.06.6 has a deterministic NULL dereference in `clear-plugins`, so that
 option and duplicate `important-plugin` registrations are forbidden. The two
 remaining built-ins are natively important; live preflight requires exactly
-those canonical paths with `active=true` and `dynamic=false`. Both
+those canonical paths with `active=true` and `dynamic=false`.
 `/srv/lightning/plugins` (the actual CLN base-directory scan location) is a
 required root-owned `0555` tmpfiles/runtime-evidence input and is masked without
 systemd's ignore-missing prefix, so an absent placeholder fails startup. The
-network-local lookalike is not a CLN default scan path; it remains required
-absent by the pre-start layout verifier but is not claimed as a namespace mask.
+pre-start verifier does not place that already-masked base path in its
+must-be-absent loop. The network-local lookalike is not a CLN default scan path;
+it remains required absent by that verifier but is not claimed as a namespace
+mask.
 Consequently there is no gRPC, REST, Commando, WebSocket proxy, recklessrpc,
 dynamic plugin directory or remote Lightning RPC surface. The
 `funder`/`spenderp` path is also inert, so this receive-only issuer profile
@@ -146,8 +152,11 @@ mainnet approval mechanism.
 The templates require the cross-UID CLN and Bitcoin-cookie validators plus the
 method guard; none has a source-level bypass flag. Activation still requires a
 Linux rendered-artifact/runtime-evidence pass, exact binary/config hashes,
-separate restore rehearsals, and live default-Signet preflight evidence. The
-repository preflight deliberately rejects mainnet, custom Signet, testnet and
+separate restore rehearsals, exact loader maps/inode evidence, and live
+default-Signet preflight evidence. Until a separately reviewed loader-evidence
+schema PR lands and passes, `CLN-LOADER-MAPS-APPROVED` must remain absent, which
+mechanically prevents the live preflight, RPC guard and issuer from starting.
+The repository preflight deliberately rejects mainnet, custom Signet, testnet and
 regtest. Mainnet support, any real-value wallet/channel, remote installation,
 and the corresponding custody decision remain separate reviewed and approved
 work. A generated node ID or test liquidity is not that approval.
@@ -174,9 +183,9 @@ independent of the live-host file format.
 Immediately after the first no-funds start, and before any address, funding or
 channel operation, run `bpir-admin lightning-staging bootstrap-preflight`. It
 must match the independently derived node ID, exact default Signet, pinned
-runtime and plugin closure, and must observe zero peer channels, zero on-chain
-wallet outputs, zero funded channels plus an empty `staticbackup`. A non-zero
-result is not recoverable by relabelling the phase.
+selected deployment-file and plugin set, and must observe zero peer channels,
+zero on-chain wallet outputs, zero funded channels plus an empty `staticbackup`.
+A non-zero result is not recoverable by relabelling the phase.
 
 Before the RPC guard, full preflight and issuer activation sentinels are
 provisioned, all of the following must then be true and independently recorded:
@@ -193,9 +202,14 @@ provisioned, all of the following must then be true and independently recorded:
 6. the CLN UID's pre-start layout verifier passes before `lightningd` starts;
    it rejects namespace symlinks, ACLs, unexpected special files, non-private
    datastore files, hard links, and the wrong socket owner/group/mode; and
-7. `bitcoinpir-lightning-preflight.service` passes as its dedicated preflight UID against
-   the running exact binaries, plugins, Core chain, node identity, channels,
-   liquidity, strict cross-UID socket metadata and fresh backup receipt.
+7. a separately reviewed runtime-evidence schema binds the running
+   `lightningd` `/proc/<MainPID>/maps` entry, inode and digest to the selected
+   private libpq and records approval of its host ABI dependencies; only then
+   may `CLN-LOADER-MAPS-APPROVED` be provisioned; and
+8. `bitcoinpir-lightning-preflight.service` passes as its dedicated preflight
+   UID against the running exact binaries, plugins, Core chain, node identity,
+   channels, liquidity, strict cross-UID socket metadata and fresh backup
+   receipt.
 
 The issuer UID cannot traverse the native CLN namespace at all. The dedicated
 preflight UID can traverse but cannot list the mode-`0710` CLN directory. For
@@ -211,6 +225,10 @@ from a dynamic datastore backup. Never copy a running SQLite CLN database. The
 global, Signet-staging, Lightning-custody and identity-restore approvals in the
 CLN unit, and the additional issuer-activation and backup/restore approvals on
 the guard/preflight/issuer units, are operator gates, not cryptographic proof.
+Those three downstream units additionally require
+`CLN-LOADER-MAPS-APPROVED`; the core unit omits it solely so the evidence can be
+collected from a no-funds generation. Never create that sentinel before the
+separate evidence-schema PR and independent evidence approval.
 The issuer additionally requires both the live preflight lease supervisor and
 RPC guard. The supervisor is `Type=notify`, reads the root-owned systemd
 InvocationID mapping before and after every full check, renews a private

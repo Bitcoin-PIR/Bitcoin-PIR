@@ -1634,6 +1634,21 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
   });
   assert.equal(model.manifest.deployment_profile, "issuer-lightning-signet-v1");
   const byName = new Map(model.request.units.map((unit) => [unit.unit_name, unit]));
+  const loaderMapsCondition =
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED";
+  assert.equal(
+    byName.get("bitcoinpir-core-lightning.service").conditions.includes(
+      loaderMapsCondition,
+    ),
+    false,
+  );
+  for (const unitName of [
+    "bitcoinpir-lightning-preflight.service",
+    "bitcoinpir-cln-rpc-guard.service",
+    "bitcoinpir-payment-issuer.service",
+  ]) {
+    assert.equal(byName.get(unitName).conditions.includes(loaderMapsCondition), true);
+  }
   assert.deepEqual(
     { ...byName.get("bitcoinpir-cln-rpc-guard.service").unit_dependencies },
     {
@@ -2937,6 +2952,25 @@ test("rendered profiles require exact profile-specific activation sentinels", (t
     );
   }
 
+  for (const sourcePath of [
+    GUARD_UNIT,
+    PREFLIGHT_UNIT,
+    "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+  ]) {
+    const issuer = makeIssuerFixture(t);
+    updateTemplate(issuer, sourcePath, (text) =>
+      text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED\n",
+        "",
+      ),
+    );
+    assert.throws(
+      () => renderFixture(issuer),
+      /profile-specific activation conditions/,
+      `${sourcePath} must retain the CLN loader maps approval blocker`,
+    );
+  }
+
   for (const [label, factory, unit, foreignSentinels] of [
     [
       "provider-v1",
@@ -2983,6 +3017,7 @@ test("Lightning bootstrap cannot be collapsed into the post-channel issuer phase
   for (const forbidden of [
     "SIGNET-ISSUER-ACTIVATION-APPROVED",
     "LIGHTNING-BACKUP-RESTORE-APPROVED",
+    "CLN-LOADER-MAPS-APPROVED",
   ]) {
     const fixture = makeIssuerFixture(t);
     updateTemplate(fixture, coreTemplate, (text) =>
@@ -3045,6 +3080,45 @@ test("offline manifest verification rechecks profile-specific activation sentine
       issuerManifest.runtime_units[index].unit_name,
     );
   }
+
+  for (const unitName of [
+    "bitcoinpir-lightning-preflight.service",
+    "bitcoinpir-cln-rpc-guard.service",
+    "bitcoinpir-payment-issuer.service",
+  ]) {
+    const issuerManifest = structuredClone(issuer.manifest);
+    const unit = issuerManifest.runtime_units.find(
+      (entry) => entry.unit_name === unitName,
+    );
+    unit.conditions = unit.conditions.filter(
+      (condition) => !condition.endsWith("/CLN-LOADER-MAPS-APPROVED"),
+    );
+    assert.throws(
+      () => runtimeRequestFromManifest(
+        issuerManifest,
+        hashBytes(Buffer.from(canonicalJson(issuerManifest))),
+      ),
+      /profile-specific activation conditions/,
+      `${unitName} offline manifest must retain the loader maps blocker`,
+    );
+  }
+
+  const coreBlockedManifest = structuredClone(issuer.manifest);
+  const coreUnit = coreBlockedManifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
+  );
+  coreUnit.conditions.push(
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
+  );
+  coreUnit.conditions.sort();
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      coreBlockedManifest,
+      hashBytes(Buffer.from(canonicalJson(coreBlockedManifest))),
+    ),
+    /profile-specific activation conditions/,
+    "core-lightning must remain startable for no-funds loader maps collection",
+  );
 
   const direct = renderFixture(makeProviderDirectFixture(t));
   const directManifest = structuredClone(direct.manifest);

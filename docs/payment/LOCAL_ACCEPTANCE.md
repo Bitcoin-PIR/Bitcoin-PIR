@@ -456,7 +456,10 @@ complete ELF loader closure, or production Signet identity, custody, liquidity,
 payment, persistent installation or activation evidence. The exact libpq still
 uses host libssl, libcrypto, GSSAPI, LDAP and libc dependencies. Production CLN
 activation remains blocked until the runtime-evidence schema binds the selected
-mapping and the host ABI trust is approved.
+mapping and the host ABI trust is approved. The core unit may run without funds
+to collect that evidence, but `CLN-LOADER-MAPS-APPROVED` must remain absent until
+the separately reviewed schema PR and evidence approval exist; its absence
+mechanically blocks preflight, guard and issuer.
 
 ### 2026-07-29 CLN bootstrap and bundle-layout gate
 
@@ -466,7 +469,7 @@ suite passed 32/32, the full `bpir-admin` suite passed 125/125, and the scoped
 warnings-denied clippy invocation passed. The deployment-template gate passed
 24/24 and the rendered-artifact gate passed 79/79.
 
-The executable-closure check was also tested against the official Core
+The selected deployment-file check was also tested against the official Core
 Lightning v26.06.6 image pinned by digest:
 
 ```text

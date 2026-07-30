@@ -11,6 +11,7 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED
 ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
 
 [Service]
@@ -69,4 +70,6 @@ ReadWritePaths=/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-ope
 # There is intentionally no [Install] section. Type=notify with Restart=no
 # plus the consumed root-only approval token make every CLN generation require
 # an explicit fresh supervisor ceremony. The guard and issuer are BindsTo this
-# lease process and stop on any failed renew.
+# lease process and stop on any failed renew. CLN-LOADER-MAPS-APPROVED must not
+# be provisioned until a separately reviewed evidence-schema change binds the
+# running lightningd maps, inode and digest to the selected private libpq.

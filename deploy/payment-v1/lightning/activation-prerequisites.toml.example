@@ -27,6 +27,8 @@ dynamic_datastore_restore_rehearsed = false
 stale_channel_state_rollback_rejected = false
 default_signet_chain_pins_verified = false
 cln_selected_deployment_file_closure_verified = false
+# Keep this false and do not provision CLN-LOADER-MAPS-APPROVED until a later,
+# separately reviewed evidence schema binds live maps, inode and file digest.
 cln_loader_maps_inode_evidence_verified = false
 exact_plugin_allowlist_verified = false
 strict_rpc_socket_layout_verified = false

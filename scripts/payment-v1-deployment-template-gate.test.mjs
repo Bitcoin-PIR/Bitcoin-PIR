@@ -1144,6 +1144,27 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
       (text) => text.replace("User=bitcoinpir-cln-rpc-guard", "User=root"),
       /Service\.User must equal/,
     ],
+    ...[
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+    ].map((sourcePath) => [
+      sourcePath,
+      (text) => text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED\n",
+        "",
+      ),
+      /ConditionPathExists/,
+    ]),
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED\n",
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED\n" +
+          "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED\n",
+      ),
+      /ConditionPathExists/,
+    ],
     [
       "deploy/payment-v1/lightning/verify-layout.sh.in",
       (text) => text.replace(":400:32\" ] || bpir_fail", ":600:32\" ] || bpir_fail"),
@@ -1160,10 +1181,19 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
     [
       "deploy/payment-v1/lightning/verify-layout.sh.in",
       (text) => text.replace(
-        '    "${bpir_lightning_base}/plugins" \\\n',
+        '    "${bpir_lightning_dir}/config" \\\n',
+        '    "${bpir_lightning_base}/plugins" \\\n' +
+          '    "${bpir_lightning_dir}/config" \\\n',
+      ),
+      /must reject only the exact unmasked config and network-local plugin lookalikes/,
+    ],
+    [
+      "deploy/payment-v1/lightning/verify-layout.sh.in",
+      (text) => text.replace(
+        '    "${bpir_lightning_dir}/plugins"\n',
         "",
       ),
-      /Lightning layout verifier template (?:must contain|is missing required text)/,
+      /must reject only the exact unmasked config and network-local plugin lookalikes/,
     ],
   ];
 

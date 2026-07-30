@@ -34,7 +34,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
     "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
-    "52007c83b076c14866a6bffea22a2faa9903d2794ede1bfa8af624513b65a80d",
+    "b5def27d9d5df397af5fafb91f0e64404b62a5c8131b9b3ae4aea187fbbcd6be",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
     "70a74e60514adaf5fb89b1461ffddc20c66a10dd127973d42d2144074011f3fc",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
@@ -42,15 +42,15 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/lightningd.conf.in":
     "b0402cc1caa0c1daa8244c85af7b728ffefb324ba9e510bfad029b972aadc847",
   "deploy/payment-v1/lightning/verify-layout.sh.in":
-    "84214eeb72316fad5bc2e2bbdc73df1ac8d278b683a48c2f00983d31a4459470",
+    "3604d6812c637503f333ced4b6789e75e75c65fde8f46a407a48f4809036134c",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "41c099d78c472efc2c6864935ed739afbaed804ad7b4827b5be5c43eea2cf967",
+    "8ac83d4a16f347381e1cd44fa3ce1cbf176c5dee909e87c65a7d204ee2ec512d",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
-    "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
+    "87eef911c6c42bd1cb350b1990e4545ffe08ff2217d8b47aa806db33f6d0a93d",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "b8a8cb918b38f36b8945b80b5da00d38e15d9cc9a72f8d8c934e760b8f022b5f",
+    "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "d0bee8a8e30762ca5c8278d4c06ff14e7c26dd7eb9be199ec8a12f7929e70ec5",
+    "9f8e90084553bfa0e36768631e21295720b627fc0b25489d124ddee4657f823c",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
@@ -706,6 +706,7 @@ function validateHetznerIssuer(text) {
     "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
   ]);
   exactDirectiveKeys(
     unit,
@@ -991,6 +992,7 @@ function validateClnRpcGuardUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
       "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
     ],
     { requireStateDirectoryMode: false },
@@ -1100,6 +1102,7 @@ function validateLightningPreflightUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
       "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
     ],
     { requireStateDirectoryMode: true },
@@ -2471,8 +2474,6 @@ export function validateDeploymentTree(rootInput) {
   }
   for (const required of [
     "[ \"${bpir_lightning_network}\" = 'signet' ] || bpir_fail",
-    '"${bpir_lightning_base}/plugins" \\',
-    '"${bpir_lightning_dir}/plugins"',
     "-perm /077",
     "-links +1",
     "/usr/bin/getfacl",
@@ -2484,6 +2485,31 @@ export function validateDeploymentTree(rootInput) {
     layoutVerifier.text,
     "Lightning layout verifier template",
   );
+  const forbiddenLoopStart = activeLayoutVerifierLines.indexOf(
+    "for bpir_forbidden in \\",
+  );
+  const forbiddenLoopEnd = activeLayoutVerifierLines.indexOf(
+    "do",
+    forbiddenLoopStart + 1,
+  );
+  const forbiddenLoopPaths = activeLayoutVerifierLines.slice(
+    forbiddenLoopStart + 1,
+    forbiddenLoopEnd,
+  );
+  if (
+    forbiddenLoopStart < 0 ||
+    forbiddenLoopEnd < 0 ||
+    JSON.stringify(forbiddenLoopPaths) !== JSON.stringify([
+      '"${bpir_lightning_base}/config" \\',
+      '"${bpir_lightning_dir}/config" \\',
+      '"${bpir_lightning_dir}/config.setconfig" \\',
+      '"${bpir_lightning_dir}/plugins"',
+    ])
+  ) {
+    fail(
+      "Lightning layout verifier must reject only the exact unmasked config and network-local plugin lookalikes",
+    );
+  }
   for (const required of [
     'bpir_hsm_secret="${bpir_lightning_dir}/hsm_secret"',
     '[ -f "${bpir_hsm_secret}" ] && [ ! -L "${bpir_hsm_secret}" ] || bpir_fail',

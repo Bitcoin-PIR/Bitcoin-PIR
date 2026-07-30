@@ -11,6 +11,7 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED
 
 [Service]
 Type=simple
@@ -83,3 +84,5 @@ InaccessiblePaths=/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge
 # installed. There is intentionally no [Install] section. The final unit name
 # is bitcoinpir-payment-issuer.service; it is bound to the exact CLN unit, its
 # method guard, and the successful live preflight, so none may be bypassed.
+# CLN-LOADER-MAPS-APPROVED must remain absent until the separately reviewed
+# loader maps/inode evidence schema exists and has produced approved evidence.

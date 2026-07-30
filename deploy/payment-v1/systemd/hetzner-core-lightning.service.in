@@ -62,6 +62,7 @@ ReadWritePaths=/srv/lightning/@LIGHTNING_NETWORK@ /run/bitcoinpir-core-lightning
 # There is intentionally no [Install] section. This daemon may start only
 # after the identity secret has been restored in isolation and matched to its
 # reviewed node ID. It deliberately does not require the later channel/data
-# backup or issuer-activation sentinels: those can be produced only after this
-# daemon has started and channels have been staged. The guard, live preflight
-# and issuer retain those later gates.
+# backup, issuer-activation or CLN-loader-maps sentinels: those can be produced
+# only after this daemon has started and channels have been staged, and a
+# no-funds daemon generation must run before its loader maps can be collected.
+# The guard, live preflight and issuer retain those later gates.

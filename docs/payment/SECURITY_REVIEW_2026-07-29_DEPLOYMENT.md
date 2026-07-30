@@ -105,7 +105,11 @@ Ubuntu library identity. They prove a selected private deployment leaf, not its
 live mapping or a complete loader closure. That leaf still trusts host libssl,
 libcrypto, GSSAPI, LDAP and libc. Production activation remains blocked until a
 later runtime-evidence schema binds the selected path, inode and digest to
-`/proc/<MainPID>/maps` and the host ABI trust is independently approved.
+`/proc/<MainPID>/maps` and the host ABI trust is independently approved. The
+core unit intentionally omits `CLN-LOADER-MAPS-APPROVED` so it can run without
+funds while that evidence is collected. Preflight, guard and issuer require the
+sentinel, which must remain absent until the separately reviewed evidence-schema
+PR exists and the resulting evidence is independently approved.
 
 Target-host probing also found two release-specific configuration hazards.
 CLN v26.06.6 dereferences a null later-config entry in `clear-plugins`, and
@@ -117,8 +121,9 @@ only `bcli`/`chanbackup` remain executable. This double condition is needed
 because the documented `plugin start` RPC can bypass a disable list. A
 root-owned `0555` tmpfiles/runtime-evidence placeholder makes the actual
 `/srv/lightning/plugins` scan path a required, non-ignore-missing namespace
-mask; the layout verifier separately rejects the non-default network-local
-lookalike. Runtime acceptance must prove exactly two active,
+mask. The pre-start layout verifier does not test that already-masked base path
+as absent; it separately rejects the non-default network-local lookalike.
+Runtime acceptance must prove exactly two active,
 non-dynamic plugins after a complete start.
 
 A post-merge independent deployment-plan review found one P1 ambiguity and six

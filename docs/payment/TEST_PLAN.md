@@ -1052,8 +1052,10 @@ The default-Signet staging preflight focused suite additionally requires:
   important-plugin registration, or an on-chain invoice fallback opt-in fail;
   `/srv/lightning/plugins` must exist in the host layout as the exact root:root
   `0555` tmpfiles/runtime-evidence placeholder and be masked without an
-  ignore-missing prefix; the network-local lookalike must remain absent under
-  the layout verifier and is not claimed as a namespace mask. Live
+  ignore-missing prefix. The pre-start verifier must reject any attempt to put
+  that already-masked base path in its must-be-absent loop; the network-local
+  lookalike must remain absent under the verifier and is not claimed as a
+  namespace mask. Live
   `plugin list` must contain exactly the two allowed entries with
   `active=true,dynamic=false`; an attempted `plugin start` of an inert member
   must fail. A
@@ -1064,7 +1066,12 @@ The default-Signet staging preflight focused suite additionally requires:
   verification. These checks do not prove the process mapping or the leaf's
   host-provided libssl, libcrypto, GSSAPI, LDAP and libc ABI dependencies;
   production activation remains blocked until maps-plus-inode evidence and host
-  ABI approval exist. The exact systemd pre-start
+  ABI approval exist. The core unit must omit
+  `CLN-LOADER-MAPS-APPROVED` so a no-funds generation can be inspected, while
+  preflight, guard and issuer must require it. Source, rendered and offline
+  manifest negative tests must reject removing it downstream or adding it to
+  core. The sentinel must remain absent until a separately reviewed evidence-
+  schema PR and independent evidence approval exist. The exact systemd pre-start
   command runs `lightningd --test-daemons-only --offline` before the datastore
   layout verifier or daemon start. Because that CLN option exits during early
   parsing, integration must additionally exercise a complete no-funds start;

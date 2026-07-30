@@ -279,9 +279,9 @@ RPC Unix socket has exact expected UID/GID and a bounded call timeout.
 This is the only renderable issuer unit. It has `Requires`, `After`, and
 `BindsTo` dependencies on the exact CLN service, method-allowlist guard, and
 successful live preflight, plus separate global, Signet-issuer,
-Lightning-custody, and backup/restore sentinels. There is no generic alternate
-unit that can use the global activation sentinel while bypassing any of those
-boundaries.
+Lightning-custody, backup/restore, and `CLN-LOADER-MAPS-APPROVED` sentinels.
+There is no generic alternate unit that can use the global activation sentinel
+while bypassing any of those boundaries.
 
 The issuer detailed store uses its own remote rollback authority. Quote,
 credential-derivation, direct-receipt, Cashu BAT, issuer-settlement, clearing,
@@ -340,14 +340,18 @@ bundle contains the reviewed executable/plugin members identified by the
 approved upstream archive hash. A separate digest-equals-file root and one-entry
 manifest contain exactly `libpq.so.5`; the service's only environment assignment
 selects that root. Do not install `libpq5` with `apt` as a deployment workaround,
-and do not widen the loader
-path. The current render and offline-manifest gates agree on the selected
+and do not widen the loader path. The current render and offline-manifest gates
+agree on the selected
 regular-file digest and loader-directory configuration; they do not prove the
 running mapping. The private libpq still trusts the host's `libssl.so.3`,
 `libcrypto.so.3`, `libgssapi_krb5.so.2`, `libldap.so.2`, and `libc.so.6` ABI.
 Do not production-activate CLN until a later runtime-evidence schema binds the
 selected file's path, inode and digest to `/proc/<MainPID>/maps` and the host ABI
-trust has independent approval.
+trust has independent approval. The core unit omits
+`CLN-LOADER-MAPS-APPROVED` only so a no-funds generation can run while that
+evidence is collected. The live preflight, RPC guard and issuer units all
+require the sentinel. It must not be provisioned before the separately reviewed
+evidence-schema PR exists and its evidence has passed independent review.
 
 For v26.06.6, do not use `clear-plugins`: the pinned release crashes while it
 walks not-yet-parsed later config variables. Install the exact official
@@ -358,7 +362,8 @@ evidence must provide `/srv/lightning/plugins`, the actual default scan path, as
 a root:root `0555` placeholder; the unit masks that exact existing path without
 an ignore-missing prefix, so missing setup fails closed. The network-local
 lookalike is not a default scan path and must remain absent under the layout
-verifier. A successful `--test-daemons-only` is necessary
+verifier. The verifier must not test the already namespace-masked base path as
+absent. A successful `--test-daemons-only` is necessary
 but not sufficient because it exits before plugin initialization and final
 config parsing. Require a complete no-funds start plus an exact
 `active=true,dynamic=false` two-plugin live receipt before issuer activation.
@@ -371,7 +376,7 @@ an explicit start.
 
 The live preflight uses a third, dedicated UID—not the issuer UID—with temporary
 membership in the native CLN and Bitcoin-cookie groups. It validates the exact
-cross-UID `0710`/`0660` CLN shape and bitcoind-UID/cookie-GID `0710`/`0640`
+cross-UID `0710`/`0660` CLN shape and bitcoind-UID/cookie-GID `2710`/`0640`
 cookie shape. The supplied CLN configuration and prerequisite record remain
 default-Signet-only with `real_funds_authorized = false`; Linux artifact/runtime
 evidence, restore drills, remote installation and any real funds remain
