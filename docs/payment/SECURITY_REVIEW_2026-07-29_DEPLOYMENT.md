@@ -372,6 +372,42 @@ structured request-error records with remote-address metadata. These are
 pre-migration observations, not reusable activation evidence. Clearing the old
 mixed-service journal is a separate destructive retention decision.
 
+The repository now contains a non-deployed core-pattern ceremony v2. It binds
+the full Noble Apport side effect (`core_pattern`, `suid_dumpable`, and
+`core_pipe_limit`), exact installed handler and unit generations, never calls
+stock Apport ExecStart/ExecStop, and directly manages only the exact enablement,
+mask, approval-bound lease/preflight, both preflight gates, and reboot-guard
+generations. Stable unit configuration is
+separate from settled active/exited or inactive/dead observation. Matching
+sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
+quoted/escaped external start/stop/reload dependencies, load-path overrides for
+Apport/systemd-sysctl/guard, systemd specifier/path-normalization handler
+aliases, and implicit socket/path triggers are rejected.
+Runtime evidence uses complete Unit/Service `Properties.GetAll` values fenced
+by identical `ListUnits` and `ListJobs` generations plus an unchanged static
+configuration generation. The Apport gate and guard explicitly clear
+`ExecStop`; exact `ExecStartEx`, `ExecStopEx`, and `ExecConditionEx` sets are
+checked. The official Noble systemd-sysctl unit/binary and vendor boot
+enablement are fixed; candidate retains an exact drop-in that clears all five
+credential properties, closing `sysctl.extra` overrides. The preflight,
+systemd-sysctl gate and three-sysctl guard are durable before
+pending; fresh recovery binds the newest exact lease/preflight/pending digest
+and actual `/proc` boot, and terminal receipts bind the preflight and ordered
+recovery-approval chain. A full terminal-state inspection follows receipt-
+candidate persistence and precedes publication; cleanup is revalidated before
+lease release. Exact empty lock generations and live-plus-quarantine regular
+files replay from the durable lease/pins, while unknown generations fail
+closed. The maintenance-lock launcher now accepts only the canonical Node and
+source plus exact mutation command arguments under a closed environment.
+Deterministic receipts remain terminal after link/fsync/verify uncertainty.
+Hard process-death tests cover apply, recovery, rollback and all three sysctls.
+The former privileged-container PID1 matrix was
+retired because it shared the host kernel; an independent-kernel VM gate is
+checked statically but no VM matrix was run. This closes the source/test
+mechanism, not the activation
+gate: the exact host still requires fresh materialization, separate host-wide
+risk approval, execution, and stopped/live evidence.
+
 The directory selection is now resolved to exact source, binary, manifest,
 config and publisher-public-key pins in an explicitly degraded centralized
 mode. Resolution is not activation: the unit has no `[Install]` section and
