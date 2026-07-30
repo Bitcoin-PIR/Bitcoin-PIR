@@ -171,7 +171,20 @@ interface PirSdkWasm {
   };
   /** Strict transport-neutral verifier for complete multi-relay catalogs. */
   WasmDirectoryCatalogCandidateV1: {
-    verifyRelayCatalogs(
+    /**
+     * Event-batch verifier only. Caller has already enforced 2..8 canonical
+     * origin-only WSS URLs and 16 EOSE-complete subscriptions per view.
+     */
+    verifyStrictRelayEventBatch(
+      relayBatchJson: Uint8Array,
+      pinnedDirectoryPubkey: Uint8Array,
+      nowUnix: bigint,
+    ): WasmDirectoryCatalogCandidateV1;
+    /**
+     * Event-batch verifier only. Caller has already enforced one canonical
+     * origin-only WSS URL and 16 EOSE-complete subscriptions.
+     */
+    verifyCentralizedSingleRelayEventBatch(
       relayBatchJson: Uint8Array,
       pinnedDirectoryPubkey: Uint8Array,
       nowUnix: bigint,

@@ -55,6 +55,7 @@ import {
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
 import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
 import type { ProductQueryShapeV1 } from './service-entitlement.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 import type {
   DatabaseCatalog,
   OnionPirMerkleInfoJson,
@@ -1758,7 +1759,7 @@ export class OnionPirWebClient {
             announcement,
             this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY,
             attestation.serverStaticPub,
-            BigInt(Math.floor(Date.now() / 1000)),
+            trustedNowUnixV1(),
             BigInt(this.config.maxAnnounceAgeSeconds ?? 0),
           );
         } finally {

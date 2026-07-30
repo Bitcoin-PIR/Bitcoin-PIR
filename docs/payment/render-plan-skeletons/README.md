@@ -96,10 +96,10 @@ placeholder permits only offline review of the bounded config bytes. Relay
 selection must still move through its separate artifact gate and reviewed PR;
 installation, start, private-key use, routing and publication remain separately
 approved actions. The fixed unit/NSS/config/state paths describe one instance;
-under the current default `2..8` distinct-origin client contract, a second
-origin remains blocked. A separately reviewed explicit centralized-single-relay
-browser opt-in may remove that default requirement, but this skeleton cannot
-silently do so.
+under the default `strict-multi-relay` client contract, a second origin remains
+blocked. The implemented explicit `centralized-single-relay` browser mode may
+accept this one-origin topology only with its degraded assurance label; this
+skeleton selects neither mode and cannot silently downgrade the default.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.

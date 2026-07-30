@@ -76,8 +76,9 @@ pub use clearing::{
     MAX_SETTLEMENT_RULES, PROVIDER_REDEEM_REQUEST_DIGEST_DOMAIN,
 };
 pub use directory::{
-    is_canonical_public_wss_endpoint_v1, DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1,
-    DirectoryOperatorAssertionV1, DirectoryTransportV1, VerifiedDirectoryOperatorAssertionV1,
+    is_canonical_public_wss_endpoint_v1, is_canonical_public_wss_origin_v1,
+    DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1, DirectoryOperatorAssertionV1,
+    DirectoryTransportV1, VerifiedDirectoryOperatorAssertionV1,
     DIRECTORY_OPERATOR_ASSERTION_DIGEST_DOMAIN_V1,
     DIRECTORY_OPERATOR_ASSERTION_SIGNATURE_DOMAIN_V1, MAX_DIRECTORY_ASSERTION_LEN_V1,
     MAX_DIRECTORY_ASSERTION_VALIDITY_SECONDS_V1, MAX_DIRECTORY_ENDPOINTS_V1,
@@ -85,14 +86,11 @@ pub use directory::{
 };
 pub use error::ServiceProtocolError;
 pub use grant_claim::{
-    derive_shared_issuer_local_grant_namespace_v1,
-    verify_shared_issuer_local_grant_claim_v1, SharedIssuerLocalGrantNamespaceV1,
-    SharedIssuerProviderSecretV1, VerifiedSharedIssuerLocalGrantClaimV1,
-    SHARED_ISSUER_LOCAL_GRANT_BINDING_DOMAIN_V1,
-    SHARED_ISSUER_LOCAL_GRANT_CLAIM_KEY_DOMAIN_V1,
-    SHARED_ISSUER_LOCAL_GRANT_KEY_ID_DOMAIN_V1,
-    SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_DOMAIN_V1,
-    SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
+    derive_shared_issuer_local_grant_namespace_v1, verify_shared_issuer_local_grant_claim_v1,
+    SharedIssuerLocalGrantNamespaceV1, SharedIssuerProviderSecretV1,
+    VerifiedSharedIssuerLocalGrantClaimV1, SHARED_ISSUER_LOCAL_GRANT_BINDING_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_CLAIM_KEY_DOMAIN_V1, SHARED_ISSUER_LOCAL_GRANT_KEY_ID_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_DOMAIN_V1, SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
     SHARED_ISSUER_WIRE_IDEMPOTENCY_DOMAIN_V1,
 };
 pub use issuance::{

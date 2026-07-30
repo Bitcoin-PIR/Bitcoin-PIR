@@ -310,14 +310,18 @@ The directory service is still deliberately non-activatable while
 `relay-selection.toml.example` is `UNRESOLVED`. Do not include it in a public
 render, install a publisher key, or publish a catalog merely because the rest
 of a profile passes. Relay resolution, key installation/use and public Nostr
-publication are distinct reviewed/approved steps.
+publication are distinct reviewed/approved steps. Resolution also records one
+explicit directory transport mode: strict mode retains two to eight distinct
+exact credential-free origin-only WSS URLs, while centralized mode accepts
+exactly one and must be presented
+as degraded. No render infers independent operators or failure domains from
+origin count.
 
 This closed profile has one fixed unit/NSS/config/state identity. The current
-default browser/publisher contract still requires `2..8` distinct WSS origins,
-so a second origin blocks use under that default. A separately reviewed
-explicit centralized-single-relay browser opt-in may implement the user's
-accepted centralized-directory mode; this profile does not weaken the default
-or authorize an automatic fallback.
+default browser/publisher contract still uses strict mode and requires `2..8`
+distinct WSS origins. The explicit `centralized-single-relay` mode instead
+accepts exactly one origin and must remain visibly degraded. This stopped
+profile does not select either mode and never authorizes an automatic fallback.
 
 `scripts/build-payment-v1-directory-relay.sh` is the closed Linux-amd64 build
 recipe. It uses a registry-digest-pinned Rust container already present on the

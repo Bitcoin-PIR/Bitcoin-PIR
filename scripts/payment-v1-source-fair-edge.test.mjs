@@ -800,7 +800,7 @@ const providerRequest =
 const quoteRequest =
   "POST /v1/quotes/bolt11 HTTP/1.1\r\nHost: pay.example.net\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const directoryPublisherRequest =
-  "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
+  "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
 
 test("HAProxy enforces per-source upgraded-connection slots without cross-source starvation", {
   skip: HAPROXY === undefined,
@@ -1130,7 +1130,7 @@ http://:${port} {
   @publisher {
     remote_ip 127.0.0.1
     method GET
-    path /v1/directory
+    path /
     header Host publisher.example.net
   }
   handle @publisher {
@@ -1159,7 +1159,7 @@ http://:${port} {
   await waitForTcpListener(port, caddy, () => output);
 
   const request =
-    "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
   const unauthorizedAddress = nonLoopbackIpv4Address();
   assert.ok(unauthorizedAddress, "test host has no non-loopback IPv4 address");
   assert.equal(
@@ -1380,9 +1380,9 @@ function renderedCaddyLaneHarnessConfig(
   return rendered;
 }
 
-function websocketDirectoryRequest(host, extraHeaders = []) {
+function websocketDirectoryRequest(host, extraHeaders = [], requestTarget = "/") {
   return [
-    "GET /v1/directory HTTP/1.1",
+    `GET ${requestTarget} HTTP/1.1`,
     `Host: ${host}`,
     "Connection: Upgrade",
     "Upgrade: websocket",
@@ -1471,8 +1471,27 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     provider: 0,
   });
 
-  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
   let before = laneRecordCounts(harness);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublicStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publicClientIp,
+        websocketDirectoryRequest("directory.example.net", [], rejectedTarget),
+        "127.0.0.1",
+        "directory.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublicStatus >= 400 && rejectedPublicStatus < 500,
+      true,
+      `unexpected public status ${rejectedPublicStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
+
+  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
+  before = laneRecordCounts(harness);
   const publicBindPublisherStatus = statusOf(
     await tlsHttpResponseHeaders(
       edgePort,
@@ -1514,6 +1533,25 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
   );
   assert.equal(spoofedPublisherStatus >= 400 && spoofedPublisherStatus < 500, true);
   assert.deepEqual(laneRecordCounts(harness), before);
+
+  before = laneRecordCounts(harness);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublisherStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publisherClientIp,
+        websocketDirectoryRequest("publisher.example.net", [], rejectedTarget),
+        "127.0.0.2",
+        "publisher.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublisherStatus >= 400 && rejectedPublisherStatus < 500,
+      true,
+      `unexpected publisher status ${rejectedPublisherStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
 
   assert.equal(
     statusOf(

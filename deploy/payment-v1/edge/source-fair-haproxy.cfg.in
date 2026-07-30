@@ -157,7 +157,7 @@ frontend directory_public
     http-request deny deny_status 429 if { sc0_conn_cur gt 4 }
     http-request deny deny_status 429 if { sc0_conn_rate gt 12 }
     http-request deny deny_status 429 unless { method GET }
-    http-request deny deny_status 404 unless { path -m str /v1/directory }
+    http-request deny deny_status 404 unless { path -m str / }
     http-request del-header Forwarded
     http-request del-header X-Forwarded-For
     http-request del-header X-Forwarded-Host
@@ -200,7 +200,7 @@ frontend directory_publisher
     http-request deny deny_status 429 if { sc0_conn_cur gt 2 }
     http-request deny deny_status 429 if { sc0_conn_rate gt 8 }
     http-request deny deny_status 429 unless { method GET }
-    http-request deny deny_status 404 unless { path -m str /v1/directory }
+    http-request deny deny_status 404 unless { path -m str / }
     http-request del-header Forwarded
     http-request del-header X-Forwarded-For
     http-request del-header X-Forwarded-Host
