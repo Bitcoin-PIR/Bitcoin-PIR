@@ -249,6 +249,17 @@ running under the unit's `MainPID`; every live pre-start has completed with
 stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
 stopped-relay v3 evidence rather than upgrading it in place.
 
+V8 also stores every standalone typed D-Bus `t` value as a canonical decimal
+string. Its parser extracts the raw JSON integer before any JavaScript
+`Number` conversion, rejects duplicate or extra object keys and noncanonical
+number syntax, and bounds the value by uint64. This preserves systemd's
+`18446744073709551615` infinity sentinel exactly. Watchdog text and typed
+evidence are one lifecycle invariant: an inactive never-run unit must report
+`infinity` and uint64 max, an ordinary active unit must report zero in both
+forms, and the active preflight must report `1min 30s` and `90000000` with a
+fresh nonzero monotonic timestamp. Mixing values from different lifecycle
+states or retaining the old numeric evidence shape fails closed.
+
 Runtime evidence also treats private-file loader compatibility as a distinct
 invariant from ordinary readability. Every secret's final parent is bound to
 the consumer EUID and exact mode `0700`; all ancestors follow the loader's

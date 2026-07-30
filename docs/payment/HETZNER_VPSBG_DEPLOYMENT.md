@@ -523,6 +523,13 @@ must agree. Service snapshots additionally require typed `ExecStartEx` and
 path/argv/flags and stopped-state scalar redundancy. The exact render plan,
 manifest, request and host first line must be
 `systemd 255 (255.4-1ubuntu8.15)`.
+All typed `t` fields are evidence decimal strings parsed losslessly from the
+raw busctl JSON integer. For this never-run inactive unit, scalar
+`WatchdogUSec=infinity` must pair with typed
+`WatchdogUSec=18446744073709551615`, and
+`WatchdogTimestampMonotonic=0`; a numeric JSON evidence field or a live-state
+zero interval is rejected.
+
 This schema also binds the private
 config to its real consumer and 0700 final parent, and seals both file and
 descriptor-walk fingerprints before the final typed-credential,

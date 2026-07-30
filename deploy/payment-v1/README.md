@@ -259,9 +259,13 @@ check or a stale lease file cannot keep either downstream service active.
 Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,
-capabilities, boot and host identity to that manifest. The Hetzner edge request
-also binds the live runtime directory and all four socket types, owners, groups,
-and modes. Edge live evidence additionally requires hard/soft core limits of
+capabilities, boot and host identity to that manifest. Standalone typed D-Bus
+`t` properties are emitted as canonical decimal strings parsed losslessly from
+raw busctl JSON. Watchdog text/typed pairs are lifecycle-specific: inactive
+never-run is `infinity`/uint64-max, ordinary live is `0`/`0`, and live
+preflight is `1min 30s`/`90000000` with a fresh timestamp. The Hetzner edge
+request also binds the live runtime directory and all four socket types,
+owners, groups, and modes. Edge live evidence additionally requires hard/soft core limits of
 zero, zero current/max cgroup swap, and the host-wide
 `kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
 that exact root-owned, canonical, one-link, non-writable handler.

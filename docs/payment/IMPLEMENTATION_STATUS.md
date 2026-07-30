@@ -812,6 +812,11 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `WatchdogTimestampMonotonic`, plus two typed manager
       `ServiceWatchdogs` passes. Each watchdog pass binds the immediately
       following boot uptime, requires a fresh timestamp, and rejects rollback;
+      standalone D-Bus `t` values are stored as lossless canonical decimal
+      strings, including exact uint64 max for an inactive unit's infinity
+      sentinel. Scalar/typed pairs are lifecycle-closed: stopped is
+      `infinity`/uint64-max, ordinary live is `0`/`0`, and live preflight is
+      `1min 30s`/`90000000`;
       every rendered relationship must be loaded by the manager and the
       snapshots repeat at final sealing. Stale pre-`daemon-reload` manager
       state fails closed.
@@ -983,7 +988,10 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `a(sasasttttuii)` path/argv/flags; only the guard/preflight token-unlink
       precommands are privileged. Scalar command records are strict
       systemd-255 redundancy with one-newline delimiters and coherent
-      running/completed/stopped metadata.
+      running/completed/stopped metadata. The raw busctl parser preserves all
+      standalone `t` integers as decimal strings before JSON number rounding
+      can occur and rejects old numeric evidence, malformed syntax and
+      text/typed watchdog lifecycle mismatches.
       The release closure is the collector, rendered gate and
       deployment-template gate from one frozen commit; tests exact-match all
       local and `node:` specifiers and reject alternate dynamic, CommonJS and

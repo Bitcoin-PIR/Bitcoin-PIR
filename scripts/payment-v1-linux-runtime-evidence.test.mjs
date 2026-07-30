@@ -81,6 +81,7 @@ const TEMPLATE_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-deployment-template-gate.mjs",
 );
+const UINT64_MAX_DECIMAL = "18446744073709551615";
 const COMMANDS = [
   "/usr/bin/busctl",
   "/usr/bin/false",
@@ -439,7 +440,31 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       JSON.stringify({ data: 30_000_000, type: "t" }),
       "TimeoutStopUSec",
     ),
-    30_000_000,
+    "30000000",
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":18446744073709551615}',
+      "inactive WatchdogUSec",
+    ),
+    UINT64_MAX_DECIMAL,
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      '{"data":18446744073709551614,"type":"t"}',
+      "max minus one",
+    ),
+    "18446744073709551614",
+  );
+  assert.notEqual(
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":9007199254740992}',
+      "safe boundary plus one",
+    ),
+    parseBusctlUnsignedJsonV1(
+      '{"type":"t","data":9007199254740993}',
+      "unsafe adjacent integer",
+    ),
   );
   assert.deepEqual(
     parseBusctlBooleanJsonV1(JSON.stringify({ data: true, type: "b" })),
@@ -529,15 +554,21 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       label,
     );
   }
-  for (const [label, value] of [
-    ["wrong unsigned type", { data: 30_000_000, type: "u" }],
-    ["negative unsigned", { data: -1, type: "t" }],
-    ["infinite unsigned", { data: Number.MAX_VALUE, type: "t" }],
-    ["missing unsigned", { type: "t" }],
+  for (const [label, raw] of [
+    ["wrong unsigned type", '{"data":30000000,"type":"u"}'],
+    ["negative unsigned", '{"data":-1,"type":"t"}'],
+    ["uint64 max plus one", '{"type":"t","data":18446744073709551616}'],
+    ["Number-rounded uint64 max", '{"type":"t","data":18446744073709552000}'],
+    ["leading-zero unsigned", '{"type":"t","data":01}'],
+    ["exponent unsigned", '{"type":"t","data":1e3}'],
+    ["quoted unsigned", '{"type":"t","data":"0"}'],
+    ["duplicate data", '{"type":"t","data":0,"data":0}'],
+    ["extra key", '{"type":"t","data":0,"extra":0}'],
+    ["missing unsigned", '{"type":"t"}'],
   ]) {
     assert.throws(
-      () => parseBusctlUnsignedJsonV1(JSON.stringify(value), label),
-      /finite|keys|reviewed/,
+      () => parseBusctlUnsignedJsonV1(raw, label),
+      /raw-number|uint64|reviewed/,
       label,
     );
   }
@@ -551,9 +582,9 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
   const service = {
     ExecStartEx: [],
     ExecStartPreEx: [],
-    TimeoutStopUSec: 30_000_000,
-    WatchdogTimestampMonotonic: 0,
-    WatchdogUSec: 0,
+    TimeoutStopUSec: "30000000",
+    WatchdogTimestampMonotonic: "0",
+    WatchdogUSec: "0",
   };
   assert.equal(
     assertEffectiveSystemdPolicySnapshotUnchangedV1(
@@ -564,6 +595,34 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       "test",
     ),
     true,
+  );
+  const unsafeEarlier = {
+    ...service,
+    WatchdogTimestampMonotonic: "9007199254740992",
+  };
+  const unsafeLater = {
+    ...service,
+    WatchdogTimestampMonotonic: "9007199254740993",
+  };
+  assert.equal(
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      unsafeEarlier,
+      unsafeLater,
+      "unsafe monotonic timestamp",
+    ),
+    true,
+  );
+  assert.throws(
+    () => assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      unsafeLater,
+      unsafeEarlier,
+      "unsafe monotonic timestamp rollback",
+    ),
+    /policy changed during live collection/u,
   );
   const changed = clone(dependencies);
   changed.After = ["basic.target"];
@@ -1127,7 +1186,7 @@ function fixture() {
     Type: "simple",
     UMask: "0077",
     User: "bitcoinpir-test",
-    WatchdogUSec: "infinity",
+    WatchdogUSec: "0",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -1328,9 +1387,9 @@ function fixture() {
         properties: {
           ExecStartEx: clone(unit.exec_start_ex),
           ExecStartPreEx: clone(unit.exec_start_pre_ex),
-          TimeoutStopUSec: 30_000_000,
-          WatchdogTimestampMonotonic: 0,
-          WatchdogUSec: 0,
+          TimeoutStopUSec: "30000000",
+          WatchdogTimestampMonotonic: "0",
+          WatchdogUSec: "0",
         },
       })),
       unit_dependencies: {
@@ -1388,6 +1447,7 @@ function stoppedEdgeFixture() {
     MainPID: "0",
     MemorySwapCurrent: "[not set]",
     SubState: "dead",
+    WatchdogUSec: "infinity",
   });
   const stoppedConditions = clone(live.evidence.units[0].conditions);
   const globalActivation = stoppedConditions.find((condition) =>
@@ -1402,9 +1462,9 @@ function stoppedEdgeFixture() {
     service_properties: {
       ExecStartEx: clone(live.request.units[0].exec_start_ex),
       ExecStartPreEx: clone(live.request.units[0].exec_start_pre_ex),
-      TimeoutStopUSec: 30_000_000,
-      WatchdogTimestampMonotonic: 0,
-      WatchdogUSec: 0,
+      TimeoutStopUSec: "30000000",
+      WatchdogTimestampMonotonic: "0",
+      WatchdogUSec: UINT64_MAX_DECIMAL,
     },
     unit_name: live.request.units[0].unit_name,
   };
@@ -1591,6 +1651,7 @@ function stoppedRelayFixture() {
     ProtectProc: "invisible",
     ProcSubset: "pid",
     SubState: "dead",
+    WatchdogUSec: "infinity",
   });
   const conditions = value.request.units[0].conditions.map((condition) => ({
     negate: false,
@@ -1608,9 +1669,9 @@ function stoppedRelayFixture() {
     service_properties: {
       ExecStartEx: clone(value.request.units[0].exec_start_ex),
       ExecStartPreEx: [],
-      TimeoutStopUSec: 30_000_000,
-      WatchdogTimestampMonotonic: 0,
-      WatchdogUSec: 0,
+      TimeoutStopUSec: "30000000",
+      WatchdogTimestampMonotonic: "0",
+      WatchdogUSec: UINT64_MAX_DECIMAL,
     },
     unit_name: "bitcoinpir-directory-relay.service",
   };
@@ -2026,9 +2087,9 @@ function preflightLeaseFixture() {
       properties: {
         ExecStartEx: clone(unit.exec_start_ex),
         ExecStartPreEx: clone(unit.exec_start_pre_ex),
-        TimeoutStopUSec: 30_000_000,
-        WatchdogTimestampMonotonic: 4_500_000,
-        WatchdogUSec: 90_000_000,
+        TimeoutStopUSec: "30000000",
+        WatchdogTimestampMonotonic: "4500000",
+        WatchdogUSec: "90000000",
       },
     },
     {
@@ -2036,9 +2097,9 @@ function preflightLeaseFixture() {
       properties: {
         ExecStartEx: clone(unit.exec_start_ex),
         ExecStartPreEx: clone(unit.exec_start_pre_ex),
-        TimeoutStopUSec: 30_000_000,
-        WatchdogTimestampMonotonic: 4_900_000,
-        WatchdogUSec: 90_000_000,
+        TimeoutStopUSec: "30000000",
+        WatchdogTimestampMonotonic: "4900000",
+        WatchdogUSec: "90000000",
       },
     },
   ];
@@ -2261,6 +2322,64 @@ test("systemd 255 text redundancy accepts one running start and completed pre-st
   assert.match(value.evidence.units[0].properties.ExecStart, /code=\(null\) ; status=0\/0/u);
   assert.match(value.evidence.units[0].properties.ExecStartPre, /code=exited ; status=0/u);
   assert.equal(validate(value), true);
+});
+
+test("systemd 255 watchdog text and typed uint64 agree with each lifecycle", () => {
+  const ordinary = fixture();
+  assert.equal(ordinary.evidence.units[0].properties.WatchdogUSec, "0");
+  assert.equal(
+    ordinary.evidence.units[0].service_property_passes[0].properties.WatchdogUSec,
+    "0",
+  );
+  assert.equal(validate(ordinary), true);
+
+  const stopped = stoppedEdgeFixture();
+  assert.equal(
+    stopped.evidence.unit_configuration_passes[0][0].properties.WatchdogUSec,
+    "infinity",
+  );
+  assert.equal(
+    stopped.evidence.unit_configuration_passes[0][0]
+      .service_properties.WatchdogUSec,
+    UINT64_MAX_DECIMAL,
+  );
+  assert.equal(validateStopped(stopped), true);
+
+  const preflight = preflightLeaseFixture();
+  assert.equal(preflight.evidence.units[0].properties.WatchdogUSec, "1min 30s");
+  assert.equal(
+    preflight.evidence.units[0].service_property_passes[0].properties.WatchdogUSec,
+    "90000000",
+  );
+  assert.equal(validate(preflight), true);
+
+  const ordinaryTextMismatch = fixture();
+  ordinaryTextMismatch.evidence.units[0].properties.WatchdogUSec = "infinity";
+  assert.throws(() => validate(ordinaryTextMismatch), /live scalar watchdog interval/u);
+
+  const ordinaryTypedMismatch = fixture();
+  ordinaryTypedMismatch.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogUSec = UINT64_MAX_DECIMAL;
+  assert.throws(() => validate(ordinaryTypedMismatch), /typed watchdog interval/u);
+
+  const stoppedTextMismatch = stoppedEdgeFixture();
+  stoppedTextMismatch.evidence.unit_configuration_passes[0][0]
+    .properties.WatchdogUSec = "0";
+  assert.throws(() => validateStopped(stoppedTextMismatch), /stopped scalar watchdog interval/u);
+
+  const stoppedTypedMismatch = stoppedEdgeFixture();
+  stoppedTypedMismatch.evidence.unit_configuration_passes[0][0]
+    .service_properties.WatchdogUSec = "0";
+  assert.throws(() => validateStopped(stoppedTypedMismatch), /stopped typed watchdog interval/u);
+
+  const preflightTextMismatch = preflightLeaseFixture();
+  preflightTextMismatch.evidence.units[0].properties.WatchdogUSec = "0";
+  assert.throws(() => validate(preflightTextMismatch), /watchdog lease drift/u);
+
+  const preflightTypedMismatch = preflightLeaseFixture();
+  preflightTypedMismatch.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogUSec = "0";
+  assert.throws(() => validate(preflightTypedMismatch), /typed watchdog interval/u);
 });
 
 test("resolved directory relay can produce live evidence only for its closed artifact shape", () => {
@@ -3719,13 +3838,13 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = []; }, /effective BindsTo dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.Requires = []; }, /effective Requires dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = ["bitcoinpir-core-lightning-lookalike.service"]; }, /effective BindsTo dependency drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift|service policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /canonical uint64 decimal string/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = "31000000"; }, /TimeoutStopUSec drift|service policy changed/],
     [(value) => { value.evidence.units[0].service_property_passes[0].properties.ExecStartPreEx[0].flags = []; }, /ExecStartPreEx drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = 0; }, /typed watchdog interval drift/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 0; }, /timestamp is not fresh/],
-    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 5_000_001; }, /timestamp is not fresh/],
-    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = 4_499_999; }, /policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = "0"; }, /typed watchdog interval drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = "0"; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = "5000001"; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = "4499999"; }, /policy changed/],
     [(value) => { value.evidence.units[0].service_property_passes[0].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
     [(value) => { value.evidence.units[0].service_property_passes[1].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
     [(value) => { value.evidence.systemd_manager_passes[0].ServiceWatchdogs.value = false; }, /typed b true/],
@@ -3750,9 +3869,9 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
   refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
     .observed_uptime_milliseconds = 5006;
   refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
-    .properties.WatchdogTimestampMonotonic = 5_005_000;
+    .properties.WatchdogTimestampMonotonic = "5005000";
   refreshedAfterHostStart.evidence.units[0].service_property_passes[1]
-    .properties.WatchdogTimestampMonotonic = 5_009_000;
+    .properties.WatchdogTimestampMonotonic = "5009000";
   assert.equal(validate(refreshedAfterHostStart), true);
 
   const staleAfterFalseToTrue = preflightLeaseFixture();
@@ -3763,9 +3882,9 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
     .observed_uptime_milliseconds = 100_010;
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
-    .properties.WatchdogTimestampMonotonic = 10_000_000;
+    .properties.WatchdogTimestampMonotonic = "10000000";
   staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
-    .properties.WatchdogTimestampMonotonic = 10_000_000;
+    .properties.WatchdogTimestampMonotonic = "10000000";
   assert.throws(() => validate(staleAfterFalseToTrue), /timestamp is not fresh/);
 });
 

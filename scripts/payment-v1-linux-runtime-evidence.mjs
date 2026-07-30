@@ -69,6 +69,8 @@ const MAX_PROC_PROCESSES = 65_536;
 const MAX_PROC_THREADS = 262_144;
 const MAX_PROC_CREDENTIAL_SCAN_MILLISECONDS = 30_000;
 const MAX_PROC_CLOSURE_EVIDENCE_BYTES = 4 * 1024 * 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
+const UINT64_MAX_DECIMAL = UINT64_MAX.toString(10);
 const PROC_SUPER_MAGIC = 0x9fa0;
 export const PROTECTED_PROCESS_ENUMERATION_KIND =
   "procfs-v3-all-thread-protected-credentials-dangerous-capabilities-two-pass-v3";
@@ -2622,16 +2624,39 @@ export function parseBusctlUnsignedJsonV1(text, label = "systemd unsigned proper
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
     fail(`${label} is not bounded busctl JSON`);
   }
-  const parsed = parseStrictJson(text, label);
-  exactKeys(parsed, ["data", "type"], label);
-  if (
-    parsed.type !== "t" ||
-    !Number.isSafeInteger(parsed.data) ||
-    parsed.data < 0
-  ) {
-    fail(`${label} does not have one reviewed finite t value`);
+  // Parse the raw integer token before JSON.parse can round UINT64_MAX.
+  // The two alternatives are the only accepted exact-key object orderings.
+  const patterns = [
+    /^[\t\n\r ]*\{[\t\n\r ]*"type"[\t\n\r ]*:[\t\n\r ]*"t"[\t\n\r ]*,[\t\n\r ]*"data"[\t\n\r ]*:[\t\n\r ]*(0|[1-9][0-9]*)[\t\n\r ]*\}[\t\n\r ]*$/u,
+    /^[\t\n\r ]*\{[\t\n\r ]*"data"[\t\n\r ]*:[\t\n\r ]*(0|[1-9][0-9]*)[\t\n\r ]*,[\t\n\r ]*"type"[\t\n\r ]*:[\t\n\r ]*"t"[\t\n\r ]*\}[\t\n\r ]*$/u,
+  ];
+  let decimal;
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match !== null) {
+      decimal = match[1];
+      break;
+    }
   }
-  return parsed.data;
+  if (decimal === undefined) {
+    fail(`${label} does not have one strict raw-number t object`);
+  }
+  validateCanonicalUint64DecimalV1(decimal, label);
+  return decimal;
+}
+
+function validateCanonicalUint64DecimalV1(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9][0-9]{0,19})$/u.test(value)
+  ) {
+    fail(`${label} is not a canonical uint64 decimal string`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > UINT64_MAX) {
+    fail(`${label} is outside the uint64 range`);
+  }
+  return parsed;
 }
 
 export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property") {
@@ -2893,12 +2918,11 @@ function expectedTimeoutStopUsecV1(unit) {
   ) {
     fail(`rendered TimeoutStopSec is not one positive integer: ${unit.unit_name}`);
   }
-  const seconds = Number(values[0]);
-  const usec = seconds * 1_000_000;
-  if (!Number.isSafeInteger(usec)) {
+  const usec = BigInt(values[0]) * 1_000_000n;
+  if (usec > UINT64_MAX) {
     fail(`rendered TimeoutStopSec is outside the reviewed range: ${unit.unit_name}`);
   }
-  return usec;
+  return usec.toString(10);
 }
 
 function validateReviewedTypedExecPolicyV2(unit) {
@@ -2990,17 +3014,21 @@ function validateEffectiveServiceStaticPropertiesV2(unit, properties) {
   if (canonicalJson(properties.ExecStartPreEx) !== canonicalJson(unit.exec_start_pre_ex)) {
     fail(`effective ExecStartPreEx drift: ${unit.unit_name}`);
   }
-  if (
-    !Number.isSafeInteger(properties.TimeoutStopUSec) ||
-    properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)
-  ) {
+  validateCanonicalUint64DecimalV1(
+    properties.TimeoutStopUSec,
+    `${unit.unit_name}.TimeoutStopUSec`,
+  );
+  validateCanonicalUint64DecimalV1(
+    properties.WatchdogTimestampMonotonic,
+    `${unit.unit_name}.WatchdogTimestampMonotonic`,
+  );
+  validateCanonicalUint64DecimalV1(
+    properties.WatchdogUSec,
+    `${unit.unit_name}.WatchdogUSec`,
+  );
+  if (properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)) {
     fail(`effective TimeoutStopUSec drift: ${unit.unit_name}`);
   }
-  const preflight = unit.unit_name === "bitcoinpir-lightning-preflight.service";
-  if (properties.WatchdogUSec !== (preflight ? 90_000_000 : 0)) {
-    fail(`effective typed watchdog interval drift: ${unit.unit_name}`);
-  }
-  return preflight;
 }
 
 function validateEffectiveServicePropertiesV1(
@@ -3008,9 +3036,14 @@ function validateEffectiveServicePropertiesV1(
   properties,
   uptimeMilliseconds,
 ) {
-  const preflight = validateEffectiveServiceStaticPropertiesV2(unit, properties);
+  validateEffectiveServiceStaticPropertiesV2(unit, properties);
+  const preflight = unit.unit_name === "bitcoinpir-lightning-preflight.service";
+  const expectedWatchdogUsec = preflight ? "90000000" : "0";
+  if (properties.WatchdogUSec !== expectedWatchdogUsec) {
+    fail(`effective typed watchdog interval drift: ${unit.unit_name}`);
+  }
   if (!preflight) {
-    if (properties.WatchdogTimestampMonotonic !== 0) {
+    if (properties.WatchdogTimestampMonotonic !== "0") {
       fail(`effective typed watchdog is unreviewed: ${unit.unit_name}`);
     }
     return;
@@ -3018,14 +3051,19 @@ function validateEffectiveServicePropertiesV1(
   if (!Number.isSafeInteger(uptimeMilliseconds) || uptimeMilliseconds < 0) {
     fail(`watchdog freshness uptime is invalid: ${unit.unit_name}`);
   }
-  const uptimeUsec = uptimeMilliseconds * 1000;
-  const timestamp = properties.WatchdogTimestampMonotonic;
+  const uptimeUsec = BigInt(uptimeMilliseconds) * 1000n;
+  const timestamp = validateCanonicalUint64DecimalV1(
+    properties.WatchdogTimestampMonotonic,
+    `${unit.unit_name}.WatchdogTimestampMonotonic`,
+  );
+  const watchdogUsec = validateCanonicalUint64DecimalV1(
+    properties.WatchdogUSec,
+    `${unit.unit_name}.WatchdogUSec`,
+  );
   if (
-    !Number.isSafeInteger(uptimeUsec) ||
-    !Number.isSafeInteger(timestamp) ||
-    timestamp <= 0 ||
+    timestamp === 0n ||
     timestamp > uptimeUsec ||
-    uptimeUsec - timestamp >= 90_000_000
+    uptimeUsec - timestamp >= watchdogUsec
   ) {
     fail(`effective watchdog timestamp is not fresh in this boot: ${unit.unit_name}`);
   }
@@ -3033,7 +3071,10 @@ function validateEffectiveServicePropertiesV1(
 
 function validateStoppedEffectiveServicePropertiesV2(unit, properties) {
   validateEffectiveServiceStaticPropertiesV2(unit, properties);
-  if (properties.WatchdogTimestampMonotonic !== 0) {
+  if (properties.WatchdogUSec !== UINT64_MAX_DECIMAL) {
+    fail(`stopped typed watchdog interval is not infinity: ${unit.unit_name}`);
+  }
+  if (properties.WatchdogTimestampMonotonic !== "0") {
     fail(`stopped typed watchdog timestamp is not zero: ${unit.unit_name}`);
   }
 }
@@ -3060,18 +3101,24 @@ export function assertEffectiveSystemdPolicySnapshotUnchangedV1(
   const actualTimestamp = actualServiceProperties?.WatchdogTimestampMonotonic;
   const expectedStatic = expectedServiceProperties === undefined ? undefined : {
     ...expectedServiceProperties,
-    WatchdogTimestampMonotonic: 0,
+    WatchdogTimestampMonotonic: "0",
   };
   const actualStatic = actualServiceProperties === undefined ? undefined : {
     ...actualServiceProperties,
-    WatchdogTimestampMonotonic: 0,
+    WatchdogTimestampMonotonic: "0",
   };
+  const expectedTimestampValue = validateCanonicalUint64DecimalV1(
+    expectedTimestamp,
+    `${unitName}.expected WatchdogTimestampMonotonic`,
+  );
+  const actualTimestampValue = validateCanonicalUint64DecimalV1(
+    actualTimestamp,
+    `${unitName}.actual WatchdogTimestampMonotonic`,
+  );
   if (
     canonicalJson(actualDependencies) !== canonicalJson(expectedDependencies) ||
     canonicalJson(actualStatic) !== canonicalJson(expectedStatic) ||
-    !Number.isSafeInteger(expectedTimestamp) ||
-    !Number.isSafeInteger(actualTimestamp) ||
-    actualTimestamp < expectedTimestamp
+    actualTimestampValue < expectedTimestampValue
   ) {
     fail(`systemd dependency or service policy changed during live collection: ${unitName}`);
   }
@@ -3477,9 +3524,16 @@ function validateEffectiveUnitStaticProperties(
     }
   }
   const watchdog = unit.hardening.WatchdogSec;
-  if (watchdog === undefined) {
+  if (!new Set(["active", "inactive"]).has(properties.ActiveState)) {
+    fail(`effective watchdog lifecycle is unreviewed: ${unit.unit_name}`);
+  }
+  if (properties.ActiveState === "inactive") {
     if (properties.WatchdogUSec !== "infinity") {
-      fail(`effective watchdog is unreviewed: ${unit.unit_name}`);
+      fail(`stopped scalar watchdog interval is not infinity: ${unit.unit_name}`);
+    }
+  } else if (watchdog === undefined) {
+    if (properties.WatchdogUSec !== "0") {
+      fail(`live scalar watchdog interval is not zero: ${unit.unit_name}`);
     }
   } else if (
     canonicalJson(watchdog) !== canonicalJson(["90"]) ||
