@@ -30,9 +30,9 @@ import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mj
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 6;
+const EVIDENCE_SCHEMA_VERSION = 7;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -269,7 +269,6 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "LimitCORESoft",
   "LimitNOFILE",
   "LimitNOFILESoft",
-  "LoadCredential",
   "LoadState",
   "LockPersonality",
   "MainPID",
@@ -302,7 +301,6 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "Result",
   "RootDirectory",
   "RootImage",
-  "SetCredential",
   "StandardError",
   "StandardOutput",
   "SubState",
@@ -328,6 +326,11 @@ export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze([
 ]);
 export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
   "ExecStartPreEx",
+  "ImportCredential",
+  "LoadCredential",
+  "LoadCredentialEncrypted",
+  "SetCredential",
+  "SetCredentialEncrypted",
   "TimeoutStopUSec",
   "WatchdogTimestampMonotonic",
   "WatchdogUSec",

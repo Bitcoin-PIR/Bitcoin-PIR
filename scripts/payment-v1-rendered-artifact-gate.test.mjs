@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   canonicalJson,
   computeApprovedPlanSha256,
   parseStrictJson,
@@ -1118,7 +1119,7 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 6);
+  assert.equal(first.request.schema_version, 7);
   assert.deepEqual(first.request.busctl_unit_properties, [
     "After",
     "Before",
@@ -1129,11 +1130,29 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   assert.deepEqual(first.request.busctl_manager_properties, ["ServiceWatchdogs"]);
   assert.deepEqual(first.request.busctl_service_properties, [
     "ExecStartPreEx",
+    "ImportCredential",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
     "TimeoutStopUSec",
     "WatchdogTimestampMonotonic",
     "WatchdogUSec",
   ]);
   assert.equal(first.request.systemctl_show_properties.includes("Conditions"), false);
+  for (const property of [
+    "ImportCredential",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
+  ]) {
+    assert.equal(first.request.systemctl_show_properties.includes(property), false);
+  }
+  assert.deepEqual(
+    first.request.busctl_service_properties,
+    RUNTIME_BUSCTL_SERVICE_PROPERTIES,
+  );
   assert.deepEqual(
     first.request.runtime_paths.map(({ file_type, mode, target_path }) => ({ file_type, mode, target_path })),
     [
@@ -2322,8 +2341,11 @@ for (const [directive, value] of [
   ["ExecStartPost", "/usr/bin/true"],
   ["ExecCondition", "/usr/bin/true"],
   ["EnvironmentFile", "/tmp/evil.env"],
+  ["ImportCredential", "secret.*"],
   ["LoadCredential", "secret:/tmp/secret"],
+  ["LoadCredentialEncrypted", "secret:/tmp/secret"],
   ["SetCredential", "secret:evil"],
+  ["SetCredentialEncrypted", "secret:evil"],
   ["BindPaths", "/tmp:/etc"],
   ["BindReadOnlyPaths", "/tmp:/etc"],
   ["RootDirectory", "/tmp/root"],
