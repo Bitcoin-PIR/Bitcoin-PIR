@@ -127,10 +127,16 @@ challenge, installed bytes, owner/mode/link state, ACLs, xattrs, file
 capabilities, NSS, effective systemd state and `systemd-analyze verify`.
 Long-running units additionally bind `MainPID`/invocation and the real
 `/proc/<pid>` UID/GID/supplementary-group set across a no-restart collection
-window. The reviewed preflight is the sole active-exited one-shot and instead
-must prove a successful zero-status completion in the current boot. Offline
-review is meaningful only with an independently transferred full evidence
-digest.
+window. At the time of this review, the preflight was the sole active-exited
+one-shot and instead had to prove a successful zero-status completion in the
+current boot. That finding is superseded in the current worktree: the
+preflight is now a live `Type=notify` supervisor with a short lease bound to
+one exact CLN InvocationID, and runtime evidence requires its MainPID,
+`NotifyAccess=main`, exact watchdog, typed dependency graph and typed stop
+timeout, with a final snapshot that rejects stale manager state. These additions
+are identified as runtime-evidence v5; the v4 discussion below records the
+reviewed 2026-07-29 baseline. Offline review is meaningful only with
+an independently transferred full evidence digest.
 
 Runtime-evidence v4 narrows NSS to a files-authoritative closed set: both
 `passwd` and `group` must use exactly `files`, or both must use exactly

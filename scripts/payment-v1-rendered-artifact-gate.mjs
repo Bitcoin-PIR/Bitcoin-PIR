@@ -30,9 +30,9 @@ import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mj
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 4;
+const EVIDENCE_SCHEMA_VERSION = 6;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v4";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -40,8 +40,6 @@ const MAX_PAYLOAD_BYTES = 512 * 1024 * 1024;
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 4096;
 const MAX_PATH_COMPONENTS = 24;
-const EMPTY_SHA256 =
-  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const DIRECTORY_RELAY_SELECTION_SOURCE =
   "deploy/payment-v1/relay-selection.toml.example";
 
@@ -65,6 +63,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "MemorySwapMax",
   "MemoryDenyWriteExecute",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
   "PrivateTmp",
   "ProcSubset",
@@ -100,6 +99,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "Type",
   "UMask",
   "User",
+  "WatchdogSec",
   "WorkingDirectory",
 ]);
 
@@ -111,6 +111,13 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "Description",
   "Requires",
   "Wants",
+]);
+
+const SYSTEMD_RUNTIME_RELATION_KEYS = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Requires",
 ]);
 
 const SYSTEMD_SERVICE_KEYS = Object.freeze([
@@ -196,6 +203,26 @@ const MANAGED_FILE_PREFIXES = Object.freeze([
   "/usr/local/libexec/bitcoinpir/",
 ]);
 
+// Core Lightning v26.06.6 refuses startup when any mandatory subdaemon is
+// absent or reports a different version. The operator ceremony also needs the
+// exact CLI and hsmtool; treating only lightningd plus two plugins as the
+// bundle would make the rendered-artifact receipt materially incomplete.
+const REQUIRED_CLN_BUNDLE_PATHS_V26066 = Object.freeze([
+  "bin/lightning-cli",
+  "bin/lightning-hsmtool",
+  "libexec/c-lightning/lightning_channeld",
+  "libexec/c-lightning/lightning_closingd",
+  "libexec/c-lightning/lightning_connectd",
+  "libexec/c-lightning/lightning_gossip_compactd",
+  "libexec/c-lightning/lightning_gossipd",
+  "libexec/c-lightning/lightning_hsmd",
+  "libexec/c-lightning/lightning_onchaind",
+  "libexec/c-lightning/lightning_openingd",
+  "bin/lightningd",
+  "plugins/bcli",
+  "plugins/chanbackup",
+]);
+
 const REQUIRED_SYSTEMD_HARDENING = Object.freeze({
   LockPersonality: ["true"],
   MemoryDenyWriteExecute: ["true"],
@@ -250,6 +277,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "MemorySwapCurrent",
   "MemorySwapMax",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
   "PrivateTmp",
   "ProcSubset",
@@ -283,13 +311,29 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "Type",
   "UMask",
   "User",
+  "WatchdogUSec",
   "WorkingDirectory",
 ]);
 
 // Conditions is an `a(sbbsi)` D-Bus property. systemctl 255 renders it as
 // `[unprintable]`, so the root collector must read it through busctl's strict
 // JSON mode instead of pretending it is one of the scalar show properties.
-export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze(["Conditions"]);
+export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Conditions",
+  "Requires",
+]);
+export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
+  "ExecStartPreEx",
+  "TimeoutStopUSec",
+  "WatchdogTimestampMonotonic",
+  "WatchdogUSec",
+]);
+export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
+  "ServiceWatchdogs",
+]);
 
 const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
@@ -453,6 +497,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "AUTHORITY_PUBKEY_HEX",
   "BITCOIN_CORE_BUNDLE_SHA256",
   "BPIR_ADMIN_SHA256",
+  "BUSCTL_SHA256",
   "CADDY_SHA256",
   "CASHU_MINT_ID_HEX",
   "CLN_BUNDLE_SHA256",
@@ -1401,6 +1446,36 @@ function validateDirectoryRelayPayloadClosure({
   }
 }
 
+function validateIssuerLightningPreflightPayloadContract(plan) {
+  if (plan.deployment_profile !== "issuer-lightning-signet-v1") return;
+  const preflightPath = "/etc/bitcoinpir/payment-v1/lightning/preflight.toml";
+  const preflight = plan.payload_artifacts.find(
+    (artifact) => artifact.target_path === preflightPath,
+  );
+  if (!preflight) {
+    fail("issuer Lightning profile is missing its static preflight config");
+  }
+  if (
+    preflight.class !== "config" ||
+    preflight.uid !== 0 ||
+    preflight.gid !== Number(plan.placeholders.PREFLIGHT_GID) ||
+    preflight.mode !== "0440"
+  ) {
+    fail(
+      "issuer Lightning preflight config must be root:PREFLIGHT_GID mode 0440",
+    );
+  }
+  if (
+    plan.payload_artifacts.some((artifact) =>
+      /(?:^|\/)backup-receipt(?:\.|$)/u.test(artifact.target_path),
+    )
+  ) {
+    fail(
+      "issuer Lightning backup receipt is dynamic StateDirectory data, not a rendered payload or hash manifest",
+    );
+  }
+}
+
 function validateDirectoryRelayConfigOwnerBinding(document) {
   if (document.deployment_profile !== "directory-relay-v1") return;
   const identities = document.service_identities ?? [];
@@ -1554,6 +1629,7 @@ function validatePlan(plan) {
   const expectedTemplates = PROFILE_CATALOG[plan.deployment_profile].templates;
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
   validateProviderPayloadClosure(plan);
+  validateIssuerLightningPreflightPayloadContract(plan);
   validateRemoteRollbackPayloadMetadata(plan);
   validateDirectoryRelayConfigOwnerBinding(plan);
   validateSecretOwnerBindings(plan);
@@ -1683,6 +1759,28 @@ function parseSystemdUnit(text, label) {
   const service = sections.get("Service");
   const unit = sections.get("Unit");
   const execStart = service.get("ExecStart") ?? [];
+  const rawExecStartPre = service.get("ExecStartPre") ?? [];
+  const execStartPreEx = rawExecStartPre.map((command, index) => {
+    const privileged = command.startsWith("+");
+    const normalized = privileged ? command.slice(1) : command;
+    if (
+      normalized === "" ||
+      !normalized.startsWith("/") ||
+      /^[!:@-]/u.test(normalized) ||
+      /["'`$;&|<>\r\n\0]/u.test(normalized)
+    ) {
+      fail(`${label} ExecStartPre[${index}] uses an unreviewed command prefix or syntax`);
+    }
+    const argv = normalized.split(/\s+/u);
+    if (argv.some((argument) => argument === "" || argument.length > 4096)) {
+      fail(`${label} ExecStartPre[${index}] has malformed argv`);
+    }
+    return {
+      argv,
+      flags: privileged ? ["privileged"] : [],
+      path: argv[0],
+    };
+  });
   if (execStart.length !== 1) fail(`${label} must have exactly one effective ExecStart`);
   const conditions = [...unit.entries()]
     .filter(([key]) => key.startsWith("Condition"))
@@ -1722,10 +1820,24 @@ function parseSystemdUnit(text, label) {
       fail(`${label} ${key} contains an unreviewed capability`);
     }
   }
+  const unitDependencies = Object.create(null);
+  for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+    const names = (unit.get(key) ?? [])
+      .flatMap((value) => value.split(/\s+/u))
+      .filter((value) => value !== "")
+      .sort(asciiCompare);
+    if (
+      names.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name)) ||
+      new Set(names).size !== names.length
+    ) {
+      fail(`${label} has malformed or duplicate ${key}= dependencies`);
+    }
+    unitDependencies[key] = names;
+  }
   const managedReferences = new Set();
   for (const [key, commands] of [
     ["ExecStart", execStart],
-    ["ExecStartPre", service.get("ExecStartPre") ?? []],
+    ["ExecStartPre", execStartPreEx.map(({ argv }) => argv.join(" "))],
   ]) {
     for (const [index, command] of commands.entries()) {
       for (const reference of managedReferencesFromCommand(
@@ -1741,9 +1853,11 @@ function parseSystemdUnit(text, label) {
     environment,
     environment_files: [],
     exec_start: [...execStart],
-    exec_start_pre: [...(service.get("ExecStartPre") ?? [])],
+    exec_start_pre: execStartPreEx.map(({ argv }) => argv.join(" ")),
+    exec_start_pre_ex: execStartPreEx,
     hardening,
     managed_references: [...managedReferences].sort(asciiCompare),
+    unit_dependencies: unitDependencies,
   };
 }
 
@@ -1791,25 +1905,33 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+      "ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
     ]),
     "/etc/systemd/system/bitcoinpir-core-lightning.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
     "/etc/systemd/system/bitcoinpir-lightning-preflight.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+      "ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
     ]),
     "/etc/systemd/system/bitcoinpir-payment-issuer.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
   }),
   "provider-v1": Object.freeze({
@@ -1886,6 +2008,7 @@ function validateProfileUnitPolicy(
   hardening,
   execStart,
   execStartPre,
+  execStartPreEx,
   label,
 ) {
   const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
@@ -1894,6 +2017,15 @@ function validateProfileUnitPolicy(
   }
   if (canonicalize(conditions) !== canonicalize([...expectedConditions].sort(asciiCompare))) {
     fail(`${label} must retain the exact global and profile-specific activation conditions`);
+  }
+  const approvalConsumer =
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    new Set([
+      "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service",
+      "/etc/systemd/system/bitcoinpir-lightning-preflight.service",
+    ]).has(fragmentPath);
+  if (!approvalConsumer && execStartPreEx.some((command) => command.flags.length !== 0)) {
+    fail(`${label} contains closed-world forbidden directive: privileged ExecStartPre flags`);
   }
   if (deploymentProfile === "directory-relay-v1") {
     const blocked =
@@ -1978,6 +2110,112 @@ function validateProfileUnitPolicy(
     }
     if (hardening.RestartSec !== undefined) {
       fail(`${label} must not configure RestartSec for the non-restarting CLN guard`);
+    }
+    const expectedApproval = {
+      argv: [
+        "/usr/bin/unlink",
+        "--",
+        "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
+      ],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    };
+    if (canonicalize(execStartPreEx[0]) !== canonicalize(expectedApproval)) {
+      fail(`${label} must consume the exact privileged guard approval token first`);
+    }
+    if (execStartPreEx.slice(1).some((command) => command.flags.length !== 0)) {
+      fail(`${label} grants privileged ExecStartPre flags beyond the approval unlink`);
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize([
+        "/run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-lightning-operator-approvals",
+      ])
+    ) {
+      fail(`${label} must expose only guard state and the root-only approval parent as writable`);
+    }
+  }
+  if (
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    fragmentPath === "/etc/systemd/system/bitcoinpir-lightning-preflight.service"
+  ) {
+    const expectedApproval = {
+      argv: [
+        "/usr/bin/unlink",
+        "--",
+        "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
+      ],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    };
+    if (canonicalize(execStartPreEx[0]) !== canonicalize(expectedApproval)) {
+      fail(`${label} must consume the exact privileged preflight approval token first`);
+    }
+    if (execStartPreEx.slice(1).some((command) => command.flags.length !== 0)) {
+      fail(`${label} grants privileged ExecStartPre flags beyond the approval unlink`);
+    }
+    for (const [key, expected] of [
+      ["StateDirectory", "bitcoinpir-lightning-preflight"],
+      ["StateDirectoryMode", "0700"],
+      ["RuntimeDirectory", "bitcoinpir-lightning-preflight"],
+      ["RuntimeDirectoryMode", "0700"],
+      ["Type", "notify"],
+      ["NotifyAccess", "main"],
+      ["Restart", "no"],
+      ["WatchdogSec", "90"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    // The exact source template gate owns the full content-addressed path
+    // closure. The rendered/runtime gate independently pins the dynamic
+    // receipt StateDirectory and systemd invocation mapping as read-only.
+    // The main process can write only its volatile lease RuntimeDirectory;
+    // the second namespace write path is a root:root 0700 parent used solely
+    // by the exact privileged one-shot unlink.
+    const readOnlyTokens = (hardening.ReadOnlyPaths ?? []).flatMap((value) =>
+      value.split(/\s+/u),
+    );
+    if (!readOnlyTokens.includes("/var/lib/bitcoinpir-lightning-preflight")) {
+      fail(`${label} must mount the preflight StateDirectory read-only`);
+    }
+    if (!readOnlyTokens.includes("/run/systemd/units")) {
+      fail(`${label} must mount the systemd invocation map read-only`);
+    }
+    for (const commandPath of ["/usr/bin/busctl", "/usr/bin/unlink"]) {
+      if (!readOnlyTokens.includes(commandPath)) {
+        fail(`${label} must mount ${commandPath} read-only`);
+      }
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize([
+        "/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals",
+      ])
+    ) {
+      fail(`${label} must expose only lease state and the root-only approval parent as writable`);
+    }
+    const command = execStart[0] ?? "";
+    if (!command.includes("lightning-staging preflight-supervisor")) {
+      fail(`${label} must run the invocation-bound preflight supervisor`);
+    }
+    for (const exactArgument of [
+      "--config /etc/bitcoinpir/payment-v1/lightning/preflight.toml",
+      "--config-protected-parent /etc/bitcoinpir/payment-v1/lightning",
+      "--config-expected-uid 0",
+    ]) {
+      if (!command.includes(exactArgument)) {
+        fail(`${label} must keep ${exactArgument}`);
+      }
+    }
+    for (const requiredArgument of [
+      "--config-expected-gid",
+      "--config-reader-expected-uid",
+    ]) {
+      if (!new RegExp(`(?:^|\\s)${requiredArgument} [1-9][0-9]*(?:\\s|$)`, "u").test(command)) {
+        fail(`${label} must pin a non-root ${requiredArgument} value`);
+      }
     }
   }
   if (
@@ -2066,7 +2304,22 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
         fail(`issuer service identity does not match its externally approved UID/GID placeholders: ${unit.unit_name}`);
       }
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered runtime unit");
   }
+}
+
+function validatePreflightConfigReaderIdentity(unit, identity, label) {
+  if (unit.unit_name !== "bitcoinpir-lightning-preflight.service") return;
+  const tokens = (unit.exec_start?.[0] ?? "").trim().split(/\s+/u);
+  const exactArgument = (flag, expected) => {
+    const indexes = tokens.flatMap((token, index) => token === flag ? [index] : []);
+    if (indexes.length !== 1 || tokens[indexes[0] + 1] !== String(expected)) {
+      fail(`${label} ${unit.unit_name} must bind ${flag} to ${expected}`);
+    }
+  };
+  exactArgument("--config-expected-uid", 0);
+  exactArgument("--config-expected-gid", identity.gid);
+  exactArgument("--config-reader-expected-uid", identity.uid);
 }
 
 function artifactBundlePath(targetPath) {
@@ -2347,6 +2600,50 @@ function configManagedReferences(sourcePath, text, plan) {
   return [...references].sort(asciiCompare);
 }
 
+function validateIssuerPreflightSystemdPin(targetPath, bytes, plan) {
+  if (
+    plan.deployment_profile !== "issuer-lightning-signet-v1" ||
+    targetPath !== "/etc/bitcoinpir/payment-v1/lightning/preflight.toml"
+  ) return;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail("issuer preflight config must be UTF-8");
+  }
+  const sections = [];
+  let current;
+  for (const [index, original] of text.split(/\r?\n/u).entries()) {
+    const line = original.replace(/\s+#.*$/u, "").trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const header = /^\[([A-Za-z0-9_.-]+)\]$/u.exec(line);
+    if (header) {
+      current = header[1];
+      if (current === "systemd.busctl") sections.push([]);
+      continue;
+    }
+    if (current === "systemd.busctl") {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*\s*=\s*.+$/u.test(line)) {
+        fail(`issuer preflight systemd.busctl line ${index + 1} is malformed`);
+      }
+      sections.at(-1).push(line.replace(/\s*=\s*/u, "="));
+    }
+  }
+  if (sections.length !== 1) {
+    fail("issuer preflight config must contain exactly one [systemd.busctl] table");
+  }
+  const expected = [
+    "path=\"/usr/bin/busctl\"",
+    "protected_parent=\"/usr/bin\"",
+    `sha256_hex=\"${plan.placeholders.BUSCTL_SHA256}\"`,
+    "expected_uid=0",
+    "expected_gid=0",
+  ].sort(asciiCompare);
+  if (canonicalize([...sections[0]].sort(asciiCompare)) !== canonicalize(expected)) {
+    fail("issuer preflight config must bind the exact render-plan BUSCTL_SHA256 and root binary boundary");
+  }
+}
+
 function parseTmpfilesDirectories(sourcePath, text) {
   if (sourcePath !== "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in") return [];
   const directories = [];
@@ -2363,10 +2660,18 @@ function parseTmpfilesDirectories(sourcePath, text) {
       fail(`rendered ${sourcePath} line ${index + 1} is outside the closed tmpfiles schema`);
     }
     const targetPath = safeTargetPath(fields[1], `rendered ${sourcePath} directory`);
-    if (!targetPath.startsWith("/run/bitcoinpir-cln-rpc-guard")) {
+    if (
+      !targetPath.startsWith("/run/bitcoinpir-cln-rpc-guard") &&
+      targetPath !== "/run/bitcoinpir-lightning-operator-approvals"
+    ) {
       fail(`rendered ${sourcePath} has an unreviewed runtime directory`);
     }
-    validateMode(fields[2], ["0710"], `rendered ${sourcePath} directory`);
+    const approvalDirectory = targetPath === "/run/bitcoinpir-lightning-operator-approvals";
+    validateMode(
+      fields[2],
+      approvalDirectory ? ["0700"] : ["0710"],
+      `rendered ${sourcePath} directory`,
+    );
     for (const [field, label] of [[fields[3], "user"], [fields[4], "group"]]) {
       if (!/^[a-z_][a-z0-9_-]{0,31}$/u.test(field)) {
         fail(`rendered ${sourcePath} tmpfiles ${label} is not one literal NSS name`);
@@ -2378,9 +2683,15 @@ function parseTmpfilesDirectories(sourcePath, text) {
       target_path: targetPath,
       user_name: fields[3],
     });
+    if (
+      approvalDirectory &&
+      (fields[3] !== "root" || fields[4] !== "root")
+    ) {
+      fail(`rendered ${sourcePath} approval directory must be root:root mode 0700`);
+    }
   }
   directories.sort((left, right) => asciiCompare(left.target_path, right.target_path));
-  if (directories.length !== 2) fail(`rendered ${sourcePath} must define exactly two directories`);
+  if (directories.length !== 3) fail(`rendered ${sourcePath} must define exactly three directories`);
   return directories;
 }
 
@@ -2460,22 +2771,12 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/lightning/preflight.toml");
       return;
-    case "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256":
-      if (
-        entries.length !== 1 ||
-        !/^\/etc\/bitcoinpir\/payment-v1\/lightning\/backup-receipt\.(?:bin|json|toml)$/u.test(
-          entries[0].target_path,
-        )
-      ) {
-        fail(`hash manifest ${manifestPath} must bind one reviewed backup-receipt artifact`);
-      }
-      return;
     case "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": {
       const prefix = `/opt/bitcoinpir/core-lightning/${plan.placeholders.CLN_BUNDLE_SHA256}/`;
-      if (entries.length < 3 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
+      if (entries.some((entry) => !entry.target_path.startsWith(prefix))) {
         fail(`hash manifest ${manifestPath} must remain inside the selected CLN bundle`);
       }
-      for (const required of ["bin/lightningd", "plugins/bcli", "plugins/chanbackup"]) {
+      for (const required of REQUIRED_CLN_BUNDLE_PATHS_V26066) {
         if (!entries.some((entry) => entry.target_path === `${prefix}${required}`)) {
           fail(`hash manifest ${manifestPath} is missing ${required}`);
         }
@@ -2727,6 +3028,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         parsed.hardening,
         parsed.exec_start,
         parsed.exec_start_pre,
+        parsed.exec_start_pre_ex,
         `rendered unit ${specification.target_path}`,
       );
       for (const reference of parsed.managed_references) initialReferences.add(reference);
@@ -2758,6 +3060,11 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     if (sourceSha256 !== specification.expected_sha256) {
       fail(`payload source hash mismatch for ${specification.source_path}`);
     }
+    validateIssuerPreflightSystemdPin(
+      specification.target_path,
+      sourceBytes,
+      plan,
+    );
     for (const reference of remoteRollbackConfigManagedReferences(
       plan.deployment_profile,
       specification.target_path,
@@ -2973,8 +3280,10 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         "environment_files",
         "exec_start",
         "exec_start_pre",
+        "exec_start_pre_ex",
         "fragment_path",
         "hardening",
+        "unit_dependencies",
         "unit_name",
       ],
       label,
@@ -2998,6 +3307,23 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["environment", "environment_files", "exec_start_pre"]) {
       validateStringArray(unit[key], `${label}.${key}`, { maxItems: 64, maxLength: 8192 });
     }
+    if (!Array.isArray(unit.exec_start_pre_ex) || unit.exec_start_pre_ex.length !== unit.exec_start_pre.length) {
+      fail(`${label}.exec_start_pre_ex must exactly cover ExecStartPre`);
+    }
+    for (const [commandIndex, command] of unit.exec_start_pre_ex.entries()) {
+      exactKeys(command, ["argv", "flags", "path"], `${label}.exec_start_pre_ex[${commandIndex}]`);
+      validateStringArray(command.argv, `${label}.exec_start_pre_ex[${commandIndex}].argv`, { maxItems: 64, maxLength: 4096 });
+      validateStringArray(command.flags, `${label}.exec_start_pre_ex[${commandIndex}].flags`, { maxItems: 1, maxLength: 32 });
+      safeTargetPath(command.path, `${label}.exec_start_pre_ex[${commandIndex}].path`);
+      if (
+        command.argv.length < 1 ||
+        command.argv[0] !== command.path ||
+        !command.flags.every((flag) => flag === "privileged") ||
+        canonicalize(command.argv.join(" ")) !== canonicalize(unit.exec_start_pre[commandIndex])
+      ) {
+        fail(`${label}.exec_start_pre_ex[${commandIndex}] is not canonical`);
+      }
+    }
     if (unit.environment_files.length !== 0) fail(`${label}.environment_files must be empty`);
     if (!isPlainObject(unit.hardening)) fail(`${label}.hardening must be an object`);
     for (const [key, values] of Object.entries(unit.hardening)) {
@@ -3009,6 +3335,21 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         fail(`${label}.hardening.${key} is weaker than the reviewed baseline`);
       }
     }
+    exactKeys(unit.unit_dependencies, SYSTEMD_RUNTIME_RELATION_KEYS, `${label}.unit_dependencies`);
+    for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+      validateStringArray(unit.unit_dependencies[key], `${label}.unit_dependencies.${key}`, {
+        maxItems: 64,
+        maxLength: 320,
+      });
+      const sorted = [...unit.unit_dependencies[key]].sort(asciiCompare);
+      if (
+        canonicalize(sorted) !== canonicalize(unit.unit_dependencies[key]) ||
+        new Set(sorted).size !== sorted.length ||
+        sorted.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name))
+      ) {
+        fail(`${label}.unit_dependencies.${key} is not a canonical unit-name set`);
+      }
+    }
     validateProfileUnitPolicy(
       manifest.deployment_profile,
       unit.fragment_path,
@@ -3016,6 +3357,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       unit.hardening,
       unit.exec_start,
       unit.exec_start_pre,
+      unit.exec_start_pre_ex,
       label,
     );
   }
@@ -3034,6 +3376,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     ) {
       fail(`rendered manifest service identity does not match User=/Group=: ${unit.unit_name}`);
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered manifest runtime unit");
   }
   validateSecretOwnerBindings(manifest);
   const systemdArtifactTargets = manifest.artifacts
@@ -3050,11 +3393,19 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     const label = `rendered manifest tmpfiles_directories[${index}]`;
     exactKeys(directory, ["group_name", "mode", "target_path", "user_name"], label);
     safeTargetPath(directory.target_path, `${label}.target_path`);
-    validateMode(directory.mode, ["0710"], label);
+    const approvalDirectory = directory.target_path ===
+      "/run/bitcoinpir-lightning-operator-approvals";
+    validateMode(directory.mode, approvalDirectory ? ["0700"] : ["0710"], label);
     for (const key of ["group_name", "user_name"]) {
       if (!/^[a-z_][a-z0-9_-]{0,31}$/u.test(directory[key])) {
         fail(`${label}.${key} is not a literal NSS name`);
       }
+    }
+    if (
+      approvalDirectory &&
+      (directory.user_name !== "root" || directory.group_name !== "root")
+    ) {
+      fail(`${label} approval directory must be root:root mode 0700`);
     }
   }
   const systemdAnalyzeArgv = [
@@ -3138,7 +3489,9 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     schema_version: EVIDENCE_SCHEMA_VERSION,
     secret_files: secretFiles,
     service_identities: manifest.service_identities,
+    busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
@@ -3293,140 +3646,10 @@ function validateStringArray(value, label, { maxItems = 2048, maxLength = 4096 }
   }
 }
 
-function canonicalEqual(actual, expected, label) {
-  if (canonicalize(actual) !== canonicalize(expected)) {
-    fail(`${label} does not match the rendered manifest expectation`);
-  }
-}
-
-export function validateRuntimeEvidence({ model, evidence }) {
-  if (
-    model.manifest.deployment_profile === "directory-relay-v1" &&
-    !isResolvedDirectoryRelayRuntimeRequest(model.request)
-  ) {
-    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
-  }
-  exactKeys(
-    evidence,
-    [
-      "collected_at_unix_seconds",
-      "collector",
-      "host",
-      "installed_files",
-      "manifest_sha256",
-      "schema_version",
-      "systemd_analyze_verify",
-      "units",
-    ],
-    "runtime evidence",
-  );
-  if (evidence.schema_version !== EVIDENCE_SCHEMA_VERSION) {
-    fail(`runtime evidence schema_version must equal ${EVIDENCE_SCHEMA_VERSION}`);
-  }
-  if (evidence.collector !== RUNTIME_COLLECTOR) fail("runtime evidence collector is not reviewed");
-  if (evidence.manifest_sha256 !== model.manifestSha256) {
-    fail("runtime evidence manifest_sha256 does not bind the rendered manifest");
-  }
-  if (
-    !Number.isSafeInteger(evidence.collected_at_unix_seconds) ||
-    evidence.collected_at_unix_seconds < 1
-  ) {
-    fail("runtime evidence collected_at_unix_seconds must be a positive safe integer");
-  }
-  exactKeys(
-    evidence.host,
-    ["boot_id", "kernel_release", "machine_id_sha256", "systemd_version"],
-    "runtime evidence host",
-  );
-  validateSha256(evidence.host.machine_id_sha256, "runtime evidence host.machine_id_sha256");
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(evidence.host.boot_id)) {
-    fail("runtime evidence host.boot_id must be a lowercase UUID");
-  }
-  for (const key of ["kernel_release", "systemd_version"]) {
-    validateSafeAscii(evidence.host[key], `runtime evidence host.${key}`, 128);
-  }
-
-  exactKeys(
-    evidence.systemd_analyze_verify,
-    ["argv", "exit_status", "stderr", "stdout"],
-    "runtime evidence systemd_analyze_verify",
-  );
-  validateStringArray(evidence.systemd_analyze_verify.argv, "systemd-analyze argv");
-  canonicalEqual(
-    evidence.systemd_analyze_verify.argv,
-    model.request.systemd_analyze_argv,
-    "systemd-analyze argv",
-  );
-  if (evidence.systemd_analyze_verify.exit_status !== 0) {
-    fail("systemd-analyze verify did not exit successfully");
-  }
-  if (evidence.systemd_analyze_verify.stdout !== "" || evidence.systemd_analyze_verify.stderr !== "") {
-    fail("systemd-analyze verify must produce no warnings or output");
-  }
-  if (sha256(Buffer.from(evidence.systemd_analyze_verify.stdout)) !== EMPTY_SHA256) {
-    fail("systemd-analyze stdout hash is not empty");
-  }
-
-  canonicalEqual(evidence.installed_files, model.request.installed_files, "installed file evidence");
-  if (!Array.isArray(evidence.units) || evidence.units.length !== model.request.units.length) {
-    fail("runtime unit evidence count does not match the rendered manifest");
-  }
-  for (let index = 0; index < evidence.units.length; index += 1) {
-    const actual = evidence.units[index];
-    const expected = model.request.units[index];
-    const label = `runtime evidence units[${index}]`;
-    exactKeys(
-      actual,
-      [
-        "active_state",
-        "conditions",
-        "drop_in_paths",
-        "environment",
-        "environment_files",
-        "exec_start",
-        "exec_start_pre",
-        "fragment_path",
-        "hardening",
-        "load_state",
-        "unit_name",
-      ],
-      label,
-    );
-    if (actual.load_state !== "loaded") fail(`${label}.load_state must equal loaded`);
-    if (!["active", "inactive"].includes(actual.active_state)) {
-      fail(`${label}.active_state must be active or inactive, never failed/unknown`);
-    }
-    if (!Array.isArray(actual.drop_in_paths) || actual.drop_in_paths.length !== 0) {
-      fail(`${label}.drop_in_paths must be empty`);
-    }
-    for (const key of [
-      "conditions",
-      "environment",
-      "environment_files",
-      "exec_start",
-      "exec_start_pre",
-    ]) {
-      validateStringArray(actual[key], `${label}.${key}`);
-    }
-    if (actual.environment_files.length !== 0) {
-      fail(`${label}.environment_files must be empty`);
-    }
-    canonicalEqual(actual.unit_name, expected.unit_name, `${label}.unit_name`);
-    canonicalEqual(actual.fragment_path, expected.fragment_path, `${label}.fragment_path`);
-    canonicalEqual(actual.exec_start, expected.exec_start, `${label}.exec_start`);
-    canonicalEqual(actual.exec_start_pre, expected.exec_start_pre, `${label}.exec_start_pre`);
-    canonicalEqual(actual.environment, expected.environment, `${label}.environment`);
-    canonicalEqual(actual.environment_files, expected.environment_files, `${label}.environment_files`);
-    canonicalEqual(actual.conditions, expected.conditions, `${label}.conditions`);
-    canonicalEqual(actual.hardening, expected.hardening, `${label}.hardening`);
-  }
-  return true;
-}
-
 function parseCli(argv) {
   const command = argv[0];
-  if (!["render", "verify", "verify-runtime"].includes(command)) {
-    fail("usage: payment-v1-rendered-artifact-gate.mjs <render|verify|verify-runtime> --source-root ABS --input-root ABS --plan ABS --approved-plan-sha256 HEX --bundle ABS [--evidence ABS --trusted-evidence-sha256 HEX]");
+  if (!["render", "verify"].includes(command)) {
+    fail("usage: payment-v1-rendered-artifact-gate.mjs <render|verify> --source-root ABS --input-root ABS --plan ABS --approved-plan-sha256 HEX --bundle ABS");
   }
   const values = Object.create(null);
   const allowed = new Set([
@@ -3435,8 +3658,6 @@ function parseCli(argv) {
     "--plan",
     "--approved-plan-sha256",
     "--bundle",
-    "--evidence",
-    "--trusted-evidence-sha256",
   ]);
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -3444,7 +3665,7 @@ function parseCli(argv) {
     if (!allowed.has(flag) || value === undefined || values[flag] !== undefined) {
       fail(`invalid, repeated, or missing CLI option: ${flag ?? "<missing>"}`);
     }
-    if (!["--approved-plan-sha256", "--trusted-evidence-sha256"].includes(flag) && !value.startsWith("/")) {
+    if (flag !== "--approved-plan-sha256" && !value.startsWith("/")) {
       fail(`${flag} must be an absolute path`);
     }
     values[flag] = value;
@@ -3458,22 +3679,7 @@ function parseCli(argv) {
   ]) {
     if (values[required] === undefined) fail(`missing required CLI option ${required}`);
   }
-  if (command === "verify-runtime" && values["--evidence"] === undefined) {
-    fail("verify-runtime requires --evidence");
-  }
-  if (command === "verify-runtime" && values["--trusted-evidence-sha256"] === undefined) {
-    fail("offline verify-runtime requires an externally trusted evidence SHA-256 pin");
-  }
-  if (command !== "verify-runtime" && values["--evidence"] !== undefined) {
-    fail("--evidence is valid only for verify-runtime");
-  }
-  if (command !== "verify-runtime" && values["--trusted-evidence-sha256"] !== undefined) {
-    fail("--trusted-evidence-sha256 is valid only for verify-runtime");
-  }
   validateSha256(values["--approved-plan-sha256"], "CLI approved plan SHA-256");
-  if (values["--trusted-evidence-sha256"] !== undefined) {
-    validateSha256(values["--trusted-evidence-sha256"], "CLI trusted evidence SHA-256");
-  }
   return { command, values };
 }
 
@@ -3492,27 +3698,7 @@ function runCli(argv) {
     process.stdout.write("payment-v1-rendered-artifact-gate: render PASS\n");
     return;
   }
-  const model = verifyBundle(common);
-  if (command === "verify-runtime") {
-    const evidenceBytes = readRegularSingleLinkFile(
-      values["--evidence"],
-      "runtime evidence",
-      MAX_JSON_BYTES,
-    );
-    if (sha256(evidenceBytes) !== values["--trusted-evidence-sha256"]) {
-      fail("runtime evidence does not match the externally trusted evidence SHA-256 pin");
-    }
-    let evidenceText;
-    try {
-      evidenceText = new TextDecoder("utf-8", { fatal: true }).decode(evidenceBytes);
-    } catch {
-      fail("runtime evidence is not valid UTF-8");
-    }
-    const evidence = parseStrictJson(evidenceText, "runtime evidence");
-    validateRuntimeEvidence({ model, evidence });
-    process.stdout.write("payment-v1-rendered-artifact-gate: offline pinned runtime structure PASS\n");
-    return;
-  }
+  verifyBundle(common);
   process.stdout.write("payment-v1-rendered-artifact-gate: verify PASS\n");
 }
 

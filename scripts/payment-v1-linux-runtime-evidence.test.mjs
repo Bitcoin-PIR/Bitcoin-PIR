@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertEffectiveConditionSnapshotUnchangedV1,
   assertCompleteNssSnapshotUnchangedV2,
+  assertEffectiveSystemdPolicySnapshotUnchangedV1,
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
@@ -40,6 +41,10 @@ import {
   collectVisibleNssEvidenceV2,
   parseGroupEnumerationV2,
   parseBusctlConditionsJsonV1,
+  parseBusctlBooleanJsonV1,
+  parseBusctlExecStartPreExJsonV1,
+  parseBusctlUnitNamesJsonV1,
+  parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
@@ -53,6 +58,8 @@ import {
   validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  RUNTIME_BUSCTL_MANAGER_PROPERTIES,
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
@@ -74,6 +81,7 @@ const COMMANDS = [
   "/usr/bin/systemctl",
   "/usr/bin/systemd-analyze",
   "/usr/bin/test",
+  "/usr/bin/unlink",
   "/usr/bin/uname",
   "/usr/sbin/getcap",
 ];
@@ -212,6 +220,146 @@ test("systemd Conditions use the reviewed busctl object path and strict a(sbbsi)
   );
 });
 
+test("systemd dependencies, commands, booleans and timeouts use strict typed busctl values", () => {
+  assert.deepEqual(
+    parseBusctlUnitNamesJsonV1(JSON.stringify({
+      data: ["network-online.target", "basic.target", "dev-disk-by\\x2duuid.device"],
+      type: "as",
+    })),
+    ["basic.target", "dev-disk-by\\x2duuid.device", "network-online.target"],
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      JSON.stringify({ data: 30_000_000, type: "t" }),
+      "TimeoutStopUSec",
+    ),
+    30_000_000,
+  );
+  assert.deepEqual(
+    parseBusctlBooleanJsonV1(JSON.stringify({ data: true, type: "b" })),
+    { signature: "b", value: true },
+  );
+  const execTuple = [
+    "/usr/bin/unlink",
+    ["/usr/bin/unlink", "--", "/run/approval"],
+    ["privileged"],
+    1, 2, 3, 4, 1, 0, 0,
+  ];
+  assert.deepEqual(
+    parseBusctlExecStartPreExJsonV1(JSON.stringify({
+      data: [execTuple],
+      type: "a(sasasttttuii)",
+    })),
+    [{
+      argv: ["/usr/bin/unlink", "--", "/run/approval"],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    }],
+  );
+  // Exact tuple shape observed from systemd 255.4 for ssh.service on the
+  // target Ubuntu 24.04 host. This guards against growing a synthetic fixture
+  // that no longer matches the real D-Bus signature.
+  assert.deepEqual(
+    parseBusctlExecStartPreExJsonV1(
+      '{"type":"a(sasasttttuii)","data":[["/usr/sbin/sshd",["/usr/sbin/sshd","-t"],[],0,0,0,0,0,0,0]]}',
+    ),
+    [{
+      argv: ["/usr/sbin/sshd", "-t"],
+      flags: [],
+      path: "/usr/sbin/sshd",
+    }],
+  );
+  assert.throws(
+    () => parseBusctlExecStartPreExJsonV1(JSON.stringify({
+      data: [[...execTuple, 0]],
+      type: "a(sasasttttuii)",
+    })),
+    /reviewed exec-command tuple/,
+  );
+  for (const [label, value] of [
+    ["wrong boolean type", { data: true, type: "u" }],
+    ["nonboolean", { data: 1, type: "b" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlBooleanJsonV1(JSON.stringify(value), label),
+      /reviewed b value/,
+      label,
+    );
+  }
+  for (const [label, value] of [
+    ["wrong exec signature", { data: [execTuple], type: "a(sas)" }],
+    ["foreign exec flag", { data: [[...execTuple.slice(0, 2), ["ambient"], ...execTuple.slice(3)]], type: "a(sasasttttuii)" }],
+    ["path argv mismatch", { data: [["/usr/bin/test", ...execTuple.slice(1)]], type: "a(sasasttttuii)" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlExecStartPreExJsonV1(JSON.stringify(value), label),
+      /reviewed|shape/,
+      label,
+    );
+  }
+
+  for (const [label, value] of [
+    ["wrong unit-array type", { data: [], type: "a(s)" }],
+    ["duplicate unit", { data: ["a.service", "a.service"], type: "as" }],
+    ["lookalike path", { data: ["../a.service"], type: "as" }],
+    ["noncanonical escape", { data: ["dev-foo\\x2Dbar.device"], type: "as" }],
+    ["oversized unit array", { data: Array.from({ length: 257 }, (_, index) => `u${index}.service`), type: "as" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlUnitNamesJsonV1(JSON.stringify(value), label),
+      /reviewed|bounded|canonical|duplicate|shape|unit-name/,
+      label,
+    );
+  }
+  for (const [label, value] of [
+    ["wrong unsigned type", { data: 30_000_000, type: "u" }],
+    ["negative unsigned", { data: -1, type: "t" }],
+    ["infinite unsigned", { data: Number.MAX_VALUE, type: "t" }],
+    ["missing unsigned", { type: "t" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlUnsignedJsonV1(JSON.stringify(value), label),
+      /finite|keys|reviewed/,
+      label,
+    );
+  }
+
+  const dependencies = {
+    After: ["basic.target", "network-online.target"],
+    Before: ["shutdown.target"],
+    BindsTo: [],
+    Requires: [],
+  };
+  const service = {
+    ExecStartPreEx: [],
+    TimeoutStopUSec: 30_000_000,
+    WatchdogTimestampMonotonic: 0,
+    WatchdogUSec: 0,
+  };
+  assert.equal(
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      service,
+      clone(service),
+      "test",
+    ),
+    true,
+  );
+  const changed = clone(dependencies);
+  changed.After = ["basic.target"];
+  assert.throws(
+    () => assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      changed,
+      service,
+      service,
+      "test",
+    ),
+    /policy changed during live collection/,
+  );
+});
+
 test("live collector seals expensive secrets before its final Conditions and generation pass", () => {
   const source = readFileSync(COLLECTOR, "utf8");
   const secretSealMarker = source.indexOf(
@@ -238,6 +386,9 @@ test("live collector seals expensive secrets before its final Conditions and gen
 
   const finalStatePass = source.slice(finalStateMarker, finishedMarker);
   assert.match(finalStatePass, /collectEffectiveConditions\(/);
+  assert.match(finalStatePass, /collectEffectiveUnitDependenciesV1\(/);
+  assert.match(finalStatePass, /collectEffectiveServicePropertiesV1\(/);
+  assert.match(finalStatePass, /assertEffectiveSystemdPolicySnapshotUnchangedV1\(/);
   assert.match(finalStatePass, /confirmUnitGeneration\(/);
   assert.doesNotMatch(
     finalStatePass,
@@ -334,6 +485,11 @@ function fixture() {
     environment_files: [],
     exec_start: [`${binaryPath} serve --config /etc/bitcoinpir/payment-v1/test/config.toml`],
     exec_start_pre: ["/usr/bin/test -x /opt/bitcoinpir/test/check"],
+    exec_start_pre_ex: [{
+      argv: ["/usr/bin/test", "-x", "/opt/bitcoinpir/test/check"],
+      flags: [],
+      path: "/usr/bin/test",
+    }],
     fragment_path: fragmentPath,
     hardening: {
       AmbientCapabilities: [""],
@@ -365,10 +521,17 @@ function fixture() {
       SupplementaryGroups: ["bitcoinpir-shared"],
       SystemCallArchitectures: ["native"],
       TasksMax: ["128"],
+      TimeoutStopSec: ["30"],
       Type: ["simple"],
       UMask: ["0077"],
       User: ["bitcoinpir-test"],
       WorkingDirectory: ["/var/lib/bitcoinpir-test"],
+    },
+    unit_dependencies: {
+      After: ["network-online.target"],
+      Before: [],
+      BindsTo: [],
+      Requires: [],
     },
     unit_name: "bitcoinpir-test.service",
   };
@@ -389,7 +552,9 @@ function fixture() {
       target_path: "/run/bitcoinpir-test/service.sock",
       uid: 730,
     }],
-    schema_version: 4,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
+    busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
+    schema_version: 6,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -443,6 +608,7 @@ function fixture() {
     MemorySwapCurrent: "0",
     MemorySwapMax: "0",
     NoNewPrivileges: "yes",
+    NotifyAccess: "none",
     PrivateDevices: "yes",
     PrivateTmp: "yes",
     ProcSubset: "all",
@@ -476,6 +642,7 @@ function fixture() {
     Type: "simple",
     UMask: "0077",
     User: "bitcoinpir-test",
+    WatchdogUSec: "0",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -633,7 +800,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 4,
+    schema_version: 6,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -642,6 +809,9 @@ function fixture() {
       stderr: "",
       stdout: "",
     },
+    systemd_manager_passes: [0, 1].map(() => ({
+      ServiceWatchdogs: { signature: "b", value: true },
+    })),
     trusted_commands: COMMANDS.map((path, index) => ({
       gid: 0,
       mode: "0755",
@@ -667,6 +837,21 @@ function fixture() {
       ],
       process_identity: processIdentity,
       properties,
+      service_property_passes: [0, 1].map((index) => ({
+        observed_uptime_milliseconds: 5000 + (index * 10),
+        properties: {
+          ExecStartPreEx: clone(unit.exec_start_pre_ex),
+          TimeoutStopUSec: 30_000_000,
+          WatchdogTimestampMonotonic: 0,
+          WatchdogUSec: 0,
+        },
+      })),
+      unit_dependencies: {
+        After: ["basic.target", "network-online.target"],
+        Before: ["shutdown.target"],
+        BindsTo: [],
+        Requires: [],
+      },
       unit_name: unit.unit_name,
     }],
   };
@@ -1230,14 +1415,33 @@ function localFilesPolicySnapshot(nss) {
   };
 }
 
-function oneshotFixture() {
+function preflightLeaseFixture() {
   const value = fixture();
   const fragmentPath = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
+  const approvalPath =
+    "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved";
   const unit = value.request.units[0];
   unit.fragment_path = fragmentPath;
   unit.unit_name = "bitcoinpir-lightning-preflight.service";
-  unit.hardening.Type = ["oneshot"];
-  unit.hardening.RemainAfterExit = ["yes"];
+  unit.hardening.Type = ["notify"];
+  unit.hardening.NotifyAccess = ["main"];
+  unit.hardening.WatchdogSec = ["90"];
+  unit.conditions.push(`ConditionPathExists=${approvalPath}`);
+  unit.exec_start_pre.unshift(`/usr/bin/unlink -- ${approvalPath}`);
+  unit.exec_start_pre_ex.unshift({
+    argv: ["/usr/bin/unlink", "--", approvalPath],
+    flags: ["privileged"],
+    path: "/usr/bin/unlink",
+  });
+  unit.unit_dependencies = {
+    After: ["bitcoinpir-core-lightning.service"],
+    Before: [
+      "bitcoinpir-cln-rpc-guard.service",
+      "bitcoinpir-payment-issuer.service",
+    ],
+    BindsTo: ["bitcoinpir-core-lightning.service"],
+    Requires: ["bitcoinpir-core-lightning.service"],
+  };
   value.request.service_identities[0].unit_name = unit.unit_name;
   value.request.installed_files[0].target_path = fragmentPath;
   value.request.systemd_analyze_argv[2] = fragmentPath;
@@ -1247,20 +1451,56 @@ function oneshotFixture() {
   actual.unit_name = unit.unit_name;
   actual.properties.FragmentPath = fragmentPath;
   actual.properties.ControlGroup = `/system.slice/${unit.unit_name}`;
-  actual.properties.Type = "oneshot";
-  actual.properties.RemainAfterExit = "yes";
-  actual.properties.MainPID = "0";
-  actual.properties.SubState = "exited";
-  actual.properties.Result = "success";
-  actual.properties.ExecMainCode = "1";
-  actual.properties.ExecMainStatus = "0";
+  actual.properties.Type = "notify";
+  actual.properties.NotifyAccess = "main";
+  actual.properties.WatchdogUSec = "1min 30s";
+  actual.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  actual.conditions.push({
+    negate: false,
+    parameter: approvalPath,
+    path_exists: false,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  });
+  actual.conditions.sort((left, right) => left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0);
+  actual.service_property_passes = [
+    {
+      observed_uptime_milliseconds: 5000,
+      properties: {
+        ExecStartPreEx: clone(unit.exec_start_pre_ex),
+        TimeoutStopUSec: 30_000_000,
+        WatchdogTimestampMonotonic: 4_500_000,
+        WatchdogUSec: 90_000_000,
+      },
+    },
+    {
+      observed_uptime_milliseconds: 5010,
+      properties: {
+        ExecStartPreEx: clone(unit.exec_start_pre_ex),
+        TimeoutStopUSec: 30_000_000,
+        WatchdogTimestampMonotonic: 4_900_000,
+        WatchdogUSec: 90_000_000,
+      },
+    },
+  ];
+  actual.unit_dependencies = {
+    After: ["basic.target", "bitcoinpir-core-lightning.service"],
+    Before: [
+      "bitcoinpir-cln-rpc-guard.service",
+      "bitcoinpir-payment-issuer.service",
+      "shutdown.target",
+    ],
+    BindsTo: ["bitcoinpir-core-lightning.service"],
+    Requires: ["bitcoinpir-core-lightning.service"],
+  };
   actual.generation_confirmations = actual.generation_confirmations.map((confirmation) => ({
     ...confirmation,
     control_group: actual.properties.ControlGroup,
-    main_pid: "0",
   }));
-  actual.process_identity = null;
-  for (const pass of value.evidence.protected_process_closure.passes) pass.holders = [];
+  for (const pass of value.evidence.protected_process_closure.passes) {
+    pass.holders[0].control_group = actual.properties.ControlGroup;
+  }
   return value;
 }
 
@@ -1358,6 +1598,8 @@ function secretIsolationFixture() {
       uid_before: [733, 733, 733, 733],
     },
     properties: peerProperties,
+    service_property_passes: clone(value.evidence.units[0].service_property_passes),
+    unit_dependencies: clone(value.evidence.units[0].unit_dependencies),
     unit_name: peerUnit.unit_name,
   });
   const holders = [
@@ -2643,11 +2885,11 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 3;
+  legacyEvidence.evidence.schema_version = 4;
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 3;
+  legacyRequest.request.schema_version = 4;
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
 
   const legacySystemctlConditions = fixture();
@@ -2673,6 +2915,22 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   const legacyNssProfile = fixture();
   legacyNssProfile.evidence.nss.backend_profile = "local-files-only-v1";
   assert.throws(() => validate(legacyNssProfile), /files-authoritative backend/);
+
+  const missingBusctlServiceSchema = fixture();
+  delete missingBusctlServiceSchema.request.busctl_service_properties;
+  assert.throws(() => validate(missingBusctlServiceSchema), /busctl service property schema/);
+
+  const foreignBusctlServiceSchema = fixture();
+  foreignBusctlServiceSchema.request.busctl_service_properties = ["TimeoutStopUSec", "RestartUSec"];
+  assert.throws(() => validate(foreignBusctlServiceSchema), /busctl service property schema/);
+
+  const missingBusctlManagerSchema = fixture();
+  delete missingBusctlManagerSchema.request.busctl_manager_properties;
+  assert.throws(() => validate(missingBusctlManagerSchema), /busctl manager property schema/);
+
+  const foreignBusctlManagerSchema = fixture();
+  foreignBusctlManagerSchema.request.busctl_manager_properties = ["RuntimeWatchdogUSec"];
+  assert.throws(() => validate(foreignBusctlManagerSchema), /busctl manager property schema/);
 
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
@@ -2700,20 +2958,64 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   assert.throws(() => validate(wrongPolicyPath), /metadata is not trusted/);
 });
 
-test("reviewed preflight oneshot uses active-exited boot-bound completion evidence without fake procfs identity", () => {
-  assert.equal(validate(oneshotFixture()), true);
+test("reviewed preflight lease requires a live notify process and exact watchdog", () => {
+  assert.equal(validate(preflightLeaseFixture()), true);
   for (const [mutate, expected] of [
-    [(value) => { value.evidence.units[0].properties.ExecMainCode = "0"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.ExecMainStatus = "1"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.SubState = "running"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.MainPID = "42"; }, /oneshot completion proof/],
+    [(value) => { value.evidence.units[0].properties.NotifyAccess = "none"; }, /NotifyAccess drift/],
+    [(value) => { value.evidence.units[0].properties.WatchdogUSec = "0"; }, /watchdog lease drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.After = ["basic.target"]; }, /effective After dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.Before = ["shutdown.target"]; }, /effective Before dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = []; }, /effective BindsTo dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.Requires = []; }, /effective Requires dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = ["bitcoinpir-core-lightning-lookalike.service"]; }, /effective BindsTo dependency drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift|service policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.ExecStartPreEx[0].flags = []; }, /ExecStartPreEx drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = 0; }, /typed watchdog interval drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 0; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 5_000_001; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = 4_499_999; }, /policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
+    [(value) => { value.evidence.systemd_manager_passes[0].ServiceWatchdogs.value = false; }, /typed b true/],
+    [(value) => { value.evidence.systemd_manager_passes[1].ServiceWatchdogs.signature = "u"; }, /typed b true/],
+    [(value) => { value.evidence.units[0].properties.SubState = "exited"; }, /no active MainPID/],
+    [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
     [(value) => { value.evidence.units[0].properties.ActiveEnterTimestampMonotonic = "6000000"; }, /not bound to this boot/],
     [(value) => { value.evidence.units[0].properties.InvocationID = "0".repeat(32); }, /InvocationID/],
   ]) {
-    const value = oneshotFixture();
+    const value = preflightLeaseFixture();
     mutate(value);
     assert.throws(() => validate(value), expected);
   }
+
+  const equalTimestamp = preflightLeaseFixture();
+  equalTimestamp.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = equalTimestamp.evidence.units[0]
+      .service_property_passes[0].properties.WatchdogTimestampMonotonic;
+  assert.equal(validate(equalTimestamp), true);
+
+  const refreshedAfterHostStart = preflightLeaseFixture();
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
+    .observed_uptime_milliseconds = 5006;
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogTimestampMonotonic = 5_005_000;
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = 5_009_000;
+  assert.equal(validate(refreshedAfterHostStart), true);
+
+  const staleAfterFalseToTrue = preflightLeaseFixture();
+  staleAfterFalseToTrue.evidence.host.uptime_started_milliseconds = 100_000;
+  staleAfterFalseToTrue.evidence.host.uptime_finished_milliseconds = 100_010;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
+    .observed_uptime_milliseconds = 100_000;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
+    .observed_uptime_milliseconds = 100_010;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogTimestampMonotonic = 10_000_000;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = 10_000_000;
+  assert.throws(() => validate(staleAfterFalseToTrue), /timestamp is not fresh/);
 });
 
 test("secret evidence binds parent metadata and positive owner/negative cross-role access probes", () => {

@@ -6,8 +6,10 @@ Wants=network-online.target
 Requires=bitcoinpir-core-lightning.service bitcoinpir-cln-rpc-guard.service bitcoinpir-lightning-preflight.service
 BindsTo=bitcoinpir-core-lightning.service bitcoinpir-cln-rpc-guard.service bitcoinpir-lightning-preflight.service
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
 
 [Service]

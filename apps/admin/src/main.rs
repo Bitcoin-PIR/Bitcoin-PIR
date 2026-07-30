@@ -27,8 +27,8 @@
 //!   decrypt, acknowledgement, and explicit one-shot NUT-07 retirement.
 //! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
 //!   for two providers, five payment methods, and five workloads.
-//! - `lightning-staging` — strict default-Signet/CLN preflight plus an explicit
-//!   local, digest-only backup-receipt ceremony.
+//! - `lightning-staging` — strict default-Signet/CLN bootstrap/full preflights
+//!   plus an explicit local, digest-only backup-receipt ceremony.
 //! - `rollback-authority-deployment-lint` — offline bounded deployment-set
 //!   public-config independence validation without reading client secrets.
 //!
@@ -122,7 +122,7 @@ enum Command {
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
-    /// Strict default-Signet/CLN preflight and local backup-receipt ceremony.
+    /// Strict default-Signet/CLN bootstrap/full preflights and backup ceremony.
     #[command(name = "lightning-staging")]
     LightningStaging(lightning_staging::LightningStagingArgs),
     /// Validate 2..=16 authority configs pairwise offline without reading
@@ -484,8 +484,52 @@ mod cli_tests {
             "--config-protected-parent",
             "/srv/bitcoinpir",
             "--config-expected-uid",
-            "991",
+            "0",
             "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
+            "991",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
+    }
+
+    #[test]
+    fn lightning_staging_supervisor_uses_the_same_closed_trust_boundary() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "lightning-staging",
+            "preflight-supervisor",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "0",
+            "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
+            "991",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
+    }
+
+    #[test]
+    fn lightning_staging_bootstrap_preflight_uses_the_same_trust_boundary() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "lightning-staging",
+            "bootstrap-preflight",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "0",
+            "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
             "991",
         ])
         .unwrap();
@@ -503,8 +547,10 @@ mod cli_tests {
             "--config-protected-parent",
             "/srv/bitcoinpir",
             "--config-expected-uid",
-            "991",
+            "0",
             "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
             "991",
         ];
         assert!(Cli::try_parse_from(base).is_err());

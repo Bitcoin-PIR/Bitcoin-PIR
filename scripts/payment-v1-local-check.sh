@@ -97,10 +97,11 @@ node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs \
-  scripts/payment-v1-source-fair-edge.test.mjs
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 if [[ "$mode" == "quick" ]]; then
   echo "[5/5] quick mode complete (no external network, no funds)"
@@ -386,10 +387,11 @@ node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs \
-  scripts/payment-v1-source-fair-edge.test.mjs
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
