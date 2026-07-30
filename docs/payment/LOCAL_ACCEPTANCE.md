@@ -424,6 +424,43 @@ acquisition/recovery and joined synthetic two-provider DPF/Merkle boundary. It
 is not Signet, public-network, real-funds, production-ingress, production
 attestation or deployed-origin acceptance; ARC remains experimental.
 
+### 2026-07-29 CLN bootstrap and bundle-layout gate
+
+The current-tree bootstrap work was exercised without creating a persistent
+wallet, contacting a remote node or using funds. The focused Lightning-staging Rust
+suite passed 32/32, the full `bpir-admin` suite passed 125/125, and the scoped
+warnings-denied clippy invocation passed. The deployment-template gate passed
+24/24 and the rendered-artifact gate passed 79/79.
+
+The executable-closure check was also tested against the official Core
+Lightning v26.06.6 image pinned by digest:
+
+```text
+elementsproject/lightningd@sha256:094be3630f865c795649d6063a8796afa0f78e82a0c311bb34f2b0bd570c819a
+```
+
+Because the deployment target is x86-64 while the development host is arm64,
+the manifest-list check was repeated under QEMU against its explicit linux/amd64
+child digest
+`sha256:f8f1ec25ea6dfbc9fab1e3dd918e15f7c4a3f5bb97b87bb6490d4c8a7c71ee6b`.
+It reported `v26.06.6`, passed `--test-daemons-only --offline`, contained the
+same eight required subdaemons and accepted the native 32-byte identity format.
+
+A minimal copied layout containing the pinned CLI, HSM tool, daemon, required
+plugins and required `libexec/c-lightning` subdaemons passed
+`lightningd --test-daemons-only --offline`. Removing `lightning_hsmd` was
+rejected, and the positive invocation with an explicit empty config made no
+wallet or network-state mutation. The final bootstrap gate additionally uses
+the fixed eight-call sequence with empty `listfunds`, and the rendered layout
+requires a pre-existing owner-read-only native 32-byte `hsm_secret`. A
+disposable native 32-byte seed was accepted by the same pinned image's
+`lightning-hsmtool getnodeid` and produced an exact compressed public node ID;
+no seed bytes were printed or retained. This is evidence for the bootstrap RPC
+sequence, activation-sentinel separation and bundled executable closure only.
+It is not evidence for a persistent Signet identity, an isolated identity
+restore, faucet funding, channel recovery, production secrets or a production
+deployment.
+
 ### 2026-07-28 focused Harmony closeout
 
 After the final V2Full reservation/lifecycle changes, the focused Rust 1.94.1
@@ -1338,6 +1375,76 @@ PID namespace; a warm reload, container-only record or evidence without its
 complete transferred SHA-256 is not accepted. At the end of a private no-funds
 drill, stop Caddy and then HAProxy, confirm the listener set is empty, and revoke
 `EDGE-ACTIVATION-APPROVED`.
+
+## 2026-07-30 P1-3 preflight owner/mode contract
+
+The current worktree passed the focused static-config/dynamic-receipt closeout:
+
+```sh
+cargo test --locked --offline -p bpir-admin
+node --test scripts/payment-v1-deployment-template-gate.test.mjs \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+cargo clippy --locked --offline -p bpir-admin --all-targets --no-deps -- -D warnings
+```
+
+Results were 139/139 Rust tests and 104/104 Node tests, with the target package
+warnings-denied clippy clean. In addition, the exact
+`protected_config_real_linux_uid_gid_and_mode_contract` test passed as root in
+the existing `bpir-rust-ci:1.94.1` Linux container with networking disabled.
+That real-kernel matrix changes the child EUID, effective GID and supplementary
+groups and covers root/config-group `0440`, wrong owner/mode/EUID, missing and
+extra groups, a writable direct parent and a writable ancestor. The normal
+macOS run also executes the platform-independent identity/group-set matrix.
+
+The broader dependency-linting form without `--no-deps` remains non-green under
+the local Rust 1.94.1 toolchain because the pre-existing
+`pir-identity::signing_preimage` triggers Clippy's `too_many_arguments`; that is
+not reported as passing evidence for this closeout.
+
+## 2026-07-30 P1-1 CLN InvocationID lease closeout
+
+The current dirty CLN worktree passed the short-lease remediation checks in a
+network-disabled, root-run `bpir-rust-ci:1.94.1-tools` container with the source
+mounted read-only and `CARGO_TARGET_DIR` confined to the container's `/tmp`:
+
+```sh
+cargo fmt --package bpir-admin -- --check
+cargo test --locked --offline -p bpir-admin
+BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1 cargo test --locked --offline \
+  -p bpir-admin \
+  lightning_staging::tests::protected_config_real_linux_uid_gid_and_mode_contract \
+  -- --exact --nocapture
+cargo clippy --locked --offline -p bpir-admin --all-targets --no-deps -- -D warnings
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
+```
+
+Results were 141/141 Rust tests, the separately forced real-root contract 1/1,
+and 212 Node cases with 190 passed, 22 platform-specific skips and zero
+failures. Package-scoped formatting and warnings-denied Clippy were clean. The
+source gate passed directly, and Actionlint passed for this workflow after
+excluding its three pre-existing informational `SC2016` findings outside the
+new root-test step.
+
+The Node runtime suite includes typed D-Bus dependency arrays and
+`TimeoutStopUSec`, stale-manager/missing-edge/lookalike/timeout mutations, and
+final-snapshot drift. Rust additionally covers commit-time backup-age
+revalidation, exact watchdog environment parsing and Linux abstract notify
+sockets.
+
+The accumulated required relationship, service-property and watchdog fields
+intentionally bump the live request, collector identity and evidence kind from
+v4 to v6. Existing v4 or v5 render requests and evidence must not be translated
+or reused; render a new v6 request and collect fresh target-host evidence after
+`daemon-reload`.
+
+This establishes source and deterministic compatibility evidence only. It does
+not prove target-systemd formatting, a live CLN InvocationID mapping, watchdog
+enforcement, BindsTo propagation, fresh CLN identity bootstrap or production
+activation; those remain target-host gates.
 
 ## Expected acceptance record
 

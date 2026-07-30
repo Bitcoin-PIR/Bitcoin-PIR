@@ -25,6 +25,96 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning-cli",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/bin/lightning-cli",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning-hsmtool",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/bin/lightning-hsmtool",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_channeld",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_channeld",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_closingd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_closingd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_connectd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_connectd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_gossip_compactd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_gossip_compactd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_gossipd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_gossipd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_hsmd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_hsmd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_onchaind",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_onchaind",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_openingd",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_openingd",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/bcli",
       "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/plugins/bcli",
       "uid": 0
@@ -192,15 +282,6 @@
       "uid": 0
     },
     {
-      "class": "policy",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 52925,
-      "mode": "0440",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/backup-receipt.json",
-      "target_path": "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.json",
-      "uid": 0
-    },
-    {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 52925,
@@ -216,15 +297,6 @@
       "mode": "0444",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/issuer/payment-issuer.sha256",
       "target_path": "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256",
-      "uid": 0
-    },
-    {
-      "class": "hash-manifest",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 0,
-      "mode": "0444",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/backup-receipt.sha256",
-      "target_path": "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256",
       "uid": 0
     },
     {
@@ -297,6 +369,7 @@
     "BITCOIN_CORE_BUNDLE_SHA256": "INVALID_REPLACE_WITH_BITCOIN_CORE_BUNDLE_SHA256",
     "BITCOIN_RPC_PORT": "INVALID_REPLACE_WITH_RPC_PORT",
     "BPIR_ADMIN_SHA256": "INVALID_REPLACE_WITH_BPIR_ADMIN_SHA256",
+    "BUSCTL_SHA256": "5cca481831f317814f050f97e86467079140f61e9007a32385be724d1a481f14",
     "CLN_BUNDLE_SHA256": "INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256",
     "CLN_GUARD_MAX_INVOICE_BURST": "INVALID_REPLACE_WITH_BURST_LIMIT",
     "CLN_GUARD_MAX_INVOICE_MSAT": "INVALID_REPLACE_WITH_MAX_INVOICE_MSAT",
