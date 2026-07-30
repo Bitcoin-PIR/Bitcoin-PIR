@@ -303,6 +303,26 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.doesNotMatch(recipe, /cargo (?:build|run|test).*(?:^|\s)--manifest-path/gu);
 });
 
+test("CI rebuilds the selected source commit and fully verifies resolved selection", () => {
+  const workflow = readFileSync(
+    join(SCRIPT_DIRECTORY, "..", ".github", "workflows", "payment-platform.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /directory-relay-artifact:[\s\S]*?fetch-depth: 0/u);
+  assert.match(
+    workflow,
+    /validateRelaySelection[\s\S]*?selection\.sourceCommit[\s\S]*?--source-commit "\$bpir_source_commit"/u,
+  );
+  assert.match(
+    workflow,
+    /payment-v1-directory-relay-artifact-gate\.mjs verify-selection[\s\S]*?--selection[\s\S]*?--config/u,
+  );
+  assert.match(
+    workflow,
+    /if \[\[ "\$bpir_selection_status" == "RESOLVED" \]\]; then\s+bpir_source_commit="\$\{bpir_relay_selection\[1\]\}"/u,
+  );
+});
+
 test("build recipe help executes before any environment or artifact preflight", () => {
   const recipePath = join(SCRIPT_DIRECTORY, "build-payment-v1-directory-relay.sh");
   const result = spawnSync("bash", [recipePath, "--help"], {

@@ -592,10 +592,12 @@ blinding scalar or query data into operator records.
 Run `LOCAL_ACCEPTANCE.md` first. Then require all of the following before any
 public/staging listener:
 
-The directory relay is still `UNRESOLVED`; therefore a public directory
-listener or catalog publication is not currently eligible for activation. The
-current private no-funds live drill is edge-only and must remain unrouted; it
-must not start CLN, the issuer or a provider, or invent a relay substitute.
+The directory relay selection is resolved, but no listener or catalog
+publication is eligible until the exact install bundle passes stopped evidence,
+the three relay startup sentinels are separately approved, fresh-live evidence
+passes, and routing/publication approvals are recorded. Resolution alone must
+not create a sentinel or start the unit. The current private no-funds live drill
+must remain unrouted and must not start CLN, the issuer or a provider.
 Likewise, the current Lightning preflight accepts only default Signet. Mainnet
 cannot proceed by changing a config value or by user approval alone; it needs a
 reviewed mainnet implementation and negative tests.
@@ -846,7 +848,9 @@ global one, and does not authorize another unit or phase. A Signet approval is
 not a mainnet approval.
 Even with approval, mainnet remains blocked
 until the missing reviewed deployment preflight exists, and relay publication
-remains blocked while relay selection is `UNRESOLVED`.
+remains blocked until the resolved relay install has independently verified
+stopped-state and fresh-live evidence and the publisher-key use/catalog
+publication steps receive their own approval.
 
 ARC additionally requires an independent cryptographic review before it can
 leave experimental status.

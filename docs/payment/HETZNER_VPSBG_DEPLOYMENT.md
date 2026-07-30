@@ -361,10 +361,11 @@ route resolves that hostname to the relay's private bind; Caddy and HAProxy
 both require the separately approved exact publisher-client address before the
 relay performs the signed-event check.
 
-`deploy/payment-v1/relay-selection.toml.example` deliberately starts with
-`status = "UNRESOLVED"`. While unresolved, the relay service has
-`ExecStart=/usr/bin/false` and requires a separate
-`RELAY-SELECTION-RESOLVED` sentinel. The selection may become resolved only in a
+`deploy/payment-v1/relay-selection.toml.example` is explicitly `RESOLVED` in
+degraded `centralized-single-relay` mode. Resolution pins source, artifact,
+config and public-key bytes; it is not activation. The unit still requires the
+separately provisioned `RELAY-SELECTION-RESOLVED` sentinel in addition to its
+global and relay-activation sentinels. A selection is accepted only in a
 reviewed PR that freezes the repository's directory-only relay interface and
 records:
 
@@ -391,8 +392,9 @@ BitcoinPIR bounds: 262,176-byte outer EVENT message, 192 KiB content, kind
 default to `strict-multi-relay` with two to eight distinct WSS origins. Exactly
 one hostname is accepted only by the explicit, visibly degraded
 `centralized-single-relay` mode; two aliases on one Hetzner host still do not
-provide operator or failure independence. This stopped profile selects neither
-mode and never permits an automatic fallback.
+provide operator or failure independence. The checked-in selection explicitly
+accepts that degraded one-origin assurance and never permits an automatic
+fallback.
 
 The reviewed process interface is intentionally narrow: exactly
 `bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`, with no CLI
@@ -437,36 +439,52 @@ and its exact Payment V1 source parent
 `4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4` found no P0/P1/P2 source issue.
 The source gate/readback suite passed 80/80, the relay library/binary suite
 passed 24/24 in Linux Docker, and the exact-head CI exercised the real
-two-relay process topology. This closes only the implementation-audit item.
-Relay selection remains unresolved until the exact source archive, Cargo.lock,
-reproducible-build manifest, Linux binary, bounded config and publisher
-public-key pins are recorded, an independent clean host reproduces them, the
-chosen directory mode is recorded, and target-host runtime/fault evidence
-passes. Centralized mode requires an explicit degraded-assurance acceptance;
-strict mode requires two distinct WSS origins. Independent relay failure
+two-relay process topology. The selected source commit, canonical source
+archive, Cargo.lock, build manifest, Linux binary, bounded config and publisher
+public-key pins are now recorded in `relay-selection.toml`; CI independently
+rebuilds that selected commit and runs `verify-selection`. Target-host stopped
+and fresh-live evidence remains a separate activation requirement. Strict mode
+would require two distinct WSS origins; the selected centralized mode records
+the user's explicit degraded-assurance acceptance. Independent relay failure
 domains remain the stronger recommended topology, not something inferred from
 origin count or a mandatory purchase of another host.
 
-Accordingly, no public relay service or catalog publication belongs in a
-rendered plan today. The locally held publisher key, if any, is not relay
-selection evidence and its installation/use requires its own approval.
+Accordingly, a resolved install bundle may now be rendered, but no public relay
+service or catalog publication is yet authorized. The locally held publisher
+private key remains off the relay and its use requires its own approval.
 
-The repository now has one stopped-only `directory-relay-v1` render skeleton.
-It renders the bounded config plus the blocked unit only; it carries no binary
-payload and cannot pass the live collector. This closes offline preparation
-shape, not relay selection or installation authority. The only applicable
-Linux runtime command is `collect-stopped-relay`, followed by independently
-pinned `verify-stopped-relay-offline`; both reject any non-false `ExecStart`,
-any pre-start command, installed-file/fragment/effective-unit drift, a failed
-`systemd-analyze verify`, any requested runtime socket, or any live evidence.
+The `directory-relay-v1` render skeleton binds the exact SHA-256 of
+`relay-selection.toml` into the externally approved plan. An `UNRESOLVED`
+selection renders only the bounded config and blocked unit and must carry no
+payload. The checked-in `RESOLVED` selection instead requires exactly three
+payloads: the selected root-owned mode-0555 binary at
+`/opt/bitcoinpir/directory-relay/<binary-sha256>/bitcoinpir-directory-relay`,
+plus root-owned mode-0444 `binary.sha256` and `config.sha256` manifests. Each
+manifest contains exactly one strict `sha256sum` entry with an absolute target;
+the config digest equals the owner-only rendered config bytes. Extra payloads,
+including a publisher private key, fail closed.
+
+`collect-stopped-relay` followed by independently pinned
+`verify-stopped-relay-offline` applies both before and after resolution. It
+requires the unit to remain inactive/dead and the
+`RELAY-SELECTION-RESOLVED` activation sentinel to be absent; for a resolved
+unit it additionally seals the binary, both manifests, config and fragment.
 The v2 stopped-relay schema reads systemd Conditions only through busctl's
-typed `a(sbbsi)` value, requires the unresolved selection sentinel to be
-absent, binds the private config to its real consumer and 0700 final parent,
-and seals both file and descriptor-walk fingerprints before the final
-Conditions/stopped-generation pass. For the inactive/dead unit, systemd 255
-evidence records the dynamic
-`MemorySwapCurrent=[not set]` while the configured and effective
-`MemorySwapMax=0` remains mandatory.
+typed `a(sbbsi)` value, binds the private config to its real consumer and 0700
+final parent, and seals both file and descriptor-walk fingerprints before the
+final Conditions/stopped-generation pass. Only an exact resolved unit may use
+the live collector. Its `ExecStartPre` runs `sha256sum --check --strict` over
+the two closed manifests before the sole pinned-binary `--config` command.
+For an inactive/dead unit, systemd 255 evidence records the dynamic
+`MemorySwapCurrent=[not set]` while configured and effective
+`MemorySwapMax=0` remain mandatory.
+
+Resolution still does not activate the unit: there is no `[Install]` section,
+and all three `ACTIVATION-APPROVED`, `RELAY-ACTIVATION-APPROVED` and
+`RELAY-SELECTION-RESOLVED` files must exist at start. Conditions are not
+continuous revocation. Rollback therefore stops the unit first, proves it
+inactive with both loopback listeners gone, removes the relay activation
+sentinel, and only then changes installed generation or routing.
 
 For a future selection, run `scripts/build-payment-v1-directory-relay.sh` from
 the frozen reviewed source. Its pinned Linux-amd64 container runs with network
@@ -483,9 +501,12 @@ requires both clean binaries and the selected binary to be byte-identical,
 rechecks the recorded Git/Tar versions, independently rebuilds the already
 verified archive twice from gate-private snapshots, reads `--version` only
 from the verified binary's private snapshot, and hashes the exact `config.toml`
-bytes. The resulting build-manifest digest is a selection field. None of those
-steps authorizes installing the binary, changing `/usr/bin/false`, using the
-publisher key, opening a listener, routing traffic or publishing an event.
+bytes. The resulting build-manifest digest is a selection field. CI checks out
+full history, builds `selection.source_commit` rather than assuming workflow
+`HEAD`, and runs the complete `verify-selection` path when resolved. None of
+those steps authorizes installing the binary, creating a startup sentinel,
+using the publisher key, opening a listener, routing traffic or publishing an
+event.
 The verifier seals the artifact-root parent chain across long rebuilds. The
 recipe applies host-side `SIGKILL` timeouts to every Docker operation, reseals
 the complete closed-world allowlist after long runners and after manifest
@@ -519,9 +540,12 @@ mandatory before any later installation gate can advance.
 
 The recipe and verifier's clean builds on one Docker daemon establish local
 determinism only; the daemon and its host remain a trusted execution boundary.
-Before relay selection becomes `RESOLVED`, an independent operator on a clean,
-separately administered host must reproduce the same archive, lockfile,
-Git/Tar-version, build-manifest and binary digests.
+The committed `RESOLVED` selection records the sealed candidate hashes but does
+not itself claim independent reproduction. Before relay installation or
+activation, the selected-commit CI job must reproduce the same archive,
+lockfile, Git/Tar-version, build-manifest and binary digests on its independently
+administered runner and pass `verify-selection`; an operator on another clean
+host may provide an additional independently pinned reproduction record.
 
 ## VPSBG minimal change
 

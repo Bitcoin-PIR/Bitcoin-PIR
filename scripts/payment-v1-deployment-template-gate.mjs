@@ -2437,7 +2437,17 @@ export function validateDeploymentTree(rootInput) {
     relayLabel,
   );
   validateCommonServiceHardening(relayParsed, relayLabel, true);
-  exactDirectiveValues(relayParsed, "Unit", "Description", ["BitcoinPIR Hetzner directory-only relay (blocked template)"], relayLabel);
+  exactDirectiveValues(
+    relayParsed,
+    "Unit",
+    "Description",
+    [
+      selection.status === "RESOLVED"
+        ? "BitcoinPIR Hetzner directory-only relay (resolved, sentinel-gated)"
+        : "BitcoinPIR Hetzner directory-only relay (blocked template)",
+    ],
+    relayLabel,
+  );
   exactDirectiveValues(relayParsed, "Unit", "After", ["network-online.target"], relayLabel);
   exactDirectiveValues(relayParsed, "Unit", "Wants", ["network-online.target"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "User", ["bitcoinpir-directory-relay"], relayLabel);
@@ -2456,7 +2466,17 @@ export function validateDeploymentTree(rootInput) {
   exactDirectiveValues(relayParsed, "Service", "ProtectHostname", ["true"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressDeny", ["any"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressAllow", ["localhost"], relayLabel);
-  exactDirectiveValues(relayParsed, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/directory-relay"], relayLabel);
+  exactDirectiveValues(
+    relayParsed,
+    "Service",
+    "ReadOnlyPaths",
+    [
+      selection.status === "RESOLVED"
+        ? `/etc/bitcoinpir/payment-v1/directory-relay /opt/bitcoinpir/directory-relay/${selection.binarySha256}`
+        : "/etc/bitcoinpir/payment-v1/directory-relay",
+    ],
+    relayLabel,
+  );
   exactDirectiveValues(relayParsed, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], relayLabel);
   rejectPattern(
@@ -2473,6 +2493,9 @@ export function validateDeploymentTree(rootInput) {
     exactDirectiveValues(relayParsed, "Service", "ExecStartPre", [], relayLabel);
     exactDirectiveValues(relayParsed, "Service", "Restart", ["no"], relayLabel);
   } else {
+    if (sha256File(relayConfig.absolute) !== selection.configSha256) {
+      fail("resolved relay config bytes do not equal relay selection config_sha256");
+    }
     const expectedExecStart =
       `/opt/bitcoinpir/directory-relay/${selection.binarySha256}/` +
       "bitcoinpir-directory-relay --config " +
@@ -2485,8 +2508,8 @@ export function validateDeploymentTree(rootInput) {
       "Service",
       "ExecStartPre",
       [
-        "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
-        "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
       ],
       relayLabel,
     );

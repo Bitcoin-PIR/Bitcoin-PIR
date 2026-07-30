@@ -272,17 +272,19 @@ same-event publisher-lane retry, and verifies both listeners return after each
 independent process restart. The test deliberately does not infer relay-operator
 or host independence from local process separation.
 
-Payment CI also runs the stopped-only artifact recipe itself in a dedicated
-Ubuntu job. The job pulls the exact digest-pinned Rust image, archives the
-checked-out commit, completes both clean builds, atomically publishes the
+Payment CI also runs the directory-relay artifact recipe in a dedicated Ubuntu
+job. The job pulls the exact digest-pinned Rust image, validates the selection,
+uses full Git history to archive `selection.source_commit` rather than assuming
+workflow `HEAD`, completes both clean builds, atomically publishes the
 owner-only temporary artifact, and exercises both independent-rebuild gates.
 `create-manifest` performs two clean rebuilds before publication; after the
 atomic rename, `verify-build` performs two more clean rebuilds against the
 published path before the final seal. The recipe therefore performs six
-empty-target builds in total. The artifact stays under the ephemeral runner
-directory and is neither uploaded nor installed; a passing job does not resolve
-`relay-selection.toml`, replace `/usr/bin/false`, open a listener, or activate
-the relay.
+empty-target builds in total. When selection is resolved, the job additionally
+runs `verify-selection` against the exact config and selection bytes. The
+artifact stays under the ephemeral runner directory and is neither uploaded nor
+installed; a passing job does not create a sentinel, open a listener, route
+traffic or activate the relay.
 
 Directory mode tests additionally require all of the following across the
 publisher CLI, staging readback, WASM and Web adapter:

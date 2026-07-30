@@ -857,13 +857,14 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       pinned publisher/kind, bounded ID-filtered REQ/EOSE readback, immutable
       SQLite event archive plus current heads, durable duplicate handling,
       bounded connection/work/egress/archive/time dimensions and graceful
-      drain. It is not a general-purpose relay. The production selection and
-      unit remain `UNRESOLVED`/`ExecStart=/usr/bin/false`; final merged source,
-      binary/config/public-key hashes, source-fair ingress and one explicitly
-      selected directory mode are activation gates. Strict mode needs two
-      distinct WSS origins; an independent second operator is stronger than
-      same-host origin diversity but is not required by the approved
-      centralized/degraded profile.
+      drain. It is not a general-purpose relay. The production selection is
+      resolved for exact source/archive/lockfile/build-manifest/binary/config/
+      public-key hashes and explicit degraded `centralized-single-relay` mode.
+      The unit is content-addressed and hash-preflighted but remains inert until
+      all three explicit startup sentinels exist; stopped and fresh-live host
+      evidence, source-fair ingress and publication approvals remain gates. An
+      independent second operator is stronger than the approved centralized
+      profile but is not falsely inferred from same-host origin diversity.
 - [x] Source-template, rendered-profile and live-Linux evidence tools are
       checked in. The source gate freezes inactive templates and the unchanged
       VPSBG baseline. The rendered gate binds one externally approved plan to
@@ -1064,8 +1065,9 @@ findings and must not be collapsed into that count.
    aggregate full-suite or production-network result.
    Persistent default-signet Lightning, including an external check of the
    default-signet challenge that the coarse CLN `signet` identity cannot prove,
-   an external WebPKI Cashu mint, production catalog publication and monitored
-   relay selection remain staging gates. The final topology also needs
+   an external WebPKI Cashu mint, production catalog publication, and stopped
+   plus fresh-live evidence for the resolved relay selection remain staging
+   gates. The final topology also needs
    production identity/attestation/pins, TLS/edge controls, outage/restart
    drills, compatibility observations and data-retention review.
 7. **ARC review.** ARC must remain hidden behind an experimental offer/UX label

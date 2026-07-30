@@ -12,7 +12,8 @@ Every skeleton is deliberately unusable:
   invalid replacement markers;
 - payload `source_path` values name deliberately nonexistent relative entries
   beneath a future private input root;
-- binary target paths retain an invalid digest marker; and
+- binary target paths retain an invalid digest marker except the resolved
+  directory-relay selection, whose reviewed binary digest is already fixed; and
 - numeric service identities are documentation examples and must be replaced
   with the exact approved NSS values on the target host.
 
@@ -67,7 +68,7 @@ initializing a blank store and calling it a switch.
 
 | File | Gate profile | Scope |
 | --- | --- | --- |
-| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One stopped-only relay config fixed to UID 62951/GID 62952/mode 0400 for the real loader, plus blocked unit preparation; v2 stopped evidence additionally requires a consumer-owned 0700 final parent and real-EUID readability. No binary, key, start or publication authority. |
+| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One resolved, still sentinel-gated relay: config fixed to UID 62951/GID 62952/mode 0400, exact content-addressed binary, and two root-owned one-entry hash manifests. V2 stopped evidence still precedes activation; no publisher private key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
@@ -76,17 +77,18 @@ initializing a blank store and calling it a switch.
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 
-The directory-relay skeleton is intentionally weaker than an activation plan:
-it has no payload artifacts, its unit remains exactly `ExecStart=/usr/bin/false`,
-and the live collector rejects the profile. Materializing its public-key
-placeholder permits only offline review of the bounded config bytes. Relay
-selection must still move through its separate artifact gate and reviewed PR;
-installation, start, private-key use, routing and publication remain separately
-approved actions. The fixed unit/NSS/config/state paths describe one instance;
-under the default `strict-multi-relay` client contract, a second origin remains
-blocked. The implemented explicit `centralized-single-relay` browser mode may
-accept this one-origin topology only with its degraded assurance label; this
-skeleton selects neither mode and cannot silently downgrade the default.
+The directory-relay skeleton is intentionally weaker than an activation plan.
+It binds the resolved selection source SHA-256 and requires exactly the selected
+binary plus `binary.sha256` and `config.sha256`; all three private input paths
+and both manifest-file digests remain invalid replacement markers. The binary
+target/digest is fixed to the selected artifact. The live collector accepts
+only the exact resolved profile, while stopped evidence must first prove the
+`RELAY-SELECTION-RESOLVED` sentinel absent (so the three conditions are not all
+satisfied) and the installed closure unchanged.
+Installation, start, publisher-private-key use, routing and publication remain
+separately approved actions. The fixed unit/NSS/config/state paths describe one
+instance, and the selected `centralized-single-relay` mode is explicitly
+degraded; it cannot silently downgrade or masquerade as strict multi-relay.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.

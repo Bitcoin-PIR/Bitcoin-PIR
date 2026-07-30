@@ -1373,8 +1373,11 @@ At minimum, a release candidate needs evidence for:
   Merkle verification, but uses `NoSevHost`, synthetic proof material and an
   all-zero test database rather than production identity/attestation/data);
 - independent ARC review;
-- a resolved and hash-frozen directory-relay selection; the committed
-  `UNRESOLVED` relay state is an activation blocker, not a passing local test;
+- an installed and independently verified directory-relay runtime. The
+  selection is now resolved and hash-frozen in
+  `deploy/payment-v1/relay-selection.toml.example`, using the explicitly
+  accepted degraded `centralized-single-relay` mode; stopped-state and
+  fresh-live target evidence remain deployment blockers;
 - a production Standard Cashu mint. Until an exact mint, WebPKI/pins, unit,
   custody limits and recovery/outage plan are approved, every mint-dependent
   Standard Cashu offer in the current policy must be omitted. The checked-in

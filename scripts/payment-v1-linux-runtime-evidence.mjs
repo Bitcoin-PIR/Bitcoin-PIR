@@ -31,6 +31,7 @@ import {
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
   canonicalJson,
+  isResolvedDirectoryRelayRuntimeRequest,
   parseStrictJson,
   runtimeRequestFromManifest,
 } from "./payment-v1-rendered-artifact-gate.mjs";
@@ -2432,7 +2433,7 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
   if (conditions.length !== expected.length) {
     fail(`stopped effective condition count drift: ${unit.unit_name}`);
   }
-  let unresolvedSelectionObserved = false;
+  let absentSelectionActivationSentinelObserved = false;
   for (let index = 0; index < expected.length; index += 1) {
     const actual = conditions[index];
     const definition = expected[index];
@@ -2458,13 +2459,13 @@ function validateStoppedEffectiveConditionsV2(unit, properties, conditions) {
       "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED"
     ) {
       if (actual.negate || actual.path_exists || !new Set([-1, 0]).has(actual.result)) {
-        fail("stopped directory-relay selection condition is not unresolved");
+        fail("stopped directory-relay selection activation sentinel is present");
       }
-      unresolvedSelectionObserved = true;
+      absentSelectionActivationSentinelObserved = true;
     }
   }
-  if (!unresolvedSelectionObserved || properties.ConditionResult !== "no") {
-    fail(`stopped effective conditions do not prove an unresolved relay: ${unit.unit_name}`);
+  if (!absentSelectionActivationSentinelObserved || properties.ConditionResult !== "no") {
+    fail(`stopped effective conditions do not prove an inactive relay: ${unit.unit_name}`);
   }
 }
 
@@ -3958,7 +3959,51 @@ export function validateStoppedRelayPreparationEvidence({
   const relayIdentity = request.service_identities?.[0];
   const relayConfigPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
   const relayFragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const relayBinaryManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const relayConfigManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
   const relayInstalledTargets = request.installed_files?.map((file) => file.target_path);
+  const resolvedRelay = isResolvedDirectoryRelayRuntimeRequest(request);
+  const blockedRelay =
+    canonicalJson(relayUnit?.exec_start) === canonicalJson(["/usr/bin/false"]) &&
+    canonicalJson(relayUnit?.exec_start_pre) === canonicalJson([]);
+  const relayBinaryPath = resolvedRelay
+    ? relayUnit.exec_start[0].split(" ", 1)[0]
+    : undefined;
+  const expectedInstalledTargets = resolvedRelay
+    ? [
+        relayBinaryManifestPath,
+        relayConfigManifestPath,
+        relayConfigPath,
+        relayFragmentPath,
+        relayBinaryPath,
+      ]
+    : [relayConfigPath, relayFragmentPath];
+  const expectedInstalledMetadata = new Map([
+    [relayConfigPath, { gid: 62952, mode: "0400", uid: 62951 }],
+    [relayFragmentPath, { gid: 0, mode: "0644", uid: 0 }],
+    ...(resolvedRelay
+      ? [
+          [relayBinaryManifestPath, { gid: 0, mode: "0444", uid: 0 }],
+          [relayConfigManifestPath, { gid: 0, mode: "0444", uid: 0 }],
+          [relayBinaryPath, { gid: 0, mode: "0555", uid: 0 }],
+        ]
+      : []),
+  ]);
+  const installedShapeMatches =
+    canonicalJson(relayInstalledTargets) === canonicalJson(expectedInstalledTargets) &&
+    request.installed_files?.every((file) => {
+      const expected = expectedInstalledMetadata.get(file.target_path);
+      return (
+        expected !== undefined &&
+        file.file_type === "regular" &&
+        file.uid === expected.uid &&
+        file.gid === expected.gid &&
+        file.mode === expected.mode &&
+        file.nlink === 1
+      );
+    });
   exactKeys(
     evidence,
     [
@@ -4002,27 +4047,13 @@ export function validateStoppedRelayPreparationEvidence({
     relayIdentity.unit_name !== relayUnit.unit_name ||
     relayIdentity.uid !== 62951 ||
     relayIdentity.gid !== 62952 ||
-    canonicalJson(relayUnit.exec_start) !== canonicalJson(["/usr/bin/false"]) ||
-    relayUnit.exec_start_pre.length !== 0 ||
+    (!blockedRelay && !resolvedRelay) ||
     canonicalJson(relayUnit.conditions) !== canonicalJson([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
     ]) ||
-    canonicalJson(relayInstalledTargets) !== canonicalJson([
-      relayConfigPath,
-      relayFragmentPath,
-    ]) ||
-    request.installed_files[0].file_type !== "regular" ||
-    request.installed_files[0].uid !== relayIdentity.uid ||
-    request.installed_files[0].gid !== relayIdentity.gid ||
-    request.installed_files[0].mode !== "0400" ||
-    request.installed_files[0].nlink !== 1 ||
-    request.installed_files[1].file_type !== "regular" ||
-    request.installed_files[1].uid !== 0 ||
-    request.installed_files[1].gid !== 0 ||
-    request.installed_files[1].mode !== "0644" ||
-    request.installed_files[1].nlink !== 1 ||
+    !installedShapeMatches ||
     canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
       "/usr/bin/systemd-analyze",
       "verify",
@@ -4043,7 +4074,7 @@ export function validateStoppedRelayPreparationEvidence({
     request.secret_files[0].mode !== "0400" ||
     request.tmpfiles_directories.length !== 0
   ) {
-    fail("stopped directory-relay evidence schema, collector, profile, or blocked-unit binding is not reviewed");
+    fail("stopped directory-relay evidence schema, collector, profile, or unit binding is not reviewed");
   }
   for (const [key, expected] of [
     ["LimitCORE", "0"],
@@ -4055,11 +4086,25 @@ export function validateStoppedRelayPreparationEvidence({
     ["StandardOutput", "null"],
     ["ProtectClock", "true"],
     ["ProtectHostname", "true"],
-    ["Restart", "no"],
+    ["Restart", resolvedRelay ? "on-failure" : "no"],
   ]) {
     if (canonicalJson(relayUnit.hardening[key] ?? []) !== canonicalJson([expected])) {
       fail(`stopped directory-relay request hardening drift: ${key}`);
     }
+  }
+  if (
+    resolvedRelay &&
+    (
+      canonicalJson(relayUnit.hardening.RestartSec ?? []) !== canonicalJson(["5"]) ||
+      canonicalJson(relayUnit.hardening.ReadOnlyPaths ?? []) !== canonicalJson([
+        `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(relayBinaryPath)}`,
+      ])
+    )
+  ) {
+    fail("stopped resolved directory-relay request hardening drift");
+  }
+  if (!resolvedRelay && relayUnit.hardening.RestartSec !== undefined) {
+    fail("stopped blocked directory-relay request must not configure RestartSec");
   }
   if (
     typeof evidence.challenge_hex !== "string" ||
@@ -4113,6 +4158,70 @@ export function validateStoppedRelayPreparationEvidence({
   return true;
 }
 
+function validateResolvedDirectoryRelayLiveRequestShape(request) {
+  if (!isResolvedDirectoryRelayRuntimeRequest(request)) {
+    fail("live directory relay request is not the exact resolved profile");
+  }
+  const unit = request.units[0];
+  const identity = request.service_identities?.[0];
+  const binaryPath = unit.exec_start[0].split(" ", 1)[0];
+  const configPath = "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const fragmentPath = "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  const expected = new Map([
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      { gid: 0, mode: "0444", uid: 0 },
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      { gid: 0, mode: "0444", uid: 0 },
+    ],
+    [configPath, { gid: 62952, mode: "0400", uid: 62951 }],
+    [fragmentPath, { gid: 0, mode: "0644", uid: 0 }],
+    [binaryPath, { gid: 0, mode: "0555", uid: 0 }],
+  ]);
+  const files = request.installed_files ?? [];
+  const fileShapeMatches =
+    canonicalJson(files.map((file) => file.target_path)) ===
+      canonicalJson([...expected.keys()]) &&
+    files.every((file) => {
+      const metadata = expected.get(file.target_path);
+      return (
+        metadata !== undefined &&
+        file.file_type === "regular" &&
+        file.gid === metadata.gid &&
+        file.mode === metadata.mode &&
+        file.nlink === 1 &&
+        file.uid === metadata.uid
+      );
+    });
+  if (
+    request.service_identities?.length !== 1 ||
+    identity?.unit_name !== unit.unit_name ||
+    identity.uid !== 62951 ||
+    identity.gid !== 62952 ||
+    !fileShapeMatches ||
+    canonicalJson(request.systemd_analyze_argv) !== canonicalJson([
+      "/usr/bin/systemd-analyze",
+      "verify",
+      fragmentPath,
+    ]) ||
+    request.runtime_paths?.length !== 0 ||
+    request.tmpfiles_directories?.length !== 0 ||
+    request.secret_files?.length !== 1 ||
+    request.secret_files[0].consumer_unit_name !== unit.unit_name ||
+    request.secret_files[0].target_path !== configPath ||
+    request.secret_files[0].uid !== 62951 ||
+    request.secret_files[0].gid !== 62952 ||
+    request.secret_files[0].mode !== "0400" ||
+    canonicalJson(unit.hardening.ReadOnlyPaths ?? []) !== canonicalJson([
+      `/etc/bitcoinpir/payment-v1/directory-relay ${dirname(binaryPath)}`,
+    ])
+  ) {
+    fail("live resolved directory-relay request artifact or identity closure is not reviewed");
+  }
+}
+
 export function validateLiveRuntimeEvidence({
   evidence,
   request,
@@ -4121,8 +4230,14 @@ export function validateLiveRuntimeEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  if (
+    request.deployment_profile === "directory-relay-v1" &&
+    !isResolvedDirectoryRelayRuntimeRequest(request)
+  ) {
+    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
+  }
   if (request.deployment_profile === "directory-relay-v1") {
-    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+    validateResolvedDirectoryRelayLiveRequestShape(request);
   }
   exactKeys(
     evidence,
@@ -4993,8 +5108,14 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   validateDigest(approvedPlanSha256, "approved plan SHA-256");
   validateDigest(expectedMachineIdSha256, "expected machine-id SHA-256");
   const { request } = readPinnedBundle(bundleRoot, approvedManifestSha256, approvedPlanSha256);
+  if (
+    request.deployment_profile === "directory-relay-v1" &&
+    !isResolvedDirectoryRelayRuntimeRequest(request)
+  ) {
+    fail("unresolved directory-relay-v1 cannot produce live runtime evidence");
+  }
   if (request.deployment_profile === "directory-relay-v1") {
-    fail("directory-relay-v1 is stopped-only and cannot produce live runtime evidence");
+    validateResolvedDirectoryRelayLiveRequestShape(request);
   }
   const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);

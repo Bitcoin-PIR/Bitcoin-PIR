@@ -267,9 +267,10 @@ initial host PID namespace, followed by a fresh live proof; a warm-reload
 snapshot is rejected. Linux pipe core handlers
 may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 
-The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
-repository cannot accidentally activate it before this boundary and the final
-source/binary/config pins are reviewed.
+The directory selection is resolved to exact source/binary/config pins and an
+explicit degraded centralized mode. The unit still cannot activate by default:
+it has no `[Install]` section and requires three separately provisioned startup
+sentinels; stopped and fresh-live evidence remain mandatory before routing.
 
 After source merge, an independent read-only audit of merge
 `49dc56bb735a6df6a1665c91f0636188d65a66b5` and exact Payment V1 source parent
@@ -281,11 +282,12 @@ correlation logging or shutdown paths. The source gate/readback suite passed
 CI covered the real two-relay process topology. This is source-review evidence,
 not a resolved binary/config/key selection or target-host activation claim.
 
-This is not a documentation-only placeholder: public directory deployment and
-catalog publication remain blocked until relay selection is resolved in
-reviewed source and its exact source/archive/lockfile/binary/config/publisher-
-key digests are frozen. A production Nostr key existing locally does not
-resolve the relay, authorize installing that key, or authorize publishing it.
+This is not a documentation-only placeholder: exact source/archive/lockfile/
+binary/config/publisher-public-key digests are frozen and reproducibly checked,
+but public directory deployment and catalog publication remain blocked on
+target-host evidence and separate activation/routing/publication approvals. A
+production Nostr private key is never a relay payload and its existence does
+not authorize using or publishing it.
 
 ### Independent rollback domains
 
@@ -329,11 +331,10 @@ on one Hetzner host; arbitrary unmeasured limits are not safe defaults.
 - A dedicated source-fair edge implementation and its privacy review should be
   versioned separately from commercial pricing. Anonymous PoW for quote
   creation is an optional second layer, not a substitute for authority ACLs.
-- The directory relay needs an activatable rendered profile only after the
-  merged source commit, source archive, `Cargo.lock`, binary, config and
-  publisher public-key digests are frozen. Two independently operated relay
-  origins are still required; two DNS aliases on one Hetzner host are not
-  independent.
+- The resolved directory relay profile still needs target-host stopped/live
+  evidence, activation and routing review. Its selected centralized mode is
+  explicitly degraded; two DNS aliases on one Hetzner host must never be
+  presented as independent relay origins.
 - The payout protocol/store/worker code remains useful future work, but no real
   executor or automatic value-transfer product is enabled in V1.
 - ARC needs a separate cryptographic and implementation review before any
@@ -443,6 +444,6 @@ independently verified artifacts. `UNSET` means the phase must not advance.
 | exact-head CI | workflow URLs, conclusion and tested head | `UNSET_FOR_FINAL_DEPLOYMENT_CLOSEOUT_HEAD` |
 | rendered plan | approved plan digest and selected skeleton/profile | `UNSET_BEFORE_RENDER` |
 | installed target evidence | stopped-edge and fresh-live full-file digests | `UNSET_BEFORE_REMOTE_DRILL` |
-| relay selection | resolved source/archive/lockfile/binary/config/key pins | `UNRESOLVED` |
+| relay selection | resolved source/archive/lockfile/binary/config/key pins | `RESOLVED`: exact pins are committed in `deploy/payment-v1/relay-selection.toml.example`; centralized-single-relay is an explicitly accepted degraded-assurance mode, not an independent-relay claim |
 | Lightning network gate | approved default-Signet preflight record, or a future reviewed mainnet profile | `UNSET`; mainnet profile not implemented |
 | Cashu mint | approved production endpoint, pins, unit and custody/recovery record, or explicit offer omission bound to `provider-no-standard-cashu-v1` or `provider-direct-v1` | `UNSET`; omit mint-dependent offers, keep `provider-v1` blocked, and use only an exact separately approved no-Standard-Cashu profile |

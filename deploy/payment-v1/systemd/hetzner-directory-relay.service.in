@@ -1,6 +1,6 @@
-# BitcoinPIR Payment V1 deployment template; relay selection is not resolved.
+# BitcoinPIR Payment V1 deployment template; selection is resolved but activation is separate.
 [Unit]
-Description=BitcoinPIR Hetzner directory-only relay (blocked template)
+Description=BitcoinPIR Hetzner directory-only relay (resolved, sentinel-gated)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
@@ -16,14 +16,13 @@ StateDirectory=bitcoinpir-directory-relay
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/bitcoinpir-directory-relay
 Environment=RUST_LOG=error
-# The reviewed directory-only relay exposes only --config with an absolute,
-# owner-only TOML path. Keeping ExecStart as an unconditional failure prevents
-# use before exact artifact selection. The
-# pinned binary path, binary/config hash checks and sole --config argument must
-# replace this line in the same PR that changes relay-selection.toml from
-# not-resolved to resolved.
-ExecStart=/usr/bin/false
-Restart=no
+# Both one-entry manifests use absolute targets and are immutable root-owned
+# payloads. The owner-only config remains readable by this service account.
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256
+ExecStart=/opt/bitcoinpir/directory-relay/77571e6266ca2908483d7172d0cf5c542c16f818dad09767426439f0358e7eb8/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml
+Restart=on-failure
+RestartSec=5
 TimeoutStopSec=30
 LimitCORE=0
 LimitNOFILE=4096
@@ -54,7 +53,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
-ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay /opt/bitcoinpir/directory-relay/77571e6266ca2908483d7172d0cf5c542c16f818dad09767426439f0358e7eb8
 ReadWritePaths=/var/lib/bitcoinpir-directory-relay
 InaccessiblePaths=/run/bitcoinpir-source-fair-edge
 
