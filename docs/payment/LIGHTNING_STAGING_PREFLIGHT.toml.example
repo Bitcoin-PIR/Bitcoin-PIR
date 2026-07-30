@@ -62,10 +62,11 @@ expected_subversion = "/Satoshi:29.0.0/"
 [bitcoin.rpc_cookie]
 path = "/srv/bitcoin/signet/.cookie"
 protected_parent = "/srv/bitcoin"
-access_policy = "cross-uid-shared-group"
+access_policy = "cross-uid-setgid-shared-group"
 # Cookie/final-network-directory owner (bitcoind UID) and the distinct,
-# CLN/preflight-only cookie group. Cross-UID mode requires 0710 on
-# `/srv/bitcoin/signet` and 0640 with link count one on `.cookie`.
+# CLN/preflight-only cookie group. This versioned cross-UID policy requires
+# setgid mode 2710 on `/srv/bitcoin/signet` and 0640 with link count one on
+# `.cookie`; the old non-setgid 0710 shape fails closed.
 expected_uid = 990
 expected_gid = 994
 

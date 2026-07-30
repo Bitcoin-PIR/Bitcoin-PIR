@@ -241,10 +241,54 @@ pub fn prepare_private_unix_socket_parent_v1(
     expected_group_gid: Option<u32>,
     label: &str,
 ) -> Result<PathBuf, String> {
+    prepare_private_service_parent_v1(
+        path,
+        expected_owner_uid,
+        PrivateServiceParentPolicyV1::UnixSocket { expected_group_gid },
+        label,
+    )
+}
+
+/// Validate the parent of a cross-UID, group-readable private file.
+///
+/// The final parent must be owned by the expected daemon UID and trusted
+/// reader GID with exact mode 2710. The setgid bit is mandatory so a daemon
+/// that deliberately does not hold the reader group still creates the file
+/// with that group. As with the Unix-socket validator, every component is
+/// opened with `O_NOFOLLOW` and writable or untrusted ancestors fail closed.
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+pub fn prepare_private_setgid_group_file_parent_v1(
+    path: &Path,
+    expected_owner_uid: u32,
+    expected_group_gid: u32,
+    label: &str,
+) -> Result<PathBuf, String> {
+    prepare_private_service_parent_v1(
+        path,
+        expected_owner_uid,
+        PrivateServiceParentPolicyV1::SetgidGroupFile { expected_group_gid },
+        label,
+    )
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+#[derive(Clone, Copy)]
+enum PrivateServiceParentPolicyV1 {
+    UnixSocket { expected_group_gid: Option<u32> },
+    SetgidGroupFile { expected_group_gid: u32 },
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn prepare_private_service_parent_v1(
+    path: &Path,
+    expected_owner_uid: u32,
+    policy: PrivateServiceParentPolicyV1,
+    label: &str,
+) -> Result<PathBuf, String> {
     let file_name = path
         .file_name()
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| format!("{label} must name a socket: {}", path.display()))?
+        .ok_or_else(|| format!("{label} must name a protected entry: {}", path.display()))?
         .to_os_string();
     let configured_parent = path
         .parent()
@@ -306,7 +350,7 @@ pub fn prepare_private_unix_socket_parent_v1(
                 &current,
                 &opened_path,
                 expected_owner_uid,
-                expected_group_gid,
+                policy,
                 label,
             )?;
         } else {
@@ -325,6 +369,18 @@ pub fn prepare_private_unix_socket_parent_v1(
 ) -> Result<PathBuf, String> {
     Err(format!(
         "{label} protected Unix-socket operations require Linux or macOS"
+    ))
+}
+
+#[cfg(not(all(unix, any(target_os = "linux", target_os = "macos"))))]
+pub fn prepare_private_setgid_group_file_parent_v1(
+    _path: &Path,
+    _expected_owner_uid: u32,
+    _expected_group_gid: u32,
+    label: &str,
+) -> Result<PathBuf, String> {
+    Err(format!(
+        "{label} protected group-file operations require Linux or macOS"
     ))
 }
 
@@ -360,23 +416,31 @@ fn validate_socket_final_parent_fd_v1(
     directory: &File,
     path: &Path,
     expected_owner_uid: u32,
-    expected_group_gid: Option<u32>,
+    policy: PrivateServiceParentPolicyV1,
     label: &str,
 ) -> Result<(), String> {
     let stat = rustix::fs::fstat(directory)
         .map_err(|error| format!("inspect {label} final parent {}: {error}", path.display()))?;
     let euid = rustix::process::geteuid().as_raw();
     let permissions = (stat.st_mode & 0o7777) as u32;
-    let valid_identity_and_mode = if expected_owner_uid == euid {
-        stat.st_uid == euid && permissions == 0o700
-    } else {
-        expected_group_gid.is_some_and(|gid| {
-            stat.st_uid == expected_owner_uid && stat.st_gid == gid && permissions == 0o710
-        })
+    let valid_identity_and_mode = match policy {
+        PrivateServiceParentPolicyV1::UnixSocket { .. } if expected_owner_uid == euid => {
+            stat.st_uid == euid && permissions == 0o700
+        }
+        PrivateServiceParentPolicyV1::UnixSocket { expected_group_gid } => expected_group_gid
+            .is_some_and(|gid| {
+                stat.st_uid == expected_owner_uid && stat.st_gid == gid && permissions == 0o710
+            }),
+        PrivateServiceParentPolicyV1::SetgidGroupFile { expected_group_gid } => {
+            expected_owner_uid != euid
+                && stat.st_uid == expected_owner_uid
+                && stat.st_gid == expected_group_gid
+                && permissions == 0o2710
+        }
     };
     if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_dir() || !valid_identity_and_mode {
         return Err(format!(
-            "{label} final parent must be same-UID mode 0700 or cross-UID owner/group mode 0710: {}",
+            "{label} final parent does not match its exact owner/group/mode policy: {}",
             path.display()
         ));
     }
@@ -915,6 +979,154 @@ mod tests {
             prepare_private_unix_socket_parent_v1(&path, another_uid, None, "test RPC socket")
                 .is_err()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setgid_group_file_creation_linux_child() {
+        use rustix::process::{Gid, Uid};
+        use std::io::Write as _;
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+        let Ok(path) = std::env::var("BPIR_SETGID_FILE_CHILD_PATH") else {
+            return;
+        };
+        let uid = std::env::var("BPIR_SETGID_FILE_CHILD_UID")
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        let primary_gid = std::env::var("BPIR_SETGID_FILE_CHILD_PRIMARY_GID")
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        let inherited_gid = std::env::var("BPIR_SETGID_FILE_CHILD_INHERITED_GID")
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+
+        rustix::thread::set_thread_groups(&[]).unwrap();
+        rustix::thread::set_thread_gid(Gid::from_raw(primary_gid)).unwrap();
+        rustix::thread::set_thread_uid(Uid::from_raw(uid)).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o640)
+            .open(&path)
+            .unwrap();
+        file.write_all(
+            b"__cookie__:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        .unwrap();
+        file.sync_all().unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let metadata = file.metadata().unwrap();
+        assert_eq!(metadata.uid(), uid);
+        assert_eq!(metadata.gid(), inherited_gid);
+        assert_eq!(metadata.mode() & 0o7777, 0o640);
+        assert_eq!(metadata.nlink(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setgid_group_file_parent_requires_exact_cross_uid_2710_shape() {
+        use rustix::fs::chown;
+        use rustix::process::{Gid, Uid};
+        use std::os::unix::fs::MetadataExt as _;
+        use std::process::Command;
+
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+
+        const OWNER_UID: u32 = 60_101;
+        const READER_GID: u32 = 60_102;
+        let directory = private_tempdir();
+        chown(
+            directory.path(),
+            Some(Uid::from_raw(OWNER_UID)),
+            Some(Gid::from_raw(READER_GID)),
+        )
+        .unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o2710))
+            .unwrap();
+        let path = directory.path().join(".cookie");
+
+        assert_eq!(
+            prepare_private_setgid_group_file_parent_v1(
+                &path,
+                OWNER_UID,
+                READER_GID,
+                "test Core RPC cookie",
+            )
+            .unwrap()
+            .file_name(),
+            path.file_name()
+        );
+
+        const DAEMON_PRIMARY_GID: u32 = 60_103;
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::setgid_group_file_creation_linux_child")
+            .arg("--nocapture")
+            .env("BPIR_SETGID_FILE_CHILD_PATH", &path)
+            .env("BPIR_SETGID_FILE_CHILD_UID", OWNER_UID.to_string())
+            .env(
+                "BPIR_SETGID_FILE_CHILD_PRIMARY_GID",
+                DAEMON_PRIMARY_GID.to_string(),
+            )
+            .env(
+                "BPIR_SETGID_FILE_CHILD_INHERITED_GID",
+                READER_GID.to_string(),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "setgid child failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let inherited = std::fs::metadata(&path).unwrap();
+        assert_eq!(inherited.uid(), OWNER_UID);
+        assert_eq!(inherited.gid(), READER_GID);
+        assert_eq!(inherited.mode() & 0o7777, 0o640);
+        assert_eq!(inherited.nlink(), 1);
+
+        for mode in [0o710, 0o2700, 0o2711, 0o3710] {
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+            assert!(prepare_private_setgid_group_file_parent_v1(
+                &path,
+                OWNER_UID,
+                READER_GID,
+                "test Core RPC cookie",
+            )
+            .is_err());
+        }
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o2710))
+            .unwrap();
+        assert!(prepare_private_setgid_group_file_parent_v1(
+            &path,
+            OWNER_UID + 1,
+            READER_GID,
+            "test Core RPC cookie",
+        )
+        .is_err());
+        assert!(prepare_private_setgid_group_file_parent_v1(
+            &path,
+            OWNER_UID,
+            READER_GID + 1,
+            "test Core RPC cookie",
+        )
+        .is_err());
+        assert!(prepare_private_setgid_group_file_parent_v1(
+            &path,
+            rustix::process::geteuid().as_raw(),
+            READER_GID,
+            "test Core RPC cookie",
+        )
+        .is_err());
     }
 
     #[test]

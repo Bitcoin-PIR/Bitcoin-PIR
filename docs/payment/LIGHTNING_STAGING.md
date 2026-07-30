@@ -121,15 +121,19 @@ The Core RPC cookie has an access policy independent of the CLN socket
 policy. Omitting `bitcoin.rpc_cookie.access_policy` preserves schema V1's
 `same-uid-owner-only` layout: the preflight EUID must equal the bitcoind UID,
 the final cookie directory is exact mode 0700, and the single-link cookie is
-exact mode 0600. `cross-uid-shared-group` requires the separate
+exact mode 0600. `cross-uid-setgid-shared-group` requires the separate
 `bitcoin.rpc_cookie.cross_uid_access` table, a root:root mode-0755 broad
 parent (normally `/srv/bitcoin`), exactly one directly nested
-bitcoind-UID/cookie-GID mode-0710 network directory, and a
+bitcoind-UID/cookie-GID mode-2710 setgid network directory, and a
 bitcoind-UID/cookie-GID mode-0640 cookie with link count one. The preflight
 must run under its separately pinned EUID and have that cookie GID as its
 effective or supplementary group. Configure bitcoind with
 `rpccookieperms=group` and the cookie-only group so it creates the required
-0640 file; the preflight never changes ownership or permissions. Bitcoin
+0640 file. Bitcoind keeps its separate primary group and does not receive the
+cookie group; the setgid directory supplies the cookie's group inheritance.
+The preflight never changes ownership or permissions. The obsolete
+`cross-uid-shared-group` cookie-policy spelling and its mode-0710 directory
+shape are rejected rather than silently reinterpreted. Bitcoin
 Core documents that cookie read access is a powerful RPC trust boundary and
 supports `owner`, `group`, or `all` via
 [`rpccookieperms`](https://github.com/bitcoin/bitcoin/blob/master/src/init.cpp).
@@ -163,6 +167,13 @@ layout. If CLN is already split-UID while Core names a different bitcoind UID,
 the two required preflight EUIDs conflict and static validation fails; the
 operator must add the explicit Core cross-UID table rather than obtaining an
 implicit policy downgrade.
+
+The CLN plugin snapshot is also closed: every `plugin list` item must contain
+exactly `name`, `active` and `dynamic` with the expected JSON types. The
+observed path set must equal the pinned executable allowlist, every plugin must
+be active, and every plugin must report `dynamic=false`. Missing or unknown
+item fields, duplicate or unexpected paths, dynamically managed plugins and
+response-shape drift all fail closed.
 
 The CLN adapter's timeout is one process-local monotonic budget covering
 socket metadata validation, connect, complete request write and complete
@@ -368,7 +379,7 @@ following before emitting one bounded `result=PASS` line:
   EUID, a mode-0700 final directory and a mode-0600 single-link cookie.
   Cross-UID mode requires the exact preflight EUID plus effective or
   supplementary cookie-only GID, root:root 0755 on the broad parent, exactly
-  one bitcoind-UID/cookie-GID 0710 network directory below it, and a
+  one bitcoind-UID/cookie-GID setgid 2710 network directory below it, and a
   bitcoind-UID/cookie-GID 0640 single-link cookie. The cookie path is canonical
   and `O_NOFOLLOW`-opened, its parents and ACL policy are checked, and the same
   descriptor's identity/size plus two matching bounded content reads and the
@@ -380,7 +391,8 @@ following before emitting one bounded `result=PASS` line:
 - Core v29+, exact configured subversion, `chain=signet`, the exact default
   challenge and genesis, `initialblockdownload=false`, and bounded header lag;
 - exact CLN role identity, version, `network=signet`, height lag and an exact
-  active plugin allowlist whose executable hashes are also pinned;
+  active, `dynamic=false` plugin allowlist whose executable hashes are also
+  pinned; the plugin response and each item have closed JSON shapes;
 - a canonical `lightning-rpc` path with no symlinked component, exact runtime
   EUID and (for cross-UID) effective/supplementary shared-group membership.
   Same-UID staging requires an owner/GID-pinned non-writable tree, exact 0700
