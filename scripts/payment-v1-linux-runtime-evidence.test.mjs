@@ -51,6 +51,7 @@ import {
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
+  parseSystemctlExecArgvV1,
   systemdCredentialBusctlArgvV1,
   systemdUnitObjectPathV1,
   readOneLinkRegular,
@@ -563,6 +564,43 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
   );
 });
 
+test("systemctl Exec serialization accepts the real systemd 255 multi-command delimiter", () => {
+  const firstCommand =
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const secondCommand =
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const first =
+    `{ path=/usr/bin/sha256sum ; argv[]=${firstCommand} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  const second =
+    `{ path=/usr/bin/sha256sum ; argv[]=${secondCommand} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+
+  assert.deepEqual(
+    parseSystemctlExecArgvV1(`${first}\n${second}`, "real systemd 255 ExecStartPre"),
+    [firstCommand, secondCommand],
+  );
+  assert.deepEqual(
+    parseSystemctlExecArgvV1(`${first} ; ${second}`, "legacy fixture ExecStartPre"),
+    [firstCommand, secondCommand],
+  );
+  assert.deepEqual(parseSystemctlExecArgvV1("", "empty ExecStartPre"), []);
+
+  for (const malformed of [
+    `${first}\n\n${second}`,
+    `${first} ${second}`,
+    `unreviewed-prefix${first}`,
+    `${first}\r\n${second}`,
+    `${first}\0`,
+    `${first}\n${second}\n`,
+  ]) {
+    assert.throws(
+      () => parseSystemctlExecArgvV1(malformed, "malformed ExecStartPre"),
+      /unreviewed systemctl Exec serialization/,
+    );
+  }
+});
+
 test("systemd credential properties require the five reviewed typed empty arrays", () => {
   for (const [property, type] of [
     ["ImportCredential", "as"],
@@ -1011,7 +1049,7 @@ function fixture() {
     Type: "simple",
     UMask: "0077",
     User: "bitcoinpir-test",
-    WatchdogUSec: "0",
+    WatchdogUSec: "infinity",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -1514,6 +1552,8 @@ function resolvedStoppedRelayFixture() {
     `/usr/bin/sha256sum --check --strict ${binaryManifestPath}`,
     `/usr/bin/sha256sum --check --strict ${configManifestPath}`,
   ];
+  unit.hardening.IPAddressAllow = ["localhost"];
+  unit.hardening.IPAddressDeny = ["any"];
   unit.hardening.Restart = ["on-failure"];
   unit.hardening.RestartSec = ["5"];
   unit.hardening.ReadOnlyPaths = [
@@ -1538,6 +1578,8 @@ function resolvedStoppedRelayFixture() {
   effective.fragment_sha256 = hash("resolved-relay-fragment");
   effective.properties.ExecStart = execValue(unit.exec_start[0]);
   effective.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  effective.properties.IPAddressAllow = "127.0.0.0/8 ::1/128";
+  effective.properties.IPAddressDeny = "::/0 0.0.0.0/0";
   effective.properties.ReadOnlyPaths = unit.hardening.ReadOnlyPaths[0];
   effective.properties.Restart = "on-failure";
   value.evidence.unit_configuration_passes = [
@@ -1702,8 +1744,8 @@ function resolvedLiveRelayFixture() {
     ExecStartPre: unit.exec_start_pre.map(execValue).join(" ; "),
     FragmentPath: fragmentPath,
     Group: "bitcoinpir-directory-relay",
-    IPAddressAllow: "localhost",
-    IPAddressDeny: "any",
+    IPAddressAllow: "127.0.0.0/8 ::1/128",
+    IPAddressDeny: "::/0 0.0.0.0/0",
     InaccessiblePaths: "/run/bitcoinpir-source-fair-edge",
     MemoryMax: "536870912",
     ProtectClock: "yes",
@@ -3087,6 +3129,15 @@ test("stopped directory-relay preparation is closed and can never become live ev
 test("resolved directory-relay has stopped preparation evidence before sentinels exist", () => {
   const value = resolvedStoppedRelayFixture();
   assert.equal(validateStoppedRelay(value), true);
+
+  const unexpandedAddressAlias = resolvedStoppedRelayFixture();
+  for (const pass of unexpandedAddressAlias.evidence.unit_configuration_passes) {
+    pass[0].properties.IPAddressAllow = "localhost";
+  }
+  assert.throws(
+    () => validateStoppedRelay(unexpandedAddressAlias),
+    /effective IPAddressAllow drift/,
+  );
 
   const missingManifest = resolvedStoppedRelayFixture();
   missingManifest.request.installed_files.shift();

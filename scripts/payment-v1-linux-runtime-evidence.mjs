@@ -3045,13 +3045,50 @@ function expectedWords(values) {
   return values.flatMap((value) => value.split(/\s+/u)).sort();
 }
 
-function extractExecArgv(value, label) {
-  if (value === "") return [];
-  const result = [];
-  for (const match of value.matchAll(/(?:^|\s*;\s*)\{[^{}]*?argv\[\]=(.+?)\s*;\s*ignore_errors=/gu)) {
-    result.push(match[1].trim());
+function expectedEffectiveWords(key, values) {
+  const words = expectedWords(values);
+  if (key === "IPAddressAllow" && words.includes("localhost")) {
+    return words
+      .filter((word) => word !== "localhost")
+      .concat(["127.0.0.0/8", "::1/128"])
+      .sort();
   }
-  if (result.length === 0) fail(`${label} has an unreviewed systemctl Exec serialization`);
+  if (key === "IPAddressDeny" && words.includes("any")) {
+    return words
+      .filter((word) => word !== "any")
+      .concat(["0.0.0.0/0", "::/0"])
+      .sort();
+  }
+  return words;
+}
+
+export function parseSystemctlExecArgvV1(value, label = "systemd Exec property") {
+  if (value === "") return [];
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value, "utf8") > 256 * 1024 ||
+    /[\r\0]/u.test(value)
+  ) {
+    fail(`${label} has an unreviewed systemctl Exec serialization`);
+  }
+  const result = [];
+  const recordPattern =
+    /\{[^{}\r\n]*?argv\[\]=([^{}\r\n]+?)\s*;\s*ignore_errors=[^{}\r\n]*\}/gu;
+  let cursor = 0;
+  for (const match of value.matchAll(recordPattern)) {
+    const separator = value.slice(cursor, match.index);
+    if (
+      (cursor === 0 && separator !== "") ||
+      (cursor !== 0 && !/^(?:\n|[ \t]*;[ \t]*)$/u.test(separator))
+    ) {
+      fail(`${label} has an unreviewed systemctl Exec serialization`);
+    }
+    result.push(match[1].trim());
+    cursor = match.index + match[0].length;
+  }
+  if (result.length === 0 || cursor !== value.length) {
+    fail(`${label} has an unreviewed systemctl Exec serialization`);
+  }
   return result;
 }
 
@@ -3124,8 +3161,14 @@ function validateEffectiveUnitStaticProperties(
   ]) {
     if (properties[forbidden] !== "") fail(`effective ${forbidden} is forbidden: ${unit.unit_name}`);
   }
-  const actualStart = extractExecArgv(properties.ExecStart, `${unit.unit_name}.ExecStart`);
-  const actualPre = extractExecArgv(properties.ExecStartPre, `${unit.unit_name}.ExecStartPre`);
+  const actualStart = parseSystemctlExecArgvV1(
+    properties.ExecStart,
+    `${unit.unit_name}.ExecStart`,
+  );
+  const actualPre = parseSystemctlExecArgvV1(
+    properties.ExecStartPre,
+    `${unit.unit_name}.ExecStartPre`,
+  );
   if (canonicalJson(actualStart) !== canonicalJson(unit.exec_start)) fail(`effective ExecStart drift: ${unit.unit_name}`);
   if (canonicalJson(actualPre) !== canonicalJson(unit.exec_start_pre)) fail(`effective ExecStartPre drift: ${unit.unit_name}`);
   if (canonicalJson(splitLiteralWords(properties.Environment)) !== canonicalJson([...unit.environment].sort())) {
@@ -3144,13 +3187,16 @@ function validateEffectiveUnitStaticProperties(
       if (properties[key] !== "") fail(`effective ${key} drift: ${unit.unit_name}`);
       continue;
     }
-    if (canonicalJson(splitLiteralWords(properties[key])) !== canonicalJson(expectedWords(expected))) {
+    if (
+      canonicalJson(splitLiteralWords(properties[key])) !==
+      canonicalJson(expectedEffectiveWords(key, expected))
+    ) {
       fail(`effective ${key} drift: ${unit.unit_name}`);
     }
   }
   const watchdog = unit.hardening.WatchdogSec;
   if (watchdog === undefined) {
-    if (properties.WatchdogUSec !== "0") {
+    if (properties.WatchdogUSec !== "infinity") {
       fail(`effective watchdog is unreviewed: ${unit.unit_name}`);
     }
   } else if (
