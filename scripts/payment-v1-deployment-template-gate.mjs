@@ -34,9 +34,9 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
     "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
-    "2057e23b4f06c3394f1c4505e3d11b8bc44e046a4af7e2bbb0672450578a8e9f",
+    "52007c83b076c14866a6bffea22a2faa9903d2794ede1bfa8af624513b65a80d",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
-    "af1dcd84e83bf0f4676311324f5aa0d5fbf3d20514e5795e0ac104602894c934",
+    "70a74e60514adaf5fb89b1461ffddc20c66a10dd127973d42d2144074011f3fc",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
     "1da053febf373f7166935e0d57abe140e129931accbb856d93889c4fc979b6f4",
   "deploy/payment-v1/lightning/lightningd.conf.in":
@@ -44,7 +44,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/verify-layout.sh.in":
     "84214eeb72316fad5bc2e2bbdc73df1ac8d278b683a48c2f00983d31a4459470",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "f34b8ce2441926e4ab44e360b71ab8a533cc0bef00520ebe368a1ac8c42093ff",
+    "41c099d78c472efc2c6864935ed739afbaed804ad7b4827b5be5c43eea2cf967",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
     "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
@@ -960,7 +960,7 @@ function validateCoreLightningUnit(text) {
     unit,
     "Service",
     "InaccessiblePaths",
-    ["-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins"],
+    ["/srv/lightning/plugins"],
     label,
   );
   exactDirectiveValues(
@@ -1483,6 +1483,7 @@ function validateIssuerClnArgs(text, mode) {
 function validateClnGuardTmpfiles(text, mode) {
   const label = "CLN RPC guard tmpfiles template";
   const expected = [
+    "d /srv/lightning/plugins 0555 root root - -",
     "d /run/bitcoinpir-lightning-operator-approvals 0700 root root - -",
     "d /run/bitcoinpir-cln-rpc-guard 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
     "d /run/bitcoinpir-cln-rpc-guard/issuer 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
@@ -1525,7 +1526,8 @@ function validateActivationPrerequisites(text) {
     "dynamic_datastore_restore_rehearsed",
     "stale_channel_state_rollback_rejected",
     "default_signet_chain_pins_verified",
-    "cln_bundle_executable_closure_verified",
+    "cln_selected_deployment_file_closure_verified",
+    "cln_loader_maps_inode_evidence_verified",
     "exact_plugin_allowlist_verified",
     "strict_rpc_socket_layout_verified",
     "cross_uid_preflight_policy_verified",

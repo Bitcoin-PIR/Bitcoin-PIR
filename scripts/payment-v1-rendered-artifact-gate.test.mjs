@@ -1614,7 +1614,15 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
   const fixture = makeIssuerFixture(t);
   const model = renderFixture(fixture);
   assert.equal(model.request.units.length, 4);
-  assert.equal(model.request.tmpfiles_directories.length, 3);
+  assert.equal(model.request.tmpfiles_directories.length, 4);
+  assert.deepEqual(model.request.tmpfiles_directories.find(
+    (directory) => directory.target_path === "/srv/lightning/plugins",
+  ), {
+    group_name: "root",
+    mode: "0555",
+    target_path: "/srv/lightning/plugins",
+    user_name: "root",
+  });
   assert.deepEqual(model.request.tmpfiles_directories.find(
     (directory) => directory.target_path ===
       "/run/bitcoinpir-lightning-operator-approvals",
@@ -2818,14 +2826,14 @@ test("Core Lightning receives only its content-addressed private libpq root", (t
   );
 });
 
-test("Core Lightning masks both mutable default plugin directories", (t) => {
+test("Core Lightning requires and masks its root-owned base plugin placeholder", (t) => {
   const template = "deploy/payment-v1/systemd/hetzner-core-lightning.service.in";
   const exact =
-    "InaccessiblePaths=-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins";
+    "InaccessiblePaths=/srv/lightning/plugins";
   for (const replacement of [
     "",
-    "InaccessiblePaths=-/srv/lightning/@LIGHTNING_NETWORK@/plugins",
-    "InaccessiblePaths=-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/other",
+    "InaccessiblePaths=-/srv/lightning/plugins",
+    "InaccessiblePaths=/srv/lightning/@LIGHTNING_NETWORK@/plugins",
   ]) {
     const fixture = makeIssuerFixture(t);
     updateTemplate(fixture, template, (text) =>
@@ -2833,8 +2841,27 @@ test("Core Lightning masks both mutable default plugin directories", (t) => {
     );
     assert.throws(
       () => renderFixture(fixture),
-      /mask the exact CLN base and network plugin directories|closed-world forbidden directive/,
+      /fail closed unless it can mask the exact CLN base plugin directory|closed-world forbidden directive/,
     );
+  }
+
+  for (const [mutation, expected] of [
+    [
+      (text) => text.replace("d /srv/lightning/plugins                       0555 root root - -\n", ""),
+      /exactly four directories|closed-world layout/,
+    ],
+    [
+      (text) => text.replace("0555 root root", "0755 bitcoinpir-lightning root"),
+      /closed-world layout|unreviewed runtime directory|mode/,
+    ],
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(
+      fixture,
+      "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
+      mutation,
+    );
+    assert.throws(() => renderFixture(fixture), expected);
   }
 
   const model = renderFixture(makeIssuerFixture(t));
@@ -2842,13 +2869,26 @@ test("Core Lightning masks both mutable default plugin directories", (t) => {
   const unit = manifest.runtime_units.find(
     (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
   );
-  unit.hardening.InaccessiblePaths = ["-/srv/lightning/signet/plugins"];
+  unit.hardening.InaccessiblePaths = ["-/srv/lightning/plugins"];
   assert.throws(
     () => runtimeRequestFromManifest(
       manifest,
       hashBytes(Buffer.from(canonicalJson(manifest))),
     ),
-    /mask the exact CLN base and network plugin directories/,
+    /fail closed unless it can mask the exact CLN base plugin directory/,
+  );
+
+  const missingPlaceholderManifest = structuredClone(model.manifest);
+  missingPlaceholderManifest.tmpfiles_directories =
+    missingPlaceholderManifest.tmpfiles_directories.filter(
+      (directory) => directory.target_path !== "/srv/lightning/plugins",
+    );
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      missingPlaceholderManifest,
+      hashBytes(Buffer.from(canonicalJson(missingPlaceholderManifest))),
+    ),
+    /tmpfiles directories must equal the exact protected host layout/,
   );
 });
 

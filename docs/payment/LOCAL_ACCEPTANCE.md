@@ -450,9 +450,13 @@ rejected with `Permission denied`, after which the two-plugin set was unchanged.
 The temporary CLN and Core processes were then stopped, their three test ports
 were verified absent, and both exact diagnostic staging directories were
 deleted. `bitcoinpir-core-lightning.service` remained inactive. This is target
-runtime evidence for the workaround and private-libpq closure, not production
-Signet identity, custody, liquidity, payment, persistent installation or
-activation evidence.
+probe evidence that the selected private libpq leaf was sufficient for this
+disposable start; it is not maps-plus-inode proof of the loaded object, a
+complete ELF loader closure, or production Signet identity, custody, liquidity,
+payment, persistent installation or activation evidence. The exact libpq still
+uses host libssl, libcrypto, GSSAPI, LDAP and libc dependencies. Production CLN
+activation remains blocked until the runtime-evidence schema binds the selected
+mapping and the host ABI trust is approved.
 
 ### 2026-07-29 CLN bootstrap and bundle-layout gate
 
@@ -486,7 +490,7 @@ requires a pre-existing owner-read-only native 32-byte `hsm_secret`. A
 disposable native 32-byte seed was accepted by the same pinned image's
 `lightning-hsmtool getnodeid` and produced an exact compressed public node ID;
 no seed bytes were printed or retained. This is evidence for the bootstrap RPC
-sequence, activation-sentinel separation and bundled executable closure only.
+sequence, activation-sentinel separation and selected bundled deployment files only.
 It is not evidence for a persistent Signet identity, an isolated identity
 restore, faucet funding, channel recovery, production secrets or a production
 deployment.

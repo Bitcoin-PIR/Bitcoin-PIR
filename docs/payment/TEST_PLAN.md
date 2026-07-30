@@ -1050,16 +1050,21 @@ The default-Signet staging preflight focused suite additionally requires:
   each has one exact basename `disable-plugin` line. Missing/extra members,
   legacy plugin paths, wrong modes, `clear-plugins`, duplicate explicit
   important-plugin registration, or an on-chain invoice fallback opt-in fail;
-  `/srv/lightning/plugins` and the network-local plugin directory must be both
-  absent in the host layout and masked in the service namespace. Live
+  `/srv/lightning/plugins` must exist in the host layout as the exact root:root
+  `0555` tmpfiles/runtime-evidence placeholder and be masked without an
+  ignore-missing prefix; the network-local lookalike must remain absent under
+  the layout verifier and is not claimed as a namespace mask. Live
   `plugin list` must contain exactly the two allowed entries with
   `active=true,dynamic=false`; an attempted `plugin start` of an inert member
   must fail. A
-  separate one-entry manifest requires the sole private loader object
+  separate one-entry manifest requires the sole private deployment leaf
   `libpq.so.5` below a digest-equals-file root. Missing `lightning_hsmd` or
   libpq, an additional loader object, an alternate/combined
   `LD_LIBRARY_PATH`, or any `LD_PRELOAD` fails rendering and offline-manifest
-  verification, while the exact systemd pre-start
+  verification. These checks do not prove the process mapping or the leaf's
+  host-provided libssl, libcrypto, GSSAPI, LDAP and libc ABI dependencies;
+  production activation remains blocked until maps-plus-inode evidence and host
+  ABI approval exist. The exact systemd pre-start
   command runs `lightningd --test-daemons-only --offline` before the datastore
   layout verifier or daemon start. Because that CLN option exits during early
   parsing, integration must additionally exercise a complete no-funds start;

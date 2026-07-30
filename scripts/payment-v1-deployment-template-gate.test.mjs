@@ -741,7 +741,7 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
     [
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
       (text) => text.replace(
-        "InaccessiblePaths=-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins\n",
+        "InaccessiblePaths=/srv/lightning/plugins\n",
         "",
       ),
       /InaccessiblePaths|Service directive keys/,

@@ -237,7 +237,7 @@ const CLN_PLUGIN_NAMES_V26066 = Object.freeze([
   ...CLN_INERT_PLUGIN_NAMES_V26066,
 ].sort(asciiCompare));
 
-// This is the exact selected runtime closure from the independently approved
+// This is the exact selected deployment-file closure from the independently approved
 // official v26.06.6 archive. Disabled built-ins remain present at their
 // compiled path but are installed non-executable; this avoids both the
 // clear-plugins NULL dereference and noisy missing-built-in startup behavior.
@@ -2123,9 +2123,9 @@ function validateProfileUnitPolicy(
     }
     if (
       canonicalize(hardening.InaccessiblePaths ?? []) !==
-      canonicalize(["-/srv/lightning/plugins -/srv/lightning/signet/plugins"])
+      canonicalize(["/srv/lightning/plugins"])
     ) {
-      fail(`${label} must mask the exact CLN base and network plugin directories`);
+      fail(`${label} must fail closed unless it can mask the exact CLN base plugin directory`);
     }
   }
   if (deploymentProfile === "directory-relay-v1") {
@@ -2775,14 +2775,16 @@ function parseTmpfilesDirectories(sourcePath, text) {
     const targetPath = safeTargetPath(fields[1], `rendered ${sourcePath} directory`);
     if (
       !targetPath.startsWith("/run/bitcoinpir-cln-rpc-guard") &&
-      targetPath !== "/run/bitcoinpir-lightning-operator-approvals"
+      targetPath !== "/run/bitcoinpir-lightning-operator-approvals" &&
+      targetPath !== "/srv/lightning/plugins"
     ) {
       fail(`rendered ${sourcePath} has an unreviewed runtime directory`);
     }
     const approvalDirectory = targetPath === "/run/bitcoinpir-lightning-operator-approvals";
+    const clnBasePluginDirectory = targetPath === "/srv/lightning/plugins";
     validateMode(
       fields[2],
-      approvalDirectory ? ["0700"] : ["0710"],
+      approvalDirectory ? ["0700"] : clnBasePluginDirectory ? ["0555"] : ["0710"],
       `rendered ${sourcePath} directory`,
     );
     for (const [field, label] of [[fields[3], "user"], [fields[4], "group"]]) {
@@ -2797,14 +2799,14 @@ function parseTmpfilesDirectories(sourcePath, text) {
       user_name: fields[3],
     });
     if (
-      approvalDirectory &&
+      (approvalDirectory || clnBasePluginDirectory) &&
       (fields[3] !== "root" || fields[4] !== "root")
     ) {
-      fail(`rendered ${sourcePath} approval directory must be root:root mode 0700`);
+      fail(`rendered ${sourcePath} protected directory must retain its exact root ownership`);
     }
   }
   directories.sort((left, right) => asciiCompare(left.target_path, right.target_path));
-  if (directories.length !== 3) fail(`rendered ${sourcePath} must define exactly three directories`);
+  if (directories.length !== 4) fail(`rendered ${sourcePath} must define exactly four directories`);
   return directories;
 }
 
@@ -3516,17 +3518,56 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     safeTargetPath(directory.target_path, `${label}.target_path`);
     const approvalDirectory = directory.target_path ===
       "/run/bitcoinpir-lightning-operator-approvals";
-    validateMode(directory.mode, approvalDirectory ? ["0700"] : ["0710"], label);
+    const clnBasePluginDirectory = directory.target_path === "/srv/lightning/plugins";
+    validateMode(
+      directory.mode,
+      approvalDirectory ? ["0700"] : clnBasePluginDirectory ? ["0555"] : ["0710"],
+      label,
+    );
     for (const key of ["group_name", "user_name"]) {
       if (!/^[a-z_][a-z0-9_-]{0,31}$/u.test(directory[key])) {
         fail(`${label}.${key} is not a literal NSS name`);
       }
     }
     if (
-      approvalDirectory &&
+      (approvalDirectory || clnBasePluginDirectory) &&
       (directory.user_name !== "root" || directory.group_name !== "root")
     ) {
-      fail(`${label} approval directory must be root:root mode 0700`);
+      fail(`${label} protected directory must retain its exact root ownership`);
+    }
+  }
+  if (manifest.deployment_profile === "issuer-lightning-signet-v1") {
+    const expectedTmpfilesDirectories = [
+      {
+        group_name: "bitcoinpir-issuer",
+        mode: "0710",
+        target_path: "/run/bitcoinpir-cln-rpc-guard",
+        user_name: "bitcoinpir-cln-rpc-guard",
+      },
+      {
+        group_name: "bitcoinpir-issuer",
+        mode: "0710",
+        target_path: "/run/bitcoinpir-cln-rpc-guard/issuer",
+        user_name: "bitcoinpir-cln-rpc-guard",
+      },
+      {
+        group_name: "root",
+        mode: "0700",
+        target_path: "/run/bitcoinpir-lightning-operator-approvals",
+        user_name: "root",
+      },
+      {
+        group_name: "root",
+        mode: "0555",
+        target_path: "/srv/lightning/plugins",
+        user_name: "root",
+      },
+    ];
+    if (
+      canonicalJson(manifest.tmpfiles_directories) !==
+      canonicalJson(expectedTmpfilesDirectories)
+    ) {
+      fail("issuer Lightning tmpfiles directories must equal the exact protected host layout");
     }
   }
   const systemdAnalyzeArgv = [

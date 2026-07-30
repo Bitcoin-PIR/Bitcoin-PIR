@@ -5,7 +5,7 @@ identity, channel or funds, and they do not authorize a remote-host change.
 The first persistent identity ceremony, Signet funding, public peer/channel
 work, mainnet use and real-value funds each remain separately approved actions.
 
-## Frozen runtime boundary
+## Frozen deployment-file boundary
 
 `lightningd` is launched with exactly one explicit, absolute `--conf` path.
 Core Lightning treats an explicit config as the complete file configuration,
@@ -15,7 +15,8 @@ arguments contain no RPC password, HSM passphrase, seed, macaroon or other
 secret.
 
 The rendered bundle manifest must enumerate and hash the exact 38-file selected
-CLN runtime. For the pinned v26.06.6 profile the executable closure is `lightningd`,
+CLN deployment-file set. For the pinned v26.06.6 profile the executable members
+are `lightningd`,
 `lightning-cli`, `lightning-hsmtool`, `lightning_channeld`,
 `lightning_closingd`, `lightning_connectd`, `lightning_gossipd`,
 `lightning_gossip_compactd`, `lightning_hsmd`, `lightning_onchaind`,
@@ -29,18 +30,25 @@ v26.06.6 archive links `lightningd` to libpq even when PostgreSQL is not the
 selected datastore, while the target host deliberately has no system libpq.
 The unit therefore sets exactly
 `LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/<libpq-sha256>`; the
-rendered and runtime gates reject an alternate/combined path, `LD_PRELOAD`, a
+rendered and offline-manifest gates reject an alternate/combined path, `LD_PRELOAD`, a
 missing libpq, or any second object in that loader directory. Keeping the
 library in its own digest-equals-file root preserves `CLN_BUNDLE_SHA256` as the
 identity of the independently approved upstream CLN release archive. The
 selected libpq bytes and their distribution provenance remain explicit
 production render inputs and are never installed through the host package
-manager. CLI tools and `lightningd` live below `bin/`; the eight
+manager. This is a selected private deployment leaf, not a complete dynamic
+loader closure: that libpq still resolves `libssl.so.3`, `libcrypto.so.3`,
+`libgssapi_krb5.so.2`, `libldap.so.2`, and `libc.so.6` from the reviewed host
+ABI. The current runtime-evidence schema does not inspect `/proc/<pid>/maps` or
+bind a mapped inode to the selected file. Production activation of CLN is
+therefore blocked until a later evidence schema proves that exact mapping and
+the host ABI trust is approved. CLI tools and `lightningd` live below `bin/`;
+the eight
 mandatory subdaemons retain the upstream `libexec/c-lightning/` layout that
 `lightningd` resolves relative to its own executable. `lightning_dualopend` and
 `lightning_websocketd` are deliberately absent: the closed config enables
 neither experimental dual funding nor a WebSocket listener. Additional loader
-objects are forbidden in this profile. The service performs
+objects are forbidden in the private loader directory. The service performs
 strict bundle/config/layout checks before launch, including upstream
 `lightningd --test-daemons-only` against the exact rendered config. That probe
 executes the mandatory subdaemon version handshake but creates no wallet,
@@ -51,8 +59,11 @@ v26.06.6 has a deterministic NULL dereference in `clear-plugins`, so that
 option and duplicate `important-plugin` registrations are forbidden. The two
 remaining built-ins are natively important; live preflight requires exactly
 those canonical paths with `active=true` and `dynamic=false`. Both
-`/srv/lightning/plugins` (the actual CLN base-directory scan location) and the
-network-local plugin path are absent and masked by the systemd namespace.
+`/srv/lightning/plugins` (the actual CLN base-directory scan location) is a
+required root-owned `0555` tmpfiles/runtime-evidence input and is masked without
+systemd's ignore-missing prefix, so an absent placeholder fails startup. The
+network-local lookalike is not a CLN default scan path; it remains required
+absent by the pre-start layout verifier but is not claimed as a namespace mask.
 Consequently there is no gRPC, REST, Commando, WebSocket proxy, recklessrpc,
 dynamic plugin directory or remote Lightning RPC surface. The
 `funder`/`spenderp` path is also inert, so this receive-only issuer profile
@@ -83,8 +94,9 @@ extended ACL. Every regular CLN datastore/secret file remains CLN-owned,
 single-link and owner-only; the layout verifier rejects any group/world file
 permission.
 
-`cln-rpc-guard-tmpfiles.conf.in` creates guard/issuer mode-`0710` runtime root
-and final directories plus the root:root mode-`0700`
+`cln-rpc-guard-tmpfiles.conf.in` creates the root:root mode-`0555`
+`/srv/lightning/plugins` namespace placeholder, guard/issuer mode-`0710`
+runtime root and final directories, plus the root:root mode-`0700`
 `/run/bitcoinpir-lightning-operator-approvals` parent. It deliberately creates
 no approval token. The guard creates its downstream
 socket as guard-UID/issuer-GID mode `0660`, validates kernel peer credentials,

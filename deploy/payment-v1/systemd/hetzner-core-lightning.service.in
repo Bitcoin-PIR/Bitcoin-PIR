@@ -53,7 +53,9 @@ SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-InaccessiblePaths=-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins
+# The root-owned base plugin placeholder is a required tmpfiles/runtime-evidence
+# input. No '-' prefix is permitted: an absent path must fail namespace setup.
+InaccessiblePaths=/srv/lightning/plugins
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/ /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/
 ReadWritePaths=/srv/lightning/@LIGHTNING_NETWORK@ /run/bitcoinpir-core-lightning
 
