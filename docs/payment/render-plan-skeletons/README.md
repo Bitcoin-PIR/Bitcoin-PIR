@@ -20,6 +20,12 @@ Every skeleton is deliberately unusable:
 The gate must reject an untouched skeleton. Making one syntactically acceptable
 is not approval to install or activate it.
 
+The integrated existing-Caddy overlay plan carries two distinct adapted-JSON
+pins. `target.admin_uds_hardening.adapted_json_sha256` is the exact live
+hardened-preimage digest; `managed_block.candidate_adapted_json_sha256` is the
+exact post-overlay digest. Both use the admin-UDS gate canonicalizer, not the
+newline-terminated overlay plan/receipt encoding.
+
 The three provider skeletons are separate closed profiles, not optional-field
 variants. `provider-v1` retains its complete Standard Cashu inputs unchanged.
 `provider-no-standard-cashu-v1` uses a distinct unit, service identity, state
@@ -89,6 +95,38 @@ Installation, start, publisher-private-key use, routing and publication remain
 separately approved actions. The fixed unit/NSS/config/state paths describe one
 instance, and the selected `centralized-single-relay` mode is explicitly
 degraded; it cannot silently downgrade or masquerade as strict multi-relay.
+
+The separate `bhtm-caddy-admin-uds-v1.plan.json.example` is not a rendered
+service profile and is not part of `payment-v1-rendered-artifact-gate.mjs`.
+It describes one stopped-service maintenance transaction for the exact existing
+root `bhtm-caddy.service`. Its dedicated read-only gate deterministically
+derives a hardened Caddyfile and unit from their exact preimages, canonicalizes
+an externally generated adapted-JSON artifact, rejects configured log sinks,
+and binds its exact digest and size into the candidate. It neither
+renders an install bundle nor executes the cold stop/start. See
+[`../CADDY_ADMIN_UDS_HARDENING.md`](../CADDY_ADMIN_UDS_HARDENING.md).
+The read-only gate does not itself prove that Caddy generated the supplied
+artifact; a future executor must run the plan-pinned Caddy binary against the
+exact candidate and compare the same tuple before mutation.
+Its runtime closure includes the exact admin-UDS gate, Node, probe and `setpriv`
+binaries plus a
+same-boot privileged process/capability inventory. The integrated-existing-Caddy
+overlay skeleton separately pins both this canonical plan and its complete
+committed receipt, the canonical adapted-JSON digest, and the fresh runtime
+probe executables; a receipt summary alone is not sufficient. Its rendered
+bundle also carries the exact admin-UDS gate and probe sources. The executor
+descriptor-pins the gate generation, reads its exact bytes once and supplies
+those bytes with their reviewed SHA-256 on the probe's stdin; the probe verifies
+that digest before a data-URL import, so it never resolves the gate by pathname.
+The root-owned overlay executor statically imports both the admin-UDS gate and
+overlay gate as part of its own exact full-source bootstrap TCB; those imports
+are not claimed to be descriptor-loaded. Install the admin-UDS gate and probe
+before the cold admin-UDS transaction and pin their resulting
+regular-file generations as `runtime.gate` and `runtime.probe` in the hardening
+plan. The later overlay plan must repeat those exact full pins as
+`runtime.admin_uds_gate` and `runtime.admin_probe`; replacing either installed
+artifact after the hardening receipt requires a new cold hardening transaction
+and receipt.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.

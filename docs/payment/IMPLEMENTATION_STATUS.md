@@ -906,17 +906,112 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       therefore requires inactive/dead units, absent socket paths, locked
       non-login service accounts and an empty protected-credential closure
       before HAProxy may start, followed by Caddy and a fresh live proof in the
-      host initial PID namespace. The current pinned Ubuntu 24.04,
+      host initial PID namespace. The earlier pinned Ubuntu 24.04,
       HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete
       deployment/rendered/live/source-fair/Nostr Node gate, including real
       `getent`, per-user `id -G`, full procfs thread scans and the
       descriptor-bound installed-file and secret-directory ABA tests. Record a
       fresh aggregate count from the final branch before activation rather than
-      reusing an older pre-race-test total.
+      reusing an older pre-race-test total. Caddy 2.11.3 is now historical
+      compatibility evidence only, not production evidence: current edge CI
+      resolves and pins Caddy 2.11.4 and its exact amd64 binary. A current-tree
+      pinned Ubuntu 24.04 / HAProxy 2.8.16 / Caddy 2.11.4 targeted run passed
+      all 15 source-fair template and real-process tests with no skip; the
+      larger final aggregate and exact-head CI remain separate merge gates.
       An Alpine procfs regression also passes for legal repeated `Groups:`
       entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those
       deterministic tests.
+- [x] A local, undeployed `bhtm-caddy-admin-uds-v1` maintenance gate now
+      derives the complete candidate Caddyfile and `bhtm-caddy.service` unit
+      only from exact preimages. It moves the global admin listener to
+      `unix//run/bitcoinpir-caddy-admin/admin.sock|0200`, requires root:root
+      `RuntimeDirectory` mode `0700`, `UMask=0077`, `LimitCORE=0`,
+      `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
+      drop-ins or effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
+      substitutions, and an explicit UDS reload address. It pins the exact
+      production Caddy v2.11.4 preimage independently from the resolved Caddy
+      2.11.4 test image, and pins Node v22.22.2 independently from Node 24
+      browser CI. A real Linux container process test proves root `/config/`
+      readback, descriptor-pinned `setpriv` execution with zero effective
+      capabilities/cleared groups, `EACCES` for six simulated non-root service
+      UIDs, absent IPv4/IPv6 TCP 2019, exact directory/socket ownership and mode, and
+      same-process reload over the UDS, plus real import-override and
+      permission-drift regressions. Exact Caddy v2.11.4 regressions also prove
+      that all 21 non-canonical Unicode whitespace code points and quoted
+      `admin` directives can alter the adapted admin listener and are rejected
+      by the closed-profile lexer. Canonical adapted JSON additionally rejects
+      global, access and request-scoped log sinks; the candidate binds its
+      canonical digest and size, and the committed root readback must reproduce
+      that digest. The read-only gate consumes an externally generated adapter
+      artifact, so a future executor must still prove it ran the plan-pinned
+      Caddy binary on the exact candidate. The plan requires a cold
+      stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
+      systemd InvocationID, complete actual
+      service-UID and existing-site inventories, exact old-config+old-unit
+      rollback, and outcome-unknown handling after an ambiguous start. This
+      slice is validation-only: no executor, installation, host mutation or
+      activation is claimed. In addition to static `systemd-analyze verify`, an
+      isolated real-systemd-PID-1 compatibility test now proves two distinct
+      cold generations plus stop-time removal and start-time recreation of the
+      runtime directory/socket. It feeds each real InvocationID into the
+      production validator, binds the zero core/swap and null stream settings,
+      and confirms an intentionally failing request sentinel does not reach
+      journald. The target-host cold ceremony and its
+      independently transferred evidence remain deployment gates.
+- [x] The local, undeployed `integrated-existing-bhtm-caddy-v1` alternative is
+      renderable as a dependency-closed source-fair bundle plus an externally
+      approved overlay transaction plan. It appends only to the exact pinned
+      hardened `bhtm-caddy.service` preimage and requires a canonical,
+      owner-only committed admin-UDS receipt whose Caddy binary, Caddyfile,
+      unit and InvocationID equal that preimage. It uses a content-addressed
+      `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
+      until an atomically published durable receipt, and includes deterministic
+      stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
+      health checks. The executor validates the complete canonical hardening
+      plan/receipt and collects fresh descriptor-sealed UDS mode,
+      zero-capability UID-denial, root readback, TCP-refusal, boot and
+      generation evidence before exchange and after reload/health. Those
+      probes now bind the current effective fragment/drop-ins/environment-name
+      policy, `ExecStart`, UDS `ExecReload`, daemon-reload state,
+      runtime-directory/identity/umask/core/swap/output settings and exact MainPID argv/start
+      ticks; process environment values are never retained. Stable runtime
+      snapshots are repeated immediately before exchange and reload. Recovery
+      validates the original persisted monotonic windows unchanged, so corrupt
+      cross-window evidence fails before mutation instead of being normalized
+      into an acceptable receipt. Adapted JSON is exact-digest pinned to the
+      hardened preimage before exchange and to the overlay candidate after
+      reload and after health checks. Recovery permits either reviewed digest
+      only during ambiguous classification, then re-probes the exact terminal
+      or aborted generation before publishing state, cleanup or return. Phase
+      state and lock ownership use atomic pending-file
+      publication; helper return ambiguity is resolved only by supplemental
+      fsync and stable exact-pair classification; unknown outcomes prohibit
+      rollback, receipt terminalization and cleanup. Mutable transaction
+      directory identities and final receipt ownership metadata are sealed
+      across recovery, and the helper is parent-death bound. Helper protocol v4
+      checks the expected supervisor PID and `/proc/<pid>/stat` start ticks both
+      before and after `PR_SET_PDEATHSIG`, so subreaper adoption cannot authorize
+      a delayed mutation. An installed pair
+      cannot enter automatic rollback until its `exchanged` phase is durable;
+      failed abort publication preserves the candidate recovery witness;
+      cleanup failures remain attached to the primary error; and a durable
+      committed receipt remains attached through terminal-phase finalization
+      failure.
+      Recovery may reclaim a malformed unpublished `owner.json.pending` only
+      when it is the sole exact root-owned owner-only single-link entry; a
+      malformed authoritative owner or any ambiguous shape remains fail closed.
+      The overlay also re-pins the installed admin-UDS gate itself and requires
+      its complete file generation to equal the prerequisite hardening plan.
+      Mock failure-window tests and real Linux open/write/fsync/rename,
+      applied-then-error, SIGKILL/late-helper and repeated-recovery tests pass.
+      The root-only lock/publication suites are routed through the CI root
+      invocation so these cases cannot be silently skipped.
+      This does not perform the cold admin migration and does
+      not isolate the remaining existing root Caddy global/ACME/UID-0 domain, does
+      not replace cold edge evidence, and is not deployable on the currently
+      inspected Hetzner network until a distinct RFC1918/ULA publisher route is
+      separately provisioned and approved.
 - [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
       checkpoint signed by a disposable test key. nos.lol and
       `relay.primal.net` each returned 16 positive matching OKs, then returned

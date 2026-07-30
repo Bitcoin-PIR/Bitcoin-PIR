@@ -704,6 +704,59 @@ test("public issuer edge exposes ledger accrual only", () => {
   });
 });
 
+test("integrated existing-Caddy managed block rejects trust and privacy bypasses", () => {
+  const path =
+    "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
+  for (const [transform, expected] of [
+    [
+      (text) => `{\n\tadmin off\n}\n${text}`,
+      /global options block|four reviewed hostname blocks/,
+    ],
+    [
+      (text) => text.replace("header_up -*", "header_up Authorization {http.request.header.Authorization}"),
+      /header_up -\*|auth/,
+    ],
+    [
+      (text) => text.replace(
+        "reverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock",
+        "reverse_proxy 127.0.0.1:8191",
+      ),
+      /source-fair Unix socket|direct application bypass/,
+    ],
+    [
+      (text) => text.replace("proxy_protocol v2", "proxy_protocol v1"),
+      /proxy_protocol v2/,
+    ],
+    [
+      (text) => text.replace('respond "" 404', 'respond "" 200'),
+      /respond.*404/,
+    ],
+    [
+      (text) => text.replace(
+        "@PROVIDER_WSS_HOST@ {",
+        "@PROVIDER_WSS_HOST@ {\n\tlog",
+      ),
+      /access logging/,
+    ],
+    [
+      (text) => text.replace(
+        "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        "bind @PUBLIC_HTTPS_BIND@",
+      ),
+      /PUBLIC_HTTPS_BIND.*exactly 3|PRIVATE_BIND.*exactly 1/,
+    ],
+    [
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*origin-root path/,
+    ],
+  ]) {
+    withFixture((root) => {
+      mutate(root, path, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
 test("source-fair edge rejects identity leaks, persistence, bypasses, and unbounded lanes", () => {
   const mutations = [
     [

@@ -708,6 +708,169 @@ PID namespace or systemd container. This closes ordinary reacquisition under
 the trusted-root/authentication-policy boundary, not a compromised root or new
 local-privilege exploit.
 
+### Existing-Caddy admin UDS prerequisite (not deployed)
+
+The existing root `bhtm-caddy.service` currently requires a separate cold
+maintenance prerequisite before it is eligible for the integrated overlay.
+`bhtm-caddy-admin-uds-v1` deterministically changes only the global admin
+endpoint to `unix//run/bitcoinpir-caddy-admin/admin.sock|0200` and the reviewed
+unit directives needed for a root-owned `0700` `RuntimeDirectory`, `UMask=0077`,
+`LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null`,
+`StandardError=null`, an explicit UDS `ExecReload`, final
+`UnsetEnvironment=CADDY_ADMIN`, and an exact non-`--environ` `ExecStart`. It
+rejects drop-ins, every `PassEnvironment`,
+environment-file ambiguity, all Caddy imports and environment substitutions,
+quoted `import`/`admin` directive tokens, and all 21 Unicode White_Space
+separators outside the canonical subset. The exact v2.11.4 adapter regression
+demonstrates why those closed-profile lexer exclusions are required.
+All unrelated Caddyfile and unit bytes, existing sites, and ACME storage
+location remain unchanged.
+
+This cannot be performed by appending a Caddy site block or by reloading the
+old process: systemd creates the new runtime directory only for a new cold
+generation. The profile therefore requires exact old/new Caddyfile and unit
+pins, the exact independently inventoried production Caddy `v2.11.4` binary,
+exact admin-UDS gate, Node `v22.22.2`, probe and `setpriv` pins, a same-boot privileged
+process/capability inventory, and complete service-UID/site inventories,
+stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
+and a new `InvocationID`. Committed evidence must include root API readback over
+the UDS, root:root `0700`/`0200` directory/socket metadata, `EACCES` for every
+approved non-root service UID (including `pir` and `cloudflared`), disappearance
+of IPv4 and IPv6 TCP port 2019, zero effective capabilities and cleared
+supplementary groups for each denial probe, and all before/after site probes.
+
+Any unclassified file pair remains stopped. Once a start has been requested,
+an ambiguous systemctl result, generation, UDS readback or receipt publication
+is `outcome-unknown`; automatic rollback is forbidden until explicit recovery
+classifies the active generation. Safe rollback restores the exact old
+Caddyfile **and** exact old unit, fsyncs both parents, daemon-reloads, starts a
+new old-config generation and re-runs old health checks. The checked-in gate is
+read-only and no transaction executor is yet approved. See
+[CADDY_ADMIN_UDS_HARDENING.md](CADDY_ADMIN_UDS_HARDENING.md).
+
+### Alternative existing-Caddy overlay (not deployed)
+
+`integrated-existing-bhtm-caddy-v1` is an explicit alternative to
+`edge-hetzner-v1` for a host whose production edge is the existing root
+`bhtm-caddy.service` and `/etc/caddy/Caddyfile`. It is not a second edge to run
+beside `edge-hetzner-v1`. Its rendered bundle closes over the managed Caddy
+block, source-fair HAProxy config/unit, the admin-UDS gate/probe, overlay
+gate/executor, a
+content-addressed Linux `renameat2(RENAME_EXCHANGE)` helper and the helper's
+one-entry hash manifest. A separate overlay plan pins the exact Caddyfile
+preimage, Caddy binary and unit fragment, active PID/InvocationID/control-group
+generation, rendered block, helper, Node/`setpriv`, admin-UDS gate/probe,
+overlay gate/executor, TLS inputs, HAProxy
+bundle/runtime evidence and all four health probes.
+
+This profile deliberately does **not** claim that appending a block performs
+the admin migration or otherwise hardens the existing root Caddy process. It
+now requires a canonical owner-only committed
+`bhtm-caddy-admin-uds-v1` receipt and requires its target binary, Caddyfile,
+unit and active `InvocationID` to equal that receipt's hardened generation.
+The overlay executor revalidates the complete canonical hardening plan and
+receipt, not a summary subset. Before exchange and again after validation,
+reload and application health, it freshly seals the runtime directory/socket,
+performs descriptor-pinned `setpriv` root and service-UID probes, requires both
+TCP-2019 endpoints refused, and binds the same boot and Caddy generation. It
+also binds the current effective fragment, absence of drop-ins/environment
+files, explicit environment-name policy, `ExecStart`, UDS `ExecReload`,
+`NeedDaemonReload=no`, runtime-directory/identity/umask settings, and exact
+MainPID argv/start ticks with no process `CADDY_ADMIN`. Environment values are
+not retained. Stable snapshots are repeated immediately before each exchange
+or reload, and recovery validates saved monotonic windows without rewriting
+them; corrupt historical evidence fails before any mutation. The executor also
+accepts only the approved canonical adapted-JSON digest and bounded size with the exact
+UDS admin listener, and must produce that artifact itself by running the
+plan-pinned Caddy binary against the exact candidate. Fresh live root readback
+must equal the hardened-preimage adapted digest before exchange and the overlay
+candidate adapted digest after reload and after health checks; pre-exchange
+drift aborts, while post-exchange drift enters the exact rollback transaction.
+Crash recovery initially admits either reviewed live digest only while the
+exchange/reload boundary is ambiguous; before returning a committed,
+rolled-back or aborted outcome it performs a new probe narrowed to that
+outcome's exact candidate or hardened-preimage digest.
+The exact adapted preimage and candidate JSON must contain no configured
+global/access/runtime log sink; null service streams close the implicit
+journald error path. Existing global options, ACME account/certificate state,
+zero-RTT choice, plugins,
+resource limits and every pre-existing site remain in the Payment V1 trust,
+privacy and failure domain. The overlay plan must acknowledge that wider domain
+explicitly. A successful reload receipt proves only the pinned generation,
+exact append, source-fair sockets and application health; it cannot turn warm
+reload evidence into the cold stopped-edge/fresh-start proof required above.
+
+The current inspected Hetzner host has only loopback plus its public interface;
+it has no reviewed RFC1918/ULA publisher bind/client route. The integrated
+profile therefore remains fail-closed and non-deployable there until a separate
+network change supplies either a narrow WireGuard route or an explicitly
+reviewed same-host veth/network-namespace private route. The private bind, sole
+client and public bind must be three distinct addresses; neither public nor
+loopback substitutions are accepted. Network provisioning is outside this
+profile and must precede render-plan approval.
+
+Before execution, create the overlay transaction parent directories as sealed
+root-owned `0700` directories, including `adapted`, `backups`, `receipts` and
+`transactions`; the executor creates only its unique transaction directory.
+Each transaction ID is single-use. The executor builds the candidate from the
+exact preimage and already rendered/pinned managed block, runs Caddy adapt and
+validate, durably writes the exact backup and an append-only phase record, then
+exchanges the candidate and live Caddyfile atomically. It verifies both the
+live candidate and swapped-out preimage before reload. The swapped-out preimage
+stays at the candidate path until a terminal receipt is atomically published
+and durable. Receipt bytes first reach an owner-only, fsynced `.pending` entry;
+the pinned helper then publishes that entry with `RENAME_NOREPLACE` and fsyncs
+the parent directory, so a crash cannot make a truncated final receipt
+authoritative.
+
+Every phase-journal member uses the same fixed per-phase `.pending` protocol:
+exclusive create, complete write, file fsync, `RENAME_NOREPLACE`, then parent
+fsync. Recovery treats a truncated pending inode as non-authoritative, validates
+the complete proposed predecessor chain before publishing a valid pending
+record, and first fsyncs and stably rereads all visible phase names before any
+of them can authorize a recovery mutation. Recovery is idempotent on later
+invocations. Execution likewise does not permit an automatic rollback until
+the installed pair's `exchanged` predecessor is durable. If that phase cannot
+be published, the exact installed pair and candidate are left for explicit
+recovery to classify and journal. Any failure to publish
+`aborted-before-install` also preserves the candidate until recovery can append
+that terminal phase; cleanup errors remain attached to the initiating error.
+The lock owner is also
+published atomically from `owner.json.pending`; a live pending owner blocks
+recovery, while an exact dead process generation can be reclaimed. Mutable
+`adapted`, `backups`, `receipts`, `transactions` and per-transaction directory
+device/inode/owner/mode seals are recorded in the prepared state and must remain
+identical throughout execution and crash recovery. Final receipts are trusted
+only as root-owned, mode-0400, single-link files whose parent fsync has succeeded.
+
+The helper binds itself to the executor lifetime with Linux
+`PR_SET_PDEATHSIG(SIGKILL)`. Helper protocol v4 receives the expected supervisor
+PID plus `/proc/<pid>/stat` start ticks and validates that exact process
+generation both before and after installing the death signal, so subreaper
+adoption cannot authorize a delayed mutation. A live executor waits for the
+direct helper to exit. If the
+helper applies `renameat2` but reports an error, or the executor dies around the
+helper call, the next step fsyncs the exact parent and performs two stable
+target/candidate classifications. An exact installed pair may continue and an
+exact not-installed pair may abort; any fsync failure, directory drift or
+unknown pair is `outcome-unknown`. That state forbids automatic rollback,
+terminal receipt creation and candidate cleanup and requires explicit recovery.
+Likewise, a final receipt that is merely visible after a reported publication
+error is not durable until a supplemental parent fsync and exact reread succeed.
+A durable committed receipt remains attached to any later phase-finalization
+error and therefore continues to prohibit rollback.
+
+On any post-install failure, rollback uses the same exchange helper and verifies
+both restored preimage and swapped-out candidate before the second reload. The
+explicit `recover` command holds a boot-ID/PID/start-time lock and classifies
+only exact target/candidate digest pairs: preimage/candidate before install is
+cleaned without activation; candidate/preimage is exchanged back and reloaded;
+an interrupted rollback is reloaded and finalized; a valid durable committed
+receipt is finalized and never rolled back. Any unknown pair stops without
+overwriting either name. Health uses system WebPKI and hostname validation plus
+the approved leaf-certificate digest; WebSocket probes also verify the Upgrade,
+Connection and computed `Sec-WebSocket-Accept` proof.
+
 1. Freeze exact BitcoinPIR commit, binaries, policies, directory artifacts,
    authority metadata and key-role inventory.
 2. Complete the selected

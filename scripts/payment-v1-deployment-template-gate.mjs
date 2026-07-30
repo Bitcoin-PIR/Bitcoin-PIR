@@ -25,6 +25,8 @@ export const ACTIVE_BASELINES = Object.freeze({
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
+    "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
     "6a52ff0034390ffda572bd785e766653dc749736bd942f497a4b897778113983",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
@@ -62,6 +64,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
@@ -1549,6 +1552,115 @@ function validateCaddyTemplate(text, label, expectedUpstreams, expectedTopLevelH
   }
 }
 
+function validateIntegratedExistingCaddyManagedBlock(text) {
+  const label = "integrated existing bhtm-Caddy managed block";
+  const begin =
+    "# BEGIN BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-v1";
+  const end =
+    "# END BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-v1";
+  if ((text.match(new RegExp(begin, "gu")) ?? []).length !== 1 ||
+      (text.match(new RegExp(end, "gu")) ?? []).length !== 1) {
+    fail(`${label} must contain one exact transaction marker pair`);
+  }
+  if (!text.endsWith("\n")) fail(`${label} must end in canonical LF`);
+  rejectPattern(text, /\r|\0/u, label, "non-canonical text");
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*\{\s*(?:\n|$)/mu,
+    label,
+    "global options block that cannot be safely appended",
+  );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*(?:log|log_append|log_name)(?:\s|$)/mu,
+    label,
+    "application access logging",
+  );
+  rejectPattern(
+    text,
+    /\b(?:import|invoke|forward_auth|php_fastcgi|file_server|redir)\b/mu,
+    label,
+    "unreviewed expansion or handler",
+  );
+  const expectedTopLevelHeaders = [
+    "@PROVIDER_WSS_HOST@ {",
+    "@PAYMENT_ISSUER_HTTPS_HOST@ {",
+    "@DIRECTORY_RELAY_WSS_HOST@ {",
+    "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+  ];
+  const actualTopLevelHeaders = topLevelCaddyBlockHeaders(text, label);
+  if (JSON.stringify(actualTopLevelHeaders) !== JSON.stringify(expectedTopLevelHeaders)) {
+    fail(`${label} must contain exactly its four reviewed hostname blocks`);
+  }
+  for (const [siteAddress, siteLabel] of [
+    ["@DIRECTORY_RELAY_WSS_HOST@", "public directory site"],
+    ["@DIRECTORY_PUBLISHER_HTTPS_HOST@", "publisher directory site"],
+  ]) {
+    const siteActive = activeTemplateLines(
+      caddySiteBlock(text, siteAddress, label),
+      `${label} ${siteLabel}`,
+    );
+    const pathLines = siteActive.filter((line) => line.startsWith("path "));
+    if (JSON.stringify(pathLines) !== JSON.stringify(["path /"])) {
+      fail(`${label} ${siteLabel} must admit only the exact origin-root path`);
+    }
+    const uriExpressions = siteActive.filter((line) =>
+      line.includes("{http.request.uri}"));
+    if (
+      JSON.stringify(uriExpressions) !==
+      JSON.stringify(['expression {http.request.uri} == "/"'])
+    ) {
+      fail(`${label} ${siteLabel} must bind the exact origin-root request URI`);
+    }
+  }
+  const expectedUpstreams = [
+    "unix//run/bitcoinpir-source-fair-edge/provider.sock",
+    ...Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
+    "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
+    "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+  ].sort();
+  const active = activeTemplateLines(text, label);
+  const upstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} contains a malformed reverse_proxy directive`);
+      return match[1];
+    })
+    .sort();
+  if (JSON.stringify(upstreams) !== JSON.stringify(expectedUpstreams)) {
+    fail(`${label} must use only the exact source-fair Unix socket multiset`);
+  }
+  for (const [line, count] of [
+    ["header_up -*", 7],
+    ["proxy_protocol v2", 7],
+    ["respond \"\" 404", 4],
+    ["bind @PUBLIC_HTTPS_BIND@", 3],
+    ["bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@", 1],
+    ["remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@", 1],
+    [
+      "tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+      1,
+    ],
+  ]) {
+    if (active.filter((entry) => entry === line).length !== count) {
+      fail(`${label} must contain ${JSON.stringify(line)} exactly ${count} time(s)`);
+    }
+  }
+  rejectPattern(
+    text,
+    /header_up\s+(?:Authorization|Cookie|Forwarded|Proxy-Authorization|Traceparent|Tracestate|Baggage|X-Forwarded(?:-[A-Za-z0-9-]+)?|X-Real-IP|X-Request-ID)\b/iu,
+    label,
+    "identity, auth, cookie or trace forwarding",
+  );
+  rejectPattern(
+    text,
+    /reverse_proxy\s+(?:https?:\/\/|127\.0\.0\.1|localhost|\[?::1\]?)/iu,
+    label,
+    "direct application bypass",
+  );
+}
+
 function caddySiteBlock(text, siteAddress, label) {
   const lines = text.split("\n");
   const header = `${siteAddress} {`;
@@ -2354,6 +2466,12 @@ export function validateDeploymentTree(rootInput) {
     "Hetzner public Caddy template",
     "production payout route",
   );
+
+  const integratedExistingCaddyBlock = readRequired(
+    root,
+    "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+  );
+  validateIntegratedExistingCaddyManagedBlock(integratedExistingCaddyBlock.text);
 
   const authorityEdge = readRequired(
     root,
