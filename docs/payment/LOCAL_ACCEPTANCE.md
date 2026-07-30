@@ -1415,13 +1415,15 @@ BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1 cargo test --locked --offline \
   lightning_staging::tests::protected_config_real_linux_uid_gid_and_mode_contract \
   -- --exact --nocapture
 cargo clippy --locked --offline -p bpir-admin --all-targets --no-deps -- -D warnings
-node --test scripts/payment-v1-deployment-template-gate.test.mjs \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs \
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
   scripts/payment-v1-linux-runtime-evidence.test.mjs
 ```
 
-Results were 140/140 Rust tests, the separately forced real-root contract 1/1,
-and 190 Node tests with 168 passed, 22 platform-specific skips and zero
+Results were 141/141 Rust tests, the separately forced real-root contract 1/1,
+and 212 Node cases with 190 passed, 22 platform-specific skips and zero
 failures. Package-scoped formatting and warnings-denied Clippy were clean. The
 source gate passed directly, and Actionlint passed for this workflow after
 excluding its three pre-existing informational `SC2016` findings outside the
@@ -1433,10 +1435,11 @@ final-snapshot drift. Rust additionally covers commit-time backup-age
 revalidation, exact watchdog environment parsing and Linux abstract notify
 sockets.
 
-The new required relationship and service-property fields intentionally bump
-the live request, collector identity and evidence kind from v4 to v5. Existing
-v4 render requests or evidence must not be translated or reused; render a new
-v5 request and collect fresh target-host evidence after `daemon-reload`.
+The accumulated required relationship, service-property and watchdog fields
+intentionally bump the live request, collector identity and evidence kind from
+v4 to v6. Existing v4 or v5 render requests and evidence must not be translated
+or reused; render a new v6 request and collect fresh target-host evidence after
+`daemon-reload`.
 
 This establishes source and deterministic compatibility evidence only. It does
 not prove target-systemd formatting, a live CLN InvocationID mapping, watchdog

@@ -531,9 +531,13 @@ jobs:
           node --test --test-concurrency=1 \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
             scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
-            scripts/payment-v1-rendered-artifact-gate.test.mjs \
-            scripts/payment-v1-linux-runtime-evidence.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs
+          # These suites exercise competing global /tmp and systemd-shaped
+          # paths. Keep them in independent serial Node invocations.
+          node --test --test-concurrency=1 \
+            scripts/payment-v1-rendered-artifact-gate.test.mjs
+          node --test --test-concurrency=1 \
+            scripts/payment-v1-linux-runtime-evidence.test.mjs
           node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
           systemd-analyze verify scripts/fixtures/payment-v1-caddy-admin-uds-hardened.service
           sudo "$(command -v node)" --test \

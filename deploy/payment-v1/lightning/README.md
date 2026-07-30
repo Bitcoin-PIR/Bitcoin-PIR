@@ -60,7 +60,9 @@ single-link and owner-only; the layout verifier rejects any group/world file
 permission.
 
 `cln-rpc-guard-tmpfiles.conf.in` creates guard/issuer mode-`0710` runtime root
-and final directories. The guard creates its downstream
+and final directories plus the root:root mode-`0700`
+`/run/bitcoinpir-lightning-operator-approvals` parent. It deliberately creates
+no approval token. The guard creates its downstream
 socket as guard-UID/issuer-GID mode `0660`, validates kernel peer credentials,
 and fails on a stale or replaced path. The issuer has no guard-native group,
 cannot traverse `/srv/lightning`, and cannot bypass the method guard. The
@@ -175,13 +177,38 @@ the guard/preflight/issuer units, are operator gates, not cryptographic proof.
 The issuer additionally requires both the live preflight lease supervisor and
 RPC guard. The supervisor is `Type=notify`, reads the root-owned systemd
 InvocationID mapping before and after every full check, renews a private
-120-second `/run/bitcoinpir-lightning-preflight/lease.toml` every 30 seconds,
-and uses `WatchdogSec=90` with `Restart=no`; it feeds the watchdog only after a
-completed renewal, so a hang is killed before the 120-second lease expires. The guard and issuer both bind to
+180-second `/run/bitcoinpir-lightning-preflight/lease.toml` after the initial
+pass and after each 20-second sleep, and places the complete renewal under a
+cooperative 55-second async deadline. Blocking filesystem calls are bounded by
+exact `TimeoutStartSec=120` before the first `READY`, then by the systemd
+watchdog. It verifies the
+exact pinned `/usr/bin/busctl` and typed system-manager
+`ServiceWatchdogs=true` before every round, including the first `READY=1`.
+With `WatchdogSec=90` and `Restart=no`, it feeds the watchdog only after a
+completed renewal, so a hang is killed before the 180-second lease expires. The guard and issuer both bind to
 that process; the guard also requires it and cannot start before its initial
 `READY=1`. CLN generation change, renewal failure or watchdog expiry therefore
 stops both downstream services. The volatile lease file alone never authorizes
 either service.
+
+Every explicit preflight/guard generation requires fresh root-owned regular
+mode-`0600` tokens at the exact paths below. Provision both only after reviewing
+the intended generation; systemd records each positive condition result and
+the first privileged pre-start command atomically removes its corresponding
+token. There is intentionally no issuer token.
+
+```sh
+install -o root -g root -m 0600 /dev/null \
+  /run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
+install -o root -g root -m 0600 /dev/null \
+  /run/bitcoinpir-lightning-operator-approvals/guard-generation-approved
+```
+
+Do not recreate either token as part of boot, daemon reload, ordinary restart,
+or automated recovery. Runtime evidence requires the root-only parent metadata,
+the manager-recorded successful token conditions, absent consumed paths, and
+typed `ExecStartPreEx` proof that only these two exact `unlink` commands used
+the `privileged` execution flag.
 
 Start from `docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example` and render
 the exact Hetzner paths/hashes/UIDs into
@@ -192,6 +219,8 @@ write policy. The preflight process must have exactly its primary config group
 and the two declared cookie/RPC supplementary groups, with no extras. Its
 checksum manifest, plus the `bpir-admin`, layout verifier, CLN bundle and
 `lightningd.conf` manifests, are static root-owned deployment inputs. The
+config also pins exact `/usr/bin/busctl` owner/path/hash metadata; its digest is
+bound to the render plan's `BUSCTL_SHA256`. The
 backup receipt is different: the ceremony writes it as preflight-owned mode
 `0600` dynamic state below the unit's mode-`0700`
 `/var/lib/bitcoinpir-lightning-preflight` `StateDirectory`. The V1 admin binary

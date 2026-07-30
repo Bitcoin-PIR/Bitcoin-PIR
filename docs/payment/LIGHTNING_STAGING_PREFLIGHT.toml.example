@@ -31,6 +31,18 @@ max_block_height_lag = 2
 # 250,000 msat leaves margin above the documented 100-sat maximum test invoice.
 minimum_route_liquidity_msat = 250000
 
+[systemd]
+
+[systemd.busctl]
+# This pin is part of the host-specific render plan. The value below is the
+# reviewed current Hetzner `/usr/bin/busctl`; remeasure it on every host image
+# change and bind the replacement through BUSCTL_SHA256 before rendering.
+path = "/usr/bin/busctl"
+protected_parent = "/usr/bin"
+sha256_hex = "5cca481831f317814f050f97e86467079140f61e9007a32385be724d1a481f14"
+expected_uid = 0
+expected_gid = 0
+
 [bitcoin]
 # Inline RPC usernames/passwords are rejected. Use Core's owner-controlled
 # cookie through an explicit absolute datadir/conf/cookie path.

@@ -986,18 +986,29 @@ The default-Signet staging preflight focused suite additionally requires:
   generation-bound, and a changed link or target before, during or after a
   renewal fails without logging either ID;
 - the supervisor writes only a schema-v1 mode-`0600` lease below its private
-  mode-`0700` RuntimeDirectory, renews every 30 seconds with an exact 180-second
-  validity, sends `READY=1` only after the first complete pass and lease commit,
-  and requires the exact 90-second systemd watchdog environment, fed only after
-  a successful renewal. With the 30-second downstream stop bounds, watchdog
+  mode-`0700` RuntimeDirectory, renews after each 20-second sleep with an exact
+  180-second
+  validity, puts the complete renewal and durable lease commit under one
+  cooperative 55-second async deadline, sends `READY=1` only after the first
+  complete pass and
+  lease commit, and requires the exact 90-second systemd watchdog environment,
+  fed only after a successful renewal. Every round must verify the pinned
+  root-owned `/usr/bin/busctl` and typed manager `ServiceWatchdogs=true` before
+  any watchdog feed. With the 30-second downstream stop bounds, watchdog
   failure must still leave at least 60 seconds before lease expiry. Source,
   rendered-artifact and live-runtime tests must reject `oneshot`, automatic
   restart, missing watchdog/notify policy, a writable systemd mapping, broader
-  lease write paths, or guard/issuer dependency bypass. Live evidence must use
-  typed D-Bus arrays to prove the manager actually loaded every rendered
+  lease write paths, or guard/issuer dependency bypass. Preflight and guard
+  must each require and consume one exact root-only approval token; real PID 1
+  testing must prove a direct CLN restart stops all consumers and neither an
+  absent nor half-provisioned token set can reactivate the issuer. Live
+  evidence must use typed D-Bus arrays to prove the manager actually loaded every rendered
   `After`/`Before`/`BindsTo`/`Requires` edge, use typed `TimeoutStopUSec` to
-  prove the stop bound, and reject dependency or timeout changes between the
-  initial and final sealing passes;
+  prove the stop bound, require two typed manager `ServiceWatchdogs=true`
+  passes, and bind each typed `ExecStartPreEx`, `WatchdogUSec`, and
+  `WatchdogTimestampMonotonic` pass to its immediately following boot uptime.
+  It must reject stale/future/rolled-back watchdog timestamps and dependency or
+  timeout changes between the initial and final sealing passes;
 - the bootstrap phase uses exactly the documented eight read-only Core/CLN
   RPC calls, verifies the same chain/runtime/plugin trust boundary as full
   preflight, accepts all three exact role identities only with zero peer

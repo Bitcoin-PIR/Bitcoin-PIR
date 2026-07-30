@@ -40,6 +40,8 @@ import {
   collectVisibleNssEvidenceV2,
   parseGroupEnumerationV2,
   parseBusctlConditionsJsonV1,
+  parseBusctlBooleanJsonV1,
+  parseBusctlExecStartPreExJsonV1,
   parseBusctlUnitNamesJsonV1,
   parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
@@ -55,6 +57,7 @@ import {
   validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  RUNTIME_BUSCTL_MANAGER_PROPERTIES,
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
@@ -77,6 +80,7 @@ const COMMANDS = [
   "/usr/bin/systemctl",
   "/usr/bin/systemd-analyze",
   "/usr/bin/test",
+  "/usr/bin/unlink",
   "/usr/bin/uname",
   "/usr/sbin/getcap",
 ];
@@ -215,7 +219,7 @@ test("systemd Conditions use the reviewed busctl object path and strict a(sbbsi)
   );
 });
 
-test("systemd dependencies and stop timeout use strict typed busctl values", () => {
+test("systemd dependencies, commands, booleans and timeouts use strict typed busctl values", () => {
   assert.deepEqual(
     parseBusctlUnitNamesJsonV1(JSON.stringify({
       data: ["network-online.target", "basic.target", "dev-disk-by\\x2duuid.device"],
@@ -230,6 +234,68 @@ test("systemd dependencies and stop timeout use strict typed busctl values", () 
     ),
     30_000_000,
   );
+  assert.deepEqual(
+    parseBusctlBooleanJsonV1(JSON.stringify({ data: true, type: "b" })),
+    { signature: "b", value: true },
+  );
+  const execTuple = [
+    "/usr/bin/unlink",
+    ["/usr/bin/unlink", "--", "/run/approval"],
+    ["privileged"],
+    1, 2, 3, 4, 1, 0, 0,
+  ];
+  assert.deepEqual(
+    parseBusctlExecStartPreExJsonV1(JSON.stringify({
+      data: [execTuple],
+      type: "a(sasasttttuii)",
+    })),
+    [{
+      argv: ["/usr/bin/unlink", "--", "/run/approval"],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    }],
+  );
+  // Exact tuple shape observed from systemd 255.4 for ssh.service on the
+  // target Ubuntu 24.04 host. This guards against growing a synthetic fixture
+  // that no longer matches the real D-Bus signature.
+  assert.deepEqual(
+    parseBusctlExecStartPreExJsonV1(
+      '{"type":"a(sasasttttuii)","data":[["/usr/sbin/sshd",["/usr/sbin/sshd","-t"],[],0,0,0,0,0,0,0]]}',
+    ),
+    [{
+      argv: ["/usr/sbin/sshd", "-t"],
+      flags: [],
+      path: "/usr/sbin/sshd",
+    }],
+  );
+  assert.throws(
+    () => parseBusctlExecStartPreExJsonV1(JSON.stringify({
+      data: [[...execTuple, 0]],
+      type: "a(sasasttttuii)",
+    })),
+    /reviewed exec-command tuple/,
+  );
+  for (const [label, value] of [
+    ["wrong boolean type", { data: true, type: "u" }],
+    ["nonboolean", { data: 1, type: "b" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlBooleanJsonV1(JSON.stringify(value), label),
+      /reviewed b value/,
+      label,
+    );
+  }
+  for (const [label, value] of [
+    ["wrong exec signature", { data: [execTuple], type: "a(sas)" }],
+    ["foreign exec flag", { data: [[...execTuple.slice(0, 2), ["ambient"], ...execTuple.slice(3)]], type: "a(sasasttttuii)" }],
+    ["path argv mismatch", { data: [["/usr/bin/test", ...execTuple.slice(1)]], type: "a(sasasttttuii)" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlExecStartPreExJsonV1(JSON.stringify(value), label),
+      /reviewed|shape/,
+      label,
+    );
+  }
 
   for (const [label, value] of [
     ["wrong unit-array type", { data: [], type: "a(s)" }],
@@ -263,7 +329,12 @@ test("systemd dependencies and stop timeout use strict typed busctl values", () 
     BindsTo: [],
     Requires: [],
   };
-  const service = { TimeoutStopUSec: 30_000_000 };
+  const service = {
+    ExecStartPreEx: [],
+    TimeoutStopUSec: 30_000_000,
+    WatchdogTimestampMonotonic: 0,
+    WatchdogUSec: 0,
+  };
   assert.equal(
     assertEffectiveSystemdPolicySnapshotUnchangedV1(
       dependencies,
@@ -413,6 +484,11 @@ function fixture() {
     environment_files: [],
     exec_start: [`${binaryPath} serve --config /etc/bitcoinpir/payment-v1/test/config.toml`],
     exec_start_pre: ["/usr/bin/test -x /opt/bitcoinpir/test/check"],
+    exec_start_pre_ex: [{
+      argv: ["/usr/bin/test", "-x", "/opt/bitcoinpir/test/check"],
+      flags: [],
+      path: "/usr/bin/test",
+    }],
     fragment_path: fragmentPath,
     hardening: {
       AmbientCapabilities: [""],
@@ -476,7 +552,8 @@ function fixture() {
       uid: 730,
     }],
     busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
-    schema_version: 5,
+    busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
+    schema_version: 6,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -720,7 +797,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 5,
+    schema_version: 6,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -729,6 +806,9 @@ function fixture() {
       stderr: "",
       stdout: "",
     },
+    systemd_manager_passes: [0, 1].map(() => ({
+      ServiceWatchdogs: { signature: "b", value: true },
+    })),
     trusted_commands: COMMANDS.map((path, index) => ({
       gid: 0,
       mode: "0755",
@@ -754,7 +834,15 @@ function fixture() {
       ],
       process_identity: processIdentity,
       properties,
-      service_properties: { TimeoutStopUSec: 30_000_000 },
+      service_property_passes: [0, 1].map((index) => ({
+        observed_uptime_milliseconds: 5000 + (index * 10),
+        properties: {
+          ExecStartPreEx: clone(unit.exec_start_pre_ex),
+          TimeoutStopUSec: 30_000_000,
+          WatchdogTimestampMonotonic: 0,
+          WatchdogUSec: 0,
+        },
+      })),
       unit_dependencies: {
         After: ["basic.target", "network-online.target"],
         Before: ["shutdown.target"],
@@ -1078,12 +1166,21 @@ function localFilesPolicySnapshot(nss) {
 function preflightLeaseFixture() {
   const value = fixture();
   const fragmentPath = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
+  const approvalPath =
+    "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved";
   const unit = value.request.units[0];
   unit.fragment_path = fragmentPath;
   unit.unit_name = "bitcoinpir-lightning-preflight.service";
   unit.hardening.Type = ["notify"];
   unit.hardening.NotifyAccess = ["main"];
   unit.hardening.WatchdogSec = ["90"];
+  unit.conditions.push(`ConditionPathExists=${approvalPath}`);
+  unit.exec_start_pre.unshift(`/usr/bin/unlink -- ${approvalPath}`);
+  unit.exec_start_pre_ex.unshift({
+    argv: ["/usr/bin/unlink", "--", approvalPath],
+    flags: ["privileged"],
+    path: "/usr/bin/unlink",
+  });
   unit.unit_dependencies = {
     After: ["bitcoinpir-core-lightning.service"],
     Before: [
@@ -1105,6 +1202,36 @@ function preflightLeaseFixture() {
   actual.properties.Type = "notify";
   actual.properties.NotifyAccess = "main";
   actual.properties.WatchdogUSec = "1min 30s";
+  actual.properties.ExecStartPre = unit.exec_start_pre.map(execValue).join(" ; ");
+  actual.conditions.push({
+    negate: false,
+    parameter: approvalPath,
+    path_exists: false,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  });
+  actual.conditions.sort((left, right) => left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0);
+  actual.service_property_passes = [
+    {
+      observed_uptime_milliseconds: 5000,
+      properties: {
+        ExecStartPreEx: clone(unit.exec_start_pre_ex),
+        TimeoutStopUSec: 30_000_000,
+        WatchdogTimestampMonotonic: 4_500_000,
+        WatchdogUSec: 90_000_000,
+      },
+    },
+    {
+      observed_uptime_milliseconds: 5010,
+      properties: {
+        ExecStartPreEx: clone(unit.exec_start_pre_ex),
+        TimeoutStopUSec: 30_000_000,
+        WatchdogTimestampMonotonic: 4_900_000,
+        WatchdogUSec: 90_000_000,
+      },
+    },
+  ];
   actual.unit_dependencies = {
     After: ["basic.target", "bitcoinpir-core-lightning.service"],
     Before: [
@@ -1219,7 +1346,7 @@ function secretIsolationFixture() {
       uid_before: [733, 733, 733, 733],
     },
     properties: peerProperties,
-    service_properties: clone(value.evidence.units[0].service_properties),
+    service_property_passes: clone(value.evidence.units[0].service_property_passes),
     unit_dependencies: clone(value.evidence.units[0].unit_dependencies),
     unit_name: peerUnit.unit_name,
   });
@@ -2390,6 +2517,14 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   foreignBusctlServiceSchema.request.busctl_service_properties = ["TimeoutStopUSec", "RestartUSec"];
   assert.throws(() => validate(foreignBusctlServiceSchema), /busctl service property schema/);
 
+  const missingBusctlManagerSchema = fixture();
+  delete missingBusctlManagerSchema.request.busctl_manager_properties;
+  assert.throws(() => validate(missingBusctlManagerSchema), /busctl manager property schema/);
+
+  const foreignBusctlManagerSchema = fixture();
+  foreignBusctlManagerSchema.request.busctl_manager_properties = ["RuntimeWatchdogUSec"];
+  assert.throws(() => validate(foreignBusctlManagerSchema), /busctl manager property schema/);
+
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
   assert.throws(() => validate(remoteBackend), /local-files-only profile/);
@@ -2417,8 +2552,17 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = []; }, /effective BindsTo dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.Requires = []; }, /effective Requires dependency drift/],
     [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = ["bitcoinpir-core-lightning-lookalike.service"]; }, /effective BindsTo dependency drift/],
-    [(value) => { value.evidence.units[0].service_properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
-    [(value) => { value.evidence.units[0].service_properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift|service policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.ExecStartPreEx[0].flags = []; }, /ExecStartPreEx drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogUSec = 0; }, /typed watchdog interval drift/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 0; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].properties.WatchdogTimestampMonotonic = 5_000_001; }, /timestamp is not fresh/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].properties.WatchdogTimestampMonotonic = 4_499_999; }, /policy changed/],
+    [(value) => { value.evidence.units[0].service_property_passes[0].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
+    [(value) => { value.evidence.units[0].service_property_passes[1].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
+    [(value) => { value.evidence.systemd_manager_passes[0].ServiceWatchdogs.value = false; }, /typed b true/],
+    [(value) => { value.evidence.systemd_manager_passes[1].ServiceWatchdogs.signature = "u"; }, /typed b true/],
     [(value) => { value.evidence.units[0].properties.SubState = "exited"; }, /no active MainPID/],
     [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
     [(value) => { value.evidence.units[0].properties.ActiveEnterTimestampMonotonic = "6000000"; }, /not bound to this boot/],
@@ -2428,6 +2572,34 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
     mutate(value);
     assert.throws(() => validate(value), expected);
   }
+
+  const equalTimestamp = preflightLeaseFixture();
+  equalTimestamp.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = equalTimestamp.evidence.units[0]
+      .service_property_passes[0].properties.WatchdogTimestampMonotonic;
+  assert.equal(validate(equalTimestamp), true);
+
+  const refreshedAfterHostStart = preflightLeaseFixture();
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
+    .observed_uptime_milliseconds = 5006;
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogTimestampMonotonic = 5_005_000;
+  refreshedAfterHostStart.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = 5_009_000;
+  assert.equal(validate(refreshedAfterHostStart), true);
+
+  const staleAfterFalseToTrue = preflightLeaseFixture();
+  staleAfterFalseToTrue.evidence.host.uptime_started_milliseconds = 100_000;
+  staleAfterFalseToTrue.evidence.host.uptime_finished_milliseconds = 100_010;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
+    .observed_uptime_milliseconds = 100_000;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
+    .observed_uptime_milliseconds = 100_010;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogTimestampMonotonic = 10_000_000;
+  staleAfterFalseToTrue.evidence.units[0].service_property_passes[1]
+    .properties.WatchdogTimestampMonotonic = 10_000_000;
+  assert.throws(() => validate(staleAfterFalseToTrue), /timestamp is not fresh/);
 });
 
 test("secret evidence binds parent metadata and positive owner/negative cross-role access probes", () => {

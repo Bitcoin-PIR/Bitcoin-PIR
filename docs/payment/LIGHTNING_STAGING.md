@@ -295,8 +295,15 @@ lease at `/run/bitcoinpir-lightning-preflight/lease.toml`. The lease names only
 the CLN invocation ID and its check/expiry timestamps; it contains no invoice,
 payment hash, node ID, channel state, balance, capability or query data.
 
-The supervisor renews every 30 seconds and every lease is valid for exactly 180
-seconds. Each renewal reopens and revalidates the protected static config,
+The supervisor renews after a 20-second sleep and every lease is valid for
+exactly 180 seconds. A cooperative 55-second aggregate async deadline covers
+each whole renewal, so the 20-second sleep plus the maximum asynchronous round
+leaves 15 seconds before the 90-second watchdog. Blocking filesystem calls are
+bounded by systemd rather than Tokio's cooperative timeout: the exact
+`TimeoutStartSec=120` covers the first pre-`READY` round, and the watchdog
+covers steady-state renewals. Each
+renewal first verifies the exact pinned `/usr/bin/busctl` and
+the manager's typed `ServiceWatchdogs=true`, then reopens and revalidates the protected static config,
 complete runtime group set, binaries/plugins, Core/CLN state, backup receipt
 and the CLN invocation mapping before and after the checks. `WatchdogSec=90`
 closes a hung renewal before the lease can expire. The guard and issuer each
@@ -314,12 +321,22 @@ so they stop rather than continuing under a stale result. The guard also
 `Requires=` and starts after the first `READY=1`, and the issuer starts only
 after both. A lease file by itself is never authorization: the active exact
 supervisor generation and systemd dependency graph are mandatory. Recovery is
-an explicit operator review and service start, not an automatic retry.
+an explicit operator review and service start, not an automatic retry. Each new
+preflight and guard generation additionally consumes its own root:root
+mode-`0600` token below the root-only
+`/run/bitcoinpir-lightning-operator-approvals` directory; there is no issuer
+token. This keeps an explicit CLN restart from resetting either downstream
+deadman without a fresh ceremony.
 
 Target-host live evidence reads the manager's typed D-Bus `After`, `Before`,
-`BindsTo` and `Requires` arrays and requires every relationship rendered from
+`BindsTo` and `Requires` arrays, initial/final typed
+`ServiceWatchdogs`, `ExecStartPreEx`, `WatchdogUSec` and
+`WatchdogTimestampMonotonic`, and requires every relationship rendered from
 the reviewed units to remain present; implicit systemd dependencies are
-allowed. It also requires the typed `TimeoutStopUSec` to equal each rendered
+allowed. Each watchdog property pass records the immediately following boot
+uptime, rejects future or 90-second-stale timestamps, and permits only
+nondecreasing timestamps between passes. It also requires the typed
+`TimeoutStopUSec` to equal each rendered
 `TimeoutStopSec`, and repeats both snapshots in the final lightweight sealing
 pass. Therefore an installed new unit with a stale, not-yet-reloaded manager
 definition cannot satisfy activation evidence.

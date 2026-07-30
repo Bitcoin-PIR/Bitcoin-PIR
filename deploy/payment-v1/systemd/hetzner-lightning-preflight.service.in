@@ -11,6 +11,7 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
 
 [Service]
 Type=notify
@@ -23,6 +24,7 @@ StateDirectory=bitcoinpir-lightning-preflight
 StateDirectoryMode=0700
 RuntimeDirectory=bitcoinpir-lightning-preflight
 RuntimeDirectoryMode=0700
+ExecStartPre=+/usr/bin/unlink -- /run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
 ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256
@@ -58,9 +60,13 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
-ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
-ReadWritePaths=/run/bitcoinpir-lightning-preflight
+# The config must pin /usr/bin/busctl to @BUSCTL_SHA256@.
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+# The approval parent is root:root 0700: only the privileged one-shot unlink
+# can write there; the long-running preflight process remains excluded by DAC.
+ReadWritePaths=/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals
 
 # There is intentionally no [Install] section. Type=notify with Restart=no
-# makes every CLN generation require an explicit fresh supervisor start. The
-# guard and issuer are BindsTo this lease process and stop on any failed renew.
+# plus the consumed root-only approval token make every CLN generation require
+# an explicit fresh supervisor ceremony. The guard and issuer are BindsTo this
+# lease process and stop on any failed renew.

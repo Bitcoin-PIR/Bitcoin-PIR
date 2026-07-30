@@ -48,9 +48,10 @@ const CLN_SYSTEMD_INVOCATION_LINK_NAME_V1: &str = "invocation:bitcoinpir-core-li
 const PREFLIGHT_LEASE_SCHEMA_V1: u32 = 1;
 const PREFLIGHT_LEASE_STATE_DIRECTORY_V1: &str = "/run/bitcoinpir-lightning-preflight";
 const PREFLIGHT_LEASE_PATH_V1: &str = "/run/bitcoinpir-lightning-preflight/lease.toml";
-const PREFLIGHT_LEASE_REFRESH_SECONDS_V1: u64 = 30;
+const PREFLIGHT_LEASE_REFRESH_SECONDS_V1: u64 = 20;
 const PREFLIGHT_LEASE_VALIDITY_SECONDS_V1: u64 = 180;
 const PREFLIGHT_WATCHDOG_USEC_V1: u64 = 90 * 1_000_000;
+const PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1: u64 = 55;
 
 #[derive(Args, Debug)]
 pub struct LightningStagingArgs {
@@ -156,7 +157,14 @@ struct LightningStagingConfigV1 {
     minimum_route_liquidity_msat: u64,
     bitcoin: BitcoinConfigV1,
     lightning: LightningConfigV1,
+    systemd: SystemdConfigV1,
     backup: BackupConfigV1,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SystemdConfigV1 {
+    busctl: PinnedBinaryV1,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -304,6 +312,22 @@ struct PreflightLeaseV1 {
     cln_invocation_id: String,
     checked_at_unix: u64,
     valid_until_unix: u64,
+}
+
+#[derive(Debug)]
+struct PreflightSupervisorRoundSuccessV1 {
+    preflight: PreflightSuccessV1,
+    invocation_id: String,
+    committed_at_unix: u64,
+    backup_age_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BusctlBooleanPropertyV1 {
+    #[serde(rename = "type")]
+    signature: String,
+    data: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -719,66 +743,158 @@ async fn run_preflight_supervisor_loop_v1(
     let mut last_committed_at_unix: Option<u64> = None;
 
     loop {
-        // Re-open and re-validate all static configuration and runtime
-        // identities on every renewal. A prior successful pass never
-        // authorizes a later generation of either the config or CLN.
-        let config = load_validated_preflight_config_v1(args)?;
-        let invocation_before = read_cln_systemd_invocation_id_v1()?;
-        if let Some(expected) = bound_invocation_id.as_deref() {
-            validate_cln_invocation_binding_v1(
-                Some(expected),
-                &invocation_before,
-                &invocation_before,
-            )?;
-        }
-
-        let checked_at_unix = unix_time_now_v1()?;
-        let mut runner = SystemCommandRunnerV1;
-        let success = run_preflight_v1(&config, checked_at_unix, &mut runner).await?;
-        let invocation_after = read_cln_systemd_invocation_id_v1()?;
-        validate_cln_invocation_binding_v1(
-            bound_invocation_id.as_deref(),
-            &invocation_before,
-            &invocation_after,
-        )?;
-
-        let committed_at_unix = unix_time_now_v1()?;
-        validate_lease_clock_v1(checked_at_unix, committed_at_unix, last_committed_at_unix)?;
-        let committed_backup_age_seconds = validate_backup_receipt_age_v1(
-            success.backup_receipt_recorded_at_unix,
-            config.backup.max_age_seconds,
-            committed_at_unix,
-        )?;
-        let lease = PreflightLeaseV1 {
-            schema_version: PREFLIGHT_LEASE_SCHEMA_V1,
-            cln_invocation_id: invocation_after.clone(),
-            checked_at_unix: committed_at_unix,
-            valid_until_unix: committed_at_unix
-                .checked_add(PREFLIGHT_LEASE_VALIDITY_SECONDS_V1)
-                .ok_or_else(|| PreflightFailureV1::new("lease.clock", "timestamp-overflow"))?,
-        };
-        write_preflight_lease_v1(args, &lease)?;
+        // One cooperative async deadline covers the complete renewal,
+        // including the
+        // manager watchdog check, all RPCs, generation recheck and durable
+        // lease commit. A blocking fsync is bounded by systemd rather than
+        // Tokio's cooperative timeout: TimeoutStartSec covers the first round,
+        // and the watchdog covers steady-state renewals. There is
+        // deliberately no watchdog notification inside this future: a partial
+        // or wedged round can never extend systemd's liveness window.
+        let round = timeout(
+            Duration::from_secs(PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1),
+            run_preflight_supervisor_round_v1(
+                args,
+                bound_invocation_id.as_deref(),
+                last_committed_at_unix,
+            ),
+        )
+        .await
+        .map_err(|_| PreflightFailureV1::new("lease.round", "deadline-exceeded"))??;
 
         if bound_invocation_id.is_none() {
             systemd_notify_v1(b"READY=1\nWATCHDOG=1\nSTATUS=CLN preflight lease active")?;
             println!(
                 "schema_version=1 phase=supervisor role={} bitcoin_height={} cln_height={} active_public_peer_channels={} active_allowed_plugins={} backup_age_seconds={} lease_validity_seconds={} result=PASS",
-                success.role.label(),
-                success.bitcoin_height,
-                success.cln_height,
-                success.peer_channel_count,
-                success.plugin_count,
-                committed_backup_age_seconds,
+                round.preflight.role.label(),
+                round.preflight.bitcoin_height,
+                round.preflight.cln_height,
+                round.preflight.peer_channel_count,
+                round.preflight.plugin_count,
+                round.backup_age_seconds,
                 PREFLIGHT_LEASE_VALIDITY_SECONDS_V1,
             );
-            bound_invocation_id = Some(invocation_after);
+            bound_invocation_id = Some(round.invocation_id);
         } else {
             systemd_notify_v1(b"WATCHDOG=1\nSTATUS=CLN preflight lease active")?;
         }
-        last_committed_at_unix = Some(committed_at_unix);
+        last_committed_at_unix = Some(round.committed_at_unix);
 
         tokio::time::sleep(Duration::from_secs(PREFLIGHT_LEASE_REFRESH_SECONDS_V1)).await;
     }
+}
+
+async fn run_preflight_supervisor_round_v1(
+    args: &LightningStagingPreflightArgs,
+    bound_invocation_id: Option<&str>,
+    last_committed_at_unix: Option<u64>,
+) -> Result<PreflightSupervisorRoundSuccessV1, PreflightFailureV1> {
+    // Re-open and re-validate all static configuration and runtime identities
+    // on every renewal. A prior successful pass never authorizes a later
+    // generation of the config, CLN or systemd manager policy.
+    let config = load_validated_preflight_config_v1(args)?;
+    let mut runner = SystemCommandRunnerV1;
+    validate_systemd_service_watchdogs_enabled_v1(&config, &mut runner).await?;
+    let invocation_before = read_cln_systemd_invocation_id_v1()?;
+    if let Some(expected) = bound_invocation_id {
+        validate_cln_invocation_binding_v1(Some(expected), &invocation_before, &invocation_before)?;
+    }
+
+    let checked_at_unix = unix_time_now_v1()?;
+    let success = run_preflight_v1(&config, checked_at_unix, &mut runner).await?;
+    let invocation_after = read_cln_systemd_invocation_id_v1()?;
+    validate_cln_invocation_binding_v1(bound_invocation_id, &invocation_before, &invocation_after)?;
+
+    let committed_at_unix = unix_time_now_v1()?;
+    validate_lease_clock_v1(checked_at_unix, committed_at_unix, last_committed_at_unix)?;
+    let backup_age_seconds = validate_backup_receipt_age_v1(
+        success.backup_receipt_recorded_at_unix,
+        config.backup.max_age_seconds,
+        committed_at_unix,
+    )?;
+    let lease = PreflightLeaseV1 {
+        schema_version: PREFLIGHT_LEASE_SCHEMA_V1,
+        cln_invocation_id: invocation_after.clone(),
+        checked_at_unix: committed_at_unix,
+        valid_until_unix: committed_at_unix
+            .checked_add(PREFLIGHT_LEASE_VALIDITY_SECONDS_V1)
+            .ok_or_else(|| PreflightFailureV1::new("lease.clock", "timestamp-overflow"))?,
+    };
+    write_preflight_lease_v1(args, &lease)?;
+
+    Ok(PreflightSupervisorRoundSuccessV1 {
+        preflight: success,
+        invocation_id: invocation_after,
+        committed_at_unix,
+        backup_age_seconds,
+    })
+}
+
+fn parse_systemd_service_watchdogs_property_v1(bytes: &[u8]) -> Result<(), PreflightFailureV1> {
+    let check = "systemd.service-watchdogs";
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err(PreflightFailureV1::new(check, "invalid-manager-property"));
+    }
+    let property: BusctlBooleanPropertyV1 = serde_json::from_slice(bytes)
+        .map_err(|_| PreflightFailureV1::new(check, "invalid-manager-property"))?;
+    if property.signature != "b" {
+        return Err(PreflightFailureV1::new(check, "invalid-manager-property"));
+    }
+    if !property.data {
+        return Err(PreflightFailureV1::new(check, "manager-disabled"));
+    }
+    Ok(())
+}
+
+async fn query_systemd_service_watchdogs_enabled_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<(), PreflightFailureV1> {
+    let output = runner
+        .execute(CommandRequestV1 {
+            program: config.systemd.busctl.path.clone(),
+            args: [
+                "--system",
+                "--json=short",
+                "get-property",
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+                "ServiceWatchdogs",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            timeout: Duration::from_secs(config.command_timeout_seconds),
+        })
+        .await
+        .map_err(|failure| PreflightFailureV1::new("systemd.service-watchdogs", failure.label()))?;
+    parse_systemd_service_watchdogs_property_v1(&output)
+}
+
+async fn validate_systemd_service_watchdogs_enabled_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<(), PreflightFailureV1> {
+    validate_systemd_busctl_config_v1(config)?;
+    validate_pinned_binary_v1(&config.systemd.busctl, "binary.busctl")?;
+    query_systemd_service_watchdogs_enabled_v1(config, runner).await
+}
+
+fn validate_systemd_busctl_config_v1(
+    config: &LightningStagingConfigV1,
+) -> Result<(), PreflightFailureV1> {
+    if config.systemd.busctl.path != Path::new("/usr/bin/busctl")
+        || config.systemd.busctl.protected_parent != Path::new("/usr/bin")
+        || config.systemd.busctl.expected_uid != 0
+        || config.systemd.busctl.expected_gid != 0
+    {
+        return Err(PreflightFailureV1::new(
+            "config.systemd-busctl",
+            "invalid-binary-boundary",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_lease_clock_v1(
@@ -1345,6 +1461,7 @@ fn validate_static_config_v1(
     )?;
     validate_lightning_rpc_access_policy_v1(&config.lightning)?;
     validate_preflight_identity_separation_v1(config)?;
+    validate_systemd_busctl_config_v1(config)?;
     validate_absolute_utf8_path_v1(&config.backup.receipt, "config.backup-receipt")?;
     validate_absolute_utf8_path_v1(&config.backup.protected_parent, "config.backup-parent")?;
     Ok(ids)
@@ -4142,6 +4259,15 @@ mod tests {
                     expected_gid: 0,
                 }],
             },
+            systemd: SystemdConfigV1 {
+                busctl: PinnedBinaryV1 {
+                    path: PathBuf::from("/usr/bin/busctl"),
+                    protected_parent: PathBuf::from("/usr/bin"),
+                    sha256_hex: hex::encode([6u8; 32]),
+                    expected_uid: 0,
+                    expected_gid: 0,
+                },
+            },
             backup: BackupConfigV1 {
                 receipt: PathBuf::from("/srv/bitcoinpir-backup/receipt.toml"),
                 protected_parent: PathBuf::from("/srv/bitcoinpir-backup"),
@@ -6689,6 +6815,10 @@ mod tests {
         const {
             assert!(PREFLIGHT_WATCHDOG_USEC_V1 % 1_000_000 == 0);
             assert!(
+                PREFLIGHT_LEASE_REFRESH_SECONDS_V1 + PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1
+                    < PREFLIGHT_WATCHDOG_USEC_V1 / 1_000_000
+            );
+            assert!(
                 PREFLIGHT_LEASE_VALIDITY_SECONDS_V1
                     >= PREFLIGHT_WATCHDOG_USEC_V1 / 1_000_000 + 30 + 60
             );
@@ -6724,6 +6854,84 @@ mod tests {
         ];
         for lease in invalid {
             assert!(validate_preflight_lease_v1(&lease).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_manager_watchdog_check_uses_exact_typed_busctl_request() {
+        let payer_config = config(StagingRoleV1::Payer);
+        let mut runner = FakeRunnerV1 {
+            responses: VecDeque::from(vec![br#"{"type":"b","data":true}"#.to_vec()]),
+            commands: Vec::new(),
+        };
+        query_systemd_service_watchdogs_enabled_v1(&payer_config, &mut runner)
+            .await
+            .unwrap();
+        assert_eq!(
+            runner.commands,
+            vec![CapturedCommandV1 {
+                program: PathBuf::from("/usr/bin/busctl"),
+                args: vec![
+                    "--system".to_owned(),
+                    "--json=short".to_owned(),
+                    "get-property".to_owned(),
+                    "org.freedesktop.systemd1".to_owned(),
+                    "/org/freedesktop/systemd1".to_owned(),
+                    "org.freedesktop.systemd1.Manager".to_owned(),
+                    "ServiceWatchdogs".to_owned(),
+                ],
+            }]
+        );
+
+        for (body, reason) in [
+            (
+                br#"{"type":"b","data":false}"#.as_slice(),
+                "manager-disabled",
+            ),
+            (
+                br#"{"type":"u","data":1}"#.as_slice(),
+                "invalid-manager-property",
+            ),
+            (
+                br#"{"type":"b","data":true,"extra":0}"#.as_slice(),
+                "invalid-manager-property",
+            ),
+            (b"not-json".as_slice(), "invalid-manager-property"),
+        ] {
+            assert_eq!(
+                parse_systemd_service_watchdogs_property_v1(body)
+                    .unwrap_err()
+                    .reason,
+                reason
+            );
+        }
+
+        let invalid_boundaries = [
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.path = PathBuf::from("/usr/local/bin/busctl");
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.protected_parent = PathBuf::from("/usr");
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.expected_uid = 1;
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.expected_gid = 1;
+                value
+            },
+        ];
+        for invalid in invalid_boundaries {
+            let failure = validate_systemd_busctl_config_v1(&invalid).unwrap_err();
+            assert_eq!(failure.check, "config.systemd-busctl");
+            assert_eq!(failure.reason, "invalid-binary-boundary");
         }
     }
 

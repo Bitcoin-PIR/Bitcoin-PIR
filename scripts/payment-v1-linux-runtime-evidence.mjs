@@ -27,6 +27,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_MANAGER_PROPERTIES,
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
@@ -36,14 +37,14 @@ import {
   runtimeRequestFromManifest,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v5";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v6";
 export const STOPPED_EDGE_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
 export const STOPPED_RELAY_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE = "local-files-only-v1";
-const LIVE_SCHEMA_VERSION = 5;
+const LIVE_SCHEMA_VERSION = 6;
 const STOPPED_EDGE_SCHEMA_VERSION = 3;
 const STOPPED_RELAY_SCHEMA_VERSION = 2;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
@@ -131,6 +132,7 @@ const REQUIRED_COMMANDS = Object.freeze([
   "/usr/bin/systemctl",
   "/usr/bin/systemd-analyze",
   "/usr/bin/test",
+  "/usr/bin/unlink",
   "/usr/bin/uname",
   "/usr/sbin/getcap",
 ]);
@@ -2303,11 +2305,24 @@ function effectiveBusctlPropertyNames() {
 }
 
 function effectiveBusctlServicePropertyNames() {
-  const local = ["TimeoutStopUSec"];
+  const local = [
+    "ExecStartPreEx",
+    "TimeoutStopUSec",
+    "WatchdogTimestampMonotonic",
+    "WatchdogUSec",
+  ];
   if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)) {
     fail("collector and rendered runtime busctl service property schemas diverged");
   }
   return [...RUNTIME_BUSCTL_SERVICE_PROPERTIES];
+}
+
+function effectiveBusctlManagerPropertyNames() {
+  const local = ["ServiceWatchdogs"];
+  if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_MANAGER_PROPERTIES)) {
+    fail("collector and rendered runtime busctl manager property schemas diverged");
+  }
+  return [...RUNTIME_BUSCTL_MANAGER_PROPERTIES];
 }
 
 function compareEffectiveConditionRecords(left, right) {
@@ -2329,10 +2344,14 @@ function expectedEffectiveConditions(unit) {
       fail(`unit has an unreviewed effective condition: ${unit.unit_name}`);
     }
     const negate = match[1] === "!";
+    const consumedApproval = new Set([
+      "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
+      "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
+    ]).has(match[2]);
     return {
       negate,
       parameter: match[2],
-      path_exists: !negate,
+      path_exists: consumedApproval ? false : !negate,
       result: 1,
       trigger: false,
       type: "ConditionPathExists",
@@ -2450,6 +2469,67 @@ export function parseBusctlUnsignedJsonV1(text, label = "systemd unsigned proper
   return parsed.data;
 }
 
+export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (parsed.type !== "b" || typeof parsed.data !== "boolean") {
+    fail(`${label} does not have one reviewed b value`);
+  }
+  return { signature: "b", value: parsed.data };
+}
+
+export function parseBusctlExecStartPreExJsonV1(
+  text,
+  label = "systemd ExecStartPreEx",
+) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 256 * 1024) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (
+    parsed.type !== "a(sasasttttuii)" ||
+    !Array.isArray(parsed.data) ||
+    parsed.data.length > 64
+  ) {
+    fail(`${label} does not have the reviewed a(sasasttttuii) shape`);
+  }
+  return parsed.data.map((tuple, index) => {
+    if (
+      !Array.isArray(tuple) ||
+      // a(sasasttttuii) is exactly: s, as, as, four t, one u and two i.
+      tuple.length !== 10 ||
+      typeof tuple[0] !== "string" ||
+      !/^\/[A-Za-z0-9._/-]+$/u.test(tuple[0]) ||
+      resolve(tuple[0]) !== tuple[0] ||
+      !Array.isArray(tuple[1]) ||
+      tuple[1].length < 1 ||
+      tuple[1].length > 64 ||
+      tuple[1][0] !== tuple[0] ||
+      tuple[1].some((argument) =>
+        typeof argument !== "string" ||
+        argument.length < 1 ||
+        argument.length > 4096 ||
+        /[\0\r\n]/u.test(argument)) ||
+      !Array.isArray(tuple[2]) ||
+      tuple[2].some((flag) => flag !== "privileged") ||
+      new Set(tuple[2]).size !== tuple[2].length ||
+      tuple.slice(3).some((value) =>
+        !Number.isSafeInteger(value) || value < 0)
+    ) {
+      fail(`${label}.data[${index}] is not one reviewed exec-command tuple`);
+    }
+    return {
+      argv: tuple[1],
+      flags: tuple[2],
+      path: tuple[0],
+    };
+  });
+}
+
 function collectBusctlPropertyV1(unitName, interfaceName, property, parser) {
   const record = runAbsolute("/usr/bin/busctl", [
     "--json=short",
@@ -2500,15 +2580,63 @@ function collectEffectiveUnitDependenciesV1(unitName) {
 
 function collectEffectiveServicePropertiesV1(unitName) {
   const propertyNames = effectiveBusctlServicePropertyNames();
-  if (canonicalJson(propertyNames) !== canonicalJson(["TimeoutStopUSec"])) {
+  if (canonicalJson(propertyNames) !== canonicalJson([
+    "ExecStartPreEx",
+    "TimeoutStopUSec",
+    "WatchdogTimestampMonotonic",
+    "WatchdogUSec",
+  ])) {
     fail("runtime busctl service property set is not closed");
   }
   return {
+    ExecStartPreEx: collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Service",
+      "ExecStartPreEx",
+      parseBusctlExecStartPreExJsonV1,
+    ),
     TimeoutStopUSec: collectBusctlPropertyV1(
       unitName,
       "org.freedesktop.systemd1.Service",
       "TimeoutStopUSec",
       parseBusctlUnsignedJsonV1,
+    ),
+    WatchdogTimestampMonotonic: collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Service",
+      "WatchdogTimestampMonotonic",
+      parseBusctlUnsignedJsonV1,
+    ),
+    WatchdogUSec: collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Service",
+      "WatchdogUSec",
+      parseBusctlUnsignedJsonV1,
+    ),
+  };
+}
+
+function collectSystemdManagerPropertiesV1() {
+  const properties = effectiveBusctlManagerPropertyNames();
+  if (canonicalJson(properties) !== canonicalJson(["ServiceWatchdogs"])) {
+    fail("runtime busctl manager property set is not closed");
+  }
+  const record = runAbsolute("/usr/bin/busctl", [
+    "--system",
+    "--json=short",
+    "get-property",
+    "org.freedesktop.systemd1",
+    "/org/freedesktop/systemd1",
+    "org.freedesktop.systemd1.Manager",
+    "ServiceWatchdogs",
+  ]);
+  if (record.exit_status !== 0 || record.stderr !== "") {
+    fail("busctl ServiceWatchdogs failed for systemd manager");
+  }
+  return {
+    ServiceWatchdogs: parseBusctlBooleanJsonV1(
+      record.stdout,
+      "systemd-manager.ServiceWatchdogs",
     ),
   };
 }
@@ -2570,13 +2698,64 @@ function expectedTimeoutStopUsecV1(unit) {
   return usec;
 }
 
-function validateEffectiveServicePropertiesV1(unit, properties) {
-  exactKeys(properties, ["TimeoutStopUSec"], `${unit.unit_name}.service_properties`);
+function validateEffectiveServicePropertiesV1(
+  unit,
+  properties,
+  uptimeMilliseconds,
+) {
+  exactKeys(
+    properties,
+    [
+      "ExecStartPreEx",
+      "TimeoutStopUSec",
+      "WatchdogTimestampMonotonic",
+      "WatchdogUSec",
+    ],
+    `${unit.unit_name}.service_properties`,
+  );
+  if (canonicalJson(properties.ExecStartPreEx) !== canonicalJson(unit.exec_start_pre_ex)) {
+    fail(`effective ExecStartPreEx drift: ${unit.unit_name}`);
+  }
   if (
     !Number.isSafeInteger(properties.TimeoutStopUSec) ||
     properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)
   ) {
     fail(`effective TimeoutStopUSec drift: ${unit.unit_name}`);
+  }
+  const preflight = unit.unit_name === "bitcoinpir-lightning-preflight.service";
+  if (!preflight) {
+    if (properties.WatchdogUSec !== 0 || properties.WatchdogTimestampMonotonic !== 0) {
+      fail(`effective typed watchdog is unreviewed: ${unit.unit_name}`);
+    }
+    return;
+  }
+  if (properties.WatchdogUSec !== 90_000_000) {
+    fail(`effective typed watchdog interval drift: ${unit.unit_name}`);
+  }
+  if (!Number.isSafeInteger(uptimeMilliseconds) || uptimeMilliseconds < 0) {
+    fail(`watchdog freshness uptime is invalid: ${unit.unit_name}`);
+  }
+  const uptimeUsec = uptimeMilliseconds * 1000;
+  const timestamp = properties.WatchdogTimestampMonotonic;
+  if (
+    !Number.isSafeInteger(uptimeUsec) ||
+    !Number.isSafeInteger(timestamp) ||
+    timestamp <= 0 ||
+    timestamp > uptimeUsec ||
+    uptimeUsec - timestamp >= 90_000_000
+  ) {
+    fail(`effective watchdog timestamp is not fresh in this boot: ${unit.unit_name}`);
+  }
+}
+
+function validateSystemdManagerPropertiesV1(properties, label) {
+  exactKeys(properties, ["ServiceWatchdogs"], label);
+  exactKeys(properties.ServiceWatchdogs, ["signature", "value"], `${label}.ServiceWatchdogs`);
+  if (
+    properties.ServiceWatchdogs.signature !== "b" ||
+    properties.ServiceWatchdogs.value !== true
+  ) {
+    fail(`${label}.ServiceWatchdogs must be typed b true`);
   }
 }
 
@@ -2587,9 +2766,22 @@ export function assertEffectiveSystemdPolicySnapshotUnchangedV1(
   actualServiceProperties,
   unitName = "systemd unit",
 ) {
+  const expectedTimestamp = expectedServiceProperties?.WatchdogTimestampMonotonic;
+  const actualTimestamp = actualServiceProperties?.WatchdogTimestampMonotonic;
+  const expectedStatic = expectedServiceProperties === undefined ? undefined : {
+    ...expectedServiceProperties,
+    WatchdogTimestampMonotonic: 0,
+  };
+  const actualStatic = actualServiceProperties === undefined ? undefined : {
+    ...actualServiceProperties,
+    WatchdogTimestampMonotonic: 0,
+  };
   if (
     canonicalJson(actualDependencies) !== canonicalJson(expectedDependencies) ||
-    canonicalJson(actualServiceProperties) !== canonicalJson(expectedServiceProperties)
+    canonicalJson(actualStatic) !== canonicalJson(expectedStatic) ||
+    !Number.isSafeInteger(expectedTimestamp) ||
+    !Number.isSafeInteger(actualTimestamp) ||
+    actualTimestamp < expectedTimestamp
   ) {
     fail(`systemd dependency or service policy changed during live collection: ${unitName}`);
   }
@@ -2802,7 +2994,7 @@ function validateEffectiveUnitProperties(
   validateEffectiveUnitStaticProperties(unit, properties);
   validateEffectiveConditions(unit, conditions);
   validateEffectiveUnitDependenciesV1(unit, unitDependencies);
-  validateEffectiveServicePropertiesV1(unit, serviceProperties);
+  validateEffectiveServicePropertiesV1(unit, serviceProperties, uptimeFinishedMilliseconds);
   if (
     unit.hardening.MemorySwapMax !== undefined &&
     properties.MemorySwapCurrent !== "0"
@@ -3027,10 +3219,11 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
   };
 }
 
-function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
+function collectUnit(unit, nss, serviceIdentities) {
   const conditions = collectEffectiveConditions(unit.unit_name);
   const unitDependencies = collectEffectiveUnitDependenciesV1(unit.unit_name);
   const serviceProperties = collectEffectiveServicePropertiesV1(unit.unit_name);
+  const servicePropertiesUptimeMilliseconds = readLinuxUptimeMillisecondsV1();
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
@@ -3041,7 +3234,7 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     conditions,
     unitDependencies,
     serviceProperties,
-    uptimeFinishedMilliseconds,
+    servicePropertiesUptimeMilliseconds,
   );
   let generationConfirmations;
   let processIdentity;
@@ -3066,7 +3259,10 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     generation_confirmations: generationConfirmations,
     process_identity: processIdentity,
     properties,
-    service_properties: serviceProperties,
+    service_property_passes: [{
+      observed_uptime_milliseconds: servicePropertiesUptimeMilliseconds,
+      properties: serviceProperties,
+    }],
     unit_dependencies: unitDependencies,
     unit_name: unit.unit_name,
   };
@@ -3105,6 +3301,15 @@ function readPidNamespaceBinding() {
   };
 }
 
+function readLinuxUptimeMillisecondsV1() {
+  const uptimeText = readFileSync("/proc/uptime", "utf8").trim().split(/\s+/u)[0];
+  const uptimeMilliseconds = Math.floor(Number(uptimeText) * 1000);
+  if (!Number.isSafeInteger(uptimeMilliseconds) || uptimeMilliseconds < 0) {
+    fail("Linux uptime is malformed");
+  }
+  return uptimeMilliseconds;
+}
+
 function readHostBinding() {
   const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   validateUuid(bootId, "Linux boot id");
@@ -3113,9 +3318,7 @@ function readHostBinding() {
     fail("Linux core_pattern is malformed");
   }
   const machineId = readFileSync("/etc/machine-id");
-  const uptimeText = readFileSync("/proc/uptime", "utf8").trim().split(/\s+/u)[0];
-  const uptimeMilliseconds = Math.floor(Number(uptimeText) * 1000);
-  if (!Number.isSafeInteger(uptimeMilliseconds) || uptimeMilliseconds < 0) fail("Linux uptime is malformed");
+  const uptimeMilliseconds = readLinuxUptimeMillisecondsV1();
   const kernel = runAbsolute("/usr/bin/uname", ["-r"]);
   const systemd = runAbsolute("/usr/bin/systemctl", ["--version"]);
   if (kernel.exit_status !== 0 || kernel.stderr !== "" || systemd.exit_status !== 0 || systemd.stderr !== "") {
@@ -4314,6 +4517,7 @@ export function validateLiveRuntimeEvidence({
       "secret_access_checks",
       "secret_parent_directories",
       "systemd_analyze_verify",
+      "systemd_manager_passes",
       "trusted_commands",
       "units",
     ],
@@ -4344,6 +4548,13 @@ export function validateLiveRuntimeEvidence({
       canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)
   ) {
     fail("runtime request busctl service property schema is not the reviewed closed set");
+  }
+  if (
+    !Array.isArray(request.busctl_manager_properties) ||
+    canonicalJson(request.busctl_manager_properties) !==
+      canonicalJson(RUNTIME_BUSCTL_MANAGER_PROPERTIES)
+  ) {
+    fail("runtime request busctl manager property schema is not the reviewed closed set");
   }
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
@@ -4408,6 +4619,18 @@ export function validateLiveRuntimeEvidence({
     !Number.isSafeInteger(evidence.host.uptime_finished_milliseconds) ||
     evidence.host.uptime_finished_milliseconds < evidence.host.uptime_started_milliseconds
   ) fail("live evidence uptime binding is invalid");
+  if (
+    !Array.isArray(evidence.systemd_manager_passes) ||
+    evidence.systemd_manager_passes.length !== 2
+  ) {
+    fail("live systemd manager property passes are incomplete");
+  }
+  for (const [index, properties] of evidence.systemd_manager_passes.entries()) {
+    validateSystemdManagerPropertiesV1(
+      properties,
+      `live systemd manager pass[${index}]`,
+    );
+  }
 
   if (!Array.isArray(evidence.trusted_commands) || evidence.trusted_commands.length !== REQUIRED_COMMANDS.length + 1) {
     fail("live evidence does not bind the complete command TCB");
@@ -4602,7 +4825,7 @@ export function validateLiveRuntimeEvidence({
         "generation_confirmations",
         "process_identity",
         "properties",
-        "service_properties",
+        "service_property_passes",
         "unit_dependencies",
         "unit_name",
       ],
@@ -4619,13 +4842,48 @@ export function validateLiveRuntimeEvidence({
     if (!fragment || actual.fragment_sha256 !== fragment.sha256) {
       fail(`live systemd fragment hash drift: ${expected.unit_name}`);
     }
+    if (
+      !Array.isArray(actual.service_property_passes) ||
+      actual.service_property_passes.length !== 2
+    ) {
+      fail(`live service property passes are incomplete: ${expected.unit_name}`);
+    }
+    for (const [passIndex, pass] of actual.service_property_passes.entries()) {
+      exactKeys(
+        pass,
+        ["observed_uptime_milliseconds", "properties"],
+        `live ${expected.unit_name} service property pass[${passIndex}]`,
+      );
+      if (
+        !Number.isSafeInteger(pass.observed_uptime_milliseconds) ||
+        pass.observed_uptime_milliseconds < evidence.host.uptime_started_milliseconds ||
+        pass.observed_uptime_milliseconds > evidence.host.uptime_finished_milliseconds ||
+        (passIndex > 0 &&
+          pass.observed_uptime_milliseconds <
+            actual.service_property_passes[passIndex - 1].observed_uptime_milliseconds)
+      ) {
+        fail(`live service property pass uptime is invalid: ${expected.unit_name}`);
+      }
+    }
     const lifecycle = validateEffectiveUnitProperties(
       expected,
       actual.properties,
       actual.conditions,
       actual.unit_dependencies,
-      actual.service_properties,
-      evidence.host.uptime_finished_milliseconds,
+      actual.service_property_passes[0].properties,
+      actual.service_property_passes[0].observed_uptime_milliseconds,
+    );
+    validateEffectiveServicePropertiesV1(
+      expected,
+      actual.service_property_passes[1].properties,
+      actual.service_property_passes[1].observed_uptime_milliseconds,
+    );
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      actual.unit_dependencies,
+      actual.unit_dependencies,
+      actual.service_property_passes[0].properties,
+      actual.service_property_passes[1].properties,
+      expected.unit_name,
     );
     validateGenerationConfirmations(actual.generation_confirmations, actual.properties, expected.unit_name);
     lifecycleByUnit.set(expected.unit_name, lifecycle);
@@ -5187,6 +5445,11 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) fail("collector is running on an unapproved host");
+  const systemdManagerStarted = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerStarted,
+    "initial systemd manager properties",
+  );
   const challengeHex = randomBytes(32).toString("hex");
   const nss = collectNss();
   const installedFiles = request.installed_files.map(collectInstalledFile);
@@ -5202,7 +5465,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     "around access probes",
   );
   const units = request.units.map((unit) =>
-    collectUnit(unit, nss, request.service_identities, hostStarted.uptime_milliseconds),
+    collectUnit(unit, nss, request.service_identities),
   );
   const runtimePathConfirmation = request.runtime_paths.map(collectRuntimePath);
   if (canonicalJson(runtimePaths) !== canonicalJson(runtimePathConfirmation)) {
@@ -5224,10 +5487,6 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     fail("runtime path metadata changed during protected process collection");
   }
   confirmLocalFilesNssPolicyUnchanged(nss);
-  const hostFinished = readHostBinding();
-  if (!sameHostGeneration(hostStarted, hostFinished)) {
-    fail("host or boot identity changed during live collection");
-  }
   // Complete expensive secret revalidation only after every earlier long host,
   // systemd, procfs, NSS and runtime-path probe. File content/metadata is
   // rechecked first; the descriptor-bound directory-set pass then also catches
@@ -5246,8 +5505,10 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   // the expensive secret commands. Per-unit checks inside collectUnit are not
   // enough: a profile sentinel or unit generation could otherwise change while
   // later probes run. Recheck structured Conditions, typed dependency/timeout
-  // state and each same unit generation here; nothing below this loop probes
-  // external state before the evidence object is constructed and returned.
+  // state and each same unit generation here. Every service-property read is
+  // immediately followed by the boot uptime used for its watchdog-freshness
+  // bound; no earlier collection timestamp is reused.
+  const finalSystemdSnapshots = [];
   for (let index = 0; index < request.units.length; index += 1) {
     const finalConditions = collectEffectiveConditions(request.units[index].unit_name);
     const finalUnitDependencies = collectEffectiveUnitDependenciesV1(
@@ -5256,21 +5517,48 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     const finalServiceProperties = collectEffectiveServicePropertiesV1(
       request.units[index].unit_name,
     );
+    const observedUptimeMilliseconds = readLinuxUptimeMillisecondsV1();
     assertEffectiveConditionSnapshotUnchangedV1(
       units[index].conditions,
       finalConditions,
       request.units[index].unit_name,
     );
-    assertEffectiveSystemdPolicySnapshotUnchangedV1(
-      units[index].unit_dependencies,
-      finalUnitDependencies,
-      units[index].service_properties,
-      finalServiceProperties,
-      request.units[index].unit_name,
-    );
     units[index].generation_confirmations.push(
       confirmUnitGeneration(request.units[index], units[index].properties),
     );
+    finalSystemdSnapshots.push({
+      observedUptimeMilliseconds,
+      serviceProperties: finalServiceProperties,
+      unitDependencies: finalUnitDependencies,
+    });
+  }
+  const systemdManagerFinished = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerFinished,
+    "final systemd manager properties",
+  );
+  const hostFinished = readHostBinding();
+  if (!sameHostGeneration(hostStarted, hostFinished)) {
+    fail("host or boot identity changed during live collection");
+  }
+  for (let index = 0; index < request.units.length; index += 1) {
+    validateEffectiveServicePropertiesV1(
+      request.units[index],
+      finalSystemdSnapshots[index].serviceProperties,
+      finalSystemdSnapshots[index].observedUptimeMilliseconds,
+    );
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      units[index].unit_dependencies,
+      finalSystemdSnapshots[index].unitDependencies,
+      units[index].service_property_passes[0].properties,
+      finalSystemdSnapshots[index].serviceProperties,
+      request.units[index].unit_name,
+    );
+    units[index].service_property_passes.push({
+      observed_uptime_milliseconds:
+        finalSystemdSnapshots[index].observedUptimeMilliseconds,
+      properties: finalSystemdSnapshots[index].serviceProperties,
+    });
   }
   const finished = Math.floor(Date.now() / 1000);
   const evidence = {
@@ -5304,6 +5592,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     secret_access_checks: secretAccessChecks,
     secret_parent_directories: secretParentDirectories,
     systemd_analyze_verify: analyze,
+    systemd_manager_passes: [systemdManagerStarted, systemdManagerFinished],
     trusted_commands: trustedCommands,
     units,
   };

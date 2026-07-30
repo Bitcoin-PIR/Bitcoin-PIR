@@ -36,7 +36,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "2057e23b4f06c3394f1c4505e3d11b8bc44e046a4af7e2bbb0672450578a8e9f",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
-    "62b6a6108b4c5768f5de522d72d93a84e97e07f0d93f5dfc02265a87eb18fc31",
+    "af1dcd84e83bf0f4676311324f5aa0d5fbf3d20514e5795e0ac104602894c934",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
     "1da053febf373f7166935e0d57abe140e129931accbb856d93889c4fc979b6f4",
   "deploy/payment-v1/lightning/lightningd.conf.in":
@@ -46,9 +46,9 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
     "ba42a3edf60c55664b32edc89977b222f9011ed857ded45c38d228a4941be49b",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
-    "e9ba0a45c7ef3504dcac3bb24e3c283a3721edf535df7150cdf5057c395d5e11",
+    "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "f1a08337a16ae9e753567865dc35ff20f9f22c3ca590b3883ca2b7700a16a5ce",
+    "b8a8cb918b38f36b8945b80b5da00d38e15d9cc9a72f8d8c934e760b8f022b5f",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "d0bee8a8e30762ca5c8278d4c06ff14e7c26dd7eb9be199ec8a12f7929e70ec5",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
@@ -947,6 +947,7 @@ function validateClnRpcGuardUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
     ],
     { requireStateDirectoryMode: false },
   );
@@ -1012,6 +1013,7 @@ function validateClnRpcGuardUnit(text) {
     "Service",
     "ExecStartPre",
     [
+      "+/usr/bin/unlink -- /run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
       "/usr/bin/test -x /opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@/bitcoinpir-cln-rpc-guard",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256",
     ],
@@ -1038,8 +1040,8 @@ function validateClnRpcGuardUnit(text) {
     ],
     label,
   );
-  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@"], label);
-  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/run/bitcoinpir-cln-rpc-guard"], label);
+  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@"], label);
+  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-lightning-operator-approvals"], label);
 }
 
 function validateLightningPreflightUnit(text) {
@@ -1054,6 +1056,7 @@ function validateLightningPreflightUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
     ],
     { requireStateDirectoryMode: true },
   );
@@ -1106,6 +1109,7 @@ function validateLightningPreflightUnit(text) {
     "Service",
     "ExecStartPre",
     [
+      "+/usr/bin/unlink -- /run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
       "/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256",
@@ -1132,14 +1136,14 @@ function validateLightningPreflightUnit(text) {
     unit,
     "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
     label,
   );
   exactDirectiveValues(
     unit,
     "Service",
     "ReadWritePaths",
-    ["/run/bitcoinpir-lightning-preflight"],
+    ["/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals"],
     label,
   );
 }
@@ -1432,6 +1436,7 @@ function validateIssuerClnArgs(text, mode) {
 function validateClnGuardTmpfiles(text, mode) {
   const label = "CLN RPC guard tmpfiles template";
   const expected = [
+    "d /run/bitcoinpir-lightning-operator-approvals 0700 root root - -",
     "d /run/bitcoinpir-cln-rpc-guard 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
     "d /run/bitcoinpir-cln-rpc-guard/issuer 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
   ];

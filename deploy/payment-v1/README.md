@@ -242,10 +242,14 @@ UID/GID to the preflight service identity, and rejects any rendered/static
 backup-receipt payload or manifest; that receipt lives only as service-owned
 mode-`0600` dynamic state below the mode-`0700` preflight `StateDirectory`.
 The rendered profile also requires an invocation-bound `Type=notify` preflight
-supervisor, exact 30/120-second refresh/lease policy, `WatchdogSec=90`,
-`Restart=no`, read-only access to `/run/systemd/units`, a sole writable volatile
-lease directory, and guard/issuer lifecycle binding. A prior successful check
-or a stale lease file cannot keep either downstream service active.
+supervisor, exact 20/180-second refresh/lease policy, a cooperative 55-second
+whole-renewal deadline, `WatchdogSec=90`, `Restart=no`, read-only access to
+`/run/systemd/units` and the pinned `/usr/bin/busctl`, a writable volatile lease
+directory plus the root:root mode-`0700` approval parent used only by the
+privileged unlink, and guard/issuer lifecycle binding. Preflight and guard starts
+each consume a separate root-only one-shot approval token; an explicit CLN
+restart therefore cannot silently reset either deadman. A prior successful
+check or a stale lease file cannot keep either downstream service active.
 Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,

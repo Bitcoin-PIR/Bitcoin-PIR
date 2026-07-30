@@ -790,16 +790,31 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       gate. The production supervisor no longer latches one successful pass:
       before and after every renewal it validates the root-owned systemd
       InvocationID mapping for the exact CLN unit, binds its first generation,
-      writes a private 180-second volatile lease every 30 seconds, and sends
-      `READY`/watchdog notifications only after success. The unit is
+      writes a private 180-second volatile lease after the initial pass and
+      after each 20-second sleep,
+      and sends
+      `READY`/watchdog notifications only after a complete successful renewal
+      covered by one cooperative 55-second async deadline; blocking filesystem
+      calls are bounded by exact `TimeoutStartSec=120` before the first
+      `READY`, then by the 90-second systemd watchdog. Every renewal
+      revalidates the exact
+      root-owned, content-pinned `/usr/bin/busctl` and requires the systemd
+      manager's typed `ServiceWatchdogs=true`. The unit is
       `Type=notify`, `WatchdogSec=90`, `Restart=no`; both the RPC guard and
       issuer bind to it, so any renewal failure, hang or CLN generation change
       stops downstream payment access. Their 30-second stop bounds leave about
-      60 seconds of margin before the lease expires.
+      60 seconds of margin before the lease expires. Preflight and guard each
+      consume a distinct one-shot token from a root:root mode-`0700` runtime
+      directory before dropping privileges, so restarting CLN cannot silently
+      create a fresh downstream generation.
       Live runtime evidence reads typed systemd D-Bus dependency arrays and
-      `TimeoutStopUSec`, requires every rendered relationship to be loaded by
-      the manager, and repeats the snapshots at final sealing; stale
-      pre-`daemon-reload` manager state fails closed.
+      `TimeoutStopUSec`, `ExecStartPreEx`, `WatchdogUSec`, and
+      `WatchdogTimestampMonotonic`, plus two typed manager
+      `ServiceWatchdogs` passes. Each watchdog pass binds the immediately
+      following boot uptime, requires a fresh timestamp, and rejects rollback;
+      every rendered relationship must be loaded by the manager and the
+      snapshots repeat at final sealing. Stale pre-`daemon-reload` manager
+      state fails closed.
       It pins Core/CLN/CLI/plugin binaries below explicit protected parents,
       authenticates an explicit loopback Core RPC endpoint with an owner-only
       pinned cookie, checks the exact default challenge/genesis, verifies CLN
@@ -909,7 +924,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v5 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v6 accepts
       only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
       and `/etc/group`, and rejects UID/GID aliases or extra protected-group
       primary/explicit/effective members; a final snapshot confirmation closes
