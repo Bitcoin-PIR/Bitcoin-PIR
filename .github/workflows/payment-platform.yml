@@ -153,6 +153,22 @@ jobs:
           -p payment-issuer
           -p rollback-authority
           -p bpir-admin
+      - name: Enforce the real Linux root UID/GID credential boundary
+        run: |
+          rustup_home="$(rustup show home)"
+          cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+          cargo_bin="$(command -v cargo)"
+          root_test_target="$(mktemp -d "${RUNNER_TEMP}/bpir-admin-root-target.XXXXXX")"
+          trap 'sudo rm -rf -- "$root_test_target"' EXIT
+          sudo env \
+            PATH="$PATH" \
+            RUSTUP_HOME="$rustup_home" \
+            CARGO_HOME="$cargo_home" \
+            CARGO_TARGET_DIR="$root_test_target" \
+            BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1 \
+            "$cargo_bin" test --locked --offline -p bpir-admin \
+              lightning_staging::tests::protected_config_real_linux_uid_gid_and_mode_contract \
+              -- --exact --nocapture
       - name: Test concrete provider-store Cashu BAT verifier boundary
         run: >-
           cargo test --locked --offline
@@ -552,9 +568,13 @@ jobs:
           node --test --test-concurrency=1 \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
             scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
-            scripts/payment-v1-rendered-artifact-gate.test.mjs \
-            scripts/payment-v1-linux-runtime-evidence.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs
+          # These suites exercise competing global /tmp and systemd-shaped
+          # paths. Keep them in independent serial Node invocations.
+          node --test --test-concurrency=1 \
+            scripts/payment-v1-rendered-artifact-gate.test.mjs
+          node --test --test-concurrency=1 \
+            scripts/payment-v1-linux-runtime-evidence.test.mjs
           node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
           node --test scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
           node --test scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs

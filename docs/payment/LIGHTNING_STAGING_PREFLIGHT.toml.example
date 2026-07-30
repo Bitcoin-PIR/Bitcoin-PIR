@@ -3,12 +3,18 @@
 # Copy this public, non-secret template separately onto each payer/router/issuer
 # host. Replace every placeholder and set `role` for that host. The preflight
 # is intentionally read-only and will fail on these zero hash placeholders.
-# In this numeric example the protected config and backup receipt are owned by
-# the dedicated preflight service (UID/GID 995), so invoke both commands with:
-#   --config-expected-uid 995 --config-expected-gid 995
+# In this numeric example the protected config is root-owned, group-readable
+# only by the dedicated preflight service, and exact mode 0440. Invoke both
+# commands as preflight UID 995 with:
+#   --config-expected-uid 0 --config-expected-gid 995 \
+#   --config-reader-expected-uid 995
+# Its effective-plus-supplementary GID set must be exactly {993, 994, 995};
+# extra inherited groups fail closed. Every config-parent ancestor must be
+# root-owned and have no group/other write bit.
 # UID 990 is bitcoind, UID 991 is CLN, UID/GID 992 is the long-lived issuer,
 # GID 993 is the native CLN RPC guard group, GID 994 is the Bitcoin-cookie
-# group, and UID/GID 995 is the one-shot preflight. CLN and preflight receive
+# group, and UID/GID 995 is the long-lived preflight supervisor. CLN and
+# preflight receive
 # GID 994; the RPC guard and preflight receive GID 993. The issuer receives
 # neither group and reaches only the guard's downstream issuer-group socket.
 
@@ -24,6 +30,18 @@ command_timeout_seconds = 5
 max_block_height_lag = 2
 # 250,000 msat leaves margin above the documented 100-sat maximum test invoice.
 minimum_route_liquidity_msat = 250000
+
+[systemd]
+
+[systemd.busctl]
+# This pin is part of the host-specific render plan. The value below is the
+# reviewed current Hetzner `/usr/bin/busctl`; remeasure it on every host image
+# change and bind the replacement through BUSCTL_SHA256 before rendering.
+path = "/usr/bin/busctl"
+protected_parent = "/usr/bin"
+sha256_hex = "5cca481831f317814f050f97e86467079140f61e9007a32385be724d1a481f14"
+expected_uid = 0
+expected_gid = 0
 
 [bitcoin]
 # Inline RPC usernames/passwords are rejected. Use Core's owner-controlled
@@ -122,9 +140,10 @@ expected_gid = 0
 # The receipt records only a digest and operator confirmations. It must not
 # contain hsm_secret, emergency.recover/SCB bytes, wallet data or passwords.
 # Create or refresh it only with `lightning-staging record-backup-receipt`
-# after both separately controlled backups were restore-checked.
-receipt = "/srv/bitcoinpir-backup/default-signet-payer.toml"
-protected_parent = "/srv/bitcoinpir-backup"
+# after both separately controlled backups were restore-checked. It is dynamic
+# runtime state owned by the preflight service, not a rendered `/etc` payload.
+receipt = "/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml"
+protected_parent = "/var/lib/bitcoinpir-lightning-preflight"
 expected_uid = 995
 expected_gid = 995
 max_age_seconds = 86400
