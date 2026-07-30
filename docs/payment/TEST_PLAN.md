@@ -900,11 +900,15 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
-- runtime-evidence accepts only the exact local-files NSS profile and checks
-  stable root-owned policy snapshots, identity-relevant `getent` projections,
-  every user's `id -G`, UID/GID uniqueness and protected-group closure;
-- a final policy snapshot detects `/etc/nsswitch.conf`, `/etc/passwd` or
-  `/etc/group` drift during later live checks;
+- runtime-evidence accepts only exact paired `files` or paired
+  `files systemd` NSS sources for passwd/group, with files first and inherited
+  initgroups; mixed/reversed sequences, action brackets and every other source
+  fail closed. It checks stable root-owned policy snapshots,
+  identity-relevant `getent` projections, every user's `id -G`, UID/GID
+  uniqueness and protected-group closure;
+- a final complete policy/getent/id snapshot detects `/etc/nsswitch.conf`,
+  `/etc/passwd`, `/etc/group`, enumeration or supplementary-group drift during
+  later live and stopped checks;
 - two bounded full `/proc/<pid>/task/<tid>` scans must produce identical
   protected UID/GID holder records, record `CapInh`, `CapPrm`, `CapEff`,
   `CapAmb`, and `CapBnd`, and reject reviewed dangerous active capabilities on

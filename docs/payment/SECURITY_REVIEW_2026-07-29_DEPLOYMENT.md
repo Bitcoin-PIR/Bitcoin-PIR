@@ -132,18 +132,23 @@ must prove a successful zero-status completion in the current boot. Offline
 review is meaningful only with an independently transferred full evidence
 digest.
 
-Runtime-evidence v4 narrows NSS to a provable local-files profile: exactly
-`passwd: files`, `group: files`, and inherited group-based `initgroups`. Stable
-root-owned snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
-must agree around NSS enumeration, with the complete identity-relevant `getent`
-projection, and with a final confirmation after the remaining live checks;
-`id -G` is checked for every account under a monotonic deadline. The live pass
+Runtime-evidence v4 narrows NSS to a files-authoritative closed set: both
+`passwd` and `group` must use exactly `files`, or both must use exactly
+`files systemd`, with inherited group-based `initgroups`. Only the latter exact
+Ubuntu fallback sequence is accepted; mixed sequences, reversed order, action
+brackets and every other source fail closed. Stable root-owned snapshots of
+`/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group` must agree around NSS
+enumeration with the complete identity-relevant `getent` projection. `id -G` is
+checked for every account under a monotonic deadline, and the full getent/id
+projection is repeated after the remaining checks and must be identical. The live pass
 leaves non-identity passwd/group fields hash-bound rather than semantically
 compared. The stopped-edge pass additionally binds `/etc/shadow` and requires
 each service account to be UID/GID-pinned, login-disabled and password-locked. Duplicate
 UID/GID aliases and extra protected-group primary, explicit, or effective
-members fail closed. Remote/cached or optionally enumerable NSS providers are
-not accepted by this V1 claim.
+members fail closed. SSSD, LDAP, winbind, NIS, `compat`, DNS and arbitrary
+remote/cached or optionally enumerable NSS providers are not accepted by this
+V1 claim; the sole reviewed systemd fallback passes only while its complete
+enumeration projection remains exactly the local-files projection.
 
 Runtime-evidence v4 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce

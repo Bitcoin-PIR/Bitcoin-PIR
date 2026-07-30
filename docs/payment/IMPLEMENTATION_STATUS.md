@@ -875,10 +875,13 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
       credentials to one machine/boot/invocation. Runtime-evidence v4 accepts
-      only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
-      and `/etc/group`, and rejects UID/GID aliases or extra protected-group
-      primary/explicit/effective members; a final snapshot confirmation closes
-      drift during the remainder of live collection. Two bounded
+      only the closed files-authoritative NSS sequences `files` and
+      `files systemd` (the latter only as the same second-position fallback for
+      both passwd and group), binds `/etc/nsswitch.conf`, `/etc/passwd` and
+      `/etc/group`, and rejects UID/GID aliases or extra protected-group
+      primary/explicit/effective members. A final complete getent/id enumeration,
+      not merely another policy-file stat, closes identity drift during the
+      remainder of live collection. Two bounded
       all-process/all-thread passes additionally reject stale protected UID/GID
       holders outside the exact current unit cgroups, record every active
       capability set plus `CapBnd`, reject reviewed dangerous non-root

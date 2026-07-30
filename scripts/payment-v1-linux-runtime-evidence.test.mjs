@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertEffectiveConditionSnapshotUnchangedV1,
+  assertCompleteNssSnapshotUnchangedV2,
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
@@ -1491,7 +1492,7 @@ test("complete NSS parsers reject ambiguous, noncanonical, or duplicate enumerat
   }
 });
 
-test("NSS policy accepts only local files with inherited initgroups", () => {
+test("NSS policy accepts only reviewed files-authoritative source sequences", () => {
   assert.deepEqual(
     parseLocalFilesNsswitchV1([
       "passwd: files",
@@ -1505,9 +1506,30 @@ test("NSS policy accepts only local files with inherited initgroups", () => {
       passwd: ["files"],
     },
   );
+  assert.deepEqual(
+    parseLocalFilesNsswitchV1([
+      "passwd: files systemd",
+      "group: files systemd # Ubuntu's reviewed fallback sequence",
+      "hosts: files dns",
+      "",
+    ].join("\n")),
+    {
+      group: ["files", "systemd"],
+      initgroups: "inherits-group",
+      passwd: ["files", "systemd"],
+    },
+  );
   for (const input of [
     "passwd: files systemd\ngroup: files\n",
+    "passwd: files\ngroup: files systemd\n",
+    "passwd: systemd files\ngroup: systemd files\n",
+    "passwd: systemd\ngroup: systemd\n",
+    "passwd: files systemd systemd\ngroup: files systemd systemd\n",
     "passwd: files\ngroup: files sss\n",
+    "passwd: files ldap\ngroup: files ldap\n",
+    "passwd: files dns\ngroup: files dns\n",
+    "passwd: files winbind\ngroup: files winbind\n",
+    "passwd: files nis\ngroup: files nis\n",
     "passwd: files\ngroup: files\ninitgroups: files\n",
     "passwd: files\npasswd: files\ngroup: files\n",
     "passwd: files\ngroup: files [SUCCESS=merge] systemd\n",
@@ -1515,7 +1537,7 @@ test("NSS policy accepts only local files with inherited initgroups", () => {
   ]) {
     assert.throws(
       () => parseLocalFilesNsswitchV1(input),
-      /local-files-only|repeats|simple local profile/,
+      /files-only or files-then-systemd|inherit group|repeats|simple local profile/,
     );
   }
 });
@@ -1536,6 +1558,33 @@ test("final NSS policy confirmation rejects identity or policy drift after enume
   assert.throws(
     () => assertLocalFilesNssPolicyUnchanged(nss, changedIdentity),
     /changed after complete enumeration/,
+  );
+});
+
+test("final NSS snapshot confirmation repeats the complete getent and id projection", () => {
+  const nss = fixture().evidence.nss;
+  assert.equal(assertCompleteNssSnapshotUnchangedV2(nss, clone(nss)), true);
+
+  const changedPasswdProjection = clone(nss);
+  changedPasswdProjection.passwd_stdout_sha256 = hash("changed-passwd-projection");
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedPasswdProjection),
+    /complete getent\/id projection changed/,
+  );
+
+  const changedGroups = clone(nss);
+  changedGroups.users[0].supplementary_gids = [731];
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedGroups),
+    /complete getent\/id projection changed/,
+  );
+
+  const changedFallback = clone(nss);
+  changedFallback.sources.passwd = ["files", "systemd"];
+  changedFallback.sources.group = ["files", "systemd"];
+  assert.throws(
+    () => assertCompleteNssSnapshotUnchangedV2(nss, changedFallback),
+    /complete getent\/id projection changed/,
   );
 });
 
@@ -2142,6 +2191,11 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   const value = stoppedEdgeFixture();
   assert.equal(validateStopped(value), true);
 
+  const reviewedSystemdFallback = stoppedEdgeFixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validateStopped(reviewedSystemdFallback), true);
+
   const active = stoppedEdgeFixture();
   active.evidence.stopped_unit_passes[1][0].active_state = "active";
   assert.throws(() => validateStopped(active), /not fully stopped/);
@@ -2183,6 +2237,11 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
 test("stopped directory-relay preparation is closed and can never become live evidence", () => {
   const value = stoppedRelayFixture();
   assert.equal(validateStoppedRelay(value), true);
+
+  const reviewedSystemdFallback = stoppedRelayFixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validateStoppedRelay(reviewedSystemdFallback), true);
 
   const active = stoppedRelayFixture();
   active.evidence.stopped_unit_passes[1][0].active_state = "active";
@@ -2550,9 +2609,27 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   foreignBusctlSchema.request.busctl_unit_properties = ["Conditions", "Triggers"];
   assert.throws(() => validate(foreignBusctlSchema), /busctl property schema/);
 
+  const reviewedSystemdFallback = fixture();
+  reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
+  reviewedSystemdFallback.evidence.nss.sources.group = ["files", "systemd"];
+  assert.equal(validate(reviewedSystemdFallback), true);
+
+  const legacyNssProfile = fixture();
+  legacyNssProfile.evidence.nss.backend_profile = "local-files-only-v1";
+  assert.throws(() => validate(legacyNssProfile), /files-authoritative backend/);
+
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
-  assert.throws(() => validate(remoteBackend), /local-files-only profile/);
+  assert.throws(() => validate(remoteBackend), /files-only or files-then-systemd/);
+
+  const mixedFallback = fixture();
+  mixedFallback.evidence.nss.sources.passwd.push("systemd");
+  assert.throws(() => validate(mixedFallback), /files-only or files-then-systemd/);
+
+  const wrongFallbackOrder = fixture();
+  wrongFallbackOrder.evidence.nss.sources.passwd = ["systemd", "files"];
+  wrongFallbackOrder.evidence.nss.sources.group = ["systemd", "files"];
+  assert.throws(() => validate(wrongFallbackOrder), /files-only or files-then-systemd/);
 
   const writablePolicy = fixture();
   writablePolicy.evidence.nss.nsswitch_file.mode = "0664";

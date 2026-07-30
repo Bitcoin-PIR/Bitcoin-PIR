@@ -42,7 +42,8 @@ export const STOPPED_EDGE_EVIDENCE_KIND =
 export const STOPPED_RELAY_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
-export const NSS_BACKEND_PROFILE = "local-files-only-v1";
+export const NSS_BACKEND_PROFILE =
+  "local-files-authoritative-reviewed-systemd-fallback-v2";
 const LIVE_SCHEMA_VERSION = 4;
 const STOPPED_EDGE_SCHEMA_VERSION = 3;
 const STOPPED_RELAY_SCHEMA_VERSION = 2;
@@ -118,6 +119,18 @@ const LOCKED_SERVICE_ACCOUNT_SHELLS = Object.freeze([
   "/bin/false",
   "/usr/sbin/nologin",
 ]);
+const REVIEWED_NSS_SOURCE_PROFILES = Object.freeze([
+  Object.freeze({
+    group: Object.freeze(["files"]),
+    initgroups: "inherits-group",
+    passwd: Object.freeze(["files"]),
+  }),
+  Object.freeze({
+    group: Object.freeze(["files", "systemd"]),
+    initgroups: "inherits-group",
+    passwd: Object.freeze(["files", "systemd"]),
+  }),
+]);
 const REVIEWED_ONESHOT_UNIT = "bitcoinpir-lightning-preflight.service";
 const REVIEWED_ONESHOT_FRAGMENT = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
 const REQUIRED_COMMANDS = Object.freeze([
@@ -161,6 +174,21 @@ function exactKeys(value, keys, label) {
   if (canonicalJson(actual) !== canonicalJson(expected)) {
     fail(`${label} keys must equal ${JSON.stringify(expected)}`);
   }
+}
+
+function assertReviewedNssSources(sources, label = "NSS sources") {
+  exactKeys(sources, ["group", "initgroups", "passwd"], label);
+  const encoded = canonicalJson(sources);
+  if (
+    !REVIEWED_NSS_SOURCE_PROFILES.some(
+      (profile) => canonicalJson(profile) === encoded,
+    )
+  ) {
+    fail(
+      `${label} must be exactly files-only or files-then-systemd for both passwd and group with inherited initgroups`,
+    );
+  }
+  return sources;
 }
 
 function validateAbsolutePath(value, label) {
@@ -1009,18 +1037,18 @@ export function parseLocalFilesNsswitchV1(text) {
     }
     databases.set(database, sources);
   }
-  if (
-    canonicalJson(databases.get("passwd")) !== canonicalJson(["files"]) ||
-    canonicalJson(databases.get("group")) !== canonicalJson(["files"]) ||
-    databases.has("initgroups")
-  ) {
-    fail("NSS backend is not the reviewed local-files-only profile");
+  if (!databases.has("passwd") || !databases.has("group")) {
+    fail("NSS backend must define both passwd and group sources");
   }
-  return {
-    group: ["files"],
+  const sources = {
+    group: databases.get("group"),
     initgroups: "inherits-group",
-    passwd: ["files"],
+    passwd: databases.get("passwd"),
   };
+  if (databases.has("initgroups")) {
+    fail("NSS backend must inherit group sources for initgroups");
+  }
+  return assertReviewedNssSources(sources, "NSS backend sources");
 }
 
 function collectLocalFilesNssPolicy() {
@@ -1139,8 +1167,17 @@ export function assertLocalFilesNssPolicyUnchanged(nss, currentPolicy) {
   return true;
 }
 
-function confirmLocalFilesNssPolicyUnchanged(nss) {
-  return assertLocalFilesNssPolicyUnchanged(nss, collectLocalFilesNssPolicy());
+export function assertCompleteNssSnapshotUnchangedV2(expected, actual) {
+  if (canonicalJson(expected) !== canonicalJson(actual)) {
+    fail(
+      "local NSS policy, identity files, or complete getent/id projection changed after complete enumeration",
+    );
+  }
+  return true;
+}
+
+function confirmCompleteNssSnapshotUnchanged(nss) {
+  return assertCompleteNssSnapshotUnchangedV2(nss, collectNss());
 }
 
 function collectLockedServiceAccountPolicy(request, nss) {
@@ -3282,15 +3319,11 @@ function validateStoppedNssEvidence(nss, request) {
   );
   if (
     nss.backend_profile !== NSS_BACKEND_PROFILE ||
-    nss.enumeration_kind !== NSS_ENUMERATION_KIND ||
-    canonicalJson(nss.sources) !== canonicalJson({
-      group: ["files"],
-      initgroups: "inherits-group",
-      passwd: ["files"],
-    })
+    nss.enumeration_kind !== NSS_ENUMERATION_KIND
   ) {
-    fail("stopped-edge NSS evidence is not the reviewed complete local-files profile");
+    fail("stopped-edge NSS evidence is not the reviewed files-authoritative profile");
   }
+  assertReviewedNssSources(nss.sources, "stopped-edge NSS sources");
   validatePolicyFileEvidence(nss.nsswitch_file, "/etc/nsswitch.conf", "stopped-edge nsswitch file");
   validatePolicyFileEvidence(nss.passwd_file, "/etc/passwd", "stopped-edge passwd file");
   validatePolicyFileEvidence(nss.group_file, "/etc/group", "stopped-edge group file");
@@ -4581,21 +4614,12 @@ export function validateLiveRuntimeEvidence({
     "live NSS evidence",
   );
   if (evidence.nss.backend_profile !== NSS_BACKEND_PROFILE) {
-    fail("live NSS evidence does not use the reviewed local-files-only backend");
+    fail("live NSS evidence does not use the reviewed files-authoritative backend");
   }
   if (evidence.nss.enumeration_kind !== NSS_ENUMERATION_KIND) {
     fail("live NSS evidence does not use the reviewed complete-enumeration profile");
   }
-  exactKeys(evidence.nss.sources, ["group", "initgroups", "passwd"], "live NSS sources");
-  if (
-    canonicalJson(evidence.nss.sources) !== canonicalJson({
-      group: ["files"],
-      initgroups: "inherits-group",
-      passwd: ["files"],
-    })
-  ) {
-    fail("live NSS sources are not the reviewed local-files-only profile");
-  }
+  assertReviewedNssSources(evidence.nss.sources, "live NSS sources");
   for (const [key, path] of [
     ["nsswitch_file", "/etc/nsswitch.conf"],
     ["passwd_file", "/etc/passwd"],
@@ -4990,7 +5014,7 @@ function collectStoppedPreparationEvidence({
   if (canonicalJson(accountPolicyStarted) !== canonicalJson(accountPolicyFinished)) {
     fail("service account login policy changed during stopped-edge collection");
   }
-  confirmLocalFilesNssPolicyUnchanged(nss);
+  confirmCompleteNssSnapshotUnchanged(nss);
   const hostFinished = readHostBinding();
   const finished = Math.floor(Date.now() / 1000);
   if (!sameHostGeneration(hostStarted, hostFinished)) {
@@ -5157,7 +5181,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (canonicalJson(runtimePaths) !== canonicalJson(finalRuntimePaths)) {
     fail("runtime path metadata changed during protected process collection");
   }
-  confirmLocalFilesNssPolicyUnchanged(nss);
+  confirmCompleteNssSnapshotUnchanged(nss);
   const hostFinished = readHostBinding();
   if (!sameHostGeneration(hostStarted, hostFinished)) {
     fail("host or boot identity changed during live collection");

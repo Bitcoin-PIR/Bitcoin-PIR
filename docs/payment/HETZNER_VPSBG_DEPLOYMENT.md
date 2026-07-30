@@ -653,7 +653,7 @@ non-persistent evidence.
 The code does not by itself clear this P1 blocker. Before public activation,
 the exact rendered Linux host must prove both units active, the volatile
 directory `0750`, all four sockets `0660` with the source-fair UID/GID, exact
-local-files NSS/supplementary-group membership, effective memory/task/file limits, and no
+files-authoritative NSS/supplementary-group membership, effective memory/task/file limits, and no
 drop-ins. It must also prove zero current/max swap, zero hard/soft core limits,
 and the safe host core pattern. The exact pinned Caddy and HAProxy binaries must pass the real
 fairness/leak suite without skipped tests. HAProxy sees traffic only after
@@ -662,21 +662,30 @@ header, handshake, firewall, and volumetric evidence is also mandatory. These
 are availability/privacy controls, not commercial pricing policy.
 
 The V1 NSS statement is deliberately narrow. The activation host must use
-`passwd: files` and `group: files` with no separate `initgroups:` entry. The
-collector binds stable snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and
-`/etc/group` around enumeration and confirms them again after the remaining
-live checks, requires ordinary `getent` identity-relevant account/group
-projections to agree, and checks every enumerated account with `id -G`.
+either exact `passwd/group: files` or exact `passwd/group: files systemd`, with
+the same sequence for both databases and no separate `initgroups:` entry.
+`systemd` is accepted only as Ubuntu's second, lower-priority fallback after
+the authoritative local files; `systemd files`, a mixed pair, action brackets,
+or any third source fail closed. The collector binds stable snapshots of
+`/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group` around enumeration,
+requires ordinary `getent` identity-relevant account/group projections to equal
+those files exactly, and checks every enumerated account with `id -G`. After all
+remaining live or stopped checks it repeats the complete `getent` and `id -G`
+projection and requires the second snapshot to equal the first byte-for-byte.
+This closed-set change uses the single
+`local-files-authoritative-reviewed-systemd-fallback-v2` backend tag; evidence
+carrying the older `local-files-only-v1` tag is rejected and must be recollected.
 The live pass hash-binds but does not semantically compare password, GECOS,
 home, shell and group-password fields. The mandatory stopped-edge pass also
 reads stable `/etc/passwd` and `/etc/shadow` snapshots and requires every
 manifest-bound service account to have the pinned UID/GID, a
 `/usr/sbin/nologin` or `/bin/false` shell, and a locked password. It rejects
 UID/GID aliases and any
-extra primary, explicit, or effective member of a protected group. A host using
-SSSD, LDAP, winbind, NIS or systemd UserDB cannot pass V1 merely because its
-currently visible `getent` output looks complete; such a backend needs an
-authoritative backend-specific generation/completeness proof.
+extra primary, explicit, or effective member of a protected group. SSSD, LDAP,
+winbind, NIS, `compat`, DNS, any other source, or a non-second-position systemd
+UserDB cannot pass V1 merely because its currently visible `getent` output looks
+complete; such a backend needs an authoritative backend-specific generation/
+completeness proof.
 
 Because removing a user from NSS does not revoke credentials already held by a
 Linux thread, the v4 collector also executes two bounded full `/proc` PID/TID
