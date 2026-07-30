@@ -29,6 +29,8 @@ export interface ProductAdmissionPanelOptionsV1 {
   roles: ProductAdmissionPanelRoleV1[];
   /** Honest product-layer note for adapters that still dial a pair together. */
   transportCompatibilityNotice?: string;
+  /** Fresh fail-closed trust check before offer/payment/token/auth transitions. */
+  beforeSecurityTransition?: () => void | Promise<void>;
   onStateChange?: (snapshot: ProductAdmissionSnapshotV1 | null) => void;
 }
 
@@ -420,6 +422,7 @@ export class ProductAdmissionPanelV1 {
     this.publicError = null;
     this.render();
     try {
+      await this.options.beforeSecurityTransition?.();
       const snapshot = await action();
       this.render(snapshot);
     } catch (error) {

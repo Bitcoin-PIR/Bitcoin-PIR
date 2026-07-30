@@ -7,6 +7,7 @@
  */
 
 import type { WasmDirectoryCatalogCandidateV1 } from './sdk-bridge.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 const DB_NAME = 'bitcoinpir-directory-v1';
 const DB_VERSION = 1;
@@ -71,9 +72,31 @@ export interface DirectoryDiscoveryEntryJsonV1 {
   directory_sequence: number;
   directory_valid_until: number;
   status: 'active';
-  operator_assertion: unknown;
-  catalog_hints: unknown[];
-  health: unknown;
+  operator_assertion: {
+    v: 1;
+    operator_pubkey_ed25519: string;
+    stable_server_id: string;
+    provider_id: string;
+    assertion_epoch: number;
+    not_before: number;
+    valid_until: number;
+    endpoints: Array<{ transport: 'wss'; url: string }>;
+    policy_signing_key_ed25519: string;
+    policy_epoch: number;
+    policy_digest: string;
+    signature_ed25519: string;
+  };
+  catalog_hints: Array<{
+    scope_id: string;
+    backend: 'dpf-pir-v1' | 'harmony-pir-v2' | 'onion-pir-v1' | 'tee-oram-v1';
+    workload: 'dpf-evaluate-job-v1' | 'harmony-hint-bundle-v1'
+      | 'harmony-query-job-v1' | 'onion-evaluate-job-v1' | 'tee-oram-query-v1';
+    acquisition: 'free-v1' | 'bolt11-v1' | 'cashu-ecash-v1';
+    authorization: 'free-v1' | 'bolt11-direct-receipt-v1' | 'cashu-ecash-v1'
+      | 'bitcoinpir-cashu-bat-v1' | 'arc-v1-experimental';
+    deployment: 'stable' | 'experimental';
+  }>;
+  health: { class: 'unknown' | 'available' | 'degraded' | 'unavailable'; observed_bucket: number };
 }
 
 export interface SelectableDirectoryEntryV1 {
@@ -94,12 +117,20 @@ export interface SelectableDirectoryShardV1 {
   shard: number;
   checkpointEpoch: string;
   checkpointRootHex: string;
+  checkpointValidUntilUnix: string;
   entries: SelectableDirectoryEntryV1[];
 }
 
 export interface SelectableDirectoryCatalogV1 {
   version: 1;
   directoryPubkeyHex: string;
+  /** Relay transport assurance only; never persisted in rollback state. */
+  directoryMode: 'strict-multi-relay' | 'centralized-single-relay';
+  directoryAssurance:
+    | 'multi-origin-split-view-compared'
+    | 'centralized-degraded-no-relay-cross-check';
+  /** Minimum of every authenticated checkpoint and entry, including tombstones. */
+  catalogValidUntilUnix: string;
   shards: SelectableDirectoryShardV1[];
 }
 
@@ -141,6 +172,7 @@ export class DirectoryRollbackVaultV1 {
    */
   async acceptCatalog(
     candidate: WasmDirectoryCatalogCandidateV1,
+    nowUnix?: bigint,
   ): Promise<SelectableDirectoryCatalogV1> {
     const keys = parseStateKeys(candidate.stateKeysJson());
     return withExclusiveLock(`bitcoinpir:directory:${keys.directoryPubkeyHex}`, async () => {
@@ -150,7 +182,11 @@ export class DirectoryRollbackVaultV1 {
       await applyAtomicCas(this.db, writes);
       const durable = successorEnvelope(plan);
       candidate.acknowledgePersisted(encodeJson(durable));
-      return parseSelectableCatalog(candidate.selectableCatalogJson(), keys.directoryPubkeyHex);
+      return parseSelectableCatalog(
+        candidate.selectableCatalogJson(),
+        keys,
+        nowUnix ?? trustedNowUnixV1(),
+      );
     });
   }
 
@@ -304,36 +340,76 @@ function successorEnvelope(plan: RollbackPlanV1): StateEnvelopeV1 {
 
 function parseSelectableCatalog(
   json: string,
-  expectedDirectoryPubkeyHex: string,
+  expectedKeys: DirectoryStateKeysV1,
+  nowUnix: bigint,
 ): SelectableDirectoryCatalogV1 {
-  let value: SelectableDirectoryCatalogV1;
+  let decoded: unknown;
   try {
-    value = JSON.parse(json) as SelectableDirectoryCatalogV1;
+    decoded = JSON.parse(json) as unknown;
   } catch {
     throw new Error('WASM returned malformed selectable directory catalog');
   }
+  const value = exactRecord(decoded, [
+    'version',
+    'directoryPubkeyHex',
+    'directoryMode',
+    'directoryAssurance',
+    'catalogValidUntilUnix',
+    'shards',
+  ], 'selectable directory catalog');
   if (value.version !== 1
       || canonicalHex32('directoryPubkeyHex', value.directoryPubkeyHex)
-        !== expectedDirectoryPubkeyHex
+        !== expectedKeys.directoryPubkeyHex
+      || !validDirectoryAssurance(value.directoryMode, value.directoryAssurance)
       || !Array.isArray(value.shards) || value.shards.length !== 16) {
     throw new Error('selectable directory catalog has the wrong namespace or shard count');
   }
   const providers = new Set<string>();
-  value.shards.forEach((shard, index) => {
+  let conservativeExpiry: bigint | null = null;
+  const shards = value.shards.map((candidate, index): SelectableDirectoryShardV1 => {
+    const shard = exactRecord(candidate, [
+      'shard',
+      'checkpointEpoch',
+      'checkpointRootHex',
+      'checkpointValidUntilUnix',
+      'entries',
+    ], 'selectable directory shard');
     if (canonicalShard(shard.shard) !== index
         || !isPositiveDecimal(shard.checkpointEpoch)
         || canonicalHex32('checkpointRootHex', shard.checkpointRootHex).length !== 64
+        || !isPositiveDecimal(shard.checkpointValidUntilUnix)
         || !Array.isArray(shard.entries)) {
       throw new Error('selectable directory shard is malformed');
     }
-    for (const item of shard.entries) {
+    conservativeExpiry = minimumUnix(
+      conservativeExpiry,
+      BigInt(shard.checkpointValidUntilUnix),
+    );
+    const entries = shard.entries.map((candidateEntry): SelectableDirectoryEntryV1 => {
+      const item = exactRecord(candidateEntry, [
+        'providerIdHex',
+        'eventIdHex',
+        'directorySequence',
+        'directoryValidUntil',
+        'operatorPubkeyEd25519Hex',
+        'stableServerId',
+        'policySigningKeyEd25519Hex',
+        'assertionEpoch',
+        'policyEpoch',
+        'policyDigestHex',
+        'entry',
+      ], 'selectable directory entry');
       const provider = canonicalHex32('providerIdHex', item.providerIdHex);
       if (providers.has(provider)) throw new Error('provider appears in multiple directory shards');
       providers.add(provider);
+      const directoryValidUntil = positiveDecimal(
+        'directoryValidUntil',
+        item.directoryValidUntil,
+      );
+      const entry = parseDiscoveryEntry(item.entry, provider, item);
       if (provider[0] !== index.toString(16)
           || canonicalHex32('eventIdHex', item.eventIdHex).length !== 64
           || !isPositiveDecimal(item.directorySequence)
-          || !isPositiveDecimal(item.directoryValidUntil)
           || canonicalHex32('operatorPubkeyEd25519Hex', item.operatorPubkeyEd25519Hex).length !== 64
           || typeof item.stableServerId !== 'string' || item.stableServerId.length === 0
           || canonicalHex32(
@@ -343,16 +419,282 @@ function parseSelectableCatalog(
           || item.policySigningKeyEd25519Hex === item.operatorPubkeyEd25519Hex
           || !isPositiveDecimal(item.assertionEpoch)
           || !isPositiveDecimal(item.policyEpoch)
-          || canonicalHex32('policyDigestHex', item.policyDigestHex).length !== 64
-          || item.entry?.v !== 1 || item.entry.status !== 'active'
-          || item.entry.provider_id !== provider
-          || String(item.entry.directory_sequence) !== item.directorySequence
-          || String(item.entry.directory_valid_until) !== item.directoryValidUntil) {
+          || canonicalHex32('policyDigestHex', item.policyDigestHex).length !== 64) {
         throw new Error('selectable directory entry is malformed or inconsistent');
       }
-    }
+      conservativeExpiry = minimumUnix(conservativeExpiry, BigInt(directoryValidUntil));
+      return {
+        providerIdHex: provider,
+        eventIdHex: canonicalHex32('eventIdHex', item.eventIdHex),
+        directorySequence: positiveDecimal('directorySequence', item.directorySequence),
+        directoryValidUntil,
+        operatorPubkeyEd25519Hex: canonicalHex32(
+          'operatorPubkeyEd25519Hex',
+          item.operatorPubkeyEd25519Hex,
+        ),
+        stableServerId: item.stableServerId,
+        policySigningKeyEd25519Hex: canonicalHex32(
+          'policySigningKeyEd25519Hex',
+          item.policySigningKeyEd25519Hex,
+        ),
+        assertionEpoch: positiveDecimal('assertionEpoch', item.assertionEpoch),
+        policyEpoch: positiveDecimal('policyEpoch', item.policyEpoch),
+        policyDigestHex: canonicalHex32('policyDigestHex', item.policyDigestHex),
+        entry,
+      };
+    });
+    return {
+      shard: index,
+      checkpointEpoch: positiveDecimal('checkpointEpoch', shard.checkpointEpoch),
+      checkpointRootHex: canonicalHex32('checkpointRootHex', shard.checkpointRootHex),
+      checkpointValidUntilUnix: positiveDecimal(
+        'checkpointValidUntilUnix',
+        shard.checkpointValidUntilUnix,
+      ),
+      entries,
+    };
   });
+  const claimedExpiry = positiveDecimal('catalogValidUntilUnix', value.catalogValidUntilUnix);
+  const rollbackProviders = new Set(expectedKeys.entries);
+  if ([...providers].some((provider) => !rollbackProviders.has(provider))) {
+    throw new Error('selectable directory provider has no rollback state key');
+  }
+  // Tombstones participate in the Rust-computed catalog minimum but are not
+  // exported as selectable entries. The claimed minimum may therefore be
+  // earlier than every expiry visible here, but it must never extend one.
+  if (conservativeExpiry === null || BigInt(claimedExpiry) > conservativeExpiry) {
+    throw new Error('selectable directory catalog expiry extends authenticated validity');
+  }
+  if (nowUnix <= 0n || nowUnix > BigInt(claimedExpiry)) {
+    throw new Error('selectable directory catalog is expired');
+  }
+  for (const shard of shards) {
+    for (const entry of shard.entries) {
+      freezeDiscoveryEntry(entry.entry);
+      Object.freeze(entry);
+    }
+    Object.freeze(shard.entries);
+    Object.freeze(shard);
+  }
+  Object.freeze(shards);
+  return Object.freeze({
+    version: 1,
+    directoryPubkeyHex: expectedKeys.directoryPubkeyHex,
+    directoryMode: value.directoryMode as SelectableDirectoryCatalogV1['directoryMode'],
+    directoryAssurance:
+      value.directoryAssurance as SelectableDirectoryCatalogV1['directoryAssurance'],
+    catalogValidUntilUnix: claimedExpiry,
+    shards,
+  });
+}
+
+function freezeDiscoveryEntry(entry: DirectoryDiscoveryEntryJsonV1): void {
+  for (const endpoint of entry.operator_assertion.endpoints) Object.freeze(endpoint);
+  Object.freeze(entry.operator_assertion.endpoints);
+  Object.freeze(entry.operator_assertion);
+  for (const hint of entry.catalog_hints) Object.freeze(hint);
+  Object.freeze(entry.catalog_hints);
+  Object.freeze(entry.health);
+  Object.freeze(entry);
+}
+
+/** Recheck immediately before admission/payment/token/query transitions. */
+export function assertSelectableDirectoryCatalogFreshV1(
+  catalog: SelectableDirectoryCatalogV1,
+  nowUnix: bigint = trustedNowUnixV1(),
+): void {
+  const expiry = positiveDecimal('catalogValidUntilUnix', catalog.catalogValidUntilUnix);
+  if (nowUnix <= 0n || nowUnix > BigInt(expiry)) {
+    throw new Error('verified directory catalog expired; refresh is required');
+  }
+}
+
+function parseDiscoveryEntry(
+  candidate: unknown,
+  providerIdHex: string,
+  selectable: Record<string, unknown>,
+): DirectoryDiscoveryEntryJsonV1 {
+  const entry = exactRecord(candidate, [
+    'v',
+    'provider_id',
+    'directory_sequence',
+    'directory_valid_until',
+    'status',
+    'operator_assertion',
+    'catalog_hints',
+    'health',
+  ], 'directory discovery entry');
+  const assertion = exactRecord(entry.operator_assertion, [
+    'v',
+    'operator_pubkey_ed25519',
+    'stable_server_id',
+    'provider_id',
+    'assertion_epoch',
+    'not_before',
+    'valid_until',
+    'endpoints',
+    'policy_signing_key_ed25519',
+    'policy_epoch',
+    'policy_digest',
+    'signature_ed25519',
+  ], 'directory operator assertion');
+  if (!Array.isArray(assertion.endpoints) || assertion.endpoints.length === 0
+      || !Array.isArray(entry.catalog_hints)) {
+    throw new Error('directory discovery entry has malformed assertion or hints');
+  }
+  const endpoints = assertion.endpoints.map((candidateEndpoint) => {
+    const endpoint = exactRecord(candidateEndpoint, ['transport', 'url'], 'directory endpoint');
+    if (endpoint.transport !== 'wss' || typeof endpoint.url !== 'string'
+        || endpoint.url.length === 0 || endpoint.url.length > 512) {
+      throw new Error('directory endpoint is malformed');
+    }
+    return { transport: 'wss' as const, url: endpoint.url };
+  });
+  const catalogHints = entry.catalog_hints.map((candidateHint) => {
+    const hint = exactRecord(candidateHint, [
+      'scope_id', 'backend', 'workload', 'acquisition', 'authorization', 'deployment',
+    ], 'directory catalog hint');
+    return {
+      scope_id: canonicalHex32('catalog hint scope_id', hint.scope_id),
+      backend: exactStringMember('catalog hint backend', hint.backend, [
+        'dpf-pir-v1', 'harmony-pir-v2', 'onion-pir-v1', 'tee-oram-v1',
+      ] as const),
+      workload: exactStringMember('catalog hint workload', hint.workload, [
+        'dpf-evaluate-job-v1', 'harmony-hint-bundle-v1', 'harmony-query-job-v1',
+        'onion-evaluate-job-v1', 'tee-oram-query-v1',
+      ] as const),
+      acquisition: exactStringMember('catalog hint acquisition', hint.acquisition, [
+        'free-v1', 'bolt11-v1', 'cashu-ecash-v1',
+      ] as const),
+      authorization: exactStringMember('catalog hint authorization', hint.authorization, [
+        'free-v1', 'bolt11-direct-receipt-v1', 'cashu-ecash-v1',
+        'bitcoinpir-cashu-bat-v1', 'arc-v1-experimental',
+      ] as const),
+      deployment: exactStringMember('catalog hint deployment', hint.deployment, [
+        'stable', 'experimental',
+      ] as const),
+    };
+  });
+  const health = exactRecord(entry.health, ['class', 'observed_bucket'], 'directory health');
+  const directorySequence = positiveSafeInteger(
+    'directory discovery sequence',
+    entry.directory_sequence,
+  );
+  const directoryValidUntil = positiveSafeInteger(
+    'directory discovery expiry',
+    entry.directory_valid_until,
+  );
+  const assertionEpoch = positiveSafeInteger('assertion epoch', assertion.assertion_epoch);
+  const assertionNotBefore = positiveSafeInteger('assertion not-before', assertion.not_before);
+  const assertionValidUntil = positiveSafeInteger('assertion expiry', assertion.valid_until);
+  const policyEpoch = positiveSafeInteger('assertion policy epoch', assertion.policy_epoch);
+  const observedBucket = positiveSafeInteger('directory health bucket', health.observed_bucket);
+  const healthClass = exactStringMember('directory health class', health.class, [
+    'unknown', 'available', 'degraded', 'unavailable',
+  ] as const);
+  if (entry.v !== 1 || entry.status !== 'active'
+      || entry.provider_id !== providerIdHex
+      || String(directorySequence) !== selectable.directorySequence
+      || String(directoryValidUntil) !== selectable.directoryValidUntil
+      || assertion.v !== 1
+      || assertion.provider_id !== providerIdHex
+      || assertion.operator_pubkey_ed25519 !== selectable.operatorPubkeyEd25519Hex
+      || assertion.stable_server_id !== selectable.stableServerId
+      || String(assertionEpoch) !== selectable.assertionEpoch
+      || assertion.policy_signing_key_ed25519 !== selectable.policySigningKeyEd25519Hex
+      || String(policyEpoch) !== selectable.policyEpoch
+      || assertion.policy_digest !== selectable.policyDigestHex
+      || typeof assertion.signature_ed25519 !== 'string'
+      || !/^[0-9a-f]{128}$/.test(assertion.signature_ed25519)
+      || typeof assertion.stable_server_id !== 'string'
+      || assertion.stable_server_id.length === 0
+      || assertion.stable_server_id.length > 256) {
+    throw new Error('directory discovery entry is inconsistent with selectable trust material');
+  }
+  return {
+    v: 1,
+    provider_id: providerIdHex,
+    directory_sequence: directorySequence,
+    directory_valid_until: directoryValidUntil,
+    status: 'active',
+    operator_assertion: {
+      v: 1,
+      operator_pubkey_ed25519: canonicalHex32(
+        'assertion operator key',
+        assertion.operator_pubkey_ed25519,
+      ),
+      stable_server_id: assertion.stable_server_id as string,
+      provider_id: providerIdHex,
+      assertion_epoch: assertionEpoch,
+      not_before: assertionNotBefore,
+      valid_until: assertionValidUntil,
+      endpoints,
+      policy_signing_key_ed25519: canonicalHex32(
+        'assertion policy key',
+        assertion.policy_signing_key_ed25519,
+      ),
+      policy_epoch: policyEpoch,
+      policy_digest: canonicalHex32('assertion policy digest', assertion.policy_digest),
+      signature_ed25519: assertion.signature_ed25519,
+    },
+    catalog_hints: catalogHints,
+    health: { class: healthClass, observed_bucket: observedBucket },
+  };
+}
+
+function exactRecord(
+  candidate: unknown,
+  expectedFields: readonly string[],
+  label: string,
+): Record<string, any> {
+  if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const value = candidate as Record<string, unknown>;
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedFields].sort();
+  if (actual.length !== expected.length
+      || actual.some((field, index) => field !== expected[index])) {
+    throw new Error(`${label} has unknown or missing fields`);
+  }
   return value;
+}
+
+function positiveDecimal(field: string, value: unknown): string {
+  if (!isPositiveDecimal(value)) throw new Error(`${field} must be a positive decimal string`);
+  return value;
+}
+
+function positiveSafeInteger(field: string, value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new Error(`${field} must be a positive safe integer`);
+  }
+  return Number(value);
+}
+
+function exactStringMember<const T extends string>(
+  field: string,
+  value: unknown,
+  allowed: readonly T[],
+): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new Error(`${field} has an unsupported value`);
+  }
+  return value as T;
+}
+
+function minimumUnix(current: bigint | null, candidate: bigint): bigint {
+  return current === null || candidate < current ? candidate : current;
+}
+
+function validDirectoryAssurance(
+  mode: unknown,
+  assurance: unknown,
+): boolean {
+  return (mode === 'strict-multi-relay'
+      && assurance === 'multi-origin-split-view-compared')
+    || (mode === 'centralized-single-relay'
+      && assurance === 'centralized-degraded-no-relay-cross-check');
 }
 
 function fixedStateBytes(value: unknown): Uint8Array {

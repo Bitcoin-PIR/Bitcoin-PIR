@@ -1,5 +1,6 @@
 version = 1
 status = "UNRESOLVED"
+directory_mode = "UNRESOLVED"
 implementation = "UNRESOLVED"
 source_repository = "UNRESOLVED"
 source_commit = "UNRESOLVED"
@@ -12,6 +13,8 @@ config_sha256 = "UNRESOLVED"
 publisher_pubkey_hex = "UNRESOLVED"
 
 # Fixed BitcoinPIR directory-relay profile. These are not commercial policy.
+# Resolve directory_mode to exactly "strict-multi-relay" or
+# "centralized-single-relay"; the latter is an explicit degraded opt-in.
 listen_host = "127.0.0.1"
 allowed_kind = 30078
 max_event_message_bytes = 262176

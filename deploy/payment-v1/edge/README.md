@@ -130,12 +130,15 @@ independent lanes:
 | --- | --- | --- | --- | ---: | ---: |
 | PIR provider | public HTTPS/WSS `/v1/pir` | `provider.sock` | `127.0.0.1:8191` | 128 | 8 |
 | payment issuer | public HTTPS enumerated routes | `issuer.sock` | `127.0.0.1:5610` | 128 | 8 |
-| directory readers | public WSS `/v1/directory` | `directory-public.sock` | `127.0.0.1:8080` | 48 | 4 |
-| directory publisher | private-route, exact-source WSS `/v1/directory` | `directory-publisher.sock` | `127.0.0.1:8081` | 4 | 2 |
+| directory readers | dedicated public WSS origin, exact `/` | `directory-public.sock` | `127.0.0.1:8080` | 48 | 4 |
+| directory publisher | dedicated private-route WSS origin, exact `/` | `directory-publisher.sock` | `127.0.0.1:8081` | 4 | 2 |
 
 The publisher listener binds a distinct RFC1918/ULA address and hostname and
 requires the publisher's exact RFC1918/ULA WireGuard/private-route source in
 both Caddy's direct-peer matcher and HAProxy's PROXY-v2-decoded source check.
+Both relay hostnames use the root WebSocket path so the public and publisher
+clients can supply the protocol's exact origin-only URL; `/v1/directory` and
+every other path fail closed.
 PROXY v2 is not itself authenticated. Source integrity here comes from the
 protected Unix-socket directory/mode, exact Caddy supplementary-group
 membership, the HAProxy owner identity, and the stopped/live

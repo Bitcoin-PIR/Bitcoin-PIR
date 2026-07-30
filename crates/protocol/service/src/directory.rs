@@ -423,8 +423,8 @@ impl DirectoryOperatorAssertionV1 {
 /// Return whether `endpoint` is the canonical, credential-free public `wss://`
 /// form accepted by the directory protocol.
 ///
-/// Publisher transports reuse this exact predicate so relay destinations and
-/// provider discovery endpoints cannot drift into different URL grammars.
+/// Provider discovery endpoints use this broader path-capable grammar. Relay
+/// transports use the origin-only predicate below.
 pub fn is_canonical_public_wss_endpoint_v1(endpoint: &str) -> bool {
     if endpoint.is_empty()
         || endpoint.len() > MAX_DIRECTORY_ENDPOINT_LEN_V1
@@ -499,6 +499,13 @@ pub fn is_canonical_public_wss_endpoint_v1(endpoint: &str) -> bool {
         return false;
     }
     true
+}
+
+/// Canonical directory-relay form: the exact credential-free public WSS
+/// origin with no path. Provider service endpoints intentionally retain the
+/// broader endpoint grammar above.
+pub fn is_canonical_public_wss_origin_v1(origin: &str) -> bool {
+    is_canonical_public_wss_endpoint_v1(origin) && !origin["wss://".len()..].contains('/')
 }
 
 #[cfg(test)]
@@ -673,7 +680,10 @@ mod tests {
             "wss://a.example/v1?x=1",
             "wss://a.example//query",
             "wss://a.example/v1//query",
-            &format!("wss://a.example/{}", "x".repeat(MAX_DIRECTORY_ENDPOINT_LEN_V1)),
+            &format!(
+                "wss://a.example/{}",
+                "x".repeat(MAX_DIRECTORY_ENDPOINT_LEN_V1)
+            ),
         ] {
             assert!(!is_canonical_public_wss_endpoint_v1(bad), "accepted {bad}");
         }
@@ -681,6 +691,13 @@ mod tests {
         assert!(is_canonical_public_wss_endpoint_v1(
             "wss://a.example:8443/v1"
         ));
+        assert!(is_canonical_public_wss_origin_v1("wss://a.example"));
+        assert!(is_canonical_public_wss_origin_v1("wss://a.example:8443"));
+        assert!(!is_canonical_public_wss_origin_v1("wss://a.example/v1"));
+        assert!(!is_canonical_public_wss_origin_v1("wss://a.example/"));
+        assert!(!is_canonical_public_wss_origin_v1("wss://a.example:443"));
+        assert!(!is_canonical_public_wss_origin_v1("wss://a.example:0"));
+        assert!(!is_canonical_public_wss_origin_v1("wss://a.example:08443"));
     }
 
     #[test]

@@ -29,10 +29,10 @@ const { WebSocketServer } = requireFromWeb("ws");
 
 const SCRIPT = new URL("./payment-v1-nostr-readback.mjs", import.meta.url);
 const SCRIPT_PATH = fileURLToPath(SCRIPT);
-const VALID_RELAYS = ["wss://a.example", "wss://b.example:8443/v1"];
+const VALID_RELAYS = ["wss://a.example", "wss://b.example:8443"];
 const EXPECTED_SET_DIGEST = "0".repeat(64);
 
-function run(artifact, relays = VALID_RELAYS) {
+function run(artifact, relays = VALID_RELAYS, centralizedSingleRelay = false) {
   return spawnSync(
     process.execPath,
     [
@@ -40,12 +40,53 @@ function run(artifact, relays = VALID_RELAYS) {
       "--artifact",
       artifact,
       ...relays.flatMap((relay) => ["--relay", relay]),
+      ...(centralizedSingleRelay ? ["--centralized-single-relay"] : []),
       "--expected-set-digest-hex",
       EXPECTED_SET_DIGEST,
     ],
     { encoding: "utf8", timeout: 5_000 },
   );
 }
+
+test("single relay requires explicit centralized mode and never downgrades strict mode", () => {
+  const directory = privateTempdir();
+  try {
+    const artifact = join(directory, "artifact.json");
+    writeFileSync(artifact, "{}", { mode: 0o600 });
+
+    const strictOne = run(artifact, ["wss://central.example"]);
+    assert.equal(strictOne.status, 2);
+    assert.match(strictOne.stderr, /strict-relay-count-out-of-range/);
+
+    const centralizedOne = run(artifact, ["wss://central.example"], true);
+    assert.equal(centralizedOne.status, 2);
+    assert.match(centralizedOne.stderr, /invalid-artifact-shape/);
+    assert.doesNotMatch(
+      centralizedOne.stderr,
+      /centralized-single-relay-requires-exactly-one-relay/,
+    );
+
+    const centralizedTwo = run(artifact, VALID_RELAYS, true);
+    assert.equal(centralizedTwo.status, 2);
+    assert.match(
+      centralizedTwo.stderr,
+      /centralized-single-relay-requires-exactly-one-relay/,
+    );
+
+    const strictZero = run(artifact, []);
+    assert.equal(strictZero.status, 2);
+    assert.match(strictZero.stderr, /strict-relay-count-out-of-range/);
+
+    const strictNine = run(
+      artifact,
+      Array.from({ length: 9 }, (_, index) => `wss://relay-${index}.example`),
+    );
+    assert.equal(strictNine.status, 2);
+    assert.match(strictNine.stderr, /strict-relay-count-out-of-range/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function privateTempdir() {
   const directory = mkdtempSync(join(tmpdir(), "bpir-nostr-readback-test-"));
@@ -98,12 +139,15 @@ test("raw relay aliases fail before URL normalization", () => {
       "ws://a.example",
       "wss://A.example",
       "wss://a.example:443",
+      "wss://a.example:0",
+      "wss://a.example:08443",
       "wss://a.example:08443/v1",
       "wss://127.0.0.1",
       "wss://[::1]",
       "wss://internal",
       "wss://a.example.",
       "wss://a.example/",
+      "wss://a.example/v1",
       "wss://a.example//query",
       "wss://a.example/v1//query",
       "wss://a.example/v1/../query",

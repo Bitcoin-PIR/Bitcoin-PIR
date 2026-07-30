@@ -212,13 +212,13 @@
 	bind @PUBLIC_HTTPS_BIND@
 	@directory_ws {
 		method GET
-		path /v1/directory
+		path /
 		header Host @DIRECTORY_RELAY_WSS_HOST@
 		header Connection *Upgrade*
 		header Upgrade websocket
 		header Sec-WebSocket-Version 13
 		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
-		expression {http.request.uri} == "/v1/directory"
+		expression {http.request.uri} == "/"
 	}
 
 	handle @directory_ws {
@@ -263,13 +263,13 @@
 	@directory_publisher_ws {
 		remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@
 		method GET
-		path /v1/directory
+		path /
 		header Host @DIRECTORY_PUBLISHER_HTTPS_HOST@
 		header Connection *Upgrade*
 		header Upgrade websocket
 		header Sec-WebSocket-Version 13
 		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
-		expression {http.request.uri} == "/v1/directory"
+		expression {http.request.uri} == "/"
 	}
 
 	handle @directory_publisher_ws {

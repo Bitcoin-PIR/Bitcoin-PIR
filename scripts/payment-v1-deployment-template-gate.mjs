@@ -26,11 +26,11 @@ export const ACTIVE_BASELINES = Object.freeze({
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
-    "31b981a179fe1af292704d983ce97b3401da4c18cd64002510b22bb7f21a4adf",
+    "6a52ff0034390ffda572bd785e766653dc749736bd942f497a4b897778113983",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
     "237162cb5d57333adf789e612fcdb4be602bf6e0c9cd99a03ecd079ab8aa257f",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
-    "5d3e28438563f592aea4d4a26a7e260f3e313a9e505a0b945bb9f602f0436653",
+    "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "937737e212f2be0a2fda92fe1aaa421b1aeefdd074261ca78485ca9430d0c443",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
@@ -102,6 +102,7 @@ const HASH_FIELDS = Object.freeze([
   "config_sha256",
 ]);
 const UNRESOLVED_FIELDS = Object.freeze([
+  "directory_mode",
   "implementation",
   "source_repository",
   "source_commit",
@@ -112,6 +113,7 @@ const UNRESOLVED_FIELDS = Object.freeze([
 const RELAY_SELECTION_FIELDS = Object.freeze([
   "version",
   "status",
+  "directory_mode",
   "implementation",
   "source_repository",
   "source_commit",
@@ -1625,7 +1627,7 @@ function validateHetznerPublicCaddyLaneBindings(text) {
     Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
     label,
   );
-  exactCaddySiteBindingsAndUpstreams(
+  const reader = exactCaddySiteBindingsAndUpstreams(
     text,
     "@DIRECTORY_RELAY_WSS_HOST@",
     ["bind @PUBLIC_HTTPS_BIND@"],
@@ -1648,6 +1650,30 @@ function validateHetznerPublicCaddyLaneBindings(text) {
     ],
     [],
     label,
+  );
+  requireExactActiveLine(
+    reader.active,
+    "path /",
+    1,
+    `${label} public directory site`,
+  );
+  requireExactActiveLine(
+    reader.active,
+    'expression {http.request.uri} == "/"',
+    1,
+    `${label} public directory site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    "path /",
+    1,
+    `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    'expression {http.request.uri} == "/"',
+    1,
+    `${label} publisher site`,
   );
   requireExactActiveLine(
     publisher.active,
@@ -1766,6 +1792,13 @@ function validateSourceFairHaproxy(text) {
   ).length;
   if (allocationGuardCount !== trackedAllocationGuards.length) {
     fail(`${label} must have exactly six post-allocation tracking guards`);
+  }
+  if (
+    active.filter((line) =>
+      line === "http-request deny deny_status 404 unless { path -m str / }"
+    ).length !== 2
+  ) {
+    fail(`${label} must admit the exact origin-root path on both directory lanes`);
   }
   const egressFilters = active.filter((line) => line.startsWith("filter bwlim-out "));
   const enabledEgressFilters = active.filter((line) => line.startsWith("http-request set-bandwidth-limit "));
@@ -1923,6 +1956,16 @@ export function validateRelaySelection(text) {
     fail("relay selection status must be UNRESOLVED or RESOLVED");
   }
 
+  const directoryMode = stringField(selection, "directory_mode");
+  if (
+    directoryMode !== "strict-multi-relay" &&
+    directoryMode !== "centralized-single-relay"
+  ) {
+    fail(
+      "resolved relay directory_mode must be strict-multi-relay or centralized-single-relay",
+    );
+  }
+
   exactField(selection, "implementation", "bitcoinpir-directory-only");
   exactField(
     selection,
@@ -1962,6 +2005,7 @@ export function validateRelaySelection(text) {
   }
   return {
     status,
+    directoryMode,
     sourceCommit,
     sourceArchiveSha256: stringField(selection, "source_archive_sha256"),
     cargoLockSha256: stringField(selection, "cargo_lock_sha256"),

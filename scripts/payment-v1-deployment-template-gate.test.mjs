@@ -63,6 +63,7 @@ function replaceRelayField(text, field, value) {
 function resolvedRelaySelection(text, overrides = {}) {
   const values = {
     status: "RESOLVED",
+    directory_mode: "strict-multi-relay",
     implementation: "bitcoinpir-directory-only",
     source_repository: "https://github.com/Bitcoin-PIR/Bitcoin-PIR.git",
     source_commit: "1".repeat(40),
@@ -708,6 +709,11 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
     ],
     [
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*path/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
       (text) => `(extra_public_bind) {\n\tbind @PUBLIC_HTTPS_BIND@\n}\nimport extra_public_bind\n${text}`,
       /import\/invoke expansion|snippet or named route/,
     ],
@@ -772,6 +778,14 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       (text) => text.replace("    no log\n", "    log stdout format raw local0\n"),
       /no log|logging|persistent/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "http-request deny deny_status 404 unless { path -m str / }",
+        "http-request deny deny_status 404 unless { path -m str /v1/directory }",
+      ),
+      /exact origin-root path/,
     ],
     [
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
@@ -1015,6 +1029,21 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
     build_manifest_sha256: "0".repeat(64),
   });
   assert.throws(() => validateRelaySelection(zeroArtifactHash), /non-zero lowercase SHA-256/);
+
+  const implicitOrUnknownMode = resolvedRelaySelection(unresolved, {
+    directory_mode: "single",
+  });
+  assert.throws(
+    () => validateRelaySelection(implicitOrUnknownMode),
+    /directory_mode must be strict-multi-relay or centralized-single-relay/,
+  );
+
+  assert.equal(
+    validateRelaySelection(resolvedRelaySelection(unresolved, {
+      directory_mode: "centralized-single-relay",
+    })).directoryMode,
+    "centralized-single-relay",
+  );
 });
 
 test("a future directory-only exact-hash relay selection is accepted", () => {
@@ -1024,6 +1053,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
   );
   assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
     status: "RESOLVED",
+    directoryMode: "strict-multi-relay",
     sourceCommit: "1".repeat(40),
     sourceArchiveSha256: "2".repeat(64),
     cargoLockSha256: "3".repeat(64),

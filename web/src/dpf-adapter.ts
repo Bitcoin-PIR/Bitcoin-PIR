@@ -76,6 +76,7 @@ import {
   canonicalProductQueryShapeV1,
   type ProductQueryShapeV1,
 } from './service-entitlement.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -2071,7 +2072,7 @@ export class BatchPirClientAdapter {
       return { state: 'error', error: msg };
     }
     try {
-      const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+      const nowSecs = trustedNowUnixV1();
       const maxAge = BigInt(this.config.maxAnnounceAgeSeconds ?? 0);
       const result = gateOperatorIdentity(v, pin, att.serverStaticPub, nowSecs, maxAge);
       if (result.state === 'verified') {

@@ -48,10 +48,9 @@ needs to know the other's identity or payment method.
 
   The two stateful authority hosts above are separately administered failure domains.
 
-  independent Relay B failure domain
-  +----------------------+
-  | second complete view |  Browser requires complete Relay A + Relay B
-  +----------------------+
+  Explicit directory transport choice:
+    centralized-single-relay -> complete Relay A only, visibly degraded
+    strict-multi-relay        -> Relay A plus a second distinct WSS origin
 ```
 
 The rollback authorities are not extra processes on the stateful Hetzner
@@ -62,11 +61,34 @@ explicitly non-production exercise. The exact-pinned VPSBG Free-PoW profile is
 the narrow storeless exception described below; adding any stateful method to
 it creates a new authority requirement.
 
-Relay A and Relay B likewise require genuinely independent host, network,
-administrator, log and backup/restore domains; a second hostname on the Hetzner
-host is not an independent view. Relay B may be a separately reviewed external
-relay, but the current relay selection remains `UNRESOLVED` and no generic
-third-party-relay deployment profile is approved yet.
+V1's approved centralized deployment profile permits directory operation to be
+co-located with the payment/Cashu/ARC services on this Hetzner host. That mode
+still requires a distinct public-reader and private-publisher lane, but only one
+public WSS origin; clients and operator tools must opt in with the exact
+`centralized-single-relay` mode and display its degraded assurance. It has no
+relay-outage redundancy or relay split-view comparison.
+
+This permitted co-location is also a residual correlation boundary, not merely
+an availability choice. The Hetzner administrator, network edge, or upstream
+observer can correlate one client IP and coarse timing across directory fetch,
+provider connection, issuer quote/payment polling, and token redemption even
+though application logs and keys are separated and the relay never receives an
+invoice or query. Query-independent catalog refresh, coarse batching, delayed
+credential use, and a privacy network can reduce that signal; separate service
+keys alone cannot. Production claims must therefore describe this profile as
+centralized/degraded and must not claim unlinkability from the co-located host.
+
+Strict mode instead requires two distinct WSS origins. Origin diversity is not
+the same claim as independent failure domains: two processes or hostnames on
+this Hetzner may satisfy the origin grammar and catch accidental divergence,
+but share operator, network, storage and outage risk. A self-hosted Relay A plus
+a public Relay B is another possible strict topology without purchasing another
+host, provided the public relay first passes event-size, kind-30078, retention,
+positive-OK, exact-ID readback, control-frame and privacy compatibility tests.
+A separately operated instance of the repository relay gives the strongest
+availability and adversarial split-view separation, but is not mandatory for
+the explicitly centralized V1 profile. None of these relay topologies changes
+the pinned event-signature, rollback or live provider verification boundaries.
 
 Each `edge-rollback-authority-v1` instance is also network-specific. Its Caddy
 listener binds one reviewed RFC1918/ULA address, systemd denies every address
@@ -331,8 +353,9 @@ separate activation gates.
 The directory publisher key is a dedicated offline BIP340 key and is never
 installed on the relay. The relay sees only public signed directory events; it
 must accept writes only from the pinned publisher and only kind `30078`.
-The production publisher URL remains a canonical credential-free `wss://`
-hostname because `bpir-admin directory publish` uses WebPKI server
+The production publisher URL remains the exact canonical credential-free
+`wss://host[:nondefault-port]` origin with no path because `bpir-admin
+directory-artifact publish` uses WebPKI server
 authentication and no client certificate. Split DNS or an explicit private
 route resolves that hostname to the relay's private bind; Caddy and HAProxy
 both require the separately approved exact publisher-client address before the
@@ -350,7 +373,9 @@ records:
 - canonical reproducible-build manifest SHA-256;
 - exact binary SHA-256 and `--version` output;
 - exact bounded config SHA-256; and
-- the pinned directory publisher public key.
+- the pinned directory publisher public key; and
+- exactly one `directory_mode`: `strict-multi-relay` or the explicitly accepted
+  degraded `centralized-single-relay`.
 
 Mutable branches, mutable container tags, `nostr-rs-relay` 0.9.0 at
 `ff65ec2acd781150a585a78e1c60b0cdb104698e`, and its 0.10.0/master at
@@ -362,13 +387,12 @@ application listeners to loopback, use the same-host WSS edge, disable
 access/event/body/IP logging, disable NIP-42 for the current publisher, retain
 the NIP-01 addressable-event replacement ordering, and enforce the
 BitcoinPIR bounds: 262,176-byte outer EVENT message, 192 KiB content, kind
-30078, and a deployment-config size no greater than 16 KiB. The current default
-browser/publisher contract requires `2..8` distinct WSS relay origins, so under
-that default a second origin remains a blocker; two aliases for one origin do
-not satisfy it. A separately reviewed, explicit centralized-single-relay
-browser opt-in may later implement the user's accepted centralized-directory
-mode, but this stopped profile neither supplies that opt-in nor permits an
-automatic fallback from `2..8` to one.
+30078, and a deployment-config size no greater than 16 KiB. Directory clients
+default to `strict-multi-relay` with two to eight distinct WSS origins. Exactly
+one hostname is accepted only by the explicit, visibly degraded
+`centralized-single-relay` mode; two aliases on one Hetzner host still do not
+provide operator or failure independence. This stopped profile selects neither
+mode and never permits an automatic fallback.
 
 The reviewed process interface is intentionally narrow: exactly
 `bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`, with no CLI
@@ -415,10 +439,13 @@ The source gate/readback suite passed 80/80, the relay library/binary suite
 passed 24/24 in Linux Docker, and the exact-head CI exercised the real
 two-relay process topology. This closes only the implementation-audit item.
 Relay selection remains unresolved until the exact source archive, Cargo.lock,
-Linux binary, bounded config and publisher public-key pins are recorded,
-target-host runtime/fault evidence passes, and either the default contract's
-second independent relay origin is approved or a separately reviewed explicit
-centralized-single-relay browser opt-in is selected.
+reproducible-build manifest, Linux binary, bounded config and publisher
+public-key pins are recorded, an independent clean host reproduces them, the
+chosen directory mode is recorded, and target-host runtime/fault evidence
+passes. Centralized mode requires an explicit degraded-assurance acceptance;
+strict mode requires two distinct WSS origins. Independent relay failure
+domains remain the stronger recommended topology, not something inferred from
+origin count or a mandatory purchase of another host.
 
 Accordingly, no public relay service or catalog publication belongs in a
 rendered plan today. The locally held publisher key, if any, is not relay

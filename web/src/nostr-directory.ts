@@ -8,16 +8,22 @@ import {
 import { hexToBytes } from './hash.js';
 import { requireSdkWasm } from './sdk-bridge.js';
 import type { ProviderTrustAnchorV1 } from './service-admission.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 const DIRECTORY_SUBSCRIPTION_PREFIX = 'bitcoinpir-directory-v1-shard-';
 const SHARD_COUNT = 16;
 const MAX_RELAYS = 8;
+const MAX_RELAY_ORIGIN_BYTES = 512;
 const MAX_EVENTS_PER_SHARD = 1_025;
 const MAX_NIP01_MESSAGE_BYTES = 256 * 1024 + 256;
 const MAX_RELAY_EVENT_BYTES = 8 * 1024 * 1024;
 const MAX_DIRECTORY_EVENT_BYTES_TOTAL = 16 * 1024 * 1024;
 const MAX_WASM_DIRECTORY_BATCH_BYTES = 64 * 1024 * 1024;
 const UTF8 = new TextEncoder();
+
+export type DirectoryRelayModeV1 =
+  | 'strict-multi-relay'
+  | 'centralized-single-relay';
 
 export interface DirectoryWebSocketV1 {
   readonly readyState: number;
@@ -35,6 +41,8 @@ export interface DirectoryWebSocketV1 {
 
 export interface NostrDirectoryRefreshOptionsV1 {
   relays: string[];
+  /** Defaults to strict. Centralized mode is an explicit, exact-one-relay opt-in. */
+  relayMode?: DirectoryRelayModeV1;
   pinnedDirectoryPubkeyHex: string;
   vault: DirectoryRollbackVaultV1;
   timeoutMs?: number;
@@ -134,8 +142,13 @@ export function directoryProviderTrustAnchorV1(
 export async function refreshNostrDirectoryV1(
   options: NostrDirectoryRefreshOptionsV1,
 ): Promise<SelectableDirectoryCatalogV1> {
+  const relayMode = options.relayMode ?? 'strict-multi-relay';
+  if (relayMode !== 'strict-multi-relay' && relayMode !== 'centralized-single-relay') {
+    throw new Error('directory relay mode is unsupported');
+  }
   const relayUrls = validateRelayUrls(
     options.relays,
+    relayMode,
     options.allowInsecureLoopback ?? false,
   );
   const directoryPubkeyHex = canonicalNonzeroHex32(
@@ -157,21 +170,33 @@ export async function refreshNostrDirectoryV1(
     .filter((result): result is PromiseFulfilledResult<CompleteRelayV1> =>
       result.status === 'fulfilled')
     .map((result) => result.value);
-  if (complete.length < 2) {
-    throw new Error('fewer than two relays returned complete 16-shard EOSE catalogs');
+  if (relayMode === 'strict-multi-relay' && complete.length < 2) {
+    throw new Error(
+      'strict directory refresh has fewer than two complete 16-shard EOSE relay catalogs',
+    );
+  }
+  if (relayMode === 'centralized-single-relay' && complete.length !== 1) {
+    throw new Error('centralized directory relay did not return one complete 16-shard EOSE catalog');
   }
   const batch = UTF8.encode(JSON.stringify({
     version: 1,
+    directoryMode: relayMode,
     relays: complete,
   }));
   if (batch.length > MAX_WASM_DIRECTORY_BATCH_BYTES) {
     throw new Error('complete directory relay batch exceeds the WASM V1 bound');
   }
-  const candidate = sdk.WasmDirectoryCatalogCandidateV1.verifyRelayCatalogs(
-    batch,
-    directoryPubkey,
-    trustedNowUnix(),
-  );
+  const candidate = relayMode === 'centralized-single-relay'
+    ? sdk.WasmDirectoryCatalogCandidateV1.verifyCentralizedSingleRelayEventBatch(
+      batch,
+      directoryPubkey,
+      trustedNowUnixV1(),
+    )
+    : sdk.WasmDirectoryCatalogCandidateV1.verifyStrictRelayEventBatch(
+      batch,
+      directoryPubkey,
+      trustedNowUnixV1(),
+    );
   try {
     return await options.vault.acceptCatalog(candidate);
   } finally {
@@ -336,29 +361,78 @@ function subscriptionIdFromReq(request: string): string {
   return value[1];
 }
 
-function validateRelayUrls(values: string[], allowInsecureLoopback: boolean): string[] {
-  if (!Array.isArray(values) || values.length < 2 || values.length > MAX_RELAYS) {
-    throw new Error('directory refresh requires two to eight relay URLs');
+function validateRelayUrls(
+  values: string[],
+  relayMode: DirectoryRelayModeV1,
+  allowInsecureLoopback: boolean,
+): string[] {
+  if (!Array.isArray(values)) {
+    throw new Error('directory relay URLs must be an array');
   }
-  const canonical = values.map((value) => {
-    let parsed: URL;
-    try { parsed = new URL(value); } catch { throw new Error('directory relay URL is invalid'); }
-    const loopback = parsed.hostname === 'localhost'
-      || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
-    if (parsed.protocol !== 'wss:'
-        && !(allowInsecureLoopback && loopback && parsed.protocol === 'ws:')) {
-      throw new Error('directory relays must use wss://');
-    }
-    if (parsed.username || parsed.password || parsed.hash || parsed.search
-        || (parsed.pathname !== '/' && parsed.pathname !== '')) {
-      throw new Error('directory relay must be a credential-free WebSocket origin');
-    }
-    return parsed.origin;
-  });
+  if (relayMode === 'centralized-single-relay' && values.length !== 1) {
+    throw new Error(
+      'centralized single-relay mode requires exactly one relay URL and never downgrades strict mode',
+    );
+  }
+  if (relayMode === 'strict-multi-relay'
+      && (values.length < 2 || values.length > MAX_RELAYS)) {
+    throw new Error('strict directory refresh requires two to eight relay URLs');
+  }
+  const parsed = values.map((value) =>
+    parseCanonicalRelayOriginV1(value, allowInsecureLoopback));
+  const canonical = parsed.map((relay) => relay.origin);
   if (new Set(canonical).size !== canonical.length) {
     throw new Error('directory relay URLs must be distinct');
   }
+  const publicHostnames = parsed
+    .filter((relay) => relay.protocol === 'wss:')
+    .map((relay) => relay.hostname);
+  if (new Set(publicHostnames).size !== publicHostnames.length) {
+    throw new Error('strict directory relay hostnames must be distinct');
+  }
   return canonical;
+}
+
+function parseCanonicalRelayOriginV1(
+  value: string,
+  allowInsecureLoopback: boolean,
+): URL {
+  if (typeof value !== 'string' || value.length === 0
+      || value.length > MAX_RELAY_ORIGIN_BYTES || /[^\x00-\x7f]/.test(value)
+      || /[\x00-\x20\x7f]/.test(value)) {
+    throw new Error('directory relay must be a canonical public WSS origin');
+  }
+  let parsed: URL;
+  try { parsed = new URL(value); } catch {
+    throw new Error('directory relay URL is invalid');
+  }
+  const loopback = parsed.hostname === 'localhost'
+    || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
+  const insecureDevelopmentOrigin = allowInsecureLoopback
+    && loopback && parsed.protocol === 'ws:';
+  if (parsed.protocol !== 'wss:' && !insecureDevelopmentOrigin) {
+    throw new Error('directory relays must use wss://');
+  }
+  if (parsed.username || parsed.password || parsed.hash || parsed.search
+      || (parsed.pathname !== '/' && parsed.pathname !== '')) {
+    throw new Error('directory relay must be a credential-free WebSocket origin');
+  }
+  if (value !== parsed.origin) {
+    throw new Error('directory relay must be the exact canonical WebSocket origin');
+  }
+  if (parsed.port === '0') {
+    throw new Error('directory relay port is invalid');
+  }
+  if (insecureDevelopmentOrigin) return parsed;
+
+  const host = parsed.hostname;
+  if (loopback || host.length === 0 || host.length > 253 || !host.includes('.')
+      || host.startsWith('.') || host.endsWith('.') || /^[0-9a-fx.]+$/.test(host)
+      || host.split('.').some((label) => label.length === 0 || label.length > 63
+        || label.startsWith('-') || label.endsWith('-') || !/^[a-z0-9-]+$/.test(label))) {
+    throw new Error('directory relay must be a canonical public WSS origin');
+  }
+  return parsed;
 }
 
 function canonicalNonzeroHex32(field: string, value: string): string {
@@ -366,10 +440,4 @@ function canonicalNonzeroHex32(field: string, value: string): string {
     throw new Error(`${field} must be non-zero lowercase 32-byte hex`);
   }
   return value;
-}
-
-function trustedNowUnix(): bigint {
-  const now = Date.now();
-  if (!Number.isFinite(now) || now <= 0) throw new Error('trusted wall clock is unavailable');
-  return BigInt(Math.floor(now / 1000));
 }

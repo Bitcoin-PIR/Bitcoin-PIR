@@ -25,6 +25,7 @@ import {
   type WasmBolt11QuoteStatusV1,
   type WasmIssuedCapabilitiesV1,
 } from './sdk-bridge.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 const CT_QUOTE_INTENT = 'application/vnd.bitcoinpir.bolt11-quote-intent-v1';
 const CT_QUOTE = 'application/vnd.bitcoinpir.bolt11-quote-v1';
@@ -157,7 +158,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
           options.offer.offerId,
           delegation,
           checkpoint,
-          trustedNowUnix(),
+          trustedNowUnixV1(),
         );
         return {
           nextCheckpoint: handle.quote_key_checkpoint_bytes(),
@@ -238,7 +239,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
     }
     let wasm: WasmBolt11AcquisitionV1 | null = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
       recovery.state,
-      trustedNowUnix(),
+      trustedNowUnixV1(),
     );
     try {
       options.assertReady();
@@ -299,7 +300,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       } catch (error) {
         staleAfterPost = error;
       }
-      wasm.accept_initial_quote(response, trustedNowUnix());
+      wasm.accept_initial_quote(response, trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
       if (staleAfterPost) throw staleAfterPost;
       this.assertReadyForInvoice();
@@ -330,7 +331,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
   async pollStatus(): Promise<Bolt11QuoteStatusNameV1> {
     return this.withLockedRecovery(async (wasm, recovery, locked) => {
       const quoteId = canonicalHex32('quoteId', wasm.quote_id_hex());
-      const body = wasm.build_status_request(trustedNowUnix());
+      const body = wasm.build_status_request(trustedNowUnixV1());
       const response = await requestBinary(
         this.fetchImpl,
         issuerUrl(
@@ -345,7 +346,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_QUOTE_BYTES,
         this.requestTimeoutMs,
       );
-      wasm.accept_status(response, trustedNowUnix());
+      wasm.accept_status(response, trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
       return wasm.quote_status();
     });
@@ -360,7 +361,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       const quoteId = canonicalHex32('quoteId', wasm.quote_id_hex());
       // prepare_claim is replay-stable. Persist its exact blinded requests and
       // signature before the POST so response loss can replay byte-for-byte.
-      const body = wasm.prepare_claim(trustedNowUnix());
+      const body = wasm.prepare_claim(trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
       const response = await requestBinary(
         this.fetchImpl,
@@ -376,7 +377,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_ISSUANCE_RESPONSE_BYTES,
         this.requestTimeoutMs,
       );
-      const issued = wasm.finish_claim(response, trustedNowUnix());
+      const issued = wasm.finish_claim(response, trustedNowUnixV1());
       const capabilities: AdmissionCapabilityV1[] = [];
       try {
         const scheme = validateIssuedScheme(issued.scheme);
@@ -423,7 +424,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       this.requireActive();
       const working = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
         recovery.state,
-        trustedNowUnix(),
+        trustedNowUnixV1(),
       );
       try {
         return await operation(working, recovery, locked);
@@ -439,7 +440,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
           if (!this.completed) {
             this.wasm = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
               recovery.state,
-              trustedNowUnix(),
+              trustedNowUnixV1(),
             );
           }
         }
@@ -665,12 +666,6 @@ function canonicalIssuerEndpoint(value: string, allowInsecureLoopback: boolean):
     throw new Error('issuer endpoint must be a credential-free origin URL');
   }
   return parsed.origin;
-}
-
-function trustedNowUnix(): bigint {
-  const now = Date.now();
-  if (!Number.isFinite(now) || now <= 0) throw new Error('trusted wall clock is unavailable');
-  return BigInt(Math.floor(now / 1000));
 }
 
 function canonicalHex32(field: string, value: string): string {
