@@ -28,9 +28,9 @@ import { pathToFileURL } from "node:url";
 
 const PLAN_SCHEMA_VERSION = 1;
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 4;
+const EVIDENCE_SCHEMA_VERSION = 5;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v4";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v5";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -55,6 +55,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "MemorySwapMax",
   "MemoryDenyWriteExecute",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
   "PrivateTmp",
   "ProtectClock",
@@ -88,6 +89,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "Type",
   "UMask",
   "User",
+  "WatchdogSec",
   "WorkingDirectory",
 ]);
 
@@ -99,6 +101,13 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "Description",
   "Requires",
   "Wants",
+]);
+
+const SYSTEMD_RUNTIME_RELATION_KEYS = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Requires",
 ]);
 
 const SYSTEMD_SERVICE_KEYS = Object.freeze([
@@ -162,6 +171,26 @@ const MANAGED_FILE_PREFIXES = Object.freeze([
   "/usr/local/libexec/bitcoinpir/",
 ]);
 
+// Core Lightning v26.06.6 refuses startup when any mandatory subdaemon is
+// absent or reports a different version. The operator ceremony also needs the
+// exact CLI and hsmtool; treating only lightningd plus two plugins as the
+// bundle would make the rendered-artifact receipt materially incomplete.
+const REQUIRED_CLN_BUNDLE_PATHS_V26066 = Object.freeze([
+  "bin/lightning-cli",
+  "bin/lightning-hsmtool",
+  "libexec/c-lightning/lightning_channeld",
+  "libexec/c-lightning/lightning_closingd",
+  "libexec/c-lightning/lightning_connectd",
+  "libexec/c-lightning/lightning_gossip_compactd",
+  "libexec/c-lightning/lightning_gossipd",
+  "libexec/c-lightning/lightning_hsmd",
+  "libexec/c-lightning/lightning_onchaind",
+  "libexec/c-lightning/lightning_openingd",
+  "bin/lightningd",
+  "plugins/bcli",
+  "plugins/chanbackup",
+]);
+
 const REQUIRED_SYSTEMD_HARDENING = Object.freeze({
   LockPersonality: ["true"],
   MemoryDenyWriteExecute: ["true"],
@@ -214,6 +243,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "MemorySwapCurrent",
   "MemorySwapMax",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
   "PrivateTmp",
   "ProtectClock",
@@ -245,13 +275,23 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "Type",
   "UMask",
   "User",
+  "WatchdogUSec",
   "WorkingDirectory",
 ]);
 
 // Conditions is an `a(sbbsi)` D-Bus property. systemctl 255 renders it as
 // `[unprintable]`, so the root collector must read it through busctl's strict
 // JSON mode instead of pretending it is one of the scalar show properties.
-export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze(["Conditions"]);
+export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Conditions",
+  "Requires",
+]);
+export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
+  "TimeoutStopUSec",
+]);
 
 const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in": {
@@ -1167,6 +1207,36 @@ function validateProviderPayloadClosure(plan) {
   }
 }
 
+function validateIssuerLightningPreflightPayloadContract(plan) {
+  if (plan.deployment_profile !== "issuer-lightning-signet-v1") return;
+  const preflightPath = "/etc/bitcoinpir/payment-v1/lightning/preflight.toml";
+  const preflight = plan.payload_artifacts.find(
+    (artifact) => artifact.target_path === preflightPath,
+  );
+  if (!preflight) {
+    fail("issuer Lightning profile is missing its static preflight config");
+  }
+  if (
+    preflight.class !== "config" ||
+    preflight.uid !== 0 ||
+    preflight.gid !== Number(plan.placeholders.PREFLIGHT_GID) ||
+    preflight.mode !== "0440"
+  ) {
+    fail(
+      "issuer Lightning preflight config must be root:PREFLIGHT_GID mode 0440",
+    );
+  }
+  if (
+    plan.payload_artifacts.some((artifact) =>
+      /(?:^|\/)backup-receipt(?:\.|$)/u.test(artifact.target_path),
+    )
+  ) {
+    fail(
+      "issuer Lightning backup receipt is dynamic StateDirectory data, not a rendered payload or hash manifest",
+    );
+  }
+}
+
 function validatePlan(plan) {
   exactKeys(
     plan,
@@ -1292,6 +1362,7 @@ function validatePlan(plan) {
   const expectedTemplates = PROFILE_CATALOG[plan.deployment_profile].templates;
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
   validateProviderPayloadClosure(plan);
+  validateIssuerLightningPreflightPayloadContract(plan);
   validateRemoteRollbackPayloadMetadata(plan);
   validateSecretOwnerBindings(plan);
 }
@@ -1459,6 +1530,20 @@ function parseSystemdUnit(text, label) {
       fail(`${label} ${key} contains an unreviewed capability`);
     }
   }
+  const unitDependencies = Object.create(null);
+  for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+    const names = (unit.get(key) ?? [])
+      .flatMap((value) => value.split(/\s+/u))
+      .filter((value) => value !== "")
+      .sort(asciiCompare);
+    if (
+      names.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name)) ||
+      new Set(names).size !== names.length
+    ) {
+      fail(`${label} has malformed or duplicate ${key}= dependencies`);
+    }
+    unitDependencies[key] = names;
+  }
   const managedReferences = new Set();
   for (const [key, commands] of [
     ["ExecStart", execStart],
@@ -1481,6 +1566,7 @@ function parseSystemdUnit(text, label) {
     exec_start_pre: [...(service.get("ExecStartPre") ?? [])],
     hardening,
     managed_references: [...managedReferences].sort(asciiCompare),
+    unit_dependencies: unitDependencies,
   };
 }
 
@@ -1513,25 +1599,31 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
     "/etc/systemd/system/bitcoinpir-core-lightning.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
     "/etc/systemd/system/bitcoinpir-lightning-preflight.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
     "/etc/systemd/system/bitcoinpir-payment-issuer.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
   }),
   "provider-v1": Object.freeze({
@@ -1610,6 +1702,65 @@ function validateProfileUnitPolicy(
     }
     if (hardening.RestartSec !== undefined) {
       fail(`${label} must not configure RestartSec for the non-restarting CLN guard`);
+    }
+  }
+  if (
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    fragmentPath === "/etc/systemd/system/bitcoinpir-lightning-preflight.service"
+  ) {
+    for (const [key, expected] of [
+      ["StateDirectory", "bitcoinpir-lightning-preflight"],
+      ["StateDirectoryMode", "0700"],
+      ["RuntimeDirectory", "bitcoinpir-lightning-preflight"],
+      ["RuntimeDirectoryMode", "0700"],
+      ["Type", "notify"],
+      ["NotifyAccess", "main"],
+      ["Restart", "no"],
+      ["WatchdogSec", "90"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    // The exact source template gate owns the full content-addressed path
+    // closure. The rendered/runtime gate independently pins the dynamic
+    // receipt StateDirectory and systemd invocation mapping as read-only,
+    // while the volatile lease RuntimeDirectory is the sole write boundary.
+    const readOnlyTokens = (hardening.ReadOnlyPaths ?? []).flatMap((value) =>
+      value.split(/\s+/u),
+    );
+    if (!readOnlyTokens.includes("/var/lib/bitcoinpir-lightning-preflight")) {
+      fail(`${label} must mount the preflight StateDirectory read-only`);
+    }
+    if (!readOnlyTokens.includes("/run/systemd/units")) {
+      fail(`${label} must mount the systemd invocation map read-only`);
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize(["/run/bitcoinpir-lightning-preflight"])
+    ) {
+      fail(`${label} must limit lease writes to its volatile RuntimeDirectory`);
+    }
+    const command = execStart[0] ?? "";
+    if (!command.includes("lightning-staging preflight-supervisor")) {
+      fail(`${label} must run the invocation-bound preflight supervisor`);
+    }
+    for (const exactArgument of [
+      "--config /etc/bitcoinpir/payment-v1/lightning/preflight.toml",
+      "--config-protected-parent /etc/bitcoinpir/payment-v1/lightning",
+      "--config-expected-uid 0",
+    ]) {
+      if (!command.includes(exactArgument)) {
+        fail(`${label} must keep ${exactArgument}`);
+      }
+    }
+    for (const requiredArgument of [
+      "--config-expected-gid",
+      "--config-reader-expected-uid",
+    ]) {
+      if (!new RegExp(`(?:^|\\s)${requiredArgument} [1-9][0-9]*(?:\\s|$)`, "u").test(command)) {
+        fail(`${label} must pin a non-root ${requiredArgument} value`);
+      }
     }
   }
   if (
@@ -1698,7 +1849,22 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
         fail(`issuer service identity does not match its externally approved UID/GID placeholders: ${unit.unit_name}`);
       }
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered runtime unit");
   }
+}
+
+function validatePreflightConfigReaderIdentity(unit, identity, label) {
+  if (unit.unit_name !== "bitcoinpir-lightning-preflight.service") return;
+  const tokens = (unit.exec_start?.[0] ?? "").trim().split(/\s+/u);
+  const exactArgument = (flag, expected) => {
+    const indexes = tokens.flatMap((token, index) => token === flag ? [index] : []);
+    if (indexes.length !== 1 || tokens[indexes[0] + 1] !== String(expected)) {
+      fail(`${label} ${unit.unit_name} must bind ${flag} to ${expected}`);
+    }
+  };
+  exactArgument("--config-expected-uid", 0);
+  exactArgument("--config-expected-gid", identity.gid);
+  exactArgument("--config-reader-expected-uid", identity.uid);
 }
 
 function artifactBundlePath(targetPath) {
@@ -1861,22 +2027,12 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/lightning/preflight.toml");
       return;
-    case "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256":
-      if (
-        entries.length !== 1 ||
-        !/^\/etc\/bitcoinpir\/payment-v1\/lightning\/backup-receipt\.(?:bin|json|toml)$/u.test(
-          entries[0].target_path,
-        )
-      ) {
-        fail(`hash manifest ${manifestPath} must bind one reviewed backup-receipt artifact`);
-      }
-      return;
     case "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": {
       const prefix = `/opt/bitcoinpir/core-lightning/${plan.placeholders.CLN_BUNDLE_SHA256}/`;
-      if (entries.length < 3 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
+      if (entries.some((entry) => !entry.target_path.startsWith(prefix))) {
         fail(`hash manifest ${manifestPath} must remain inside the selected CLN bundle`);
       }
-      for (const required of ["bin/lightningd", "plugins/bcli", "plugins/chanbackup"]) {
+      for (const required of REQUIRED_CLN_BUNDLE_PATHS_V26066) {
         if (!entries.some((entry) => entry.target_path === `${prefix}${required}`)) {
           fail(`hash manifest ${manifestPath} is missing ${required}`);
         }
@@ -2332,6 +2488,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         "exec_start_pre",
         "fragment_path",
         "hardening",
+        "unit_dependencies",
         "unit_name",
       ],
       label,
@@ -2366,6 +2523,21 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         fail(`${label}.hardening.${key} is weaker than the reviewed baseline`);
       }
     }
+    exactKeys(unit.unit_dependencies, SYSTEMD_RUNTIME_RELATION_KEYS, `${label}.unit_dependencies`);
+    for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+      validateStringArray(unit.unit_dependencies[key], `${label}.unit_dependencies.${key}`, {
+        maxItems: 64,
+        maxLength: 320,
+      });
+      const sorted = [...unit.unit_dependencies[key]].sort(asciiCompare);
+      if (
+        canonicalize(sorted) !== canonicalize(unit.unit_dependencies[key]) ||
+        new Set(sorted).size !== sorted.length ||
+        sorted.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name))
+      ) {
+        fail(`${label}.unit_dependencies.${key} is not a canonical unit-name set`);
+      }
+    }
     validateProfileUnitPolicy(
       manifest.deployment_profile,
       unit.fragment_path,
@@ -2390,6 +2562,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     ) {
       fail(`rendered manifest service identity does not match User=/Group=: ${unit.unit_name}`);
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered manifest runtime unit");
   }
   validateSecretOwnerBindings(manifest);
   const systemdArtifactTargets = manifest.artifacts
@@ -2483,6 +2656,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     secret_files: secretFiles,
     service_identities: manifest.service_identities,
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
@@ -2726,6 +2900,7 @@ export function validateRuntimeEvidence({ model, evidence }) {
         "fragment_path",
         "hardening",
         "load_state",
+        "unit_dependencies",
         "unit_name",
       ],
       label,
@@ -2757,6 +2932,11 @@ export function validateRuntimeEvidence({ model, evidence }) {
     canonicalEqual(actual.environment_files, expected.environment_files, `${label}.environment_files`);
     canonicalEqual(actual.conditions, expected.conditions, `${label}.conditions`);
     canonicalEqual(actual.hardening, expected.hardening, `${label}.hardening`);
+    canonicalEqual(
+      actual.unit_dependencies,
+      expected.unit_dependencies,
+      `${label}.unit_dependencies`,
+    );
   }
   return true;
 }

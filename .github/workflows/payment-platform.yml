@@ -141,6 +141,22 @@ jobs:
           -p payment-issuer
           -p rollback-authority
           -p bpir-admin
+      - name: Enforce the real Linux root UID/GID credential boundary
+        run: |
+          rustup_home="$(rustup show home)"
+          cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+          cargo_bin="$(command -v cargo)"
+          root_test_target="$(mktemp -d "${RUNNER_TEMP}/bpir-admin-root-target.XXXXXX")"
+          trap 'sudo rm -rf -- "$root_test_target"' EXIT
+          sudo env \
+            PATH="$PATH" \
+            RUSTUP_HOME="$rustup_home" \
+            CARGO_HOME="$cargo_home" \
+            CARGO_TARGET_DIR="$root_test_target" \
+            BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1 \
+            "$cargo_bin" test --locked --offline -p bpir-admin \
+              lightning_staging::tests::protected_config_real_linux_uid_gid_and_mode_contract \
+              -- --exact --nocapture
       - name: Test concrete provider-store Cashu BAT verifier boundary
         run: >-
           cargo test --locked --offline

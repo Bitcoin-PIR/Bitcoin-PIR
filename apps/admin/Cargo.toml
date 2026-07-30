@@ -44,7 +44,7 @@ hex = "0.4"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "net", "process"] }
 zeroize = "1"
 k256 = { version = "0.13", features = ["schnorr"] }
 sha2 = "0.10"
@@ -52,6 +52,7 @@ async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+rustix = { version = "1", features = ["thread"] }
 pir-payment-crypto = { path = "../../crates/payment/crypto" }
 # Used by upload-side tests to confirm the bytes we emit parse and
 # verify cleanly via the same parser the server runs.

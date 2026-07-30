@@ -1,13 +1,15 @@
 # BitcoinPIR CLN RPC method guard; never install this .in file directly.
 [Unit]
 Description=BitcoinPIR Core Lightning RPC allowlist guard (template only)
-After=bitcoinpir-core-lightning.service
-Requires=bitcoinpir-core-lightning.service
-BindsTo=bitcoinpir-core-lightning.service
+After=bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service
+Requires=bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service
+BindsTo=bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service
 Before=bitcoinpir-payment-issuer.service
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
 
 [Service]

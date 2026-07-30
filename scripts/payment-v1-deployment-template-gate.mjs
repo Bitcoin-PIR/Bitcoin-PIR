@@ -32,7 +32,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
     "5d3e28438563f592aea4d4a26a7e260f3e313a9e505a0b945bb9f602f0436653",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
-    "937737e212f2be0a2fda92fe1aaa421b1aeefdd074261ca78485ca9430d0c443",
+    "2057e23b4f06c3394f1c4505e3d11b8bc44e046a4af7e2bbb0672450578a8e9f",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
     "62b6a6108b4c5768f5de522d72d93a84e97e07f0d93f5dfc02265a87eb18fc31",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
@@ -40,15 +40,15 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/lightningd.conf.in":
     "58973f2b3992a6eb0a2cd4b94b6d878f01240b5ba92d84da5a91ef0c442159f9",
   "deploy/payment-v1/lightning/verify-layout.sh.in":
-    "a3e3c9033bb0e258c2393117a4b3d17388002a21ae9b8259eed64b90bf2f57ea",
+    "d43ff49520b4208d1550e77613cfbf3936653465841c53579617ad08d0fd1dac",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "151835ac92bda1fa7ed0e79473229b20a3bdb7f03358b106a2ca139c6f3622b7",
+    "ba42a3edf60c55664b32edc89977b222f9011ed857ded45c38d228a4941be49b",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
-    "c0a30b8460cd81d75be235fffe53a3ac00f62b1fdf8f6db78d8ac8f25b3f7d89",
+    "e9ba0a45c7ef3504dcac3bb24e3c283a3721edf535df7150cdf5057c395d5e11",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "02e085d322b69b7d0bb785c2e2ea57402de1430b300b9f12e21efe4abb452e15",
+    "f1a08337a16ae9e753567865dc35ff20f9f22c3ca590b3883ca2b7700a16a5ce",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "48536732029012911245f6e126d71a86f50138a9662dfc48d07d3e6eb137efc9",
+    "d0bee8a8e30762ca5c8278d4c06ff14e7c26dd7eb9be199ec8a12f7929e70ec5",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
@@ -324,6 +324,8 @@ const COMMON_SERVICE_KEYS = new Set([
   "InaccessiblePaths",
   "ExecStartPre",
   "RemainAfterExit",
+  "NotifyAccess",
+  "WatchdogSec",
 ]);
 
 function validateDirectiveShape(unit, label) {
@@ -644,8 +646,10 @@ function validateHetznerIssuer(text) {
   const label = "Hetzner issuer template";
   const unit = validateInactiveSystemdTemplate(text, label, [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+    "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
   ]);
   exactDirectiveKeys(
@@ -823,9 +827,9 @@ function validateCoreLightningUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-      "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
-      "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
     ],
     { requireStateDirectoryMode: false },
   );
@@ -877,6 +881,7 @@ function validateCoreLightningUnit(text) {
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
+      "/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf --test-daemons-only --offline",
       "/usr/local/libexec/bitcoinpir/verify-lightning-layout",
     ],
     label,
@@ -911,8 +916,10 @@ function validateClnRpcGuardUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
       "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
     ],
     { requireStateDirectoryMode: false },
@@ -968,9 +975,9 @@ function validateClnRpcGuardUnit(text) {
     exactDirectiveValues(unit, "Service", key, [value], label);
   }
   exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Core Lightning RPC allowlist guard (template only)"], label);
-  exactDirectiveValues(unit, "Unit", "After", ["bitcoinpir-core-lightning.service"], label);
-  exactDirectiveValues(unit, "Unit", "Requires", ["bitcoinpir-core-lightning.service"], label);
-  exactDirectiveValues(unit, "Unit", "BindsTo", ["bitcoinpir-core-lightning.service"], label);
+  exactDirectiveValues(unit, "Unit", "After", ["bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service"], label);
+  exactDirectiveValues(unit, "Unit", "Requires", ["bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service"], label);
+  exactDirectiveValues(unit, "Unit", "BindsTo", ["bitcoinpir-core-lightning.service bitcoinpir-lightning-preflight.service"], label);
   exactDirectiveValues(unit, "Unit", "Before", ["bitcoinpir-payment-issuer.service"], label);
   exactDirectiveValues(unit, "Service", "CapabilityBoundingSet", [""], label);
   exactDirectiveValues(unit, "Service", "AmbientCapabilities", [""], label);
@@ -1016,11 +1023,13 @@ function validateLightningPreflightUnit(text) {
     label,
     [
       "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
       "/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
     ],
-    { requireStateDirectoryMode: false },
+    { requireStateDirectoryMode: true },
   );
   exactDirectiveKeys(
     unit,
@@ -1032,29 +1041,38 @@ function validateLightningPreflightUnit(text) {
     unit,
     "Service",
     [
-      "Type", "User", "Group", "SupplementaryGroups", "UMask", "ExecStartPre",
-      "ExecStart", "RemainAfterExit", "TimeoutStartSec", "NoNewPrivileges",
+      "Type", "NotifyAccess", "User", "Group", "SupplementaryGroups", "UMask",
+      "StateDirectory", "StateDirectoryMode", "RuntimeDirectory", "RuntimeDirectoryMode",
+      "ExecStartPre", "ExecStart", "Restart", "WatchdogSec", "TimeoutStartSec",
+      "TimeoutStopSec", "NoNewPrivileges",
       "PrivateDevices", "PrivateTmp", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
       "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
       "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
       "RestrictNamespaces", "SystemCallArchitectures", "CapabilityBoundingSet",
       "AmbientCapabilities", "RestrictAddressFamilies", "IPAddressDeny",
-      "IPAddressAllow", "ReadOnlyPaths",
+      "IPAddressAllow", "ReadOnlyPaths", "ReadWritePaths",
     ],
     label,
   );
-  validatePinnedServiceSandbox(unit, label, "oneshot", "");
-  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Hetzner live Core Lightning preflight (template only)"], label);
+  validatePinnedServiceSandbox(unit, label, "notify", "");
+  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Hetzner live Core Lightning preflight lease (template only)"], label);
   exactDirectiveValues(unit, "Unit", "Requires", ["bitcoinpir-core-lightning.service"], label);
   exactDirectiveValues(unit, "Unit", "BindsTo", ["bitcoinpir-core-lightning.service"], label);
   exactDirectiveValues(unit, "Unit", "After", ["bitcoinpir-core-lightning.service"], label);
-  exactDirectiveValues(unit, "Unit", "Before", ["bitcoinpir-payment-issuer.service"], label);
+  exactDirectiveValues(unit, "Unit", "Before", ["bitcoinpir-cln-rpc-guard.service bitcoinpir-payment-issuer.service"], label);
+  exactDirectiveValues(unit, "Service", "NotifyAccess", ["main"], label);
   exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-lightning-preflight"], label);
   exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-lightning-preflight"], label);
   exactDirectiveValues(unit, "Service", "SupplementaryGroups", ["bitcoinpir-cln-guard bitcoinpir-bitcoin-rpc"], label);
-  exactDirectiveValues(unit, "Service", "RemainAfterExit", ["yes"], label);
-  exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["60"], label);
+  exactDirectiveValues(unit, "Service", "StateDirectory", ["bitcoinpir-lightning-preflight"], label);
+  exactDirectiveValues(unit, "Service", "StateDirectoryMode", ["0700"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-lightning-preflight"], label);
+  exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0700"], label);
+  exactDirectiveValues(unit, "Service", "Restart", ["no"], label);
+  exactDirectiveValues(unit, "Service", "WatchdogSec", ["90"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["120"], label);
+  exactDirectiveValues(unit, "Service", "TimeoutStopSec", ["30"], label);
   exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
   exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost"], label);
   exactDirectiveValues(
@@ -1065,7 +1083,6 @@ function validateLightningPreflightUnit(text) {
       "/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256",
-      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256",
     ],
     label,
   );
@@ -1074,13 +1091,14 @@ function validateLightningPreflightUnit(text) {
     [
       "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin",
       "lightning-staging",
-      "preflight",
+      "preflight-supervisor",
     ],
     [
       ["--config", "/etc/bitcoinpir/payment-v1/lightning/preflight.toml"],
       ["--config-protected-parent", "/etc/bitcoinpir/payment-v1/lightning"],
-      ["--config-expected-uid", "@PREFLIGHT_UID@"],
+      ["--config-expected-uid", "0"],
       ["--config-expected-gid", "@PREFLIGHT_GID@"],
+      ["--config-reader-expected-uid", "@PREFLIGHT_UID@"],
     ],
     label,
   );
@@ -1088,7 +1106,14 @@ function validateLightningPreflightUnit(text) {
     unit,
     "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    label,
+  );
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "ReadWritePaths",
+    ["/run/bitcoinpir-lightning-preflight"],
     label,
   );
 }
@@ -1408,16 +1433,21 @@ function validateActivationPrerequisites(text) {
     "cln_rpc_guard_tmpfiles_sha256",
     "lightningd_config_sha256",
     "preflight_config_sha256",
-    "backup_receipt_sha256",
+    "identity_restore_evidence_sha256",
+    "channel_recovery_restore_evidence_sha256",
+    "datastore_restore_evidence_sha256",
     "expected_cln_version",
     "expected_node_id_hex",
   ];
   const booleans = [
     "identity_secret_offline_restore_rehearsed",
+    "identity_node_id_crosscheck_passed",
+    "bootstrap_zero_channel_preflight_passed",
     "channel_recovery_restore_rehearsed",
     "dynamic_datastore_restore_rehearsed",
     "stale_channel_state_rollback_rejected",
     "default_signet_chain_pins_verified",
+    "cln_bundle_executable_closure_verified",
     "exact_plugin_allowlist_verified",
     "strict_rpc_socket_layout_verified",
     "cross_uid_preflight_policy_verified",
@@ -2193,6 +2223,19 @@ export function validateDeploymentTree(rootInput) {
     "${bpir_lightning_uid}:${bpir_lightning_gid}:660",
   ]) {
     requireText(layoutVerifier.text, required, "Lightning layout verifier template");
+  }
+  const activeLayoutVerifierLines = activeTemplateLines(
+    layoutVerifier.text,
+    "Lightning layout verifier template",
+  );
+  for (const required of [
+    'bpir_hsm_secret="${bpir_lightning_dir}/hsm_secret"',
+    '[ -f "${bpir_hsm_secret}" ] && [ ! -L "${bpir_hsm_secret}" ] || bpir_fail',
+    '[ "$(/usr/bin/stat -c \'%u:%g:%a:%s\' -- "${bpir_hsm_secret}")" = "${bpir_lightning_uid}:${bpir_lightning_gid}:400:32" ] || bpir_fail',
+  ]) {
+    if (!activeLayoutVerifierLines.includes(required)) {
+      fail("Lightning layout verifier template must enforce the exact native hsm_secret boundary");
+    }
   }
 
   const publicEdge = readRequired(

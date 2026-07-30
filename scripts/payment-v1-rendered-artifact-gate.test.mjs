@@ -305,6 +305,16 @@ function makeIssuerFixture(t) {
     chanbackup: Buffer.from("reviewed-chanbackup\n"),
     guard: Buffer.from("reviewed-cln-guard\n"),
     issuer: Buffer.from("reviewed-payment-issuer\n"),
+    lightningChanneld: Buffer.from("reviewed-lightning-channeld\n"),
+    lightningCli: Buffer.from("reviewed-lightning-cli\n"),
+    lightningClosingd: Buffer.from("reviewed-lightning-closingd\n"),
+    lightningConnectd: Buffer.from("reviewed-lightning-connectd\n"),
+    lightningGossipCompactd: Buffer.from("reviewed-lightning-gossip-compactd\n"),
+    lightningGossipd: Buffer.from("reviewed-lightning-gossipd\n"),
+    lightningHsmd: Buffer.from("reviewed-lightning-hsmd\n"),
+    lightningHsmtool: Buffer.from("reviewed-lightning-hsmtool\n"),
+    lightningOnchaind: Buffer.from("reviewed-lightning-onchaind\n"),
+    lightningOpeningd: Buffer.from("reviewed-lightning-openingd\n"),
     lightningd: Buffer.from("reviewed-lightningd\n"),
   };
   const binaryDigests = Object.fromEntries(
@@ -320,6 +330,16 @@ function makeIssuerFixture(t) {
     chanbackup: `${clnRoot}/plugins/chanbackup`,
     guard: `/opt/bitcoinpir/cln-rpc-guard/${binaryDigests.guard}/bitcoinpir-cln-rpc-guard`,
     issuer: `/opt/bitcoinpir/payment-issuer/${binaryDigests.issuer}/payment-issuer`,
+    lightningChanneld: `${clnRoot}/libexec/c-lightning/lightning_channeld`,
+    lightningCli: `${clnRoot}/bin/lightning-cli`,
+    lightningClosingd: `${clnRoot}/libexec/c-lightning/lightning_closingd`,
+    lightningConnectd: `${clnRoot}/libexec/c-lightning/lightning_connectd`,
+    lightningGossipCompactd: `${clnRoot}/libexec/c-lightning/lightning_gossip_compactd`,
+    lightningGossipd: `${clnRoot}/libexec/c-lightning/lightning_gossipd`,
+    lightningHsmd: `${clnRoot}/libexec/c-lightning/lightning_hsmd`,
+    lightningHsmtool: `${clnRoot}/bin/lightning-hsmtool`,
+    lightningOnchaind: `${clnRoot}/libexec/c-lightning/lightning_onchaind`,
+    lightningOpeningd: `${clnRoot}/libexec/c-lightning/lightning_openingd`,
     lightningd: `${clnRoot}/bin/lightningd`,
   };
   const renderedTargets = {
@@ -350,7 +370,6 @@ function makeIssuerFixture(t) {
     "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-value-root.key":
       "rollback-value-root\n",
     "/etc/bitcoinpir/payment-v1/issuer/service-policy.bin": "policy\n",
-    "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.json": "{}\n",
     "/etc/bitcoinpir/payment-v1/lightning/preflight.toml": "profile = \"signet-v1\"\n",
   };
   const digestFor = new Map([
@@ -361,12 +380,23 @@ function makeIssuerFixture(t) {
   ]);
   const manifestEntries = {
     "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256": [targets.issuer],
-    "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256": [
-      "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.json",
-    ],
     "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256": [targets.bitcoinCli],
     "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256": [targets.admin],
-    "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": [targets.lightningd, targets.bcli, targets.chanbackup],
+    "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": [
+      targets.lightningCli,
+      targets.lightningHsmtool,
+      targets.lightningChanneld,
+      targets.lightningClosingd,
+      targets.lightningConnectd,
+      targets.lightningGossipCompactd,
+      targets.lightningGossipd,
+      targets.lightningHsmd,
+      targets.lightningOnchaind,
+      targets.lightningOpeningd,
+      targets.lightningd,
+      targets.bcli,
+      targets.chanbackup,
+    ],
     "/etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256": [targets.guard],
     "/etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256": [renderedTargets.verifier],
     "/etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256": [renderedTargets.config],
@@ -730,7 +760,7 @@ function makeRuntimeEvidence(model) {
     },
     installed_files: clone(model.request.installed_files),
     manifest_sha256: model.manifestSha256,
-    schema_version: 4,
+    schema_version: 5,
     systemd_analyze_verify: {
       argv: clone(model.request.systemd_analyze_argv),
       exit_status: 0,
@@ -748,6 +778,7 @@ function makeRuntimeEvidence(model) {
       fragment_path: unit.fragment_path,
       hardening: clone(unit.hardening),
       load_state: "loaded",
+      unit_dependencies: clone(unit.unit_dependencies),
       unit_name: unit.unit_name,
     })),
   };
@@ -766,8 +797,15 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 4);
-  assert.deepEqual(first.request.busctl_unit_properties, ["Conditions"]);
+  assert.equal(first.request.schema_version, 5);
+  assert.deepEqual(first.request.busctl_unit_properties, [
+    "After",
+    "Before",
+    "BindsTo",
+    "Conditions",
+    "Requires",
+  ]);
+  assert.deepEqual(first.request.busctl_service_properties, ["TimeoutStopUSec"]);
   assert.equal(first.request.systemctl_show_properties.includes("Conditions"), false);
   assert.deepEqual(
     first.request.runtime_paths.map(({ file_type, mode, target_path }) => ({ file_type, mode, target_path })),
@@ -876,6 +914,35 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
   assert.equal(model.request.units.length, 4);
   assert.equal(model.request.tmpfiles_directories.length, 2);
   assert.equal(model.manifest.deployment_profile, "issuer-lightning-signet-v1");
+  const byName = new Map(model.request.units.map((unit) => [unit.unit_name, unit]));
+  assert.deepEqual(
+    { ...byName.get("bitcoinpir-cln-rpc-guard.service").unit_dependencies },
+    {
+      After: [
+        "bitcoinpir-core-lightning.service",
+        "bitcoinpir-lightning-preflight.service",
+      ],
+      Before: ["bitcoinpir-payment-issuer.service"],
+      BindsTo: [
+        "bitcoinpir-core-lightning.service",
+        "bitcoinpir-lightning-preflight.service",
+      ],
+      Requires: [
+        "bitcoinpir-core-lightning.service",
+        "bitcoinpir-lightning-preflight.service",
+      ],
+    },
+  );
+  assert.deepEqual(
+    byName.get("bitcoinpir-lightning-preflight.service").unit_dependencies.Before,
+    ["bitcoinpir-cln-rpc-guard.service", "bitcoinpir-payment-issuer.service"],
+  );
+  assert.equal(
+    byName.get("bitcoinpir-payment-issuer.service").unit_dependencies.BindsTo.includes(
+      "bitcoinpir-lightning-preflight.service",
+    ),
+    true,
+  );
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
 });
 
@@ -1268,7 +1335,7 @@ test("issuer profile rejects deletion of every referenced payload dependency", (
     changed.payload_artifacts = changed.payload_artifacts.filter((entry) => entry.target_path !== artifact.target_path);
     assert.throws(
       () => renderBundle({ approvedPlanSha256: approved(changed), inputRoot: fixture.inputRoot, outputRoot: join(fixture.root, `missing-payload-${hashBytes(artifact.target_path).slice(0, 12)}`), plan: changed, sourceRoot: fixture.sourceRoot }),
-      /dependency is missing|references missing artifact|remote rollback .* payload is missing/,
+      /dependency is missing|references missing artifact|remote rollback .* payload is missing|missing its static preflight config/,
       artifact.target_path,
     );
   }
@@ -1456,6 +1523,97 @@ test("payload class and target metadata are target-derived and secrets cannot be
   assert.throws(() => renderFixture(wrongManifestMode), /hash manifest must be immutable root:root mode 0444/);
 });
 
+test("issuer Lightning preflight config and dynamic receipt ownership are closed", (t) => {
+  for (const [field, value] of [
+    ["uid", 737],
+    ["gid", 734],
+    ["mode", "0400"],
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    const config = fixture.plan.payload_artifacts.find(
+      (entry) => entry.target_path === "/etc/bitcoinpir/payment-v1/lightning/preflight.toml",
+    );
+    config[field] = value;
+    assert.throws(
+      () => renderFixture(fixture),
+      /preflight config must be root:PREFLIGHT_GID mode 0440|0400 for one owner/,
+    );
+  }
+
+  const staticReceipt = makeIssuerFixture(t);
+  staticReceipt.plan.payload_artifacts.push(addPayload(
+    staticReceipt,
+    "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.toml",
+    "schema_version = 1\n",
+    999,
+    { class: "policy", gid: 736, mode: "0440", uid: 0 },
+  ));
+  assert.throws(
+    () => renderFixture(staticReceipt),
+    /backup receipt is dynamic StateDirectory data/,
+  );
+
+  for (const [mutation, expected] of [
+    [
+      (text) => text.replace("StateDirectoryMode=0700", "StateDirectoryMode=0750"),
+      /StateDirectoryMode=0700/,
+    ],
+    [
+      (text) => text.replace(" /var/lib/bitcoinpir-lightning-preflight", ""),
+      /mount the preflight StateDirectory read-only/,
+    ],
+    [
+      (text) => text.replace(" /run/systemd/units", ""),
+      /mount the systemd invocation map read-only/,
+    ],
+    [
+      (text) => text.replace(
+        "ReadWritePaths=/run/bitcoinpir-lightning-preflight",
+        "ReadWritePaths=/run",
+      ),
+      /limit lease writes to its volatile RuntimeDirectory/,
+    ],
+    [
+      (text) => text.replace("Type=notify", "Type=oneshot"),
+      /Type=notify/,
+    ],
+    [
+      (text) => text.replace("WatchdogSec=90", "WatchdogSec=0"),
+      /WatchdogSec=90/,
+    ],
+    [
+      (text) => text.replace("preflight-supervisor", "preflight"),
+      /invocation-bound preflight supervisor/,
+    ],
+    [
+      (text) => text.replace("--config-expected-uid 0", "--config-expected-uid 737"),
+      /--config-expected-uid 0|bind --config-expected-uid to 0/,
+    ],
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(
+      fixture,
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      mutation,
+    );
+    assert.throws(() => renderFixture(fixture), expected);
+  }
+
+  const rendered = renderFixture(makeIssuerFixture(t));
+  const manifest = structuredClone(rendered.manifest);
+  const unit = manifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-lightning-preflight.service",
+  );
+  unit.exec_start[0] = unit.exec_start[0].replace(
+    "--config-reader-expected-uid 737",
+    "--config-reader-expected-uid 738",
+  );
+  assert.throws(
+    () => runtimeRequestFromManifest(manifest, hashBytes(Buffer.from(canonicalJson(manifest)))),
+    /bind --config-reader-expected-uid to 737/,
+  );
+});
+
 test("hash manifests are strict, sorted, complete, and bind actual artifacts", (t) => {
   const wrong = makeEdgeFixture(t);
   const manifest = wrong.plan.payload_artifacts.find((entry) => entry.target_path.endsWith("caddy.sha256"));
@@ -1491,6 +1649,22 @@ test("hash manifests are strict, sorted, complete, and bind actual artifacts", (
   writeFileSync(clnPath, `${reversed}\n`);
   clnManifest.expected_sha256 = hashFile(clnPath);
   assert.throws(() => renderFixture(unsorted), /bytewise ASCII sorted/);
+
+  const incompleteCln = makeIssuerFixture(t);
+  const incompleteManifest = incompleteCln.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/cln-bundle.sha256"),
+  );
+  const incompletePath = join(incompleteCln.inputRoot, incompleteManifest.source_path);
+  const withoutHsmd = readFileSync(incompletePath, "utf8")
+    .split("\n")
+    .filter((line) => !line.endsWith("/libexec/c-lightning/lightning_hsmd"))
+    .join("\n");
+  writeFileSync(incompletePath, withoutHsmd);
+  incompleteManifest.expected_sha256 = hashFile(incompletePath);
+  assert.throws(
+    () => renderFixture(incompleteCln),
+    /missing libexec\/c-lightning\/lightning_hsmd/,
+  );
 });
 
 test("HAProxy content-address placeholder must equal the selected binary digest", (t) => {
@@ -1521,10 +1695,13 @@ test("rendered profiles require exact profile-specific activation sentinels", (t
   assert.throws(() => renderFixture(fixture), /profile-specific activation conditions/);
 
   for (const sourcePath of ISSUER_TEMPLATES.filter((path) => path.endsWith(".service.in"))) {
+    const phaseSentinel = sourcePath.endsWith("hetzner-core-lightning.service.in")
+      ? "SIGNET-LIGHTNING-STAGING-APPROVED"
+      : "SIGNET-ISSUER-ACTIVATION-APPROVED";
     const issuer = makeIssuerFixture(t);
     updateTemplate(issuer, sourcePath, (text) =>
       text.replace(
-        "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED\n",
+        `ConditionPathExists=/etc/bitcoinpir/payment-v1/${phaseSentinel}\n`,
         "",
       ),
     );
@@ -1576,6 +1753,38 @@ test("rendered profiles require exact profile-specific activation sentinels", (t
   }
 });
 
+test("Lightning bootstrap cannot be collapsed into the post-channel issuer phase", (t) => {
+  const coreTemplate = "deploy/payment-v1/systemd/hetzner-core-lightning.service.in";
+  for (const forbidden of [
+    "SIGNET-ISSUER-ACTIVATION-APPROVED",
+    "LIGHTNING-BACKUP-RESTORE-APPROVED",
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(fixture, coreTemplate, (text) =>
+      text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED\n",
+        `ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED\nConditionPathExists=/etc/bitcoinpir/payment-v1/${forbidden}\n`,
+      ),
+    );
+    assert.throws(() => renderFixture(fixture), /profile-specific activation conditions/);
+  }
+
+  for (const sourcePath of [
+    "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+    "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+    "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(fixture, sourcePath, (text) =>
+      text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED\n",
+        "",
+      ),
+    );
+    assert.throws(() => renderFixture(fixture), /profile-specific activation conditions/);
+  }
+});
+
 test("offline manifest verification rechecks profile-specific activation sentinels", (t) => {
   const fixture = makeEdgeFixture(t);
   const model = renderFixture(fixture);
@@ -1594,9 +1803,13 @@ test("offline manifest verification rechecks profile-specific activation sentine
   const issuer = renderFixture(makeIssuerFixture(t));
   for (let index = 0; index < issuer.manifest.runtime_units.length; index += 1) {
     const issuerManifest = structuredClone(issuer.manifest);
+    const phaseSentinel = issuerManifest.runtime_units[index].unit_name ===
+      "bitcoinpir-core-lightning.service"
+      ? "/SIGNET-LIGHTNING-STAGING-APPROVED"
+      : "/SIGNET-ISSUER-ACTIVATION-APPROVED";
     issuerManifest.runtime_units[index].conditions =
       issuerManifest.runtime_units[index].conditions.filter(
-        (condition) => !condition.endsWith("/SIGNET-ISSUER-ACTIVATION-APPROVED"),
+        (condition) => !condition.endsWith(phaseSentinel),
       );
     assert.throws(
       () => runtimeRequestFromManifest(
@@ -1704,6 +1917,7 @@ test("runtime structure remains manifest-bound and rejects drop-ins, reset effec
     ["ExecStart reset", (e) => { e.units[0].exec_start = ["/usr/bin/true"]; }, /exec_start does not match/],
     ["ExecStartPre reset", (e) => { e.units[0].exec_start_pre = []; }, /exec_start_pre does not match/],
     ["environment", (e) => e.units[0].environment.push("LD_PRELOAD=/tmp/evil"), /environment does not match/],
+    ["unit dependency", (e) => { e.units[0].unit_dependencies.After = []; }, /unit_dependencies does not match/],
     ["fragment", (e) => { e.units[0].fragment_path = "/run/systemd/transient/evil.service"; }, /fragment_path does not match/],
     ["file hash", (e) => { e.installed_files[0].sha256 = "3".repeat(64); }, /installed file evidence does not match/],
     ["host state", (e) => { e.units[0].active_state = "failed"; }, /active_state must be/],

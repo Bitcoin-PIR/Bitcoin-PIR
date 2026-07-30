@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertEffectiveConditionSnapshotUnchangedV1,
+  assertEffectiveSystemdPolicySnapshotUnchangedV1,
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
@@ -37,6 +38,8 @@ import {
   collectVisibleNssEvidenceV2,
   parseGroupEnumerationV2,
   parseBusctlConditionsJsonV1,
+  parseBusctlUnitNamesJsonV1,
+  parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
@@ -48,6 +51,7 @@ import {
   validateStoppedEdgeActivationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
@@ -207,6 +211,79 @@ test("systemd Conditions use the reviewed busctl object path and strict a(sbbsi)
   );
 });
 
+test("systemd dependencies and stop timeout use strict typed busctl values", () => {
+  assert.deepEqual(
+    parseBusctlUnitNamesJsonV1(JSON.stringify({
+      data: ["network-online.target", "basic.target", "dev-disk-by\\x2duuid.device"],
+      type: "as",
+    })),
+    ["basic.target", "dev-disk-by\\x2duuid.device", "network-online.target"],
+  );
+  assert.equal(
+    parseBusctlUnsignedJsonV1(
+      JSON.stringify({ data: 30_000_000, type: "t" }),
+      "TimeoutStopUSec",
+    ),
+    30_000_000,
+  );
+
+  for (const [label, value] of [
+    ["wrong unit-array type", { data: [], type: "a(s)" }],
+    ["duplicate unit", { data: ["a.service", "a.service"], type: "as" }],
+    ["lookalike path", { data: ["../a.service"], type: "as" }],
+    ["noncanonical escape", { data: ["dev-foo\\x2Dbar.device"], type: "as" }],
+    ["oversized unit array", { data: Array.from({ length: 257 }, (_, index) => `u${index}.service`), type: "as" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlUnitNamesJsonV1(JSON.stringify(value), label),
+      /reviewed|bounded|canonical|duplicate|shape|unit-name/,
+      label,
+    );
+  }
+  for (const [label, value] of [
+    ["wrong unsigned type", { data: 30_000_000, type: "u" }],
+    ["negative unsigned", { data: -1, type: "t" }],
+    ["infinite unsigned", { data: Number.MAX_VALUE, type: "t" }],
+    ["missing unsigned", { type: "t" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlUnsignedJsonV1(JSON.stringify(value), label),
+      /finite|keys|reviewed/,
+      label,
+    );
+  }
+
+  const dependencies = {
+    After: ["basic.target", "network-online.target"],
+    Before: ["shutdown.target"],
+    BindsTo: [],
+    Requires: [],
+  };
+  const service = { TimeoutStopUSec: 30_000_000 };
+  assert.equal(
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      clone(dependencies),
+      service,
+      clone(service),
+      "test",
+    ),
+    true,
+  );
+  const changed = clone(dependencies);
+  changed.After = ["basic.target"];
+  assert.throws(
+    () => assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      dependencies,
+      changed,
+      service,
+      service,
+      "test",
+    ),
+    /policy changed during live collection/,
+  );
+});
+
 test("live collector seals expensive secrets before its final Conditions and generation pass", () => {
   const source = readFileSync(COLLECTOR, "utf8");
   const secretSealMarker = source.indexOf(
@@ -233,6 +310,9 @@ test("live collector seals expensive secrets before its final Conditions and gen
 
   const finalStatePass = source.slice(finalStateMarker, finishedMarker);
   assert.match(finalStatePass, /collectEffectiveConditions\(/);
+  assert.match(finalStatePass, /collectEffectiveUnitDependenciesV1\(/);
+  assert.match(finalStatePass, /collectEffectiveServicePropertiesV1\(/);
+  assert.match(finalStatePass, /assertEffectiveSystemdPolicySnapshotUnchangedV1\(/);
   assert.match(finalStatePass, /confirmUnitGeneration\(/);
   assert.doesNotMatch(
     finalStatePass,
@@ -328,10 +408,17 @@ function fixture() {
       SupplementaryGroups: ["bitcoinpir-shared"],
       SystemCallArchitectures: ["native"],
       TasksMax: ["128"],
+      TimeoutStopSec: ["30"],
       Type: ["simple"],
       UMask: ["0077"],
       User: ["bitcoinpir-test"],
       WorkingDirectory: ["/var/lib/bitcoinpir-test"],
+    },
+    unit_dependencies: {
+      After: ["network-online.target"],
+      Before: [],
+      BindsTo: [],
+      Requires: [],
     },
     unit_name: "bitcoinpir-test.service",
   };
@@ -352,7 +439,8 @@ function fixture() {
       target_path: "/run/bitcoinpir-test/service.sock",
       uid: 730,
     }],
-    schema_version: 4,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
+    schema_version: 5,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -404,6 +492,7 @@ function fixture() {
     MemorySwapCurrent: "0",
     MemorySwapMax: "0",
     NoNewPrivileges: "yes",
+    NotifyAccess: "none",
     PrivateDevices: "yes",
     PrivateTmp: "yes",
     ProtectClock: "",
@@ -435,6 +524,7 @@ function fixture() {
     Type: "simple",
     UMask: "0077",
     User: "bitcoinpir-test",
+    WatchdogUSec: "0",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -592,7 +682,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 4,
+    schema_version: 5,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -626,6 +716,13 @@ function fixture() {
       ],
       process_identity: processIdentity,
       properties,
+      service_properties: { TimeoutStopUSec: 30_000_000 },
+      unit_dependencies: {
+        After: ["basic.target", "network-online.target"],
+        Before: ["shutdown.target"],
+        BindsTo: [],
+        Requires: [],
+      },
       unit_name: unit.unit_name,
     }],
   };
@@ -743,14 +840,24 @@ function localFilesPolicySnapshot(nss) {
   };
 }
 
-function oneshotFixture() {
+function preflightLeaseFixture() {
   const value = fixture();
   const fragmentPath = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
   const unit = value.request.units[0];
   unit.fragment_path = fragmentPath;
   unit.unit_name = "bitcoinpir-lightning-preflight.service";
-  unit.hardening.Type = ["oneshot"];
-  unit.hardening.RemainAfterExit = ["yes"];
+  unit.hardening.Type = ["notify"];
+  unit.hardening.NotifyAccess = ["main"];
+  unit.hardening.WatchdogSec = ["90"];
+  unit.unit_dependencies = {
+    After: ["bitcoinpir-core-lightning.service"],
+    Before: [
+      "bitcoinpir-cln-rpc-guard.service",
+      "bitcoinpir-payment-issuer.service",
+    ],
+    BindsTo: ["bitcoinpir-core-lightning.service"],
+    Requires: ["bitcoinpir-core-lightning.service"],
+  };
   value.request.service_identities[0].unit_name = unit.unit_name;
   value.request.installed_files[0].target_path = fragmentPath;
   value.request.systemd_analyze_argv[2] = fragmentPath;
@@ -760,20 +867,26 @@ function oneshotFixture() {
   actual.unit_name = unit.unit_name;
   actual.properties.FragmentPath = fragmentPath;
   actual.properties.ControlGroup = `/system.slice/${unit.unit_name}`;
-  actual.properties.Type = "oneshot";
-  actual.properties.RemainAfterExit = "yes";
-  actual.properties.MainPID = "0";
-  actual.properties.SubState = "exited";
-  actual.properties.Result = "success";
-  actual.properties.ExecMainCode = "1";
-  actual.properties.ExecMainStatus = "0";
+  actual.properties.Type = "notify";
+  actual.properties.NotifyAccess = "main";
+  actual.properties.WatchdogUSec = "1min 30s";
+  actual.unit_dependencies = {
+    After: ["basic.target", "bitcoinpir-core-lightning.service"],
+    Before: [
+      "bitcoinpir-cln-rpc-guard.service",
+      "bitcoinpir-payment-issuer.service",
+      "shutdown.target",
+    ],
+    BindsTo: ["bitcoinpir-core-lightning.service"],
+    Requires: ["bitcoinpir-core-lightning.service"],
+  };
   actual.generation_confirmations = actual.generation_confirmations.map((confirmation) => ({
     ...confirmation,
     control_group: actual.properties.ControlGroup,
-    main_pid: "0",
   }));
-  actual.process_identity = null;
-  for (const pass of value.evidence.protected_process_closure.passes) pass.holders = [];
+  for (const pass of value.evidence.protected_process_closure.passes) {
+    pass.holders[0].control_group = actual.properties.ControlGroup;
+  }
   return value;
 }
 
@@ -871,6 +984,8 @@ function secretIsolationFixture() {
       uid_before: [733, 733, 733, 733],
     },
     properties: peerProperties,
+    service_properties: clone(value.evidence.units[0].service_properties),
+    unit_dependencies: clone(value.evidence.units[0].unit_dependencies),
     unit_name: peerUnit.unit_name,
   });
   const holders = [
@@ -1897,11 +2012,11 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 3;
+  legacyEvidence.evidence.schema_version = 4;
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 3;
+  legacyRequest.request.schema_version = 4;
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
 
   const legacySystemctlConditions = fixture();
@@ -1918,6 +2033,14 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   const foreignBusctlSchema = fixture();
   foreignBusctlSchema.request.busctl_unit_properties = ["Conditions", "Triggers"];
   assert.throws(() => validate(foreignBusctlSchema), /busctl property schema/);
+
+  const missingBusctlServiceSchema = fixture();
+  delete missingBusctlServiceSchema.request.busctl_service_properties;
+  assert.throws(() => validate(missingBusctlServiceSchema), /busctl service property schema/);
+
+  const foreignBusctlServiceSchema = fixture();
+  foreignBusctlServiceSchema.request.busctl_service_properties = ["TimeoutStopUSec", "RestartUSec"];
+  assert.throws(() => validate(foreignBusctlServiceSchema), /busctl service property schema/);
 
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
@@ -1936,17 +2059,24 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   assert.throws(() => validate(wrongPolicyPath), /metadata is not trusted/);
 });
 
-test("reviewed preflight oneshot uses active-exited boot-bound completion evidence without fake procfs identity", () => {
-  assert.equal(validate(oneshotFixture()), true);
+test("reviewed preflight lease requires a live notify process and exact watchdog", () => {
+  assert.equal(validate(preflightLeaseFixture()), true);
   for (const [mutate, expected] of [
-    [(value) => { value.evidence.units[0].properties.ExecMainCode = "0"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.ExecMainStatus = "1"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.SubState = "running"; }, /oneshot completion proof/],
-    [(value) => { value.evidence.units[0].properties.MainPID = "42"; }, /oneshot completion proof/],
+    [(value) => { value.evidence.units[0].properties.NotifyAccess = "none"; }, /NotifyAccess drift/],
+    [(value) => { value.evidence.units[0].properties.WatchdogUSec = "0"; }, /watchdog lease drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.After = ["basic.target"]; }, /effective After dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.Before = ["shutdown.target"]; }, /effective Before dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = []; }, /effective BindsTo dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.Requires = []; }, /effective Requires dependency drift/],
+    [(value) => { value.evidence.units[0].unit_dependencies.BindsTo = ["bitcoinpir-core-lightning-lookalike.service"]; }, /effective BindsTo dependency drift/],
+    [(value) => { value.evidence.units[0].service_properties.TimeoutStopUSec = 0; }, /TimeoutStopUSec drift/],
+    [(value) => { value.evidence.units[0].service_properties.TimeoutStopUSec = 31_000_000; }, /TimeoutStopUSec drift/],
+    [(value) => { value.evidence.units[0].properties.SubState = "exited"; }, /no active MainPID/],
+    [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
     [(value) => { value.evidence.units[0].properties.ActiveEnterTimestampMonotonic = "6000000"; }, /not bound to this boot/],
     [(value) => { value.evidence.units[0].properties.InvocationID = "0".repeat(32); }, /InvocationID/],
   ]) {
-    const value = oneshotFixture();
+    const value = preflightLeaseFixture();
     mutate(value);
     assert.throws(() => validate(value), expected);
   }

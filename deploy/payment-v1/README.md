@@ -2,9 +2,9 @@
 
 These files are review inputs, not installed service definitions. Every service
 template ends in `.in`, has no `[Install]` section, and requires both the global
-`/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED` sentinel and the exact
-profile-specific activation-sentinel set after rendering. The global sentinel
-alone cannot satisfy any closed profile. The VPSBG input is only a
+`/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED` sentinel and its exact
+phase/profile-specific activation-sentinel set after rendering. The global
+sentinel alone cannot satisfy any closed unit. The VPSBG input is only a
 non-executable argument fragment; it is neither a runit service nor a
 replacement for the measured Tier 3 run script.
 
@@ -25,7 +25,8 @@ The role gate is machine-enforced per unit:
 | Render profile or blocked role | Required role-specific activation sentinel(s) | Sentinel(s) that must be absent |
 | --- | --- | --- |
 | `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` | — |
-| `issuer-lightning-signet-v1` | `SIGNET-ISSUER-ACTIVATION-APPROVED` | — |
+| `issuer-lightning-signet-v1` Core Lightning bootstrap | `SIGNET-LIGHTNING-STAGING-APPROVED`, `LIGHTNING-CUSTODY-APPROVED`, `LIGHTNING-IDENTITY-RESTORE-APPROVED` | — |
+| `issuer-lightning-signet-v1` RPC guard, full preflight and issuer | the three bootstrap sentinels plus `LIGHTNING-BACKUP-RESTORE-APPROVED` and `SIGNET-ISSUER-ACTIVATION-APPROVED` | — |
 | `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
 | `provider-no-standard-cashu-v1` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
 | `provider-direct-v1` | `PROVIDER-DIRECT-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` |
@@ -43,6 +44,14 @@ prove that the old unit is inactive and port `8191` has no listener, confirm all
 other provider sentinels are absent, then create exactly the new profile's
 positive sentinel and start only its unit. Never create the new sentinel first
 or rely on a bind failure to perform the switch.
+
+The two Signet rows intentionally break the first-start circular dependency.
+The CLN bootstrap unit can establish and expose only its reviewed native
+runtime after identity custody is approved; it cannot activate the payment
+issuer. Before funding or channel mutation, the read-only zero-channel
+`lightning-staging bootstrap-preflight` must bind the live node ID and default
+Signet state. Guard/full-preflight/issuer activation remains blocked until
+channel recovery and datastore restore evidence is separately accepted.
 
 The three profiles deliberately use separate `StateDirectory=` roots. That
 does not authorize a fresh `provider.sqlite3` for the same provider. All three
@@ -120,7 +129,7 @@ The templates divide responsibilities as follows:
   paid-QoS claim, and removing BAT/shared fields from either larger profile does
   not create this profile.
 - `systemd/hetzner-cln-rpc-guard.service.in` is the only principal other than
-  CLN and the dedicated one-shot preflight that may traverse the native CLN
+  CLN and the dedicated preflight supervisor that may traverse the native CLN
   socket directory. It parses and reconstructs bounded JSON-RPC, permits only
   the issuer's exact `getinfo`, `listinvoices`, and `invoice` shapes, and emits
   a separate issuer-group socket below a boot-created `0710` directory. Its
@@ -219,7 +228,17 @@ This source-template gate is not proof of installed bytes. Use
 `scripts/payment-v1-rendered-artifact-gate.mjs` to render one closed deployment
 profile from an externally digest-approved plan, recompute every referenced
 artifact/hash manifest, and reject placeholders, extra files, symlinks and
-cross-profile dependencies. Then use
+cross-profile dependencies. For the issuer Lightning profile it additionally
+pins `preflight.toml` to root:`PREFLIGHT_GID` mode `0440`, binds its CLI reader
+UID/GID to the preflight service identity, and rejects any rendered/static
+backup-receipt payload or manifest; that receipt lives only as service-owned
+mode-`0600` dynamic state below the mode-`0700` preflight `StateDirectory`.
+The rendered profile also requires an invocation-bound `Type=notify` preflight
+supervisor, exact 30/120-second refresh/lease policy, `WatchdogSec=90`,
+`Restart=no`, read-only access to `/run/systemd/units`, a sole writable volatile
+lease directory, and guard/issuer lifecycle binding. A prior successful check
+or a stale lease file cannot keep either downstream service active.
+Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,
 capabilities, boot and host identity to that manifest. The Hetzner edge request

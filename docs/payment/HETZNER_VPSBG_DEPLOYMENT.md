@@ -664,9 +664,15 @@ On the exact Linux staging host, a root operator must run
 `scripts/payment-v1-linux-runtime-evidence.mjs collect-live`, pin the expected
 machine/boot and approved plan/manifest digests, and transfer the resulting
 full-file evidence digest over the approved out-of-band channel. The verifier
-checks effective systemd state, process credentials for long-running units,
-the successful exited state of the reviewed one-shot preflight, installed
-bytes, NSS, ACLs, xattrs, capabilities and `systemd-analyze verify`. Until that
+checks effective systemd state and process credentials for every long-running
+unit. For the preflight supervisor it specifically requires a live `notify`
+MainPID, `NotifyAccess=main`, the exact 90-second watchdog and stable systemd
+InvocationID rather than accepting an exited one-shot result. It also checks
+typed live `After`/`Before`/`BindsTo`/`Requires` relationships and
+`TimeoutStopUSec` against the rendered manager model, including a final
+snapshot after the expensive probes, so a missing `daemon-reload` fails. It
+also checks installed bytes, NSS, ACLs, xattrs, capabilities and
+`systemd-analyze verify`. Until that
 live evidence passes, these inputs remain deployment preparation rather than
 an activatable bundle.
 

@@ -938,6 +938,38 @@ deterministic fake Lightning backend is used by default.
 
 The default-Signet staging preflight focused suite additionally requires:
 
+- the production `preflight-supervisor` accepts only the exact protected
+  systemd mapping
+  `/run/systemd/units/invocation:bitcoinpir-core-lightning.service`; the link
+  and root-owned parent chain, 32-byte lowercase non-zero/non-all-ones target,
+  and before/after metadata snapshot must be stable. The first InvocationID is
+  generation-bound, and a changed link or target before, during or after a
+  renewal fails without logging either ID;
+- the supervisor writes only a schema-v1 mode-`0600` lease below its private
+  mode-`0700` RuntimeDirectory, renews every 30 seconds with an exact 180-second
+  validity, sends `READY=1` only after the first complete pass and lease commit,
+  and requires the exact 90-second systemd watchdog environment, fed only after
+  a successful renewal. With the 30-second downstream stop bounds, watchdog
+  failure must still leave at least 60 seconds before lease expiry. Source,
+  rendered-artifact and live-runtime tests must reject `oneshot`, automatic
+  restart, missing watchdog/notify policy, a writable systemd mapping, broader
+  lease write paths, or guard/issuer dependency bypass. Live evidence must use
+  typed D-Bus arrays to prove the manager actually loaded every rendered
+  `After`/`Before`/`BindsTo`/`Requires` edge, use typed `TimeoutStopUSec` to
+  prove the stop bound, and reject dependency or timeout changes between the
+  initial and final sealing passes;
+- the bootstrap phase uses exactly the documented eight read-only Core/CLN
+  RPC calls, verifies the same chain/runtime/plugin trust boundary as full
+  preflight, accepts all three exact role identities only with zero peer
+  channels, zero `listfunds` outputs/channels and empty `staticbackup`, and
+  fails on any pre-existing state; the pre-start layout verifier also requires
+  an exact owner-read-only native 32-byte `hsm_secret` so omission cannot create
+  a replacement identity;
+- the v26.06.6 bundle manifest requires CLI/hsmtool, all eight mandatory
+  `libexec/c-lightning` subdaemons, `lightningd`, `bcli` and `chanbackup`; a
+  missing `lightning_hsmd` fails rendering, while the exact systemd pre-start
+  command runs `lightningd --test-daemons-only --offline` before the datastore
+  layout verifier or daemon start;
 - all three role-specific channel/gossip topologies pass only with exact,
   distinct compressed node keys, public active channels and same-SCID
   bidirectional gossip; payer/router/issuer also enforce the configured
@@ -946,19 +978,32 @@ The default-Signet staging preflight focused suite additionally requires:
   identity/network/version, unknown/inactive plugins, private/disconnected
   channels, missing/low directional liquidity estimates, missing gossip, SCB
   mismatch and stale/unconfirmed backup receipts fail closed;
-- config and receipt TOML reject unknown fields; binary/plugin, config, Core
-  RPC cookie, socket and receipt paths reject symlinks, unsafe owner/mode and
-  writable protected parents;
+- config and receipt TOML reject unknown fields. The static config reader
+  requires root:preflight-group mode `0440`, the actual pinned non-root EUID,
+  the exact effective/supplementary group set and a root-owned non-writable
+  direct parent whose entire root-to-parent chain is opened with `O_NOFOLLOW`
+  and satisfies the same owner/write policy; wrong UID/GID/mode, missing or
+  extra group, writable ancestor or layout fails closed. Binary/plugin, Core RPC
+  cookie, socket and dynamic receipt paths reject symlinks, unsafe owner/mode
+  and writable protected parents. A root-capable Linux test uses real child
+  process UIDs, GIDs and supplementary groups for the positive and negative DAC
+  matrix; non-root developer runs retain the pure identity matrix. CI has a
+  separate `sudo` root step with `BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1`, so a
+  silently skipped real-kernel matrix fails that explicit gate;
 - Core CLI arguments require exact Signet, loopback host, non-zero port and the
   configured owner-only cookie while rejecting `-conf`, inline credentials,
   implicit auth, special/mutating modes and cookie path substitution; and
 - the mock command layer invokes only the documented read-only Core/CLN RPC
   methods and never wallet, address, channel-open, payment or shutdown methods.
 
-The backup-receipt tests prove only strict parsing, protected-file handling,
-exact `getinfo -> staticbackup` command order, SCB-digest binding, atomic
-receipt replacement, explicit parent-lock release, primary-error precedence
-and fail-closed unlock failure after success. Both long acknowledgement flags record an **operator
+The backup-receipt tests prove only strict parsing, the fixed
+`/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml` path,
+preflight-identity binding, preflight-owned mode-`0600` file handling below an
+exact mode-`0700` dynamic `StateDirectory`, exact `getinfo -> staticbackup`
+command order, SCB-digest binding, atomic receipt replacement, explicit
+parent-lock release, primary-error precedence and fail-closed outcome-unknown
+handling for parent-`fsync` or unlock failure after the atomic rename. Both
+long acknowledgement flags record an **operator
 assertion**; they do not prove an offline copy exists or can be restored.
 `staticbackup`/SCB is static channel-recovery material, not a live/dynamic CLN
 database backup. A datastore-specific backup/replication and restore rehearsal

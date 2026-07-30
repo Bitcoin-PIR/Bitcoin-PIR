@@ -27,6 +27,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import {
+  RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
@@ -35,12 +36,12 @@ import {
   runtimeRequestFromManifest,
 } from "./payment-v1-rendered-artifact-gate.mjs";
 
-export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v4";
+export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v5";
 export const STOPPED_EDGE_EVIDENCE_KIND =
   "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
 export const NSS_ENUMERATION_KIND = "getent-passwd-group-plus-id-groups-v2";
 export const NSS_BACKEND_PROFILE = "local-files-only-v1";
-const LIVE_SCHEMA_VERSION = 4;
+const LIVE_SCHEMA_VERSION = 5;
 const STOPPED_EDGE_SCHEMA_VERSION = 3;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -114,8 +115,6 @@ const LOCKED_SERVICE_ACCOUNT_SHELLS = Object.freeze([
   "/bin/false",
   "/usr/sbin/nologin",
 ]);
-const REVIEWED_ONESHOT_UNIT = "bitcoinpir-lightning-preflight.service";
-const REVIEWED_ONESHOT_FRAGMENT = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
 const REQUIRED_COMMANDS = Object.freeze([
   "/usr/bin/busctl",
   "/usr/bin/false",
@@ -2223,6 +2222,7 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "MemorySwapCurrent",
   "MemorySwapMax",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
   "PrivateTmp",
   "ProtectClock",
@@ -2278,6 +2278,7 @@ const EFFECTIVE_BASE_PROPERTIES = Object.freeze([
   "RootImage",
   "SetCredential",
   "SubState",
+  "WatchdogUSec",
 ]);
 
 function effectivePropertyNames() {
@@ -2289,11 +2290,19 @@ function effectivePropertyNames() {
 }
 
 function effectiveBusctlPropertyNames() {
-  const local = ["Conditions"];
+  const local = ["After", "Before", "BindsTo", "Conditions", "Requires"];
   if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_UNIT_PROPERTIES)) {
     fail("collector and rendered runtime busctl property schemas diverged");
   }
   return [...RUNTIME_BUSCTL_UNIT_PROPERTIES];
+}
+
+function effectiveBusctlServicePropertyNames() {
+  const local = ["TimeoutStopUSec"];
+  if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)) {
+    fail("collector and rendered runtime busctl service property schemas diverged");
+  }
+  return [...RUNTIME_BUSCTL_SERVICE_PROPERTIES];
 }
 
 function compareEffectiveConditionRecords(left, right) {
@@ -2383,26 +2392,120 @@ export function parseBusctlConditionsJsonV1(text, label = "systemd Conditions") 
   return records;
 }
 
-function collectEffectiveConditions(unitName) {
-  const propertyNames = effectiveBusctlPropertyNames();
-  if (canonicalJson(propertyNames) !== canonicalJson(["Conditions"])) {
-    fail("runtime busctl property set is not closed");
+const SYSTEMD_DEPENDENCY_PROPERTIES_V1 = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Requires",
+]);
+const SYSTEMD_UNIT_NAME_V1 =
+  /^(?=.{1,320}$)(?:[A-Za-z0-9:_.@-]|\\x[0-9a-f]{2})+\.(?:automount|device|mount|path|scope|service|slice|socket|swap|target|timer)$/u;
+
+function validateCanonicalSystemdUnitNameSetV1(value, label) {
+  if (!Array.isArray(value) || value.length > 256) {
+    fail(`${label} is not a bounded systemd unit-name array`);
   }
+  if (
+    value.some((name) => typeof name !== "string" || !SYSTEMD_UNIT_NAME_V1.test(name)) ||
+    new Set(value).size !== value.length ||
+    canonicalJson([...value].sort()) !== canonicalJson(value)
+  ) {
+    fail(`${label} is not a canonical sorted systemd unit-name set`);
+  }
+  return value;
+}
+
+export function parseBusctlUnitNamesJsonV1(text, label = "systemd unit relation") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 128 * 1024) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (parsed.type !== "as" || !Array.isArray(parsed.data)) {
+    fail(`${label} does not have the reviewed as shape`);
+  }
+  const sorted = [...parsed.data].sort();
+  validateCanonicalSystemdUnitNameSetV1(sorted, label);
+  return sorted;
+}
+
+export function parseBusctlUnsignedJsonV1(text, label = "systemd unsigned property") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (
+    parsed.type !== "t" ||
+    !Number.isSafeInteger(parsed.data) ||
+    parsed.data < 0
+  ) {
+    fail(`${label} does not have one reviewed finite t value`);
+  }
+  return parsed.data;
+}
+
+function collectBusctlPropertyV1(unitName, interfaceName, property, parser) {
   const record = runAbsolute("/usr/bin/busctl", [
     "--json=short",
     "get-property",
     "org.freedesktop.systemd1",
     systemdUnitObjectPathV1(unitName),
-    "org.freedesktop.systemd1.Unit",
-    "Conditions",
+    interfaceName,
+    property,
   ]);
   if (record.exit_status !== 0 || record.stderr !== "") {
-    fail(`busctl Conditions failed for ${unitName}`);
+    fail(`busctl ${property} failed for ${unitName}`);
   }
-  return parseBusctlConditionsJsonV1(record.stdout, `${unitName}.Conditions`).map((condition) => ({
+  return parser(record.stdout, `${unitName}.${property}`);
+}
+
+function collectEffectiveConditions(unitName) {
+  const propertyNames = effectiveBusctlPropertyNames();
+  if (!propertyNames.includes("Conditions")) {
+    fail("runtime busctl property set is not closed");
+  }
+  return collectBusctlPropertyV1(
+    unitName,
+    "org.freedesktop.systemd1.Unit",
+    "Conditions",
+    parseBusctlConditionsJsonV1,
+  ).map((condition) => ({
     ...condition,
     path_exists: existsSync(condition.parameter),
   }));
+}
+
+function collectEffectiveUnitDependenciesV1(unitName) {
+  const propertyNames = effectiveBusctlPropertyNames();
+  const result = Object.create(null);
+  for (const property of SYSTEMD_DEPENDENCY_PROPERTIES_V1) {
+    if (!propertyNames.includes(property)) {
+      fail("runtime busctl dependency property set is not closed");
+    }
+    result[property] = collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Unit",
+      property,
+      parseBusctlUnitNamesJsonV1,
+    );
+  }
+  return result;
+}
+
+function collectEffectiveServicePropertiesV1(unitName) {
+  const propertyNames = effectiveBusctlServicePropertyNames();
+  if (canonicalJson(propertyNames) !== canonicalJson(["TimeoutStopUSec"])) {
+    fail("runtime busctl service property set is not closed");
+  }
+  return {
+    TimeoutStopUSec: collectBusctlPropertyV1(
+      unitName,
+      "org.freedesktop.systemd1.Service",
+      "TimeoutStopUSec",
+      parseBusctlUnsignedJsonV1,
+    ),
+  };
 }
 
 function validateEffectiveConditions(unit, conditions) {
@@ -2417,6 +2520,75 @@ function validateEffectiveConditions(unit, conditions) {
   if (canonicalJson(conditions) !== canonicalJson(expectedEffectiveConditions(unit))) {
     fail(`effective condition drift: ${unit.unit_name}`);
   }
+}
+
+function validateEffectiveUnitDependenciesV1(unit, dependencies) {
+  exactKeys(
+    dependencies,
+    SYSTEMD_DEPENDENCY_PROPERTIES_V1,
+    `${unit.unit_name}.unit_dependencies`,
+  );
+  exactKeys(
+    unit.unit_dependencies,
+    SYSTEMD_DEPENDENCY_PROPERTIES_V1,
+    `${unit.unit_name}.rendered_unit_dependencies`,
+  );
+  for (const property of SYSTEMD_DEPENDENCY_PROPERTIES_V1) {
+    const actual = validateCanonicalSystemdUnitNameSetV1(
+      dependencies[property],
+      `${unit.unit_name}.${property}`,
+    );
+    const expected = validateCanonicalSystemdUnitNameSetV1(
+      unit.unit_dependencies[property],
+      `${unit.unit_name}.rendered_${property}`,
+    );
+    if (expected.some((name) => !actual.includes(name))) {
+      fail(`effective ${property} dependency drift: ${unit.unit_name}`);
+    }
+  }
+}
+
+function expectedTimeoutStopUsecV1(unit) {
+  const values = unit.hardening.TimeoutStopSec;
+  if (
+    !Array.isArray(values) ||
+    values.length !== 1 ||
+    !/^[1-9][0-9]*$/u.test(values[0])
+  ) {
+    fail(`rendered TimeoutStopSec is not one positive integer: ${unit.unit_name}`);
+  }
+  const seconds = Number(values[0]);
+  const usec = seconds * 1_000_000;
+  if (!Number.isSafeInteger(usec)) {
+    fail(`rendered TimeoutStopSec is outside the reviewed range: ${unit.unit_name}`);
+  }
+  return usec;
+}
+
+function validateEffectiveServicePropertiesV1(unit, properties) {
+  exactKeys(properties, ["TimeoutStopUSec"], `${unit.unit_name}.service_properties`);
+  if (
+    !Number.isSafeInteger(properties.TimeoutStopUSec) ||
+    properties.TimeoutStopUSec !== expectedTimeoutStopUsecV1(unit)
+  ) {
+    fail(`effective TimeoutStopUSec drift: ${unit.unit_name}`);
+  }
+}
+
+export function assertEffectiveSystemdPolicySnapshotUnchangedV1(
+  expectedDependencies,
+  actualDependencies,
+  expectedServiceProperties,
+  actualServiceProperties,
+  unitName = "systemd unit",
+) {
+  if (
+    canonicalJson(actualDependencies) !== canonicalJson(expectedDependencies) ||
+    canonicalJson(actualServiceProperties) !== canonicalJson(expectedServiceProperties)
+  ) {
+    fail(`systemd dependency or service policy changed during live collection: ${unitName}`);
+  }
+  return true;
 }
 
 export function assertEffectiveConditionSnapshotUnchangedV1(
@@ -2496,26 +2668,6 @@ function validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds) {
   if (properties.ControlGroup !== expectedSystemUnitControlGroup(unit.unit_name)) {
     fail(`unit is outside its reviewed system.slice control group: ${unit.unit_name}`);
   }
-  if (properties.Type === "oneshot") {
-    if (
-      unit.unit_name !== REVIEWED_ONESHOT_UNIT ||
-      unit.fragment_path !== REVIEWED_ONESHOT_FRAGMENT ||
-      canonicalJson(unit.hardening.Type ?? []) !== canonicalJson(["oneshot"]) ||
-      canonicalJson(unit.hardening.RemainAfterExit ?? []) !== canonicalJson(["yes"])
-    ) {
-      fail(`unit is not the uniquely reviewed successful oneshot: ${unit.unit_name}`);
-    }
-    if (
-      mainPid !== 0 ||
-      properties.SubState !== "exited" ||
-      properties.Result !== "success" ||
-      properties.ExecMainCode !== "1" ||
-      properties.ExecMainStatus !== "0"
-    ) {
-      fail(`reviewed oneshot completion proof failed: ${unit.unit_name}`);
-    }
-    return { kind: "successful-oneshot", mainPid };
-  }
   if (!["simple", "notify"].includes(properties.Type)) {
     fail(`unit has an unreviewed long-running Type: ${unit.unit_name}`);
   }
@@ -2525,12 +2677,21 @@ function validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds) {
   return { kind: "long-running", mainPid };
 }
 
-function validateEffectiveUnitProperties(unit, properties, conditions, uptimeFinishedMilliseconds) {
+function validateEffectiveUnitProperties(
+  unit,
+  properties,
+  conditions,
+  unitDependencies,
+  serviceProperties,
+  uptimeFinishedMilliseconds,
+) {
   exactKeys(properties, effectivePropertyNames(), `effective properties for ${unit.unit_name}`);
   if (properties.FragmentPath !== unit.fragment_path) fail(`FragmentPath drift: ${unit.unit_name}`);
   if (properties.DropInPaths !== "") fail(`systemd drop-ins are forbidden: ${unit.unit_name}`);
   if (properties.LoadState !== "loaded") fail(`unit is not loaded: ${unit.unit_name}`);
   validateEffectiveConditions(unit, conditions);
+  validateEffectiveUnitDependenciesV1(unit, unitDependencies);
+  validateEffectiveServicePropertiesV1(unit, serviceProperties);
   for (const forbidden of [
     "ExecStartPost",
     "ExecCondition",
@@ -2567,6 +2728,17 @@ function validateEffectiveUnitProperties(unit, properties, conditions, uptimeFin
     if (canonicalJson(splitLiteralWords(properties[key])) !== canonicalJson(expectedWords(expected))) {
       fail(`effective ${key} drift: ${unit.unit_name}`);
     }
+  }
+  const watchdog = unit.hardening.WatchdogSec;
+  if (watchdog === undefined) {
+    if (properties.WatchdogUSec !== "0") {
+      fail(`effective watchdog is unreviewed: ${unit.unit_name}`);
+    }
+  } else if (
+    canonicalJson(watchdog) !== canonicalJson(["90"]) ||
+    properties.WatchdogUSec !== "1min 30s"
+  ) {
+    fail(`effective watchdog lease drift: ${unit.unit_name}`);
   }
   if (unit.hardening.LimitCORE !== undefined && properties.LimitCORESoft !== "0") {
     fail(`effective LimitCORESoft drift: ${unit.unit_name}`);
@@ -2751,6 +2923,8 @@ function collectLongRunningProcessIdentity(unit, properties, nss, serviceIdentit
 
 function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
   const conditions = collectEffectiveConditions(unit.unit_name);
+  const unitDependencies = collectEffectiveUnitDependenciesV1(unit.unit_name);
+  const serviceProperties = collectEffectiveServicePropertiesV1(unit.unit_name);
   const properties = Object.create(null);
   for (const property of effectivePropertyNames()) {
     properties[property] = collectSystemctlValue(unit.unit_name, property);
@@ -2759,6 +2933,8 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     unit,
     properties,
     conditions,
+    unitDependencies,
+    serviceProperties,
     uptimeFinishedMilliseconds,
   );
   let generationConfirmations;
@@ -2784,6 +2960,8 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
     generation_confirmations: generationConfirmations,
     process_identity: processIdentity,
     properties,
+    service_properties: serviceProperties,
+    unit_dependencies: unitDependencies,
     unit_name: unit.unit_name,
   };
 }
@@ -2884,10 +3062,6 @@ function validateIdVector(value, expected, label) {
 
 function validateProcessIdentityEvidence(processIdentity, lifecycle, expectedIdentity, unit) {
   const unitName = unit.unit_name;
-  if (lifecycle.kind === "successful-oneshot") {
-    if (processIdentity !== null) fail(`reviewed oneshot must not claim procfs process identity: ${unitName}`);
-    return;
-  }
   exactKeys(
     processIdentity,
     [
@@ -3652,6 +3826,13 @@ export function validateLiveRuntimeEvidence({
   ) {
     fail("runtime request busctl property schema is not the reviewed closed set");
   }
+  if (
+    !Array.isArray(request.busctl_service_properties) ||
+    canonicalJson(request.busctl_service_properties) !==
+      canonicalJson(RUNTIME_BUSCTL_SERVICE_PROPERTIES)
+  ) {
+    fail("runtime request busctl service property schema is not the reviewed closed set");
+  }
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
   }
@@ -3903,7 +4084,16 @@ export function validateLiveRuntimeEvidence({
     const actual = evidence.units[index];
     exactKeys(
       actual,
-      ["conditions", "fragment_sha256", "generation_confirmations", "process_identity", "properties", "unit_name"],
+      [
+        "conditions",
+        "fragment_sha256",
+        "generation_confirmations",
+        "process_identity",
+        "properties",
+        "service_properties",
+        "unit_dependencies",
+        "unit_name",
+      ],
       `live units[${index}]`,
     );
     if (actual.unit_name !== expected.unit_name || actual.properties.FragmentPath !== expected.fragment_path) {
@@ -3921,6 +4111,8 @@ export function validateLiveRuntimeEvidence({
       expected,
       actual.properties,
       actual.conditions,
+      actual.unit_dependencies,
+      actual.service_properties,
       evidence.host.uptime_finished_milliseconds,
     );
     validateGenerationConfirmations(actual.generation_confirmations, actual.properties, expected.unit_name);
@@ -4434,14 +4626,27 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   // The final external-state pass is deliberately lightweight and comes after
   // the expensive secret commands. Per-unit checks inside collectUnit are not
   // enough: a profile sentinel or unit generation could otherwise change while
-  // later probes run. Recheck structured Conditions and bind each same unit
-  // generation here; nothing below this loop probes external state before the
-  // evidence object is constructed and returned.
+  // later probes run. Recheck structured Conditions, typed dependency/timeout
+  // state and each same unit generation here; nothing below this loop probes
+  // external state before the evidence object is constructed and returned.
   for (let index = 0; index < request.units.length; index += 1) {
     const finalConditions = collectEffectiveConditions(request.units[index].unit_name);
+    const finalUnitDependencies = collectEffectiveUnitDependenciesV1(
+      request.units[index].unit_name,
+    );
+    const finalServiceProperties = collectEffectiveServicePropertiesV1(
+      request.units[index].unit_name,
+    );
     assertEffectiveConditionSnapshotUnchangedV1(
       units[index].conditions,
       finalConditions,
+      request.units[index].unit_name,
+    );
+    assertEffectiveSystemdPolicySnapshotUnchangedV1(
+      units[index].unit_dependencies,
+      finalUnitDependencies,
+      units[index].service_properties,
+      finalServiceProperties,
       request.units[index].unit_name,
     );
     units[index].generation_confirmations.push(

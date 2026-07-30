@@ -113,7 +113,7 @@ test("global activation never substitutes for a role-specific approval", () => {
     ],
     [
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
-      "SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "SIGNET-LIGHTNING-STAGING-APPROVED",
     ],
     [
       "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
@@ -609,10 +609,63 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
     [
       "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
       (text) => text.replace(
-        "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight",
+        "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight-supervisor",
         "/usr/bin/true",
       ),
       /command prefix/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("StateDirectoryMode=0700", "StateDirectoryMode=0750"),
+      /StateDirectoryMode must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("--config-expected-uid 0", "--config-expected-uid @PREFLIGHT_UID@"),
+      /--config-expected-uid|argument set/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("--config-reader-expected-uid @PREFLIGHT_UID@", ""),
+      /--config-reader-expected-uid|argument set|Service directive keys/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace(" /var/lib/bitcoinpir-lightning-preflight", ""),
+      /ReadOnlyPaths must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("Type=notify", "Type=oneshot"),
+      /Service\.Type must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("WatchdogSec=90", "WatchdogSec=0"),
+      /WatchdogSec must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("Restart=no", "Restart=on-failure"),
+      /Restart must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace(" /run/systemd/units", ""),
+      /ReadOnlyPaths must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace(
+        "ReadWritePaths=/run/bitcoinpir-lightning-preflight",
+        "ReadWritePaths=/run",
+      ),
+      /ReadWritePaths must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace(" bitcoinpir-lightning-preflight.service", ""),
+      /Unit\.(?:After|Requires|BindsTo) must equal/,
     ],
     [
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
@@ -942,6 +995,19 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
       "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
       (text) => text.replace("User=bitcoinpir-cln-rpc-guard", "User=root"),
       /Service\.User must equal/,
+    ],
+    [
+      "deploy/payment-v1/lightning/verify-layout.sh.in",
+      (text) => text.replace(":400:32\" ] || bpir_fail", ":600:32\" ] || bpir_fail"),
+      /exact native hsm_secret boundary/,
+    ],
+    [
+      "deploy/payment-v1/lightning/verify-layout.sh.in",
+      (text) => text.replace(
+        '[ -f "${bpir_hsm_secret}" ] && [ ! -L "${bpir_hsm_secret}" ] || bpir_fail',
+        ': # omitted restored identity check',
+      ),
+      /exact native hsm_secret boundary/,
     ],
   ];
 

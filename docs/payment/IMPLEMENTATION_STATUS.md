@@ -767,19 +767,55 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Implemented but not production-activated
 
-- [x] `bpir-admin lightning-staging preflight` implements a read-only,
-      fail-closed default-Signet gate for one local payer/router/issuer role.
+- [x] `bpir-admin lightning-staging bootstrap-preflight`, `preflight`, and
+      `preflight-supervisor` implement read-only, fail-closed default-Signet
+      gates for one local
+      payer/router/issuer role. Bootstrap is receipt-independent, queries no
+      gossip and accepts only zero peer channels, zero `listfunds`
+      outputs/channels plus empty `staticbackup`; it is the no-funds
+      identity/runtime gate before any faucet or channel mutation. The
+      pre-start layout gate requires the restored native 32-byte `hsm_secret`
+      with exact owner and mode `0400`, so an absent secret cannot generate a
+      replacement identity. Full preflight remains the post-channel activation
+      gate. The production supervisor no longer latches one successful pass:
+      before and after every renewal it validates the root-owned systemd
+      InvocationID mapping for the exact CLN unit, binds its first generation,
+      writes a private 180-second volatile lease every 30 seconds, and sends
+      `READY`/watchdog notifications only after success. The unit is
+      `Type=notify`, `WatchdogSec=90`, `Restart=no`; both the RPC guard and
+      issuer bind to it, so any renewal failure, hang or CLN generation change
+      stops downstream payment access. Their 30-second stop bounds leave about
+      60 seconds of margin before the lease expires.
+      Live runtime evidence reads typed systemd D-Bus dependency arrays and
+      `TimeoutStopUSec`, requires every rendered relationship to be loaded by
+      the manager, and repeats the snapshots at final sealing; stale
+      pre-`daemon-reload` manager state fails closed.
       It pins Core/CLN/CLI/plugin binaries below explicit protected parents,
       authenticates an explicit loopback Core RPC endpoint with an owner-only
       pinned cookie, checks the exact default challenge/genesis, verifies CLN
       role/channel/gossip topology and directional minimum-liquidity estimates,
-      and binds a fresh backup receipt to the current SCB digest. Atomic receipt
-      writes explicitly unlock the pinned output-parent descriptor on every
-      ordinary success/error path; the primary operation error wins, while a
-      successful write followed by unlock failure fails closed. The latest
-      focused admin suite passed 126/126 with warnings denied. Its command
-      runner is mock-tested against a fixed
-      read-only RPC allowlist. It has not yet been run on the final persistent
+      and binds a fresh backup receipt to the current SCB digest. The static
+      preflight TOML contract is root:dedicated-preflight-group mode `0440`
+      below a root-owned non-writable parent; every path ancestor is a
+      root-owned non-writable `O_NOFOLLOW`-opened directory. The command pins
+      both the actual non-root reader EUID and the exact effective plus
+      supplementary group set (config, cookie and CLN groups only). The
+      receipt is ceremony-created preflight-owned mode `0600` state below the
+      unit's mode-`0700` `StateDirectory`; V1 pins the exact
+      `/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml` path and
+      binds its configured owner/group to the trusted reader UID/config GID.
+      It is never a rendered `/etc` payload or static hash-manifest input.
+      Atomic receipt writes explicitly unlock the pinned output-parent
+      descriptor on every ordinary success/error path; the primary operation
+      error wins, while a successful write followed by parent `fsync` or unlock
+      failure is explicitly outcome-unknown and fails closed. Both command
+      runners are mock-tested against separate fixed
+      read-only RPC allowlists.
+      The rendered v26.06.6 bundle gate now requires `lightning-cli`,
+      `lightning-hsmtool`, all eight mandatory CLN subdaemons, `lightningd`,
+      `bcli` and `chanbackup`; a source skeleton can no longer omit runtime
+      dependencies while claiming a complete bundle. These paths have not yet
+      been run on the final persistent
       Signet hosts and does not replace actual liquidity, payment, restore or
       peer/bootstrap acceptance. The receipt is an operator assertion:
       `staticbackup`/SCB material supports channel recovery but is not a live or
@@ -790,7 +826,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       but has not been connected to a persistent, external or public-network node.
       It deliberately binds loopback and, in the prepared production topology,
       expects the guard-UID/issuer-GID method-scoped Unix socket. A separate
-      one-shot preflight UID checks the native cross-UID CLN socket and Bitcoin
+      dedicated preflight supervisor UID checks the native cross-UID CLN socket and Bitcoin
       cookie after the CLN daemon itself runs the recursive layout verifier.
       Production TLS ingress, source-aware abuse controls, Linux installed-
       artifact/runtime evidence, process supervision and operational key
@@ -857,7 +893,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v4 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v5 accepts
       only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
       and `/etc/group`, and rejects UID/GID aliases or extra protected-group
       primary/explicit/effective members; a final snapshot confirmation closes
