@@ -247,9 +247,17 @@ recovery material exists. The checked-in units therefore use these gates:
    Signet faucet/funding and channel ceremony proceed. After every channel
    mutation, export and restore-test current channel recovery material and take
    a supported datastore backup/restore rehearsal.
-5. Only the RPC guard, full `preflight` and issuer units require the additional
-   issuer-activation and channel-backup-restore approvals. Full preflight then
-   checks exact channels, directional liquidity, gossip and the fresh receipt.
+5. Keep the core unit running without funds long enough for a separately
+   reviewed runtime-evidence schema to bind its selected libpq path, inode and
+   digest to `/proc/<MainPID>/maps` and record host ABI approval. The core unit
+   deliberately omits `CLN-LOADER-MAPS-APPROVED` so this evidence can be
+   collected.
+6. Only after that schema PR and evidence approval may
+   `CLN-LOADER-MAPS-APPROVED` be provisioned. The RPC guard, full `preflight`
+   and issuer units require it in addition to issuer-activation and
+   channel-backup-restore approvals. Until then the sentinel must remain absent.
+   Full preflight then checks exact channels, directional liquidity, gossip and
+   the fresh receipt.
 
 `bootstrap-preflight` is a one-way phase gate, not a recovery mode. It fails if
 any peer-channel, wallet-output, funded-channel or SCB entry already exists and
@@ -495,6 +503,38 @@ artifacts and each node's self-report. They do not attest either running daemon
 process image. The service manager must therefore use the same canonical
 pinned daemon paths; process-executable evidence remains a deployment and
 manual-acceptance gate.
+
+For the pinned v26.06.6 Ubuntu 24.04 runtime, `lightningd` also requires the
+reviewed private `libpq.so.5`. Its separate one-entry manifest and
+digest-equals-file root permit no other loader object, and the systemd unit
+permits exactly one literal `LD_LIBRARY_PATH` selecting that root. This keeps
+the upstream CLN archive identity separate from the Ubuntu library identity.
+These checks prove only the selected private deployment leaf and its configured
+search directory. The leaf still resolves libssl, libcrypto, GSSAPI, LDAP and
+libc from the reviewed host ABI, and the current runtime-evidence schema does
+not inspect process maps. Production activation is blocked until target
+evidence binds the selected path, inode and digest to `/proc/<MainPID>/maps`,
+rejects a system, alternate, deleted or injected libpq mapping, and records
+approval of the host ABI dependencies. The core unit omits
+`CLN-LOADER-MAPS-APPROVED` only so a no-funds generation can supply that
+evidence; the preflight, guard and issuer units require it. Do not create the
+sentinel before the separately reviewed evidence-schema PR exists and passes.
+
+That release also contains a deterministic `clear-plugins` NULL dereference
+when later config variables are still unparsed. The production profile never
+uses it. Its bundle carries the exact 27 built-in plugin files in the official
+`libexec/c-lightning/plugins` directory, installs the 25 disallowed members as
+root-owned non-executable `0444`, and has one exact `disable-plugin` line for
+each basename. Only `bcli` and `chanbackup` are `0555`. Live preflight requires
+both to be active and non-dynamic and rejects any third plugin. A root-owned
+`0555` tmpfiles/runtime-evidence placeholder makes `/srv/lightning/plugins`,
+CLN's real base scan path, a required non-ignore-missing systemd mask. The
+pre-start layout verifier must not test that already-masked base path as absent;
+it separately requires only the non-default network-local lookalike to remain
+absent. `--test-daemons-only` exits
+before plugin initialization and final config parsing, so deployment evidence
+must also include a complete isolated no-funds start; the early probe is not a
+substitute.
 
 This preflight deliberately does not call `getpeerinfo`. Its
 `spendable_msat`/`receivable_msat` checks are CLN estimates that can change with

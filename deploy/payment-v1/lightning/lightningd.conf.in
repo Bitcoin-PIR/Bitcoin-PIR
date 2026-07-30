@@ -16,8 +16,10 @@ announce-addr-discovered=false
 autoconnect-seeker-peers=0
 disable-dns
 
-# Avoid adding an on-chain fallback identity to anonymous Payment V1 invoices.
-invoices-onchain-fallback=false
+# `invoices-onchain-fallback` is deliberately absent. It is a no-argument
+# opt-in in pinned CLN v26.06.6 and defaults to false; spelling it as
+# `invoices-onchain-fallback=false` is invalid and fails only during the final
+# configuration pass, after the early daemon probe has already exited.
 
 # Minimize payment metadata in the journal. Debug/IO logging is forbidden.
 log-level=unusual
@@ -34,9 +36,33 @@ bitcoin-rpcport=@BITCOIN_RPC_PORT@
 bitcoin-rpcclienttimeout=30
 bitcoin-retry-timeout=30
 
-# Remove every default/plugin-directory surface, including grpc, REST,
-# Commando, recklessrpc and wss-proxy. These two exact executables are the full
-# allowlist and their hashes are included in the CLN bundle manifest/preflight.
-clear-plugins
-important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/bcli
-important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/chanbackup
+# Pinned CLN v26.06.6 crashes when `clear-plugins` walks later, not-yet-parsed
+# config variables. Keep the complete reviewed built-in tree at its compiled
+# path, but disable every built-in except bcli and chanbackup by basename. The
+# disabled files are installed root:root 0444, the two active built-ins 0555,
+# and the systemd namespace masks CLN's mutable default plugin directories.
+disable-plugin=autoclean
+disable-plugin=bookkeeper
+disable-plugin=cln-askrene
+disable-plugin=cln-bip353
+disable-plugin=cln-bwatch
+disable-plugin=cln-currencyrate
+disable-plugin=cln-grpc
+disable-plugin=cln-lsps-client
+disable-plugin=cln-lsps-service
+disable-plugin=cln-renepay
+disable-plugin=cln-xpay
+disable-plugin=clnrest
+disable-plugin=commando
+disable-plugin=exposesecret
+disable-plugin=funder
+disable-plugin=keysend
+disable-plugin=offers
+disable-plugin=pay
+disable-plugin=recklessrpc
+disable-plugin=recover
+disable-plugin=spenderp
+disable-plugin=sql
+disable-plugin=topology
+disable-plugin=txprepare
+disable-plugin=wss-proxy

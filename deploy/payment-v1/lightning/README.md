@@ -5,7 +5,7 @@ identity, channel or funds, and they do not authorize a remote-host change.
 The first persistent identity ceremony, Signet funding, public peer/channel
 work, mainnet use and real-value funds each remain separately approved actions.
 
-## Frozen runtime boundary
+## Frozen deployment-file boundary
 
 `lightningd` is launched with exactly one explicit, absolute `--conf` path.
 Core Lightning treats an explicit config as the complete file configuration,
@@ -14,27 +14,68 @@ directory. The rendered file must contain no `include` line. Command-line
 arguments contain no RPC password, HSM passphrase, seed, macaroon or other
 secret.
 
-The rendered bundle manifest must enumerate and hash every shipped CLN binary,
-subdaemon, shared object and the only two allowed plugins. For the pinned
-v26.06.6 profile the mandatory executable closure is `lightningd`,
+The rendered bundle manifest must enumerate and hash the exact 38-file selected
+CLN deployment-file set. For the pinned v26.06.6 profile the executable members
+are `lightningd`,
 `lightning-cli`, `lightning-hsmtool`, `lightning_channeld`,
 `lightning_closingd`, `lightning_connectd`, `lightning_gossipd`,
 `lightning_gossip_compactd`, `lightning_hsmd`, `lightning_onchaind`,
-`lightning_openingd`, `bcli` and `chanbackup`; omission of any one fails the
-rendered-artifact gate. CLI tools and `lightningd` live below `bin/`; the eight
+`lightning_openingd`, `bcli` and `chanbackup`. The other 25 official built-in
+plugin files remain present at `libexec/c-lightning/plugins/`, but are
+root-owned mode `0444` and therefore inert; the configuration also disables
+each one by its exact basename. Omission, addition, legacy `plugins/` layout,
+or a mode swap fails the rendered-artifact gate. A separate one-entry manifest requires the exact
+regular `libpq.so.5` selected by `CLN_LIBPQ_SHA256`. The official Ubuntu 24.04 CLN
+v26.06.6 archive links `lightningd` to libpq even when PostgreSQL is not the
+selected datastore, while the target host deliberately has no system libpq.
+The unit therefore sets exactly
+`LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/<libpq-sha256>`; the
+rendered and offline-manifest gates reject an alternate/combined path, `LD_PRELOAD`, a
+missing libpq, or any second object in that loader directory. Keeping the
+library in its own digest-equals-file root preserves `CLN_BUNDLE_SHA256` as the
+identity of the independently approved upstream CLN release archive. The
+selected libpq bytes and their distribution provenance remain explicit
+production render inputs and are never installed through the host package
+manager. This is a selected private deployment leaf, not a complete dynamic
+loader closure: that libpq still resolves `libssl.so.3`, `libcrypto.so.3`,
+`libgssapi_krb5.so.2`, `libldap.so.2`, and `libc.so.6` from the reviewed host
+ABI. The current runtime-evidence schema does not inspect `/proc/<pid>/maps` or
+bind a mapped inode to the selected file. Production activation of CLN is
+therefore blocked until a later evidence schema proves that exact mapping and
+the host ABI trust is approved. The core unit deliberately does not require
+`CLN-LOADER-MAPS-APPROVED`, so a no-funds generation can run to collect that
+evidence. The preflight, guard and issuer units all require it. The sentinel
+must not be provisioned until a separately reviewed evidence-schema PR exists,
+the exact maps/inode/digest evidence passes, and the host ABI trust is approved.
+CLI tools and `lightningd` live below `bin/`; the eight
 mandatory subdaemons retain the upstream `libexec/c-lightning/` layout that
 `lightningd` resolves relative to its own executable. `lightning_dualopend` and
 `lightning_websocketd` are deliberately absent: the closed config enables
-neither experimental dual funding nor a WebSocket listener. Additional
-bundle-local shared libraries may be
-enumerated and pinned, but cannot replace that closure. The service performs
+neither experimental dual funding nor a WebSocket listener. Additional loader
+objects are forbidden in the private loader directory. The service performs
 strict bundle/config/layout checks before launch, including upstream
 `lightningd --test-daemons-only` against the exact rendered config. That probe
 executes the mandatory subdaemon version handshake but creates no wallet,
-identity or database state. `clear-plugins` removes the
-default plugin set; only pinned `bcli` and `chanbackup` are restored as
-important plugins. Consequently there is no gRPC, REST, Commando, WebSocket
-proxy, recklessrpc, dynamic plugin directory or remote Lightning RPC surface.
+identity or database state. It is an early-exit probe and is not treated as
+proof of final config parsing or plugin initialization; the source/render gate
+and live `plugin list` preflight provide those independent checks. Pinned CLN
+v26.06.6 has a deterministic NULL dereference in `clear-plugins`, so that
+option and duplicate `important-plugin` registrations are forbidden. The two
+remaining built-ins are natively important; live preflight requires exactly
+those canonical paths with `active=true` and `dynamic=false`.
+`/srv/lightning/plugins` (the actual CLN base-directory scan location) is a
+required root-owned `0555` tmpfiles/runtime-evidence input and is masked without
+systemd's ignore-missing prefix, so an absent placeholder fails startup. The
+pre-start verifier does not place that already-masked base path in its
+must-be-absent loop. The network-local lookalike is not a CLN default scan path;
+it remains required absent by that verifier but is not claimed as a namespace
+mask.
+Consequently there is no gRPC, REST, Commando, WebSocket proxy, recklessrpc,
+dynamic plugin directory or remote Lightning RPC surface. The
+`funder`/`spenderp` path is also inert, so this receive-only issuer profile
+cannot initiate a channel with `fundchannel`; initial liquidity must arrive via
+a separately approved peer opening an inbound channel. A maintenance profile
+must not temporarily widen this long-running unit.
 The native socket is an administrative CLN RPC surface, not a method-scoped
 capability. It is reachable only by CLN, the dedicated preflight supervisor, and
 the separately pinned `bitcoinpir-cln-rpc-guard`. The long-running issuer
@@ -59,8 +100,9 @@ extended ACL. Every regular CLN datastore/secret file remains CLN-owned,
 single-link and owner-only; the layout verifier rejects any group/world file
 permission.
 
-`cln-rpc-guard-tmpfiles.conf.in` creates guard/issuer mode-`0710` runtime root
-and final directories plus the root:root mode-`0700`
+`cln-rpc-guard-tmpfiles.conf.in` creates the root:root mode-`0555`
+`/srv/lightning/plugins` namespace placeholder, guard/issuer mode-`0710`
+runtime root and final directories, plus the root:root mode-`0700`
 `/run/bitcoinpir-lightning-operator-approvals` parent. It deliberately creates
 no approval token. The guard creates its downstream
 socket as guard-UID/issuer-GID mode `0660`, validates kernel peer credentials,
@@ -80,9 +122,10 @@ would make it too easy to bypass either boundary.
 The config fixes Core RPC to loopback and omits all RPC user/password options,
 so a password can never appear in the rendered config or process arguments.
 Bitcoin Core must create its cookie as bitcoind-UID/`bitcoinpir-bitcoin-rpc`
-GID mode `0640` below a bitcoind-owned/group mode-`0710` final directory. Only
-CLN and the dedicated preflight UID receive that group; neither the issuer nor
-the CLN guard does. The preflight checks the exact EUID/supplementary GID,
+GID mode `0640` below a bitcoind-owned/cookie-group mode-`2710` final directory,
+so newly created cookies inherit the independent reader GID. Only CLN and the
+dedicated preflight UID receive that group; neither the issuer nor the CLN
+guard does. The preflight checks the exact EUID/supplementary GID,
 canonical no-symlink path, single-link regular file, ACL policy, and metadata
 stability around the same open file descriptor. Do not insert an RPC password
 into this template or give the cookie group to the issuer.
@@ -109,8 +152,11 @@ mainnet approval mechanism.
 The templates require the cross-UID CLN and Bitcoin-cookie validators plus the
 method guard; none has a source-level bypass flag. Activation still requires a
 Linux rendered-artifact/runtime-evidence pass, exact binary/config hashes,
-separate restore rehearsals, and live default-Signet preflight evidence. The
-repository preflight deliberately rejects mainnet, custom Signet, testnet and
+separate restore rehearsals, exact loader maps/inode evidence, and live
+default-Signet preflight evidence. Until a separately reviewed loader-evidence
+schema PR lands and passes, `CLN-LOADER-MAPS-APPROVED` must remain absent, which
+mechanically prevents the live preflight, RPC guard and issuer from starting.
+The repository preflight deliberately rejects mainnet, custom Signet, testnet and
 regtest. Mainnet support, any real-value wallet/channel, remote installation,
 and the corresponding custody decision remain separate reviewed and approved
 work. A generated node ID or test liquidity is not that approval.
@@ -137,9 +183,9 @@ independent of the live-host file format.
 Immediately after the first no-funds start, and before any address, funding or
 channel operation, run `bpir-admin lightning-staging bootstrap-preflight`. It
 must match the independently derived node ID, exact default Signet, pinned
-runtime and plugin closure, and must observe zero peer channels, zero on-chain
-wallet outputs, zero funded channels plus an empty `staticbackup`. A non-zero
-result is not recoverable by relabelling the phase.
+selected deployment-file and plugin set, and must observe zero peer channels,
+zero on-chain wallet outputs, zero funded channels plus an empty `staticbackup`.
+A non-zero result is not recoverable by relabelling the phase.
 
 Before the RPC guard, full preflight and issuer activation sentinels are
 provisioned, all of the following must then be true and independently recorded:
@@ -156,9 +202,14 @@ provisioned, all of the following must then be true and independently recorded:
 6. the CLN UID's pre-start layout verifier passes before `lightningd` starts;
    it rejects namespace symlinks, ACLs, unexpected special files, non-private
    datastore files, hard links, and the wrong socket owner/group/mode; and
-7. `bitcoinpir-lightning-preflight.service` passes as its dedicated preflight UID against
-   the running exact binaries, plugins, Core chain, node identity, channels,
-   liquidity, strict cross-UID socket metadata and fresh backup receipt.
+7. a separately reviewed runtime-evidence schema binds the running
+   `lightningd` `/proc/<MainPID>/maps` entry, inode and digest to the selected
+   private libpq and records approval of its host ABI dependencies; only then
+   may `CLN-LOADER-MAPS-APPROVED` be provisioned; and
+8. `bitcoinpir-lightning-preflight.service` passes as its dedicated preflight
+   UID against the running exact binaries, plugins, Core chain, node identity,
+   channels, liquidity, strict cross-UID socket metadata and fresh backup
+   receipt.
 
 The issuer UID cannot traverse the native CLN namespace at all. The dedicated
 preflight UID can traverse but cannot list the mode-`0710` CLN directory. For
@@ -174,6 +225,10 @@ from a dynamic datastore backup. Never copy a running SQLite CLN database. The
 global, Signet-staging, Lightning-custody and identity-restore approvals in the
 CLN unit, and the additional issuer-activation and backup/restore approvals on
 the guard/preflight/issuer units, are operator gates, not cryptographic proof.
+Those three downstream units additionally require
+`CLN-LOADER-MAPS-APPROVED`; the core unit omits it solely so the evidence can be
+collected from a no-funds generation. Never create that sentinel before the
+separate evidence-schema PR and independent evidence approval.
 The issuer additionally requires both the live preflight lease supervisor and
 RPC guard. The supervisor is `Type=notify`, reads the root-owned systemd
 InvocationID mapping before and after every full check, renews a private

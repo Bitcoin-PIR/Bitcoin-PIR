@@ -424,6 +424,43 @@ acquisition/recovery and joined synthetic two-provider DPF/Merkle boundary. It
 is not Signet, public-network, real-funds, production-ingress, production
 attestation or deployed-origin acceptance; ARC remains experimental.
 
+### 2026-07-30 Hetzner CLN v26.06.6 final-parse/plugin probe
+
+An isolated, no-funds probe ran the exact official Ubuntu 24.04 amd64 CLN
+archive (`3214d71227f780a9a53cf264ab35cf452e0bdf43c1497ea406beedf2ad0af058`)
+on the target Hetzner host with the separately pinned private `libpq.so.5`
+(`ad59c3cee64268b3cf6c245ea623610ca32eab3c0bfe39d90cabf27e46ad4203`)
+and Bitcoin Core 31.1 in disposable regtest state. Bitcoin Core listened only
+on loopback with wallet and P2P disabled; CLN used `--offline`, a loopback-only
+test bind and a disposable identity. No Signet/mainnet address, channel, coin or
+payment was created.
+
+The checked-in pre-probe shape found two fail-closed but production-blocking
+release facts: config-file `clear-plugins` deterministically segfaulted in
+v26.06.6, and `invoices-onchain-fallback=false` was rejected in the final
+config pass because the secure-default option is a no-argument opt-in. The
+early `--test-daemons-only` probe had exited before the latter check. With both
+spellings removed, all 27 official built-ins present at their compiled path,
+25 exact basename disables, the same 25 files root-owned `0444`, and only
+`bcli`/`chanbackup` mode `0555`, the daemon completed startup. `plugin list`
+contained exactly those two canonical paths with `active=true` and
+`dynamic=false`. An explicit `plugin start` of the inert `commando` member was
+rejected with `Permission denied`, after which the two-plugin set was unchanged.
+
+The temporary CLN and Core processes were then stopped, their three test ports
+were verified absent, and both exact diagnostic staging directories were
+deleted. `bitcoinpir-core-lightning.service` remained inactive. This is target
+probe evidence that the selected private libpq leaf was sufficient for this
+disposable start; it is not maps-plus-inode proof of the loaded object, a
+complete ELF loader closure, or production Signet identity, custody, liquidity,
+payment, persistent installation or activation evidence. The exact libpq still
+uses host libssl, libcrypto, GSSAPI, LDAP and libc dependencies. Production CLN
+activation remains blocked until the runtime-evidence schema binds the selected
+mapping and the host ABI trust is approved. The core unit may run without funds
+to collect that evidence, but `CLN-LOADER-MAPS-APPROVED` must remain absent until
+the separately reviewed schema PR and evidence approval exist; its absence
+mechanically blocks preflight, guard and issuer.
+
 ### 2026-07-29 CLN bootstrap and bundle-layout gate
 
 The current-tree bootstrap work was exercised without creating a persistent
@@ -432,7 +469,7 @@ suite passed 32/32, the full `bpir-admin` suite passed 125/125, and the scoped
 warnings-denied clippy invocation passed. The deployment-template gate passed
 24/24 and the rendered-artifact gate passed 79/79.
 
-The executable-closure check was also tested against the official Core
+The selected deployment-file check was also tested against the official Core
 Lightning v26.06.6 image pinned by digest:
 
 ```text
@@ -456,7 +493,7 @@ requires a pre-existing owner-read-only native 32-byte `hsm_secret`. A
 disposable native 32-byte seed was accepted by the same pinned image's
 `lightning-hsmtool getnodeid` and produced an exact compressed public node ID;
 no seed bytes were printed or retained. This is evidence for the bootstrap RPC
-sequence, activation-sentinel separation and bundled executable closure only.
+sequence, activation-sentinel separation and selected bundled deployment files only.
 It is not evidence for a persistent Signet identity, an isolated identity
 restore, faucet funding, channel recovery, production secrets or a production
 deployment.

@@ -1043,11 +1043,39 @@ The default-Signet staging preflight focused suite additionally requires:
   fails on any pre-existing state; the pre-start layout verifier also requires
   an exact owner-read-only native 32-byte `hsm_secret` so omission cannot create
   a replacement identity;
-- the v26.06.6 bundle manifest requires CLI/hsmtool, all eight mandatory
-  `libexec/c-lightning` subdaemons, `lightningd`, `bcli` and `chanbackup`; a
-  missing `lightning_hsmd` fails rendering, while the exact systemd pre-start
+- the v26.06.6 bundle manifest is an exact 38-file set: CLI/hsmtool,
+  `lightningd`, all eight mandatory `libexec/c-lightning` subdaemons and the
+  27 official built-in plugin files at their compiled path. Only `bcli` and
+  `chanbackup` are executable (`0555`); the other 25 are root-owned `0444` and
+  each has one exact basename `disable-plugin` line. Missing/extra members,
+  legacy plugin paths, wrong modes, `clear-plugins`, duplicate explicit
+  important-plugin registration, or an on-chain invoice fallback opt-in fail;
+  `/srv/lightning/plugins` must exist in the host layout as the exact root:root
+  `0555` tmpfiles/runtime-evidence placeholder and be masked without an
+  ignore-missing prefix. The pre-start verifier must reject any attempt to put
+  that already-masked base path in its must-be-absent loop; the network-local
+  lookalike must remain absent under the verifier and is not claimed as a
+  namespace mask. Live
+  `plugin list` must contain exactly the two allowed entries with
+  `active=true,dynamic=false`; an attempted `plugin start` of an inert member
+  must fail. A
+  separate one-entry manifest requires the sole private deployment leaf
+  `libpq.so.5` below a digest-equals-file root. Missing `lightning_hsmd` or
+  libpq, an additional loader object, an alternate/combined
+  `LD_LIBRARY_PATH`, or any `LD_PRELOAD` fails rendering and offline-manifest
+  verification. These checks do not prove the process mapping or the leaf's
+  host-provided libssl, libcrypto, GSSAPI, LDAP and libc ABI dependencies;
+  production activation remains blocked until maps-plus-inode evidence and host
+  ABI approval exist. The core unit must omit
+  `CLN-LOADER-MAPS-APPROVED` so a no-funds generation can be inspected, while
+  preflight, guard and issuer must require it. Source, rendered and offline
+  manifest negative tests must reject removing it downstream or adding it to
+  core. The sentinel must remain absent until a separately reviewed evidence-
+  schema PR and independent evidence approval exist. The exact systemd pre-start
   command runs `lightningd --test-daemons-only --offline` before the datastore
-  layout verifier or daemon start;
+  layout verifier or daemon start. Because that CLN option exits during early
+  parsing, integration must additionally exercise a complete no-funds start;
+  the early probe alone is not final-config or plugin-initialization evidence;
 - all three role-specific channel/gossip topologies pass only with exact,
   distinct compressed node keys, public active channels and same-SCID
   bidirectional gossip; payer/router/issuer also enforce the configured

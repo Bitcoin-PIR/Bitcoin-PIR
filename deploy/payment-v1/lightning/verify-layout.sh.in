@@ -41,7 +41,10 @@ esac
 
 # Explicit --conf means these are ignored by CLN, but rejecting them keeps the
 # trust boundary legible and prevents accidental future fallback to implicit
-# configuration or dynamic plugins.
+# configuration or dynamic plugins. Do not test the required
+# /srv/lightning/plugins placeholder here: systemd masks that path before this
+# ExecStartPre runs. Tmpfiles and runtime evidence validate the placeholder's
+# root:root 0555 host metadata; this loop rejects only unmasked lookalikes.
 for bpir_forbidden in \
     "${bpir_lightning_base}/config" \
     "${bpir_lightning_dir}/config" \

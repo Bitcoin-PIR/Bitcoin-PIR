@@ -93,6 +93,39 @@ hardlink, reset, drop-in, environment-file, credential or cross-profile path.
 Secret ownership is bound to the exact consuming service identity rather than
 an arbitrary non-root UID/GID.
 
+The official Ubuntu 24.04 CLN v26.06.6 archive has a runtime dependency on
+`libpq.so.5`, which is absent from the inspected Hetzner host. Installing a
+package is not an acceptable workaround while dpkg is unhealthy. The closed
+issuer profile instead requires one private `libpq.so.5` below an independent
+digest-equals-file root, permits no second object in that loader directory, and binds
+the CLN unit to that directory with its sole literal environment assignment.
+Source, rendered and offline-runtime gates reject omission, path widening and
+`LD_PRELOAD`; this keeps the upstream CLN archive identity distinct from the
+Ubuntu library identity. They prove a selected private deployment leaf, not its
+live mapping or a complete loader closure. That leaf still trusts host libssl,
+libcrypto, GSSAPI, LDAP and libc. Production activation remains blocked until a
+later runtime-evidence schema binds the selected path, inode and digest to
+`/proc/<MainPID>/maps` and the host ABI trust is independently approved. The
+core unit intentionally omits `CLN-LOADER-MAPS-APPROVED` so it can run without
+funds while that evidence is collected. Preflight, guard and issuer require the
+sentinel, which must remain absent until the separately reviewed evidence-schema
+PR exists and the resulting evidence is independently approved.
+
+Target-host probing also found two release-specific configuration hazards.
+CLN v26.06.6 dereferences a null later-config entry in `clear-plugins`, and
+`invoices-onchain-fallback=false` is invalid because that option is a
+no-argument opt-in whose secure default is already false. Both spellings are
+now forbidden. The exact official 27-plugin tree is retained at its compiled
+path, 25 disallowed members are exact-disabled and installed mode `0444`, and
+only `bcli`/`chanbackup` remain executable. This double condition is needed
+because the documented `plugin start` RPC can bypass a disable list. A
+root-owned `0555` tmpfiles/runtime-evidence placeholder makes the actual
+`/srv/lightning/plugins` scan path a required, non-ignore-missing namespace
+mask. The pre-start layout verifier does not test that already-masked base path
+as absent; it separately rejects the non-default network-local lookalike.
+Runtime acceptance must prove exactly two active,
+non-dynamic plugins after a complete start.
+
 A post-merge independent deployment-plan review found one P1 ambiguity and six
 P2 documentation/gate drifts before activation. The current `provider-v1`
 profile was incorrectly described as renderable after omitting Standard-Cashu

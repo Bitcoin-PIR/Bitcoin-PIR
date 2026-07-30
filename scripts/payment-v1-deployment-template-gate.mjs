@@ -34,23 +34,23 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
     "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
-    "2057e23b4f06c3394f1c4505e3d11b8bc44e046a4af7e2bbb0672450578a8e9f",
+    "b5def27d9d5df397af5fafb91f0e64404b62a5c8131b9b3ae4aea187fbbcd6be",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
-    "af1dcd84e83bf0f4676311324f5aa0d5fbf3d20514e5795e0ac104602894c934",
+    "70a74e60514adaf5fb89b1461ffddc20c66a10dd127973d42d2144074011f3fc",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
     "1da053febf373f7166935e0d57abe140e129931accbb856d93889c4fc979b6f4",
   "deploy/payment-v1/lightning/lightningd.conf.in":
-    "58973f2b3992a6eb0a2cd4b94b6d878f01240b5ba92d84da5a91ef0c442159f9",
+    "b0402cc1caa0c1daa8244c85af7b728ffefb324ba9e510bfad029b972aadc847",
   "deploy/payment-v1/lightning/verify-layout.sh.in":
-    "d43ff49520b4208d1550e77613cfbf3936653465841c53579617ad08d0fd1dac",
+    "3604d6812c637503f333ced4b6789e75e75c65fde8f46a407a48f4809036134c",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "ba42a3edf60c55664b32edc89977b222f9011ed857ded45c38d228a4941be49b",
+    "8ac83d4a16f347381e1cd44fa3ce1cbf176c5dee909e87c65a7d204ee2ec512d",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
-    "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
+    "87eef911c6c42bd1cb350b1990e4545ffe08ff2217d8b47aa806db33f6d0a93d",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "b8a8cb918b38f36b8945b80b5da00d38e15d9cc9a72f8d8c934e760b8f022b5f",
+    "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "d0bee8a8e30762ca5c8278d4c06ff14e7c26dd7eb9be199ec8a12f7929e70ec5",
+    "9f8e90084553bfa0e36768631e21295720b627fc0b25489d124ddee4657f823c",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
@@ -96,6 +96,33 @@ const ACTIVATION_SENTINEL =
 const UNSAFE_RELAY_COMMITS = new Set([
   "ff65ec2acd781150a585a78e1c60b0cdb104698e",
   "b5c1f642e4f4c3b9c54f5d18d66f4c53642076b4",
+]);
+const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
+  "autoclean",
+  "bookkeeper",
+  "cln-askrene",
+  "cln-bip353",
+  "cln-bwatch",
+  "cln-currencyrate",
+  "cln-grpc",
+  "cln-lsps-client",
+  "cln-lsps-service",
+  "cln-renepay",
+  "cln-xpay",
+  "clnrest",
+  "commando",
+  "exposesecret",
+  "funder",
+  "keysend",
+  "offers",
+  "pay",
+  "recklessrpc",
+  "recover",
+  "spenderp",
+  "sql",
+  "topology",
+  "txprepare",
+  "wss-proxy",
 ]);
 const HASH_FIELDS = Object.freeze([
   "source_archive_sha256",
@@ -679,6 +706,7 @@ function validateHetznerIssuer(text) {
     "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
     "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
   ]);
   exactDirectiveKeys(
     unit,
@@ -872,14 +900,14 @@ function validateCoreLightningUnit(text) {
     "Service",
     [
       "Type", "User", "Group", "SupplementaryGroups", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
-      "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
+      "WorkingDirectory", "Environment", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
       "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE", "NoNewPrivileges",
       "PrivateDevices", "PrivateTmp", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
       "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
       "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
       "RestrictNamespaces", "SystemCallArchitectures", "CapabilityBoundingSet",
-      "AmbientCapabilities", "RestrictAddressFamilies", "ReadOnlyPaths", "ReadWritePaths",
+      "AmbientCapabilities", "RestrictAddressFamilies", "InaccessiblePaths", "ReadOnlyPaths", "ReadWritePaths",
     ],
     label,
   );
@@ -894,6 +922,13 @@ function validateCoreLightningUnit(text) {
   exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-core-lightning"], label);
   exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0700"], label);
   exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/srv/lightning/@LIGHTNING_NETWORK@"], label);
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "Environment",
+    ["LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@"],
+    label,
+  );
   exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
   exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
   exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["120"], label);
@@ -906,6 +941,7 @@ function validateCoreLightningUnit(text) {
     [
       "/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
@@ -924,8 +960,15 @@ function validateCoreLightningUnit(text) {
   exactDirectiveValues(
     unit,
     "Service",
+    "InaccessiblePaths",
+    ["/srv/lightning/plugins"],
+    label,
+  );
+  exactDirectiveValues(
+    unit,
+    "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/ /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/"],
     label,
   );
   exactDirectiveValues(
@@ -949,6 +992,7 @@ function validateClnRpcGuardUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
       "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
     ],
     { requireStateDirectoryMode: false },
@@ -1058,6 +1102,7 @@ function validateLightningPreflightUnit(text) {
       "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
       "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
       "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
     ],
     { requireStateDirectoryMode: true },
@@ -1390,7 +1435,6 @@ function validateLightningdConfig(text) {
     "announce-addr-discovered=false",
     "autoconnect-seeker-peers=0",
     "disable-dns",
-    "invoices-onchain-fallback=false",
     "log-level=unusual",
     "log-timestamps=true",
     "bitcoin-cli=/opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoin-cli",
@@ -1399,9 +1443,7 @@ function validateLightningdConfig(text) {
     "bitcoin-rpcport=@BITCOIN_RPC_PORT@",
     "bitcoin-rpcclienttimeout=30",
     "bitcoin-retry-timeout=30",
-    "clear-plugins",
-    "important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/bcli",
-    "important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/chanbackup",
+    ...CLN_INERT_PLUGIN_NAMES_V26066.map((name) => `disable-plugin=${name}`),
   ];
   if (
     actual.length !== expected.length ||
@@ -1411,9 +1453,15 @@ function validateLightningdConfig(text) {
   }
   rejectPattern(
     text,
-    /(?:^|\n)\s*(?:include|plugin|plugin-dir|rpcuser|rpcpassword|grpc-port|commando|developer)(?:=|\s|$)/iu,
+    /(?:^|\n)\s*(?:clear-plugins|important-plugin|include|plugin|plugin-dir|rpcuser|rpcpassword|grpc-port|commando|developer)(?:=|\s|$)/iu,
     label,
     "dynamic plugin, include, credential, or remote-RPC option",
+  );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*invoices-onchain-fallback(?:=|\s|$)/iu,
+    label,
+    "on-chain invoice fallback opt-in",
   );
 }
 
@@ -1438,6 +1486,7 @@ function validateIssuerClnArgs(text, mode) {
 function validateClnGuardTmpfiles(text, mode) {
   const label = "CLN RPC guard tmpfiles template";
   const expected = [
+    "d /srv/lightning/plugins 0555 root root - -",
     "d /run/bitcoinpir-lightning-operator-approvals 0700 root root - -",
     "d /run/bitcoinpir-cln-rpc-guard 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
     "d /run/bitcoinpir-cln-rpc-guard/issuer 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer - -",
@@ -1480,7 +1529,8 @@ function validateActivationPrerequisites(text) {
     "dynamic_datastore_restore_rehearsed",
     "stale_channel_state_rollback_rejected",
     "default_signet_chain_pins_verified",
-    "cln_bundle_executable_closure_verified",
+    "cln_selected_deployment_file_closure_verified",
+    "cln_loader_maps_inode_evidence_verified",
     "exact_plugin_allowlist_verified",
     "strict_rpc_socket_layout_verified",
     "cross_uid_preflight_policy_verified",
@@ -2435,6 +2485,31 @@ export function validateDeploymentTree(rootInput) {
     layoutVerifier.text,
     "Lightning layout verifier template",
   );
+  const forbiddenLoopStart = activeLayoutVerifierLines.indexOf(
+    "for bpir_forbidden in \\",
+  );
+  const forbiddenLoopEnd = activeLayoutVerifierLines.indexOf(
+    "do",
+    forbiddenLoopStart + 1,
+  );
+  const forbiddenLoopPaths = activeLayoutVerifierLines.slice(
+    forbiddenLoopStart + 1,
+    forbiddenLoopEnd,
+  );
+  if (
+    forbiddenLoopStart < 0 ||
+    forbiddenLoopEnd < 0 ||
+    JSON.stringify(forbiddenLoopPaths) !== JSON.stringify([
+      '"${bpir_lightning_base}/config" \\',
+      '"${bpir_lightning_dir}/config" \\',
+      '"${bpir_lightning_dir}/config.setconfig" \\',
+      '"${bpir_lightning_dir}/plugins"',
+    ])
+  ) {
+    fail(
+      "Lightning layout verifier must reject only the exact unmasked config and network-local plugin lookalikes",
+    );
+  }
   for (const required of [
     'bpir_hsm_secret="${bpir_lightning_dir}/hsm_secret"',
     '[ -f "${bpir_hsm_secret}" ] && [ ! -L "${bpir_hsm_secret}" ] || bpir_fail',

@@ -1,5 +1,6 @@
 # Created at boot before activation; approval token files are deliberately not
 # created here and must be provisioned root:root mode 0600 for each ceremony.
+d /srv/lightning/plugins                       0555 root root - -
 d /run/bitcoinpir-lightning-operator-approvals 0700 root root - -
 d /run/bitcoinpir-cln-rpc-guard        0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer    - -
 d /run/bitcoinpir-cln-rpc-guard/issuer 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer    - -

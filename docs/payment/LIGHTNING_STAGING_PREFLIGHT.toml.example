@@ -131,8 +131,15 @@ expected_gid = 0
 # This is an exact allowlist of every entry returned by `plugin list`, not a
 # prefix allowlist. Add one table per expected plugin and pin each executable.
 [[lightning.allowed_plugins]]
-name = "/usr/local/libexec/bitcoinpir/cln-plugins/bookkeeper"
-protected_parent = "/usr/local/libexec/bitcoinpir"
+name = "/opt/bitcoinpir/core-lightning/0000000000000000000000000000000000000000000000000000000000000000/libexec/c-lightning/plugins/bcli"
+protected_parent = "/opt/bitcoinpir/core-lightning/0000000000000000000000000000000000000000000000000000000000000000/libexec/c-lightning/plugins"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+[[lightning.allowed_plugins]]
+name = "/opt/bitcoinpir/core-lightning/0000000000000000000000000000000000000000000000000000000000000000/libexec/c-lightning/plugins/chanbackup"
+protected_parent = "/opt/bitcoinpir/core-lightning/0000000000000000000000000000000000000000000000000000000000000000/libexec/c-lightning/plugins"
 sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
 expected_uid = 0
 expected_gid = 0

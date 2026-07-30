@@ -43,6 +43,15 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/libpq.so.5",
+      "target_path": "/opt/bitcoinpir/core-lightning-libpq/INVALID_REPLACE_WITH_CLN_LIBPQ_SHA256/libpq.so.5",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning_channeld",
       "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/lightning_channeld",
       "uid": 0
@@ -115,8 +124,8 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0555",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/bcli",
-      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/plugins/bcli",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/bcli",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/bcli",
       "uid": 0
     },
     {
@@ -124,8 +133,233 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0555",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/chanbackup",
-      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/plugins/chanbackup",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/chanbackup",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/chanbackup",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/autoclean",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/autoclean",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/bookkeeper",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/bookkeeper",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-askrene",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-askrene",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-bip353",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-bip353",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-bwatch",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-bwatch",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-currencyrate",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-currencyrate",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-grpc",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-grpc",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-lsps-client",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-lsps-client",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-lsps-service",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-lsps-service",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-renepay",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-renepay",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/cln-xpay",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/cln-xpay",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/clnrest",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/clnrest",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/commando",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/commando",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/exposesecret",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/exposesecret",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/funder",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/funder",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/keysend",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/keysend",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/offers",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/offers",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/pay",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/pay",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/recklessrpc",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/recklessrpc",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/recover",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/recover",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/spenderp",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/spenderp",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/sql",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/sql",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/topology",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/topology",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/txprepare",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/txprepare",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/plugins/wss-proxy",
+      "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/libexec/c-lightning/plugins/wss-proxy",
       "uid": 0
     },
     {
@@ -331,6 +565,15 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/cln-libpq.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/cln-rpc-guard.sha256",
       "target_path": "/etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256",
       "uid": 0
@@ -371,6 +614,7 @@
     "BPIR_ADMIN_SHA256": "INVALID_REPLACE_WITH_BPIR_ADMIN_SHA256",
     "BUSCTL_SHA256": "5cca481831f317814f050f97e86467079140f61e9007a32385be724d1a481f14",
     "CLN_BUNDLE_SHA256": "INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256",
+    "CLN_LIBPQ_SHA256": "INVALID_REPLACE_WITH_CLN_LIBPQ_SHA256",
     "CLN_GUARD_MAX_INVOICE_BURST": "INVALID_REPLACE_WITH_BURST_LIMIT",
     "CLN_GUARD_MAX_INVOICE_MSAT": "INVALID_REPLACE_WITH_MAX_INVOICE_MSAT",
     "CLN_GUARD_MAX_INVOICES_PER_MINUTE": "INVALID_REPLACE_WITH_PER_MINUTE_LIMIT",

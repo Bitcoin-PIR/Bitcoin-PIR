@@ -69,6 +69,33 @@ const ISSUER_TEMPLATES = [
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
 ];
+const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
+  "autoclean",
+  "bookkeeper",
+  "cln-askrene",
+  "cln-bip353",
+  "cln-bwatch",
+  "cln-currencyrate",
+  "cln-grpc",
+  "cln-lsps-client",
+  "cln-lsps-service",
+  "cln-renepay",
+  "cln-xpay",
+  "clnrest",
+  "commando",
+  "exposesecret",
+  "funder",
+  "keysend",
+  "offers",
+  "pay",
+  "recklessrpc",
+  "recover",
+  "spenderp",
+  "sql",
+  "topology",
+  "txprepare",
+  "wss-proxy",
+]);
 
 function hashBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -445,6 +472,7 @@ function issuerPlaceholders(binaryDigests) {
     BPIR_ADMIN_SHA256: binaryDigests.admin,
     BUSCTL_SHA256: "5cca481831f317814f050f97e86467079140f61e9007a32385be724d1a481f14",
     CLN_BUNDLE_SHA256: hashBytes("cln-bundle"),
+    CLN_LIBPQ_SHA256: binaryDigests.libpq,
     CLN_GUARD_MAX_INVOICE_BURST: "8",
     CLN_GUARD_MAX_INVOICE_MSAT: "10000000",
     CLN_GUARD_MAX_INVOICES_PER_MINUTE: "60",
@@ -483,6 +511,7 @@ function makeIssuerFixture(t) {
     lightningGossipd: Buffer.from("reviewed-lightning-gossipd\n"),
     lightningHsmd: Buffer.from("reviewed-lightning-hsmd\n"),
     lightningHsmtool: Buffer.from("reviewed-lightning-hsmtool\n"),
+    libpq: Buffer.from("reviewed-libpq-so-5\n"),
     lightningOnchaind: Buffer.from("reviewed-lightning-onchaind\n"),
     lightningOpeningd: Buffer.from("reviewed-lightning-openingd\n"),
     lightningd: Buffer.from("reviewed-lightningd\n"),
@@ -490,14 +519,23 @@ function makeIssuerFixture(t) {
   const binaryDigests = Object.fromEntries(
     Object.entries(binaryBytes).map(([name, bytes]) => [name, hashBytes(bytes)]),
   );
+  const inertPluginBytes = Object.fromEntries(
+    CLN_INERT_PLUGIN_NAMES_V26066.map((name) => [
+      name,
+      Buffer.from(`reviewed-disabled-${name}\n`),
+    ]),
+  );
+  const inertPluginDigests = Object.fromEntries(
+    Object.entries(inertPluginBytes).map(([name, bytes]) => [name, hashBytes(bytes)]),
+  );
   const placeholders = issuerPlaceholders(binaryDigests);
   const clnRoot = `/opt/bitcoinpir/core-lightning/${placeholders.CLN_BUNDLE_SHA256}`;
   const bitcoinRoot = `/opt/bitcoinpir/bitcoin-core/${placeholders.BITCOIN_CORE_BUNDLE_SHA256}`;
   const targets = {
     admin: `/opt/bitcoinpir/bpir-admin/${binaryDigests.admin}/bpir-admin`,
     bitcoinCli: `${bitcoinRoot}/bin/bitcoin-cli`,
-    bcli: `${clnRoot}/plugins/bcli`,
-    chanbackup: `${clnRoot}/plugins/chanbackup`,
+    bcli: `${clnRoot}/libexec/c-lightning/plugins/bcli`,
+    chanbackup: `${clnRoot}/libexec/c-lightning/plugins/chanbackup`,
     guard: `/opt/bitcoinpir/cln-rpc-guard/${binaryDigests.guard}/bitcoinpir-cln-rpc-guard`,
     issuer: `/opt/bitcoinpir/payment-issuer/${binaryDigests.issuer}/payment-issuer`,
     lightningChanneld: `${clnRoot}/libexec/c-lightning/lightning_channeld`,
@@ -508,10 +546,17 @@ function makeIssuerFixture(t) {
     lightningGossipd: `${clnRoot}/libexec/c-lightning/lightning_gossipd`,
     lightningHsmd: `${clnRoot}/libexec/c-lightning/lightning_hsmd`,
     lightningHsmtool: `${clnRoot}/bin/lightning-hsmtool`,
+    libpq: `/opt/bitcoinpir/core-lightning-libpq/${binaryDigests.libpq}/libpq.so.5`,
     lightningOnchaind: `${clnRoot}/libexec/c-lightning/lightning_onchaind`,
     lightningOpeningd: `${clnRoot}/libexec/c-lightning/lightning_openingd`,
     lightningd: `${clnRoot}/bin/lightningd`,
   };
+  const inertPluginTargets = Object.fromEntries(
+    CLN_INERT_PLUGIN_NAMES_V26066.map((name) => [
+      name,
+      `${clnRoot}/libexec/c-lightning/plugins/${name}`,
+    ]),
+  );
   const renderedTargets = {
     config: "/etc/bitcoinpir/payment-v1/lightning/lightningd.conf",
     verifier: "/usr/local/libexec/bitcoinpir/verify-lightning-layout",
@@ -551,6 +596,7 @@ function makeIssuerFixture(t) {
   };
   const digestFor = new Map([
     ...Object.entries(targets).map(([name, target]) => [target, binaryDigests[name]]),
+    ...Object.entries(inertPluginTargets).map(([name, target]) => [target, inertPluginDigests[name]]),
     [renderedTargets.config, renderedHashes.config],
     [renderedTargets.verifier, renderedHashes.verifier],
     ...Object.entries(directFiles).map(([target, bytes]) => [target, hashBytes(bytes)]),
@@ -573,7 +619,9 @@ function makeIssuerFixture(t) {
       targets.lightningd,
       targets.bcli,
       targets.chanbackup,
+      ...Object.values(inertPluginTargets),
     ],
+    "/etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256": [targets.libpq],
     "/etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256": [targets.guard],
     "/etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256": [renderedTargets.verifier],
     "/etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256": [renderedTargets.config],
@@ -592,6 +640,7 @@ function makeIssuerFixture(t) {
   );
   const payloadContents = [
     ...Object.entries(targets).map(([name, target]) => [target, binaryBytes[name]]),
+    ...Object.entries(inertPluginTargets).map(([name, target]) => [target, inertPluginBytes[name]]),
     ...Object.entries(directFiles),
     ...Object.entries(manifestFiles),
   ].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
@@ -602,6 +651,9 @@ function makeIssuerFixture(t) {
       const artifact = addPayload(fixture, target, bytes, index);
       const remoteConfig = target ===
         "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml";
+      if (Object.values(inertPluginTargets).includes(target)) {
+        return { ...artifact, mode: "0444" };
+      }
       return artifact.class === "secret" || remoteConfig
         ? { ...artifact, class: "secret", gid: Number(placeholders.ISSUER_GID), mode: "0400", uid: Number(placeholders.ISSUER_UID) }
         : artifact;
@@ -1562,7 +1614,15 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
   const fixture = makeIssuerFixture(t);
   const model = renderFixture(fixture);
   assert.equal(model.request.units.length, 4);
-  assert.equal(model.request.tmpfiles_directories.length, 3);
+  assert.equal(model.request.tmpfiles_directories.length, 4);
+  assert.deepEqual(model.request.tmpfiles_directories.find(
+    (directory) => directory.target_path === "/srv/lightning/plugins",
+  ), {
+    group_name: "root",
+    mode: "0555",
+    target_path: "/srv/lightning/plugins",
+    user_name: "root",
+  });
   assert.deepEqual(model.request.tmpfiles_directories.find(
     (directory) => directory.target_path ===
       "/run/bitcoinpir-lightning-operator-approvals",
@@ -1574,6 +1634,21 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
   });
   assert.equal(model.manifest.deployment_profile, "issuer-lightning-signet-v1");
   const byName = new Map(model.request.units.map((unit) => [unit.unit_name, unit]));
+  const loaderMapsCondition =
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED";
+  assert.equal(
+    byName.get("bitcoinpir-core-lightning.service").conditions.includes(
+      loaderMapsCondition,
+    ),
+    false,
+  );
+  for (const unitName of [
+    "bitcoinpir-lightning-preflight.service",
+    "bitcoinpir-cln-rpc-guard.service",
+    "bitcoinpir-payment-issuer.service",
+  ]) {
+    assert.equal(byName.get(unitName).conditions.includes(loaderMapsCondition), true);
+  }
   assert.deepEqual(
     { ...byName.get("bitcoinpir-cln-rpc-guard.service").unit_dependencies },
     {
@@ -2568,7 +2643,267 @@ test("hash manifests are strict, sorted, complete, and bind actual artifacts", (
   incompleteManifest.expected_sha256 = hashFile(incompletePath);
   assert.throws(
     () => renderFixture(incompleteCln),
-    /missing libexec\/c-lightning\/lightning_hsmd/,
+    /cln-bundle\.sha256 targets must equal the closed-world set/,
+  );
+
+  const extraCln = makeIssuerFixture(t);
+  const extraClnBytes = Buffer.from("unreviewed-cln-plugin\n");
+  const extraClnRoot =
+    `/opt/bitcoinpir/core-lightning/${extraCln.plan.placeholders.CLN_BUNDLE_SHA256}`;
+  const extraClnTarget = `${extraClnRoot}/libexec/c-lightning/plugins/evil`;
+  extraCln.plan.payload_artifacts.push(
+    addPayload(extraCln, extraClnTarget, extraClnBytes, 199),
+  );
+  const extraClnManifest = extraCln.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/cln-bundle.sha256"),
+  );
+  const extraClnManifestPath = join(extraCln.inputRoot, extraClnManifest.source_path);
+  const extraClnLines = [
+    ...readFileSync(extraClnManifestPath, "utf8").trimEnd().split("\n"),
+    `${hashBytes(extraClnBytes)}  ${extraClnTarget}`,
+  ].sort((left, right) => {
+    const leftTarget = left.slice(66);
+    const rightTarget = right.slice(66);
+    return leftTarget < rightTarget ? -1 : leftTarget > rightTarget ? 1 : 0;
+  });
+  writeFileSync(extraClnManifestPath, `${extraClnLines.join("\n")}\n`);
+  extraClnManifest.expected_sha256 = hashFile(extraClnManifestPath);
+  assert.throws(
+    () => renderFixture(extraCln),
+    /cln-bundle\.sha256 targets must equal the closed-world set/,
+  );
+
+  const executableDisabledPlugin = makeIssuerFixture(t);
+  executableDisabledPlugin.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/libexec/c-lightning/plugins/commando"),
+  ).mode = "0555";
+  assert.throws(
+    () => renderFixture(executableDisabledPlugin),
+    /disabled CLN plugin must be immutable root:root mode 0444/,
+  );
+
+  const inertAllowedPlugin = makeIssuerFixture(t);
+  inertAllowedPlugin.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/libexec/c-lightning/plugins/bcli"),
+  ).mode = "0444";
+  assert.throws(
+    () => renderFixture(inertAllowedPlugin),
+    /executable binary must be immutable root:root mode 0555/,
+  );
+
+  const missingLibpq = makeIssuerFixture(t);
+  const missingLibpqManifest = missingLibpq.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/cln-libpq.sha256"),
+  );
+  const missingLibpqPath = join(
+    missingLibpq.inputRoot,
+    missingLibpqManifest.source_path,
+  );
+  writeFileSync(
+    missingLibpqPath,
+    readFileSync(missingLibpqPath, "utf8")
+      .split("\n")
+      .filter((line) => !line.endsWith("/libpq.so.5"))
+      .join("\n"),
+  );
+  missingLibpqManifest.expected_sha256 = hashFile(missingLibpqPath);
+  assert.throws(() => renderFixture(missingLibpq), /non-empty|must bind only/);
+
+  const extraLoader = makeIssuerFixture(t);
+  const extraLoaderBytes = Buffer.from("unreviewed-loader-library\n");
+  const extraLoaderTarget =
+    `/opt/bitcoinpir/core-lightning-libpq/${extraLoader.plan.placeholders.CLN_LIBPQ_SHA256}` +
+    "/libssl.so.3";
+  extraLoader.plan.payload_artifacts.push(
+    addPayload(extraLoader, extraLoaderTarget, extraLoaderBytes, 99),
+  );
+  const extraLoaderManifest = extraLoader.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/cln-libpq.sha256"),
+  );
+  const extraLoaderManifestPath = join(
+    extraLoader.inputRoot,
+    extraLoaderManifest.source_path,
+  );
+  const extraLoaderLines = [
+    ...readFileSync(extraLoaderManifestPath, "utf8").trimEnd().split("\n"),
+    `${hashBytes(extraLoaderBytes)}  ${extraLoaderTarget}`,
+  ].sort((left, right) => {
+    const leftTarget = left.slice(66);
+    const rightTarget = right.slice(66);
+    return leftTarget < rightTarget ? -1 : leftTarget > rightTarget ? 1 : 0;
+  });
+  writeFileSync(extraLoaderManifestPath, `${extraLoaderLines.join("\n")}\n`);
+  extraLoaderManifest.expected_sha256 = hashFile(extraLoaderManifestPath);
+  assert.throws(
+    () => renderFixture(extraLoader),
+    /must bind only/,
+  );
+});
+
+test("Core Lightning receives only its content-addressed private libpq root", (t) => {
+  const template = "deploy/payment-v1/systemd/hetzner-core-lightning.service.in";
+  const expectedEnvironment =
+    "Environment=LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@";
+  for (const [replacement, expected] of [
+    ["", /content-addressed libpq root/],
+    [
+      "Environment=LD_LIBRARY_PATH=/tmp:/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@",
+      /content-addressed libpq root/,
+    ],
+    ["Environment=LD_PRELOAD=/tmp/evil.so", /content-addressed libpq root/],
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(fixture, template, (text) =>
+      text.replace(`${expectedEnvironment}\n`, replacement === "" ? "" : `${replacement}\n`),
+    );
+    assert.throws(() => renderFixture(fixture), expected);
+  }
+
+  const unmounted = makeIssuerFixture(t);
+  updateTemplate(unmounted, template, (text) =>
+    text.replace(
+      " /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/",
+      "",
+    ),
+  );
+  assert.throws(
+    () => renderFixture(unmounted),
+    /mount exactly its config, CLN, libpq and Bitcoin Core roots read-only/,
+  );
+
+  const wrongDigest = makeIssuerFixture(t);
+  wrongDigest.plan.placeholders.CLN_LIBPQ_SHA256 = "1".repeat(64);
+  assert.throws(
+    () => renderFixture(wrongDigest),
+    /CLN_LIBPQ_SHA256 must select|must bind only|dependency is missing|references missing artifact/,
+  );
+
+  const dishonestDigest = makeIssuerFixture(t);
+  const originalLibpqTarget = dishonestDigest.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/libpq.so.5"),
+  ).target_path;
+  const dishonestLibpqTarget =
+    `/opt/bitcoinpir/core-lightning-libpq/${"2".repeat(64)}/libpq.so.5`;
+  dishonestDigest.plan.placeholders.CLN_LIBPQ_SHA256 = "2".repeat(64);
+  dishonestDigest.plan.payload_artifacts.find((entry) =>
+    entry.target_path === originalLibpqTarget
+  ).target_path = dishonestLibpqTarget;
+  const dishonestManifest = dishonestDigest.plan.payload_artifacts.find((entry) =>
+    entry.target_path.endsWith("/cln-libpq.sha256"),
+  );
+  const dishonestManifestPath = join(
+    dishonestDigest.inputRoot,
+    dishonestManifest.source_path,
+  );
+  writeFileSync(
+    dishonestManifestPath,
+    readFileSync(dishonestManifestPath, "utf8").replace(
+      originalLibpqTarget,
+      dishonestLibpqTarget,
+    ),
+  );
+  dishonestManifest.expected_sha256 = hashFile(dishonestManifestPath);
+  assert.throws(
+    () => renderFixture(dishonestDigest),
+    /CLN_LIBPQ_SHA256 must equal the selected single-file binary digest/,
+  );
+
+  const model = renderFixture(makeIssuerFixture(t));
+  const manifest = structuredClone(model.manifest);
+  const unit = manifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
+  );
+  unit.environment = ["LD_PRELOAD=/tmp/evil.so"];
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      manifest,
+      hashBytes(Buffer.from(canonicalJson(manifest))),
+    ),
+    /content-addressed libpq root/,
+  );
+
+  const unmountedManifest = structuredClone(model.manifest);
+  const unmountedUnit = unmountedManifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
+  );
+  unmountedUnit.hardening.ReadOnlyPaths = [
+    unmountedUnit.hardening.ReadOnlyPaths[0].replace(
+      / \/opt\/bitcoinpir\/core-lightning-libpq\/[0-9a-f]{64}\//u,
+      "",
+    ),
+  ];
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      unmountedManifest,
+      hashBytes(Buffer.from(canonicalJson(unmountedManifest))),
+    ),
+    /mount exactly its config, CLN, libpq and Bitcoin Core roots read-only/,
+  );
+});
+
+test("Core Lightning requires and masks its root-owned base plugin placeholder", (t) => {
+  const template = "deploy/payment-v1/systemd/hetzner-core-lightning.service.in";
+  const exact =
+    "InaccessiblePaths=/srv/lightning/plugins";
+  for (const replacement of [
+    "",
+    "InaccessiblePaths=-/srv/lightning/plugins",
+    "InaccessiblePaths=/srv/lightning/@LIGHTNING_NETWORK@/plugins",
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(fixture, template, (text) =>
+      text.replace(`${exact}\n`, replacement === "" ? "" : `${replacement}\n`),
+    );
+    assert.throws(
+      () => renderFixture(fixture),
+      /fail closed unless it can mask the exact CLN base plugin directory|closed-world forbidden directive/,
+    );
+  }
+
+  for (const [mutation, expected] of [
+    [
+      (text) => text.replace("d /srv/lightning/plugins                       0555 root root - -\n", ""),
+      /exactly four directories|closed-world layout/,
+    ],
+    [
+      (text) => text.replace("0555 root root", "0755 bitcoinpir-lightning root"),
+      /closed-world layout|unreviewed runtime directory|mode/,
+    ],
+  ]) {
+    const fixture = makeIssuerFixture(t);
+    updateTemplate(
+      fixture,
+      "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
+      mutation,
+    );
+    assert.throws(() => renderFixture(fixture), expected);
+  }
+
+  const model = renderFixture(makeIssuerFixture(t));
+  const manifest = structuredClone(model.manifest);
+  const unit = manifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
+  );
+  unit.hardening.InaccessiblePaths = ["-/srv/lightning/plugins"];
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      manifest,
+      hashBytes(Buffer.from(canonicalJson(manifest))),
+    ),
+    /fail closed unless it can mask the exact CLN base plugin directory/,
+  );
+
+  const missingPlaceholderManifest = structuredClone(model.manifest);
+  missingPlaceholderManifest.tmpfiles_directories =
+    missingPlaceholderManifest.tmpfiles_directories.filter(
+      (directory) => directory.target_path !== "/srv/lightning/plugins",
+    );
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      missingPlaceholderManifest,
+      hashBytes(Buffer.from(canonicalJson(missingPlaceholderManifest))),
+    ),
+    /tmpfiles directories must equal the exact protected host layout/,
   );
 });
 
@@ -2614,6 +2949,25 @@ test("rendered profiles require exact profile-specific activation sentinels", (t
       () => renderFixture(issuer),
       /profile-specific activation conditions/,
       sourcePath,
+    );
+  }
+
+  for (const sourcePath of [
+    GUARD_UNIT,
+    PREFLIGHT_UNIT,
+    "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+  ]) {
+    const issuer = makeIssuerFixture(t);
+    updateTemplate(issuer, sourcePath, (text) =>
+      text.replace(
+        "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED\n",
+        "",
+      ),
+    );
+    assert.throws(
+      () => renderFixture(issuer),
+      /profile-specific activation conditions/,
+      `${sourcePath} must retain the CLN loader maps approval blocker`,
     );
   }
 
@@ -2663,6 +3017,7 @@ test("Lightning bootstrap cannot be collapsed into the post-channel issuer phase
   for (const forbidden of [
     "SIGNET-ISSUER-ACTIVATION-APPROVED",
     "LIGHTNING-BACKUP-RESTORE-APPROVED",
+    "CLN-LOADER-MAPS-APPROVED",
   ]) {
     const fixture = makeIssuerFixture(t);
     updateTemplate(fixture, coreTemplate, (text) =>
@@ -2725,6 +3080,45 @@ test("offline manifest verification rechecks profile-specific activation sentine
       issuerManifest.runtime_units[index].unit_name,
     );
   }
+
+  for (const unitName of [
+    "bitcoinpir-lightning-preflight.service",
+    "bitcoinpir-cln-rpc-guard.service",
+    "bitcoinpir-payment-issuer.service",
+  ]) {
+    const issuerManifest = structuredClone(issuer.manifest);
+    const unit = issuerManifest.runtime_units.find(
+      (entry) => entry.unit_name === unitName,
+    );
+    unit.conditions = unit.conditions.filter(
+      (condition) => !condition.endsWith("/CLN-LOADER-MAPS-APPROVED"),
+    );
+    assert.throws(
+      () => runtimeRequestFromManifest(
+        issuerManifest,
+        hashBytes(Buffer.from(canonicalJson(issuerManifest))),
+      ),
+      /profile-specific activation conditions/,
+      `${unitName} offline manifest must retain the loader maps blocker`,
+    );
+  }
+
+  const coreBlockedManifest = structuredClone(issuer.manifest);
+  const coreUnit = coreBlockedManifest.runtime_units.find(
+    (entry) => entry.unit_name === "bitcoinpir-core-lightning.service",
+  );
+  coreUnit.conditions.push(
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
+  );
+  coreUnit.conditions.sort();
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      coreBlockedManifest,
+      hashBytes(Buffer.from(canonicalJson(coreBlockedManifest))),
+    ),
+    /profile-specific activation conditions/,
+    "core-lightning must remain startable for no-funds loader maps collection",
+  );
 
   const direct = renderFixture(makeProviderDirectFixture(t));
   const directManifest = structuredClone(direct.manifest);

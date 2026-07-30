@@ -836,12 +836,37 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       failure is explicitly outcome-unknown and fails closed. Both command
       runners are mock-tested against separate fixed
       read-only RPC allowlists.
-      The rendered v26.06.6 bundle gate now requires `lightning-cli`,
-      `lightning-hsmtool`, all eight mandatory CLN subdaemons, `lightningd`,
-      `bcli` and `chanbackup`; a source skeleton can no longer omit runtime
-      dependencies while claiming a complete bundle. These paths have not yet
-      been run on the final persistent
-      Signet hosts and does not replace actual liquidity, payment, restore or
+      The rendered v26.06.6 bundle gate now requires the exact selected
+      38-file deployment-file set: `lightning-cli`, `lightning-hsmtool`, all
+      eight mandatory CLN subdaemons, `lightningd`, and all 27 built-in plugin
+      bytes at the
+      official `libexec` path. Only `bcli` and `chanbackup` remain executable;
+      the other 25 are exact root-owned `0444` payloads and exact-disabled by
+      basename. A root:root `0555` tmpfiles/runtime-evidence placeholder makes
+      the actual `/srv/lightning/plugins` default scan path a required,
+      non-ignore-missing namespace mask. The pre-start layout verifier does not
+      misclassify that already-masked path as absent; it separately rejects the
+      non-default network-local lookalike. The
+      live preflight requires exactly two active, non-dynamic plugins. This
+      replaces the crashing v26.06.6 `clear-plugins` path and closes the
+      previously misidentified `/srv/lightning/plugins` scan surface. A
+      separate one-entry manifest binds exactly one
+      private `libpq.so.5` below a digest-equals-file root. A source skeleton
+      can no longer omit a member of the selected deployment-file set. The CLN
+      unit exposes only that independent root through `LD_LIBRARY_PATH`, and
+      source, rendered and offline-manifest gates reject a second library,
+      `LD_PRELOAD` or an alternate loader path. This preserves
+      `CLN_BUNDLE_SHA256` as the upstream release-archive identity, but it does
+      not prove the live mapped object or a complete ELF closure. The private
+      libpq retains host-ABI dependencies on libssl, libcrypto, GSSAPI, LDAP and
+      libc. Production CLN activation remains blocked until maps-plus-inode
+      runtime evidence is implemented and that host ABI trust is approved. The
+      core unit intentionally omits `CLN-LOADER-MAPS-APPROVED` so a no-funds
+      generation can produce that evidence; preflight, guard and issuer require
+      it. The sentinel must remain absent until the separately reviewed schema
+      PR and evidence approval exist. These paths have not yet been run on the
+      final persistent Signet hosts and do not replace actual liquidity,
+      payment, restore or
       peer/bootstrap acceptance. The receipt is an operator assertion:
       `staticbackup`/SCB material supports channel recovery but is not a live or
       dynamic `lightningd.sqlite3` backup, and the command neither copies nor

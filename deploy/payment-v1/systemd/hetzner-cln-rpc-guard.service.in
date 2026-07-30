@@ -11,6 +11,7 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED
 ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved
 
 [Service]
@@ -70,3 +71,5 @@ ReadWritePaths=/run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-lightning-operator-
 # The guard deliberately has no network address and no [Install] section. Its
 # primary group reaches only the native CLN socket. Its sole supplementary
 # group lets it assign the issuer group to the separately guarded socket.
+# CLN-LOADER-MAPS-APPROVED must remain absent until the separately reviewed
+# loader maps/inode evidence schema exists and has produced approved evidence.
