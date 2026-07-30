@@ -429,7 +429,15 @@ operator has activated the path with real money or public infrastructure.
       activation ceremony in addition to its inert render profile. A canonical
       plan binds exact installed files, external sentinels, firewall evidence,
       Caddy/publisher preimages, boot identity and regular Node/systemctl/ip
-      executables, plus the executor's exact two-module local import closure. A
+      executables, plus the executor's exact three-module local import closure.
+      Its native launcher now binds a five-entry manifest, a machine-parsed
+      static-ELF proof and descriptor-sealed Node/module execution that remains
+      safe across atomic pathname replacement. The shared schema-v2 plan and
+      receipt validator is also consumed by the downstream Caddy overlay and
+      now requires a genuinely active/running nonzero Caddy generation. Each
+      IPv4/IPv6 INPUT/FORWARD before chain has exactly one ordered
+      `RELATED,ESTABLISHED` accept; deletion, duplication and post-user-jump
+      placement fail closed. A
       fresh at-most-one-hour approval can start only the netns
       unit; a different receipt-bound approval can stop only that unit. Runtime
       verification closes nsfs, veth txid aliases/MACs/cross-indices, loopback,
@@ -442,6 +450,19 @@ operator has activated the path with real money or public infrastructure.
       target installation or activation. The publication-interval firewall
       generation guard, exact target pins, remote mutation/start approvals,
       Caddy overlay receipt and new-boot runtime evidence remain mandatory.
+- [x] The Caddy-admin UDS cold migration and publisher-netns ceremony now use
+      the same publisher lifecycle lock. The cold plan binds an exact inactive
+      netns unit plus absent nsfs path, host veth and five sentinels; checks run
+      before and after lock acquisition and immediately before every Caddy
+      stop/candidate start/rollback start. A pre-stop activation race invokes
+      no Caddy lifecycle command.
+      After a durable start request, any error/nonzero/timeout or later proof
+      failure retains that shared lock. Same-transaction recovery either
+      terminalizes an exact late-active generation or releases the lock only
+      after repeated no-job, exact-inactive, absent nsfs/veth and exact-sentinel
+      proof. Both ordinary pre-start closure passes use a
+      Job/unit-network/Job clamp, and committed replay also rejects a pending
+      PID 1 job.
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
       checkpoints, tombstones, strict-mode relay split-view checks and rollback
       state. The separate centralized-single-relay API requires an explicit

@@ -22,18 +22,54 @@ import {
   PUBLISHER_NETNS_CEREMONY_TEST_ONLY_IO as realFs,
   ROLLBACK_ACKNOWLEDGEMENTS,
   ROLLBACK_APPROVAL_KIND,
+  assertPublisherRecoveryOwnsLifecycleLock,
   computePlanSha256,
   executeApply,
   executeRollback,
+  formatPublisherNetnsCeremonyOutcomeV2,
+  formatPublisherNetnsPlanValidationV2,
   parseSystemdExecRecordsV1,
   validateCeremonyPlan,
   validatePrivatePairV1,
 } from "./payment-v1-publisher-netns-ceremony.mjs";
+import {
+  inspectStaticElfV1,
+  validatePublisherNetnsPlanV2,
+} from "./payment-v1-publisher-netns-schema.mjs";
 
 const NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
 const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
 const CADDY_UNIT = "bhtm-caddy.service";
 const NOW = 1_788_000_000;
+
+test("schema-v2 CLI status lines are explicit and machine-parseable", () => {
+  assert.equal(
+    formatPublisherNetnsPlanValidationV2("a".repeat(64)),
+    `valid schema_version=2 plan_sha256=${"a".repeat(64)}\n`,
+  );
+  assert.equal(
+    formatPublisherNetnsCeremonyOutcomeV2("committed", "/receipt.json"),
+    "committed schema_version=2 receipt=/receipt.json\n",
+  );
+});
+
+test("publisher recovery cannot clear another lifecycle transaction's stale lock", () => {
+  const owner = {
+    boot_id: "22345678-1234-4234-9234-123456789abc",
+    pid: 999999,
+    process_start_ticks: "1",
+    transaction_id: "bhtm-caddy-admin-uds:admin-maintenance",
+  };
+  assert.throws(
+    () => assertPublisherRecoveryOwnsLifecycleLock(owner, "publisher-activation"),
+    /different transaction/u,
+  );
+  owner.transaction_id = "publisher-activation";
+  assert.equal(
+    assertPublisherRecoveryOwnsLifecycleLock(owner, "publisher-activation"),
+    true,
+  );
+});
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -70,7 +106,22 @@ function launcherManifestBytes(runtime) {
     runtime.integrated_caddy_gate,
     runtime.executor,
     runtime.publisher_netns_gate,
+    runtime.schema_validator,
   ].map((pinValue) => `${pinValue.sha256}  ${pinValue.path}\n`).join(""), "utf8");
+}
+
+function staticElfFixture() {
+  const bytes = Buffer.alloc(64 + 56);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+  bytes.writeUInt16LE(2, 16);
+  bytes.writeUInt16LE(62, 18);
+  bytes.writeUInt32LE(1, 20);
+  bytes.writeBigUInt64LE(64n, 32);
+  bytes.writeUInt16LE(64, 52);
+  bytes.writeUInt16LE(56, 54);
+  bytes.writeUInt16LE(1, 56);
+  bytes.writeUInt32LE(1, 64);
+  return bytes;
 }
 
 function installedFileBytes(id, topology, installedFiles = undefined) {
@@ -380,7 +431,8 @@ function fixture() {
     unit: active(CADDY_UNIT, "c".repeat(32), "900"),
   };
   const ceremonyId = "publisher-netns-20260730-a";
-  const launcherSha256 = hash("launcher\n");
+  const launcherBytes = staticElfFixture();
+  const launcherSha256 = hash(launcherBytes);
   const runtime = {
     executor: pin(
       "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs", "0555",
@@ -407,8 +459,15 @@ function fixture() {
       "0555",
       "publisher-netns-gate",
     ),
+    schema_validator: pin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+      "0555",
+      "publisher-netns-schema",
+    ),
     systemctl: pin("/usr/bin/systemctl", "0755", "systemctl"),
   };
+  runtime.launcher.sha256 = launcherSha256;
+  runtime.launcher.size = String(launcherBytes.length);
   const launcherManifest = launcherManifestBytes(runtime);
   runtime.launcher_manifest.sha256 = hash(launcherManifest);
   runtime.launcher_manifest.size = String(launcherManifest.length);
@@ -434,6 +493,7 @@ function fixture() {
     },
     installed_files: installedFiles,
     kind: CEREMONY_KIND,
+    launcher_static_elf: inspectStaticElfV1(launcherBytes),
     preimage: {
       host_interface: "absent",
       loaded_netns_unit: loadedNetnsUnit(installedFiles),
@@ -456,7 +516,7 @@ function fixture() {
     source_commit: "8".repeat(40),
     topology,
     transaction: {
-      lock_path: "/run/bitcoinpir-payment-v1-publisher-netns-ceremony.lock",
+      lock_path: "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
       receipt_path: `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${ceremonyId}.json`,
       rollback_receipt_path:
         `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${ceremonyId}.rollback.json`,
@@ -544,7 +604,9 @@ function fakeOps(fixtureValue) {
   }
   for (const [name, runtimePin] of Object.entries(plan.runtime)) {
     files.set(runtimePin.path, {
-      bytes: name === "launcher_manifest"
+      bytes: name === "launcher"
+        ? staticElfFixture()
+        : name === "launcher_manifest"
         ? launcherManifestBytes(plan.runtime)
         : Buffer.from(`${name}\n`, "utf8"),
       snapshot: structuredClone(runtimePin),
@@ -567,9 +629,14 @@ function fakeOps(fixtureValue) {
   let topology = topologyFixture(plan);
   const calls = [];
   let startStatus = 0;
+  let startError = null;
   let stopStatus = 0;
+  let jobAbsent = true;
+  let networkAbsentOverride = null;
   let afterStart = () => {};
   let afterStop = () => {};
+  let beforeNetworkAbsent = () => {};
+  let beforeUnitJobAbsent = () => {};
   let beforeUnitState = () => {};
   let beforeLoadedNetnsUnit = () => {};
   let beforeHostIdentity = () => {};
@@ -597,14 +664,20 @@ function fakeOps(fixtureValue) {
     set host(value) { host = structuredClone(value); },
     get loaded() { return loaded; },
     set loaded(value) { loaded = structuredClone(value); },
+    get lockHeld() { return lockHeld; },
     get netns() { return netns; },
     set netns(value) { netns = structuredClone(value); },
     get publisher() { return publisher; },
     set publisher(value) { publisher = structuredClone(value); },
+    set jobAbsent(value) { jobAbsent = value; },
+    set networkAbsentOverride(value) { networkAbsentOverride = value; },
+    set startError(value) { startError = value; },
     set startStatus(value) { startStatus = value; },
     set stopStatus(value) { stopStatus = value; },
     set afterStart(value) { afterStart = value; },
     set afterStop(value) { afterStop = value; },
+    set beforeNetworkAbsent(value) { beforeNetworkAbsent = value; },
+    set beforeUnitJobAbsent(value) { beforeUnitJobAbsent = value; },
     set beforeUnitState(value) { beforeUnitState = value; },
     set beforeLoadedNetnsUnit(value) { beforeLoadedNetnsUnit = value; },
     set beforeHostIdentity(value) { beforeHostIdentity = value; },
@@ -629,7 +702,8 @@ function fakeOps(fixtureValue) {
     },
     async networkAbsent() {
       calls.push(["networkAbsent"]);
-      return netns.active_state === "inactive";
+      beforeNetworkAbsent();
+      return networkAbsentOverride ?? netns.active_state === "inactive";
     },
     async networkState() { return structuredClone(topology); },
     async readOptionalRegular(path) {
@@ -645,6 +719,10 @@ function fakeOps(fixtureValue) {
     async systemctl(args) {
       calls.push(["systemctl", ...args]);
       assert.deepEqual(args.slice(1), [NETNS_UNIT]);
+      if (args[0] === "start" && startError !== null) {
+        afterStart();
+        throw startError;
+      }
       if (args[0] === "start" && startStatus === 0) {
         netns = active(NETNS_UNIT);
         afterStart();
@@ -654,6 +732,11 @@ function fakeOps(fixtureValue) {
         afterStop();
       }
       return { status: args[0] === "start" ? startStatus : stopStatus };
+    },
+    async unitJobAbsent(name) {
+      calls.push(["unitJobAbsent", name]);
+      beforeUnitJobAbsent(name);
+      return jobAbsent;
     },
     async unitState(name) {
       calls.push(["unitState", name]);
@@ -705,6 +788,11 @@ test("closed publisher namespace ceremony plan validates", () => {
   const value = fixture();
   assert.equal(validateCeremonyPlan(value.plan), true);
   assert.equal(computePlanSha256(value.plan), value.planSha256);
+  assert.equal(
+    computePlanSha256(value.plan),
+    hash(Buffer.from(canonicalJson(value.plan), "utf8")),
+    "shared schema validator must preserve the established canonical plan digest",
+  );
 });
 
 test("loaded-unit Exec parser accepts only exact systemd record separators", () => {
@@ -749,6 +837,7 @@ test("executor local import closure is exact and both sibling gates are plan-pin
   assert.deepEqual(localImports, [
     "./payment-v1-integrated-caddy-overlay-gate.mjs",
     "./payment-v1-publisher-netns-gate.mjs",
+    "./payment-v1-publisher-netns-schema.mjs",
   ]);
   const value = fixture();
   assert.equal(
@@ -764,7 +853,7 @@ test("executor local import closure is exact and both sibling gates are plan-pin
   assert.throws(() => validateCeremonyPlan(value.plan), /path is not approved/u);
 });
 
-test("launcher and its four-entry manifest are plan- and approval-bound", async () => {
+test("launcher and its five-entry manifest are plan- and approval-bound", async () => {
   {
     const value = fixture();
     value.plan.runtime.launcher.path =
@@ -828,6 +917,21 @@ for (const [label, mutate, error] of [
   ["Caddy daemon-reload drift", (plan) => {
     plan.caddy_preimage.unit.need_daemon_reload = "yes";
   }, /unsealed systemd generation/u],
+  ["inactive Caddy", (plan) => {
+    plan.caddy_preimage.unit.active_state = "inactive";
+  }, /live non-zero systemd generation/u],
+  ["non-running Caddy", (plan) => {
+    plan.caddy_preimage.unit.sub_state = "dead";
+  }, /live non-zero systemd generation/u],
+  ["zero Caddy MainPID", (plan) => {
+    plan.caddy_preimage.unit.main_pid = "0";
+  }, /live non-zero systemd generation/u],
+  ["zero Caddy InvocationID", (plan) => {
+    plan.caddy_preimage.unit.invocation_id = "0".repeat(32);
+  }, /live non-zero systemd generation/u],
+  ["zero Caddy activation timestamp", (plan) => {
+    plan.caddy_preimage.unit.active_enter_timestamp_monotonic = "0";
+  }, /live non-zero systemd generation/u],
   ["helper path digest", (plan) => {
     plan.installed_files.find((entry) => entry.id === "helper-binary").pin.sha256 = "f".repeat(64);
   }, /content-address|path is not approved/u],
@@ -836,6 +940,23 @@ for (const [label, mutate, error] of [
     const value = fixture();
     mutate(value.plan);
     assert.throws(() => validateCeremonyPlan(value.plan), error);
+  });
+}
+
+for (const [label, mutate] of [
+  ["active state", (unit) => { unit.active_state = "inactive"; }],
+  ["running substate", (unit) => { unit.sub_state = "dead"; }],
+  ["MainPID", (unit) => { unit.main_pid = "0"; }],
+  ["InvocationID", (unit) => { unit.invocation_id = "0".repeat(32); }],
+  ["activation timestamp", (unit) => { unit.active_enter_timestamp_monotonic = "0"; }],
+]) {
+  test(`shared schema independently rejects a non-live Caddy ${label}`, () => {
+    const value = fixture();
+    mutate(value.plan.caddy_preimage.unit);
+    assert.throws(
+      () => validatePublisherNetnsPlanV2(value.plan),
+      /publisher-netns-schema-v2: .*live non-zero systemd generation/u,
+    );
   });
 }
 
@@ -860,6 +981,27 @@ test("exact committed apply replay is idempotent and does not start twice", asyn
   const second = await applyFixture(value, ops);
   assert.equal(canonicalJson(second), canonicalJson(first));
   assert.equal(ops.calls.filter((call) => call[0] === "systemctl").length, 1);
+});
+
+test("committed replay refuses a pending PID1 job and recovery retains its lock", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  await applyFixture(value, ops);
+  ops.jobAbsent = false;
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /committed replay found a pending .*systemd job/us,
+  );
+  assert.equal(ops.lockHeld, false);
+  assert.deepEqual(ops.calls.at(-1), ["unlock"]);
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /start outcome is unknown; shared lifecycle lock retained.*committed replay found a pending .*systemd job/us,
+  );
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
 });
 
 test("recover-commit reconciles a lost start response from exact live topology", async () => {
@@ -953,13 +1095,37 @@ test("the exact loaded unit and manager generation are rechecked immediately bef
   const startIndex = ops.calls.findIndex(
     (call) => call[0] === "systemctl" && call[1] === "start",
   );
-  assert.deepEqual(ops.calls.slice(startIndex - 5, startIndex), [
+  assert.deepEqual(ops.calls.slice(startIndex - 6, startIndex), [
     ["hostIdentity"],
     ["unitState", PUBLISHER_UNIT],
     ["loadedNetnsUnit"],
     ["unitState", NETNS_UNIT],
     ["networkAbsent"],
+    ["unitJobAbsent", NETNS_UNIT],
   ]);
+});
+
+test("both pre-start closures reject a queued PID1 job without invoking start", async () => {
+  for (const [jobRead, durableIntentWritten] of [[2, false], [4, true]]) {
+    const value = fixture();
+    const ops = fakeOps(value);
+    let reads = 0;
+    ops.beforeUnitJobAbsent = () => {
+      reads += 1;
+      if (reads === jobRead) ops.jobAbsent = false;
+    };
+    await assert.rejects(
+      () => applyFixture(value, ops),
+      /(?:pre-start|start-adjacent) retained a pending publisher namespace systemd job/u,
+    );
+    assert.equal(
+      ops.states.has(`${value.plan.transaction.state_directory}/05-start-intent.json`),
+      durableIntentWritten,
+    );
+    assert.equal(ops.calls.some(
+      (call) => call[0] === "systemctl" && call[1] === "start"), false);
+    assert.equal(ops.lockHeld, false);
+  }
 });
 
 test("runtime input drift after durable start intent is rechecked before activation", async () => {
@@ -1084,6 +1250,8 @@ test("a local gate import inode drift during start prevents receipt publication"
   );
   assert.equal(ops.netns.active_state, "active");
   assert.equal(ops.receipts.size, 0);
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
 });
 
 test("a host boot or systemd identity drift during start prevents receipt publication", async () => {
@@ -1100,6 +1268,8 @@ test("a host boot or systemd identity drift during start prevents receipt public
   );
   assert.equal(ops.netns.active_state, "active");
   assert.equal(ops.receipts.size, 0);
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
 });
 
 test("expired, overlong and future approvals fail before locking", async () => {
@@ -1123,24 +1293,29 @@ test("expired, overlong and future approvals fail before locking", async () => {
   }
 });
 
-test("failed systemctl start publishes no receipt and never touches Caddy", async () => {
+test("nonzero systemctl start is outcome-unknown and retains the shared lifecycle lock", async () => {
   const value = fixture();
   const ops = fakeOps(value);
   ops.startStatus = 1;
-  await assert.rejects(() => applyFixture(value, ops), /unit start failed/u);
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /start outcome is unknown; shared lifecycle lock retained.*returned nonzero/us,
+  );
   assert.equal(ops.receipts.size, 0);
   assert.deepEqual(ops.caddy, value.plan.caddy_preimage);
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
 });
 
-test("a durable start intent is single-use even when the first start command fails", async () => {
+test("a durable start intent and its retained lock prevent an implicit start retry", async () => {
   const value = fixture();
   const ops = fakeOps(value);
   ops.startStatus = 1;
-  await assert.rejects(() => applyFixture(value, ops), /unit start failed/u);
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
   ops.startStatus = 0;
   await assert.rejects(
     () => applyFixture(value, ops),
-    /existing durable start intent; it cannot be started again/u,
+    /lock held/u,
   );
   assert.equal(
     ops.calls.filter((call) => call[0] === "systemctl" && call[1] === "start").length,
@@ -1149,15 +1324,153 @@ test("a durable start intent is single-use even when the first start command fai
   assert.equal(ops.receipts.size, 0);
 });
 
-test("recover-commit never starts an inactive namespace", async () => {
+test("recover-commit releases a failed-start lock only after exact inactive terminal proof", async () => {
   const value = fixture();
   const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  ops.startStatus = 0;
+  ops.calls.length = 0;
   await assert.rejects(
     () => applyFixture(value, ops, true),
-    /recover-commit cannot start an inactive publisher namespace/u,
+    /proved the requested start did not commit/u,
   );
   assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
   assert.equal(ops.receipts.size, 0);
+  assert.equal(ops.lockHeld, false);
+  assert.deepEqual(ops.calls.filter((call) => call[0] === "unitJobAbsent"), [
+    ["unitJobAbsent", NETNS_UNIT],
+    ["unitJobAbsent", NETNS_UNIT],
+    ["unitJobAbsent", NETNS_UNIT],
+  ]);
+  assert.deepEqual(ops.calls.at(-1), ["unlock"]);
+});
+
+test("recover-commit retains the lock while a timed-out PID1 job remains pending", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startError = new Error("systemctl start timed out");
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /start outcome is unknown; shared lifecycle lock retained.*timed out/us,
+  );
+  ops.startError = null;
+  ops.jobAbsent = false;
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /start outcome is unknown; shared lifecycle lock retained.*pending .*systemd job/us,
+  );
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
+});
+
+test("recover-commit retains the lock when an existing receipt is malformed", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const path = value.plan.transaction.receipt_path;
+  ops.receipts.set(path, {
+    bytes: Buffer.from("{\"truncated\":", "utf8"),
+    snapshot: pin(path, "0400", "malformed receipt"),
+  });
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /start outcome is unknown; shared lifecycle lock retained.*existing receipt has invalid JSON/us,
+  );
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
+});
+
+test("recover-commit terminalizes a start that activated after the caller timed out", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startError = new Error("systemctl start timed out");
+  ops.afterStart = () => { ops.netns = active(NETNS_UNIT, "d".repeat(32), "789"); };
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /start outcome is unknown; shared lifecycle lock retained.*timed out/us,
+  );
+  assert.equal(ops.netns.active_state, "active");
+  ops.startError = null;
+  ops.calls.length = 0;
+  const receipt = await applyFixture(value, ops, true);
+  assert.equal(receipt.outcome, "committed");
+  assert.equal(receipt.netns_unit.invocation_id, "d".repeat(32));
+  assert.equal(ops.lockHeld, false);
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.deepEqual(ops.calls.at(-1), ["unlock"]);
+});
+
+test("recover-commit retains the lock when late activation still has a PID1 job", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startError = new Error("systemctl start timed out");
+  ops.afterStart = () => { ops.netns = active(NETNS_UNIT, "d".repeat(32), "789"); };
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  ops.startError = null;
+  ops.jobAbsent = false;
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /start outcome is unknown; shared lifecycle lock retained.*pending .*systemd job/us,
+  );
+  assert.equal(ops.receipts.size, 0);
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
+});
+
+test("recover-commit retains the lock when a timed-out start activates late", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startError = new Error("systemctl start timed out");
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  ops.startError = null;
+  let absenceReads = 0;
+  ops.beforeNetworkAbsent = () => {
+    absenceReads += 1;
+    if (absenceReads === 3) ops.netns = active(NETNS_UNIT, "c".repeat(32), "456");
+  };
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /start outcome is unknown; shared lifecycle lock retained.*terminal failed-start recovery proof/us,
+  );
+  assert.equal(ops.netns.active_state, "active");
+  assert.equal(ops.lockHeld, true);
+  assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
+});
+
+test("recover-commit retains the lock on unit, network-absence or sentinel drift", async () => {
+  for (const mutate of [
+    (value, ops) => {
+      const state = structuredClone(value.plan.preimage.netns_unit);
+      state.need_daemon_reload = "yes";
+      ops.netns = state;
+    },
+    (_value, ops) => { ops.networkAbsentOverride = false; },
+    (value, ops) => {
+      const sentinel = value.plan.activation_sentinels[0];
+      const observed = ops.files.get(sentinel.path);
+      observed.bytes = Buffer.from("drifted sentinel\n", "utf8");
+    },
+  ]) {
+    const value = fixture();
+    const ops = fakeOps(value);
+    ops.startStatus = 1;
+    await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+    ops.startStatus = 0;
+    mutate(value, ops);
+    ops.calls.length = 0;
+    await assert.rejects(
+      () => applyFixture(value, ops, true),
+      /start outcome is unknown; shared lifecycle lock retained/u,
+    );
+    assert.equal(ops.lockHeld, true);
+    assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
+  }
 });
 
 test("runtime accepts only the reviewed down, addressless kernel fallback tunnel subset", async () => {

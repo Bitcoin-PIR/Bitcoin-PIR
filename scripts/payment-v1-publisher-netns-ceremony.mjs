@@ -36,13 +36,27 @@ import {
   validatePublisherNamespaceOwnerUnitV1,
   validatePublisherNetworkPolicy,
 } from "./payment-v1-publisher-netns-gate.mjs";
+import {
+  PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_APPLY_APPROVAL_KIND,
+  PUBLISHER_NETNS_CEREMONY_KIND,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_PLAN_SCHEMA_VERSION,
+  PUBLISHER_NETNS_RECEIPT_KIND,
+  PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND,
+  computePublisherNetnsPlanSha256V2,
+  expectedPublisherNetnsLauncherManifestBytesV2,
+  inspectStaticElfV1,
+  validatePublisherNetnsApprovalV2,
+  validatePublisherNetnsPlanV2,
+  validatePublisherNetnsReceiptV2,
+} from "./payment-v1-publisher-netns-schema.mjs";
 
-export const CEREMONY_KIND = "bitcoinpir-payment-v1-publisher-netns-ceremony-v1";
-export const APPLY_APPROVAL_KIND =
-  "bitcoinpir-payment-v1-publisher-netns-apply-approval-v1";
-export const ROLLBACK_APPROVAL_KIND =
-  "bitcoinpir-payment-v1-publisher-netns-rollback-approval-v1";
-export const RECEIPT_KIND = "bitcoinpir-payment-v1-publisher-netns-receipt-v1";
+export const CEREMONY_KIND = PUBLISHER_NETNS_CEREMONY_KIND;
+export const APPLY_APPROVAL_KIND = PUBLISHER_NETNS_APPLY_APPROVAL_KIND;
+export const ROLLBACK_APPROVAL_KIND = PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND;
+export const RECEIPT_KIND = PUBLISHER_NETNS_RECEIPT_KIND;
 export const ROLLBACK_RECEIPT_KIND =
   "bitcoinpir-payment-v1-publisher-netns-rollback-receipt-v1";
 
@@ -67,19 +81,26 @@ const STATE_FILENAMES = Object.freeze([
   "30-rolled-back.json",
 ]);
 
-export const APPLY_ACKNOWLEDGEMENTS = Object.freeze([
-  "only-the-exact-publisher-network-namespace-unit-will-be-started",
-  "caddy-source-fair-publisher-and-payment-services-will-not-be-started-stopped-or-reloaded",
-  "no-activation-sentinel-firewall-rule-route-nat-forwarding-or-publication-will-be-created",
-  "the-directory-publisher-private-key-must-remain-off-host-and-only-frozen-signed-public-artifacts-may-be-published",
-]);
+export const APPLY_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS;
 
-export const ROLLBACK_ACKNOWLEDGEMENTS = Object.freeze([
-  "only-the-exact-publisher-network-namespace-unit-will-be-stopped",
-  "rollback-is-forbidden-after-the-caddy-preimage-or-publisher-service-generation-changes",
-  "caddy-source-fair-publisher-and-payment-services-will-not-be-started-stopped-or-reloaded",
-  "installed-files-activation-sentinels-firewall-rules-and-signed-public-artifacts-will-not-be-removed",
-]);
+export const ROLLBACK_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS;
+
+export function formatPublisherNetnsPlanValidationV2(planSha256) {
+  return `valid schema_version=${PUBLISHER_NETNS_PLAN_SCHEMA_VERSION} plan_sha256=${planSha256}\n`;
+}
+
+export function formatPublisherNetnsCeremonyOutcomeV2(outcome, receiptPath) {
+  return `${outcome} schema_version=${PUBLISHER_NETNS_PLAN_SCHEMA_VERSION} receipt=${receiptPath}\n`;
+}
+
+export function assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId) {
+  exactKeys(owner, ["boot_id", "pid", "process_start_ticks", "transaction_id"],
+    "stale lock owner");
+  if (owner.transaction_id !== transactionId) {
+    fail("stale lifecycle lock belongs to a different transaction and requires explicit review");
+  }
+  return true;
+}
 
 const EXPECTED_SENTINELS = Object.freeze([
   "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -116,6 +137,13 @@ const INERT_KERNEL_LINK_KINDS = Object.freeze({
 
 function fail(message) {
   throw new Error(`publisher-netns-ceremony: ${message}`);
+}
+
+class PublisherNetnsStartOutcomeUnknownError extends Error {
+  constructor(message, cause) {
+    super(`publisher-netns-ceremony: ${message}: ${cause.message}`, { cause });
+    this.name = "PublisherNetnsStartOutcomeUnknownError";
+  }
 }
 
 function exactKeys(value, expected, label) {
@@ -291,7 +319,8 @@ function validateUnitState(value, label, { active, name }) {
   validateDecimal(value.main_pid, `${label}.main_pid`);
   if (active) {
     if (value.active_state !== "active" || value.sub_state !== "running" ||
-        value.main_pid === "0" || !/^[0-9a-f]{32}$/u.test(value.invocation_id) ||
+        value.active_enter_timestamp_monotonic === "0" || value.main_pid === "0" ||
+        !/^[0-9a-f]{32}$/u.test(value.invocation_id) ||
         /^0{32}$/u.test(value.invocation_id)) {
       fail(`${label} must be one live non-zero systemd generation`);
     }
@@ -450,28 +479,7 @@ function validateCaddyState(value, label) {
   validateFilePin(value.config, `${label}.config`, {
     paths: ["/etc/caddy/Caddyfile"], modes: ["0644"],
   });
-  exactKeys(value.unit, [
-    "active_enter_timestamp_monotonic", "active_state", "invocation_id", "load_state",
-    "main_pid", "name", "need_daemon_reload", "sub_state",
-  ], `${label}.unit`);
-  if (value.unit.name !== CADDY_UNIT || value.unit.load_state !== "loaded") {
-    fail(`${label}.unit must bind ${CADDY_UNIT}`);
-  }
-  if (value.unit.need_daemon_reload !== "no") {
-    fail(`${label}.unit has an unsealed systemd generation`);
-  }
-  validateDecimal(value.unit.main_pid, `${label}.unit.main_pid`);
-  validateDecimal(value.unit.active_enter_timestamp_monotonic,
-    `${label}.unit.active_enter_timestamp_monotonic`);
-  if (value.unit.active_state === "active") {
-    if (value.unit.sub_state !== "running" || value.unit.main_pid === "0" ||
-        !/^[0-9a-f]{32}$/u.test(value.unit.invocation_id) || /^0{32}$/u.test(value.unit.invocation_id)) {
-      fail(`${label}.unit active generation is malformed`);
-    }
-  } else if (value.unit.active_state !== "inactive" || value.unit.sub_state !== "dead" ||
-      value.unit.main_pid !== "0" || !["", "0".repeat(32)].includes(value.unit.invocation_id)) {
-    fail(`${label}.unit must be active/running or inactive/dead`);
-  }
+  validateUnitState(value.unit, `${label}.unit`, { active: true, name: CADDY_UNIT });
   exactKeys(value.dependency, [
     "after_namespace_owner", "binds_to_namespace_owner", "drop_in_paths",
     "part_of_namespace_owner", "requires_namespace_owner",
@@ -590,7 +598,7 @@ function validateInstalledFiles(plan) {
 function validateRuntime(value) {
   exactKeys(value, [
     "executor", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest",
-    "node", "publisher_netns_gate", "systemctl",
+    "node", "publisher_netns_gate", "schema_validator", "systemctl",
   ], "runtime");
   validateFilePin(value.launcher, "runtime.launcher", {
     paths: [
@@ -618,6 +626,10 @@ function validateRuntime(value) {
     paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs"],
     modes: ["0555"],
   });
+  validateFilePin(value.schema_validator, "runtime.schema_validator", {
+    paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs"],
+    modes: ["0555"],
+  });
   validateFilePin(value.node, "runtime.node", {
     paths: ["/usr/bin/node"], modes: ["0555", "0755"],
   });
@@ -630,12 +642,7 @@ function validateRuntime(value) {
 }
 
 function expectedLauncherManifestBytes(runtime) {
-  return Buffer.from([
-    runtime.node,
-    runtime.integrated_caddy_gate,
-    runtime.executor,
-    runtime.publisher_netns_gate,
-  ].map((pin) => `${pin.sha256}  ${pin.path}\n`).join(""), "utf8");
+  return expectedPublisherNetnsLauncherManifestBytesV2(runtime);
 }
 
 function validateTransaction(value, ceremonyId) {
@@ -644,7 +651,7 @@ function validateTransaction(value, ceremonyId) {
   ], "transaction");
   const root = "/var/lib/bitcoinpir/payment-v1/publisher-netns";
   const expected = {
-    lock_path: "/run/bitcoinpir-payment-v1-publisher-netns-ceremony.lock",
+    lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
     receipt_path: `${root}/receipts/${ceremonyId}.json`,
     rollback_receipt_path: `${root}/receipts/${ceremonyId}.rollback.json`,
     state_directory: `${root}/transactions/${ceremonyId}`,
@@ -696,10 +703,12 @@ function rejectSecretSurface(plan) {
 }
 
 export function validateCeremonyPlan(plan) {
+  validatePublisherNetnsPlanV2(plan);
   exactKeys(plan, [
     "activation_sentinels", "caddy_preimage", "ceremony_id", "firewall_evidence",
-    "host", "installed_files", "kind", "preimage", "publisher_private_key_installed",
-    "relationship", "runtime", "schema_version", "source_commit", "topology", "transaction",
+    "host", "installed_files", "kind", "launcher_static_elf", "preimage",
+    "publisher_private_key_installed", "relationship", "runtime", "schema_version",
+    "source_commit", "topology", "transaction",
   ], "plan");
   if (plan.schema_version !== 2 || plan.kind !== CEREMONY_KIND) fail("plan kind/schema drifted");
   validateSlug(plan.ceremony_id, "plan.ceremony_id");
@@ -774,7 +783,7 @@ export function validateCeremonyPlan(plan) {
 
 export function computePlanSha256(plan) {
   validateCeremonyPlan(plan);
-  return sha256(Buffer.from(canonicalJson(plan), "utf8"));
+  return computePublisherNetnsPlanSha256V2(plan);
 }
 
 function parseUtc(value, label) {
@@ -788,6 +797,9 @@ function parseUtc(value, label) {
 }
 
 function validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, rollback) {
+  validatePublisherNetnsApprovalV2({
+    approval, approvedPlanSha256, nowUnix, plan, rollback,
+  });
   const expectedKeys = rollback ? [
     "acknowledgements", "approved_at_utc", "approved_by", "ceremony_id",
     "committed_receipt_sha256", "decision", "executor_sha256", "expires_at_utc",
@@ -925,6 +937,7 @@ function isLocalUnicastMac(value) {
 }
 
 function validateReceipt(receipt, plan, approvedPlanSha256) {
+  validatePublisherNetnsReceiptV2({ receipt, plan, approvedPlanSha256 });
   exactKeys(receipt, [
     "activation_approval_sha256", "approved_approval_sha256", "approved_plan_sha256",
     "caddy_after", "caddy_before",
@@ -1022,12 +1035,20 @@ async function collectClosedInputs(plan, ops) {
         !observed.bytes.equals(expectedLauncherManifestBytes(plan.runtime))) {
       fail("launcher manifest does not bind the exact Node/executor/import closure");
     }
+    if (name === "launcher" &&
+        canonicalJson(inspectStaticElfV1(observed.bytes)) !==
+          canonicalJson(plan.launcher_static_elf)) {
+      fail("launcher bytes do not equal the approved machine-verifiable static ELF proof");
+    }
     runtime[name] = observed.snapshot;
   }
   const sentinels = [];
   for (const pin of plan.activation_sentinels) {
     const observed = await ops.readRegular(pin.path);
-    if (canonicalJson(observed.snapshot) !== canonicalJson(pin)) fail(`sentinel ${pin.path} drifted`);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(pin) ||
+        sha256(observed.bytes) !== pin.sha256) {
+      fail(`sentinel ${pin.path} bytes or metadata drifted`);
+    }
     sentinels.push(observed.snapshot);
   }
   const firewall = await ops.readRegular(plan.firewall_evidence.path);
@@ -1064,6 +1085,9 @@ async function assertAdjacentPreStartClosure(plan, ops, label) {
   // sentinel, firewall receipt, Caddy generation, or loaded unit may change
   // after it.  In particular, the second call happens after the durable start
   // intent and immediately before systemctl start.
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
   await commonPreflight(plan, ops);
   const state = await ops.unitState(NETNS_UNIT);
   if (
@@ -1072,6 +1096,49 @@ async function assertAdjacentPreStartClosure(plan, ops, label) {
   ) {
     fail(`${label} publisher namespace preimage changed`);
   }
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
+}
+
+function validateDurableStartIntent(observed, plan, approvedPlanSha256) {
+  const intent = parseStrictJson(observed.bytes.toString("utf8"), "durable start intent");
+  exactKeys(intent, [
+    "approved_approval_sha256", "approved_plan_sha256", "ceremony_id", "phase",
+    "schema_version",
+  ], "durable start intent");
+  if (intent.schema_version !== 1 || intent.phase !== "start-intent" ||
+      intent.ceremony_id !== plan.ceremony_id ||
+      intent.approved_plan_sha256 !== approvedPlanSha256) {
+    fail("durable start intent identity/plan binding drifted");
+  }
+  validateSha256(intent.approved_approval_sha256,
+    "durable start intent approved approval SHA-256");
+  return intent;
+}
+
+async function assertInactiveFailedStartRecovery(plan, ops) {
+  const requireNoJob = async (label) => {
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail(`${label} retained a pending publisher namespace systemd job`);
+    }
+  };
+  const requireInactiveAbsent = async (label) => {
+    const unit = await ops.unitState(NETNS_UNIT);
+    if (canonicalJson(unit) !== canonicalJson(plan.preimage.netns_unit)) {
+      fail(`${label} publisher namespace unit is not the exact inactive generation`);
+    }
+    if (!(await ops.networkAbsent(plan))) {
+      fail(`${label} publisher namespace nsfs path or host veth is present`);
+    }
+  };
+
+  await requireNoJob("initial failed-start recovery proof");
+  await requireInactiveAbsent("initial failed-start recovery proof");
+  await commonPreflight(plan, ops);
+  await requireNoJob("terminal failed-start recovery proof");
+  await requireInactiveAbsent("terminal failed-start recovery proof");
+  await requireNoJob("final failed-start recovery proof");
 }
 
 async function buildCommittedReceipt({
@@ -1128,11 +1195,22 @@ async function buildCommittedReceipt({
   };
 }
 
-async function applyLocked({ approvedApprovalSha256, approvedPlanSha256, ops, plan, recover }) {
+async function applyLocked({
+  approvedApprovalSha256,
+  approvedPlanSha256,
+  lifecycle,
+  ops,
+  plan,
+  recover,
+}) {
+  if (recover) lifecycle.retainLockOnError = true;
   const existing = await ops.readOptionalRegular(plan.transaction.receipt_path);
   if (existing !== null) {
     const receipt = parseStrictJson(existing.bytes.toString("utf8"), "existing receipt");
     validateReceipt(receipt, plan, approvedPlanSha256);
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("committed replay found a pending publisher namespace systemd job");
+    }
     const before = await commonPreflight(plan, ops);
     const netns = await ops.unitState(NETNS_UNIT);
     if (canonicalJson(netns) !== canonicalJson(receipt.netns_unit)) {
@@ -1145,6 +1223,13 @@ async function applyLocked({ approvedApprovalSha256, approvedPlanSha256, ops, pl
         canonicalJson(before.closed.sentinels) !== canonicalJson(receipt.sentinels)) {
       fail("committed receipt no longer describes the live closed topology/inputs");
     }
+    if (
+      await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+      canonicalJson(await ops.unitState(NETNS_UNIT)) !== canonicalJson(receipt.netns_unit) ||
+      await ops.unitJobAbsent(NETNS_UNIT) !== true
+    ) {
+      fail("committed replay generation or PID1 job changed during terminal proof");
+    }
     await ops.writeState(plan.transaction.state_directory, "20-committed.json",
       stateRecord(plan, approvedPlanSha256, receipt.approved_approval_sha256, "committed", {
         receipt_sha256: sha256(existing.bytes),
@@ -1154,55 +1239,78 @@ async function applyLocked({ approvedApprovalSha256, approvedPlanSha256, ops, pl
   const current = await ops.unitState(NETNS_UNIT);
   const intentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
   const observedIntent = await ops.readOptionalRegular(intentPath);
-  if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit) &&
-      !(await ops.networkAbsent(plan))) {
+  const exactInactive = canonicalJson(current) === canonicalJson(plan.preimage.netns_unit);
+  if (exactInactive && !(await ops.networkAbsent(plan))) {
     fail("inactive namespace unit has an unknown namespace path or host-interface preimage");
   }
-  if (canonicalJson(current) !== canonicalJson(plan.preimage.netns_unit) && !recover) {
+  if (!exactInactive && !recover) {
     fail("publisher namespace is not the inactive preimage; use recover-commit for a lost start response");
   }
-  if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit)) {
+
+  if (recover && exactInactive) {
+    lifecycle.retainLockOnError = true;
+    if (observedIntent !== null) {
+      validateDurableStartIntent(observedIntent, plan, approvedPlanSha256);
+    }
+    await assertInactiveFailedStartRecovery(plan, ops);
+    lifecycle.retainLockOnError = false;
+    if (observedIntent === null) {
+      fail("recover-commit proved an exact inactive/absent state but found no durable start intent");
+    }
+    fail(
+      "recover-commit proved the requested start did not commit; " +
+      "the single-use start intent remains durable and the lifecycle lock was recovered",
+    );
+  }
+
+  if (exactInactive) {
     if (observedIntent !== null) {
       fail("inactive publisher namespace has an existing durable start intent; it cannot be started again");
     }
-    if (recover) {
-      fail("recover-commit cannot start an inactive publisher namespace");
+  }
+
+  let activationApprovalSha256 = approvedApprovalSha256;
+  if (!exactInactive) {
+    lifecycle.retainLockOnError = true;
+    if (observedIntent === null) {
+      fail("recover-commit found an active or unknown namespace without the durable start intent");
+    }
+    activationApprovalSha256 = validateDurableStartIntent(
+      observedIntent,
+      plan,
+      approvedPlanSha256,
+    ).approved_approval_sha256;
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("recover-commit found a pending publisher namespace systemd job");
     }
   }
+
   const before = await commonPreflight(plan, ops);
   let started = false;
-  let activationApprovalSha256 = approvedApprovalSha256;
-  if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit)) {
+  if (exactInactive) {
     await assertAdjacentPreStartClosure(plan, ops, "final pre-start");
     await ops.writeState(plan.transaction.state_directory, "00-prepared.json",
       stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "prepared"));
     await ops.writeState(plan.transaction.state_directory, "05-start-intent.json",
       stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "start-intent"));
     await assertAdjacentPreStartClosure(plan, ops, "start-adjacent");
+    lifecycle.retainLockOnError = true;
     const result = await ops.systemctl(["start", NETNS_UNIT]);
-    if (result.status !== 0) fail("exact publisher namespace unit start failed");
+    if (result.status !== 0) {
+      fail("exact publisher namespace unit start returned nonzero with an unknown final outcome");
+    }
     started = true;
-  } else {
-    if (observedIntent === null) {
-      fail("recover-commit found an active namespace without the durable start intent");
-    }
-    const intent = parseStrictJson(observedIntent.bytes.toString("utf8"), "durable start intent");
-    exactKeys(intent, [
-      "approved_approval_sha256", "approved_plan_sha256", "ceremony_id", "phase",
-      "schema_version",
-    ], "durable start intent");
-    if (intent.schema_version !== 1 || intent.phase !== "start-intent" ||
-        intent.ceremony_id !== plan.ceremony_id ||
-        intent.approved_plan_sha256 !== approvedPlanSha256) {
-      fail("durable start intent identity/plan binding drifted");
-    }
-    validateSha256(intent.approved_approval_sha256,
-      "durable start intent approved approval SHA-256");
-    activationApprovalSha256 = intent.approved_approval_sha256;
   }
   const receipt = await buildCommittedReceipt({
     activationApprovalSha256, approvedApprovalSha256, approvedPlanSha256, before, ops, plan,
   });
+  if (recover && !exactInactive) {
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+        canonicalJson(await ops.unitState(NETNS_UNIT)) !== canonicalJson(receipt.netns_unit) ||
+        await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("recover-commit active generation or PID1 job changed during terminal proof");
+    }
+  }
   await ops.writeState(plan.transaction.state_directory, "10-runtime-verified.json",
     stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "runtime-verified", {
       netns_invocation_id: receipt.netns_unit.invocation_id,
@@ -1236,12 +1344,24 @@ export async function executeApply({
     recoverStale: recover,
     transactionId: plan.ceremony_id,
   });
+  const lifecycle = { retainLockOnError: false };
+  let releaseLock = true;
   try {
     return await applyLocked({
-      approvedApprovalSha256, approvedPlanSha256, ops, plan, recover,
+      approvedApprovalSha256, approvedPlanSha256, lifecycle, ops, plan, recover,
     });
+  } catch (error) {
+    if (lifecycle.retainLockOnError) {
+      releaseLock = false;
+      if (error instanceof PublisherNetnsStartOutcomeUnknownError) throw error;
+      throw new PublisherNetnsStartOutcomeUnknownError(
+        "publisher namespace start outcome is unknown; shared lifecycle lock retained",
+        error,
+      );
+    }
+    throw error;
   } finally {
-    await release();
+    if (releaseLock) await release();
   }
 }
 
@@ -1653,7 +1773,7 @@ function acquireLock(path, { recoverStale, transactionId }) {
     }
     const observed = regularSnapshot(`${path}/${LOCK_OWNER}`);
     const old = parseStrictJson(observed.bytes.toString("utf8"), "stale lock owner");
-    exactKeys(old, ["boot_id", "pid", "process_start_ticks", "transaction_id"], "stale lock owner");
+    assertPublisherRecoveryOwnsLifecycleLock(old, transactionId);
     let live = old.boot_id === currentBootId();
     if (live) {
       try { live = processStartTicks(old.pid) === old.process_start_ticks; } catch { live = false; }
@@ -2117,6 +2237,9 @@ export function linuxOps(plan) {
       }
       return invokePinned(systemctl, args, { timeoutMs: 60_000 });
     },
+    async unitJobAbsent(name) {
+      return systemctlProperties(name, ["Job"], systemctl).get("Job") === "";
+    },
     async unitState(name) { return systemctlUnit(name, systemctl); },
     async writeReceipt(path, value) { return writeAtomicNoReplace(path, value); },
     async writeState(directory, filename, value) {
@@ -2209,7 +2332,7 @@ async function main(argv) {
     }
   }
   if (commandName === "validate-plan") {
-    process.stdout.write(`valid plan_sha256=${approvedPlanSha256}\n`);
+    process.stdout.write(formatPublisherNetnsPlanValidationV2(approvedPlanSha256));
     return;
   }
   const nowUnix = Math.floor(Date.now() / 1000);
@@ -2240,8 +2363,11 @@ async function main(argv) {
       rollbackApproval: approvalRead.value,
     });
   }
-  process.stdout.write(`${result.outcome} receipt=${commandName.startsWith("recover-rollback") || commandName === "rollback" ?
-    plan.transaction.rollback_receipt_path : plan.transaction.receipt_path}\n`);
+  process.stdout.write(formatPublisherNetnsCeremonyOutcomeV2(
+    result.outcome,
+    commandName.startsWith("recover-rollback") || commandName === "rollback" ?
+      plan.transaction.rollback_receipt_path : plan.transaction.receipt_path,
+  ));
 }
 
 const isMain = process.argv[1] !== undefined &&

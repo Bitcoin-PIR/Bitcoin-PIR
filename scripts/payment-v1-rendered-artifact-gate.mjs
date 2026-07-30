@@ -160,6 +160,7 @@ const PROFILE_CATALOG = Object.freeze({
       "scripts/payment-v1-caddy-admin-uds-transaction.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "scripts/payment-v1-publisher-netns-schema.mjs",
     ]),
   }),
   "edge-hetzner-v1": Object.freeze({
@@ -488,6 +489,13 @@ const TEMPLATE_CATALOG = Object.freeze({
     artifactClass: "executable-config",
     targetPath:
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-publisher-netns-schema.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
     modes: ["0555"],
     rootOwned: true,
   },
@@ -2668,11 +2676,12 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "651ef7072a3dccdfd640a9c70c801da32afbde599348985f5b93000ce3c3dbe0",
+  adminGate: "85f64dc3f922372fe7e37619b888080dd1d6f7063c7d871fbd35cf384fd3bbd6",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
-  adminTransaction: "de06f1d67ac27626f57f7106c03d19e8327638a7a9d094213adce913e0ca52c8",
+  adminTransaction: "4d5aa3efd63c5ee98aad701a9b69ffe8cc07153a14984d06f715b43ddb075872",
   overlayGate: "963540df059609adc6b9168d346db32bb4373c3aeddcd66db7fb4a31cef6c4ac",
-  overlayTransaction: "9babddd3d29a386a12b65037e05fbe7ecd1afbe9c24fae053f28d0f220ef81f4",
+  overlayTransaction: "956a312a3b7c1f17ba3e69f23a120bb724279c0fb9961361ba10f794d825bce9",
+  publisherNetnsSchema: "32eaa88ae4dfd1da7b41a02af8bf9b2eed3d4c46d08a77413c0de38d464b9cfe",
 });
 
 const OVERLAY_TRANSACTION_IMPORT_HEADER = [
@@ -2726,6 +2735,13 @@ const OVERLAY_TRANSACTION_IMPORT_HEADER = [
   "  validateCommittedReceipt as validateAdminUdsCommittedReceipt,",
   "  validatePublisherNetnsDropInBytes,",
   '} from "./payment-v1-caddy-admin-uds-gate.mjs";',
+  "import {",
+  "  PUBLISHER_NETNS_CEREMONY_KIND,",
+  "  PUBLISHER_NETNS_RECEIPT_KIND,",
+  "  computePublisherNetnsPlanSha256V2,",
+  "  validatePublisherNetnsPlanV2,",
+  "  validatePublisherNetnsReceiptV2,",
+  '} from "./payment-v1-publisher-netns-schema.mjs";',
   "",
   "",
 ].join("\n");
@@ -2813,6 +2829,14 @@ function configManagedReferences(sourcePath, text, plan) {
     );
     return [];
   }
+  if (sourcePath === "scripts/payment-v1-publisher-netns-schema.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.publisherNetnsSchema,
+      "rendered publisher-netns shared schema validator",
+    );
+    return [];
+  }
   if (
     sourcePath ===
     "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"
@@ -2866,6 +2890,7 @@ function configManagedReferences(sourcePath, text, plan) {
       binary,
       "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
     ].sort(asciiCompare);
   }
   const edgeReferences = {

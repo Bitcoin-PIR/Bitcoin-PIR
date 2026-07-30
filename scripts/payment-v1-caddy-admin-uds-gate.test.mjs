@@ -22,6 +22,11 @@ import {
   NODE_IMAGE_INDEX,
   PROFILE,
   PUBLISHER_NETNS_DROPIN_PATH,
+  PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_NAMESPACE_PATH,
+  PUBLISHER_NETNS_SENTINEL_PATHS,
+  PUBLISHER_NETNS_UNIT,
   SETPRIV_PATH,
   buildCandidates,
   buildHardenedCaddyfile,
@@ -160,6 +165,23 @@ function stoppedGeneration() {
   };
 }
 
+function inactivePublisherNetnsPreimage() {
+  return {
+    activation_sentinels_absent: [...PUBLISHER_NETNS_SENTINEL_PATHS],
+    host_interface_absent: PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    namespace_path_absent: PUBLISHER_NETNS_NAMESPACE_PATH,
+    unit_generation: {
+      active_enter_timestamp_monotonic: "0",
+      active_state: "inactive",
+      control_group: `/system.slice/${PUBLISHER_NETNS_UNIT}`,
+      invocation_id: "",
+      main_pid: "0",
+      sub_state: "dead",
+      unit_name: PUBLISHER_NETNS_UNIT,
+    },
+  };
+}
+
 function fixture() {
   const candidateConfig = buildHardenedCaddyfile(CONFIG, "replace-explicit-tcp-admin");
   const candidateUnit = buildHardenedUnit(UNIT);
@@ -266,6 +288,7 @@ function fixture() {
       "0644",
       9,
     ),
+    publisher_netns_preimage: inactivePublisherNetnsPreimage(),
     schema_version: 2,
     service_uid_inventory: [
       { name: "cloudflared", uid: 52901 },
@@ -310,7 +333,7 @@ function fixture() {
       },
       daemon_reload_argv: ["/usr/bin/systemctl", "daemon-reload"],
       installation_mode: "service-stopped-two-exact-rename-replacements-with-parent-fsync",
-      lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+      lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
       new_invocation_required: true,
       outcome_unknown_conditions: [
         "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
@@ -797,6 +820,13 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.site_preservation.probe_ids = ["direct-upstream", "public-site"]; }, /3\.\.128/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "123e4567-e89b-42d3-a456-426614174000"; }, /32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
+    [(plan) => {
+      plan.publisher_netns_preimage.unit_generation.active_state = "active";
+      plan.publisher_netns_preimage.unit_generation.sub_state = "running";
+    }, /publisher_netns_preimage\.unit_generation must be inactive\/dead/u],
+    [(plan) => { plan.publisher_netns_preimage.namespace_path_absent = "/run/netns/unreviewed"; }, /namespace_path_absent must equal/u],
+    [(plan) => { plan.publisher_netns_preimage.activation_sentinels_absent.pop(); }, /exact reviewed path set/u],
+    [(plan) => { plan.transaction.lock_path = "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock"; }, /publisher-lifecycle\.lock/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
     [(plan) => { plan.transaction.automatic_rollback_after_ambiguous_start = true; }, /must equal false/u],
     [(plan) => { plan.candidate.adapted_json_size = "0"; }, /must be inside/u],

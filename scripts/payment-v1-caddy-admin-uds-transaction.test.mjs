@@ -272,6 +272,11 @@ function fakeOps(fixture, { failAt } = {}) {
         { endpoint: "[::1]:2019", result: "connection-refused" },
       ];
     },
+    async publisherNetnsPreimage() {
+      calls.push("publisher-netns-preimage");
+      fault("publisher-netns-preimage");
+      return structuredClone(plan.publisher_netns_preimage);
+    },
     async publishReceipt(path, bytes, mode) {
       calls.push("publish-receipt");
       fault("publish-receipt");
@@ -575,6 +580,85 @@ test("complete cold transaction publishes a receipt only after every post-start 
     result.receipt.site_health.map(({ id }) => id),
     fixture.plan.site_preservation.probe_ids,
   );
+  const stopIndex = ops.calls.indexOf("run:stop");
+  const startIndex = ops.calls.indexOf("run:start");
+  assert.equal(ops.calls[stopIndex - 1], "publisher-netns-preimage");
+  assert.equal(ops.calls[startIndex - 1], "publisher-netns-preimage");
+});
+
+test("an initially active publisher namespace fails before lock or Caddy lifecycle", async () => {
+  const fixture = makePlanAndInventory();
+  const ops = fakeOps(fixture);
+  ops.publisherNetnsPreimage = async () => {
+    ops.calls.push("publisher-netns-preimage");
+    const value = structuredClone(fixture.plan.publisher_netns_preimage);
+    value.unit_generation = {
+      active_enter_timestamp_monotonic: "3000000",
+      active_state: "active",
+      control_group: value.unit_generation.control_group,
+      invocation_id: "52345678123442349234123456789ab1",
+      main_pid: "6666",
+      sub_state: "running",
+      unit_name: value.unit_generation.unit_name,
+    };
+    return value;
+  };
+  await assert.rejects(
+    executeCaddyAdminUdsTransaction({
+      approvedPlanSha256: fixture.approvedPlanSha256,
+      ops,
+      plan: fixture.plan,
+      siteInventoryBytes: fixture.inventoryBytes,
+    }),
+    /publisher namespace preimage.*inactive\/dead/u,
+  );
+  assert.equal(ops.calls.includes("lock"), false);
+  assert.equal(ops.calls.some((call) => call.startsWith("run:")), false);
+});
+
+test("publisher namespace activation in the adjacent pre-stop window performs no Caddy lifecycle", async () => {
+  const fixture = makePlanAndInventory();
+  const ops = fakeOps(fixture);
+  const original = ops.publisherNetnsPreimage;
+  let reads = 0;
+  ops.publisherNetnsPreimage = async () => {
+    const value = await original();
+    reads += 1;
+    if (reads === 3) value.namespace_path_absent = "/run/netns/raced-active";
+    return value;
+  };
+  await assert.rejects(
+    executeCaddyAdminUdsTransaction({
+      approvedPlanSha256: fixture.approvedPlanSha256,
+      ops,
+      plan: fixture.plan,
+      siteInventoryBytes: fixture.inventoryBytes,
+    }),
+    (error) =>
+      error instanceof ColdTransactionError &&
+      error.outcome === COLD_OUTCOMES.preStopFailed &&
+      /publisher namespace preimage/u.test(error.message),
+  );
+  assert.equal(reads, 3);
+  assert.equal(ops.calls.some((call) => call.startsWith("run:")), false);
+  assert.equal(ops.calls.some((call) => call.startsWith("replace:")), false);
+});
+
+test("rollback restart also checks the inactive publisher namespace immediately before start", async () => {
+  const fixture = makePlanAndInventory();
+  const ops = fakeOps(fixture, { failAt: "replace-config" });
+  await assert.rejects(
+    executeCaddyAdminUdsTransaction({
+      approvedPlanSha256: fixture.approvedPlanSha256,
+      ops,
+      plan: fixture.plan,
+      siteInventoryBytes: fixture.inventoryBytes,
+    }),
+    (error) => error instanceof ColdTransactionError,
+  );
+  const startIndex = ops.calls.indexOf("run:start");
+  assert.ok(startIndex > 0);
+  assert.equal(ops.calls[startIndex - 1], "publisher-netns-preimage");
 });
 
 test("pre-stop failure leaves the active pair and generation untouched", async () => {

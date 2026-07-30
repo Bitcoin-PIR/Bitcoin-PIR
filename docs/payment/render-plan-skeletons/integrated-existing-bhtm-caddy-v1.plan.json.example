@@ -123,6 +123,14 @@
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
       "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-publisher-netns-schema.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+      "uid": 0
     }
   ],
   "schema_version": 2,

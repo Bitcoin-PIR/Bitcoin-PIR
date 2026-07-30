@@ -968,19 +968,31 @@ remain separate acceptance gates.
 - publisher-netns ceremony tests require canonical closed plans; exact
   RFC1918/ULA point-to-point pairs; no publisher private key or payment/query
   correlation fields; exact installed/runtime/sentinel/firewall/Caddy pins;
-  the exact loaded Caddy `Wants+After` drop-in relation with no reverse edge or
-  pending daemon reload; inactive publisher/netns units with no pending reload;
-  an exact two-module local import closure for the executor;
+  an active/running Caddy generation with nonzero PID, invocation and activation
+  timestamp; the exact loaded Caddy `Wants+After` drop-in relation with no
+  reverse edge or pending daemon reload; inactive publisher/netns units with no pending reload;
+  an exact three-module local import closure for the executor;
   the exact loaded namespace-unit fragment, commands, conditions, relationships
   and hardening plus the PID 1 manager generation; a content-addressed native
-  launcher and exact four-entry Node/executor/import manifest; and schema-v2
+  launcher, machine-parsed static-ELF proof and exact five-entry
+  Node/executor/import manifest; descriptor-bound execution and atomic pathname
+  replacement negatives; and schema-v2
   apply/rollback approvals binding both launcher digests, with independent
   canonical digests and validity windows no longer than one hour;
 - apply starts only the exact namespace unit after an inactive/absent preimage,
-  repeats that absence immediately before writing its durable start intent,
-  while ordinary replay refuses to adopt an active unit. Lost-start recovery
+  brackets both pre-start closure passes with no-pending-PID-1-job checks, and
+  repeats exact absence after writing its durable start intent. Ordinary replay
+  refuses an active unit or pending PID 1 job. Lost-start recovery
   requires the durable start intent, preserves its original approval digest,
-  revalidates exact live topology and never calls start twice;
+  revalidates exact live topology and never calls start twice. A start error,
+  timeout, nonzero status or later proof failure retains the shared lifecycle
+  lock; only same-domain recovery may release it after repeated no-pending-job,
+  exact inactive/`NeedDaemonReload=no`, absent nsfs/veth and byte/metadata-exact
+  sentinel proof. Pending-job and late-activation races retain the lock;
+- firewall mutations delete, duplicate and move after the user jump the single
+  required `RELATED,ESTABLISHED` accept in each IPv4/IPv6 INPUT/FORWARD before
+  chain; all fail closed. Separate positive mutations exercise every documented
+  optional DHCP/mDNS/SSDP/ICMP/ND/MLD early-accept class;
 - topology negatives cover extra functional interfaces, active/addressed/
   aliased/wrong-kind fallback tunnels, loopback/client/veth identity drift,
   extra/default/gateway/NAT routes, IPv4/IPv6 host forwarding, wrong nsfs and

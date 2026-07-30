@@ -670,7 +670,24 @@ function validateBeforeChain(outputs, family, hook) {
     `${prefix}-before-${suffix}`,
   );
   const userJump = `jump ${prefix}-user-${suffix}`;
-  if (rules.filter((line) => line === userJump).length !== 1 || rules.at(-1) !== userJump) {
+  const userJumpIndexes = rules.flatMap((line, index) => line === userJump ? [index] : []);
+  if (userJumpIndexes.length !== 1) {
+    fail(`nft ${family} before-${suffix} must contain one user-chain jump`);
+  }
+  const statefulAccept = "ct state related,established accept";
+  const statefulAcceptIndexes = rules.flatMap(
+    (line, index) => line === statefulAccept ? [index] : [],
+  );
+  if (
+    statefulAcceptIndexes.length !== 1 ||
+    statefulAcceptIndexes[0] >= userJumpIndexes[0]
+  ) {
+    fail(
+      `nft ${family} before-${suffix} must contain exactly one ` +
+      "RELATED,ESTABLISHED accept before its user-chain jump",
+    );
+  }
+  if (rules.at(-1) !== userJump) {
     fail(`nft ${family} before-${suffix} must end in one user-chain jump`);
   }
   for (const line of rules.slice(0, -1)) {

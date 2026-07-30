@@ -49,6 +49,8 @@ const CADDY_ADMIN_UDS_TRANSACTION =
   "scripts/payment-v1-caddy-admin-uds-transaction.mjs";
 const INTEGRATED_CADDY_TRANSACTION =
   "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
+const PUBLISHER_NETNS_SCHEMA =
+  "scripts/payment-v1-publisher-netns-schema.mjs";
 const INTEGRATED_CADDY_BLOCK =
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
@@ -329,6 +331,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
   copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  copySource(fixture.sourceRoot, PUBLISHER_NETNS_SCHEMA);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
   const haproxyBytes = Buffer.from("reviewed-integrated-haproxy-v1\n");
   const haproxySha = hashBytes(haproxyBytes);
@@ -457,6 +460,15 @@ function makeIntegratedCaddySourceFairFixture(t) {
         ),
         target_path:
           "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: PUBLISHER_NETNS_SCHEMA,
+        source_sha256: hashFile(join(fixture.sourceRoot, PUBLISHER_NETNS_SCHEMA)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
         uid: 0,
       },
     ],
@@ -1734,7 +1746,7 @@ test("integrated cold executor rejects source drift even when the render-plan so
   );
 });
 
-test("integrated transaction closes both local gate imports", (t) => {
+test("integrated transaction closes both local gates and the shared schema import", (t) => {
   const fixture = makeIntegratedCaddySourceFairFixture(t);
   const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
   const expected = 'from "./payment-v1-caddy-admin-uds-gate.mjs";';

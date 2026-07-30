@@ -293,6 +293,16 @@
     }
   ],
   "kind": "bitcoinpir-payment-v1-publisher-netns-ceremony-v1",
+  "launcher_static_elf": {
+    "byte_order": "little-endian",
+    "elf_class": "ELF64",
+    "machine": "EM_X86_64",
+    "object_type": "ET_EXEC",
+    "program_header_count": 1,
+    "pt_dynamic": false,
+    "pt_interp": false,
+    "sha256": "INVALID_REPLACE_WITH_LAUNCHER_SHA256"
+  },
   "preimage": {
     "host_interface": "absent",
     "loaded_netns_unit": {
@@ -521,6 +531,19 @@
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
     },
+    "schema_validator": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
     "systemctl": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -554,7 +577,7 @@
     "publisher_hostname": "invalid-replace-with-approved-publisher.example"
   },
   "transaction": {
-    "lock_path": "/run/bitcoinpir-payment-v1-publisher-netns-ceremony.lock",
+    "lock_path": "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
     "receipt_path": "/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/invalid-replace-with-fresh-ceremony-id.json",
     "rollback_receipt_path": "/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/invalid-replace-with-fresh-ceremony-id.rollback.json",
     "state_directory": "/var/lib/bitcoinpir/payment-v1/publisher-netns/transactions/invalid-replace-with-fresh-ceremony-id"

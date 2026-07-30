@@ -259,6 +259,68 @@ test("closed UFW/raw/nft publisher firewall evidence passes", () => {
   assert.equal(validatePublisherFirewallOutputs(firewallOutputs()), true);
 });
 
+for (const [label, key, rule] of [
+  ["IPv4 ICMP", "nft_ip_before_forward",
+    "ip protocol icmp icmp type destination-unreachable counter packets 0 bytes 0 accept"],
+  ["IPv4 DHCP", "nft_ip_before_input",
+    "udp sport 67 udp dport 68 counter packets 0 bytes 0 accept"],
+  ["IPv4 mDNS", "nft_ip_before_input",
+    "ip daddr 224.0.0.251 udp dport 5353 counter packets 0 bytes 0 accept"],
+  ["IPv4 SSDP", "nft_ip_before_input",
+    "ip daddr 239.255.255.250 udp dport 1900 counter packets 0 bytes 0 accept"],
+  ["IPv6 ICMP", "nft_ip6_before_forward",
+    "meta l4proto ipv6-icmp icmpv6 type packet-too-big counter packets 0 bytes 0 accept"],
+  ["IPv6 neighbor discovery", "nft_ip6_before_input",
+    "meta l4proto ipv6-icmp icmpv6 type nd-neighbor-solicit ip6 hoplimit 255 counter packets 0 bytes 0 accept"],
+  ["IPv6 MLD", "nft_ip6_before_input",
+    "ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-query counter packets 0 bytes 0 accept"],
+  ["IPv6 DHCP", "nft_ip6_before_input",
+    "ip6 saddr fe80::/10 ip6 daddr fe80::/10 udp sport 547 udp dport 546 counter packets 0 bytes 0 accept"],
+  ["IPv6 mDNS", "nft_ip6_before_input",
+    "ip6 daddr ff02::fb udp dport 5353 counter packets 0 bytes 0 accept"],
+  ["IPv6 SSDP", "nft_ip6_before_input",
+    "ip6 daddr ff02::f udp dport 1900 counter packets 0 bytes 0 accept"],
+]) {
+  test(`${label} is accepted only as a reviewed optional UFW prelude rule`, () => {
+    const outputs = firewallOutputs();
+    const prefix = key.includes("ip6") ? "ufw6" : "ufw";
+    const hook = key.endsWith("forward") ? "forward" : "input";
+    outputs[key] = outputs[key].replace(
+      `    jump ${prefix}-user-${hook}`,
+      `    ${rule}\n    jump ${prefix}-user-${hook}`,
+    );
+    assert.equal(validatePublisherFirewallOutputs(outputs), true);
+  });
+}
+
+for (const [family, hook, key] of [
+  ["IPv4", "INPUT", "nft_ip_before_input"],
+  ["IPv4", "FORWARD", "nft_ip_before_forward"],
+  ["IPv6", "INPUT", "nft_ip6_before_input"],
+  ["IPv6", "FORWARD", "nft_ip6_before_forward"],
+]) {
+  const prefix = family === "IPv4" ? "ufw" : "ufw6";
+  const suffix = hook.toLowerCase();
+  const stateful = "    ct state related,established counter packets 0 bytes 0 accept";
+  const userJump = `    jump ${prefix}-user-${suffix}`;
+  for (const [mutation, transform] of [
+    ["deleted", (text) => text.replace(`${stateful}\n`, "")],
+    ["duplicated", (text) => text.replace(stateful, `${stateful}\n${stateful}`)],
+    ["moved after the user jump", (text) => text
+      .replace(`${stateful}\n`, "")
+      .replace(userJump, `${userJump}\n${stateful}`)],
+  ]) {
+    test(`${family} ${hook} rejects a ${mutation} RELATED,ESTABLISHED prelude accept`, () => {
+      const outputs = firewallOutputs();
+      outputs[key] = transform(outputs[key]);
+      assert.throws(
+        () => validatePublisherFirewallOutputs(outputs),
+        /exactly one RELATED,ESTABLISHED accept before/u,
+      );
+    });
+  }
+}
+
 test("validated firewall directory emits the canonical ceremony evidence object", () => {
   const directory = mkdtempSync(join(tmpdir(), "bitcoinpir-publisher-firewall-evidence-"));
   try {

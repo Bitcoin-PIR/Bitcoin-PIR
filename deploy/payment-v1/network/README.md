@@ -83,6 +83,25 @@ start:
    ufw route prepend deny out on bpir-pub-h from any to any
    ```
 
+   This is a stateful UFW policy, not a claim that the base/before chains accept
+   no other packet classes. Ubuntu's reviewed UFW pre-rules retain the exact
+   connection-tracking exception for `ct state related,established` (and the
+   iptables equivalent). Each IPv4/IPv6 INPUT/FORWARD before chain must contain
+   exactly one such accept before its user-chain jump. Beyond that mandatory
+   stateful rule, the reviewed IPv4 optional allowlist permits loopback INPUT,
+   selected ICMP error/echo-request types, DHCP client traffic (UDP 67 to 68),
+   mDNS (`224.0.0.251:5353`) and SSDP (`239.255.255.250:1900`); FORWARD may
+   additionally include only selected ICMP accepts. The IPv6 optional allowlist
+   analogously permits loopback INPUT, selected ICMPv6/ND/MLD compatibility
+   forms, DHCPv6 (UDP 547 to 546), mDNS (`[ff02::fb]:5353`) and the reviewed UFW
+   SSDP destination (`[ff02::f]:1900`); IPv6 FORWARD may additionally include
+   only selected ICMPv6 control accepts.
+   These early accepts can run before the interface-wide user deny. The
+   `bpir-pub-h` user-chain rule is therefore only the authorization boundary
+   for a **new TCP/443** flow that reaches that chain, not a claim that every
+   other packet class reaches it. Zero host forwarding, no namespace default
+   route and no NAT remain independently evidence-bound.
+
    Runtime evidence binds two semantic passes of raw `ufw status numbered`,
    `ufw show raw`, nft base/before/user chains for IPv4 and IPv6, forwarding
    sysctls, the nsfs mount, and the effective systemd dependency graph around a

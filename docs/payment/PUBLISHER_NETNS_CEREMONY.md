@@ -54,16 +54,17 @@ ceremony plan, it must have installed and independently pinned:
   `/etc/netns/bpir-directory-publisher/`;
 - the source-closed ceremony executor at
   `/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs`;
-- its two exact sibling imports,
+- its three exact sibling imports,
   `payment-v1-integrated-caddy-overlay-gate.mjs` and
-  `payment-v1-publisher-netns-gate.mjs`, installed root-owned and pinned in
-  the same plan;
+  `payment-v1-publisher-netns-gate.mjs`, plus the no-cycle
+  `payment-v1-publisher-netns-schema.mjs` validator, installed root-owned and
+  pinned in the same plan;
 - the independently compiled, statically linked, content-addressed native launcher at
   `/opt/bitcoinpir/publisher-netns-launcher/<launcher-sha256>/payment-v1-publisher-netns-launcher`;
-- the exact four-entry, root-owned `0444` launcher manifest at
+- the exact five-entry, root-owned `0444` launcher manifest at
   `/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256`, in this
   canonical order: `/usr/bin/node`, integrated-Caddy gate, ceremony executor,
-  publisher-netns gate;
+  publisher-netns gate, shared schema validator;
 - regular, no-follow `/usr/bin/node`, `/usr/bin/systemctl` and `/usr/bin/ip`;
 - root-owned `0700` transaction parents
   `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts` and
@@ -104,6 +105,23 @@ zero and both routing tables contain only the connected `10.203.0.0/30` route.
 It does not install a rule or claim the point-in-time snapshot stayed unchanged
 during a later publication.
 
+The captured UFW base/before chains deliberately include Ubuntu's stateful
+`RELATED,ESTABLISHED` accept exception. Every IPv4/IPv6 INPUT/FORWARD before
+chain must contain exactly one such rule before its user-chain jump. The
+optional IPv4 INPUT allowlist additionally permits loopback, selected ICMP
+error/echo-request, DHCP client UDP 67-to-68, mDNS `224.0.0.251:5353` and SSDP
+`239.255.255.250:1900` accepts; IPv4 FORWARD may additionally contain only the
+selected ICMP accepts. The optional IPv6 INPUT allowlist permits loopback,
+selected ICMPv6/ND/MLD compatibility forms, DHCPv6 UDP 547-to-546, mDNS
+`[ff02::fb]:5353` and the reviewed UFW SSDP destination `[ff02::f]:1900`;
+IPv6 FORWARD may additionally contain only selected ICMPv6 control accepts.
+When present, these rules may accept
+matching packets before the interface-wide user deny. The exact user-chain
+allow-then-deny pair controls a new `10.203.0.2 -> 10.203.0.1:443` TCP flow
+that reaches it; it is not a claim that every other packet class reaches that
+pair. Both forwarding directions, NAT, the namespace default route and host
+forwarding remain closed and independently evidence-bound.
+
 The helper manifest must be one canonical `sha256sum` line binding the exact
 content-addressed helper. The network-input manifest must canonically bind the
 four pinned hosts, NSS, resolver and network-policy files. A plan cannot approve
@@ -122,8 +140,27 @@ sha256sum /absolute/staging/payment-v1-publisher-netns-launcher
 ```
 
 Create `launcher-inputs.sha256` with ordinary `sha256sum` output in the exact
-four-path order listed above. Its bytes and its SHA-256 are independent review
+five-path order listed above. Its bytes and its SHA-256 are independent review
 inputs; the launcher accepts neither reordered nor additional entries.
+
+`ldd` is only an operator convenience. The schema-v2 plan additionally binds a
+machine-parsed ELF64 little-endian `ET_EXEC` record: exact launcher SHA-256,
+`EM_X86_64`, bounded program-header count, and explicit absence of both
+`PT_INTERP` and `PT_DYNAMIC`. `inspectStaticElfV1()` in the shared validator
+derives that record from the same launcher bytes, and the ceremony recomputes
+it from the pinned file before mutation.
+
+After the launcher's final manifest identity recheck, Node and all four local
+modules are executed from already-open, hash-verified descriptors. A fixed
+`vm.SourceTextModule` loader permits only those sealed file URLs and Node
+built-ins; it never reopens the entrypoint or a local import by pathname. All
+other inherited descriptors are marked close-on-exec, and the bootstrap closes
+the four intentional module descriptors after reading them.
+
+The lifecycle lock is also shared with the Caddy-admin UDS cold transaction.
+Explicit publisher recovery may replace only a dead owner record for the exact
+same publisher transaction ID; it refuses a dead foreign/Admin owner. This
+preserves an Admin transaction's deliberately retained outcome-unknown lock.
 
 ## Plan and short-lived approvals
 
@@ -137,7 +174,8 @@ Replace every `INVALID_...` marker from two stable observations of the target.
 Every file pin contains device, inode, uid, gid, mode, link count, size,
 mtime/ctime nanoseconds and SHA-256. The plan also binds the current boot,
 machine identity digest, exact systemd 255 version, Caddyfile and active Caddy
-generation, its exact loaded one-way `Wants+After` drop-in relation with no
+`active/running` generation with nonzero `MainPID`, `InvocationID` and
+activation timestamp, its exact loaded one-way `Wants+After` relation with no
 reverse stop edge or pending daemon reload, inactive publisher/netns
 generations with no pending daemon reload, fixed topology, source commit,
 runtime executables and transaction paths. The executor's local import
@@ -229,6 +267,11 @@ drift fails before the lock or systemd mutation.
      --approved-approval-sha256 APPLY_APPROVAL_SHA256
    ```
 
+   Both pre-start closure passes bracket the exact inactive unit and absent
+   nsfs/veth proof with `Unit.Job` absence checks. The second pass occurs after
+   the durable start intent and immediately before the sole start request, so a
+   previously queued PID 1 job cannot be attributed to this ceremony.
+
 9. Independently transfer and verify the owner-only receipt. It binds both the
    approval that authorized `systemctl start` and, after crash recovery, the
    fresh approval that authorized terminalization; exact Caddy/publisher
@@ -271,8 +314,21 @@ receipt and records the fresh terminalization approval separately. It does not
 call `systemctl start` again. If there is no durable start intent, it refuses to
 adopt the namespace.
 
-An exact committed replay revalidates the live unit generation, topology,
-Caddy/publisher state and every closed input before returning the prior receipt.
+Once `systemctl start` has been requested, a thrown error, timeout, nonzero
+status or later receipt-proof failure is outcome-unknown and deliberately keeps
+the shared lifecycle lock. Only same-transaction `recover-commit` may replace
+its dead owner. If the start activated late, recovery verifies that exact live
+generation and terminalizes the receipt without a second start. If it did not
+activate, recovery may release the lock only after repeated proof that PID 1
+has no pending unit job, the unit equals the plan's `inactive/dead` generation
+with `NeedDaemonReload=no`, the nsfs path and host veth are absent, and all five
+external sentinels still have the plan-bound bytes and metadata. Any pending
+job, late activation during that proof, sentinel drift or unknown state keeps
+the lock for further explicit recovery.
+
+An exact committed replay requires no pending PID 1 job and revalidates the
+live unit generation, topology, Caddy/publisher state and every closed input
+before returning the prior receipt.
 It never treats a historical receipt as current runtime evidence.
 
 ## Rollback order
@@ -337,7 +393,7 @@ not a stale receipt or an ad-hoc `systemctl` command.
 | --- | --- | --- |
 | Plan, source, runtime pin, sentinel, firewall or Caddy preflight fails | None | Correct the external input; create a new plan/approval when any pin changes. |
 | Lock exists with a live/unknown owner | None | Wait for the exact process or perform manual forensic review; never delete by name alone. |
-| Start command returns nonzero | Helper may have journaled partial kernel work; no ceremony receipt | Inspect the unit/helper journal. Use the unit's exact cleanup path under a separate operator action; then regenerate preimage evidence. |
+| Start command errors, times out or returns nonzero after durable intent | Helper/PID 1 may activate late or have partial kernel work; no ceremony receipt; shared lifecycle lock retained | Run same-transaction `recover-commit`. It terminalizes an exact late-active generation, or releases the lock only after repeated no-job, exact-inactive, absent-nsfs/veth and exact-sentinel proof. |
 | Start response is lost but durable start intent and exact topology exist | Namespace active; no receipt | Run `recover-commit` with a fresh valid approval. |
 | Active namespace has no exact start intent | Unknown | Fail closed; do not adopt or publish a receipt. |
 | Runtime interface/address/route/sysctl/nsfs/Caddy/input or boot/systemd identity verification fails | Namespace may be active or stopped; no new receipt | Keep publisher/Caddy overlay inactive; investigate and explicitly clean up under the cold incident procedure. |

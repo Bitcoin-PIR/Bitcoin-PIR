@@ -25,6 +25,18 @@ export const PUBLISHER_NETNS_UNIT =
   "bitcoinpir-payment-v1-publisher-netns.service";
 export const PUBLISHER_NETNS_DROPIN_PATH =
   "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
+export const PUBLISHER_NETNS_NAMESPACE_PATH =
+  "/run/netns/bpir-directory-publisher";
+export const PUBLISHER_NETNS_HOST_INTERFACE_PATH = "/sys/class/net/bpir-pub-h";
+export const PUBLISHER_NETNS_SENTINEL_PATHS = Object.freeze([
+  "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+  "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+  "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+]);
+export const PUBLISHER_NETNS_LIFECYCLE_LOCK =
+  "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock";
 export const DAC_BOUNDARY = "capability-free-unprivileged-non-root-dac-only";
 export const MAX_ADAPTED_JSON_BYTES = 2 * 1024 * 1024;
 export const CADDY_IMAGE_INDEX =
@@ -351,7 +363,7 @@ function validateSnapshot(value, label, options) {
   if (value.nlink !== 1) fail(`${label}.nlink must equal 1`);
 }
 
-function validateUnitGeneration(value, label, { active }) {
+function validateUnitGeneration(value, label, { active, unitName = TARGET_UNIT }) {
   exactKeys(
     value,
     [
@@ -365,9 +377,9 @@ function validateUnitGeneration(value, label, { active }) {
     ],
     label,
   );
-  if (value.unit_name !== TARGET_UNIT) fail(`${label}.unit_name must equal ${TARGET_UNIT}`);
-  if (value.control_group !== `/system.slice/${TARGET_UNIT}`) {
-    fail(`${label}.control_group must equal /system.slice/${TARGET_UNIT}`);
+  if (value.unit_name !== unitName) fail(`${label}.unit_name must equal ${unitName}`);
+  if (value.control_group !== `/system.slice/${unitName}`) {
+    fail(`${label}.control_group must equal /system.slice/${unitName}`);
   }
   if (active) {
     if (value.active_state !== "active" || value.sub_state !== "running") {
@@ -392,6 +404,36 @@ function validateUnitGeneration(value, label, { active }) {
       fail(`${label} must have no live process generation`);
     }
   }
+}
+
+export function validatePublisherNetnsPreimage(value, label = "publisher_netns_preimage") {
+  exactKeys(
+    value,
+    [
+      "activation_sentinels_absent",
+      "host_interface_absent",
+      "namespace_path_absent",
+      "unit_generation",
+    ],
+    label,
+  );
+  if (
+    canonicalJson(value.activation_sentinels_absent) !==
+      canonicalJson(PUBLISHER_NETNS_SENTINEL_PATHS)
+  ) {
+    fail(`${label}.activation_sentinels_absent must equal the exact reviewed path set`);
+  }
+  if (value.host_interface_absent !== PUBLISHER_NETNS_HOST_INTERFACE_PATH) {
+    fail(`${label}.host_interface_absent must equal ${PUBLISHER_NETNS_HOST_INTERFACE_PATH}`);
+  }
+  if (value.namespace_path_absent !== PUBLISHER_NETNS_NAMESPACE_PATH) {
+    fail(`${label}.namespace_path_absent must equal ${PUBLISHER_NETNS_NAMESPACE_PATH}`);
+  }
+  validateUnitGeneration(value.unit_generation, `${label}.unit_generation`, {
+    active: false,
+    unitName: PUBLISHER_NETNS_UNIT,
+  });
+  return true;
 }
 
 function canonicalText(bytes, label) {
@@ -1260,7 +1302,7 @@ function validateTransaction(value, transactionId) {
     candidate_config_path: `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,
     candidate_unit_path: `/etc/systemd/system/.bitcoinpir-${transactionId}.candidate`,
     installation_mode: "service-stopped-two-exact-rename-replacements-with-parent-fsync",
-    lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+    lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
     new_invocation_required: true,
     receipt_path: `${root}/receipts/${transactionId}.json`,
     reload_forbidden: true,
@@ -1332,6 +1374,7 @@ export function validatePlan(plan) {
       "preimage",
       "privileged_access_inventory",
       "publisher_netns_dropin",
+      "publisher_netns_preimage",
       "runtime",
       "schema_version",
       "service_uid_inventory",
@@ -1353,6 +1396,7 @@ export function validatePlan(plan) {
     modes: ["0644"],
     path: PUBLISHER_NETNS_DROPIN_PATH,
   });
+  validatePublisherNetnsPreimage(plan.publisher_netns_preimage);
   if (
     plan.preimage.binary.path !== plan.candidate.binary.path ||
     plan.preimage.binary.sha256 !== plan.candidate.binary.sha256 ||

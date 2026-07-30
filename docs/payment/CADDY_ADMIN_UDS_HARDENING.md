@@ -190,7 +190,8 @@ verify` against the byte-exact generated unit fixture.
 A reload of the old generation therefore cannot prove or apply this migration.
 The approved transaction is:
 
-1. Hold the exact single-use lock and re-read the approved old binary,
+1. Hold the exact shared publisher-lifecycle lock at
+   `/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock` and re-read the approved old binary,
    Caddyfile, unit, active PID, `InvocationID`, and site health. Require the
    loaded unit's exact fragment, the singleton approved publisher-namespace
    drop-in and exact one-way relationship, no `EnvironmentFile` or
@@ -199,6 +200,15 @@ The approved transaction is:
    Caddy descriptor and require its approved canonical digest to equal the
    live TCP-admin `/config/` digest. Repeat the loaded-unit/process/admin
    bindings immediately before the stop boundary.
+   The plan also binds the publisher namespace unit to exact `inactive/dead`
+   state with no generation, plus absence of its nsfs path, host veth and all
+   five activation sentinels. Validate that state before locking, after locking,
+   and as the final operation immediately before the Caddy stop. The namespace
+   ceremony uses the same lock, so the two reviewed mutators cannot overlap.
+   An active or raced namespace at this boundary rejects with no Caddy
+   stop/start/reload request. The lock owner is domain-separated as an Admin
+   UDS transaction; a publisher recovery cannot discard an Admin lock retained
+   for outcome-unknown review merely because its original process exited.
 2. Validate the deterministic candidates with the exact production Caddy
    binary, require the canonical adapted JSON's exact UDS `admin.listen`,
    privacy policy, digest and size, and run `systemd-analyze verify` on the
@@ -210,7 +220,8 @@ The approved transaction is:
 4. While stopped, replace the Caddyfile and unit with the two exact approved
    candidates and fsync both parent directories. Partial pairs are never
    started.
-5. Run `systemctl daemon-reload`, start the unit, and require a new
+5. Run `systemctl daemon-reload`, repeat the exact inactive/absent publisher
+   namespace proof as the final operation before the command, start the unit, and require a new
    `InvocationID` and active-enter timestamp. A systemd `InvocationID` is the
    exact nonzero 32-character lowercase hexadecimal value returned by
    `systemctl show`; it is not a hyphenated UUID. `restart` and warm `reload`
@@ -234,7 +245,10 @@ The approved transaction is:
 An exact rollback repeats the old effective-unit and canonical old-admin
 readback checks after the rollback start and again after the long site probes;
 restoring only the two disk files is not accepted as proof of restoring the old
-runtime state.
+runtime state. The rollback start has the same immediately-adjacent inactive
+publisher-namespace check; if that proof fails, the executor leaves Caddy
+stopped and reports outcome unknown rather than starting into an unapproved
+combined lifecycle.
 
 The checked-in gate validates this plan and an already-collected committed
 receipt. The separate

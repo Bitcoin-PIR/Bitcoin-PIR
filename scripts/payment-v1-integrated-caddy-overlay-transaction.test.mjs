@@ -988,6 +988,83 @@ test("transaction rejects an internally consistent namespace receipt from a diff
   assert.equal(ops.reloadCalls, 0);
 });
 
+function replacePublisherNetnsEvidence(plan, ops, { mutatePlan, mutateReceipt }) {
+  const ceremonyPlan = JSON.parse(testPublisherNetnsPlanBytes(plan).toString("utf8"));
+  const ceremonyReceipt = JSON.parse(testPublisherNetnsReceiptBytes(plan).toString("utf8"));
+  mutatePlan?.(ceremonyPlan);
+  mutateReceipt?.(ceremonyReceipt);
+  const planBytes = Buffer.from(canonicalJson(ceremonyPlan), "utf8");
+  const planSha256 = testSha256(planBytes);
+  if (mutatePlan !== undefined) ceremonyReceipt.approved_plan_sha256 = planSha256;
+  const receiptBytes = Buffer.from(canonicalJson(ceremonyReceipt), "utf8");
+  const summary = plan.target.publisher_netns_ceremony;
+  summary.approved_plan_sha256 = planSha256;
+  summary.plan.sha256 = planSha256;
+  summary.plan.size = String(planBytes.length);
+  summary.receipt.sha256 = testSha256(receiptBytes);
+  summary.receipt.size = String(receiptBytes.length);
+  ops.files.set(summary.plan.path, { bytes: planBytes, snapshot: clone(summary.plan) });
+  ops.files.set(summary.receipt.path, {
+    bytes: receiptBytes,
+    snapshot: clone(summary.receipt),
+  });
+}
+
+for (const [label, mutation] of [
+  ["host manager field", {
+    mutatePlan: (value) => { value.host.systemd_manager_generation.pid1_start_ticks = "0"; },
+  }],
+  ["inactive Caddy preimage field", {
+    mutatePlan: (value) => { value.caddy_preimage.unit.active_state = "inactive"; },
+  }],
+  ["activation approval field", {
+    mutateReceipt: (value) => { value.activation_approval_sha256 = "A".repeat(64); },
+  }],
+  ["firewall pin field", {
+    mutatePlan: (value) => { value.firewall_evidence.mode = "0444"; },
+  }],
+  ["installed-file field", {
+    mutatePlan: (value) => { value.installed_files[1].pin.nlink = 2; },
+  }],
+  ["runtime field", {
+    mutatePlan: (value) => { value.runtime.schema_validator.path = "/tmp/unreviewed.mjs"; },
+  }],
+  ["static ELF proof field", {
+    mutatePlan: (value) => { value.launcher_static_elf.pt_interp = true; },
+  }],
+  ["loaded-unit field", {
+    mutatePlan: (value) => { value.preimage.loaded_netns_unit.service.memory_max = "infinity"; },
+  }],
+  ["sentinel field", {
+    mutatePlan: (value) => { value.activation_sentinels[0].mode = "0444"; },
+  }],
+  ["active namespace unit field", {
+    mutateReceipt: (value) => { value.netns_unit.main_pid = "0"; },
+  }],
+  ["inactive publisher unit field", {
+    mutateReceipt: (value) => { value.publisher_unit.active_state = "active"; },
+  }],
+  ["runtime topology field", {
+    mutateReceipt: (value) => { value.topology.routes.client_main[0].gateway = "10.203.0.1"; },
+  }],
+]) {
+  test(`shared schema-v2 validator rejects publisher ${label} mutation before exchange`, async () => {
+    const plan = makeIntegratedOverlayTestPlan();
+    const ops = new MockOverlayOps(plan);
+    replacePublisherNetnsEvidence(plan, ops, mutation);
+    await assert.rejects(
+      executeOverlayTransaction({
+        approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+        ops,
+        plan,
+      }),
+      /publisher-netns-schema-v2/u,
+    );
+    assert.equal(ops.exchangeHistory.length, 0);
+    assert.equal(ops.reloadCalls, 0);
+  });
+}
+
 for (const [label, mutate, expected] of [
   [
     "schema-v1 publisher namespace receipt",

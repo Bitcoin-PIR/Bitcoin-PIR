@@ -48,6 +48,13 @@ import {
   validateCommittedReceipt as validateAdminUdsCommittedReceipt,
   validatePublisherNetnsDropInBytes,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
+import {
+  PUBLISHER_NETNS_CEREMONY_KIND,
+  PUBLISHER_NETNS_RECEIPT_KIND,
+  computePublisherNetnsPlanSha256V2,
+  validatePublisherNetnsPlanV2,
+  validatePublisherNetnsReceiptV2,
+} from "./payment-v1-publisher-netns-schema.mjs";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
@@ -57,10 +64,6 @@ const TARGET_UNIT = "bhtm-caddy.service";
 const SOURCE_FAIR_UNIT = "bitcoinpir-payment-v1-source-fair-edge.service";
 const PUBLISHER_NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
 const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
-const PUBLISHER_NETNS_CEREMONY_KIND =
-  "bitcoinpir-payment-v1-publisher-netns-ceremony-v1";
-const PUBLISHER_NETNS_RECEIPT_KIND =
-  "bitcoinpir-payment-v1-publisher-netns-receipt-v1";
 const RENAME_EXCHANGE_HELPER =
   "/opt/bitcoinpir/payment-v1-rename-exchange/@OVERLAY_EXCHANGE_SHA256@/payment-v1-rename-exchange";
 const RENAME_EXCHANGE_MANIFEST =
@@ -397,30 +400,10 @@ function assertPublisherNetnsCeremonyEvidence(
     receiptBytes,
     "publisher namespace ceremony receipt",
   );
-  if (sha256(Buffer.from(canonicalJson(ceremonyPlan), "utf8")) !== summary.approved_plan_sha256) {
+  validatePublisherNetnsPlanV2(ceremonyPlan);
+  if (computePublisherNetnsPlanSha256V2(ceremonyPlan) !== summary.approved_plan_sha256) {
     fail("publisher namespace ceremony plan does not equal its approved digest");
   }
-  exactKeys(
-    ceremonyPlan,
-    [
-      "activation_sentinels",
-      "caddy_preimage",
-      "ceremony_id",
-      "firewall_evidence",
-      "host",
-      "installed_files",
-      "kind",
-      "preimage",
-      "publisher_private_key_installed",
-      "relationship",
-      "runtime",
-      "schema_version",
-      "source_commit",
-      "topology",
-      "transaction",
-    ],
-    "publisher namespace ceremony plan",
-  );
   if (
     ceremonyPlan.schema_version !== summary.plan_schema_version ||
     ceremonyPlan.kind !== PUBLISHER_NETNS_CEREMONY_KIND ||
@@ -429,30 +412,11 @@ function assertPublisherNetnsCeremonyEvidence(
   ) {
     fail("publisher namespace ceremony plan identity or receipt path drifted");
   }
-  exactKeys(
+  validatePublisherNetnsReceiptV2({
+    approvedPlanSha256: summary.approved_plan_sha256,
+    plan: ceremonyPlan,
     receipt,
-    [
-      "activation_approval_sha256",
-      "approved_approval_sha256",
-      "approved_plan_sha256",
-      "caddy_after",
-      "caddy_before",
-      "ceremony_id",
-      "firewall_evidence_sha256",
-      "host",
-      "installed_files",
-      "kind",
-      "loaded_netns_unit",
-      "netns_unit",
-      "outcome",
-      "publisher_unit",
-      "runtime",
-      "schema_version",
-      "sentinels",
-      "topology",
-    ],
-    "publisher namespace ceremony receipt",
-  );
+  });
   if (
     receipt.schema_version !== summary.receipt_schema_version ||
     receipt.kind !== PUBLISHER_NETNS_RECEIPT_KIND ||

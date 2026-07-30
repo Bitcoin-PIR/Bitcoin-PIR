@@ -23,6 +23,11 @@ import {
   NODE_IMAGE_INDEX,
   PROFILE,
   PUBLISHER_NETNS_DROPIN_PATH,
+  PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_NAMESPACE_PATH,
+  PUBLISHER_NETNS_SENTINEL_PATHS,
+  PUBLISHER_NETNS_UNIT,
   SETPRIV_PATH,
   buildHardenedCaddyfile,
   buildHardenedUnit,
@@ -124,6 +129,134 @@ function generation(unitName, { canReload, pid }) {
   };
 }
 
+function publisherUnitState(name, active, { invocation = "0".repeat(32), pid = "0" } = {}) {
+  return {
+    active_enter_timestamp_monotonic: active ? "1500000" : "0",
+    active_state: active ? "active" : "inactive",
+    invocation_id: active ? invocation : "0".repeat(32),
+    load_state: "loaded",
+    main_pid: active ? pid : "0",
+    name,
+    need_daemon_reload: "no",
+    sub_state: active ? "running" : "dead",
+  };
+}
+
+function publisherLoadedNetnsUnit(installedFiles) {
+  const helper = installedFiles.find((entry) => entry.id === "helper-binary").pin.path;
+  return {
+    condition_paths: [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+      "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+    ],
+    condition_source: "exact-fragment-pin-plus-NeedDaemonReload=no",
+    dropin_paths: [],
+    exec: {
+      start: [{ argv: `${helper} run`, ignore_errors: "no", path: helper }],
+      start_pre: [
+        { argv: `/usr/bin/test -x ${helper}`, ignore_errors: "no", path: "/usr/bin/test" },
+        {
+          argv: "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+          ignore_errors: "no",
+          path: "/usr/bin/sha256sum",
+        },
+        { argv: `${helper} self-test`, ignore_errors: "no", path: helper },
+      ],
+      stop_post: [{ argv: `${helper} cleanup`, ignore_errors: "no", path: helper }],
+    },
+    fragment_path: "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    need_daemon_reload: "no",
+    relationships: {
+      after: ["basic.target", "local-fs.target"],
+      before: ["bhtm-caddy.service", "bitcoinpir-payment-v1-source-fair-edge.service"],
+      binds_to: [],
+      part_of: ["bhtm-caddy.service"],
+      requires: [],
+      wants: [],
+    },
+    service: {
+      ambient_capabilities: [],
+      capability_bounding_set: ["CAP_NET_ADMIN", "CAP_SYS_ADMIN"],
+      group: "root",
+      kill_mode: "control-group",
+      limit_core: "0",
+      lock_personality: "yes",
+      memory_deny_write_execute: "yes",
+      memory_max: "67108864",
+      memory_swap_max: "0",
+      no_new_privileges: "yes",
+      notify_access: "main",
+      restart: "no",
+      restrict_address_families: ["AF_NETLINK", "AF_UNIX"],
+      restrict_namespaces: "net",
+      restrict_realtime: "yes",
+      restrict_suid_sgid: "yes",
+      standard_error: "null",
+      standard_output: "null",
+      state_directory: ["bitcoinpir-publisher-netns"],
+      state_directory_mode: "0700",
+      system_call_architectures: ["native"],
+      tasks_max: "8",
+      timeout_start_usec: "30s",
+      timeout_stop_usec: "30s",
+      type: "notify",
+      umask: "0077",
+      user: "root",
+      working_directory: "/var/lib/bitcoinpir-publisher-netns",
+    },
+  };
+}
+
+function publisherRuntimeTopology(plan) {
+  return {
+    client: {
+      address: plan.topology.client_address,
+      alias: "bitcoinpir-payment-v1-publisher-netns:0123456789abcdef0123456789abcdef:client",
+      index: 52,
+      interface: plan.topology.client_interface,
+      mac: "02:11:22:33:44:55",
+      peer_index: 51,
+      prefix_length: plan.topology.prefix_length,
+      up: true,
+    },
+    forwarding_sysctls: {
+      "net.ipv4.ip_forward": 0,
+      "net.ipv6.conf.all.forwarding": 0,
+    },
+    host: {
+      address: plan.topology.host_address,
+      alias: "bitcoinpir-payment-v1-publisher-netns:0123456789abcdef0123456789abcdef:host",
+      index: 51,
+      interface: plan.topology.host_interface,
+      mac: "02:aa:bb:cc:dd:ee",
+      peer_index: 52,
+      prefix_length: plan.topology.prefix_length,
+      up: true,
+    },
+    namespace: {
+      device: "13",
+      inert_interfaces: [],
+      inode: "9001",
+      interface_names: ["bpir-pub-c", "lo"],
+      loopback: {
+        addresses: [{ family: "inet", local: "127.0.0.1", prefix_length: 8 }],
+        alias: "",
+        index: 1,
+        up: true,
+      },
+      path: plan.topology.namespace_path,
+      type: "nsfs",
+    },
+    routes: {
+      client_main: [{ default: false, destination: "10.203.0.0/30", gateway: null, nat: false }],
+      host_main: [{ default: false, destination: "10.203.0.0/30", gateway: null, nat: false }],
+    },
+  };
+}
+
 export function testCaddyEffectiveUnit(plan) {
   const binary = plan.target.binary.path;
   return {
@@ -208,6 +341,23 @@ function stoppedHardeningGeneration() {
     main_pid: "0",
     sub_state: "dead",
     unit_name: "bhtm-caddy.service",
+  };
+}
+
+function inactivePublisherNetnsPreimage() {
+  return {
+    activation_sentinels_absent: [...PUBLISHER_NETNS_SENTINEL_PATHS],
+    host_interface_absent: PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    namespace_path_absent: PUBLISHER_NETNS_NAMESPACE_PATH,
+    unit_generation: {
+      active_enter_timestamp_monotonic: "0",
+      active_state: "inactive",
+      control_group: `/system.slice/${PUBLISHER_NETNS_UNIT}`,
+      invocation_id: "",
+      main_pid: "0",
+      sub_state: "dead",
+      unit_name: PUBLISHER_NETNS_UNIT,
+    },
   };
 }
 
@@ -307,6 +457,7 @@ export function makeHardeningEvidence(targetGeneration) {
       "0644",
       { size: String(PUBLISHER_NETNS_DROPIN.length), inode: "52009" },
     ),
+    publisher_netns_preimage: inactivePublisherNetnsPreimage(),
     runtime: {
       executor: testPin(EXECUTOR_PATH, "b".repeat(64), "0555", {
         inode: "52008",
@@ -366,7 +517,7 @@ export function makeHardeningEvidence(targetGeneration) {
       },
       daemon_reload_argv: ["/usr/bin/systemctl", "daemon-reload"],
       installation_mode: "service-stopped-two-exact-rename-replacements-with-parent-fsync",
-      lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+      lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
       new_invocation_required: true,
       outcome_unknown_conditions: [
         "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
@@ -615,63 +766,157 @@ export function makeIntegratedOverlayTestPlan() {
     `/var/lib/bitcoinpir/payment-v1/publisher-netns/plans/${publisherNetnsCeremonyId}.json`;
   const publisherNetnsReceiptPath =
     `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${publisherNetnsCeremonyId}.json`;
-  const publisherNetnsTopology = {
-    namespace: {
-      device: "13",
-      inode: "9001",
-      path: "/run/netns/bpir-directory-publisher",
-      type: "nsfs",
-    },
+  const publisherTopologyPlan = {
+    address_family: "ipv4",
+    client_address: "10.203.0.2",
+    client_interface: "bpir-pub-c",
+    default_route: false,
+    forwarding: false,
+    host_address: "10.203.0.1",
+    host_interface: "bpir-pub-h",
+    host_port: 443,
+    hosts_path: "/etc/netns/bpir-directory-publisher/hosts",
+    namespace_name: "bpir-directory-publisher",
+    namespace_path: "/run/netns/bpir-directory-publisher",
+    nat: false,
+    prefix_length: 30,
+    publisher_hostname: placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST,
   };
+  const helperSha256 = testSha256("publisher-netns-helper");
+  const installedFiles = [
+    ["caddy-netns-dropin", PUBLISHER_NETNS_DROPIN_PATH, hardeningEvidence.plan.publisher_netns_dropin.sha256, "0644"],
+    ["directory-publisher-unit", "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service", "1".repeat(64), "0644"],
+    ["helper-binary", `/opt/bitcoinpir/publisher-netns/${helperSha256}/payment-v1-publisher-netns`, helperSha256, "0555"],
+    ["helper-manifest", "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256", "2".repeat(64), "0444"],
+    ["netns-hosts", publisherTopologyPlan.hosts_path, "3".repeat(64), "0444"],
+    ["netns-nsswitch", "/etc/netns/bpir-directory-publisher/nsswitch.conf", "4".repeat(64), "0444"],
+    ["netns-resolv", "/etc/netns/bpir-directory-publisher/resolv.conf", "5".repeat(64), "0444"],
+    ["network-inputs-manifest", "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256", "6".repeat(64), "0444"],
+    ["network-policy", "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json", "7".repeat(64), "0444"],
+    ["publisher-netns-unit", "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service", "8".repeat(64), "0644"],
+  ].map(([id, path, digest, mode], index) => ({
+    id,
+    pin: id === "caddy-netns-dropin"
+      ? { ...hardeningEvidence.plan.publisher_netns_dropin }
+      : testPin(path, digest, mode, { inode: String(42100 + index) }),
+  }));
+  const launcherSha256 = "a".repeat(64);
+  const publisherRuntime = {
+    executor: testPin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs",
+      "b".repeat(64), "0555", { inode: "42201" },
+    ),
+    integrated_caddy_gate: testPin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "c".repeat(64), "0555", { inode: "42202" },
+    ),
+    ip: testPin("/usr/bin/ip", "d".repeat(64), "0755", { inode: "42203" }),
+    launcher: testPin(
+      `/opt/bitcoinpir/publisher-netns-launcher/${launcherSha256}/payment-v1-publisher-netns-launcher`,
+      launcherSha256, "0555", { inode: "42204" },
+    ),
+    launcher_manifest: testPin(
+      "/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256",
+      "e".repeat(64), "0444", { inode: "42205" },
+    ),
+    node: testPin("/usr/bin/node", "f".repeat(64), "0755", { inode: "42206" }),
+    publisher_netns_gate: testPin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs",
+      "0".repeat(64), "0555", { inode: "42207" },
+    ),
+    schema_validator: testPin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+      "1".repeat(64), "0555", { inode: "42208" },
+    ),
+    systemctl: testPin("/usr/bin/systemctl", "2".repeat(64), "0755", { inode: "42209" }),
+  };
+  const activationSentinels = [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+  ].map((path, index) => testPin(path, String(index + 3).repeat(64), "0400", {
+    inode: String(42300 + index),
+  }));
   const publisherNetnsPlan = {
-    activation_sentinels: [],
+    activation_sentinels: activationSentinels,
     caddy_preimage: publisherCeremonyCaddyState,
     ceremony_id: publisherNetnsCeremonyId,
-    firewall_evidence: {},
+    firewall_evidence: testPin(
+      "/var/lib/bitcoinpir/payment-v1/publisher-netns/evidence/firewall.json",
+      "9".repeat(64), "0400", { inode: "42400" },
+    ),
     host: {
       boot_id: "22345678-1234-4234-9234-123456789abc",
       machine_id_sha256: "9".repeat(64),
-      systemd_version: "systemd 255 (fixture)",
+      systemd_manager_generation: {
+        generators_finish_timestamp_monotonic: "1002",
+        generators_start_timestamp_monotonic: "1001",
+        pid1_exe_device: "2049",
+        pid1_exe_inode: "501",
+        pid1_exe_path: "/usr/lib/systemd/systemd",
+        pid1_start_ticks: "100",
+        units_load_finish_timestamp_monotonic: "1004",
+        units_load_start_timestamp_monotonic: "1003",
+      },
+      systemd_version: "systemd 255 (255.4-1ubuntu8.10)",
     },
-    installed_files: [{
-      id: "caddy-netns-dropin",
-      pin: hardeningEvidence.plan.publisher_netns_dropin,
-    }],
+    installed_files: installedFiles,
     kind: "bitcoinpir-payment-v1-publisher-netns-ceremony-v1",
-    preimage: {},
+    launcher_static_elf: {
+      byte_order: "little-endian",
+      elf_class: "ELF64",
+      machine: "EM_X86_64",
+      object_type: "ET_EXEC",
+      program_header_count: 10,
+      pt_dynamic: false,
+      pt_interp: false,
+      sha256: launcherSha256,
+    },
+    preimage: {
+      host_interface: "absent",
+      loaded_netns_unit: publisherLoadedNetnsUnit(installedFiles),
+      namespace_path: "absent",
+      netns_unit: publisherUnitState("bitcoinpir-payment-v1-publisher-netns.service", false),
+      publisher_unit: publisherUnitState("bitcoinpir-payment-v1-directory-publisher.service", false),
+    },
     publisher_private_key_installed: false,
-    relationship: {},
-    runtime: {},
+    relationship: {
+      caddy_dependency: "Wants+After",
+      integrated_profile: "integrated-existing-bhtm-caddy-v1",
+      network_before_caddy: true,
+      publisher_requires_namespace: true,
+      receipt_generation_scope: "exact-boot-and-systemd-generation",
+      reboot_recreation: "caddy-wants-after-persistent-sentinels",
+      reverse_stop_propagation: false,
+    },
+    runtime: publisherRuntime,
     schema_version: 2,
     source_commit: "8".repeat(40),
-    topology: {},
-    transaction: { receipt_path: publisherNetnsReceiptPath },
+    topology: publisherTopologyPlan,
+    transaction: {
+      lock_path: "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
+      receipt_path: publisherNetnsReceiptPath,
+      rollback_receipt_path:
+        `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${publisherNetnsCeremonyId}.rollback.json`,
+      state_directory:
+        `/var/lib/bitcoinpir/payment-v1/publisher-netns/transactions/${publisherNetnsCeremonyId}`,
+    },
   };
   const publisherNetnsPlanBytes = Buffer.from(
     canonicalJson(publisherNetnsPlan),
     "utf8",
   );
   const publisherNetnsPlanSha256 = testSha256(publisherNetnsPlanBytes);
-  const publisherNetnsUnit = {
-    active_enter_timestamp_monotonic: "1500000",
-    active_state: "active",
-    invocation_id: "a".repeat(32),
-    load_state: "loaded",
-    main_pid: "5151",
-    name: "bitcoinpir-payment-v1-publisher-netns.service",
-    need_daemon_reload: "no",
-    sub_state: "running",
-  };
-  const publisherUnit = {
-    active_enter_timestamp_monotonic: "0",
-    active_state: "inactive",
-    invocation_id: "0".repeat(32),
-    load_state: "loaded",
-    main_pid: "0",
-    name: "bitcoinpir-payment-v1-directory-publisher.service",
-    need_daemon_reload: "no",
-    sub_state: "dead",
-  };
+  const publisherNetnsUnit = publisherUnitState(
+    "bitcoinpir-payment-v1-publisher-netns.service", true,
+    { invocation: "a".repeat(32), pid: "5151" },
+  );
+  const publisherUnit = publisherUnitState(
+    "bitcoinpir-payment-v1-directory-publisher.service", false,
+  );
+  const publisherNetnsTopology = publisherRuntimeTopology(publisherNetnsPlan);
   const publisherNetnsReceipt = {
     activation_approval_sha256: "1".repeat(64),
     approved_approval_sha256: "2".repeat(64),
@@ -679,17 +924,17 @@ export function makeIntegratedOverlayTestPlan() {
     caddy_after: publisherCeremonyCaddyState,
     caddy_before: publisherCeremonyCaddyState,
     ceremony_id: publisherNetnsCeremonyId,
-    firewall_evidence_sha256: "3".repeat(64),
+    firewall_evidence_sha256: publisherNetnsPlan.firewall_evidence.sha256,
     host: publisherNetnsPlan.host,
-    installed_files: [hardeningEvidence.plan.publisher_netns_dropin],
+    installed_files: publisherNetnsPlan.installed_files.map((entry) => entry.pin),
     kind: "bitcoinpir-payment-v1-publisher-netns-receipt-v1",
-    loaded_netns_unit: {},
+    loaded_netns_unit: publisherNetnsPlan.preimage.loaded_netns_unit,
     netns_unit: publisherNetnsUnit,
     outcome: "committed",
     publisher_unit: publisherUnit,
-    runtime: {},
+    runtime: publisherNetnsPlan.runtime,
     schema_version: 2,
-    sentinels: [],
+    sentinels: publisherNetnsPlan.activation_sentinels,
     topology: publisherNetnsTopology,
   };
   const publisherNetnsReceiptBytes = Buffer.from(

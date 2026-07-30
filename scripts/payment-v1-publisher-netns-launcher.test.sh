@@ -14,13 +14,21 @@ manifest="/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256"
 executor="/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs"
 integrated_gate="/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs"
 publisher_gate="/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs"
+schema_validator="/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs"
 
-cc -std=c11 -O2 -static -Wall -Wextra -Werror "${launcher_source}" \
+cc -std=c11 -O2 -static -DBPIR_PUBLISHER_LAUNCHER_TEST_HOOKS \
+  -Wall -Wextra -Werror "${launcher_source}" \
   -o "${launcher_staging}"
 if ldd "${launcher_staging}" 2>&1 | grep -Ev 'not a dynamic executable|statically linked' >/dev/null; then
   echo "publisher launcher unexpectedly has a dynamic-loader dependency" >&2
   exit 1
 fi
+node --input-type=module --eval '
+  import { readFileSync } from "node:fs";
+  import { inspectStaticElfV1 } from "./scripts/payment-v1-publisher-netns-schema.mjs";
+  const evidence = inspectStaticElfV1(readFileSync(process.argv[1]));
+  if (evidence.pt_dynamic || evidence.pt_interp || evidence.sha256.length !== 64) process.exit(1);
+' "${launcher_staging}"
 launcher_sha256="$(sha256sum "${launcher_staging}" | cut -d' ' -f1)"
 launcher="/opt/bitcoinpir/publisher-netns-launcher/${launcher_sha256}/payment-v1-publisher-netns-launcher"
 install -d -m 0755 "$(dirname "${launcher}")"
@@ -31,13 +39,18 @@ if [[ ! -x /usr/bin/node ]]; then
 fi
 printf '%s\n' 'export const integrated = "integrated";' >"${integrated_gate}"
 printf '%s\n' 'export const publisher = "publisher";' >"${publisher_gate}"
+printf '%s\n' 'export const schema = "schema-v2";' >"${schema_validator}"
+# shellcheck disable=SC2016 # JavaScript template literal must remain shell-literal.
 printf '%s\n' \
   'import { integrated } from "./payment-v1-integrated-caddy-overlay-gate.mjs";' \
   'import { publisher } from "./payment-v1-publisher-netns-gate.mjs";' \
-  'if (integrated !== "integrated" || publisher !== "publisher") throw new Error("gate drift");' \
+  'import { schema } from "./payment-v1-publisher-netns-schema.mjs";' \
+  'import { existsSync } from "node:fs";' \
+  'if (integrated !== "integrated" || publisher !== "publisher" || schema !== "schema-v2") throw new Error("gate drift");' \
+  'if (existsSync("/proc/self/fd/57")) throw new Error("unreviewed inherited fd");' \
   'process.stdout.write(`launcher-ok:${process.argv.slice(2).join(":")}\n`);' \
   >"${executor}"
-chmod 0555 "${integrated_gate}" "${publisher_gate}" "${executor}"
+chmod 0555 "${integrated_gate}" "${publisher_gate}" "${schema_validator}" "${executor}"
 
 write_manifest() {
   {
@@ -45,15 +58,63 @@ write_manifest() {
     sha256sum "${integrated_gate}"
     sha256sum "${executor}"
     sha256sum "${publisher_gate}"
+    sha256sum "${schema_validator}"
   } >"${manifest}"
   chmod 0444 "${manifest}"
 }
 
 write_manifest
 manifest_sha256="$(sha256sum "${manifest}" | cut -d' ' -f1)"
-output="$("${launcher}" --approved-launcher-sha256 "${launcher_sha256}" \
-  --approved-manifest-sha256 "${manifest_sha256}" -- validate-plan --fixture ok)"
+output="$({ "${launcher}" --approved-launcher-sha256 "${launcher_sha256}" \
+  --approved-manifest-sha256 "${manifest_sha256}" -- validate-plan --fixture ok; \
+  } 57>/tmp/unreviewed-inherited-fd)"
 [[ "${output}" == "launcher-ok:validate-plan:--fixture:ok" ]]
+
+pause_directory="$(mktemp -d /tmp/payment-v1-launcher-pause.XXXXXX)"
+BPIR_LAUNCHER_TEST_PAUSE_DIRECTORY="${pause_directory}" \
+  "${launcher}" --approved-launcher-sha256 "${launcher_sha256}" \
+  --approved-manifest-sha256 "${manifest_sha256}" -- descriptor-race \
+  > /tmp/launcher-race.out 2>/tmp/launcher-race.err &
+race_pid="$!"
+for _ in $(seq 1 500); do
+  [[ -e "${pause_directory}/ready" ]] && break
+  kill -0 "${race_pid}" 2>/dev/null || { wait "${race_pid}"; exit 1; }
+  sleep 0.01
+done
+[[ -e "${pause_directory}/ready" ]]
+printf '%s\n' \
+  'import { writeFileSync } from "node:fs";' \
+  'writeFileSync("/tmp/atomic-entrypoint-replacement-executed", "bad\n");' \
+  > /tmp/replacement-executor.mjs
+printf '%s\n' \
+  'import { writeFileSync } from "node:fs";' \
+  'writeFileSync("/tmp/atomic-import-replacement-executed", "bad\n");' \
+  'export const integrated = "bad";' \
+  > /tmp/replacement-integrated.mjs
+chmod 0555 /tmp/replacement-executor.mjs /tmp/replacement-integrated.mjs
+mv -f /tmp/replacement-executor.mjs "${executor}"
+mv -f /tmp/replacement-integrated.mjs "${integrated_gate}"
+touch "${pause_directory}/continue"
+wait "${race_pid}"
+grep -Fx "launcher-ok:descriptor-race" /tmp/launcher-race.out >/dev/null
+[[ ! -e /tmp/atomic-entrypoint-replacement-executed ]]
+[[ ! -e /tmp/atomic-import-replacement-executed ]]
+rm -rf -- "${pause_directory}"
+
+printf '%s\n' 'export const integrated = "integrated";' >"${integrated_gate}"
+# shellcheck disable=SC2016 # JavaScript template literal must remain shell-literal.
+printf '%s\n' \
+  'import { integrated } from "./payment-v1-integrated-caddy-overlay-gate.mjs";' \
+  'import { publisher } from "./payment-v1-publisher-netns-gate.mjs";' \
+  'import { schema } from "./payment-v1-publisher-netns-schema.mjs";' \
+  'import { existsSync } from "node:fs";' \
+  'if (integrated !== "integrated" || publisher !== "publisher" || schema !== "schema-v2") throw new Error("gate drift");' \
+  'if (existsSync("/proc/self/fd/57")) throw new Error("unreviewed inherited fd");' \
+  'process.stdout.write(`launcher-ok:${process.argv.slice(2).join(":")}\n`);' \
+  >"${executor}"
+chmod 0555 "${integrated_gate}" "${executor}"
+write_manifest
+manifest_sha256="$(sha256sum "${manifest}" | cut -d' ' -f1)"
 
 printf '%s\n' \
   'import { writeFileSync } from "node:fs";' \

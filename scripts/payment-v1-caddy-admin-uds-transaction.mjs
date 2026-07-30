@@ -39,6 +39,10 @@ import {
   EXECUTOR_PATH,
   PROFILE,
   PUBLISHER_NETNS_DROPIN_PATH,
+  PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_NAMESPACE_PATH,
+  PUBLISHER_NETNS_SENTINEL_PATHS,
   PUBLISHER_NETNS_UNIT,
   SETPRIV_PATH,
   TARGET_CONFIG,
@@ -56,6 +60,7 @@ import {
   validateCommittedReceipt,
   validatePlan,
   validatePublisherNetnsDropInBytes,
+  validatePublisherNetnsPreimage,
   validatePreimageAdaptedJson,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
@@ -108,6 +113,15 @@ function exactKeys(value, expected, label) {
 
 function same(left, right) {
   return canonicalJson(left) === canonicalJson(right);
+}
+
+async function assertPublisherNetnsInactivePreimage(plan, ops, label) {
+  const observed = await ops.publisherNetnsPreimage();
+  validatePublisherNetnsPreimage(observed, `${label} publisher namespace preimage`);
+  if (!same(observed, plan.publisher_netns_preimage)) {
+    fail(`${label} publisher namespace preimage drifted from the exact inactive plan binding`);
+  }
+  return observed;
 }
 
 function validateHex64(value, label) {
@@ -786,6 +800,7 @@ async function validatePreflight({ approvedPlanSha256, inventory, ops, plan }) {
       `kernel.core_pattern must already equal ${REQUIRED_CORE_PATTERN}; this executor never changes it`,
     );
   }
+  await assertPublisherNetnsInactivePreimage(plan, ops, "preflight");
   validateSiteInventory({ bytes: inventory.bytes, plan });
 }
 
@@ -871,6 +886,11 @@ async function rollbackStoppedFailure({
         transaction_id: plan.transaction_id,
       }), "utf8"),
       STATE_MODE,
+    );
+    await assertPublisherNetnsInactivePreimage(
+      plan,
+      ops,
+      "immediate pre-rollback-start",
     );
     rollbackStartRequested = true;
     const start = await ops.run(plan.transaction.start_argv, { label: "rollback start" });
@@ -1302,6 +1322,7 @@ export async function executeCaddyAdminUdsTransaction({
     }
     const finalAdmin = await ops.probeLegacyAdmin();
     assertLegacyAdmin(finalAdmin, beforeAdmin, "immediate pre-stop old admin");
+    await assertPublisherNetnsInactivePreimage(plan, ops, "immediate pre-stop");
 
     stopRequested = true;
     const stop = await ops.run(plan.transaction.stop_argv, { label: "cold stop" });
@@ -1367,6 +1388,7 @@ export async function executeCaddyAdminUdsTransaction({
       }), "utf8"),
       STATE_MODE,
     );
+    await assertPublisherNetnsInactivePreimage(plan, ops, "immediate pre-candidate-start");
     startRequested = true;
     const start = await ops.run(plan.transaction.start_argv, { label: "candidate start" });
     if (start.status !== 0) fail("candidate start command returned nonzero");
@@ -2090,6 +2112,43 @@ function realUnitGeneration(unitName) {
   };
 }
 
+function assertFilesystemPathAbsent(path, label) {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  fail(`${label} exists at ${path}`);
+}
+
+function realPublisherNetnsPreimage() {
+  const generationBefore = realUnitGeneration(PUBLISHER_NETNS_UNIT);
+  const before = {
+    activation_sentinels_absent: [...PUBLISHER_NETNS_SENTINEL_PATHS],
+    host_interface_absent: PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    namespace_path_absent: PUBLISHER_NETNS_NAMESPACE_PATH,
+    unit_generation: generationBefore,
+  };
+  validatePublisherNetnsPreimage(before, "observed publisher namespace preimage");
+  assertFilesystemPathAbsent(
+    PUBLISHER_NETNS_NAMESPACE_PATH,
+    "publisher namespace path",
+  );
+  assertFilesystemPathAbsent(
+    PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    "publisher namespace host veth",
+  );
+  for (const path of PUBLISHER_NETNS_SENTINEL_PATHS) {
+    assertFilesystemPathAbsent(path, "publisher activation sentinel");
+  }
+  const generationAfter = realUnitGeneration(PUBLISHER_NETNS_UNIT);
+  if (!same(generationAfter, generationBefore)) {
+    fail("publisher namespace unit generation changed while proving inactive absence");
+  }
+  return before;
+}
+
 function splitSystemdWords(value, label) {
   if (value === "") return [];
   if (!/^[A-Za-z0-9_./:@+-]+(?:[\t ]+[A-Za-z0-9_./:@+-]+)*$/u.test(value)) {
@@ -2794,12 +2853,12 @@ function lockOwner(transactionId) {
     boot_id: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
     pid: process.pid,
     process_start_ticks: processStartTicks(process.pid),
-    transaction_id: transactionId,
+    transaction_id: `bhtm-caddy-admin-uds:${transactionId}`,
   };
 }
 
 function realAcquireLock(path, { transactionId }) {
-  if (path !== "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock") {
+  if (path !== PUBLISHER_NETNS_LIFECYCLE_LOCK) {
     fail("transaction lock path is not reviewed");
   }
   const parentPath = dirname(path);
@@ -2952,6 +3011,7 @@ export function linuxCaddyAdminUdsOps() {
     probeAdminApi: async (options) => realPinnedAdminProbe(options),
     probeLegacyAdmin: legacyAdminProbe,
     probeTcpAdmin: realTcpAdminProbes,
+    publisherNetnsPreimage: async () => realPublisherNetnsPreimage(),
     publishReceipt: async (path, bytes, mode) => realPublishExclusive(path, bytes, mode),
     publishState: async (directory, name, bytes, mode) => realPublishState(directory, name, bytes, mode),
     readAdminRuntimePath: async (path) => realAdminRuntimePath(path),
