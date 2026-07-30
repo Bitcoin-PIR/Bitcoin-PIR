@@ -591,7 +591,8 @@ function makePublisherNetnsFixture(t) {
       target_path: targetForSource.get(sourcePath),
       uid: 0,
     })),
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{
       gid: 742,
       group_name: "bitcoinpir-directory-publisher",

@@ -89,6 +89,10 @@ const TEMPLATE_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-deployment-template-gate.mjs",
 );
+const PUBLISHER_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-publisher-netns-gate.mjs",
+);
 const UINT64_MAX_DECIMAL = "18446744073709551615";
 assert.equal(
   REVIEWED_SYSTEMD_VERSION,
@@ -878,8 +882,9 @@ test("runtime collector reads credentials only from the systemd Service interfac
   assert.doesNotMatch(collector, /systemctl/);
 });
 
-test("runtime evidence release keeps the exact three-script and builtin import closure", () => {
+test("runtime evidence release keeps the exact four-script and builtin import closure", () => {
   assertReviewedModuleClosure(readFileSync(COLLECTOR, "utf8"), [
+    "./payment-v1-publisher-netns-gate.mjs",
     "./payment-v1-rendered-artifact-gate.mjs",
     "node:child_process",
     "node:crypto",
@@ -890,6 +895,7 @@ test("runtime evidence release keeps the exact three-script and builtin import c
   ], COLLECTOR);
   assertReviewedModuleClosure(readFileSync(RENDERED_GATE, "utf8"), [
     "./payment-v1-deployment-template-gate.mjs",
+    "./payment-v1-publisher-netns-gate.mjs",
     "node:crypto",
     "node:fs",
     "node:net",
@@ -897,11 +903,18 @@ test("runtime evidence release keeps the exact three-script and builtin import c
     "node:url",
   ], RENDERED_GATE);
   assertReviewedModuleClosure(readFileSync(TEMPLATE_GATE, "utf8"), [
+    "./payment-v1-publisher-netns-gate.mjs",
     "node:crypto",
     "node:fs",
     "node:path",
     "node:url",
   ], TEMPLATE_GATE);
+  assertReviewedModuleClosure(readFileSync(PUBLISHER_GATE, "utf8"), [
+    "node:crypto",
+    "node:fs",
+    "node:path",
+    "node:url",
+  ], PUBLISHER_GATE);
 });
 
 test("runtime evidence release rejects alternate JavaScript module loaders", () => {
@@ -1289,7 +1302,7 @@ function fixture() {
     UMask: "0077",
     UnsetEnvironment: "",
     User: "bitcoinpir-test",
-    WatchdogUSec: "infinity",
+    WatchdogUSec: "0",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -2322,12 +2335,15 @@ function publisherNetworkFixture() {
     ConditionResult: "yes",
     ControlGroup: ownerControlGroup,
     DropInPaths: "",
-    ExecStart: execValue(`${helperPath} run`),
+    ExecStart: execValue(`${helperPath} run`, { pid: "4402", state: "running" }),
     ExecStartPre: [
       `/usr/bin/test -x ${helperPath}`,
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
       `${helperPath} self-test`,
-    ].map(execValue).join(" ; "),
+    ].map((command, index) => execValue(command, {
+      pid: String(4390 + index),
+      state: "completed",
+    })).join("\n"),
     ExecStopPost: execValue(`${helperPath} cleanup`),
     FragmentPath:
       "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
@@ -2720,7 +2736,10 @@ test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way C
       for (const conditions of owner.condition_confirmations) conditions.pop();
     }), /effective Conditions drifted/u],
     ["rogue effective argv", (candidate) => mutatePublisherOwners(candidate, (owner) => {
-      owner.effective_properties.ExecStart = execValue("/usr/bin/false run");
+      owner.effective_properties.ExecStart = execValue(
+        "/usr/bin/false run",
+        { pid: "4402", state: "running" },
+      );
     }), /executable argv drifted/u],
     ["main active capability", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
       pass.main.capabilities.effective = "0000000000200000";
@@ -2948,7 +2967,7 @@ test("valid live evidence binds challenge, host, boot, files, NSS, units, and co
     .properties.WatchdogUSec = 18_446_744_073_709_552_000;
   assert.throws(
     () => validate(roundedWatchdogSentinel),
-    /typed watchdog is unreviewed/,
+    /canonical uint64|typed watchdog is unreviewed/,
   );
 
   const dynamicIdentity = fixture();

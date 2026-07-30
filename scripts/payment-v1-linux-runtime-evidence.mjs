@@ -6026,17 +6026,53 @@ function validatePublisherOwnerEffectiveProperties(properties, artifacts) {
     }
   }
   const helper = artifacts.helper_path;
+  const startRecords = parseSystemctlExecArgvV1(
+    properties.ExecStart,
+    "publisher namespace-owner ExecStart",
+  );
+  const preRecords = parseSystemctlExecArgvV1(
+    properties.ExecStartPre,
+    "publisher namespace-owner ExecStartPre",
+  );
+  const stopPostRecords = parseSystemctlExecArgvV1(
+    properties.ExecStopPost,
+    "publisher namespace-owner ExecStopPost",
+  );
+  validateSystemctlExecRuntimeMetadataV2(startRecords, {
+    active: true,
+    kind: "start",
+    label: "publisher namespace-owner ExecStart",
+    mainPid: properties.MainPID,
+  });
+  validateSystemctlExecRuntimeMetadataV2(preRecords, {
+    active: true,
+    kind: "pre",
+    label: "publisher namespace-owner ExecStartPre",
+    mainPid: properties.MainPID,
+  });
+  validateSystemctlExecRuntimeMetadataV2(stopPostRecords, {
+    active: false,
+    kind: "stop-post",
+    label: "publisher namespace-owner ExecStopPost",
+    mainPid: "0",
+  });
   if (
-    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStartPre, "publisher namespace-owner ExecStartPre")) !==
-      canonicalJson([
+    canonicalJson(effectiveExecPolicy(preRecords, "publisher namespace-owner ExecStartPre")) !==
+      canonicalJson(reviewedExecPolicy([
         `/usr/bin/test -x ${helper}`,
         "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
         `${helper} self-test`,
-      ]) ||
-    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStart, "publisher namespace-owner ExecStart")) !==
-      canonicalJson([`${helper} run`]) ||
-    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStopPost, "publisher namespace-owner ExecStopPost")) !==
-      canonicalJson([`${helper} cleanup`])
+      ], "publisher namespace-owner reviewed ExecStartPre")) ||
+    canonicalJson(effectiveExecPolicy(startRecords, "publisher namespace-owner ExecStart")) !==
+      canonicalJson(reviewedExecPolicy(
+        [`${helper} run`],
+        "publisher namespace-owner reviewed ExecStart",
+      )) ||
+    canonicalJson(effectiveExecPolicy(stopPostRecords, "publisher namespace-owner ExecStopPost")) !==
+      canonicalJson(reviewedExecPolicy(
+        [`${helper} cleanup`],
+        "publisher namespace-owner reviewed ExecStopPost",
+      ))
   ) {
     fail("publisher namespace-owner effective executable argv drifted from the pinned helper");
   }

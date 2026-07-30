@@ -1,8 +1,11 @@
 # Payment V1 private render-plan skeletons
 
-These files mirror schema version `1` and the closed profile catalog in
-`scripts/payment-v1-rendered-artifact-gate.mjs`. They are review aids, not
-ready-to-render examples.
+The main Payment V1 render-plan skeletons mirror schema version `2` and the
+closed profile catalog in `scripts/payment-v1-rendered-artifact-gate.mjs`.
+The Caddy site-inventory and directory-publisher namespace prerequisite inputs
+remain separate schema-version `1` catalogs; the publisher ceremony plan and
+approvals use schema version `2`. All files are review aids, not ready-to-render
+examples.
 
 Every skeleton is deliberately unusable:
 
