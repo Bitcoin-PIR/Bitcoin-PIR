@@ -80,6 +80,9 @@ initializing a blank store and calling it a switch.
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `directory-publisher-netns-v1.plan.json.example` | `directory-publisher-netns-v1` | One no-key publisher, one centralized relay, and a sealed route-less network namespace. |
+| `publisher-netns-ceremony-v1.plan.json.example` | source-closed activation ceremony | Exact installed/runtime/Caddy/firewall/sentinel preimages, fixed private topology and owner-only transaction paths for starting only the namespace unit. |
+| `publisher-netns-ceremony-v1.apply-approval.json.example` | short-lived apply authority | At-most-one-hour canonical plan/executor approval for starting only the exact namespace unit. |
+| `publisher-netns-ceremony-v1.rollback-approval.json.example` | separate rollback authority | At-most-one-hour plan/executor/committed-receipt approval for stopping only the exact namespace unit. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
 | `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Direct receipt, provider-local BAT and shared issuer, without Standard Cashu. |

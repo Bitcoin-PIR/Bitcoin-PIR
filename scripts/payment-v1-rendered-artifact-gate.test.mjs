@@ -501,7 +501,7 @@ function makePublisherNetnsFixture(t) {
   ]);
   const renderedNetworkTargets = new Map([
     [
-      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+      "/etc/netns/bpir-directory-publisher/hosts",
       "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
     ],
     [
@@ -509,11 +509,11 @@ function makePublisherNetnsFixture(t) {
       "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
     ],
     [
-      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf",
       "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
     ],
     [
-      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+      "/etc/netns/bpir-directory-publisher/resolv.conf",
       "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
     ],
   ]);
@@ -542,13 +542,13 @@ function makePublisherNetnsFixture(t) {
   ];
   const targetForSource = new Map([
     ["deploy/payment-v1/network/directory-publisher-hosts.conf.in",
-      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts"],
+      "/etc/netns/bpir-directory-publisher/hosts"],
     ["deploy/payment-v1/network/directory-publisher-network-policy.json.in",
       "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json"],
     ["deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
-      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf"],
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf"],
     ["deploy/payment-v1/network/directory-publisher-resolv.conf.in",
-      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf"],
+      "/etc/netns/bpir-directory-publisher/resolv.conf"],
     ["deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
       "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf"],
     ["deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",

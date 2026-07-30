@@ -1,0 +1,18 @@
+{
+  "acknowledgements": [
+    "only-the-exact-publisher-network-namespace-unit-will-be-stopped",
+    "rollback-is-forbidden-after-the-caddy-preimage-or-publisher-service-generation-changes",
+    "caddy-source-fair-publisher-and-payment-services-will-not-be-started-stopped-or-reloaded",
+    "installed-files-activation-sentinels-firewall-rules-and-signed-public-artifacts-will-not-be-removed"
+  ],
+  "approved_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC",
+  "approved_by": "INVALID_REPLACE_WITH_OPERATOR_OR_SIGNING_KEY_ID",
+  "ceremony_id": "invalid-replace-with-fresh-ceremony-id",
+  "committed_receipt_sha256": "INVALID_REPLACE_WITH_COMMITTED_RECEIPT_SHA256",
+  "decision": "approve-stop-exact-publisher-netns",
+  "executor_sha256": "INVALID_REPLACE_WITH_EXECUTOR_SHA256",
+  "expires_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC_WITHIN_ONE_HOUR",
+  "kind": "bitcoinpir-payment-v1-publisher-netns-rollback-approval-v1",
+  "plan_sha256": "INVALID_REPLACE_WITH_CANONICAL_PLAN_SHA256",
+  "schema_version": 1
+}

@@ -1,0 +1,17 @@
+{
+  "acknowledgements": [
+    "only-the-exact-publisher-network-namespace-unit-will-be-started",
+    "caddy-source-fair-publisher-and-payment-services-will-not-be-started-stopped-or-reloaded",
+    "no-activation-sentinel-firewall-rule-route-nat-forwarding-or-publication-will-be-created",
+    "the-directory-publisher-private-key-must-remain-off-host-and-only-frozen-signed-public-artifacts-may-be-published"
+  ],
+  "approved_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC",
+  "approved_by": "INVALID_REPLACE_WITH_OPERATOR_OR_SIGNING_KEY_ID",
+  "ceremony_id": "invalid-replace-with-fresh-ceremony-id",
+  "decision": "approve-start-exact-publisher-netns",
+  "executor_sha256": "INVALID_REPLACE_WITH_EXECUTOR_SHA256",
+  "expires_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC_WITHIN_ONE_HOUR",
+  "kind": "bitcoinpir-payment-v1-publisher-netns-apply-approval-v1",
+  "plan_sha256": "INVALID_REPLACE_WITH_CANONICAL_PLAN_SHA256",
+  "schema_version": 1
+}

@@ -304,6 +304,54 @@ created it. The activation ceremony must independently verify and run the
 collector bytes from the frozen commit; adding the collector script itself to
 the approved rendered manifest remains a defense-in-depth follow-up.
 
+### Same-host publisher namespace ceremony closure
+
+The fixed directory-publisher namespace now has a separate source-closed
+activation boundary rather than relying on an operator to run `systemctl` from
+the render documentation. Its canonical plan binds the exact installed helper,
+units, one-way Caddy drop-in, files-only NSS inputs, policy/manifests, five
+external sentinels, canonical UFW/nft evidence, Caddyfile and active Caddy
+generation, exact loaded one-way Caddy dependency with no pending daemon
+reload, inactive publisher/netns preimages with no pending daemon reload,
+current boot/machine/systemd
+identity, fixed `10.203.0.0/30` topology and regular Node/systemctl/ip command
+inodes. The executor's only two local imports are separately pinned as exact
+root-owned sibling gate modules and revalidated across the mutation.
+`/usr/sbin/ip` is rejected because reviewed Ubuntu/Debian exposes it as
+a symlink; the executor pins and invokes `/usr/bin/ip` by file descriptor.
+
+Apply and rollback authorities are distinct canonical documents, each valid no
+longer than one hour. Apply starts only the namespace unit. Rollback additionally
+binds the exact committed receipt and stops only that unit. Neither operation
+creates a sentinel/rule/route, changes or reloads Caddy, starts the publisher,
+publishes Nostr events or handles the offline signing key. Receipts and phase
+state use owner-only no-replace pending/link/fsync publication with exact
+recovery for both durable crash windows. Lost-start recovery requires the
+durable start intent and records both its original approval digest and the fresh
+terminalization approval; an unknown active namespace is never adopted.
+Lost-stop recovery is symmetric: it requires the exact receipt-bound durable
+stop intent, records both the original stop authorization and fresh
+terminalization approval, and never adopts an externally stopped namespace.
+
+Runtime closure checks the nsfs inode, transaction-specific host/client aliases,
+random locally administered MACs, cross-linked ifindices, exact loopback and
+client addresses, only the connected route, both forwarding sysctls and the
+same closed inert kernel-fallback tunnel subset monitored by the native helper.
+Any fallback device that is up, addressed, aliased or the wrong kind fails.
+Real arm64 Linux tests execute descriptor-pinned iproute2 inside a namespace,
+exercise pending/final crash recovery and pass the helper's injected setup,
+monitor and exact-cleanup failures.
+
+Residual blockers remain explicit. The receipt is one-boot/one-generation
+evidence; a reboot may recreate the namespace through persistent sentinels and
+Caddy `Wants+After`, but requires fresh runtime evidence. The narrow rollback
+is unavailable after Caddy/boot generation drift and cannot replace the cold
+incident procedure. Point-in-time firewall JSON is not the still-missing
+publication-interval firewall-generation guard. Target installation, exact
+pins, remote mutation/start approval, private SNI/SAN, integrated-Caddy receipt,
+stopped/fresh edge evidence and proof that no production publisher key reached
+the host remain pre-activation gates.
+
 ## P1 production activation blockers
 
 ### Source-fair public admission

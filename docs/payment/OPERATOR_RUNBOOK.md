@@ -477,6 +477,24 @@ leave those old lots safely uncheckable; do not graft the new pin onto them or
 use an unpinned client. Freeze exposure and perform explicit incident
 reconciliation until an authenticated custody-migration protocol exists.
 
+### Publisher namespace activation before the Caddy overlay
+
+The rendered `directory-publisher-netns-v1` tree must remain inert after
+installation. Use the separate plan and at-most-one-hour approval in
+`PUBLISHER_NETNS_CEREMONY.md` to start only the exact namespace unit and obtain
+an owner-only receipt. Bind that receipt into the integrated-existing-Caddy
+overlay plan before any Caddy change. Do not start the publisher and do not
+create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
+snapshot is point-in-time evidence only.
+
+Rollback order is the reverse trust order: stop the publisher, restore the
+exact Caddy overlay preimage, then use a distinct receipt-bound rollback
+approval to stop only the namespace. A changed Caddy/boot generation makes the
+narrow rollback unavailable and requires the cold-edge incident procedure.
+After reboot, the Caddy dependency may recreate the namespace, but the old
+ceremony receipt is provenance rather than current evidence; collect fresh
+runtime evidence before publication.
+
 Build and self-verify directory artifacts offline, then inspect the explicit
 publisher help separately:
 

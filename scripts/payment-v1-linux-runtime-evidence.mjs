@@ -3533,9 +3533,9 @@ function validateEffectiveUnitStaticProperties(
     }
   } else {
     const expected = [
-      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts:/etc/hosts",
-      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
-      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf:/etc/resolv.conf",
+      "/etc/netns/bpir-directory-publisher/hosts:/etc/hosts",
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
+      "/etc/netns/bpir-directory-publisher/resolv.conf:/etc/resolv.conf",
     ];
     const actual = splitLiteralWords(properties.BindReadOnlyPaths).map((value) =>
       value.endsWith(":rbind") ? value.slice(0, -6) : value);
@@ -5251,6 +5251,1110 @@ export function validateStoppedRelayPreparationEvidence({
   return true;
 }
 
+const PUBLISHER_NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
+const PUBLISHER_CADDY_UNIT = "bhtm-caddy.service";
+const PUBLISHER_NETNS_PATH = "/run/netns/bpir-directory-publisher";
+const PUBLISHER_NETNS_FRAGMENT =
+  "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service";
+const PUBLISHER_CADDY_DROP_IN =
+  "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
+const NSFS_MAGIC = 0x6e736673;
+const PUBLISHER_MONITOR_BOUNDING_CAPABILITIES = "0000000000201000";
+const PUBLISHER_OWNER_CONDITION_PATHS = Object.freeze([
+  "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+  "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+  "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+]);
+const PUBLISHER_OWNER_EFFECTIVE_PROPERTIES = Object.freeze([
+  "ActiveEnterTimestampMonotonic",
+  "ActiveState",
+  "AmbientCapabilities",
+  "CapabilityBoundingSet",
+  "ConditionResult",
+  "ControlGroup",
+  "DropInPaths",
+  "ExecStart",
+  "ExecStartPre",
+  "ExecStopPost",
+  "FragmentPath",
+  "Group",
+  "InvocationID",
+  "KillMode",
+  "LimitCORE",
+  "LimitCORESoft",
+  "LoadState",
+  "LockPersonality",
+  "MainPID",
+  "MemoryDenyWriteExecute",
+  "MemoryMax",
+  "MemorySwapCurrent",
+  "MemorySwapMax",
+  "NeedDaemonReload",
+  "NoNewPrivileges",
+  "NotifyAccess",
+  "PartOf",
+  "Restart",
+  "RestrictAddressFamilies",
+  "RestrictNamespaces",
+  "RestrictRealtime",
+  "RestrictSUIDSGID",
+  "Result",
+  "StateDirectory",
+  "StateDirectoryMode",
+  "StandardError",
+  "StandardOutput",
+  "SubState",
+  "SystemCallArchitectures",
+  "TasksMax",
+  "TimeoutStartUSec",
+  "TimeoutStopUSec",
+  "Type",
+  "UMask",
+  "User",
+  "WorkingDirectory",
+]);
+
+function expectedPublisherNetworkRequest(networkPolicySha256) {
+  return {
+    caddy_drop_in_path: PUBLISHER_CADDY_DROP_IN,
+    caddy_service_unit: PUBLISHER_CADDY_UNIT,
+    firewall: {
+      forwarding_sysctls: {
+        "net.ipv4.ip_forward": 0,
+        "net.ipv6.conf.all.forwarding": 0,
+      },
+      interface: "bpir-pub-h",
+      semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+      ufw_rules_in_install_order: [
+        "prepend deny in on bpir-pub-h from any to any",
+        "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+        "route prepend deny in on bpir-pub-h from any to any",
+        "route prepend deny out on bpir-pub-h from any to any",
+      ],
+    },
+    forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+    namespace: {
+      client: "10.203.0.2/30",
+      host: "10.203.0.1/30",
+      name: "bpir-directory-publisher",
+      path: PUBLISHER_NETNS_PATH,
+    },
+    namespace_owner_unit: PUBLISHER_NETNS_UNIT,
+    network_policy_sha256: networkPolicySha256,
+    publication_mode: {
+      centralized: true,
+      degraded: true,
+      name: "centralized-single-relay",
+    },
+    publication_time_firewall_binding: {
+      activation_blocked: true,
+      implemented: false,
+      point_in_time_evidence_only: true,
+    },
+    publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+  };
+}
+
+function publisherFirewallSemanticOutputs(outputs) {
+  const canonicalLines = (text) => text
+    .split("\n")
+    .map((line) => line.trim().replace(/\s+/gu, " "))
+    .filter((line) => line.includes("bpir-pub-h"));
+  const nft = (text) => canonicalLines(text).map((line) => line
+    .replace(/ counter packets [0-9]+ bytes [0-9]+/gu, "")
+    .replace(/ # handle [0-9]+$/gu, ""));
+  return {
+    closed_prelude_profile: "ufw-base-before-user-and-user-prefix-v1",
+    nft_ip6_forward: nft(outputs.nft_ip6_forward),
+    nft_ip6_input: nft(outputs.nft_ip6_input),
+    nft_ip_forward: nft(outputs.nft_ip_forward),
+    nft_ip_input: nft(outputs.nft_ip_input),
+    ufw_raw: canonicalLines(outputs.ufw_raw).map((line) =>
+      line.replace(/^[0-9]+ [0-9]+ /u, "COUNTERS ")),
+    ufw_status: canonicalLines(outputs.ufw_status).map((line) =>
+      line.replace(/^\[\s*[0-9]+\]\s*/u, "")),
+    validated_output_keys: [...PUBLISHER_FIREWALL_OUTPUT_KEYS],
+  };
+}
+
+const EXPECTED_PUBLISHER_FIREWALL_SEMANTICS = Object.freeze({
+  closed_prelude_profile: "ufw-base-before-user-and-user-prefix-v1",
+  nft_ip6_forward: Object.freeze([
+    'oifname "bpir-pub-h" drop',
+    'iifname "bpir-pub-h" drop',
+  ]),
+  nft_ip6_input: Object.freeze(['iifname "bpir-pub-h" drop']),
+  nft_ip_forward: Object.freeze([
+    'oifname "bpir-pub-h" drop',
+    'iifname "bpir-pub-h" drop',
+  ]),
+  nft_ip_input: Object.freeze([
+    'ip saddr 10.203.0.2 ip daddr 10.203.0.1 iifname "bpir-pub-h" tcp dport 443 accept',
+    'iifname "bpir-pub-h" drop',
+  ]),
+  ufw_raw: Object.freeze([
+    "COUNTERS ACCEPT 6 -- bpir-pub-h * 10.203.0.2 10.203.0.1 tcp dpt:443",
+    "COUNTERS DROP 0 -- bpir-pub-h * 0.0.0.0/0 0.0.0.0/0",
+    "COUNTERS DROP 0 -- bpir-pub-h * 0.0.0.0/0 0.0.0.0/0",
+    "COUNTERS DROP 0 -- * bpir-pub-h 0.0.0.0/0 0.0.0.0/0",
+    "COUNTERS DROP 0 -- bpir-pub-h * ::/0 ::/0",
+    "COUNTERS DROP 0 -- bpir-pub-h * ::/0 ::/0",
+    "COUNTERS DROP 0 -- * bpir-pub-h ::/0 ::/0",
+  ]),
+  ufw_status: Object.freeze([
+    "10.203.0.1 443/tcp on bpir-pub-h ALLOW IN 10.203.0.2",
+    "Anywhere on bpir-pub-h DENY IN Anywhere",
+    "Anywhere DENY FWD Anywhere on bpir-pub-h",
+    "Anywhere on bpir-pub-h DENY FWD Anywhere (out)",
+    "Anywhere (v6) on bpir-pub-h DENY IN Anywhere (v6)",
+    "Anywhere (v6) DENY FWD Anywhere (v6) on bpir-pub-h",
+    "Anywhere (v6) on bpir-pub-h DENY FWD Anywhere (v6) (out)",
+  ]),
+  validated_output_keys: PUBLISHER_FIREWALL_OUTPUT_KEYS,
+});
+
+function collectPublisherFirewallPass() {
+  const run = (command, args, label, allowedStderr = [""]) => {
+    const record = runAbsolute(command, args, { timeout: 30_000 });
+    if (record.exit_status !== 0 || !allowedStderr.includes(record.stderr)) {
+      fail(`${label} failed while collecting publisher firewall evidence`);
+    }
+    return record.stdout;
+  };
+  const nftCases = Object.freeze({
+    nft_ip6_base_forward: ["ip6", "filter", "FORWARD"],
+    nft_ip6_base_input: ["ip6", "filter", "INPUT"],
+    nft_ip6_before_forward: ["ip6", "filter", "ufw6-before-forward"],
+    nft_ip6_before_input: ["ip6", "filter", "ufw6-before-input"],
+    nft_ip6_before_logging_forward: ["ip6", "filter", "ufw6-before-logging-forward"],
+    nft_ip6_before_logging_input: ["ip6", "filter", "ufw6-before-logging-input"],
+    nft_ip6_forward: ["ip6", "filter", "ufw6-user-forward"],
+    nft_ip6_input: ["ip6", "filter", "ufw6-user-input"],
+    nft_ip6_logging_deny: ["ip6", "filter", "ufw6-logging-deny"],
+    nft_ip_base_forward: ["ip", "filter", "FORWARD"],
+    nft_ip_base_input: ["ip", "filter", "INPUT"],
+    nft_ip_before_forward: ["ip", "filter", "ufw-before-forward"],
+    nft_ip_before_input: ["ip", "filter", "ufw-before-input"],
+    nft_ip_before_logging_forward: ["ip", "filter", "ufw-before-logging-forward"],
+    nft_ip_before_logging_input: ["ip", "filter", "ufw-before-logging-input"],
+    nft_ip_forward: ["ip", "filter", "ufw-user-forward"],
+    nft_ip_input: ["ip", "filter", "ufw-user-input"],
+    nft_ip_logging_deny: ["ip", "filter", "ufw-logging-deny"],
+    nft_ip_not_local: ["ip", "filter", "ufw-not-local"],
+  });
+  const outputs = Object.fromEntries(Object.entries(nftCases).map(([key, args]) => [
+    key,
+    run(
+      "/usr/sbin/nft",
+      ["list", "chain", ...args],
+      `nft ${args[0]} ${args[2]}`,
+      [
+        "",
+        `# Warning: table ${args[0]} filter is managed by iptables-nft, do not touch!\n`,
+      ],
+    ),
+  ]));
+  outputs.ufw_raw = run("/usr/sbin/ufw", ["show", "raw"], "ufw show raw");
+  outputs.ufw_status = run("/usr/sbin/ufw", ["status", "numbered"], "ufw status numbered");
+  if (canonicalJson(Object.keys(outputs).sort()) !== canonicalJson(PUBLISHER_FIREWALL_OUTPUT_KEYS)) {
+    fail("publisher firewall collector output keys are not the reviewed closed set");
+  }
+  validatePublisherFirewallOutputs(outputs);
+  const semantics = publisherFirewallSemanticOutputs(outputs);
+  if (canonicalJson(semantics) !== canonicalJson(EXPECTED_PUBLISHER_FIREWALL_SEMANTICS)) {
+    fail("publisher firewall semantic normalization drifted from the closed V1 policy");
+  }
+  return {
+    output_sha256: Object.fromEntries(
+      Object.entries(outputs).map(([key, value]) => [key, hashBytes(Buffer.from(value))]),
+    ),
+    semantic_outputs: semantics,
+    semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+  };
+}
+
+function collectPublisherSysctls() {
+  const readZero = (path, label) => {
+    const value = readFileSync(path, "utf8");
+    if (value !== "0\n") fail(`${label} must be disabled for the publisher namespace boundary`);
+    return 0;
+  };
+  return {
+    "net.ipv4.ip_forward": readZero("/proc/sys/net/ipv4/ip_forward", "IPv4 forwarding"),
+    "net.ipv6.conf.all.forwarding": readZero(
+      "/proc/sys/net/ipv6/conf/all/forwarding",
+      "IPv6 forwarding",
+    ),
+  };
+}
+
+function collectPublisherCaddyDependency() {
+  const words = (property) => splitLiteralWords(collectSystemctlValue(PUBLISHER_CADDY_UNIT, property));
+  const owner = PUBLISHER_NETNS_UNIT;
+  const dropIns = words("DropInPaths");
+  if (!dropIns.includes(PUBLISHER_CADDY_DROP_IN)) {
+    fail("shared Caddy does not load the reviewed publisher namespace drop-in");
+  }
+  const snapshot = {
+    active_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "ActiveState"),
+    after_namespace_owner: words("After").includes(owner),
+    binds_to_namespace_owner: words("BindsTo").includes(owner),
+    drop_in_paths_sha256: hashBytes(Buffer.from(canonicalJson(dropIns))),
+    load_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "LoadState"),
+    part_of_namespace_owner: words("PartOf").includes(owner),
+    requires_namespace_owner: words("Requires").includes(owner),
+    wants_namespace_owner: words("Wants").includes(owner),
+  };
+  if (
+    snapshot.active_state !== "active" ||
+    snapshot.load_state !== "loaded" ||
+    !snapshot.after_namespace_owner ||
+    !snapshot.wants_namespace_owner ||
+    snapshot.binds_to_namespace_owner ||
+    snapshot.part_of_namespace_owner ||
+    snapshot.requires_namespace_owner
+  ) {
+    fail("shared Caddy has an unsafe or incomplete effective publisher dependency graph");
+  }
+  return snapshot;
+}
+
+function publisherOwnerArtifactExpectations(request) {
+  if (!Array.isArray(request.installed_files)) {
+    fail("publisher runtime request does not bind installed artifacts");
+  }
+  const fragments = request.installed_files.filter(
+    (file) => file?.target_path === PUBLISHER_NETNS_FRAGMENT,
+  );
+  const helpers = request.installed_files.filter((file) =>
+    typeof file?.target_path === "string" &&
+    /^\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/payment-v1-publisher-netns$/u
+      .test(file.target_path));
+  if (fragments.length !== 1 || helpers.length !== 1) {
+    fail("publisher request must bind exactly one namespace-owner fragment and helper");
+  }
+  const fragmentSha256 = validateDigest(
+    fragments[0].sha256,
+    "publisher namespace-owner fragment digest",
+  );
+  const helperSha256 = validateDigest(helpers[0].sha256, "publisher namespace helper digest");
+  const helperPath = validateAbsolutePath(helpers[0].target_path, "publisher namespace helper path");
+  if (helperPath.split("/").at(-2) !== helperSha256) {
+    fail("publisher namespace helper path is not addressed by its requested digest");
+  }
+  return {
+    fragment_sha256: fragmentSha256,
+    helper_path: helperPath,
+    helper_sha256: helperSha256,
+  };
+}
+
+function collectPublisherOwnerArtifacts(request) {
+  const expected = publisherOwnerArtifactExpectations(request);
+  const fragmentSha256 = hashBytes(readOneLinkRegular(
+    PUBLISHER_NETNS_FRAGMENT,
+    "publisher namespace-owner fragment",
+    2 * 1024 * 1024,
+  ));
+  const helperSha256 = hashBytes(readOneLinkRegular(
+    expected.helper_path,
+    "publisher namespace helper",
+    32 * 1024 * 1024,
+  ));
+  if (
+    fragmentSha256 !== expected.fragment_sha256 ||
+    helperSha256 !== expected.helper_sha256
+  ) {
+    fail("publisher namespace-owner artifacts drifted from the runtime request");
+  }
+  return expected;
+}
+
+function expectedPublisherOwnerConditions() {
+  return PUBLISHER_OWNER_CONDITION_PATHS.map((parameter) => ({
+    negate: false,
+    parameter,
+    path_exists: true,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  })).sort(compareEffectiveConditionRecords);
+}
+
+function validatePublisherOwnerConditions(conditions) {
+  if (!Array.isArray(conditions)) fail("publisher namespace-owner Conditions are missing");
+  for (const [index, condition] of conditions.entries()) {
+    exactKeys(
+      condition,
+      ["negate", "parameter", "path_exists", "result", "trigger", "type"],
+      `publisher namespace-owner Conditions[${index}]`,
+    );
+  }
+  if (canonicalJson(conditions) !== canonicalJson(expectedPublisherOwnerConditions())) {
+    fail("publisher namespace-owner effective Conditions drifted from the reviewed unit");
+  }
+}
+
+function validatePublisherOwnerEffectiveProperties(properties, artifacts) {
+  exactKeys(
+    properties,
+    PUBLISHER_OWNER_EFFECTIVE_PROPERTIES,
+    "publisher namespace-owner effective properties",
+  );
+  const exact = {
+    ActiveState: "active",
+    AmbientCapabilities: "",
+    ConditionResult: "yes",
+    ControlGroup: expectedSystemUnitControlGroup(PUBLISHER_NETNS_UNIT),
+    DropInPaths: "",
+    FragmentPath: PUBLISHER_NETNS_FRAGMENT,
+    Group: "root",
+    KillMode: "control-group",
+    LimitCORE: "0",
+    LimitCORESoft: "0",
+    LoadState: "loaded",
+    LockPersonality: "yes",
+    MemoryDenyWriteExecute: "yes",
+    MemoryMax: "67108864",
+    MemorySwapCurrent: "0",
+    MemorySwapMax: "0",
+    NeedDaemonReload: "no",
+    NoNewPrivileges: "yes",
+    NotifyAccess: "main",
+    Restart: "no",
+    RestrictNamespaces: "net",
+    RestrictRealtime: "yes",
+    RestrictSUIDSGID: "yes",
+    Result: "success",
+    StateDirectory: "bitcoinpir-publisher-netns",
+    StateDirectoryMode: "0700",
+    StandardError: "null",
+    StandardOutput: "null",
+    SubState: "running",
+    SystemCallArchitectures: "native",
+    TasksMax: "8",
+    TimeoutStartUSec: "30s",
+    TimeoutStopUSec: "30s",
+    Type: "notify",
+    UMask: "0077",
+    User: "root",
+    WorkingDirectory: "/var/lib/bitcoinpir-publisher-netns",
+  };
+  for (const [key, expected] of Object.entries(exact)) {
+    if (properties[key] !== expected) {
+      fail(`publisher namespace-owner effective ${key} drifted from the reviewed unit`);
+    }
+  }
+  for (const [key, expected] of [
+    ["CapabilityBoundingSet", ["CAP_NET_ADMIN", "CAP_SYS_ADMIN"]],
+    ["PartOf", [PUBLISHER_CADDY_UNIT]],
+    ["RestrictAddressFamilies", ["AF_NETLINK", "AF_UNIX"]],
+  ]) {
+    const actual = splitLiteralWords(properties[key]).map((value) =>
+      key === "CapabilityBoundingSet" ? value.toUpperCase() : value);
+    if (canonicalJson(actual) !== canonicalJson([...expected].sort())) {
+      fail(`publisher namespace-owner effective ${key} drifted from the reviewed unit`);
+    }
+  }
+  const helper = artifacts.helper_path;
+  if (
+    canonicalJson(extractExecArgv(properties.ExecStartPre, "publisher namespace-owner ExecStartPre")) !==
+      canonicalJson([
+        `/usr/bin/test -x ${helper}`,
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+        `${helper} self-test`,
+      ]) ||
+    canonicalJson(extractExecArgv(properties.ExecStart, "publisher namespace-owner ExecStart")) !==
+      canonicalJson([`${helper} run`]) ||
+    canonicalJson(extractExecArgv(properties.ExecStopPost, "publisher namespace-owner ExecStopPost")) !==
+      canonicalJson([`${helper} cleanup`])
+  ) {
+    fail("publisher namespace-owner effective executable argv drifted from the pinned helper");
+  }
+  parseUnsignedDecimal(
+    properties.ActiveEnterTimestampMonotonic,
+    "publisher namespace-owner ActiveEnterTimestampMonotonic",
+    { allowZero: false },
+  );
+  parseUnsignedDecimal(properties.MainPID, "publisher namespace-owner MainPID", {
+    allowZero: false,
+  });
+  if (
+    !/^[0-9a-f]{32}$/u.test(properties.InvocationID) ||
+    /^0{32}$/u.test(properties.InvocationID)
+  ) {
+    fail("publisher namespace-owner InvocationID is not one active generation");
+  }
+}
+
+function collectPublisherOwnerGeneration(properties) {
+  const confirmation = {
+    active_enter_timestamp_monotonic: collectSystemctlValue(
+      PUBLISHER_NETNS_UNIT,
+      "ActiveEnterTimestampMonotonic",
+    ),
+    active_state: collectSystemctlValue(PUBLISHER_NETNS_UNIT, "ActiveState"),
+    control_group: collectSystemctlValue(PUBLISHER_NETNS_UNIT, "ControlGroup"),
+    invocation_id: collectSystemctlValue(PUBLISHER_NETNS_UNIT, "InvocationID"),
+    main_pid: collectSystemctlValue(PUBLISHER_NETNS_UNIT, "MainPID"),
+    need_daemon_reload: collectSystemctlValue(PUBLISHER_NETNS_UNIT, "NeedDaemonReload"),
+  };
+  if (
+    confirmation.active_enter_timestamp_monotonic !== properties.ActiveEnterTimestampMonotonic ||
+    confirmation.active_state !== properties.ActiveState ||
+    confirmation.control_group !== properties.ControlGroup ||
+    confirmation.invocation_id !== properties.InvocationID ||
+    confirmation.main_pid !== properties.MainPID ||
+    confirmation.need_daemon_reload !== "no"
+  ) {
+    fail("publisher namespace-owner generation changed during live collection");
+  }
+  return confirmation;
+}
+
+function parsePublisherProcStatus(bytes, pid, label) {
+  const identity = parseProcStatus(bytes, pid, { expectedTgid: pid, label });
+  const lines = decodeProcText(bytes, label).split("\n");
+  const unsignedField = (name) => {
+    const matches = lines.filter((line) => line.startsWith(`${name}:`));
+    if (matches.length !== 1) fail(`${label} must contain exactly one ${name}: field`);
+    const value = matches[0].slice(name.length + 1).trim();
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(value)) fail(`${label} has malformed ${name}: value`);
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) fail(`${label} has out-of-range ${name}: value`);
+    return parsed;
+  };
+  return {
+    ...identity,
+    noNewPrivileges: unsignedField("NoNewPrivs"),
+    parentPid: unsignedField("PPid"),
+    seccomp: unsignedField("Seccomp"),
+  };
+}
+
+function readPublisherNetNamespace(path, label) {
+  const stat = lstatSync(path);
+  if (!stat.isSymbolicLink()) fail(`${label} is not a procfs namespace link`);
+  const value = readlinkSync(path);
+  if (!/^net:\[[1-9][0-9]*\]$/u.test(value)) fail(`${label} has a malformed network namespace id`);
+  return value;
+}
+
+function collectPublisherExeBinding(pid, artifacts) {
+  const procPath = `/proc/${pid}/exe`;
+  if (!lstatSync(procPath).isSymbolicLink() || readlinkSync(procPath) !== artifacts.helper_path) {
+    fail(`publisher monitor ${pid} does not execute the pinned helper path`);
+  }
+  const helperFd = openSync(
+    artifacts.helper_path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  const procFd = openSync(procPath, constants.O_RDONLY | (constants.O_CLOEXEC ?? 0));
+  try {
+    const helperStat = fstatSync(helperFd, { bigint: true });
+    const procStat = fstatSync(procFd, { bigint: true });
+    if (
+      helperStat.dev !== procStat.dev ||
+      helperStat.ino !== procStat.ino ||
+      !helperStat.isFile() ||
+      !procStat.isFile()
+    ) {
+      fail(`publisher monitor ${pid} executable inode is not the installed pinned helper`);
+    }
+    return {
+      dev: procStat.dev.toString(),
+      ino: procStat.ino.toString(),
+      path: artifacts.helper_path,
+      sha256: artifacts.helper_sha256,
+    };
+  } finally {
+    closeSync(procFd);
+    closeSync(helperFd);
+  }
+}
+
+function collectPublisherProcessSnapshot(pid, artifacts, label) {
+  const path = `/proc/${pid}`;
+  const directoryBefore = inspectProcDirectory(path, `${label} directory`);
+  const statBefore = parseProcStat(
+    readBoundedProcFile(`${path}/stat`, `${label} stat`, MAX_PROC_STAT_BYTES),
+    pid,
+    `${path}/stat`,
+  );
+  const cgroupBefore = parseUnifiedProcCgroup(
+    readBoundedProcFile(`${path}/cgroup`, `${label} cgroup`, MAX_PROC_CGROUP_BYTES),
+    `${path}/cgroup`,
+  );
+  const status = parsePublisherProcStatus(
+    readBoundedProcFile(`${path}/status`, `${label} status`, MAX_PROC_STATUS_BYTES),
+    pid,
+    `${path}/status`,
+  );
+  const networkNamespace = readPublisherNetNamespace(`${path}/ns/net`, `${label} netns`);
+  const executable = collectPublisherExeBinding(pid, artifacts);
+  const cgroupAfter = parseUnifiedProcCgroup(
+    readBoundedProcFile(`${path}/cgroup`, `${label} cgroup confirmation`, MAX_PROC_CGROUP_BYTES),
+    `${path}/cgroup`,
+  );
+  const statAfter = parseProcStat(
+    readBoundedProcFile(`${path}/stat`, `${label} stat confirmation`, MAX_PROC_STAT_BYTES),
+    pid,
+    `${path}/stat`,
+  );
+  const directoryAfter = inspectProcDirectory(path, `${label} directory confirmation`);
+  if (
+    canonicalJson(directoryBefore) !== canonicalJson(directoryAfter) ||
+    statBefore.startTimeTicks !== statAfter.startTimeTicks ||
+    cgroupBefore !== cgroupAfter
+  ) {
+    fail(`${label} restarted or moved cgroups while live evidence was collected`);
+  }
+  return {
+    capabilities: status.capabilities,
+    control_group: cgroupAfter,
+    executable,
+    gid: status.gid,
+    groups: status.groups,
+    net_namespace: networkNamespace,
+    no_new_privs: status.noNewPrivileges,
+    parent_pid: status.parentPid,
+    pid,
+    proc_directory_dev: directoryAfter.dev,
+    proc_directory_ino: directoryAfter.ino,
+    seccomp: status.seccomp,
+    start_time_ticks: statAfter.startTimeTicks,
+    uid: status.uid,
+  };
+}
+
+function readPublisherDirectChildren(mainPid) {
+  const path = `/proc/${mainPid}/task/${mainPid}/children`;
+  const text = decodeProcText(
+    readBoundedProcFile(path, "publisher namespace-owner direct children", 4096),
+    path,
+  ).trim();
+  if (text === "") return [];
+  const children = text.split(/\s+/u).map((value) => {
+    const pid = parseUnsignedDecimal(value, "publisher namespace-owner child PID", {
+      allowZero: false,
+    });
+    return pid;
+  });
+  if (children.length > 8 || new Set(children).size !== children.length) {
+    fail("publisher namespace-owner direct child set is not bounded and unique");
+  }
+  return children.sort((left, right) => left - right);
+}
+
+function collectPublisherProcessPass(properties, artifacts, namespaceMount) {
+  const mainPid = parseUnsignedDecimal(
+    properties.MainPID,
+    "publisher namespace-owner MainPID",
+    { allowZero: false },
+  );
+  const childrenBefore = readPublisherDirectChildren(mainPid);
+  if (childrenBefore.length !== 1) {
+    fail("publisher namespace-owner must have exactly one direct client monitor");
+  }
+  const collectorNetNamespace = readPublisherNetNamespace(
+    "/proc/self/ns/net",
+    "publisher collector netns",
+  );
+  const main = collectPublisherProcessSnapshot(mainPid, artifacts, "publisher host monitor");
+  const child = collectPublisherProcessSnapshot(
+    childrenBefore[0],
+    artifacts,
+    "publisher client monitor",
+  );
+  const childrenAfter = readPublisherDirectChildren(mainPid);
+  if (canonicalJson(childrenAfter) !== canonicalJson(childrenBefore)) {
+    fail("publisher namespace-owner direct child set changed during live collection");
+  }
+  const pass = {
+    child,
+    collector_net_namespace: collectorNetNamespace,
+    direct_children: childrenAfter,
+    main,
+  };
+  validatePublisherProcessPass(pass, properties, artifacts, namespaceMount);
+  return pass;
+}
+
+function validatePublisherProcessSnapshot(snapshot, {
+  artifacts,
+  expectedNetNamespace,
+  expectedParentPid,
+  expectedPid,
+  label,
+}) {
+  exactKeys(
+    snapshot,
+    [
+      "capabilities", "control_group", "executable", "gid", "groups",
+      "net_namespace", "no_new_privs", "parent_pid", "pid", "proc_directory_dev",
+      "proc_directory_ino", "seccomp", "start_time_ticks", "uid",
+    ],
+    label,
+  );
+  validateCapabilityRecord(snapshot.capabilities, `${label} capabilities`);
+  if (
+    snapshot.pid !== expectedPid ||
+    snapshot.parent_pid !== expectedParentPid ||
+    canonicalJson(snapshot.uid) !== canonicalJson([0, 0, 0, 0]) ||
+    canonicalJson(snapshot.gid) !== canonicalJson([0, 0, 0, 0]) ||
+    !Array.isArray(snapshot.groups) ||
+    snapshot.groups.length > 1 ||
+    snapshot.groups.some((gid) => gid !== 0) ||
+    activeCapabilityMask(snapshot.capabilities) !== 0n ||
+    snapshot.capabilities.bounding !== PUBLISHER_MONITOR_BOUNDING_CAPABILITIES ||
+    snapshot.no_new_privs !== 1 ||
+    snapshot.seccomp !== 2 ||
+    snapshot.control_group !== expectedSystemUnitControlGroup(PUBLISHER_NETNS_UNIT) ||
+    snapshot.net_namespace !== expectedNetNamespace ||
+    !/^[1-9][0-9]*$/u.test(snapshot.proc_directory_dev) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.proc_directory_ino) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.start_time_ticks)
+  ) {
+    fail(`${label} is not the reviewed rootless-capability sandboxed monitor process`);
+  }
+  exactKeys(snapshot.executable, ["dev", "ino", "path", "sha256"], `${label} executable`);
+  if (
+    snapshot.executable.path !== artifacts.helper_path ||
+    snapshot.executable.sha256 !== artifacts.helper_sha256 ||
+    !/^[1-9][0-9]*$/u.test(snapshot.executable.dev) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.executable.ino)
+  ) {
+    fail(`${label} executable is not the requested content-addressed helper`);
+  }
+}
+
+function validatePublisherProcessPass(pass, properties, artifacts, namespaceMount) {
+  exactKeys(
+    pass,
+    ["child", "collector_net_namespace", "direct_children", "main"],
+    "publisher namespace-owner process pass",
+  );
+  const mainPid = parseUnsignedDecimal(
+    properties.MainPID,
+    "publisher namespace-owner MainPID",
+    { allowZero: false },
+  );
+  if (
+    !Array.isArray(pass.direct_children) ||
+    pass.direct_children.length !== 1 ||
+    !Number.isSafeInteger(pass.direct_children[0]) ||
+    pass.direct_children[0] < 1 ||
+    !/^net:\[[1-9][0-9]*\]$/u.test(pass.collector_net_namespace)
+  ) {
+    fail("publisher namespace-owner does not have exactly one canonical direct child");
+  }
+  const targetNamespace = `net:[${namespaceMount.ino}]`;
+  validatePublisherProcessSnapshot(pass.main, {
+    artifacts,
+    expectedNetNamespace: pass.collector_net_namespace,
+    expectedParentPid: 1,
+    expectedPid: mainPid,
+    label: "publisher host monitor",
+  });
+  validatePublisherProcessSnapshot(pass.child, {
+    artifacts,
+    expectedNetNamespace: targetNamespace,
+    expectedParentPid: mainPid,
+    expectedPid: pass.direct_children[0],
+    label: "publisher client monitor",
+  });
+  if (
+    pass.child.pid !== pass.direct_children[0] ||
+    pass.main.net_namespace === pass.child.net_namespace
+  ) {
+    fail("publisher monitor processes do not span the reviewed host/client namespaces");
+  }
+}
+
+function collectPublisherNamespaceOwner(request, namespaceMount) {
+  const artifacts = collectPublisherOwnerArtifacts(request);
+  const conditionBefore = collectEffectiveConditions(PUBLISHER_NETNS_UNIT);
+  validatePublisherOwnerConditions(conditionBefore);
+  const properties = Object.create(null);
+  for (const property of PUBLISHER_OWNER_EFFECTIVE_PROPERTIES) {
+    properties[property] = collectSystemctlValue(PUBLISHER_NETNS_UNIT, property);
+  }
+  validatePublisherOwnerEffectiveProperties(properties, artifacts);
+  const processBefore = collectPublisherProcessPass(properties, artifacts, namespaceMount);
+  const generationBefore = collectPublisherOwnerGeneration(properties);
+  const processAfter = collectPublisherProcessPass(properties, artifacts, namespaceMount);
+  const generationAfter = collectPublisherOwnerGeneration(properties);
+  const conditionAfter = collectEffectiveConditions(PUBLISHER_NETNS_UNIT);
+  validatePublisherOwnerConditions(conditionAfter);
+  if (
+    canonicalJson(processBefore) !== canonicalJson(processAfter) ||
+    canonicalJson(conditionBefore) !== canonicalJson(conditionAfter)
+  ) {
+    fail("publisher namespace-owner process tree or Conditions changed during live collection");
+  }
+  return {
+    condition_confirmations: [conditionBefore, conditionAfter],
+    effective_properties: properties,
+    fragment_sha256: artifacts.fragment_sha256,
+    generation_confirmations: [generationBefore, generationAfter],
+    helper_path: artifacts.helper_path,
+    helper_sha256: artifacts.helper_sha256,
+    process_passes: [processBefore, processAfter],
+  };
+}
+
+function collectPublisherNamespaceMount() {
+  const mountInfo = readFileSync("/proc/self/mountinfo", "utf8");
+  if (Buffer.byteLength(mountInfo, "utf8") > MAX_COMMAND_OUTPUT_BYTES || mountInfo.includes("\0")) {
+    fail("mountinfo is malformed or oversized");
+  }
+  const matches = mountInfo.split("\n").filter((line) => {
+    if (line === "") return false;
+    const left = line.split(" - ")[0]?.split(" ");
+    return left?.[4] === PUBLISHER_NETNS_PATH;
+  });
+  if (matches.length !== 1) fail("publisher namespace path is not one distinct mount point");
+  const halves = matches[0].split(" - ");
+  if (halves.length !== 2) fail("publisher namespace mountinfo record is malformed");
+  const left = halves[0].split(" ");
+  const right = halves[1].split(" ");
+  if (left.length < 6 || right.length < 3) fail("publisher namespace mountinfo fields are incomplete");
+  const stat = lstatSync(PUBLISHER_NETNS_PATH, { bigint: true });
+  const statfs = statfsSync(PUBLISHER_NETNS_PATH, { bigint: true });
+  const statfsType = Number(statfs.type);
+  const snapshot = {
+    dev: stat.dev.toString(),
+    filesystem_type: right[0],
+    ino: stat.ino.toString(),
+    major_minor: left[2],
+    mount_id: left[0],
+    mount_source: right[1],
+    parent_mount_id: left[1],
+    root: left[3],
+    statfs_type: statfsType,
+  };
+  if (
+    !stat.isFile() ||
+    snapshot.filesystem_type !== "nsfs" ||
+    snapshot.mount_source !== "nsfs" ||
+    snapshot.root !== "/" ||
+    snapshot.statfs_type !== NSFS_MAGIC ||
+    !/^[1-9][0-9]*$/u.test(snapshot.dev) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.ino) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.mount_id) ||
+    !/^[1-9][0-9]*$/u.test(snapshot.parent_mount_id) ||
+    !/^[0-9]+:[0-9]+$/u.test(snapshot.major_minor)
+  ) {
+    fail("publisher namespace mount is not the exact reviewed nsfs boundary");
+  }
+  return snapshot;
+}
+
+function collectPublisherNetworkSnapshot(request) {
+  const namespaceMount = collectPublisherNamespaceMount();
+  return {
+    caddy_dependency: collectPublisherCaddyDependency(),
+    forwarding_sysctls: collectPublisherSysctls(),
+    namespace_mount: namespaceMount,
+    namespace_owner: collectPublisherNamespaceOwner(request, namespaceMount),
+  };
+}
+
+function collectPublisherNetworkRuntimeEvidence(request) {
+  if (request.publisher_network === undefined) return undefined;
+  const before = collectPublisherNetworkSnapshot(request);
+  const firewallBefore = collectPublisherFirewallPass();
+  const reload = runAbsolute("/usr/sbin/ufw", ["--dry-run", "reload"], {
+    timeout: 30_000,
+  });
+  if (reload.exit_status !== 0) fail("UFW dry-run reload failed");
+  const firewallAfter = collectPublisherFirewallPass();
+  const after = collectPublisherNetworkSnapshot(request);
+  if (canonicalJson(before) !== canonicalJson(after)) {
+    fail("publisher namespace or shared-Caddy boundary changed around UFW dry-run reload");
+  }
+  if (
+    canonicalJson(firewallBefore.semantic_outputs) !==
+      canonicalJson(firewallAfter.semantic_outputs)
+  ) {
+    fail("publisher firewall semantics changed around UFW dry-run reload");
+  }
+  return {
+    boundary_confirmations: [before, after],
+    firewall_passes: [firewallBefore, firewallAfter],
+    ufw_dry_run_reload: {
+      argv: reload.argv,
+      exit_status: reload.exit_status,
+      stderr_sha256: hashBytes(Buffer.from(reload.stderr)),
+      stdout_sha256: hashBytes(Buffer.from(reload.stdout)),
+    },
+  };
+}
+
+function sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork) {
+  if (publisherNetwork === undefined) return;
+  const boundaries = publisherNetwork.boundary_confirmations;
+  if (
+    !Array.isArray(boundaries) ||
+    boundaries.length !== 2 ||
+    canonicalJson(boundaries[0]) !== canonicalJson(boundaries[1])
+  ) {
+    fail("publisher boundary changed before final namespace-owner sealing");
+  }
+  const referenceOwner = boundaries[1].namespace_owner;
+  const finalConditions = collectEffectiveConditions(PUBLISHER_NETNS_UNIT);
+  validatePublisherOwnerConditions(finalConditions);
+  assertEffectiveConditionSnapshotUnchangedV1(
+    referenceOwner.condition_confirmations.at(-1),
+    finalConditions,
+    PUBLISHER_NETNS_UNIT,
+  );
+  const finalGeneration = collectPublisherOwnerGeneration(
+    referenceOwner.effective_properties,
+  );
+  for (const boundary of boundaries) {
+    const owner = boundary.namespace_owner;
+    if (
+      canonicalJson(owner.effective_properties) !==
+        canonicalJson(referenceOwner.effective_properties) ||
+      canonicalJson(owner.condition_confirmations.at(-1)) !==
+        canonicalJson(referenceOwner.condition_confirmations.at(-1)) ||
+      canonicalJson(owner.generation_confirmations.at(-1)) !==
+        canonicalJson(referenceOwner.generation_confirmations.at(-1))
+    ) {
+      fail("publisher namespace-owner evidence diverged before final sealing");
+    }
+    owner.condition_confirmations.push(finalConditions.map((entry) => ({ ...entry })));
+    owner.generation_confirmations.push({ ...finalGeneration });
+  }
+}
+
+function validatePublisherNamespaceOwnerEvidence(owner, request, namespaceMount) {
+  const artifacts = publisherOwnerArtifactExpectations(request);
+  exactKeys(
+    owner,
+    [
+      "condition_confirmations", "effective_properties", "fragment_sha256",
+      "generation_confirmations", "helper_path", "helper_sha256", "process_passes",
+    ],
+    "publisher namespace-owner evidence",
+  );
+  if (
+    owner.fragment_sha256 !== artifacts.fragment_sha256 ||
+    owner.helper_path !== artifacts.helper_path ||
+    owner.helper_sha256 !== artifacts.helper_sha256
+  ) {
+    fail("publisher namespace-owner evidence is not bound to requested installed artifacts");
+  }
+  validateDigest(owner.fragment_sha256, "publisher namespace-owner evidence fragment digest");
+  validateDigest(owner.helper_sha256, "publisher namespace-owner evidence helper digest");
+  if (
+    !Array.isArray(owner.condition_confirmations) ||
+    owner.condition_confirmations.length !== 3 ||
+    owner.condition_confirmations.some((confirmation) =>
+      canonicalJson(confirmation) !== canonicalJson(owner.condition_confirmations[0]))
+  ) {
+    fail("publisher namespace-owner Conditions were not stable across three sealing passes");
+  }
+  for (const conditions of owner.condition_confirmations) {
+    validatePublisherOwnerConditions(conditions);
+  }
+  validatePublisherOwnerEffectiveProperties(owner.effective_properties, artifacts);
+  if (
+    !Array.isArray(owner.generation_confirmations) ||
+    owner.generation_confirmations.length !== 3 ||
+    owner.generation_confirmations.some((confirmation) =>
+      canonicalJson(confirmation) !== canonicalJson(owner.generation_confirmations[0]))
+  ) {
+    fail("publisher namespace-owner generation was not stable across three sealing passes");
+  }
+  for (const confirmation of owner.generation_confirmations) {
+    exactKeys(
+      confirmation,
+      [
+        "active_enter_timestamp_monotonic", "active_state", "control_group",
+        "invocation_id", "main_pid", "need_daemon_reload",
+      ],
+      "publisher namespace-owner generation confirmation",
+    );
+    if (
+      confirmation.active_enter_timestamp_monotonic !==
+        owner.effective_properties.ActiveEnterTimestampMonotonic ||
+      confirmation.active_state !== owner.effective_properties.ActiveState ||
+      confirmation.control_group !== owner.effective_properties.ControlGroup ||
+      confirmation.invocation_id !== owner.effective_properties.InvocationID ||
+      confirmation.main_pid !== owner.effective_properties.MainPID ||
+      confirmation.need_daemon_reload !== "no"
+    ) {
+      fail("publisher namespace-owner confirmation does not bind one loaded generation");
+    }
+  }
+  if (
+    !Array.isArray(owner.process_passes) ||
+    owner.process_passes.length !== 2 ||
+    canonicalJson(owner.process_passes[0]) !== canonicalJson(owner.process_passes[1])
+  ) {
+    fail("publisher namespace-owner process tree was not stable across two passes");
+  }
+  for (const pass of owner.process_passes) {
+    validatePublisherProcessPass(
+      pass,
+      owner.effective_properties,
+      artifacts,
+      namespaceMount,
+    );
+  }
+}
+
+export function validatePublisherNetworkRuntimeEvidenceV1(evidence, request) {
+  if (request.publisher_network === undefined) {
+    if (evidence !== undefined) fail("non-publisher evidence contains a publisher network section");
+    return true;
+  }
+  exactKeys(
+    request.publisher_network,
+    [
+      "caddy_drop_in_path", "caddy_service_unit", "firewall",
+      "forbidden_caddy_reverse_stop_edges", "namespace", "namespace_owner_unit",
+      "network_policy_sha256", "publication_mode", "publication_time_firewall_binding",
+      "publisher_unit",
+    ],
+    "publisher network runtime request",
+  );
+  validateDigest(request.publisher_network.network_policy_sha256, "publisher network policy digest");
+  if (
+    canonicalJson(request.publisher_network) !== canonicalJson(
+      expectedPublisherNetworkRequest(request.publisher_network.network_policy_sha256),
+    )
+  ) {
+    fail("publisher network runtime request drifted from the centralized closed profile");
+  }
+  exactKeys(
+    evidence,
+    ["boundary_confirmations", "firewall_passes", "ufw_dry_run_reload"],
+    "publisher network live evidence",
+  );
+  if (
+    !Array.isArray(evidence.boundary_confirmations) ||
+    evidence.boundary_confirmations.length !== 2 ||
+    canonicalJson(evidence.boundary_confirmations[0]) !==
+      canonicalJson(evidence.boundary_confirmations[1])
+  ) {
+    fail("publisher boundary confirmations are incomplete or changed");
+  }
+  for (const boundary of evidence.boundary_confirmations) {
+    exactKeys(
+      boundary,
+      ["caddy_dependency", "forwarding_sysctls", "namespace_mount", "namespace_owner"],
+      "publisher boundary confirmation",
+    );
+    exactKeys(
+      boundary.caddy_dependency,
+      [
+        "active_state", "after_namespace_owner", "binds_to_namespace_owner",
+        "drop_in_paths_sha256", "load_state", "part_of_namespace_owner",
+        "requires_namespace_owner", "wants_namespace_owner",
+      ],
+      "publisher Caddy dependency evidence",
+    );
+    if (
+      boundary.caddy_dependency.active_state !== "active" ||
+      boundary.caddy_dependency.load_state !== "loaded" ||
+      !boundary.caddy_dependency.after_namespace_owner ||
+      !boundary.caddy_dependency.wants_namespace_owner ||
+      boundary.caddy_dependency.binds_to_namespace_owner ||
+      boundary.caddy_dependency.part_of_namespace_owner ||
+      boundary.caddy_dependency.requires_namespace_owner
+    ) {
+      fail("publisher Caddy evidence contains a reverse stop edge or missing ordering edge");
+    }
+    validateDigest(
+      boundary.caddy_dependency.drop_in_paths_sha256,
+      "publisher Caddy drop-in-set digest",
+    );
+    if (canonicalJson(boundary.forwarding_sysctls) !== canonicalJson({
+      "net.ipv4.ip_forward": 0,
+      "net.ipv6.conf.all.forwarding": 0,
+    })) {
+      fail("publisher forwarding sysctl evidence is not closed");
+    }
+    exactKeys(
+      boundary.namespace_mount,
+      [
+        "dev", "filesystem_type", "ino", "major_minor", "mount_id",
+        "mount_source", "parent_mount_id", "root", "statfs_type",
+      ],
+      "publisher namespace mount evidence",
+    );
+    if (
+      boundary.namespace_mount.filesystem_type !== "nsfs" ||
+      boundary.namespace_mount.mount_source !== "nsfs" ||
+      boundary.namespace_mount.root !== "/" ||
+      boundary.namespace_mount.statfs_type !== NSFS_MAGIC ||
+      !/^[1-9][0-9]*$/u.test(boundary.namespace_mount.dev) ||
+      !/^[1-9][0-9]*$/u.test(boundary.namespace_mount.ino) ||
+      !/^[1-9][0-9]*$/u.test(boundary.namespace_mount.mount_id) ||
+      !/^[1-9][0-9]*$/u.test(boundary.namespace_mount.parent_mount_id) ||
+      !/^[0-9]+:[0-9]+$/u.test(boundary.namespace_mount.major_minor)
+    ) {
+      fail("publisher namespace mount evidence is not one nsfs mount");
+    }
+    validatePublisherNamespaceOwnerEvidence(
+      boundary.namespace_owner,
+      request,
+      boundary.namespace_mount,
+    );
+  }
+  if (!Array.isArray(evidence.firewall_passes) || evidence.firewall_passes.length !== 2) {
+    fail("publisher firewall requires two semantic passes");
+  }
+  for (const pass of evidence.firewall_passes) {
+    exactKeys(
+      pass,
+      ["output_sha256", "semantic_outputs", "semantic_profile"],
+      "publisher firewall pass",
+    );
+    if (
+      pass.semantic_profile !== "bitcoinpir-publisher-ufw-closed-v1" ||
+      canonicalJson(pass.semantic_outputs) !== canonicalJson(EXPECTED_PUBLISHER_FIREWALL_SEMANTICS)
+    ) {
+      fail("publisher firewall pass is not the closed UFW/raw/nft policy");
+    }
+    exactKeys(
+      pass.output_sha256,
+      PUBLISHER_FIREWALL_OUTPUT_KEYS,
+      "publisher firewall output digests",
+    );
+    for (const [key, digest] of Object.entries(pass.output_sha256)) {
+      validateDigest(digest, `publisher firewall ${key} digest`);
+    }
+  }
+  if (
+    canonicalJson(evidence.firewall_passes[0].semantic_outputs) !==
+      canonicalJson(evidence.firewall_passes[1].semantic_outputs)
+  ) {
+    fail("publisher firewall semantic passes changed around dry-run reload");
+  }
+  exactKeys(
+    evidence.ufw_dry_run_reload,
+    ["argv", "exit_status", "stderr_sha256", "stdout_sha256"],
+    "publisher UFW dry-run evidence",
+  );
+  if (
+    canonicalJson(evidence.ufw_dry_run_reload.argv) !==
+      canonicalJson(["/usr/sbin/ufw", "--dry-run", "reload"]) ||
+    evidence.ufw_dry_run_reload.exit_status !== 0
+  ) {
+    fail("publisher UFW dry-run reload did not complete with exact argv");
+  }
+  validateDigest(evidence.ufw_dry_run_reload.stderr_sha256, "publisher UFW stderr digest");
+  validateDigest(evidence.ufw_dry_run_reload.stdout_sha256, "publisher UFW stdout digest");
+  return true;
+}
+
+
 function validateResolvedDirectoryRelayLiveRequestShape(request) {
   if (!isResolvedDirectoryRelayRuntimeRequest(request)) {
     fail("live directory relay request is not the exact resolved profile");
@@ -5323,6 +6427,7 @@ export function validateLiveRuntimeEvidence({
   nowUnixSeconds,
   maxAgeSeconds = 120,
 }) {
+  const hasPublisherNetwork = request.publisher_network !== undefined;
   if (
     request.deployment_profile === "directory-relay-v1" &&
     !isResolvedDirectoryRelayRuntimeRequest(request)
@@ -6248,7 +7353,9 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (request.deployment_profile === "directory-relay-v1") {
     validateResolvedDirectoryRelayLiveRequestShape(request);
   }
-  const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
+  const trustedCommands = [...requiredCommandsForRequest(request), process.execPath]
+    .sort()
+    .map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) fail("collector is running on an unapproved host");
@@ -6308,13 +7415,19 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     request,
     "during final evidence sealing",
   );
-  // The final external-state pass is deliberately lightweight and comes after
-  // the expensive secret commands. Per-unit checks inside collectUnit are not
-  // enough: a profile sentinel or unit generation could otherwise change while
-  // later probes run. Recheck structured credential properties and Conditions,
-  // typed dependency/timeout state and each same unit generation here. Every
-  // service-property read is immediately followed by the boot uptime used for
-  // its watchdog-freshness bound; no earlier collection timestamp is reused.
+  // The bounded publisher namespace/firewall transaction contains the last
+  // long external-state probes. Complete it before the final lightweight unit
+  // pass so no expensive command can widen the interval after the protected
+  // service Conditions and generation are sealed.
+  const publisherNetwork = collectPublisherNetworkRuntimeEvidence(request);
+  // Per-unit checks inside collectUnit are not enough: the final external-state
+  // pass is deliberately lightweight and comes after the expensive secret
+  // commands. A profile sentinel or unit generation could otherwise change
+  // while later probes run. Recheck structured credential properties and
+  // Conditions, typed dependency/timeout state and each same unit generation
+  // here. Every service-property read is immediately followed by the boot
+  // uptime used for its watchdog-freshness bound; no earlier timestamp is
+  // reused.
   const finalSystemdSnapshots = [];
   for (let index = 0; index < request.units.length; index += 1) {
     const finalCredentialProperties = collectEffectiveCredentialProperties(

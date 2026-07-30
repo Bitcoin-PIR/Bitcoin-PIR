@@ -10,7 +10,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  PUBLISHER_FIREWALL_OUTPUT_KEYS,
   PUBLISHER_NETNS_FILES,
+  publisherFirewallEvidenceFromDirectory,
   validatePublisherFirewallOutputs,
   validatePublisherNetnsTree,
 } from "./payment-v1-publisher-netns-gate.mjs";
@@ -132,8 +134,8 @@ for (const [label, path, transform, error] of [
     /TemporaryFileSystem must equal/u],
   ["publisher host run bind alias", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
     (text) => text.replace(
-      "BindReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-publisher/hosts:/etc/hosts",
-      "BindReadOnlyPaths=/run:/host-run\nBindReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-publisher/hosts:/etc/hosts",
+      "BindReadOnlyPaths=/etc/netns/bpir-directory-publisher/hosts:/etc/hosts",
+      "BindReadOnlyPaths=/run:/host-run\nBindReadOnlyPaths=/etc/netns/bpir-directory-publisher/hosts:/etc/hosts",
     ), /BindReadOnlyPaths must equal/u],
   ["external DNS", "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
     (text) => text.replace("127.0.0.1", "1.1.1.1"), /resolver must be local/u],
@@ -247,6 +249,27 @@ IPV6 (raw):
 
 test("closed UFW/raw/nft publisher firewall evidence passes", () => {
   assert.equal(validatePublisherFirewallOutputs(firewallOutputs()), true);
+});
+
+test("validated firewall directory emits the canonical ceremony evidence object", () => {
+  const directory = mkdtempSync(join(tmpdir(), "bitcoinpir-publisher-firewall-evidence-"));
+  try {
+    const outputs = firewallOutputs();
+    for (const key of PUBLISHER_FIREWALL_OUTPUT_KEYS) {
+      writeFileSync(join(directory, `${key}.txt`), outputs[key]);
+    }
+    assert.deepEqual(publisherFirewallEvidenceFromDirectory(directory), outputs);
+    const result = spawnSync(process.execPath, [
+      join(REPOSITORY, "scripts/payment-v1-publisher-netns-gate.mjs"),
+      "emit-firewall-json",
+      directory,
+    ], { encoding: "utf8", shell: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), outputs);
+    assert.equal(result.stdout.endsWith("\n"), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("firewall evidence rejects an extra publisher-interface rule", () => {

@@ -189,6 +189,16 @@ The templates divide responsibilities as follows:
   without making namespace teardown stop Caddy. Because the nsfs bind mount must be host-visible, the owner unit
   cannot use systemd mount-namespace hardening; this exception is closed by the
   helper pin and runtime evidence rather than hidden in a nominal sandbox.
+- `scripts/payment-v1-publisher-netns-ceremony.mjs` is the source-closed,
+  root-only activation/rollback boundary for that namespace. It verifies the
+  exact installed files, both local gate imports, `/usr/bin/node`,
+  `/usr/bin/systemctl`, regular
+  `/usr/bin/ip`, Caddy/publisher generations, external sentinels, canonical
+  firewall evidence and fixed topology; invokes pinned commands by descriptor;
+  starts or stops only the namespace unit; and atomically publishes
+  receipt-bound state. It never creates sentinels/rules/routes, changes Caddy,
+  starts the publisher or installs a signing key. See
+  `docs/payment/PUBLISHER_NETNS_CEREMONY.md`.
 - `systemd/payment-v1-directory-publisher.service.in` is an explicit one-shot,
   no-retry, no-key publication input. It joins only that named namespace, uses
   files-only hostname mappings to `10.203.0.1`, and can send three frozen signed

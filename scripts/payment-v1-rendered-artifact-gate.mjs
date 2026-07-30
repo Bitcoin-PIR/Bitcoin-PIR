@@ -405,7 +405,7 @@ export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
 const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/network/directory-publisher-hosts.conf.in": {
     artifactClass: "config",
-    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+    targetPath: "/etc/netns/bpir-directory-publisher/hosts",
     modes: ["0444"],
     rootOwned: true,
   },
@@ -417,13 +417,13 @@ const TEMPLATE_CATALOG = Object.freeze({
   },
   "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in": {
     artifactClass: "config",
-    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+    targetPath: "/etc/netns/bpir-directory-publisher/nsswitch.conf",
     modes: ["0444"],
     rootOwned: true,
   },
   "deploy/payment-v1/network/directory-publisher-resolv.conf.in": {
     artifactClass: "config",
-    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+    targetPath: "/etc/netns/bpir-directory-publisher/resolv.conf",
     modes: ["0444"],
     rootOwned: true,
   },
@@ -3040,10 +3040,10 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
     case "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256": {
       const expected = [
-        "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+        "/etc/netns/bpir-directory-publisher/hosts",
         "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
-        "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
-        "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+        "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+        "/etc/netns/bpir-directory-publisher/resolv.conf",
       ];
       if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
         fail(`hash manifest ${manifestPath} must bind the four exact network inputs`);

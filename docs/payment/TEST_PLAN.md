@@ -965,6 +965,36 @@ remain separate acceptance gates.
   reject dynamic imports, export-from drift, package/absolute/`file:`/`data:`
   imports, CommonJS loaders and workers. Production transfer pins all three
   bytes from one commit;
+- publisher-netns ceremony tests require canonical closed plans; exact
+  RFC1918/ULA point-to-point pairs; no publisher private key or payment/query
+  correlation fields; exact installed/runtime/sentinel/firewall/Caddy pins;
+  the exact loaded Caddy `Wants+After` drop-in relation with no reverse edge or
+  pending daemon reload; inactive publisher/netns units with no pending reload;
+  an exact two-module local import closure for the executor;
+  and apply/rollback approvals with independent canonical digests and validity
+  windows no longer than one hour;
+- apply starts only the exact namespace unit after an inactive/absent preimage,
+  repeats that absence immediately before writing its durable start intent,
+  while ordinary replay refuses to adopt an active unit. Lost-start recovery
+  requires the durable start intent, preserves its original approval digest,
+  revalidates exact live topology and never calls start twice;
+- topology negatives cover extra functional interfaces, active/addressed/
+  aliased/wrong-kind fallback tunnels, loopback/client/veth identity drift,
+  extra/default/gateway/NAT routes, IPv4/IPv6 host forwarding, wrong nsfs and
+  Caddy/publisher/input or boot/systemd identity changes before receipt
+  publication;
+- receipt/state tests cover owner-only single-link publication, valid
+  pending-only and final-plus-pending crash windows, contradictory pending
+  refusal, exact live idempotent replay, separate receipt-bound rollback,
+  lost-stop recovery only with an exact receipt-bound durable stop intent,
+  refusal to adopt an externally stopped namespace, and rollback refusal after
+  Caddy/publisher/generation drift, including boot/systemd identity drift after
+  the exact stop and installed/runtime/sentinel/firewall drift during stop;
+- disposable privileged Linux runs the Node suite without skips, including
+  descriptor execution of the exact approved inode inside a real network
+  namespace. The native helper harness injects crashes around namespace mount,
+  veth creation/move and cleanup, then proves exact recovery plus fail-closed
+  monitoring for link/default-route drift and unknown fixed-name preimages;
 - runtime-evidence accepts only exact paired `files` or paired
   `files systemd` NSS sources for passwd/group, with files first and inherited
   initgroups; mixed/reversed sequences, action brackets and every other source

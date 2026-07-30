@@ -128,3 +128,16 @@ a marked disposable container:
 BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
   scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 ```
+
+## Activation ceremony
+
+The rendered network profile is installation input, not start authority. The
+separate source-closed ceremony in
+`scripts/payment-v1-publisher-netns-ceremony.mjs` binds the installed files,
+external sentinels, canonical firewall output, Caddy/publisher preimages,
+runtime command inodes and current boot before it starts only the namespace
+unit. Its rollback has a distinct short-lived receipt-bound approval and stops
+only that unit. Neither path changes Caddy, the firewall, publication state or
+the offline publisher key boundary. Exact order, crash recovery, reboot scope
+and remaining blockers are in
+`docs/payment/PUBLISHER_NETNS_CEREMONY.md`.

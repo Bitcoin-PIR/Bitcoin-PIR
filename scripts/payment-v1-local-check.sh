@@ -105,6 +105,14 @@ node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
   scripts/payment-v1-core-pattern-crash.test.mjs \
   scripts/payment-v1-core-pattern-lock-exec.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node scripts/payment-v1-publisher-netns-gate.mjs
+node --test \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
@@ -404,6 +412,14 @@ node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
   scripts/payment-v1-core-pattern-crash.test.mjs \
   scripts/payment-v1-core-pattern-lock-exec.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node scripts/payment-v1-publisher-netns-gate.mjs
+node --test \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \

@@ -380,7 +380,8 @@ export function validatePublisherNamespaceOwnerUnitV1(unitInput) {
   }
 }
 
-function validateDropIn(text, target) {
+export function validatePublisherCaddyDropIn(text) {
+  const target = "bhtm-caddy";
   const label = `${target} namespace drop-in`;
   validateNoInstall(text, label);
   exactSectionKeys(text, "Unit", ["Wants", "After"], label);
@@ -425,9 +426,9 @@ function validatePublisherUnit(unit) {
   exactValues(unit, "RestrictAddressFamilies", ["AF_INET"], label);
   exactValues(unit, "TemporaryFileSystem", ["/run:ro"], label);
   exactValues(unit, "BindReadOnlyPaths", [
-    "/etc/bitcoinpir/payment-v1/directory-publisher/hosts:/etc/hosts",
-    "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf:/etc/resolv.conf",
-    "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
+    "/etc/netns/bpir-directory-publisher/hosts:/etc/hosts",
+    "/etc/netns/bpir-directory-publisher/resolv.conf:/etc/resolv.conf",
+    "/etc/netns/bpir-directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
   ], label);
   exactValues(unit, "UnsetEnvironment", [
     "http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy",
@@ -516,7 +517,10 @@ function canonical(value) {
   fail("network policy contains an unsupported JSON value");
 }
 
-function validateNetworkPolicy(text) {
+export function validatePublisherNetworkPolicy(
+  text,
+  publisherHostname = "@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+) {
   let policy;
   try {
     policy = JSON.parse(text);
@@ -530,7 +534,7 @@ function validateNetworkPolicy(text) {
       wants: "bitcoinpir-payment-v1-publisher-netns.service",
     },
     certificate_dns_sans: [
-      "@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+      publisherHostname,
     ],
     firewall: {
       forwarding_sysctls: {
@@ -807,14 +811,14 @@ export function validatePublisherNetnsTree(root) {
     "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"));
   validatePublisherUnit(values.get(
     "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in"));
-  validateDropIn(values.get(
-    "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in"), "bhtm-caddy");
+  validatePublisherCaddyDropIn(values.get(
+    "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in"));
   validateNetworkFiles(
     values.get("deploy/payment-v1/network/directory-publisher-hosts.conf.in"),
     values.get("deploy/payment-v1/network/directory-publisher-resolv.conf.in"),
     values.get("deploy/payment-v1/network/directory-publisher-nsswitch.conf.in"),
   );
-  validateNetworkPolicy(values.get(
+  validatePublisherNetworkPolicy(values.get(
     "deploy/payment-v1/network/directory-publisher-network-policy.json.in"));
   const networkReadme = values.get("deploy/payment-v1/network/README.md");
   for (const blocker of [
@@ -827,20 +831,26 @@ export function validatePublisherNetnsTree(root) {
   return true;
 }
 
+export function publisherFirewallEvidenceFromDirectory(directory) {
+  const root = resolve(directory);
+  const outputs = Object.fromEntries(PUBLISHER_FIREWALL_OUTPUT_KEYS.map((key) => [
+    key,
+    readFileSync(join(root, `${key}.txt`), "utf8"),
+  ]));
+  validatePublisherFirewallOutputs(outputs);
+  return outputs;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] === "verify-firewall-directory") {
-    if (process.argv.length !== 4) fail("usage: verify-firewall-directory DIRECTORY");
-    const directory = resolve(process.argv[3]);
-    const outputs = Object.fromEntries(PUBLISHER_FIREWALL_OUTPUT_KEYS.map((key) => [
-      key,
-      readFileSync(join(directory, `${key}.txt`), "utf8"),
-    ]));
-    validatePublisherFirewallOutputs(outputs);
-    process.stdout.write("payment-v1 publisher firewall evidence: ok\n");
+  if (["verify-firewall-directory", "emit-firewall-json"].includes(process.argv[2])) {
+    if (process.argv.length !== 4) fail(`usage: ${process.argv[2]} DIRECTORY`);
+    const outputs = publisherFirewallEvidenceFromDirectory(process.argv[3]);
+    if (process.argv[2] === "emit-firewall-json") process.stdout.write(canonical(outputs));
+    else process.stdout.write("payment-v1 publisher firewall evidence: ok\n");
   } else if (process.argv.length === 2) {
     validatePublisherNetnsTree(REPOSITORY);
     process.stdout.write("payment-v1 publisher netns gate: ok\n");
   } else {
-    fail("usage: payment-v1-publisher-netns-gate.mjs [verify-firewall-directory DIRECTORY]");
+    fail("usage: payment-v1-publisher-netns-gate.mjs [verify-firewall-directory|emit-firewall-json DIRECTORY]");
   }
 }

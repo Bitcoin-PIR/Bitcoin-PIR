@@ -425,6 +425,23 @@ operator has activated the path with real money or public infrastructure.
 
 ### Directory and operator tooling
 
+- [x] The fixed same-host directory-publisher network now has a source-closed
+      activation ceremony in addition to its inert render profile. A canonical
+      plan binds exact installed files, external sentinels, firewall evidence,
+      Caddy/publisher preimages, boot identity and regular Node/systemctl/ip
+      executables, plus the executor's exact two-module local import closure. A
+      fresh at-most-one-hour approval can start only the netns
+      unit; a different receipt-bound approval can stop only that unit. Runtime
+      verification closes nsfs, veth txid aliases/MACs/cross-indices, loopback,
+      the reviewed down/addressless kernel fallback subset, connected routes
+      and zero forwarding. Descriptor-pinned command execution and owner-only
+      pending/final receipt recovery pass real Linux tests; the native helper's
+      crash/monitor/cleanup harness passes in a disposable arm64 Linux
+      container. The ceremony never changes Caddy/firewall/sentinels, starts
+      the publisher or handles a private key. This is source/test closure, not
+      target installation or activation. The publication-interval firewall
+      generation guard, exact target pins, remote mutation/start approvals,
+      Caddy overlay receipt and new-boot runtime evidence remain mandatory.
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
       checkpoints, tombstones, strict-mode relay split-view checks and rollback
       state. The separate centralized-single-relay API requires an explicit

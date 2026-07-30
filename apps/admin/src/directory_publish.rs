@@ -3,9 +3,7 @@
 //! The publisher never accepts a signing key and never reconstructs an EVENT
 //! message. It verifies canonical artifacts against an explicit directory-key
 //! pin, sends the exact input message bytes, and requires one positive NIP-01
-//! `OK` for every event on every configured relay. Strict mode requires at
-//! least two distinct relays. A deliberately centralized deployment must opt
-//! into the visibly degraded single-relay mode.
+//! `OK` for every event on every independently configured relay.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -111,25 +109,6 @@ struct CheckedPublishEventV1 {
 struct RelayTargetV1 {
     url: String,
     host: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RelayModeV1 {
-    StrictMultiRelay,
-    CentralizedSingleRelay,
-}
-
-impl RelayModeV1 {
-    const fn receipt_fields(self) -> &'static str {
-        match self {
-            Self::StrictMultiRelay => {
-                "publication_mode=strict-multi-relay centralized=false degraded=false"
-            }
-            Self::CentralizedSingleRelay => {
-                "publication_mode=centralized-single-relay centralized=true degraded=true"
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -623,7 +602,7 @@ fn validate_relay_targets_v1(
         }
         targets.push(RelayTargetV1 { url, host });
     }
-    Ok((targets, relay_mode))
+    Ok(targets)
 }
 
 fn relay_host_v1(url: &str) -> Result<String, String> {
@@ -759,11 +738,6 @@ mod tests {
             RelaySetModeV1::StrictMultiRelay,
         )
         .unwrap();
-        assert_eq!(mode, RelayModeV1::StrictMultiRelay);
-        assert_eq!(
-            mode.receipt_fields(),
-            "publication_mode=strict-multi-relay centralized=false degraded=false"
-        );
         assert_eq!(targets[0].host, "one.example");
         assert_eq!(targets[1].host, "two.example");
     }

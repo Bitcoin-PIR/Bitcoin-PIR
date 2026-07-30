@@ -100,7 +100,7 @@
       "mode": "0444",
       "source_path": "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
       "source_sha256": "UNRESOLVED",
-      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+      "target_path": "/etc/netns/bpir-directory-publisher/hosts",
       "uid": 0
     },
     {
@@ -116,7 +116,7 @@
       "mode": "0444",
       "source_path": "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
       "source_sha256": "UNRESOLVED",
-      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+      "target_path": "/etc/netns/bpir-directory-publisher/nsswitch.conf",
       "uid": 0
     },
     {
@@ -124,7 +124,7 @@
       "mode": "0444",
       "source_path": "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
       "source_sha256": "UNRESOLVED",
-      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+      "target_path": "/etc/netns/bpir-directory-publisher/resolv.conf",
       "uid": 0
     },
     {
