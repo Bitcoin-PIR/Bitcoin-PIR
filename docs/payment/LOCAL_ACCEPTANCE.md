@@ -1403,7 +1403,7 @@ not reported as passing evidence for this closeout.
 
 ## 2026-07-30 P1-1 CLN InvocationID lease closeout
 
-The current dirty CLN worktree passed the short-lease remediation checks in a
+The committed CLN short-lease remediation source passed these checks in a
 network-disabled, root-run `bpir-rust-ci:1.94.1-tools` container with the source
 mounted read-only and `CARGO_TARGET_DIR` confined to the container's `/tmp`:
 
