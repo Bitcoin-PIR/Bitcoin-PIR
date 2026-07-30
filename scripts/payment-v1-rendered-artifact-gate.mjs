@@ -35,6 +35,7 @@ export const RUNTIME_COLLECTOR =
   "bitcoinpir-payment-v1-linux-runtime-evidence-v8";
 export const REVIEWED_SYSTEMD_VERSION =
   "systemd 255 (255.4-1ubuntu8.15)";
+export const REVIEWED_SYSTEMD_MANAGER_VERSION = "255.4-1ubuntu8.15";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -374,6 +375,7 @@ export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
 ]);
 export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
   "ServiceWatchdogs",
+  "Version",
 ]);
 
 const TEMPLATE_CATALOG = Object.freeze({

@@ -32,6 +32,7 @@ import {
   RUNTIME_BUSCTL_UNIT_PROPERTIES,
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+  REVIEWED_SYSTEMD_MANAGER_VERSION,
   REVIEWED_SYSTEMD_VERSION,
   canonicalJson,
   isResolvedDirectoryRelayRuntimeRequest,
@@ -2372,7 +2373,7 @@ function effectiveBusctlServicePropertyNames() {
 }
 
 function effectiveBusctlManagerPropertyNames() {
-  const local = ["ServiceWatchdogs"];
+  const local = ["ServiceWatchdogs", "Version"];
   if (canonicalJson(local) !== canonicalJson(RUNTIME_BUSCTL_MANAGER_PROPERTIES)) {
     fail("collector and rendered runtime busctl manager property schemas diverged");
   }
@@ -2671,6 +2672,22 @@ export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property
   return { signature: "b", value: parsed.data };
 }
 
+export function parseBusctlStringJsonV1(text, label = "systemd string property") {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const parsed = parseStrictJson(text, label);
+  exactKeys(parsed, ["data", "type"], label);
+  if (
+    parsed.type !== "s" ||
+    typeof parsed.data !== "string" ||
+    !/^[\x20-\x7e]{1,256}$/u.test(parsed.data)
+  ) {
+    fail(`${label} does not have one reviewed printable s value`);
+  }
+  return { signature: "s", value: parsed.data };
+}
+
 export function parseBusctlExecCommandExJsonV1(
   text,
   label = "systemd ExecCommandEx",
@@ -2846,26 +2863,27 @@ function collectEffectiveCredentialProperties(unitName) {
 
 function collectSystemdManagerPropertiesV1() {
   const properties = effectiveBusctlManagerPropertyNames();
-  if (canonicalJson(properties) !== canonicalJson(["ServiceWatchdogs"])) {
+  if (canonicalJson(properties) !== canonicalJson(["ServiceWatchdogs", "Version"])) {
     fail("runtime busctl manager property set is not closed");
   }
-  const record = runAbsolute("/usr/bin/busctl", [
-    "--system",
-    "--json=short",
-    "get-property",
-    "org.freedesktop.systemd1",
-    "/org/freedesktop/systemd1",
-    "org.freedesktop.systemd1.Manager",
-    "ServiceWatchdogs",
-  ]);
-  if (record.exit_status !== 0 || record.stderr !== "") {
-    fail("busctl ServiceWatchdogs failed for systemd manager");
-  }
+  const collect = (property, parse) => {
+    const record = runAbsolute("/usr/bin/busctl", [
+      "--system",
+      "--json=short",
+      "get-property",
+      "org.freedesktop.systemd1",
+      "/org/freedesktop/systemd1",
+      "org.freedesktop.systemd1.Manager",
+      property,
+    ]);
+    if (record.exit_status !== 0 || record.stderr !== "") {
+      fail(`busctl ${property} failed for systemd manager`);
+    }
+    return parse(record.stdout, `systemd-manager.${property}`);
+  };
   return {
-    ServiceWatchdogs: parseBusctlBooleanJsonV1(
-      record.stdout,
-      "systemd-manager.ServiceWatchdogs",
-    ),
+    ServiceWatchdogs: collect("ServiceWatchdogs", parseBusctlBooleanJsonV1),
+    Version: collect("Version", parseBusctlStringJsonV1),
   };
 }
 
@@ -3080,13 +3098,22 @@ function validateStoppedEffectiveServicePropertiesV2(unit, properties) {
 }
 
 function validateSystemdManagerPropertiesV1(properties, label) {
-  exactKeys(properties, ["ServiceWatchdogs"], label);
+  exactKeys(properties, ["ServiceWatchdogs", "Version"], label);
   exactKeys(properties.ServiceWatchdogs, ["signature", "value"], `${label}.ServiceWatchdogs`);
   if (
     properties.ServiceWatchdogs.signature !== "b" ||
     properties.ServiceWatchdogs.value !== true
   ) {
     fail(`${label}.ServiceWatchdogs must be typed b true`);
+  }
+  exactKeys(properties.Version, ["signature", "value"], `${label}.Version`);
+  if (
+    properties.Version.signature !== "s" ||
+    properties.Version.value !== REVIEWED_SYSTEMD_MANAGER_VERSION
+  ) {
+    fail(
+      `${label}.Version must be typed s ${REVIEWED_SYSTEMD_MANAGER_VERSION}`,
+    );
   }
 }
 

@@ -46,6 +46,7 @@ import {
   parseBusctlExecCommandExJsonV1,
   parseBusctlExecStartPreExJsonV1,
   parseBusctlEmptyCredentialJsonV1,
+  parseBusctlStringJsonV1,
   parseBusctlUnitNamesJsonV1,
   parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
@@ -63,6 +64,7 @@ import {
   validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  REVIEWED_SYSTEMD_MANAGER_VERSION,
   REVIEWED_SYSTEMD_VERSION,
   RUNTIME_BUSCTL_MANAGER_PROPERTIES,
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
@@ -471,6 +473,13 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
     { signature: "b", value: true },
   );
   assert.deepEqual(
+    parseBusctlStringJsonV1(JSON.stringify({
+      data: REVIEWED_SYSTEMD_MANAGER_VERSION,
+      type: "s",
+    })),
+    { signature: "s", value: REVIEWED_SYSTEMD_MANAGER_VERSION },
+  );
+  assert.deepEqual(
     parseBusctlExecCommandExJsonV1(
       '{"type":"a(sasasttttuii)","data":[["/usr/bin/sleep",["/usr/bin/sleep","infinity"],[],1,0,0,0,4242,0,0]]}',
       "ExecStartEx",
@@ -525,6 +534,17 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
     assert.throws(
       () => parseBusctlBooleanJsonV1(JSON.stringify(value), label),
       /reviewed b value/,
+      label,
+    );
+  }
+  for (const [label, value] of [
+    ["wrong string type", { data: REVIEWED_SYSTEMD_MANAGER_VERSION, type: "as" }],
+    ["nonstring", { data: 255, type: "s" }],
+    ["control character", { data: "255.4\nforeign", type: "s" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlStringJsonV1(JSON.stringify(value), label),
+      /printable s value/,
       label,
     );
   }
@@ -1355,6 +1375,7 @@ function fixture() {
     },
     systemd_manager_passes: [0, 1].map(() => ({
       ServiceWatchdogs: { signature: "b", value: true },
+      Version: { signature: "s", value: REVIEWED_SYSTEMD_MANAGER_VERSION },
     })),
     trusted_commands: COMMANDS.map((path, index) => ({
       gid: 0,
@@ -3849,6 +3870,8 @@ test("reviewed preflight lease requires a live notify process and exact watchdog
     [(value) => { value.evidence.units[0].service_property_passes[1].observed_uptime_milliseconds = 4999; }, /pass uptime is invalid/],
     [(value) => { value.evidence.systemd_manager_passes[0].ServiceWatchdogs.value = false; }, /typed b true/],
     [(value) => { value.evidence.systemd_manager_passes[1].ServiceWatchdogs.signature = "u"; }, /typed b true/],
+    [(value) => { value.evidence.systemd_manager_passes[0].Version.value = "255.4-1ubuntu8.14"; }, /Version must be typed s 255\.4-1ubuntu8\.15/],
+    [(value) => { value.evidence.systemd_manager_passes[1].Version.signature = "as"; }, /Version must be typed s 255\.4-1ubuntu8\.15/],
     [(value) => { value.evidence.units[0].properties.SubState = "exited"; }, /no active MainPID/],
     [(value) => { value.evidence.units[0].properties.MainPID = "0"; }, /reviewed running ExecStart/],
     [(value) => { value.evidence.units[0].properties.ActiveEnterTimestampMonotonic = "6000000"; }, /not bound to this boot/],

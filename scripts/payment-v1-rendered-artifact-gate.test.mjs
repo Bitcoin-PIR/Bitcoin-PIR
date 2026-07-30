@@ -1188,7 +1188,7 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "Conditions",
     "Requires",
   ]);
-  assert.deepEqual(first.request.busctl_manager_properties, ["ServiceWatchdogs"]);
+  assert.deepEqual(first.request.busctl_manager_properties, ["ServiceWatchdogs", "Version"]);
   assert.deepEqual(first.request.busctl_service_properties, [
     "ExecStartEx",
     "ExecStartPreEx",
