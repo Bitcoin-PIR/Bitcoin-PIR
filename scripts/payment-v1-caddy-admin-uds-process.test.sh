@@ -2,8 +2,8 @@
 
 set -eu
 
-script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-repository=$(CDPATH= cd -- "$script_directory/.." && pwd -P)
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+repository=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 fixture="$script_directory/fixtures/payment-v1-caddy-admin-uds-process.Caddyfile"
 probe="$script_directory/payment-v1-caddy-admin-uds-probe.mjs"
 import_fixture="$script_directory/fixtures/payment-v1-caddy-admin-uds-import-main.Caddyfile"
@@ -41,6 +41,7 @@ BPIR_IMPORT_FIXTURE="$import_fixture" BPIR_GATE="$script_directory/payment-v1-ca
     }
   '
 
+# shellcheck disable=SC2016 # JavaScript template literals are intentionally single-quoted.
 docker run --rm \
   --network none \
   --read-only \
@@ -59,6 +60,7 @@ docker run --rm \
 # the gate, while the pinned binary must demonstrate that it would otherwise
 # dispatch the hidden second admin directive. Quoted directive names are also
 # real Caddy tokens and receive the same fail-closed treatment.
+# shellcheck disable=SC2016 # JavaScript template literals are intentionally single-quoted.
 BPIR_CADDY_IMAGE="$caddy_image" BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
   node --input-type=module -e '
     import { spawnSync } from "node:child_process";
@@ -153,6 +155,16 @@ if docker logs "$container" 2>&1 | grep -F -e BPIR_LOG_SECRET_SENTINEL -e "$log_
 fi
 test "$(docker exec "$container" sh -c 'awk '\''$2 ~ /:07E3$/ && $4 == "0A" {count++} END {print count+0}'\'' /proc/net/tcp /proc/net/tcp6')" = "0"
 test "$(docker exec "$container" curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18080/)" = "bitcoinpir-caddy-admin-uds-ok"
+docker exec "$container" curl --fail --silent --show-error --max-time 3 \
+    --unix-socket "$socket" http://localhost/config/ \
+  | BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+    node --input-type=module -e '
+      import { pathToFileURL } from "node:url";
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      const { validateAdaptedCaddyPrivacy } = await import(pathToFileURL(process.env.BPIR_GATE));
+      validateAdaptedCaddyPrivacy(JSON.parse(Buffer.concat(chunks)));
+    '
 
 docker run --rm \
   --network none \

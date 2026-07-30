@@ -65,7 +65,7 @@ function generation(unitName, { canReload, pid }) {
     active_state: "active",
     can_reload: canReload,
     control_group: `/system.slice/${unitName}`,
-    invocation_id: "12345678-1234-4234-9234-123456789abc",
+    invocation_id: "12345678123442349234123456789abc",
     main_pid: pid,
     sub_state: "running",
     unit_name: unitName,
@@ -156,6 +156,11 @@ function makePlan() {
       source_sha256: sha256(SOURCE),
     },
     runtime: {
+      admin_uds_gate: pin(
+        "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+        "9".repeat(64),
+        "0555",
+      ),
       admin_probe: pin(
         "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
         "e".repeat(64),
@@ -370,10 +375,10 @@ function makePlan() {
     transaction_id: transactionId,
     trust_acknowledgements: {
       append_only_cannot_disable_global_admin: true,
-      append_only_cannot_disable_global_logging: true,
+      adapted_json_has_no_configured_log_sink: true,
       append_only_cannot_disable_global_zero_rtt: true,
       existing_preimage_remains_authoritative: true,
-      existing_root_caddy_retains_admin_acme_and_journal_trust: true,
+      existing_root_caddy_retains_admin_and_acme_trust: true,
       existing_root_caddy_expands_failure_domain: true,
       fresh_admin_runtime_probes_required_before_and_after_reload: true,
       reload_does_not_refresh_cold_runtime_evidence: true,
@@ -418,11 +423,15 @@ function adminRuntime(plan, start) {
       },
       fragment_path: plan.target.unit_fragment.path,
       group: "root",
+      limit_core: "0",
+      memory_swap_max: "0",
       need_daemon_reload: "no",
       pass_environment: [],
       runtime_directory: ["bitcoinpir-caddy-admin"],
       runtime_directory_mode: "0700",
       runtime_directory_preserve: "no",
+      standard_error: "null",
+      standard_output: "null",
       umask: "0077",
       unset_environment: ["CADDY_ADMIN"],
       user: "root",
@@ -649,6 +658,11 @@ for (const [label, mutate, expected] of [
     /receipt mode must be one of \["0400"\]/,
   ],
   [
+    "admin UDS gate path drift",
+    (plan) => { plan.runtime.admin_uds_gate.path = "/usr/local/libexec/bitcoinpir/unreviewed-admin-gate.mjs"; },
+    /runtime.admin_uds_gate.path is outside its exact reviewed target set/u,
+  ],
+  [
     "setpriv digest differs from hardening evidence",
     (plan) => { plan.runtime.setpriv_binary.sha256 = "3".repeat(64); },
     /setpriv binary must equal the approved hardening setpriv digest/,
@@ -679,6 +693,16 @@ for (const [label, mutate, expected] of [
     /health_checks\[0\]\.path must equal \/$/,
   ],
   [
+    "hyphenated target InvocationID",
+    (plan) => { plan.target.unit_generation.invocation_id = "12345678-1234-4234-9234-123456789abc"; },
+    /32-character lowercase systemd InvocationID/,
+  ],
+  [
+    "zero source-fair InvocationID",
+    (plan) => { plan.source_fair.unit_generation.invocation_id = "0".repeat(32); },
+    /nonzero 32-character lowercase systemd InvocationID/,
+  ],
+  [
     "restart command",
     (plan) => { plan.transaction.reload_argv[1] = "restart"; },
     /reload_argv/,
@@ -694,9 +718,14 @@ for (const [label, mutate, expected] of [
     /expands_failure_domain/,
   ],
   [
+    "configured log-sink denial",
+    (plan) => { plan.trust_acknowledgements.adapted_json_has_no_configured_log_sink = false; },
+    /adapted_json_has_no_configured_log_sink/,
+  ],
+  [
     "shared existing-Caddy trust denial",
-    (plan) => { plan.trust_acknowledgements.existing_root_caddy_retains_admin_acme_and_journal_trust = false; },
-    /retains_admin_acme_and_journal_trust/,
+    (plan) => { plan.trust_acknowledgements.existing_root_caddy_retains_admin_and_acme_trust = false; },
+    /retains_admin_and_acme_trust/,
   ],
 ]) {
   test(`overlay plan rejects ${label}`, () => {
@@ -797,6 +826,16 @@ for (const [label, mutate, expected] of [
   [
     "NeedDaemonReload drift",
     (receipt) => { receipt.before.admin_runtime.effective_unit.need_daemon_reload = "yes"; },
+    /effective_unit drifted/,
+  ],
+  [
+    "effective StandardOutput drift",
+    (receipt) => { receipt.after.admin_runtime.effective_unit.standard_output = "journal"; },
+    /effective_unit drifted/,
+  ],
+  [
+    "effective StandardError drift",
+    (receipt) => { receipt.after.admin_runtime.effective_unit.standard_error = "inherit"; },
     /effective_unit drifted/,
   ],
   [

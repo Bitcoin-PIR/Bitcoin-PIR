@@ -11,6 +11,7 @@ config_directory="/etc/caddy"
 config_path="$config_directory/Caddyfile"
 runtime_directory="/run/bitcoinpir-caddy-admin"
 admin_socket="$runtime_directory/admin.sock"
+journal_sentinel="bitcoinpir-journal-probe-$$"
 created_config_directory=0
 installed_config=0
 installed_unit=0
@@ -39,7 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-for command in awk cmp curl grep install node sha256sum stat systemctl systemd-analyze; do
+for command in awk cmp curl grep install journalctl node sha256sum stat systemctl systemd-analyze; do
   command -v "$command" >/dev/null
 done
 test -f "$unit_fixture"
@@ -108,6 +109,10 @@ wait_live() {
 verify_live() {
   test "$(run_root stat -c '%u:%g:%a:%F' "$runtime_directory")" = "0:0:700:directory"
   test "$(run_root stat -c '%u:%g:%a:%F' "$admin_socket")" = "0:0:200:socket"
+  test "$(systemctl show "$unit_name" --property=LimitCORE --value)" = "0"
+  test "$(systemctl show "$unit_name" --property=MemorySwapMax --value)" = "0"
+  test "$(systemctl show "$unit_name" --property=StandardOutput --value)" = "null"
+  test "$(systemctl show "$unit_name" --property=StandardError --value)" = "null"
   main_pid=$(systemctl show "$unit_name" --property=MainPID --value)
   case "$main_pid" in
     ''|*[!0-9]*|0) exit 1 ;;
@@ -120,6 +125,12 @@ verify_live() {
   fi
   test "$(curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18080/)" = \
     "bitcoinpir-caddy-admin-uds-ok"
+  test "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 3 \
+    "http://127.0.0.1:18080/$journal_sentinel")" = "502"
+  if run_root journalctl -u "$unit_name" --no-pager --output=cat | grep -F "$journal_sentinel"; then
+    echo "caddy-admin-uds-systemd=FAIL: request metadata reached journald" >&2
+    exit 1
+  fi
   test "$(run_root curl --fail --silent --show-error --max-time 3 \
     --unix-socket "$admin_socket" http://localhost/config/ \
     | node -e 'const chunks=[]; process.stdin.on("data", chunk => chunks.push(chunk)); process.stdin.on("end", () => { const value=JSON.parse(Buffer.concat(chunks)); process.stdout.write(value?.admin?.listen ?? ""); });')" = \
@@ -132,16 +143,25 @@ wait_live
 verify_live
 first_invocation=$(systemctl show "$unit_name" --property=InvocationID --value)
 first_pid=$(systemctl show "$unit_name" --property=MainPID --value)
-case "$first_invocation" in
-  ''|*[!0-9a-f]*) exit 1 ;;
-esac
-test "${#first_invocation}" -eq 32
+BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+  node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { validateSystemdInvocationId } = await import(pathToFileURL(process.env.BPIR_GATE));
+    validateSystemdInvocationId(process.argv[1], "real systemd InvocationID");
+  ' "$first_invocation"
 run_root systemctl reload "$unit_name"
 test "$(systemctl show "$unit_name" --property=MainPID --value)" = "$first_pid"
 verify_live
 
 run_root systemctl stop "$unit_name"
 test "$(systemctl is-active "$unit_name" 2>/dev/null || true)" = "inactive"
+stopped_invocation=$(systemctl show "$unit_name" --property=InvocationID --value)
+BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+  node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { normalizeSystemdInvocationId } = await import(pathToFileURL(process.env.BPIR_GATE));
+    if (normalizeSystemdInvocationId(process.argv[1], { active: false }) !== "") process.exit(1);
+  ' "$stopped_invocation"
 test ! -e "$runtime_directory"
 test ! -L "$runtime_directory"
 
@@ -149,10 +169,12 @@ run_root systemctl start "$unit_name"
 wait_live
 verify_live
 second_invocation=$(systemctl show "$unit_name" --property=InvocationID --value)
-case "$second_invocation" in
-  ''|*[!0-9a-f]*) exit 1 ;;
-esac
-test "${#second_invocation}" -eq 32
+BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+  node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { validateSystemdInvocationId } = await import(pathToFileURL(process.env.BPIR_GATE));
+    validateSystemdInvocationId(process.argv[1], "real systemd InvocationID");
+  ' "$second_invocation"
 test "$second_invocation" != "$first_invocation"
 run_root systemctl stop "$unit_name"
 test "$(systemctl is-active "$unit_name" 2>/dev/null || true)" = "inactive"

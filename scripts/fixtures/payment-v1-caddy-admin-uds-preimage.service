@@ -7,6 +7,10 @@ Type=notify
 User=root
 Group=root
 Environment=CADDY_ADMIN=127.0.0.1:2019
+StandardOutput=journal
+StandardError=inherit
+LimitCORE=infinity
+MemorySwapMax=infinity
 ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 TimeoutStopSec=5s

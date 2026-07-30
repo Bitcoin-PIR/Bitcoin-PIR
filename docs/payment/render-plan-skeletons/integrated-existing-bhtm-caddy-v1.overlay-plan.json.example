@@ -67,6 +67,19 @@
     "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256"
   },
   "runtime": {
+    "admin_uds_gate": {
+      "ctime_ns": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "sha256": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_SHA256",
+      "size": "INVALID_REPLACE_WITH_EXACT_ADMIN_HARDENING_GATE_SIZE",
+      "uid": 0
+    },
     "admin_probe": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -258,7 +271,7 @@
       "active_state": "active",
       "can_reload": "no",
       "control_group": "/system.slice/bitcoinpir-payment-v1-source-fair-edge.service",
-      "invocation_id": "INVALID_REPLACE_WITH_LOWERCASE_UUID",
+      "invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
       "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
       "sub_state": "running",
       "unit_name": "bitcoinpir-payment-v1-source-fair-edge.service"
@@ -307,7 +320,7 @@
       "socket_path": "/run/bitcoinpir-caddy-admin/admin.sock",
       "tcp_admin_absent": true,
       "transaction_id": "INVALID_REPLACE_WITH_ADMIN_UDS_TRANSACTION_ID",
-      "unit_invocation_id": "INVALID_REPLACE_WITH_HARDENED_UNIT_INVOCATION_ID",
+      "unit_invocation_id": "INVALID_REPLACE_WITH_HARDENED_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
       "unit_sha256": "INVALID_REPLACE_WITH_HARDENED_UNIT_SHA256"
     },
     "binary": {
@@ -362,7 +375,7 @@
       "active_state": "active",
       "can_reload": "yes",
       "control_group": "/system.slice/bhtm-caddy.service",
-      "invocation_id": "INVALID_REPLACE_WITH_LOWERCASE_UUID",
+      "invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
       "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
       "sub_state": "running",
       "unit_name": "bhtm-caddy.service"
@@ -459,10 +472,10 @@
   "transaction_id": "replace-integrated-existing-bhtm-caddy-v1",
   "trust_acknowledgements": {
     "append_only_cannot_disable_global_admin": true,
-    "append_only_cannot_disable_global_logging": true,
+    "adapted_json_has_no_configured_log_sink": true,
     "append_only_cannot_disable_global_zero_rtt": true,
     "existing_preimage_remains_authoritative": true,
-    "existing_root_caddy_retains_admin_acme_and_journal_trust": true,
+    "existing_root_caddy_retains_admin_and_acme_trust": true,
     "existing_root_caddy_expands_failure_domain": true,
     "fresh_admin_runtime_probes_required_before_and_after_reload": true,
     "reload_does_not_refresh_cold_runtime_evidence": true

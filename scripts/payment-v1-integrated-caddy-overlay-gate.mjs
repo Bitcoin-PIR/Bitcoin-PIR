@@ -40,6 +40,8 @@ const ADMIN_UDS_LISTEN = "unix//run/bitcoinpir-caddy-admin/admin.sock|0200";
 const ADMIN_UDS_DIAL = "unix//run/bitcoinpir-caddy-admin/admin.sock";
 const ADMIN_UDS_PROBE =
   "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs";
+const ADMIN_UDS_GATE =
+  "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs";
 const SETPRIV_BINARY = "/usr/bin/setpriv";
 const LOCK_PATH =
   "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock";
@@ -51,7 +53,8 @@ const OVERLAY_GATE_PATH =
 const OVERLAY_EXECUTOR_PATH =
   "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs";
 const HEX64 = /^[0-9a-f]{64}$/u;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const BOOT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SYSTEMD_INVOCATION_ID = /^[0-9a-f]{32}$/u;
 const SLUG = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u;
 const DNS_HOST =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
@@ -382,9 +385,19 @@ function validateDecimal(value, label, { allowZero = false } = {}) {
   }
 }
 
-function validateUuid(value, label) {
-  if (typeof value !== "string" || !UUID.test(value)) {
+function validateBootUuid(value, label) {
+  if (typeof value !== "string" || !BOOT_UUID.test(value)) {
     fail(`${label} must be a lowercase UUID`);
+  }
+}
+
+function validateInvocationId(value, label) {
+  if (
+    typeof value !== "string" ||
+    !SYSTEMD_INVOCATION_ID.test(value) ||
+    value === "0".repeat(32)
+  ) {
+    fail(`${label} must be a nonzero 32-character lowercase systemd InvocationID`);
   }
 }
 
@@ -479,7 +492,7 @@ function validateUnitGeneration(value, label, expected) {
     value.active_enter_timestamp_monotonic,
     `${label}.active_enter_timestamp_monotonic`,
   );
-  validateUuid(value.invocation_id, `${label}.invocation_id`);
+  validateInvocationId(value.invocation_id, `${label}.invocation_id`);
   if (value.control_group !== `/system.slice/${expected.unitName}`) {
     fail(`${label}.control_group must be the exact system slice`);
   }
@@ -691,6 +704,7 @@ function validateRuntime(value) {
   exactKeys(
     value,
     [
+      "admin_uds_gate",
       "exchange_helper",
       "exchange_manifest",
       "admin_probe",
@@ -708,6 +722,10 @@ function validateRuntime(value) {
   });
   validateRegularPin(value.admin_probe, "runtime.admin_probe", {
     paths: [ADMIN_UDS_PROBE],
+    modes: ["0555", "0755"],
+  });
+  validateRegularPin(value.admin_uds_gate, "runtime.admin_uds_gate", {
+    paths: [ADMIN_UDS_GATE],
     modes: ["0555", "0755"],
   });
   validateRegularPin(value.setpriv_binary, "runtime.setpriv_binary", {
@@ -1028,10 +1046,10 @@ function validateHealthChecks(value, placeholders) {
 function validateTrustAcknowledgements(value) {
   const keys = [
     "append_only_cannot_disable_global_admin",
-    "append_only_cannot_disable_global_logging",
+    "adapted_json_has_no_configured_log_sink",
     "append_only_cannot_disable_global_zero_rtt",
     "existing_preimage_remains_authoritative",
-    "existing_root_caddy_retains_admin_acme_and_journal_trust",
+    "existing_root_caddy_retains_admin_and_acme_trust",
     "existing_root_caddy_expands_failure_domain",
     "fresh_admin_runtime_probes_required_before_and_after_reload",
     "reload_does_not_refresh_cold_runtime_evidence",
@@ -1287,11 +1305,15 @@ function expectedCaddyEffectiveUnit(plan, environmentNames) {
     },
     fragment_path: plan.target.unit_fragment.path,
     group: "root",
+    limit_core: "0",
+    memory_swap_max: "0",
     need_daemon_reload: "no",
     pass_environment: [],
     runtime_directory: ["bitcoinpir-caddy-admin"],
     runtime_directory_mode: "0700",
     runtime_directory_preserve: "no",
+    standard_error: "null",
+    standard_output: "null",
     umask: "0077",
     unset_environment: ["CADDY_ADMIN"],
     user: "root",
@@ -1519,7 +1541,7 @@ export function validateOverlayPreparedContext({ approvedPlanSha256, context, pl
   }
   exactKeys(context, ["backup", "before", "host", "preparation"], "overlay prepared context");
   exactKeys(context.host, ["boot_id", "machine_id_sha256"], "overlay receipt host");
-  validateUuid(context.host.boot_id, "overlay receipt host.boot_id");
+  validateBootUuid(context.host.boot_id, "overlay receipt host.boot_id");
   validateSha256(context.host.machine_id_sha256, "overlay receipt host.machine_id_sha256");
   validateReceiptSnapshot(
     context.before,

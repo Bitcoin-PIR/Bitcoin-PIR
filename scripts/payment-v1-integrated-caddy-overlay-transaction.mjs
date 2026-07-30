@@ -42,6 +42,7 @@ import {
   DAC_BOUNDARY,
   canonicalJson as canonicalAdminUdsJson,
   computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,
+  validateAdaptedCaddyPrivacy,
   validateCommittedReceipt as validateAdminUdsCommittedReceipt,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
@@ -130,11 +131,15 @@ function expectedCaddyEffectiveUnit(plan, environmentNames) {
     },
     fragment_path: plan.target.unit_fragment.path,
     group: "root",
+    limit_core: "0",
+    memory_swap_max: "0",
     need_daemon_reload: "no",
     pass_environment: [],
     runtime_directory: ["bitcoinpir-caddy-admin"],
     runtime_directory_mode: "0700",
     runtime_directory_preserve: "no",
+    standard_error: "null",
+    standard_output: "null",
     umask: "0077",
     unset_environment: ["CADDY_ADMIN"],
     user: "root",
@@ -279,17 +284,7 @@ function assertManifest(manifestBytes, helperPin) {
 }
 
 function assertAdaptedAdminConfig(adapted) {
-  if (
-    adapted === null ||
-    typeof adapted !== "object" ||
-    Array.isArray(adapted) ||
-    adapted.admin === null ||
-    typeof adapted.admin !== "object" ||
-    Array.isArray(adapted.admin) ||
-    adapted.admin.listen !== ADMIN_LISTEN
-  ) {
-    fail(`adapted Caddy JSON admin.listen must equal ${ADMIN_LISTEN}`);
-  }
+  validateAdaptedCaddyPrivacy(adapted, ADMIN_LISTEN);
 }
 
 function parseCanonicalAdminUdsEvidence(bytes, label) {
@@ -301,7 +296,13 @@ function parseCanonicalAdminUdsEvidence(bytes, label) {
   return value;
 }
 
-function assertAdminUdsHardeningEvidence(planBytes, receiptBytes, summary, adminProbePin) {
+function assertAdminUdsHardeningEvidence(
+  planBytes,
+  receiptBytes,
+  summary,
+  adminProbePin,
+  adminGatePin,
+) {
   const hardeningPlan = parseCanonicalAdminUdsEvidence(planBytes, "Caddy admin UDS plan");
   const receipt = parseCanonicalAdminUdsEvidence(receiptBytes, "Caddy admin UDS receipt");
   if (computeApprovedAdminUdsPlanSha256(hardeningPlan) !== summary.approved_plan_sha256) {
@@ -319,6 +320,9 @@ function assertAdminUdsHardeningEvidence(planBytes, receiptBytes, summary, admin
     hardeningPlan.runtime.probe.path !== adminProbePin.path
   ) {
     fail("overlay admin probe does not equal the approved hardening probe");
+  }
+  if (!same(hardeningPlan.runtime.gate, adminGatePin)) {
+    fail("overlay admin UDS gate does not equal the exact approved hardening gate generation");
   }
   if (
     hardeningPlan.runtime.setpriv_binary.sha256 !== summary.setpriv_binary_sha256
@@ -508,6 +512,7 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
     [plan.runtime.node_binary, `${label} Node runtime`],
     [plan.runtime.setpriv_binary, `${label} setpriv runtime`],
     [plan.runtime.admin_probe, `${label} Caddy admin UDS probe`],
+    [plan.runtime.admin_uds_gate, `${label} Caddy admin UDS gate`],
     [plan.runtime.gate, `${label} overlay gate`],
     [plan.runtime.executor, `${label} overlay executor`],
     [plan.runtime.exchange_helper, `${label} rename-exchange helper`],
@@ -545,6 +550,7 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
     files.get(plan.target.admin_uds_hardening.receipt.path),
     plan.target.admin_uds_hardening,
     plan.runtime.admin_probe,
+    plan.runtime.admin_uds_gate,
   );
   const config = await ops.readRegular(plan.target.config_preimage.path);
   if (requirePreimage) {
@@ -2961,11 +2967,15 @@ const EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
   "ExecStart",
   "FragmentPath",
   "Group",
+  "LimitCORE",
+  "MemorySwapMax",
   "NeedDaemonReload",
   "PassEnvironment",
   "RuntimeDirectory",
   "RuntimeDirectoryMode",
   "RuntimeDirectoryPreserve",
+  "StandardError",
+  "StandardOutput",
   "UMask",
   "UnsetEnvironment",
   "User",
@@ -2982,11 +2992,15 @@ function normalizeEffectiveUnitProperties(values) {
     exec_start: extractSingleSystemdExec(values.get("ExecStart"), "effective Caddy ExecStart"),
     fragment_path: values.get("FragmentPath"),
     group: values.get("Group"),
+    limit_core: values.get("LimitCORE"),
+    memory_swap_max: values.get("MemorySwapMax"),
     need_daemon_reload: values.get("NeedDaemonReload"),
     pass_environment: splitSystemdLiteralWords(values.get("PassEnvironment"), "effective Caddy PassEnvironment"),
     runtime_directory: splitSystemdLiteralWords(values.get("RuntimeDirectory"), "effective Caddy RuntimeDirectory"),
     runtime_directory_mode: values.get("RuntimeDirectoryMode"),
     runtime_directory_preserve: values.get("RuntimeDirectoryPreserve"),
+    standard_error: values.get("StandardError"),
+    standard_output: values.get("StandardOutput"),
     umask: values.get("UMask"),
     unset_environment: splitSystemdLiteralWords(values.get("UnsetEnvironment"), "effective Caddy UnsetEnvironment"),
     user: values.get("User"),
@@ -3274,7 +3288,11 @@ function processStartTicks(pid) {
 
 function bootId() {
   const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  if (!/^[0-9a-f-]{36}$/u.test(value)) fail("kernel boot_id is malformed");
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value)
+  ) {
+    fail("kernel boot_id is malformed");
+  }
   return value;
 }
 
@@ -3287,10 +3305,35 @@ function lockOwner(transactionId) {
   };
 }
 
-function ownerIsLive(owner) {
+function parseLockOwner(bytes) {
+  const owner = parseStrictJson(Buffer.from(bytes).toString("utf8"), "lock owner");
   exactKeys(owner, ["boot_id", "pid", "process_start_ticks", "transaction_id"], "lock owner");
+  if (
+    typeof owner.boot_id !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(owner.boot_id)
+  ) {
+    fail("lock owner boot ID is malformed");
+  }
+  if (!Number.isSafeInteger(owner.pid) || owner.pid < 1) {
+    fail("lock owner PID is malformed");
+  }
+  if (
+    typeof owner.process_start_ticks !== "string" ||
+    !/^[1-9][0-9]*$/u.test(owner.process_start_ticks)
+  ) {
+    fail("lock owner process start ticks are malformed");
+  }
+  if (
+    typeof owner.transaction_id !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(owner.transaction_id)
+  ) {
+    fail("lock owner transaction ID is malformed");
+  }
+  return owner;
+}
+
+function ownerIsLive(owner) {
   if (owner.boot_id !== bootId()) return false;
-  if (!Number.isSafeInteger(owner.pid) || owner.pid < 1) fail("lock owner PID is malformed");
   try {
     return processStartTicks(owner.pid) === owner.process_start_ticks;
   } catch (error) {
@@ -3301,10 +3344,22 @@ function ownerIsLive(owner) {
 
 export function acquireFilesystemLock(
   path,
-  { allowUnpinnedTestHelper = false, helperPin, recoverStale, transactionId },
+  {
+    allowUnpinnedTestHelper = false,
+    helperPin,
+    recoverStale,
+    testOnlyFaultInjector,
+    transactionId,
+  },
 ) {
   if (helperPin === undefined && allowUnpinnedTestHelper !== true) {
     fail("transaction lock owner publication requires the pinned no-replace helper");
+  }
+  if (testOnlyFaultInjector !== undefined && allowUnpinnedTestHelper !== true) {
+    fail("transaction lock fault injection is test-only");
+  }
+  if (testOnlyFaultInjector !== undefined && typeof testOnlyFaultInjector !== "function") {
+    fail("transaction lock test fault injector must be a function");
   }
   const create = () => {
     mkdirSync(path, { mode: 0o700 });
@@ -3321,7 +3376,13 @@ export function acquireFilesystemLock(
     const ownerBytes = Buffer.from(canonicalJson(owner), "utf8");
     const pendingPath = `${path}/${LOCK_OWNER_PENDING}`;
     const ownerPath = `${path}/${LOCK_OWNER}`;
-    const pending = realWriteExclusive(pendingPath, ownerBytes, "0400", lockDirectorySeal);
+    const pending = realWriteExclusive(
+      pendingPath,
+      ownerBytes,
+      "0400",
+      lockDirectorySeal,
+      testOnlyFaultInjector,
+    );
     try {
       if (allowUnpinnedTestHelper) {
         // Test-only direct callers may not have a rendered helper pin. The
@@ -3405,8 +3466,25 @@ export function acquireFilesystemLock(
         `${path}/${entries[0].name}`,
         "stale lock owner",
       );
-      const owner = parseStrictJson(existing.bytes.toString("utf8"), "lock owner");
-      if (ownerIsLive(owner)) fail("transaction lock is held by a live process generation");
+      let owner;
+      try {
+        owner = parseLockOwner(existing.bytes);
+      } catch (error) {
+        if (entries[0].name === LOCK_OWNER) {
+          fail(
+            `authoritative lock owner is malformed; refusing stale-lock recovery: ${error.message}`,
+          );
+        }
+        // owner.json.pending is written before the atomic publication that
+        // makes the lock authoritative. If it is the sole, exact root-owned
+        // entry, malformed bytes prove acquisition never returned and the
+        // overlay transaction could not have started under this generation.
+        // All metadata and directory-shape checks above remain fail closed.
+        owner = null;
+      }
+      if (owner !== null && ownerIsLive(owner)) {
+        fail("transaction lock is held by a live process generation");
+      }
       realRemoveIfExact(
         `${path}/${entries[0].name}`,
         existing.snapshot,

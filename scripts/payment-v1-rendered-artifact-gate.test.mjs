@@ -41,6 +41,8 @@ const EDGE_CONFIG = "deploy/payment-v1/edge/hetzner-public.Caddyfile.in";
 const SOURCE_FAIR_CONFIG = "deploy/payment-v1/edge/source-fair-haproxy.cfg.in";
 const INTEGRATED_CADDY_GATE =
   "scripts/payment-v1-integrated-caddy-overlay-gate.mjs";
+const CADDY_ADMIN_UDS_GATE =
+  "scripts/payment-v1-caddy-admin-uds-gate.mjs";
 const INTEGRATED_CADDY_TRANSACTION =
   "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
 const INTEGRATED_CADDY_BLOCK =
@@ -279,6 +281,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
   const fixture = temporaryRoots(t);
   copySource(fixture.sourceRoot, SOURCE_FAIR_UNIT);
   copySource(fixture.sourceRoot, SOURCE_FAIR_CONFIG);
+  copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
@@ -362,6 +365,15 @@ function makeIntegratedCaddySourceFairFixture(t) {
         source_sha256: hashFile(join(fixture.sourceRoot, SOURCE_FAIR_UNIT)),
         target_path:
           "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: CADDY_ADMIN_UDS_GATE,
+        source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
         uid: 0,
       },
       {
@@ -972,6 +984,15 @@ test("integrated existing-Caddy profile closes and proves its HAProxy socket bou
   assert.deepEqual(
     model.manifest.runtime_units.map((unit) => unit.unit_name),
     ["bitcoinpir-payment-v1-source-fair-edge.service"],
+  );
+  assert.equal(
+    model.manifest.artifacts.some(
+      (artifact) =>
+        artifact.source_path === CADDY_ADMIN_UDS_GATE &&
+        artifact.target_path ===
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    ),
+    true,
   );
   assert.deepEqual(
     model.request.runtime_paths.map(({ file_type, mode, target_path }) => ({

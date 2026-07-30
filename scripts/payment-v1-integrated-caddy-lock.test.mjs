@@ -28,6 +28,10 @@ const ROOT_LINUX =
   typeof process.geteuid === "function" &&
   process.geteuid() === 0;
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const TRANSACTION_MODULE_URL = new URL(
+  "./payment-v1-integrated-caddy-overlay-transaction.mjs",
+  import.meta.url,
+).href;
 
 function regularPin(path) {
   const stat = lstatSync(path, { bigint: true });
@@ -164,6 +168,112 @@ test("stale-lock recovery refuses an unknown directory shape", {
     }),
     /unknown shape/,
   );
+
+  const splitLock = join(root, "transaction-split.lock");
+  mkdirSync(splitLock, { mode: 0o700 });
+  writeFileSync(join(splitLock, "owner.json"), "{}\n", { mode: 0o400 });
+  writeFileSync(join(splitLock, "owner.json.pending"), "{}\n", { mode: 0o400 });
+  await assert.rejects(
+    async () => acquireFilesystemLock(splitLock, {
+      allowUnpinnedTestHelper: true,
+      recoverStale: true,
+      transactionId: "lock-split-shape-test",
+    }),
+    /unknown shape/,
+  );
+  assert.equal(existsSync(join(splitLock, "owner.json")), true);
+  assert.equal(existsSync(join(splitLock, "owner.json.pending")), true);
+
+  const weakPendingLock = join(root, "transaction-weak-pending.lock");
+  mkdirSync(weakPendingLock, { mode: 0o700 });
+  writeFileSync(join(weakPendingLock, "owner.json.pending"), '{"boot_id":', {
+    mode: 0o600,
+  });
+  await assert.rejects(
+    async () => acquireFilesystemLock(weakPendingLock, {
+      allowUnpinnedTestHelper: true,
+      recoverStale: true,
+      transactionId: "lock-weak-pending-test",
+    }),
+    /not one root-owned owner-only single-link record/,
+  );
+  assert.equal(existsSync(join(weakPendingLock, "owner.json.pending")), true);
+});
+
+test("stale-lock recovery reclaims only a malformed unpublished pending owner", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and procfs semantics are required",
+}, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-malformed-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const lock = join(root, "transaction.lock");
+
+  mkdirSync(lock, { mode: 0o700 });
+  writeFileSync(join(lock, "owner.json.pending"), '{"boot_id":', { mode: 0o400 });
+  const release = acquireFilesystemLock(lock, {
+    allowUnpinnedTestHelper: true,
+    recoverStale: true,
+    transactionId: "lock-malformed-pending-recovery",
+  });
+  assert.equal(existsSync(join(lock, "owner.json")), true);
+  assert.equal(existsSync(join(lock, "owner.json.pending")), false);
+  await release();
+
+  mkdirSync(lock, { mode: 0o700 });
+  writeFileSync(join(lock, "owner.json"), '{"boot_id":', { mode: 0o400 });
+  await assert.rejects(
+    async () => acquireFilesystemLock(lock, {
+      allowUnpinnedTestHelper: true,
+      recoverStale: true,
+      transactionId: "lock-malformed-authoritative-recovery",
+    }),
+    /authoritative lock owner is malformed; refusing stale-lock recovery/u,
+  );
+  assert.equal(readFileSync(join(lock, "owner.json"), "utf8"), '{"boot_id":');
+});
+
+test("SIGKILL during a partial pending-owner write is safely recoverable", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and procfs semantics are required",
+}, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-sigkill-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const lock = join(root, "transaction.lock");
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `const { acquireFilesystemLock } = await import(${JSON.stringify(TRANSACTION_MODULE_URL)});
+acquireFilesystemLock(process.argv[1], {
+  allowUnpinnedTestHelper: true,
+  recoverStale: false,
+  transactionId: "lock-partial-write-sigkill",
+  testOnlyFaultInjector(point) {
+    if (point === "after-partial-write") process.kill(process.pid, "SIGKILL");
+  },
+});`,
+      lock,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(child.status, null, child.stderr);
+  assert.equal(child.signal, "SIGKILL");
+  assert.equal(existsSync(join(lock, "owner.json")), false);
+  assert.equal(existsSync(join(lock, "owner.json.pending")), true);
+  assert.equal(
+    readFileSync(join(lock, "owner.json.pending"), "utf8").endsWith("}\n"),
+    false,
+  );
+
+  const release = acquireFilesystemLock(lock, {
+    allowUnpinnedTestHelper: true,
+    recoverStale: true,
+    transactionId: "lock-post-sigkill-recovery",
+  });
+  assert.equal(existsSync(join(lock, "owner.json")), true);
+  assert.equal(existsSync(join(lock, "owner.json.pending")), false);
+  await release();
 });
 
 test("production lock owner uses the pinned no-replace helper", {

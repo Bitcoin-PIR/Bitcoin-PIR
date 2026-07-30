@@ -77,11 +77,15 @@ test("systemd 255 effective-unit serialization normalizes without retaining Envi
     ExecStart: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile ; ignore_errors=no ; start_time=[Wed 2026-06-24 17:19:40 CEST] ; stop_time=[n/a] ; pid=639667 ; code=(null) ; status=0/0 }",
     FragmentPath: "/etc/systemd/system/bhtm-caddy.service",
     Group: "root",
+    LimitCORE: "0",
+    MemorySwapMax: "0",
     NeedDaemonReload: "no",
     PassEnvironment: "",
     RuntimeDirectory: "bitcoinpir-caddy-admin",
     RuntimeDirectoryMode: "0700",
     RuntimeDirectoryPreserve: "no",
+    StandardError: "null",
+    StandardOutput: "null",
     UMask: "0077",
     UnsetEnvironment: "CADDY_ADMIN",
     User: "root",
@@ -180,6 +184,7 @@ class MockOverlayOps {
       plan.runtime.node_binary,
       plan.runtime.setpriv_binary,
       plan.runtime.admin_probe,
+      plan.runtime.admin_uds_gate,
       plan.runtime.gate,
       plan.runtime.executor,
       plan.runtime.exchange_helper,
@@ -460,7 +465,7 @@ class MockOverlayOps {
     if (unitName === "bhtm-caddy.service" && this.driftGenerationDuringProbe && this.targetGenerationReads >= 3) {
       return {
         ...clone(this.plan.target.unit_generation),
-        invocation_id: "32345678-1234-4234-9234-123456789abc",
+        invocation_id: "32345678123442349234123456789abc",
       };
     }
     return clone(
@@ -744,6 +749,38 @@ test("transaction rejects a hardening plan and receipt from different approvals"
   assert.equal(ops.reloadCalls, 0);
 });
 
+test("transaction rejects an admin UDS gate generation not pinned by hardening", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  plan.runtime.admin_uds_gate.inode = "999999";
+  const ops = new MockOverlayOps(plan);
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /admin UDS gate does not equal the exact approved hardening gate generation/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("transaction rejects current admin UDS gate file drift before exchange", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  ops.files.get(plan.runtime.admin_uds_gate.path).snapshot.inode = "999999";
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /initial Caddy admin UDS gate drifted from the approved regular-file pin/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
 for (const [name, mutate, expected] of [
   ["runtime directory mode drift", (ops) => { ops.adminDirectoryMode = "0755"; }, /runtime directory does not match/u],
   ["socket mode drift", (ops) => { ops.adminSocketMode = "0666"; }, /admin socket does not match/u],
@@ -765,6 +802,10 @@ for (const [name, mutate, expected] of [
   ["effective RuntimeDirectory drift", (ops) => { ops.effectiveUnit.runtime_directory = ["other"]; }, /effective systemd unit drifted/u],
   ["effective RuntimeDirectoryMode drift", (ops) => { ops.effectiveUnit.runtime_directory_mode = "0755"; }, /effective systemd unit drifted/u],
   ["effective RuntimeDirectoryPreserve drift", (ops) => { ops.effectiveUnit.runtime_directory_preserve = "yes"; }, /effective systemd unit drifted/u],
+  ["effective LimitCORE drift", (ops) => { ops.effectiveUnit.limit_core = "infinity"; }, /effective systemd unit drifted/u],
+  ["effective MemorySwapMax drift", (ops) => { ops.effectiveUnit.memory_swap_max = "infinity"; }, /effective systemd unit drifted/u],
+  ["effective StandardOutput drift", (ops) => { ops.effectiveUnit.standard_output = "journal"; }, /effective systemd unit drifted/u],
+  ["effective StandardError drift", (ops) => { ops.effectiveUnit.standard_error = "inherit"; }, /effective systemd unit drifted/u],
   ["effective UMask drift", (ops) => { ops.effectiveUnit.umask = "0022"; }, /effective systemd unit drifted/u],
   ["effective User drift", (ops) => { ops.effectiveUnit.user = "caddy"; }, /effective systemd unit drifted/u],
   ["effective Group drift", (ops) => { ops.effectiveUnit.group = "caddy"; }, /effective systemd unit drifted/u],
@@ -926,6 +967,35 @@ test("adapted JSON with the wrong admin endpoint is rejected before exchange", a
   assert.equal(ops.exchangeHistory.length, 0);
   assert.equal(ops.reloadCalls, 0);
 });
+
+for (const [label, mutate, expected] of [
+  [
+    "global logging sink",
+    (adapted) => { adapted.logging = { logs: { default: { writer: { output: "file", filename: "/var/log/caddy.log" } } } }; },
+    /global logging sink/u,
+  ],
+  [
+    "server access log",
+    (adapted) => { adapted.apps.http = { servers: { srv0: { logs: {}, routes: [] } } }; },
+    /must not enable access logging/u,
+  ],
+]) {
+  test(`adapted JSON rejects ${label} before exchange`, async () => {
+    const plan = makeIntegratedOverlayTestPlan();
+    const ops = new MockOverlayOps(plan);
+    mutate(ops.adaptedJson);
+    await assert.rejects(
+      executeOverlayTransaction({
+        approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+        ops,
+        plan,
+      }),
+      expected,
+    );
+    assert.equal(ops.exchangeHistory.length, 0);
+    assert.equal(ops.reloadCalls, 0);
+  });
+}
 
 test("adapted JSON digest drift is rejected before exchange", async () => {
   const plan = makeIntegratedOverlayTestPlan();

@@ -22,6 +22,10 @@ The hardened unit must run as `root:root`, have no drop-ins, expose no
 RuntimeDirectory=bitcoinpir-caddy-admin
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=no
+LimitCORE=0
+MemorySwapMax=0
+StandardOutput=null
+StandardError=null
 UMask=0077
 UnsetEnvironment=CADDY_ADMIN
 ```
@@ -78,18 +82,37 @@ canonical. The enclosing canonical-text rule separately rejects CR and
 requires LF line endings. This is deliberate because Caddy's adapter accepts
 Unicode and quoted spellings that a narrower lexer could otherwise miss. The
 unit builder preserves every unrelated line byte-for-byte; it removes only
-the old root `User`/`Group`, old `ExecReload`, and an exact standalone
-`CADDY_ADMIN=127.0.0.1:2019` assignment, replaces `ExecStart` with the exact
-non-`--environ` command, then adds the reviewed block. It rejects an
+the old root `User`/`Group`, old `ExecReload`, any old `LimitCORE`,
+`MemorySwapMax`, `StandardOutput` and `StandardError`, and an exact standalone
+`CADDY_ADMIN=127.0.0.1:2019`
+assignment, replaces `ExecStart` with the exact non-`--environ` command, then
+adds the reviewed block. It rejects an
 environment file, every `PassEnvironment`, command-line
 environment files, continuation lines, a non-root service, or any pre-existing
 `RuntimeDirectory`, `RuntimeDirectoryMode`, `RuntimeDirectoryPreserve`,
 `UMask`, or `UnsetEnvironment` setting instead of silently overwriting it.
+`LimitCORE`, `MemorySwapMax`, `StandardOutput` and `StandardError` are
+deliberately replaced rather than rejected because closing the existing dump,
+swap and journald paths is part of this migration. `LimitCORE=0` does not make
+a Linux pipe core handler safe by itself; target activation still requires the
+separate exact `kernel.core_pattern=|/usr/bin/false` host proof.
 
 ACME storage is not copied, renamed or reinitialized. The complete existing
 site inventory and its before/after probes are separate approved plan inputs.
 Preserving config bytes is not a claim that the wider existing root Caddy,
-plugins, journal, ACME account, or all sites become isolated.
+plugins, ACME account, or all sites become isolated. The canonical adapted JSON
+must additionally have no top-level `logging`, HTTP-server `logs`, `log_append`
+or `log_name` configuration. `StandardOutput=null` and `StandardError=null`
+close only the implicit process-stream-to-journald path; they cannot neutralize
+an explicit file, network or syslog sink in Caddy JSON, so such a sink is an
+activation blocker.
+
+Nulling both service streams intentionally removes Caddy startup, ACME and
+reverse-proxy diagnostics as well as request-correlating errors. Production
+operation therefore relies on systemd state, certificate-expiry alarms,
+external endpoint probes, binary/config digest drift alarms and bounded
+non-request-bearing metrics. Re-enabling journald for troubleshooting is a
+privacy-affecting configuration change, not an ordinary logging toggle.
 
 ## Version and test evidence
 
@@ -139,10 +162,16 @@ The approved transaction is:
    candidates and fsync both parent directories. Partial pairs are never
    started.
 5. Run `systemctl daemon-reload`, start the unit, and require a new
-   `InvocationID` and active-enter timestamp. `restart` and warm `reload` are
-   not substitutes for this proof.
+   `InvocationID` and active-enter timestamp. A systemd `InvocationID` is the
+   exact nonzero 32-character lowercase hexadecimal value returned by
+   `systemctl show`; it is not a hyphenated UUID. `restart` and warm `reload`
+   are not substitutes for this proof.
+   For an inactive unit the collector normalizes either an empty value or
+   systemd's 32-zero sentinel to the receipt's canonical empty string.
 6. Require `NeedDaemonReload=no`, the exact main fragment, no drop-ins, no
-   effective `CADDY_ADMIN`, root API `GET /config/` success over the UDS,
+   effective `CADDY_ADMIN`, exact effective `LimitCORE=0`, `MemorySwapMax=0`,
+   `StandardOutput=null` and `StandardError=null`, root API `GET /config/`
+   success over the UDS,
    root:root `0700` runtime directory, root:root `0200` socket, both TCP-2019
    probes refused, and `EACCES` from every non-root UID in the approved complete
    service inventory (including `pir` and `cloudflared`) after `setpriv` proves
@@ -161,8 +190,10 @@ by themselves prove systemd PID 1 lifecycle behavior. The checked-in
 existing unit, config or runtime path, installs the byte-exact fixtures on an
 otherwise isolated Linux systemd PID 1, and proves two distinct cold
 generations. It requires cold stop to remove the `RuntimeDirectory` and socket,
-cold start to recreate both as root:root `0700`/`0200`, UDS admin readback,
-absent TCP 2019 and a same-PID UDS reload. This is staging compatibility
+cold start to recreate both as root:root `0700`/`0200`, validates each real
+systemd 32-hex `InvocationID` through the production gate, proves effective
+zero core/swap limits and null output/error streams, UDS admin readback, absent
+TCP 2019 and a same-PID UDS reload. This is staging compatibility
 evidence, not target-host activation evidence: the target still needs the
 approved plan, stopped-host inventory, complete UID probes, site probes,
 transaction/rollback ceremony and committed receipt described above.
@@ -172,7 +203,8 @@ effective systemd properties and `/proc` process identity around each admin
 probe and immediately before each file exchange or reload. It requires the
 exact fragment, no drop-ins or environment files, the approved `ExecStart` and
 UDS `ExecReload`, `NeedDaemonReload=no`, the reviewed runtime-directory,
-identity, umask and environment-name policy, and the exact MainPID argv/start
+identity, zero core/swap limits, null output/error streams, umask and
+environment-name policy, and the exact MainPID argv/start
 ticks with no process `CADDY_ADMIN`. Environment values are not placed in the
 receipt. Stable before/after snapshots bind those checks to the same boot,
 unit generation and process. This closes a no-op reload or effective-drop-in

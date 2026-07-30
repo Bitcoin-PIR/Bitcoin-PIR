@@ -267,24 +267,45 @@ initial host PID namespace, followed by a fresh live proof; a warm-reload
 snapshot is rejected. Linux pipe core handlers
 may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 
+A read-only 2026-07-30 target snapshot confirms why this remains a live gate:
+the existing Caddy unit has `MemorySwapMax=infinity`, hard
+`LimitCORE=infinity`, `StandardOutput=journal` and `StandardError=inherit`;
+the host has an 8 GiB active swap device and an apport pipe core handler. The
+current Caddy process had zero `VmSwap` at that instant, and its adapted JSON
+had no configured global or access log sink, but journald already contained
+structured request-error records with remote-address metadata. These are
+pre-migration observations, not reusable activation evidence. Clearing the old
+mixed-service journal is a separate destructive retention decision.
+
 The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
 
 A follow-up non-activating `bhtm-caddy-admin-uds-v1` maintenance gate addresses
-one part of the existing-root-Caddy TCB: its admin endpoint. It derives only an
+two parts of the existing-root-Caddy TCB: its admin endpoint and implicit
+stdout/stderr-to-journald path. It derives only an
 exact config/unit candidate from exact old bytes, rejects Caddy imports and
 environment indirection, strips `--environ`, pins the independently inventoried
 production Caddy v2.11.4 binary plus Node v22.22.2, probe and `setpriv`, and
-requires a cold new systemd generation before a root-owned `0700` runtime
+forces effective `LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null` and
+`StandardError=null`. The adapted
+JSON privacy gate rejects explicit global, access and request-scoped log sinks.
+It requires a cold new systemd generation before a root-owned `0700` runtime
 directory can exist. The isolation claim covers only capability-free
 unprivileged non-root processes; UID 0 and `CAP_DAC_OVERRIDE` remain trusted.
-Committed evidence requires root readback through a mode-`0200` UDS, `CapEff=0`,
-cleared groups and `EACCES` for the complete approved non-root service-UID inventory, absent IPv4
-and IPv6 TCP 2019, and unchanged site health. A mixed or unknown config/unit
+Committed evidence requires root readback through a mode-`0200` UDS,
+`CapEff=0`, cleared groups and `EACCES` for the complete approved non-root
+service-UID inventory, absent IPv4 and IPv6 TCP 2019, and unchanged site health.
+A mixed or unknown config/unit
 pair stays stopped; an ambiguous start is outcome-unknown and prohibits
 automatic rollback. This gate does not yet include an executor and is not host
 or deployment evidence.
+
+Boot identity remains a hyphenated UUID, while a live systemd `InvocationID`
+is independently bound as a nonzero 32-character lowercase hexadecimal value.
+Using UUID syntax for both would make every real overlay activation fail
+closed, so the real PID 1 lifecycle feeds its actual InvocationIDs through the
+same production validator.
 
 An undeployed `integrated-existing-bhtm-caddy-v1` alternative now models the
 actual existing `bhtm-caddy.service` edge without pretending it is the isolated
@@ -294,8 +315,8 @@ content-addressed `renameat2(RENAME_EXCHANGE)` helper, keeps the swapped-out
 preimage until a terminal receipt is durably and atomically published with
 `RENAME_NOREPLACE`, and has deterministic digest-pair recovery. This closes
 ordinary read-to-rename, partial-final-receipt and crash windows, but expands
-the TCB to the existing root Caddy's remaining global options, ACME, journal,
-zero-RTT, plugin, site and resource configuration. The overlay now requires a
+the TCB to the existing root Caddy's remaining global options, ACME, zero-RTT,
+plugin, site, UID-0 and other resource configuration. The overlay now requires a
 canonical committed admin-UDS receipt whose hardened binary/config/unit and
 InvocationID equal its target preimage; it cannot perform that cold migration
 itself. Its executor now revalidates the full canonical hardening plan/receipt,
@@ -303,7 +324,8 @@ pins canonical adapted JSON, and repeats fresh descriptor-sealed UDS/root/UID/
 TCP/boot/generation probes before exchange and after reload/health. It also
 binds current effective unit properties (including no drop-ins, the approved
 `ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
-runtime-directory/identity/umask settings) plus exact MainPID argv/start ticks
+runtime-directory/identity/umask/core/swap/output settings) plus exact MainPID
+argv/start ticks
 and absence of process `CADDY_ADMIN`; environment values are not retained.
 Stable runtime boundaries are repeated immediately before exchange and reload.
 Recovery validates persisted monotonic windows unchanged, so corrupt evidence

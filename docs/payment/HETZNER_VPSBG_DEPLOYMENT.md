@@ -691,8 +691,10 @@ maintenance prerequisite before it is eligible for the integrated overlay.
 `bhtm-caddy-admin-uds-v1` deterministically changes only the global admin
 endpoint to `unix//run/bitcoinpir-caddy-admin/admin.sock|0200` and the reviewed
 unit directives needed for a root-owned `0700` `RuntimeDirectory`, `UMask=0077`,
-an explicit UDS `ExecReload`, final `UnsetEnvironment=CADDY_ADMIN`, and an exact
-non-`--environ` `ExecStart`. It rejects drop-ins, every `PassEnvironment`,
+`LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null`,
+`StandardError=null`, an explicit UDS `ExecReload`, final
+`UnsetEnvironment=CADDY_ADMIN`, and an exact non-`--environ` `ExecStart`. It
+rejects drop-ins, every `PassEnvironment`,
 environment-file ambiguity, all Caddy imports and environment substitutions,
 quoted `import`/`admin` directive tokens, and all 21 Unicode White_Space
 separators outside the canonical subset. The exact v2.11.4 adapter regression
@@ -755,7 +757,9 @@ them; corrupt historical evidence fails before any mutation. The executor also
 accepts only the approved canonical adapted-JSON digest with the exact UDS
 admin listener; any drift before exchange aborts, while post-exchange drift
 enters the exact rollback transaction.
-Existing global options, ACME account/certificate state, journal/error path,
+The exact adapted preimage and candidate JSON must contain no configured
+global/access/runtime log sink; null service streams close the implicit
+journald error path. Existing global options, ACME account/certificate state,
 zero-RTT choice, plugins,
 resource limits and every pre-existing site remain in the Payment V1 trust,
 privacy and failure domain. The overlay plan must acknowledge that wider domain

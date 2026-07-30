@@ -35,7 +35,8 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const BOOT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SYSTEMD_INVOCATION_ID = /^[0-9a-f]{32}$/u;
 const SLUG = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u;
 const BEGIN_MARKER = "# BEGIN BITCOINPIR CADDY ADMIN UDS V1";
 const END_MARKER = "# END BITCOINPIR CADDY ADMIN UDS V1";
@@ -44,6 +45,7 @@ const CONFIG_EDIT_MODES = new Set([
   "insert-existing-global-options",
   "prepend-new-global-options",
 ]);
+const REJECTED_RUNTIME_LOG_HANDLERS = new Set(["log_append", "log_name"]);
 
 function fail(message) {
   throw new Error(message);
@@ -253,6 +255,29 @@ function validateDecimal(value, label) {
   if (typeof value !== "string" || !DECIMAL.test(value)) fail(`${label} must be canonical decimal text`);
 }
 
+export function validateSystemdInvocationId(value, label = "systemd InvocationID") {
+  if (
+    typeof value !== "string" ||
+    !SYSTEMD_INVOCATION_ID.test(value) ||
+    value === "0".repeat(32)
+  ) {
+    fail(`${label} must be a nonzero 32-character lowercase systemd InvocationID`);
+  }
+  return true;
+}
+
+export function normalizeSystemdInvocationId(
+  value,
+  { active, label = "systemd InvocationID" },
+) {
+  if (active) {
+    validateSystemdInvocationId(value, label);
+    return value;
+  }
+  if (value === "" || value === "0".repeat(32)) return "";
+  fail(`${label} for an inactive unit must be empty or 32 zeroes`);
+}
+
 function validateUid(value, label, { nonRoot = false } = {}) {
   if (!Number.isSafeInteger(value) || value < (nonRoot ? 1 : 0) || value > 4_294_967_294) {
     fail(`${label} is outside the reviewed UID range`);
@@ -327,9 +352,7 @@ function validateUnitGeneration(value, label, { active }) {
       value.active_enter_timestamp_monotonic,
       `${label}.active_enter_timestamp_monotonic`,
     );
-    if (typeof value.invocation_id !== "string" || !UUID.test(value.invocation_id)) {
-      fail(`${label}.invocation_id must be a lowercase UUID`);
-    }
+    validateSystemdInvocationId(value.invocation_id, `${label}.invocation_id`);
   } else {
     if (value.active_state !== "inactive" || value.sub_state !== "dead") {
       fail(`${label} must be inactive/dead`);
@@ -560,6 +583,42 @@ export function validateHardenedCaddyfile(candidateBytes) {
   return true;
 }
 
+function rejectRuntimeLogHandlers(value, path = "adapted") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => rejectRuntimeLogHandlers(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!isPlainObject(value)) return;
+  if (REJECTED_RUNTIME_LOG_HANDLERS.has(value.handler)) {
+    fail(`${path}.handler enables a request-correlating runtime log handler`);
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    rejectRuntimeLogHandlers(entry, `${path}.${key}`);
+  }
+}
+
+export function validateAdaptedCaddyPrivacy(adapted, expectedAdminListen = ADMIN_LISTEN) {
+  if (!isPlainObject(adapted)) fail("adapted Caddy JSON must be an object");
+  if (!isPlainObject(adapted.admin) || adapted.admin.listen !== expectedAdminListen) {
+    fail(`adapted Caddy JSON admin.listen must equal ${expectedAdminListen}`);
+  }
+  if (Object.hasOwn(adapted, "logging")) {
+    fail("adapted Caddy JSON must not configure a global logging sink");
+  }
+  const servers = adapted.apps?.http?.servers;
+  if (servers !== undefined) {
+    if (!isPlainObject(servers)) fail("adapted Caddy JSON apps.http.servers must be an object");
+    for (const [name, server] of Object.entries(servers)) {
+      if (!isPlainObject(server)) fail(`adapted Caddy JSON server ${name} must be an object`);
+      if (Object.hasOwn(server, "logs")) {
+        fail(`adapted Caddy JSON server ${name} must not enable access logging`);
+      }
+    }
+  }
+  rejectRuntimeLogHandlers(adapted);
+  return true;
+}
+
 function serviceSectionBounds(lines, label) {
   const indexes = [];
   for (const [index, line] of lines.entries()) {
@@ -662,6 +721,10 @@ const REPLACED_UNIT_DIRECTIVES = new Set([
   "ExecReload",
   "ExecStart",
   "Group",
+  "LimitCORE",
+  "MemorySwapMax",
+  "StandardError",
+  "StandardOutput",
   "User",
 ]);
 const MANAGED_UNIT_DIRECTIVES = new Set([
@@ -703,6 +766,10 @@ export function buildHardenedUnit(preimageBytes, binaryPath = "/usr/bin/caddy") 
     "RuntimeDirectory=bitcoinpir-caddy-admin",
     "RuntimeDirectoryMode=0700",
     "RuntimeDirectoryPreserve=no",
+    "LimitCORE=0",
+    "MemorySwapMax=0",
+    "StandardOutput=null",
+    "StandardError=null",
     "UMask=0077",
     "UnsetEnvironment=CADDY_ADMIN",
     `ExecStart=${binaryPath} run --config ${TARGET_CONFIG} --adapter caddyfile`,
@@ -754,9 +821,13 @@ export function validateHardenedUnit(candidateBytes, binaryPath = "/usr/bin/cadd
   const expected = new Map([
     ["User", ["root"]],
     ["Group", ["root"]],
+    ["LimitCORE", ["0"]],
+    ["MemorySwapMax", ["0"]],
     ["RuntimeDirectory", ["bitcoinpir-caddy-admin"]],
     ["RuntimeDirectoryMode", ["0700"]],
     ["RuntimeDirectoryPreserve", ["no"]],
+    ["StandardError", ["null"]],
+    ["StandardOutput", ["null"]],
     ["UMask", ["0077"]],
     ["UnsetEnvironment", ["CADDY_ADMIN"]],
   ]);
@@ -854,7 +925,7 @@ function validatePrivilegedAccessInventory(value) {
     ],
     "privileged_access_inventory",
   );
-  if (typeof value.boot_id !== "string" || !UUID.test(value.boot_id)) {
+  if (typeof value.boot_id !== "string" || !BOOT_UUID.test(value.boot_id)) {
     fail("privileged_access_inventory.boot_id must be a lowercase UUID");
   }
   validateDecimal(value.captured_monotonic_ns, "privileged_access_inventory.captured_monotonic_ns");
@@ -905,6 +976,10 @@ function validateCandidate(value) {
       "runtime_directory_preserve",
       "service_gid",
       "service_uid",
+      "limit_core",
+      "memory_swap_max",
+      "standard_error",
+      "standard_output",
       "umask",
     ],
     "candidate.unit_policy",
@@ -918,6 +993,10 @@ function validateCandidate(value) {
     runtime_directory_preserve: "no",
     service_gid: 0,
     service_uid: 0,
+    limit_core: "0",
+    memory_swap_max: "0",
+    standard_error: "null",
+    standard_output: "null",
     umask: "0077",
   };
   for (const [key, expected] of Object.entries(exact)) {
@@ -1211,7 +1290,7 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   if (typeof receipt.host.hostname !== "string" || receipt.host.hostname.length < 1 || receipt.host.hostname.length > 255) {
     fail("receipt.host.hostname is invalid");
   }
-  if (typeof receipt.host.boot_id !== "string" || !UUID.test(receipt.host.boot_id)) {
+  if (typeof receipt.host.boot_id !== "string" || !BOOT_UUID.test(receipt.host.boot_id)) {
     fail("receipt.host.boot_id must be a lowercase UUID");
   }
   if (receipt.host.boot_id !== plan.privileged_access_inventory.boot_id) {
@@ -1281,9 +1360,13 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
     receipt.activation.properties,
     [
       "Group",
+      "LimitCORE",
+      "MemorySwapMax",
       "RuntimeDirectory",
       "RuntimeDirectoryMode",
       "RuntimeDirectoryPreserve",
+      "StandardError",
+      "StandardOutput",
       "UMask",
       "UnsetEnvironment",
       "User",
@@ -1292,9 +1375,13 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   );
   const properties = {
     Group: "root",
+    LimitCORE: "0",
+    MemorySwapMax: "0",
     RuntimeDirectory: "bitcoinpir-caddy-admin",
     RuntimeDirectoryMode: "0700",
     RuntimeDirectoryPreserve: "no",
+    StandardError: "null",
+    StandardOutput: "null",
     UMask: "0077",
     UnsetEnvironment: ["CADDY_ADMIN"],
     User: "root",

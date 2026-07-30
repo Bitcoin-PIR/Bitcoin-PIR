@@ -925,8 +925,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       derives the complete candidate Caddyfile and `bhtm-caddy.service` unit
       only from exact preimages. It moves the global admin listener to
       `unix//run/bitcoinpir-caddy-admin/admin.sock|0200`, requires root:root
-      `RuntimeDirectory` mode `0700`, `UMask=0077`, no drop-ins or effective
-      `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
+      `RuntimeDirectory` mode `0700`, `UMask=0077`, `LimitCORE=0`,
+      `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
+      drop-ins or effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
       substitutions, and an explicit UDS reload address. It pins the exact
       production Caddy v2.11.4 preimage independently from the resolved Caddy
       2.11.4 test image, and pins Node v22.22.2 independently from Node 24
@@ -938,14 +939,21 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       permission-drift regressions. Exact Caddy v2.11.4 regressions also prove
       that all 21 non-canonical Unicode whitespace code points and quoted
       `admin` directives can alter the adapted admin listener and are rejected
-      by the closed-profile lexer. The plan requires a cold
-      stop/install/daemon-reload/start with a new InvocationID, complete actual
+      by the closed-profile lexer. Canonical adapted JSON additionally rejects
+      global, access and request-scoped log sinks. The plan requires a cold
+      stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
+      systemd InvocationID, complete actual
       service-UID and existing-site inventories, exact old-config+old-unit
       rollback, and outcome-unknown handling after an ambiguous start. This
       slice is validation-only: no executor, installation, host mutation or
-      activation is claimed. CI performs static `systemd-analyze verify`; a
-      real systemd PID 1 stop/remove/start/recreate lifecycle remains a staging
-      gate.
+      activation is claimed. In addition to static `systemd-analyze verify`, an
+      isolated real-systemd-PID-1 compatibility test now proves two distinct
+      cold generations plus stop-time removal and start-time recreation of the
+      runtime directory/socket. It feeds each real InvocationID into the
+      production validator, binds the zero core/swap and null stream settings,
+      and confirms an intentionally failing request sentinel does not reach
+      journald. The target-host cold ceremony and its
+      independently transferred evidence remain deployment gates.
 - [x] The local, undeployed `integrated-existing-bhtm-caddy-v1` alternative is
       renderable as a dependency-closed source-fair bundle plus an externally
       approved overlay transaction plan. It appends only to the exact pinned
@@ -961,7 +969,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       generation evidence before exchange and after reload/health. Those
       probes now bind the current effective fragment/drop-ins/environment-name
       policy, `ExecStart`, UDS `ExecReload`, daemon-reload state,
-      runtime-directory/identity/umask settings and exact MainPID argv/start
+      runtime-directory/identity/umask/core/swap/output settings and exact MainPID argv/start
       ticks; process environment values are never retained. Stable runtime
       snapshots are repeated immediately before exchange and reload. Recovery
       validates the original persisted monotonic windows unchanged, so corrupt
@@ -978,12 +986,17 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       cleanup failures remain attached to the primary error; and a durable
       committed receipt remains attached through terminal-phase finalization
       failure.
+      Recovery may reclaim a malformed unpublished `owner.json.pending` only
+      when it is the sole exact root-owned owner-only single-link entry; a
+      malformed authoritative owner or any ambiguous shape remains fail closed.
+      The overlay also re-pins the installed admin-UDS gate itself and requires
+      its complete file generation to equal the prerequisite hardening plan.
       Mock failure-window tests and real Linux open/write/fsync/rename,
       applied-then-error, SIGKILL/late-helper and repeated-recovery tests pass.
       The root-only lock/publication suites are routed through the CI root
       invocation so these cases cannot be silently skipped.
       This does not perform the cold admin migration and does
-      not harden the remaining existing root Caddy global/ACME/journal domain, does
+      not isolate the remaining existing root Caddy global/ACME/UID-0 domain, does
       not replace cold edge evidence, and is not deployable on the currently
       inspected Hetzner network until a distinct RFC1918/ULA publisher route is
       separately provisioned and approved.

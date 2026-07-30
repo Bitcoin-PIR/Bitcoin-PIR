@@ -87,7 +87,13 @@ Its runtime closure includes the exact Node, probe and `setpriv` binaries plus a
 same-boot privileged process/capability inventory. The integrated-existing-Caddy
 overlay skeleton separately pins both this canonical plan and its complete
 committed receipt, the canonical adapted-JSON digest, and the fresh runtime
-probe executables; a receipt summary alone is not sufficient.
+probe executables; a receipt summary alone is not sufficient. Its rendered
+bundle also carries the exact admin-UDS gate source because the overlay executor
+imports that module. Install that artifact before the cold admin-UDS transaction
+and pin the resulting regular-file generation as `runtime.gate` in the hardening
+plan. The later overlay plan must repeat that exact full pin as
+`runtime.admin_uds_gate`; replacing the installed gate after the hardening
+receipt requires a new cold hardening transaction and receipt.
 
 The directory-relay skeleton is intentionally weaker than an activation plan:
 it has no payload artifacts, its unit remains exactly `ExecStart=/usr/bin/false`,

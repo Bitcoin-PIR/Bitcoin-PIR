@@ -125,6 +125,7 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "scripts/payment-v1-caddy-admin-uds-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
     ]),
@@ -287,6 +288,13 @@ const TEMPLATE_CATALOG = Object.freeze({
     artifactClass: "executable-config",
     targetPath:
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
     modes: ["0555"],
     rootOwned: true,
   },

@@ -23,13 +23,16 @@ import {
   buildHardenedUnit,
   canonicalJson,
   computeApprovedPlanSha256,
+  normalizeSystemdInvocationId,
   parseCanonicalReceipt,
   parseStrictJson,
   sha256,
   validateCommittedReceipt,
+  validateAdaptedCaddyPrivacy,
   validateHardenedCaddyfile,
   validateHardenedUnit,
   validatePlan,
+  validateSystemdInvocationId,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +72,10 @@ Type=notify
 User=root
 Group=root
 Environment=CADDY_ADMIN=127.0.0.1:2019
+StandardOutput=journal
+StandardError=inherit
+LimitCORE=infinity
+MemorySwapMax=infinity
 ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 TimeoutStopSec=5s
@@ -106,7 +113,7 @@ function contentPin(path, bytes, mode) {
 
 function generation({
   activeEnter = "1000000",
-  invocation = "123e4567-e89b-42d3-a456-426614174000",
+  invocation = "123e4567e89b42d3a456426614174000",
   mainPid = "401",
 } = {}) {
   return {
@@ -170,6 +177,10 @@ function fixture() {
         runtime_directory_preserve: "no",
         service_gid: 0,
         service_uid: 0,
+        limit_core: "0",
+        memory_swap_max: "0",
+        standard_error: "null",
+        standard_output: "null",
         umask: "0077",
       },
     },
@@ -332,16 +343,20 @@ function receiptFixture(plan) {
       need_daemon_reload: "no",
       properties: {
         Group: "root",
+        LimitCORE: "0",
+        MemorySwapMax: "0",
         RuntimeDirectory: "bitcoinpir-caddy-admin",
         RuntimeDirectoryMode: "0700",
         RuntimeDirectoryPreserve: "no",
+        StandardError: "null",
+        StandardOutput: "null",
         UMask: "0077",
         UnsetEnvironment: ["CADDY_ADMIN"],
         User: "root",
       },
       unit_generation: generation({
         activeEnter: "2000000",
-        invocation: "223e4567-e89b-42d3-a456-426614174001",
+        invocation: "223e4567e89b42d3a456426614174001",
         mainPid: "502",
       }),
     },
@@ -439,6 +454,12 @@ test("exact preimages construct only the reviewed config and unit hardening", ()
     1,
   );
   assert.match(candidateUnit.toString("utf8"), /RuntimeDirectory=bitcoinpir-caddy-admin/u);
+  assert.match(candidateUnit.toString("utf8"), /^LimitCORE=0$/mu);
+  assert.match(candidateUnit.toString("utf8"), /^MemorySwapMax=0$/mu);
+  assert.match(candidateUnit.toString("utf8"), /^StandardOutput=null$/mu);
+  assert.match(candidateUnit.toString("utf8"), /^StandardError=null$/mu);
+  assert.doesNotMatch(candidateUnit.toString("utf8"), /^StandardOutput=journal$/mu);
+  assert.doesNotMatch(candidateUnit.toString("utf8"), /^StandardError=inherit$/mu);
   assert.match(candidateUnit.toString("utf8"), /UMask=0077/u);
   assert.equal(validateHardenedCaddyfile(candidateConfig), true);
   assert.equal(validateHardenedUnit(candidateUnit), true);
@@ -460,6 +481,54 @@ site.example.invalid {
   const candidate = buildHardenedCaddyfile(preimage, "insert-existing-global-options");
   assert.match(candidate.toString("utf8"), /^\{\n\tadmin unix\/\/run\/bitcoinpir-caddy-admin\/admin\.sock\|0200\n\temail/mu);
   assert.equal(candidate.toString("utf8").split("site.example.invalid")[1], preimage.toString("utf8").split("site.example.invalid")[1]);
+});
+
+test("adapted Caddy privacy gate rejects configured and request-scoped log sinks", () => {
+  const base = {
+    admin: { listen: ADMIN_LISTEN },
+    apps: { http: { servers: { srv0: { listen: [":443"], routes: [] } } } },
+  };
+  assert.equal(validateAdaptedCaddyPrivacy(base), true);
+  assert.throws(
+    () => validateAdaptedCaddyPrivacy({ ...base, logging: { logs: { default: {} } } }),
+    /global logging sink/u,
+  );
+  assert.throws(
+    () => validateAdaptedCaddyPrivacy({
+      ...base,
+      apps: { http: { servers: { srv0: { listen: [":443"], logs: {} } } } },
+    }),
+    /must not enable access logging/u,
+  );
+  assert.throws(
+    () => validateAdaptedCaddyPrivacy({
+      ...base,
+      apps: { http: { servers: { srv0: { routes: [{ handle: [{ handler: "log_append" }] }] } } } },
+    }),
+    /runtime log handler/u,
+  );
+});
+
+test("systemd InvocationID uses the real 32-lowercase-hex wire form", () => {
+  assert.equal(validateSystemdInvocationId("123e4567e89b42d3a456426614174000"), true);
+  assert.throws(
+    () => validateSystemdInvocationId("123e4567-e89b-42d3-a456-426614174000"),
+    /32-character lowercase systemd InvocationID/u,
+  );
+  assert.throws(
+    () => validateSystemdInvocationId("0".repeat(32)),
+    /nonzero/u,
+  );
+  assert.throws(
+    () => validateSystemdInvocationId("A".repeat(32)),
+    /lowercase/u,
+  );
+  assert.equal(normalizeSystemdInvocationId("", { active: false }), "");
+  assert.equal(normalizeSystemdInvocationId("0".repeat(32), { active: false }), "");
+  assert.throws(
+    () => normalizeSystemdInvocationId("1".repeat(32), { active: false }),
+    /inactive unit/u,
+  );
 });
 
 test("a Caddyfile without global options gets only the exact prepended admin block", () => {
@@ -573,6 +642,8 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.supply_chain.node.version = "v24.18.0"; }, /must equal v22\.22\.2/u],
     [(plan) => { plan.runtime.setpriv_binary.path = "/usr/local/bin/setpriv"; }, /must equal \/usr\/bin\/setpriv/u],
     [(plan) => { plan.service_uid_inventory = [{ name: "pir", uid: 62902 }]; }, /2\.\.128/u],
+    [(plan) => { plan.preimage.unit_generation.invocation_id = "123e4567-e89b-42d3-a456-426614174000"; }, /32-character lowercase systemd InvocationID/u],
+    [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
     [(plan) => { plan.transaction.automatic_rollback_after_ambiguous_start = true; }, /must equal false/u],
   ]) {
@@ -632,6 +703,22 @@ test("receipt rejects warm generation, non-root access, TCP admin, socket drift 
     [
       (receipt) => { receipt.activation.effective_environment_names.push("CADDY_ADMIN"); },
       /exclude CADDY_ADMIN/u,
+    ],
+    [
+      (receipt) => { receipt.activation.properties.StandardOutput = "journal"; },
+      /systemd properties do not match/u,
+    ],
+    [
+      (receipt) => { receipt.activation.properties.StandardError = "inherit"; },
+      /systemd properties do not match/u,
+    ],
+    [
+      (receipt) => { receipt.activation.properties.MemorySwapMax = "infinity"; },
+      /systemd properties do not match/u,
+    ],
+    [
+      (receipt) => { receipt.activation.properties.LimitCORE = "infinity"; },
+      /systemd properties do not match/u,
     ],
     [
       (receipt) => { receipt.outcome = "outcome-unknown"; },

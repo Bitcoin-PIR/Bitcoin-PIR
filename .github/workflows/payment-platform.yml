@@ -354,11 +354,13 @@ jobs:
             echo "test-only query logging unexpectedly compiled in release mode" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016 # Backticks are expected literally in the compiler diagnostic.
           grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
           if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then
             echo "test-only query logging unexpectedly compiled in assertions-enabled release mode" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016 # Backticks are expected literally in the compiler diagnostic.
           grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
       - name: Compile opt-in real-CDK provider interoperability test
         run: >-
@@ -378,6 +380,7 @@ jobs:
           bash -n scripts/payment-v1-cdk-regtest-e2e.sh
           grep -F 'standard_cashu_real_cdk_browser_provider_two_server_e2e' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
           grep -F 'standard_cashu_cdk_tls_proxy_subprocess' apps/server/tests/payment_v1_standard_cashu_process_e2e.rs >/dev/null
+          # shellcheck disable=SC2016 # The arithmetic expression is an asserted literal in the target script.
           grep -F 'total_mint_amount=$((expected_amount * 2))' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
           bash -n scripts/payment-v1-cln-regtest-e2e.sh
           bash scripts/payment-v1-cln-regtest-e2e.sh --help | grep -F -- '--acknowledge-local-regtest-only' >/dev/null

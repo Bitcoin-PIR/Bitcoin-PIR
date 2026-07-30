@@ -34,6 +34,10 @@
       "runtime_directory_preserve": "no",
       "service_gid": 0,
       "service_uid": 0,
+      "limit_core": "0",
+      "memory_swap_max": "0",
+      "standard_error": "null",
+      "standard_output": "null",
       "umask": "0077"
     }
   },
@@ -87,7 +91,7 @@
       "active_enter_timestamp_monotonic": "INVALID_REPLACE_WITH_MONOTONIC_TIMESTAMP",
       "active_state": "active",
       "control_group": "/system.slice/bhtm-caddy.service",
-      "invocation_id": "INVALID_REPLACE_WITH_LOWERCASE_UUID",
+      "invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
       "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
       "sub_state": "running",
       "unit_name": "bhtm-caddy.service"
