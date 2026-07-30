@@ -531,6 +531,8 @@ jobs:
             node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
           sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
           scripts/payment-v1-caddy-admin-uds-process.test.sh
+          sh -n scripts/payment-v1-caddy-admin-uds-systemd.test.sh
+          scripts/payment-v1-caddy-admin-uds-systemd.test.sh
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

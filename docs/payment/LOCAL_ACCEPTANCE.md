@@ -1310,6 +1310,12 @@ TCP 2019, a real import-override regression, permission-drift rejection, and a
 same-process reload through the UDS. The exact adapter suite also proves all 21
 non-canonical Unicode whitespace separators and both quoted `admin` directive
 forms can change the real adapted listener and are rejected by the gate. This
+branch also adds an isolated real-systemd-PID-1 lifecycle test. It refuses to
+overwrite any existing Caddy unit/config/runtime path, starts the byte-exact
+fixture twice as distinct cold generations, proves stop-time directory/socket
+removal and start-time root:root `0700`/`0200` recreation, and repeats UDS
+readback, TCP-2019 absence and same-PID reload checks. A current target-host
+cold ceremony and its independently transferred evidence remain required. This
 does not isolate UID 0 or `CAP_DAC_OVERRIDE`. A current-tree pinned Ubuntu 24.04 /
 HAProxy 2.8.16 / Caddy 2.11.4 targeted run passed the 15 source-fair template
 and real-process tests with no skip. A fresh complete aggregate using the final

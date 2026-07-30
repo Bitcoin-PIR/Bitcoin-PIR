@@ -156,11 +156,16 @@ same crash-safe journal/publication standard as the integrated overlay before
 any host run is proposed.
 
 Static `systemd-analyze verify` and the direct Caddy container exercise do not
-prove systemd PID 1 lifecycle behavior. Before target activation, a staging
-gate must use a real systemd PID 1 to prove that cold stop removes the
-`RuntimeDirectory` and socket, cold start recreates both with exact metadata,
-and the new invocation passes the same root/non-root/TCP probes. Until that
-gate passes, the maintenance profile remains non-deployable.
+by themselves prove systemd PID 1 lifecycle behavior. The checked-in
+`payment-v1-caddy-admin-uds-systemd.test.sh` therefore refuses any host with an
+existing unit, config or runtime path, installs the byte-exact fixtures on an
+otherwise isolated Linux systemd PID 1, and proves two distinct cold
+generations. It requires cold stop to remove the `RuntimeDirectory` and socket,
+cold start to recreate both as root:root `0700`/`0200`, UDS admin readback,
+absent TCP 2019 and a same-PID UDS reload. This is staging compatibility
+evidence, not target-host activation evidence: the target still needs the
+approved plan, stopped-host inventory, complete UID probes, site probes,
+transaction/rollback ceremony and committed receipt described above.
 
 The dependent integrated-overlay executor additionally re-reads the current
 effective systemd properties and `/proc` process identity around each admin
