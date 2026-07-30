@@ -900,6 +900,20 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
+- runtime-evidence v7 binds exact Unit-, Service- and Manager-interface busctl
+  property lists. `Conditions` must be typed `a(sbbsi)`;
+  `ImportCredential` must be an empty `as` array; `LoadCredential` and
+  `LoadCredentialEncrypted` must be empty `a(ss)` arrays; `SetCredential` and
+  `SetCredentialEncrypted` must be empty `a(say)` arrays. Wrong signatures,
+  non-arrays, every non-empty value, missing/extra properties, literal
+  `[unprintable]`, schema downgrade and snapshot drift fail in live,
+  stopped-edge and stopped-relay validation;
+- release tests close the runtime collector's three local script files to the
+  collector, rendered-artifact gate and deployment-template gate, in that
+  import order; exact-match every static local and `node:` specifier; and
+  reject dynamic imports, export-from drift, package/absolute/`file:`/`data:`
+  imports, CommonJS loaders and workers. Production transfer pins all three
+  bytes from one commit;
 - runtime-evidence accepts only exact paired `files` or paired
   `files systemd` NSS sources for passwd/group, with files first and inherited
   initgroups; mixed/reversed sequences, action brackets and every other source

@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertEffectiveConditionSnapshotUnchangedV1,
+  assertEffectiveCredentialSnapshotUnchangedV1,
   assertCompleteNssSnapshotUnchangedV2,
   assertEffectiveSystemdPolicySnapshotUnchangedV1,
   assertLocalFilesNssPolicyUnchanged,
@@ -43,12 +44,14 @@ import {
   parseBusctlConditionsJsonV1,
   parseBusctlBooleanJsonV1,
   parseBusctlExecStartPreExJsonV1,
+  parseBusctlEmptyCredentialJsonV1,
   parseBusctlUnitNamesJsonV1,
   parseBusctlUnsignedJsonV1,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
+  systemdCredentialBusctlArgvV1,
   systemdUnitObjectPathV1,
   readOneLinkRegular,
   readOneLinkRegularForTestV1,
@@ -67,6 +70,14 @@ import {
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const COLLECTOR = join(SCRIPT_DIRECTORY, "payment-v1-linux-runtime-evidence.mjs");
+const RENDERED_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-rendered-artifact-gate.mjs",
+);
+const TEMPLATE_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-deployment-template-gate.mjs",
+);
 const COMMANDS = [
   "/usr/bin/busctl",
   "/usr/bin/false",
@@ -95,6 +106,13 @@ const INSTALLED_FILE_PROBE_COMMANDS = [
 ];
 const CAN_EXERCISE_INSTALLED_FILE_PROBES =
   process.platform === "linux" && INSTALLED_FILE_PROBE_COMMANDS.every(existsSync);
+const CREDENTIAL_SERVICE_PROPERTIES = Object.freeze([
+  "ImportCredential",
+  "LoadCredential",
+  "LoadCredentialEncrypted",
+  "SetCredential",
+  "SetCredentialEncrypted",
+]);
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -102,6 +120,191 @@ function hash(value) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function emptyCredentialProperties() {
+  return {
+    ImportCredential: { data: [], type: "as" },
+    LoadCredential: { data: [], type: "a(ss)" },
+    LoadCredentialEncrypted: { data: [], type: "a(ss)" },
+    SetCredential: { data: [], type: "a(say)" },
+    SetCredentialEncrypted: { data: [], type: "a(say)" },
+  };
+}
+
+function moduleLoaderCodeView(source, label) {
+  const output = source.split("");
+  let cursor = 0;
+  const blank = (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+    }
+  };
+  const consumeQuoted = (quote) => {
+    const start = cursor;
+    cursor += 1;
+    while (cursor < source.length) {
+      if (source[cursor] === "\\") {
+        cursor += 2;
+        continue;
+      }
+      if (source[cursor] === quote) {
+        cursor += 1;
+        blank(start, cursor);
+        return;
+      }
+      cursor += 1;
+    }
+    assert.fail(`${label} contains an unterminated string literal`);
+  };
+  const consumeLineComment = () => {
+    const start = cursor;
+    cursor += 2;
+    while (cursor < source.length && !new Set(["\n", "\r"]).has(source[cursor])) {
+      cursor += 1;
+    }
+    blank(start, cursor);
+  };
+  const consumeBlockComment = () => {
+    const start = cursor;
+    const end = source.indexOf("*/", cursor + 2);
+    assert.ok(end >= 0, `${label} contains an unterminated block comment`);
+    cursor = end + 2;
+    blank(start, cursor);
+  };
+  const regexCanStartHere = () => {
+    let previous = cursor - 1;
+    while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
+    return previous < 0 || /[([{,:;=!?&|+*%^~<>-]/u.test(source[previous]);
+  };
+  const consumeRegex = () => {
+    const start = cursor;
+    let inCharacterClass = false;
+    cursor += 1;
+    while (cursor < source.length) {
+      if (source[cursor] === "\\") {
+        cursor += 2;
+        continue;
+      }
+      if (source[cursor] === "[") inCharacterClass = true;
+      if (source[cursor] === "]") inCharacterClass = false;
+      if (source[cursor] === "/" && !inCharacterClass) {
+        cursor += 1;
+        while (cursor < source.length && /[a-z]/iu.test(source[cursor])) cursor += 1;
+        blank(start, cursor);
+        return;
+      }
+      assert.ok(
+        source[cursor] !== "\n" && source[cursor] !== "\r",
+        `${label} contains an unterminated regular expression`,
+      );
+      cursor += 1;
+    }
+    assert.fail(`${label} contains an unterminated regular expression`);
+  };
+  const scanCode = (stopAtTemplateBrace = false) => {
+    let braceDepth = 0;
+    while (cursor < source.length) {
+      const character = source[cursor];
+      if (character === "'" || character === '"') {
+        consumeQuoted(character);
+        continue;
+      }
+      if (character === "`") {
+        consumeTemplate();
+        continue;
+      }
+      if (character === "/" && source[cursor + 1] === "/") {
+        consumeLineComment();
+        continue;
+      }
+      if (character === "/" && source[cursor + 1] === "*") {
+        consumeBlockComment();
+        continue;
+      }
+      if (character === "/" && regexCanStartHere()) {
+        consumeRegex();
+        continue;
+      }
+      if (stopAtTemplateBrace && character === "}" && braceDepth === 0) {
+        blank(cursor, cursor + 1);
+        cursor += 1;
+        return;
+      }
+      if (stopAtTemplateBrace && character === "{") braceDepth += 1;
+      if (stopAtTemplateBrace && character === "}") braceDepth -= 1;
+      cursor += 1;
+    }
+    assert.equal(stopAtTemplateBrace, false, `${label} contains an unterminated template expression`);
+  };
+  const consumeTemplate = () => {
+    const opening = cursor;
+    cursor += 1;
+    blank(opening, cursor);
+    while (cursor < source.length) {
+      if (source[cursor] === "\\") {
+        const start = cursor;
+        cursor = Math.min(cursor + 2, source.length);
+        blank(start, cursor);
+        continue;
+      }
+      if (source[cursor] === "`") {
+        blank(cursor, cursor + 1);
+        cursor += 1;
+        return;
+      }
+      if (source[cursor] === "$" && source[cursor + 1] === "{") {
+        blank(cursor, cursor + 2);
+        cursor += 2;
+        scanCode(true);
+        continue;
+      }
+      blank(cursor, cursor + 1);
+      cursor += 1;
+    }
+    const line = source.slice(0, opening).split("\n").length;
+    assert.fail(`${label} contains an unterminated template literal opened at line ${line}`);
+  };
+  scanCode();
+  return output.join("");
+}
+
+function staticModuleSpecifiers(source, label) {
+  const parser = String.raw`
+    const { readFileSync } = require("node:fs");
+    const { SourceTextModule } = require("node:vm");
+    const parsedModule = new SourceTextModule(readFileSync(0, "utf8"));
+    process.stdout.write(JSON.stringify(parsedModule.dependencySpecifiers));
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--experimental-vm-modules", "--no-warnings", "-e", parser],
+    { encoding: "utf8", input: source, maxBuffer: 2 * 1024 * 1024 },
+  );
+  assert.equal(result.status, 0, `${label} must parse as ESM: ${result.stderr}`);
+  assert.equal(result.signal, null, `${label} ESM parser was interrupted`);
+  return JSON.parse(result.stdout);
+}
+
+function assertReviewedModuleClosure(source, expectedSpecifiers, label) {
+  const code = moduleLoaderCodeView(source, label);
+  for (const [name, pattern] of [
+    ["dynamic import", /\bimport\s*\(/u],
+    ["CommonJS require", /\brequire\s*\(/u],
+    ["createRequire", /\bcreateRequire\b/u],
+    ["module registration", /\bmodule\s*\.\s*(?:register|registerHooks)\b/u],
+    ["builtin module lookup", /\bgetBuiltinModule\b/u],
+    ["worker loader", /\b(?:Worker|SharedWorker|importScripts)\b/u],
+    ["eval loader", /\beval\s*\(/u],
+    ["Function loader", /\bFunction\s*\(/u],
+  ]) {
+    assert.doesNotMatch(code, pattern, `${label} contains forbidden ${name}`);
+  }
+  assert.deepEqual(
+    [...staticModuleSpecifiers(source, label)].sort(),
+    [...expectedSpecifiers].sort(),
+    `${label} static module dependency closure changed`,
+  );
 }
 
 function installedFileExpectation(path, bytes) {
@@ -360,6 +563,161 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
   );
 });
 
+test("systemd credential properties require the five reviewed typed empty arrays", () => {
+  for (const [property, type] of [
+    ["ImportCredential", "as"],
+    ["LoadCredential", "a(ss)"],
+    ["LoadCredentialEncrypted", "a(ss)"],
+    ["SetCredential", "a(say)"],
+    ["SetCredentialEncrypted", "a(say)"],
+  ]) {
+    assert.deepEqual(
+      parseBusctlEmptyCredentialJsonV1(
+        `${JSON.stringify({ data: [], type })}\n`,
+        property,
+      ),
+      { data: [], type },
+    );
+  }
+
+  for (const [label, property, value] of [
+    ["ImportCredential wrong signature", "ImportCredential", { data: [], type: "a(ss)" }],
+    ["LoadCredential wrong signature", "LoadCredential", { data: [], type: "a(say)" }],
+    ["SetCredential wrong signature", "SetCredential", { data: [], type: "a(ss)" }],
+    ["non-array data", "LoadCredential", { data: {}, type: "a(ss)" }],
+    ["imported credential", "ImportCredential", { data: ["secret.*"], type: "as" }],
+    ["loaded credential", "LoadCredential", { data: [["secret", "/tmp/secret"]], type: "a(ss)" }],
+    ["encrypted loaded credential", "LoadCredentialEncrypted", { data: [["secret", "/tmp/secret"]], type: "a(ss)" }],
+    ["inline credential", "SetCredential", { data: [["secret", [1, 2, 3]]], type: "a(say)" }],
+    ["encrypted inline credential", "SetCredentialEncrypted", { data: [["secret", [1, 2, 3]]], type: "a(say)" }],
+    ["extra key", "LoadCredential", { data: [], type: "a(ss)", value: "hidden" }],
+  ]) {
+    assert.throws(
+      () => parseBusctlEmptyCredentialJsonV1(JSON.stringify(value), property, label),
+      /shape|typed empty|keys/,
+      label,
+    );
+  }
+  assert.throws(
+    () => parseBusctlEmptyCredentialJsonV1("[unprintable]", "LoadCredential"),
+    /JSON/,
+  );
+  assert.throws(
+    () => parseBusctlEmptyCredentialJsonV1(JSON.stringify({ data: [], type: "as" }), "PassCredential"),
+    /not a reviewed credential property/,
+  );
+  assert.throws(
+    () => parseBusctlEmptyCredentialJsonV1(`{"data":[],"type":"a(ss)","padding":"${"x".repeat(4096)}"}`, "LoadCredential"),
+    /not bounded/,
+  );
+
+  const initial = emptyCredentialProperties();
+  assert.equal(
+    assertEffectiveCredentialSnapshotUnchangedV1(
+      initial,
+      clone(initial),
+      "bitcoinpir-test.service",
+    ),
+    true,
+  );
+  const nonEmpty = clone(initial);
+  nonEmpty.SetCredential.data.push(["secret", [1]]);
+  assert.throws(
+    () => assertEffectiveCredentialSnapshotUnchangedV1(
+      initial,
+      nonEmpty,
+      "bitcoinpir-test.service",
+    ),
+    /SetCredential is forbidden/,
+  );
+});
+
+test("runtime collector reads credentials only from the systemd Service interface", () => {
+  for (const property of CREDENTIAL_SERVICE_PROPERTIES) {
+    assert.deepEqual(
+      systemdCredentialBusctlArgvV1("bitcoinpir-directory-relay.service", property),
+      [
+        "--json=short",
+        "get-property",
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1/unit/bitcoinpir_2ddirectory_2drelay_2eservice",
+        "org.freedesktop.systemd1.Service",
+        property,
+      ],
+    );
+  }
+  assert.throws(
+    () => systemdCredentialBusctlArgvV1(
+      "bitcoinpir-directory-relay.service",
+      "PassCredential",
+    ),
+    /not reviewed/,
+  );
+  const source = readFileSync(COLLECTOR, "utf8");
+  const start = source.indexOf("function collectEffectiveCredentialProperties(unitName)");
+  const end = source.indexOf("function validateEffectiveConditions", start);
+  assert.ok(start >= 0 && end > start, "missing bounded credential collector");
+  const collector = source.slice(start, end);
+  assert.match(collector, /systemdCredentialBusctlArgvV1\(unitName, property\)/);
+  assert.match(collector, /effectiveBusctlServicePropertyNames\(\)/);
+  assert.doesNotMatch(collector, /systemctl/);
+});
+
+test("runtime evidence release keeps the exact three-script and builtin import closure", () => {
+  assertReviewedModuleClosure(readFileSync(COLLECTOR, "utf8"), [
+    "./payment-v1-rendered-artifact-gate.mjs",
+    "node:child_process",
+    "node:crypto",
+    "node:fs",
+    "node:path",
+    "node:perf_hooks",
+    "node:url",
+  ], COLLECTOR);
+  assertReviewedModuleClosure(readFileSync(RENDERED_GATE, "utf8"), [
+    "./payment-v1-deployment-template-gate.mjs",
+    "node:crypto",
+    "node:fs",
+    "node:net",
+    "node:path",
+    "node:url",
+  ], RENDERED_GATE);
+  assertReviewedModuleClosure(readFileSync(TEMPLATE_GATE, "utf8"), [
+    "node:crypto",
+    "node:fs",
+    "node:path",
+    "node:url",
+  ], TEMPLATE_GATE);
+});
+
+test("runtime evidence release rejects alternate JavaScript module loaders", () => {
+  const source = readFileSync(TEMPLATE_GATE, "utf8");
+  const anchor = "export const ACTIVE_BASELINES";
+  const expected = ["node:crypto", "node:fs", "node:path", "node:url"];
+  for (const [label, injection, error] of [
+    ["dynamic", 'await import/* separated */("./dynamic-unreviewed.mjs");', /dynamic import/],
+    ["same-line static", '0; import staticUnreviewed from "./static-unreviewed.mjs";', /dependency closure changed/],
+    ["export-from", 'export { default as unreviewed } from "./export-unreviewed.mjs";', /dependency closure changed/],
+    ["package", 'import packageUnreviewed from "unreviewed-package";', /dependency closure changed/],
+    ["absolute", 'import absoluteUnreviewed from "/tmp/unreviewed.mjs";', /dependency closure changed/],
+    ["file URL", 'import fileUnreviewed from "file:///tmp/unreviewed.mjs";', /dependency closure changed/],
+    ["data URL", 'import dataUnreviewed from "data:text/javascript,export default 1";', /dependency closure changed/],
+    ["require", 'const unreviewed = require("./unreviewed.cjs");', /CommonJS require/],
+    ["createRequire", 'const unreviewed = createRequire(import.meta.url);', /createRequire/],
+    ["module register", 'module.register("./unreviewed.mjs");', /module registration/],
+    ["worker", 'new Worker("./unreviewed.mjs");', /worker loader/],
+  ]) {
+    assert.throws(
+      () => assertReviewedModuleClosure(
+        source.replace(anchor, `${injection}\n\n${anchor}`),
+        expected,
+        label,
+      ),
+      error,
+      label,
+    );
+  }
+});
+
 test("live collector seals expensive secrets before its final Conditions and generation pass", () => {
   const source = readFileSync(COLLECTOR, "utf8");
   const secretSealMarker = source.indexOf(
@@ -385,6 +743,7 @@ test("live collector seals expensive secrets before its final Conditions and gen
   assert.match(secretSealPass, /confirmSecretParentDirectoriesUnchanged\(/);
 
   const finalStatePass = source.slice(finalStateMarker, finishedMarker);
+  assert.match(finalStatePass, /collectEffectiveCredentialProperties\(/);
   assert.match(finalStatePass, /collectEffectiveConditions\(/);
   assert.match(finalStatePass, /collectEffectiveUnitDependenciesV1\(/);
   assert.match(finalStatePass, /collectEffectiveServicePropertiesV1\(/);
@@ -397,7 +756,7 @@ test("live collector seals expensive secrets before its final Conditions and gen
   );
 });
 
-test("stopped relay collector seals its private loader before final Conditions and stopped state", () => {
+test("stopped edge and relay collectors put only the final unit seal after long probes", () => {
   const source = readFileSync(COLLECTOR, "utf8");
   const collectorMarker = source.indexOf("function collectStoppedPreparationEvidence(");
   const secretSealMarker = source.indexOf(
@@ -405,26 +764,38 @@ test("stopped relay collector seals its private loader before final Conditions a
     collectorMarker,
   );
   const finalStateMarker = source.indexOf(
-    "// Typed Conditions and the stopped generation are deliberately collected",
+    "// The final external-state pass is deliberately limited to typed credential",
     secretSealMarker,
   );
   const accountPolicyMarker = source.indexOf(
     "  const accountPolicyFinished = collectLockedServiceAccountPolicy(request, nss);",
+    collectorMarker,
+  );
+  const nssMarker = source.indexOf("  confirmCompleteNssSnapshotUnchanged(nss);", accountPolicyMarker);
+  const hostMarker = source.indexOf("  const hostFinished = readHostBinding();", nssMarker);
+  const finishedMarker = source.indexOf(
+    "  const finished = Math.floor(Date.now() / 1000);",
     finalStateMarker,
   );
+  const evidenceMarker = source.indexOf("  const evidence = {", finishedMarker);
 
   assert.ok(collectorMarker >= 0, "missing stopped collector");
   assert.ok(secretSealMarker > collectorMarker, "missing stopped private-loader final seal");
+  assert.ok(accountPolicyMarker > collectorMarker, "missing stopped account-policy confirmation");
+  assert.ok(nssMarker > accountPolicyMarker, "NSS confirmation must follow account policy");
+  assert.ok(hostMarker > nssMarker, "host confirmation must follow NSS confirmation");
+  assert.ok(secretSealMarker > hostMarker, "private-loader seal must follow long host probes");
   assert.ok(finalStateMarker > secretSealMarker, "final stopped state must follow the private-loader seal");
-  assert.ok(accountPolicyMarker > finalStateMarker, "account-policy confirmation must follow final stopped state");
+  assert.ok(finishedMarker > finalStateMarker, "finish timestamp must follow final stopped state");
+  assert.ok(evidenceMarker > finishedMarker, "evidence must immediately follow the stopped final seal");
 
-  const finalStatePass = source.slice(finalStateMarker, accountPolicyMarker);
+  const finalStatePass = source.slice(finalStateMarker, finishedMarker);
   assert.match(finalStatePass, /collectStoppedUnitConfigurations\(/);
   assert.match(finalStatePass, /collectStoppedUnitStates\(/);
   assert.doesNotMatch(
     finalStatePass,
-    /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectSecretAccessChecks/,
-    "private-loader or expensive access probes must not run after final Conditions/stopped-state sealing",
+    /collectLockedServiceAccountPolicy|confirmCompleteNssSnapshotUnchanged|readHostBinding|confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectSecretAccessChecks|collectInstalledFile/,
+    "no long host, private-loader or metadata probe may run after final Conditions/stopped-state sealing",
   );
 });
 
@@ -552,9 +923,8 @@ function fixture() {
       target_path: "/run/bitcoinpir-test/service.sock",
       uid: 730,
     }],
-    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
-    schema_version: 6,
+    schema_version: 7,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -563,6 +933,7 @@ function fixture() {
       unit_name: unit.unit_name,
       user_name: "bitcoinpir-test",
     }],
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
     systemd_analyze_argv: ["/usr/bin/systemd-analyze", "verify", fragmentPath],
@@ -595,7 +966,6 @@ function fixture() {
     IPAddressDeny: "",
     InaccessiblePaths: "",
     InvocationID: "a".repeat(32),
-    LoadCredential: "",
     LoadState: "loaded",
     LockPersonality: "yes",
     LimitCORE: "0",
@@ -632,7 +1002,6 @@ function fixture() {
     RestrictSUIDSGID: "yes",
     RootDirectory: "",
     RootImage: "",
-    SetCredential: "",
     StandardError: "null",
     StandardOutput: "null",
     SubState: "running",
@@ -800,7 +1169,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 6,
+    schema_version: 7,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -829,6 +1198,7 @@ function fixture() {
         trigger: false,
         type: "ConditionPathExists",
       }],
+      credential_properties: emptyCredentialProperties(),
       fragment_sha256: hash("fragment"),
       generation_confirmations: [
         clone(generationConfirmation),
@@ -864,6 +1234,7 @@ function stoppedEdgeFixture() {
   const unitState = {
     active_state: "inactive",
     control_group: "",
+    credential_properties: emptyCredentialProperties(),
     drop_in_paths: "",
     fragment_path: live.request.units[0].fragment_path,
     invocation_id: "",
@@ -923,7 +1294,7 @@ function stoppedEdgeFixture() {
       [clone(socketAbsence)],
       [clone(socketAbsence)],
     ],
-    schema_version: 3,
+    schema_version: 4,
     stopped_unit_passes: [
       [clone(unitState)],
       [clone(unitState)],
@@ -1021,7 +1392,7 @@ function stoppedRelayFixture() {
     relayFragmentPath,
   ];
   value.evidence.evidence_kind = STOPPED_RELAY_EVIDENCE_KIND;
-  value.evidence.schema_version = 2;
+  value.evidence.schema_version = 3;
   value.evidence.runtime_socket_absence_passes = [[], []];
   for (const pass of value.evidence.stopped_unit_passes) {
     pass[0].unit_name = "bitcoinpir-directory-relay.service";
@@ -1071,6 +1442,7 @@ function stoppedRelayFixture() {
   }));
   const unitConfiguration = {
     conditions,
+    credential_properties: emptyCredentialProperties(),
     fragment_sha256: value.request.installed_files[1].sha256,
     properties,
     unit_name: "bitcoinpir-directory-relay.service",
@@ -1572,6 +1944,7 @@ function secretIsolationFixture() {
   };
   value.evidence.units.push({
     conditions: clone(value.evidence.units[0].conditions),
+    credential_properties: emptyCredentialProperties(),
     fragment_sha256: peerFragment.sha256,
     generation_confirmations: [
       clone(peerConfirmation),
@@ -2514,8 +2887,66 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   assert.throws(() => validateStopped(legacy), /closure is incomplete/);
 
   const legacySchema = stoppedEdgeFixture();
-  legacySchema.evidence.schema_version = 1;
+  legacySchema.evidence.schema_version = 3;
+  legacySchema.evidence.evidence_kind =
+    "bitcoinpir-payment-v1-linux-root-stopped-edge-v3";
+  legacySchema.evidence.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
   assert.throws(() => validateStopped(legacySchema), /evidence schema, collector/);
+
+  const legacyRequest = stoppedEdgeFixture();
+  legacyRequest.request.schema_version = 6;
+  legacyRequest.request.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+  assert.throws(() => validateStopped(legacyRequest), /evidence schema, collector/);
+
+  const missingCredentialRequestClosure = stoppedEdgeFixture();
+  delete missingCredentialRequestClosure.request.busctl_service_properties;
+  assert.throws(
+    () => validateStopped(missingCredentialRequestClosure),
+    /busctl Service property schema/,
+  );
+});
+
+test("live and stopped evidence reject every non-empty typed credential property", () => {
+  for (const property of CREDENTIAL_SERVICE_PROPERTIES) {
+    const live = fixture();
+    live.evidence.units[0].credential_properties[property].data =
+      property === "ImportCredential"
+        ? ["secret.*"]
+        : property.startsWith("Load")
+        ? [["secret", "/tmp/secret"]]
+        : [["secret", [1, 2, 3]]];
+    assert.throws(() => validate(live), new RegExp(property), `live ${property}`);
+
+    const stoppedEdge = stoppedEdgeFixture();
+    stoppedEdge.evidence.stopped_unit_passes[0][0]
+      .credential_properties[property].data =
+        property === "ImportCredential"
+          ? ["secret.*"]
+          : property.startsWith("Load")
+          ? [["secret", "/tmp/secret"]]
+          : [["secret", [1, 2, 3]]];
+    assert.throws(
+      () => validateStopped(stoppedEdge),
+      new RegExp(property),
+      `stopped edge ${property}`,
+    );
+
+    const stoppedRelay = stoppedRelayFixture();
+    stoppedRelay.evidence.unit_configuration_passes[1][0]
+      .credential_properties[property].data =
+        property === "ImportCredential"
+          ? ["secret.*"]
+          : property.startsWith("Load")
+          ? [["secret", "/tmp/secret"]]
+          : [["secret", [1, 2, 3]]];
+    assert.throws(
+      () => validateStoppedRelay(stoppedRelay),
+      new RegExp(property),
+      `stopped relay ${property}`,
+    );
+  }
 });
 
 test("stopped directory-relay preparation is closed and can never become live evidence", () => {
@@ -2619,12 +3050,33 @@ test("stopped directory-relay preparation is closed and can never become live ev
   );
 
   const legacyRelaySchema = stoppedRelayFixture();
-  legacyRelaySchema.evidence.schema_version = 1;
+  legacyRelaySchema.evidence.schema_version = 2;
   legacyRelaySchema.evidence.evidence_kind =
-    "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v1";
+    "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v2";
+  legacyRelaySchema.evidence.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
   assert.throws(
     () => validateStoppedRelay(legacyRelaySchema),
     /schema, collector, profile/,
+  );
+
+  const legacyRelayRequest = stoppedRelayFixture();
+  legacyRelayRequest.request.schema_version = 6;
+  legacyRelayRequest.request.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
+  assert.throws(
+    () => validateStoppedRelay(legacyRelayRequest),
+    /schema, collector, profile/,
+  );
+
+  const extraCredentialRequestClosure = stoppedRelayFixture();
+  extraCredentialRequestClosure.request.busctl_service_properties = [
+    ...RUNTIME_BUSCTL_SERVICE_PROPERTIES,
+    "PassCredential",
+  ];
+  assert.throws(
+    () => validateStoppedRelay(extraCredentialRequestClosure),
+    /busctl Service property schema/,
   );
 
   const live = fixture();
@@ -2885,11 +3337,17 @@ test("live verifier rejects omitted service identities and noncanonical complete
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
   const legacyEvidence = fixture();
-  legacyEvidence.evidence.schema_version = 4;
+  legacyEvidence.evidence.schema_version = 6;
+  legacyEvidence.evidence.evidence_kind =
+    "bitcoinpir-payment-v1-linux-root-live-v6";
+  legacyEvidence.evidence.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
   assert.throws(() => validate(legacyEvidence), /schema or kind/);
 
   const legacyRequest = fixture();
-  legacyRequest.request.schema_version = 4;
+  legacyRequest.request.schema_version = 6;
+  legacyRequest.request.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v6";
   assert.throws(() => validate(legacyRequest), /request schema or collector/);
 
   const legacySystemctlConditions = fixture();
@@ -2899,13 +3357,49 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   ];
   assert.throws(() => validate(legacySystemctlConditions), /systemctl property schema/);
 
+  const legacySystemctlCredentials = fixture();
+  legacySystemctlCredentials.request.systemctl_show_properties = [
+    ...legacySystemctlCredentials.request.systemctl_show_properties,
+    "LoadCredential",
+    "SetCredential",
+  ].sort();
+  assert.throws(() => validate(legacySystemctlCredentials), /systemctl property schema/);
+
   const missingBusctlSchema = fixture();
   delete missingBusctlSchema.request.busctl_unit_properties;
-  assert.throws(() => validate(missingBusctlSchema), /busctl property schema/);
+  assert.throws(() => validate(missingBusctlSchema), /busctl Unit property schema/);
 
   const foreignBusctlSchema = fixture();
   foreignBusctlSchema.request.busctl_unit_properties = ["Conditions", "Triggers"];
-  assert.throws(() => validate(foreignBusctlSchema), /busctl property schema/);
+  assert.throws(() => validate(foreignBusctlSchema), /busctl Unit property schema/);
+
+  const missingServiceBusctlSchema = fixture();
+  delete missingServiceBusctlSchema.request.busctl_service_properties;
+  assert.throws(() => validate(missingServiceBusctlSchema), /busctl Service property schema/);
+
+  const incompleteServiceBusctlSchema = fixture();
+  incompleteServiceBusctlSchema.request.busctl_service_properties = [
+    "LoadCredential",
+    "SetCredential",
+  ];
+  assert.throws(() => validate(incompleteServiceBusctlSchema), /busctl Service property schema/);
+
+  const missingCredentialEvidence = fixture();
+  delete missingCredentialEvidence.evidence.units[0]
+    .credential_properties.LoadCredentialEncrypted;
+  assert.throws(() => validate(missingCredentialEvidence), /credential properties.*keys/);
+
+  const extraCredentialEvidence = fixture();
+  extraCredentialEvidence.evidence.units[0].credential_properties.PassCredential = {
+    data: [],
+    type: "as",
+  };
+  assert.throws(() => validate(extraCredentialEvidence), /credential properties.*keys/);
+
+  const wrongCredentialType = fixture();
+  wrongCredentialType.evidence.units[0]
+    .credential_properties.SetCredentialEncrypted.type = "a(ss)";
+  assert.throws(() => validate(wrongCredentialType), /SetCredentialEncrypted is forbidden/);
 
   const reviewedSystemdFallback = fixture();
   reviewedSystemdFallback.evidence.nss.sources.passwd = ["files", "systemd"];
@@ -2918,19 +3412,19 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
 
   const missingBusctlServiceSchema = fixture();
   delete missingBusctlServiceSchema.request.busctl_service_properties;
-  assert.throws(() => validate(missingBusctlServiceSchema), /busctl service property schema/);
+  assert.throws(() => validate(missingBusctlServiceSchema), /busctl Service property schema/);
 
   const foreignBusctlServiceSchema = fixture();
   foreignBusctlServiceSchema.request.busctl_service_properties = ["TimeoutStopUSec", "RestartUSec"];
-  assert.throws(() => validate(foreignBusctlServiceSchema), /busctl service property schema/);
+  assert.throws(() => validate(foreignBusctlServiceSchema), /busctl Service property schema/);
 
   const missingBusctlManagerSchema = fixture();
   delete missingBusctlManagerSchema.request.busctl_manager_properties;
-  assert.throws(() => validate(missingBusctlManagerSchema), /busctl manager property schema/);
+  assert.throws(() => validate(missingBusctlManagerSchema), /busctl Manager property schema/);
 
   const foreignBusctlManagerSchema = fixture();
   foreignBusctlManagerSchema.request.busctl_manager_properties = ["RuntimeWatchdogUSec"];
-  assert.throws(() => validate(foreignBusctlManagerSchema), /busctl manager property schema/);
+  assert.throws(() => validate(foreignBusctlManagerSchema), /busctl Manager property schema/);
 
   const remoteBackend = fixture();
   remoteBackend.evidence.nss.sources.passwd.push("sss");
@@ -3096,7 +3590,7 @@ for (const [label, mutate, expected] of [
   ["ExecStart reset", (f) => { f.evidence.units[0].properties.ExecStart = execValue("/usr/bin/true"); }, /ExecStart drift/],
   ["ExecStartPost", (f) => { f.evidence.units[0].properties.ExecStartPost = execValue("/usr/bin/true"); }, /ExecStartPost/],
   ["EnvironmentFile", (f) => { f.evidence.units[0].properties.EnvironmentFiles = "/tmp/evil"; }, /EnvironmentFiles/],
-  ["credential", (f) => { f.evidence.units[0].properties.LoadCredential = "secret:/tmp/evil"; }, /LoadCredential/],
+  ["credential", (f) => { f.evidence.units[0].credential_properties.LoadCredential.data = [["secret", "/tmp/evil"]]; }, /LoadCredential/],
   ["root image", (f) => { f.evidence.units[0].properties.RootImage = "/tmp/root.img"; }, /RootImage/],
   ["file hash", (f) => { f.evidence.installed_files[0].sha256 = hash("evil"); }, /sha256 drift/],
   ["tmpfiles mode", (f) => { f.evidence.runtime_directories[0].mode = "0777"; }, /tmpfiles directory drift/],
