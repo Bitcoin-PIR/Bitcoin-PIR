@@ -25,6 +25,7 @@ import {
   computePlanSha256,
   executeApply,
   executeRollback,
+  parseSystemdExecRecordsV1,
   validateCeremonyPlan,
   validatePrivatePairV1,
 } from "./payment-v1-publisher-netns-ceremony.mjs";
@@ -61,6 +62,15 @@ function installedManifestBytes(installedFiles, ids) {
   .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
   .map((pinValue) => `${pinValue.sha256}  ${pinValue.path}\n`)
   .join(""), "utf8");
+}
+
+function launcherManifestBytes(runtime) {
+  return Buffer.from([
+    runtime.node,
+    runtime.integrated_caddy_gate,
+    runtime.executor,
+    runtime.publisher_netns_gate,
+  ].map((pinValue) => `${pinValue.sha256}  ${pinValue.path}\n`).join(""), "utf8");
 }
 
 function installedFileBytes(id, topology, installedFiles = undefined) {
@@ -129,6 +139,74 @@ function active(name, id = "a".repeat(32), pid = "123") {
     name,
     need_daemon_reload: "no",
     sub_state: "running",
+  };
+}
+
+function loadedNetnsUnit(installedFiles) {
+  const helper = installedFiles.find((entry) => entry.id === "helper-binary").pin.path;
+  return {
+    condition_paths: [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+      "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+    ],
+    condition_source: "exact-fragment-pin-plus-NeedDaemonReload=no",
+    dropin_paths: [],
+    exec: {
+      start: [{ argv: `${helper} run`, ignore_errors: "no", path: helper }],
+      start_pre: [
+        { argv: `/usr/bin/test -x ${helper}`, ignore_errors: "no", path: "/usr/bin/test" },
+        {
+          argv: "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+          ignore_errors: "no",
+          path: "/usr/bin/sha256sum",
+        },
+        { argv: `${helper} self-test`, ignore_errors: "no", path: helper },
+      ],
+      stop_post: [{ argv: `${helper} cleanup`, ignore_errors: "no", path: helper }],
+    },
+    fragment_path: "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    need_daemon_reload: "no",
+    relationships: {
+      after: ["basic.target", "local-fs.target"],
+      before: ["bhtm-caddy.service", "bitcoinpir-payment-v1-source-fair-edge.service"],
+      binds_to: [],
+      part_of: ["bhtm-caddy.service"],
+      requires: [],
+      wants: [],
+    },
+    service: {
+      ambient_capabilities: [],
+      capability_bounding_set: ["CAP_NET_ADMIN", "CAP_SYS_ADMIN"],
+      group: "root",
+      kill_mode: "control-group",
+      limit_core: "0",
+      lock_personality: "yes",
+      memory_deny_write_execute: "yes",
+      memory_max: "67108864",
+      memory_swap_max: "0",
+      no_new_privileges: "yes",
+      notify_access: "main",
+      restart: "no",
+      restrict_address_families: ["AF_NETLINK", "AF_UNIX"],
+      restrict_namespaces: "net",
+      restrict_realtime: "yes",
+      restrict_suid_sgid: "yes",
+      standard_error: "null",
+      standard_output: "null",
+      state_directory: ["bitcoinpir-publisher-netns"],
+      state_directory_mode: "0700",
+      system_call_architectures: ["native"],
+      tasks_max: "8",
+      timeout_start_usec: "30s",
+      timeout_stop_usec: "30s",
+      type: "notify",
+      umask: "0077",
+      user: "root",
+      working_directory: "/var/lib/bitcoinpir-publisher-netns",
+    },
   };
 }
 
@@ -302,6 +380,38 @@ function fixture() {
     unit: active(CADDY_UNIT, "c".repeat(32), "900"),
   };
   const ceremonyId = "publisher-netns-20260730-a";
+  const launcherSha256 = hash("launcher\n");
+  const runtime = {
+    executor: pin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs", "0555",
+      "executor"),
+    integrated_caddy_gate: pin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "0555",
+      "integrated-caddy-gate",
+    ),
+    ip: pin("/usr/bin/ip", "0755", "ip"),
+    launcher: pin(
+      `/opt/bitcoinpir/publisher-netns-launcher/${launcherSha256}/payment-v1-publisher-netns-launcher`,
+      "0555",
+      "launcher",
+    ),
+    launcher_manifest: pin(
+      "/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256",
+      "0444",
+      "launcher-manifest",
+    ),
+    node: pin("/usr/bin/node", "0755", "node"),
+    publisher_netns_gate: pin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs",
+      "0555",
+      "publisher-netns-gate",
+    ),
+    systemctl: pin("/usr/bin/systemctl", "0755", "systemctl"),
+  };
+  const launcherManifest = launcherManifestBytes(runtime);
+  runtime.launcher_manifest.sha256 = hash(launcherManifest);
+  runtime.launcher_manifest.size = String(launcherManifest.length);
   const plan = {
     activation_sentinels: sentinelPaths.map((path) => pin(path, "0400", basenameFor(path))),
     caddy_preimage: caddy,
@@ -310,12 +420,23 @@ function fixture() {
     host: {
       boot_id: "01234567-89ab-cdef-0123-456789abcdef",
       machine_id_sha256: hash("machine-id"),
+      systemd_manager_generation: {
+        generators_finish_timestamp_monotonic: "1002",
+        generators_start_timestamp_monotonic: "1001",
+        pid1_exe_device: "2049",
+        pid1_exe_inode: "501",
+        pid1_exe_path: "/usr/lib/systemd/systemd",
+        pid1_start_ticks: "100",
+        units_load_finish_timestamp_monotonic: "1004",
+        units_load_start_timestamp_monotonic: "1003",
+      },
       systemd_version: "systemd 255 (255.4-1ubuntu8.10)",
     },
     installed_files: installedFiles,
     kind: CEREMONY_KIND,
     preimage: {
       host_interface: "absent",
+      loaded_netns_unit: loadedNetnsUnit(installedFiles),
       namespace_path: "absent",
       netns_unit: inactive(NETNS_UNIT),
       publisher_unit: inactive(PUBLISHER_UNIT),
@@ -330,25 +451,8 @@ function fixture() {
       reboot_recreation: "caddy-wants-after-persistent-sentinels",
       reverse_stop_propagation: false,
     },
-    runtime: {
-      executor: pin(
-        "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs", "0555",
-        "executor"),
-      integrated_caddy_gate: pin(
-        "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
-        "0555",
-        "integrated-caddy-gate",
-      ),
-      ip: pin("/usr/bin/ip", "0755", "ip"),
-      node: pin("/usr/bin/node", "0755", "node"),
-      publisher_netns_gate: pin(
-        "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs",
-        "0555",
-        "publisher-netns-gate",
-      ),
-      systemctl: pin("/usr/bin/systemctl", "0755", "systemctl"),
-    },
-    schema_version: 1,
+    runtime,
+    schema_version: 2,
     source_commit: "8".repeat(40),
     topology,
     transaction: {
@@ -370,8 +474,10 @@ function fixture() {
     executor_sha256: plan.runtime.executor.sha256,
     expires_at_utc: new Date((NOW + 600) * 1000).toISOString().replace(".000Z", "Z"),
     kind: APPLY_APPROVAL_KIND,
+    launcher_manifest_sha256: plan.runtime.launcher_manifest.sha256,
+    launcher_sha256: plan.runtime.launcher.sha256,
     plan_sha256: planSha256,
-    schema_version: 1,
+    schema_version: 2,
   };
   return { approval, firewallBytes, plan, planSha256 };
 }
@@ -438,7 +544,9 @@ function fakeOps(fixtureValue) {
   }
   for (const [name, runtimePin] of Object.entries(plan.runtime)) {
     files.set(runtimePin.path, {
-      bytes: Buffer.from(`${name}\n`, "utf8"),
+      bytes: name === "launcher_manifest"
+        ? launcherManifestBytes(plan.runtime)
+        : Buffer.from(`${name}\n`, "utf8"),
       snapshot: structuredClone(runtimePin),
     });
   }
@@ -455,6 +563,7 @@ function fakeOps(fixtureValue) {
   let publisher = structuredClone(plan.preimage.publisher_unit);
   let caddy = structuredClone(plan.caddy_preimage);
   let host = structuredClone(plan.host);
+  let loaded = structuredClone(plan.preimage.loaded_netns_unit);
   let topology = topologyFixture(plan);
   const calls = [];
   let startStatus = 0;
@@ -462,6 +571,9 @@ function fakeOps(fixtureValue) {
   let afterStart = () => {};
   let afterStop = () => {};
   let beforeUnitState = () => {};
+  let beforeLoadedNetnsUnit = () => {};
+  let beforeHostIdentity = () => {};
+  let afterWriteState = () => {};
   let lockHeld = false;
   const stateObservation = (key, value) => {
     const bytes = Buffer.from(canonicalJson(value), "utf8");
@@ -483,6 +595,8 @@ function fakeOps(fixtureValue) {
     set caddy(value) { caddy = structuredClone(value); },
     get host() { return host; },
     set host(value) { host = structuredClone(value); },
+    get loaded() { return loaded; },
+    set loaded(value) { loaded = structuredClone(value); },
     get netns() { return netns; },
     set netns(value) { netns = structuredClone(value); },
     get publisher() { return publisher; },
@@ -492,6 +606,9 @@ function fakeOps(fixtureValue) {
     set afterStart(value) { afterStart = value; },
     set afterStop(value) { afterStop = value; },
     set beforeUnitState(value) { beforeUnitState = value; },
+    set beforeLoadedNetnsUnit(value) { beforeLoadedNetnsUnit = value; },
+    set beforeHostIdentity(value) { beforeHostIdentity = value; },
+    set afterWriteState(value) { afterWriteState = value; },
     set topology(value) { topology = structuredClone(value); },
     async acquireLock(_path, { recoverStale }) {
       calls.push(["lock", recoverStale]);
@@ -500,8 +617,20 @@ function fakeOps(fixtureValue) {
       return async () => { calls.push(["unlock"]); lockHeld = false; };
     },
     async caddyState() { return structuredClone(caddy); },
-    async hostIdentity() { return structuredClone(host); },
-    async networkAbsent() { return netns.active_state === "inactive"; },
+    async hostIdentity() {
+      calls.push(["hostIdentity"]);
+      beforeHostIdentity();
+      return structuredClone(host);
+    },
+    async loadedNetnsUnit() {
+      calls.push(["loadedNetnsUnit"]);
+      beforeLoadedNetnsUnit();
+      return structuredClone(loaded);
+    },
+    async networkAbsent() {
+      calls.push(["networkAbsent"]);
+      return netns.active_state === "inactive";
+    },
     async networkState() { return structuredClone(topology); },
     async readOptionalRegular(path) {
       const value = receipts.get(path) ?? states.get(path);
@@ -527,6 +656,7 @@ function fakeOps(fixtureValue) {
       return { status: args[0] === "start" ? startStatus : stopStatus };
     },
     async unitState(name) {
+      calls.push(["unitState", name]);
       beforeUnitState(name);
       if (name === NETNS_UNIT) return structuredClone(netns);
       if (name === PUBLISHER_UNIT) return structuredClone(publisher);
@@ -549,6 +679,7 @@ function fakeOps(fixtureValue) {
         throw new Error("state replay drifted");
       }
       if (existing === undefined) states.set(key, stateObservation(key, value));
+      afterWriteState(filename, value);
     },
   };
   return ops;
@@ -574,6 +705,35 @@ test("closed publisher namespace ceremony plan validates", () => {
   const value = fixture();
   assert.equal(validateCeremonyPlan(value.plan), true);
   assert.equal(computePlanSha256(value.plan), value.planSha256);
+});
+
+test("loaded-unit Exec parser accepts only exact systemd record separators", () => {
+  const first =
+    "{ path=/usr/bin/sha256sum ; argv[]=/usr/bin/sha256sum --check /one ; " +
+    "ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  const second =
+    "{ path=/usr/bin/sha256sum ; argv[]=/usr/bin/sha256sum --check /two ; " +
+    "ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  const expected = [
+    { argv: "/usr/bin/sha256sum --check /one", ignore_errors: "no", path: "/usr/bin/sha256sum" },
+    { argv: "/usr/bin/sha256sum --check /two", ignore_errors: "no", path: "/usr/bin/sha256sum" },
+  ];
+  assert.deepEqual(parseSystemdExecRecordsV1(`${first}\n${second}`), expected);
+  assert.deepEqual(parseSystemdExecRecordsV1(`${first} ; ${second}`), expected);
+  for (const malformed of [
+    `${first}${second}`,
+    `${first} ${second}`,
+    `${first}\n\n${second}`,
+    ` ${first}`,
+    `${first}\n`,
+    `${first}\r\n${second}`,
+    `${first}\0`,
+  ]) {
+    assert.throws(
+      () => parseSystemdExecRecordsV1(malformed),
+      /non-empty systemd Exec command list|unreviewed/u,
+    );
+  }
 });
 
 test("executor local import closure is exact and both sibling gates are plan-pinned", () => {
@@ -602,6 +762,42 @@ test("executor local import closure is exact and both sibling gates are plan-pin
   value.plan.runtime.publisher_netns_gate.path =
     "/usr/local/libexec/bitcoinpir/unreviewed-gate.mjs";
   assert.throws(() => validateCeremonyPlan(value.plan), /path is not approved/u);
+});
+
+test("launcher and its four-entry manifest are plan- and approval-bound", async () => {
+  {
+    const value = fixture();
+    value.plan.runtime.launcher.path =
+      "/opt/bitcoinpir/publisher-netns-launcher/unreviewed/payment-v1-publisher-netns-launcher";
+    assert.throws(() => validateCeremonyPlan(value.plan), /path is not approved/u);
+  }
+  {
+    const value = fixture();
+    const ops = fakeOps(value);
+    const manifest = ops.files.get(value.plan.runtime.launcher_manifest.path);
+    manifest.bytes = Buffer.from(`${value.plan.runtime.node.sha256}  /usr/bin/node\n`, "utf8");
+    await assert.rejects(
+      () => applyFixture(value, ops),
+      /launcher manifest does not bind the exact Node\/executor\/import closure/u,
+    );
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  }
+  {
+    const value = fixture();
+    value.approval.schema_version = 1;
+    delete value.approval.launcher_sha256;
+    delete value.approval.launcher_manifest_sha256;
+    const ops = fakeOps(value);
+    await assert.rejects(() => applyFixture(value, ops), /approval keys drifted|kind\/schema/u);
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  }
+  {
+    const value = fixture();
+    value.approval.launcher_sha256 = "f".repeat(64);
+    const ops = fakeOps(value);
+    await assert.rejects(() => applyFixture(value, ops), /approval binding drifted/u);
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  }
 });
 
 test("private pair validator accepts RFC1918 and ULA point-to-point pairs", () => {
@@ -744,11 +940,99 @@ test("namespace activation raced into the final pre-start window is never adopte
   };
   await assert.rejects(
     () => applyFixture(value, ops),
-    /namespace preimage changed during apply preflight/u,
+    /final pre-start publisher namespace preimage changed/u,
   );
   assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
   assert.equal(ops.receipts.size, 0);
 });
+
+test("the exact loaded unit and manager generation are rechecked immediately before start", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  await applyFixture(value, ops);
+  const startIndex = ops.calls.findIndex(
+    (call) => call[0] === "systemctl" && call[1] === "start",
+  );
+  assert.deepEqual(ops.calls.slice(startIndex - 5, startIndex), [
+    ["hostIdentity"],
+    ["unitState", PUBLISHER_UNIT],
+    ["loadedNetnsUnit"],
+    ["unitState", NETNS_UNIT],
+    ["networkAbsent"],
+  ]);
+});
+
+test("runtime input drift after durable start intent is rechecked before activation", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  let tampered = false;
+  ops.afterWriteState = (filename) => {
+    if (filename !== "05-start-intent.json" || tampered) return;
+    tampered = true;
+    const path = value.plan.runtime.launcher_manifest.path;
+    const observed = ops.files.get(path);
+    observed.bytes = Buffer.from("unapproved launcher manifest\n", "utf8");
+    observed.snapshot.sha256 = hash(observed.bytes);
+    observed.snapshot.size = String(observed.bytes.length);
+  };
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /runtime command launcher_manifest drifted/u,
+  );
+  assert.equal(tampered, true);
+  assert.equal(
+    ops.states.has(`${value.plan.transaction.state_directory}/05-start-intent.json`),
+    true,
+  );
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.receipts.size, 0);
+});
+
+for (const [label, mutate, expected] of [
+  [
+    "drop-in injection",
+    (ops) => { ops.loaded.dropin_paths = ["/run/systemd/system/evil.conf"]; },
+    /loaded publisher namespace unit drifted/u,
+  ],
+  [
+    "ExecStart reset",
+    (ops) => { ops.loaded.exec.start = []; },
+    /loaded publisher namespace unit drifted/u,
+  ],
+  [
+    "daemon-reload",
+    (ops) => {
+      ops.host.systemd_manager_generation.units_load_finish_timestamp_monotonic = "9999";
+    },
+    /host identity\/systemd generation drifted/u,
+  ],
+  [
+    "daemon-reexec",
+    (ops) => { ops.host.systemd_manager_generation.pid1_exe_inode = "9999"; },
+    /host identity\/systemd generation drifted/u,
+  ],
+]) {
+  test(`${label} race immediately before start fails closed`, async () => {
+    const value = fixture();
+    const ops = fakeOps(value);
+    let loadedReads = 0;
+    let hostReads = 0;
+    if (label === "drop-in injection" || label === "ExecStart reset") {
+      ops.beforeLoadedNetnsUnit = () => {
+        loadedReads += 1;
+        if (loadedReads === 3) mutate(ops);
+      };
+    } else {
+      ops.beforeHostIdentity = () => {
+        hostReads += 1;
+        if (hostReads === 3) mutate(ops);
+      };
+    }
+    await assert.rejects(() => applyFixture(value, ops), expected);
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+    assert.equal(ops.receipts.size, 0);
+  });
+}
 
 test("firewall evidence drift fails before namespace mutation", async () => {
   const value = fixture();
@@ -848,6 +1132,34 @@ test("failed systemctl start publishes no receipt and never touches Caddy", asyn
   assert.deepEqual(ops.caddy, value.plan.caddy_preimage);
 });
 
+test("a durable start intent is single-use even when the first start command fails", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /unit start failed/u);
+  ops.startStatus = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops),
+    /existing durable start intent; it cannot be started again/u,
+  );
+  assert.equal(
+    ops.calls.filter((call) => call[0] === "systemctl" && call[1] === "start").length,
+    1,
+  );
+  assert.equal(ops.receipts.size, 0);
+});
+
+test("recover-commit never starts an inactive namespace", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /recover-commit cannot start an inactive publisher namespace/u,
+  );
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.receipts.size, 0);
+});
+
 test("runtime accepts only the reviewed down, addressless kernel fallback tunnel subset", async () => {
   const value = fixture();
   const ops = fakeOps(value);
@@ -921,8 +1233,10 @@ async function committedFixture() {
     executor_sha256: value.plan.runtime.executor.sha256,
     expires_at_utc: new Date((NOW + 600) * 1000).toISOString().replace(".000Z", "Z"),
     kind: ROLLBACK_APPROVAL_KIND,
+    launcher_manifest_sha256: value.plan.runtime.launcher_manifest.sha256,
+    launcher_sha256: value.plan.runtime.launcher.sha256,
     plan_sha256: value.planSha256,
-    schema_version: 1,
+    schema_version: 2,
   };
   return { ops, receipt, receiptSha256, rollbackApproval, value };
 }

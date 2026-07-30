@@ -40,6 +40,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+assert_namespace_transaction_clean() {
+  test ! -e /run/netns/bpir-pub-test
+  test ! -e /tmp/bitcoinpir-publisher-netns-test-state/pending.v1
+  if compgen -G '/run/netns/.bpir-pub-*' >/dev/null ||
+     compgen -G '/run/netns/.bpir-final-*' >/dev/null; then
+    echo "publisher namespace cleanup left a hidden mount placeholder" >&2
+    return 1
+  fi
+}
+
 gcc -DBPIR_PUBLISHER_NETNS_TEST_PROFILE \
   -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
   "$repo_root/scripts/payment-v1-publisher-netns.c" -o "$helper"
@@ -118,7 +128,7 @@ sleep 2
 kill -TERM "$owner_pid"
 wait "$owner_pid"
 "$helper" cleanup
-test ! -e /run/netns/bpir-pub-test
+assert_namespace_transaction_clean
 
 wait_for_pause() {
   for _ in $(seq 1 80); do
@@ -130,6 +140,13 @@ wait_for_pause() {
 }
 
 for crash_stage in \
+  after-pre-mutation-journal \
+  after-transaction-directory \
+  after-placeholder-intent \
+  after-transaction-placeholder \
+  after-final-placeholder \
+  after-prepared-record \
+  after-active-record \
   after-namespace-mount \
   after-final-rename \
   after-final-mount \
@@ -144,7 +161,7 @@ do
   wait "$owner_pid" || true
   rm /tmp/bitcoinpir-publisher-netns-test-pause
   "$helper" cleanup
-  test ! -e /run/netns/bpir-pub-test
+  assert_namespace_transaction_clean
 done
 
 for crash_stage in \
@@ -165,7 +182,7 @@ do
   wait "$cleanup_pid" || true
   rm /tmp/bitcoinpir-publisher-netns-test-pause
   "$helper" cleanup
-  test ! -e /run/netns/bpir-pub-test
+  assert_namespace_transaction_clean
 done
 
 # A dead main process leaves a journal and kernel objects. PDEATHSIG removes
@@ -177,7 +194,7 @@ kill -KILL "$owner_pid"
 wait "$owner_pid" || true
 sleep 1
 "$helper" cleanup
-test ! -e /run/netns/bpir-pub-test
+assert_namespace_transaction_clean
 
 # A host endpoint drift must terminate the owner; exact alias/MAC identity is
 # still sufficient for the explicit cleanup command to remove the pair.

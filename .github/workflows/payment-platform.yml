@@ -611,6 +611,19 @@ jobs:
             BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
             scripts/payment-v1-publisher-netns-privileged-e2e.sh
           docker run --rm \
+            --cap-add NET_ADMIN \
+            --env BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            bash -lc 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs ufw nftables iproute2 iptables >/dev/null && scripts/payment-v1-publisher-firewall-privileged-e2e.sh'
+          docker run --rm \
+            --env BPIR_DISPOSABLE_TEST_CONTAINER=1 \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:7725a5c2c83eed1d36258c66efae14b1ceccd021db9ed1d9559d3335ed3d68ed \
+            bash scripts/payment-v1-publisher-netns-launcher.test.sh /work
+          docker run --rm \
             --network none \
             --read-only \
             --cap-drop ALL \

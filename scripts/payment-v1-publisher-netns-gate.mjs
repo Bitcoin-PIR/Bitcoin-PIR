@@ -125,7 +125,7 @@ function validateHelperSource(source) {
   const preprocessorDigest = createHash("sha256")
     .update(preprocessorSurface, "utf8")
     .digest("hex");
-  if (preprocessorDigest !== "5a3fdd4dfa750fcc94cfbe1161dc8d5014e3cb210f777a9fe03744f00ecfbf8d") {
+  if (preprocessorDigest !== "b6357233c1336bc83ff33fd62723b5f247bcbc29161b6a19610cd9567129caac") {
     fail(`${label} preprocessor surface drifted from the reviewed include/macro/branch set`);
   }
   for (const exact of [
@@ -136,15 +136,16 @@ function validateHelperSource(source) {
     '#define CLIENT_IFNAME "bpir-pub-c"',
     '#define HOST_ADDRESS_TEXT "10.203.0.1"',
     '#define CLIENT_ADDRESS_TEXT "10.203.0.2"',
+    '#define PENDING_RECORD "pending.v1"',
     "#define ADDRESS_PREFIX 30U",
     '#define IF_ALIAS_PREFIX "bitcoinpir-payment-v1-publisher-netns:"',
   ]) requireOnce(source, exact, label);
   for (const phase of [
-    "00-prepared", "05-namespace-intent", "10-namespace",
+    "00-placeholder-intent", "00-prepared", "05-namespace-intent", "10-namespace",
     "20-final-intent", "30-final", "40-veth-intent", "50-veth",
     "41-veth-brand-intent", "42-veth-branded", "43-veth-install-intent",
     "44-veth-installed",
-    "60-ready", "70-cleanup-intent", "90-clean",
+    "60-ready", "70-cleanup-intent", "90-clean", "90-clean-preactive",
   ]) {
     if (!source.includes(`\"${phase}\"`)) fail(`${label} lost ${phase}`);
   }
@@ -259,7 +260,36 @@ function validateHelperSource(source) {
   if (!source.includes("unknown preimage") || !source.includes("exact cleanup refused")) {
     fail(`${label} must document and implement unknown-preimage refusal`);
   }
-  if (!source.includes('"erspan0", "gre0", "gretap0"') ||
+  const setup = source.indexOf("static int setup_transaction(");
+  const setupEnd = source.indexOf("static int recover_before_start(", setup);
+  const setupBody = source.slice(setup, setupEnd);
+  const preMutationJournal = setupBody.indexOf(
+    "durable_no_replace_at(state_fd, PENDING_RECORD, pending)",
+  );
+  const transactionDirectory = setupBody.indexOf("mkdirat(state_fd, topology->txid, 0700)");
+  const placeholderIntent = setupBody.indexOf(
+    'durable_no_replace_at(tx_fd, "00-placeholder-intent", pending)',
+  );
+  const firstPlaceholder = setupBody.indexOf("create_placeholder(topology->tx_namespace_path");
+  if (!(setup >= 0 && setupEnd > setup && preMutationJournal >= 0 &&
+      preMutationJournal < transactionDirectory && transactionDirectory < placeholderIntent &&
+      placeholderIntent < firstPlaceholder) ||
+      !source.includes("cleanup_pending_before_active(state_fd)")) {
+    fail(`${label} must journal before transaction-directory and hidden-placeholder mutation`);
+  }
+  for (const binding of [
+    '{ "erspan0", "erspan" }', '{ "gre0", "gre" }',
+    '{ "gretap0", "gretap" }', '{ "ip6_vti0", "vti6" }',
+    '{ "ip6gre0", "ip6gre" }', '{ "ip6tnl0", "ip6tnl" }',
+    '{ "ip_vti0", "vti" }', '{ "sit0", "sit" }',
+    '{ "tunl0", "ipip" }',
+  ]) {
+    if (!source.includes(binding)) {
+      fail(`${label} must bind every inert kernel-fallback name to its exact link kind`);
+    }
+  }
+  if (!source.includes("strcmp(link.kind, inert_kernel_links[i].kind) == 0") ||
+      !source.includes('strcmp(link->kind, "veth") != 0') ||
       !source.includes("link.flags & IFF_UP")) {
     fail(`${label} must close the inert kernel-fallback interface allowlist`);
   }

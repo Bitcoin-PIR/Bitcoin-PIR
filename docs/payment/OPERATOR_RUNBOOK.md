@@ -487,6 +487,13 @@ overlay plan before any Caddy change. Do not start the publisher and do not
 create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
 snapshot is point-in-time evidence only.
 
+Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
+the independently pinned native launcher and its approved four-entry manifest;
+direct Node invocation is not a production ceremony. If the continuous
+publication-interval firewall guard is absent, the terminal state is
+namespace-only: neither the publisher service nor any Nostr publication may
+start, even when the namespace receipt is valid.
+
 Rollback order is the reverse trust order: stop the publisher, restore the
 exact Caddy overlay preimage, then use a distinct receipt-bound rollback
 approval to stop only the namespace. A changed Caddy/boot generation makes the

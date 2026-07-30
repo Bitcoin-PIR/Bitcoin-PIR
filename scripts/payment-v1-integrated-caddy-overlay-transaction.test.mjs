@@ -19,6 +19,7 @@ import { canonicalJson as canonicalAdminUdsJson } from "./payment-v1-caddy-admin
 import {
   TEST_OVERLAY_ADAPTED_JSON,
   TEST_PREIMAGE,
+  PUBLISHER_NETNS_DROPIN,
   TEST_REPOSITORY,
   makeIntegratedOverlayTestPlan,
   renderedManagedBlock,
@@ -26,6 +27,8 @@ import {
   testCaddyProcessRuntime,
   testHardeningPlanBytes,
   testHardeningReceiptBytes,
+  testPublisherNetnsPlanBytes,
+  testPublisherNetnsReceiptBytes,
   testSha256,
 } from "./payment-v1-integrated-caddy-overlay-test-fixture.mjs";
 
@@ -70,7 +73,9 @@ test("real health and command adapters are fail-closed in source", () => {
 
 test("systemd 255 effective-unit serialization normalizes without retaining Environment values", () => {
   const normalized = testOnlyNormalizeEffectiveUnitProperties({
-    DropInPaths: "",
+    After: "network.target bitcoinpir-payment-v1-publisher-netns.service",
+    BindsTo: "",
+    DropInPaths: "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
     Environment: "HOME=/var/lib/caddy XDG_CONFIG_HOME=/var/lib/caddy/.config XDG_DATA_HOME=/var/lib/caddy/.local/share",
     EnvironmentFiles: "",
     ExecReload: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
@@ -80,7 +85,9 @@ test("systemd 255 effective-unit serialization normalizes without retaining Envi
     LimitCORE: "0",
     MemorySwapMax: "0",
     NeedDaemonReload: "no",
+    PartOf: "",
     PassEnvironment: "",
+    Requires: "system.slice",
     RuntimeDirectory: "bitcoinpir-caddy-admin",
     RuntimeDirectoryMode: "0700",
     RuntimeDirectoryPreserve: "no",
@@ -89,6 +96,7 @@ test("systemd 255 effective-unit serialization normalizes without retaining Envi
     UMask: "0077",
     UnsetEnvironment: "CADDY_ADMIN",
     User: "root",
+    Wants: "bitcoinpir-payment-v1-publisher-netns.service",
   });
   assert.deepEqual(normalized.environment_names, ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]);
   assert.deepEqual(normalized.exec_start, {
@@ -97,6 +105,17 @@ test("systemd 255 effective-unit serialization normalizes without retaining Envi
     path: "/usr/local/bin/caddy",
   });
   assert.equal(normalized.exec_reload.argv.endsWith("unix//run/bitcoinpir-caddy-admin/admin.sock"), true);
+  assert.deepEqual(normalized.publisher_netns_dependency, {
+    after_namespace_owner: true,
+    binds_to_namespace_owner: false,
+    dropin_paths: [
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    ],
+    need_daemon_reload: "no",
+    part_of_namespace_owner: false,
+    requires_namespace_owner: false,
+    wants_namespace_owner: true,
+  });
   assert.equal(JSON.stringify(normalized).includes("/var/lib/caddy"), false);
 });
 
@@ -151,6 +170,9 @@ class MockOverlayOps {
     this.adaptedJson = clone(TEST_OVERLAY_ADAPTED_JSON);
     this.effectiveUnit = testCaddyEffectiveUnit(plan);
     this.processRuntime = testCaddyProcessRuntime(plan);
+    this.publisherNetnsReceipt = JSON.parse(
+      testPublisherNetnsReceiptBytes(plan).toString("utf8"),
+    );
     this.driftAdminAfterFirstReload = false;
     this.driftBootDuringProbe = false;
     this.driftGenerationDuringProbe = false;
@@ -194,6 +216,9 @@ class MockOverlayOps {
       plan.runtime.exchange_helper,
       plan.target.binary,
       plan.target.unit_fragment,
+      plan.target.publisher_netns_ceremony.dropin,
+      plan.target.publisher_netns_ceremony.plan,
+      plan.target.publisher_netns_ceremony.receipt,
       plan.target.admin_uds_hardening.plan,
       plan.target.admin_uds_hardening.receipt,
       plan.source_fair.haproxy_binary,
@@ -208,6 +233,18 @@ class MockOverlayOps {
     this.#putPin(
       plan.target.admin_uds_hardening.receipt,
       testHardeningReceiptBytes(plan),
+    );
+    this.#putPin(
+      plan.target.publisher_netns_ceremony.dropin,
+      PUBLISHER_NETNS_DROPIN,
+    );
+    this.#putPin(
+      plan.target.publisher_netns_ceremony.plan,
+      testPublisherNetnsPlanBytes(plan),
+    );
+    this.#putPin(
+      plan.target.publisher_netns_ceremony.receipt,
+      testPublisherNetnsReceiptBytes(plan),
     );
     this.#putPin(plan.runtime.exchange_manifest, manifest);
     this.#putPin(plan.runtime.managed_block, renderedManagedBlock(plan));
@@ -495,11 +532,38 @@ class MockOverlayOps {
         invocation_id: "32345678123442349234123456789abc",
       };
     }
-    return clone(
-      unitName === "bhtm-caddy.service"
-        ? this.plan.target.unit_generation
-        : this.plan.source_fair.unit_generation,
-    );
+    if (unitName === "bhtm-caddy.service") {
+      return clone(this.plan.target.unit_generation);
+    }
+    if (unitName === "bitcoinpir-payment-v1-source-fair-edge.service") {
+      return clone(this.plan.source_fair.unit_generation);
+    }
+    if (unitName === "bitcoinpir-payment-v1-publisher-netns.service") {
+      const unit = this.publisherNetnsReceipt.netns_unit;
+      return {
+        active_enter_timestamp_monotonic: unit.active_enter_timestamp_monotonic,
+        active_state: unit.active_state,
+        can_reload: "no",
+        control_group: "/system.slice/bitcoinpir-payment-v1-publisher-netns.service",
+        invocation_id: unit.invocation_id,
+        main_pid: unit.main_pid,
+        sub_state: unit.sub_state,
+        unit_name: unit.name,
+      };
+    }
+    if (unitName === "bitcoinpir-payment-v1-directory-publisher.service") {
+      return {
+        active_enter_timestamp_monotonic: "0",
+        active_state: "inactive",
+        can_reload: "no",
+        control_group: "",
+        invocation_id: "",
+        main_pid: "0",
+        sub_state: "dead",
+        unit_name: unitName,
+      };
+    }
+    throw new Error(`unknown unit generation ${unitName}`);
   }
 
   async removeIfExact(path, expected) {
@@ -877,6 +941,94 @@ test("transaction rejects current admin UDS gate file drift before exchange", as
   assert.equal(ops.exchangeHistory.length, 0);
   assert.equal(ops.reloadCalls, 0);
 });
+
+test("transaction rejects an internally consistent namespace receipt from a different Caddy generation", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const ops = new MockOverlayOps(plan);
+  const ceremonyPlan = JSON.parse(testPublisherNetnsPlanBytes(plan).toString("utf8"));
+  const ceremonyReceipt = JSON.parse(
+    testPublisherNetnsReceiptBytes(plan).toString("utf8"),
+  );
+  for (const caddy of [
+    ceremonyPlan.caddy_preimage,
+    ceremonyReceipt.caddy_before,
+    ceremonyReceipt.caddy_after,
+  ]) {
+    caddy.unit.invocation_id = "d".repeat(32);
+  }
+  const ceremonyPlanBytes = Buffer.from(canonicalJson(ceremonyPlan), "utf8");
+  const ceremonyPlanSha256 = testSha256(ceremonyPlanBytes);
+  ceremonyReceipt.approved_plan_sha256 = ceremonyPlanSha256;
+  const ceremonyReceiptBytes = Buffer.from(canonicalJson(ceremonyReceipt), "utf8");
+  const planPin = plan.target.publisher_netns_ceremony.plan;
+  const receiptPin = plan.target.publisher_netns_ceremony.receipt;
+  plan.target.publisher_netns_ceremony.approved_plan_sha256 = ceremonyPlanSha256;
+  planPin.sha256 = ceremonyPlanSha256;
+  planPin.size = String(ceremonyPlanBytes.length);
+  receiptPin.sha256 = testSha256(ceremonyReceiptBytes);
+  receiptPin.size = String(ceremonyReceiptBytes.length);
+  ops.files.set(planPin.path, {
+    bytes: ceremonyPlanBytes,
+    snapshot: clone(planPin),
+  });
+  ops.files.set(receiptPin.path, {
+    bytes: ceremonyReceiptBytes,
+    snapshot: clone(receiptPin),
+  });
+
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /did not occur on the exact hardened Caddy preimage generation/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+for (const [label, mutate, expected] of [
+  [
+    "schema-v1 publisher namespace receipt",
+    (receipt) => { receipt.schema_version = 1; },
+    /receipt identity or outcome drifted/u,
+  ],
+  [
+    "publisher namespace invocation drift",
+    (receipt) => { receipt.netns_unit.invocation_id = "e".repeat(32); },
+    /does not bind the active isolated topology/u,
+  ],
+  [
+    "publisher namespace topology drift",
+    (receipt) => { receipt.topology.namespace.inode = "9999"; },
+    /does not bind the active isolated topology/u,
+  ],
+]) {
+  test(`transaction rejects ${label} before exchange`, async () => {
+    const plan = makeIntegratedOverlayTestPlan();
+    const ops = new MockOverlayOps(plan);
+    const receipt = JSON.parse(
+      testPublisherNetnsReceiptBytes(plan).toString("utf8"),
+    );
+    mutate(receipt);
+    const bytes = Buffer.from(canonicalJson(receipt), "utf8");
+    const pin = plan.target.publisher_netns_ceremony.receipt;
+    pin.sha256 = testSha256(bytes);
+    pin.size = String(bytes.length);
+    ops.files.set(pin.path, { bytes, snapshot: clone(pin) });
+    await assert.rejects(
+      executeOverlayTransaction({
+        approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+        ops,
+        plan,
+      }),
+      expected,
+    );
+    assert.equal(ops.exchangeHistory.length, 0);
+    assert.equal(ops.reloadCalls, 0);
+  });
+}
 
 for (const [name, mutate, expected] of [
   ["runtime directory mode drift", (ops) => { ops.adminDirectoryMode = "0755"; }, /runtime directory does not match/u],

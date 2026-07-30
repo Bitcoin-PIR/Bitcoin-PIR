@@ -477,7 +477,8 @@ The cold plan now binds strict-parsed canonical adapted JSON digests and sizes
 for both the old disk preimage and candidate. Before stop, descriptor-pinned
 Caddy adapts the exact old bytes and that digest must equal the live TCP-admin
 `/config/` readback; the loaded unit must also have the exact fragment and old
-Exec commands, `NeedDaemonReload=no`, no drop-ins, `EnvironmentFile`, or
+Exec commands, `NeedDaemonReload=no`, no drop-ins other than the exact pinned
+one-way publisher-namespace `Wants+After` drop-in, no `EnvironmentFile`, or
 `PassEnvironment`. A committed root `/config/` readback must reproduce the
 candidate digest.
 The read-only gate does not invoke Caddy. The separate source-hash-closed cold
@@ -522,7 +523,8 @@ and the overlay candidate's adapted digest after reload/health. Recovery may
 initially accept either reviewed digest across an ambiguous exchange/reload
 boundary, but must re-probe the exact outcome-specific generation before
 terminal state, cleanup or return. It also
-binds current effective unit properties (including no drop-ins, the approved
+binds current effective unit properties (including the exact singleton
+publisher-namespace drop-in, the approved
 `ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
 runtime-directory/identity/umask/core/swap/output settings) plus exact MainPID
 argv/start ticks

@@ -1092,7 +1092,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `unix//run/bitcoinpir-caddy-admin/admin.sock|0200`, requires root:root
       `RuntimeDirectory` mode `0700`, `UMask=0077`, `LimitCORE=0`,
       `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
-      drop-ins or effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
+      drop-ins other than the exact pinned one-way publisher-namespace
+      `Wants+After` drop-in, no effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
       substitutions, and an explicit UDS reload address. It pins the exact
       production Caddy v2.11.4 preimage at the host's exact
       `/usr/local/bin/caddy` independently from the resolved Caddy 2.11.4 test
@@ -1114,7 +1115,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       both the exact disk preimage bytes and the exact candidate before mutation.
       It requires the approved canonical old adapted-JSON digest to equal the
       live TCP-admin readback and requires the loaded old unit to have the
-      exact fragment and old Exec commands, `NeedDaemonReload=no`, no drop-ins,
+      exact fragment and old Exec commands, `NeedDaemonReload=no`, exactly the
+      approved publisher-namespace drop-in,
       `EnvironmentFile`, or `PassEnvironment`. It requires root, Linux, systemd
       `255`, same-boot/PID/Invocation/preimage pins and a pre-existing exact
       `kernel.core_pattern=|/usr/bin/false`; it never changes the sysctl. The
@@ -1141,7 +1143,10 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       approved overlay transaction plan. It appends only to the exact pinned
       hardened `bhtm-caddy.service` preimage and requires a canonical,
       owner-only committed admin-UDS receipt whose Caddy binary, Caddyfile,
-      unit and InvocationID equal that preimage. It uses a content-addressed
+      unit and InvocationID equal that preimage. Schema v2 also requires the
+      canonical owner-only publisher-namespace ceremony plan/receipt and proves
+      that ceremony occurred on this exact hardened Caddy config,
+      PID/InvocationID/active-enter generation before overlay mutation. It uses a content-addressed
       `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
       until an atomically published durable receipt, and includes deterministic
       stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
@@ -1149,7 +1154,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       plan/receipt and collects fresh descriptor-sealed UDS mode,
       zero-capability UID-denial, root readback, TCP-refusal, boot and
       generation evidence before exchange and after reload/health. Those
-      probes now bind the current effective fragment/drop-ins/environment-name
+      probes now bind the current effective fragment, singleton
+      publisher-namespace drop-in and environment-name
       policy, `ExecStart`, UDS `ExecReload`, daemon-reload state,
       runtime-directory/identity/umask/core/swap/output settings and exact MainPID argv/start
       ticks; process environment values are never retained. Stable runtime

@@ -36,6 +36,7 @@ import {
   PROTECTED_PROCESS_ENUMERATION_KIND,
   collectInstalledFileForTestV1,
   confirmInstalledFileAcrossCollectionsForTestV1,
+  confirmDescriptorBoundCommandPinsForTestV1,
   collectSecretParentDirectoryForTestV1,
   confirmSecretParentDirectoryAcrossCollectionsForTestV1,
   collectProtectedCredentialProcessClosureV1,
@@ -49,6 +50,7 @@ import {
   parseBusctlStringJsonV1,
   parseBusctlUnitNamesJsonV1,
   parseBusctlUnsignedJsonV1,
+  parseBusctlWatchdogUsecJsonV2,
   parseLocalFilesNsswitchV1,
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
@@ -58,6 +60,8 @@ import {
   systemdUnitObjectPathV1,
   readOneLinkRegular,
   readOneLinkRegularForTestV1,
+  runDescriptorBoundCommandForTestV1,
+  runDescriptorBoundSetprivProbeForTestV1,
   validateNonRootEdgeCapabilitiesV1,
   validatePublisherNetworkRuntimeEvidenceV1,
   validateLiveRuntimeEvidence,
@@ -126,6 +130,15 @@ const CREDENTIAL_SERVICE_PROPERTIES = Object.freeze([
   "SetCredential",
   "SetCredentialEncrypted",
 ]);
+const CAN_EXERCISE_DESCRIPTOR_COMMANDS =
+  process.platform === "linux" &&
+  existsSync("/proc/self/fd") &&
+  existsSync("/usr/bin/true");
+const CAN_EXERCISE_DESCRIPTOR_SETPRIV =
+  CAN_EXERCISE_DESCRIPTOR_COMMANDS &&
+  process.geteuid?.() === 0 &&
+  existsSync("/usr/bin/setpriv") &&
+  existsSync("/usr/bin/test");
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -475,6 +488,30 @@ test("systemd dependencies, commands, booleans and timeouts use strict typed bus
       "unsafe adjacent integer",
     ),
   );
+  assert.equal(
+    parseBusctlWatchdogUsecJsonV2(
+      '{"type":"t","data":18446744073709551615}',
+    ),
+    "18446744073709551615",
+  );
+  assert.equal(
+    parseBusctlWatchdogUsecJsonV2('{"data":90000000,"type":"t"}'),
+    "90000000",
+  );
+  for (const [label, value] of [
+    ["quoted", '{"type":"t","data":"18446744073709551615"}'],
+    ["overflow", '{"type":"t","data":18446744073709551616}'],
+    ["negative", '{"type":"t","data":-1}'],
+    ["noncanonical", '{"type":"t","data":01}'],
+    ["wrong signature", '{"type":"u","data":90000000}'],
+    ["foreign key", '{"type":"t","data":90000000,"unit":"evil"}'],
+  ]) {
+    assert.throws(
+      () => parseBusctlWatchdogUsecJsonV2(value, label),
+      /canonical uint64 t token/,
+      label,
+    );
+  }
   assert.deepEqual(
     parseBusctlBooleanJsonV1(JSON.stringify({ data: true, type: "b" })),
     { signature: "b", value: true },
@@ -939,10 +976,16 @@ test("live collector seals expensive secrets before its final Conditions and gen
   assert.match(finalStatePass, /assertEffectiveSystemdPolicySnapshotUnchangedV1\(/);
   assert.match(finalStatePass, /confirmUnitGeneration\(/);
   assert.match(finalStatePass, /sealPublisherNamespaceOwnerRuntimeEvidence\(publisherNetwork\)/);
+  assert.match(finalStatePass, /finishTrustedCommandSession\(trustedCommands\)/);
   assert.ok(
     finalStatePass.indexOf("confirmUnitGeneration(request.units[index]") <
       finalStatePass.indexOf("sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork)"),
     "auxiliary namespace owner must be sealed after the final requested-unit pass",
+  );
+  assert.ok(
+    finalStatePass.indexOf("sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork)") <
+      finalStatePass.indexOf("finishTrustedCommandSession(trustedCommands)"),
+    "all external command pins must be rechecked after publisher/Caddy final sealing",
   );
   const afterFinalUnitSeal = source.slice(finalUnitMarker, finishedMarker);
   assert.doesNotMatch(
@@ -955,6 +998,12 @@ test("live collector seals expensive secrets before its final Conditions and gen
     /collectPublisherNetworkRuntimeEvidence/,
     "publisher network probes must not run after final Conditions/generation sealing",
   );
+  const publisherSeal = source.slice(
+    source.indexOf("function sealPublisherNamespaceOwnerRuntimeEvidence("),
+    source.indexOf("function validatePublisherNamespaceOwnerEvidence("),
+  );
+  assert.match(publisherSeal, /collectPublisherCaddyConfigGeneration\(\)/);
+  assert.match(publisherSeal, /collectPublisherCaddyUnitGeneration\(\)/);
 });
 
 test("stopped edge and relay collectors put only the final unit seal after long probes", () => {
@@ -1240,7 +1289,7 @@ function fixture() {
     UMask: "0077",
     UnsetEnvironment: "",
     User: "bitcoinpir-test",
-    WatchdogUSec: "0",
+    WatchdogUSec: "infinity",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
   };
   function richFile(expected, index) {
@@ -1412,11 +1461,16 @@ function fixture() {
       Version: { signature: "s", value: REVIEWED_SYSTEMD_MANAGER_VERSION },
     })),
     trusted_commands: COMMANDS.map((path, index) => ({
+      ctime_ns: String(1_800_000_000_000_000_000n + BigInt(index)),
+      dev: String(200 + index),
       gid: 0,
+      ino: String(10_000 + index),
       mode: "0755",
+      mtime_ns: String(1_799_999_999_000_000_000n + BigInt(index)),
       nlink: 1,
       path,
       sha256: hash(`command-${index}`),
+      size: 4096 + index,
       uid: 0,
     })),
     units: [{
@@ -2374,11 +2428,36 @@ function publisherNetworkFixture() {
   };
   const boundary = {
     caddy_dependency: {
-      active_state: "active",
       after_namespace_owner: true,
       binds_to_namespace_owner: false,
-      drop_in_paths_sha256: hash("publisher-caddy-drop-ins"),
-      load_state: "loaded",
+      config_generation_confirmations: Array.from({ length: 3 }, () => ({
+        ctime_ns: "1800000000000000000",
+        dev: "22",
+        gid: 0,
+        ino: "88001",
+        mode: "0644",
+        mtime_ns: "1799999999000000000",
+        nlink: 1,
+        path: "/etc/caddy/Caddyfile",
+        sha256: hash("publisher-caddy-config"),
+        size: 4096,
+        uid: 0,
+      })),
+      drop_in_paths: [
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      ],
+      drop_in_paths_sha256: hash(`${JSON.stringify([
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      ])}\n`),
+      generation_confirmations: Array.from({ length: 3 }, () => ({
+        active_enter_timestamp_monotonic: "7100000",
+        active_state: "active",
+        invocation_id: "c".repeat(32),
+        load_state: "loaded",
+        main_pid: "4500",
+        need_daemon_reload: "no",
+        sub_state: "running",
+      })),
       part_of_namespace_owner: false,
       requires_namespace_owner: false,
       wants_namespace_owner: true,
@@ -2501,6 +2580,50 @@ test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way C
   assert.throws(
     () => validatePublisherNetworkRuntimeEvidenceV1(reverse.evidence, reverse.request),
     /reverse stop edge/u,
+  );
+
+  const extraDropIn = publisherNetworkFixture();
+  for (const boundary of extraDropIn.evidence.boundary_confirmations) {
+    boundary.caddy_dependency.drop_in_paths.push(
+      "/etc/systemd/system/bhtm-caddy.service.d/unreviewed.conf",
+    );
+    boundary.caddy_dependency.drop_in_paths_sha256 = hash(JSON.stringify(
+      boundary.caddy_dependency.drop_in_paths,
+    ));
+  }
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(extraDropIn.evidence, extraDropIn.request),
+    /singleton reviewed drop-in/u,
+  );
+
+  for (const [label, mutate, expected] of [
+    ["Caddy InvocationID", (generation) => { generation.invocation_id = "0".repeat(32); }, /loaded active Caddy generation/u],
+    ["Caddy MainPID", (generation) => { generation.main_pid = "0"; }, /loaded active Caddy generation/u],
+    ["Caddy NeedDaemonReload", (generation) => { generation.need_daemon_reload = "yes"; }, /loaded active Caddy generation/u],
+  ]) {
+    const candidate = publisherNetworkFixture();
+    for (const boundary of candidate.evidence.boundary_confirmations) {
+      for (const generation of boundary.caddy_dependency.generation_confirmations) {
+        mutate(generation);
+      }
+    }
+    assert.throws(
+      () => validatePublisherNetworkRuntimeEvidenceV1(candidate.evidence, candidate.request),
+      expected,
+      label,
+    );
+  }
+
+  const caddyConfigRace = publisherNetworkFixture();
+  for (const boundary of caddyConfigRace.evidence.boundary_confirmations) {
+    boundary.caddy_dependency.config_generation_confirmations[2].ino = "88002";
+  }
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(
+      caddyConfigRace.evidence,
+      caddyConfigRace.request,
+    ),
+    /config generation was not stable/u,
   );
 
   const firewall = publisherNetworkFixture();
@@ -2820,6 +2943,14 @@ function secretIsolationFixture() {
 test("valid live evidence binds challenge, host, boot, files, NSS, units, and command TCB", () => {
   assert.equal(validate(fixture()), true);
 
+  const roundedWatchdogSentinel = fixture();
+  roundedWatchdogSentinel.evidence.units[0].service_property_passes[0]
+    .properties.WatchdogUSec = 18_446_744_073_709_552_000;
+  assert.throws(
+    () => validate(roundedWatchdogSentinel),
+    /typed watchdog is unreviewed/,
+  );
+
   const dynamicIdentity = fixture();
   dynamicIdentity.request.service_identities[0].uid = 61_184;
   assert.throws(() => validate(dynamicIdentity), /static service uid\/gid.*DynamicUser/u);
@@ -3099,6 +3230,126 @@ test(
           },
         }),
         /changed precise metadata/,
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Linux runtime commands execute the verified open descriptor",
+  { skip: !CAN_EXERCISE_DESCRIPTOR_COMMANDS },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-command-fd-")));
+    try {
+      const target = join(root, "command");
+      writeFileSync(target, readFileSync("/usr/bin/true"));
+      chmodSync(target, 0o755);
+      const result = runDescriptorBoundCommandForTestV1(target, [], {});
+      assert.equal(result.exit_status, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "");
+      assert.deepEqual(result.argv, [target]);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test("final command-pin closure rechecks every pathname, inode, and SHA-256", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-command-final-")));
+  try {
+    const first = join(root, "command-a");
+    const second = join(root, "command-b");
+    const replacement = join(root, "replacement");
+    const parked = join(root, "parked");
+    const bytes = process.platform === "linux"
+      ? readFileSync("/usr/bin/true")
+      : Buffer.from("#!/bin/sh\nexit 0\n", "utf8");
+    for (const path of [first, second, replacement]) {
+      writeFileSync(path, bytes);
+      chmodSync(path, 0o755);
+    }
+    assert.notEqual(lstatSync(second).ino, lstatSync(replacement).ino);
+    assert.throws(
+      () => confirmDescriptorBoundCommandPinsForTestV1([first, second], () => {
+        renameSync(second, parked);
+        renameSync(replacement, second);
+      }),
+      /final runtime command pin pathname, inode, metadata, or SHA-256 changed/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test(
+  "Linux setpriv access probe executes its nested test command by inherited descriptor",
+  { skip: !CAN_EXERCISE_DESCRIPTOR_SETPRIV },
+  () => {
+    const result = runDescriptorBoundSetprivProbeForTestV1();
+    assert.equal(result.exit_status, 0);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(result.argv.at(-3), "/usr/bin/test");
+  },
+);
+
+for (const phase of ["afterDescriptorVerification", "afterSpawn"]) {
+  test(
+    `Linux descriptor command rejects pathname/inode replacement ${phase}`,
+    { skip: !CAN_EXERCISE_DESCRIPTOR_COMMANDS },
+    () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-command-path-")));
+      try {
+        const target = join(root, "command");
+        const replacement = join(root, "replacement");
+        const parked = join(root, "parked");
+        const bytes = readFileSync("/usr/bin/true");
+        for (const path of [target, replacement]) {
+          writeFileSync(path, bytes);
+          chmodSync(path, 0o755);
+        }
+        assert.notEqual(lstatSync(target).ino, lstatSync(replacement).ino);
+        assert.throws(
+          () => runDescriptorBoundCommandForTestV1(target, [], {
+            [phase]: () => {
+              renameSync(target, parked);
+              renameSync(replacement, target);
+            },
+          }),
+          /pathname, inode, metadata, or SHA-256 changed|changed precise metadata/u,
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
+
+test(
+  "Linux descriptor command rejects a same-inode SHA-256 race before exec",
+  { skip: !CAN_EXERCISE_DESCRIPTOR_COMMANDS },
+  () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-command-hash-")));
+    try {
+      const target = join(root, "command");
+      const bytes = readFileSync("/usr/bin/true");
+      const changed = Buffer.from(bytes);
+      changed[changed.length - 1] ^= 0x01;
+      writeFileSync(target, bytes);
+      chmodSync(target, 0o755);
+      const initial = lstatSync(target);
+      assert.throws(
+        () => runDescriptorBoundCommandForTestV1(target, [], {
+          afterDescriptorVerification: () => {
+            writeFileSync(target, changed);
+            chmodSync(target, 0o755);
+            assert.equal(lstatSync(target).ino, initial.ino);
+          },
+        }),
+        /SHA-256 changed before descriptor execution/u,
       );
     } finally {
       rmSync(root, { force: true, recursive: true });
@@ -4259,6 +4510,14 @@ test("live verifier rejects legacy request/evidence and untrusted NSS policy met
   foreignSystemdEvidence.evidence.host.systemd_version = "systemd 255";
   assert.throws(() => validate(foreignSystemdEvidence), /systemd build/u);
 
+  const previousEvidenceSchema = fixture();
+  previousEvidenceSchema.evidence.schema_version = 6;
+  assert.throws(() => validate(previousEvidenceSchema), /schema or kind/);
+
+  const previousRequestSchema = fixture();
+  previousRequestSchema.request.schema_version = 6;
+  assert.throws(() => validate(previousRequestSchema), /request schema or collector/);
+
   const legacySystemctlConditions = fixture();
   legacySystemctlConditions.request.systemctl_show_properties = [
     ...legacySystemctlConditions.request.systemctl_show_properties,
@@ -4555,6 +4814,10 @@ for (const [label, mutate, expected] of [
   }, /process Groups drift/],
   ["running process UID drift", (f) => { f.evidence.units[0].process_identity.uid_after = [999, 999, 999, 999]; }, /Uid after/],
   ["command replacement", (f) => { f.evidence.trusted_commands[0].mode = "0777"; }, /untrusted runtime command/],
+  ["command device omission", (f) => { delete f.evidence.trusted_commands[0].dev; }, /command keys/u],
+  ["command malformed GID", (f) => { f.evidence.trusted_commands[0].gid = "0"; }, /untrusted runtime command/u],
+  ["command zero inode", (f) => { f.evidence.trusted_commands[0].ino = "0"; }, /untrusted runtime command/u],
+  ["command non-executable mode", (f) => { f.evidence.trusted_commands[0].mode = "0644"; }, /untrusted runtime command/u],
 ]) {
   test(`live verifier rejects ${label}`, () => {
     const value = fixture();

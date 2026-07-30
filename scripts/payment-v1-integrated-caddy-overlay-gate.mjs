@@ -13,8 +13,8 @@ import { isIP } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const OVERLAY_PLAN_SCHEMA_VERSION = 1;
-export const OVERLAY_RECEIPT_SCHEMA_VERSION = 1;
+export const OVERLAY_PLAN_SCHEMA_VERSION = 2;
+export const OVERLAY_RECEIPT_SCHEMA_VERSION = 2;
 export const OVERLAY_PROFILE = "integrated-existing-bhtm-caddy-v1";
 export const OVERLAY_COLLECTOR =
   "bitcoinpir-payment-v1-integrated-caddy-transaction-v1";
@@ -34,6 +34,9 @@ const SOURCE_FAIR_RUNTIME = "/run/bitcoinpir-source-fair-edge";
 const TARGET_UNIT = "bhtm-caddy.service";
 const TARGET_FRAGMENT = "/etc/systemd/system/bhtm-caddy.service";
 const TARGET_CONFIG = "/etc/caddy/Caddyfile";
+const PUBLISHER_NETNS_ROOT = "/var/lib/bitcoinpir/payment-v1/publisher-netns";
+export const PUBLISHER_NETNS_DROPIN_PATH =
+  "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
 const ADMIN_UDS_PROFILE = "bhtm-caddy-admin-uds-v1";
 const ADMIN_UDS_ROOT = "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds";
 const ADMIN_UDS_LISTEN = "unix//run/bitcoinpir-caddy-admin/admin.sock|0200";
@@ -584,6 +587,7 @@ function validateTarget(value) {
       "binary",
       "config_parent",
       "config_preimage",
+      "publisher_netns_ceremony",
       "unit_fragment",
       "unit_generation",
     ],
@@ -619,6 +623,13 @@ function validateTarget(value) {
     unitName: TARGET_UNIT,
   });
   validateAdminUdsHardening(value.admin_uds_hardening, value);
+  validatePublisherNetnsCeremony(value.publisher_netns_ceremony);
+  if (
+    value.publisher_netns_ceremony.dropin.sha256 !==
+    value.admin_uds_hardening.publisher_netns_dropin_sha256
+  ) {
+    fail("target publisher namespace ceremony and admin hardening disagree on the drop-in");
+  }
 }
 
 function validateAdminUdsHardening(value, target) {
@@ -634,7 +645,10 @@ function validateAdminUdsHardening(value, target) {
       "config_sha256",
       "deployment_profile",
       "plan",
+      "plan_schema_version",
+      "publisher_netns_dropin_sha256",
       "receipt",
+      "receipt_schema_version",
       "runtime_directory",
       "runtime_directory_mode",
       "setpriv_binary_sha256",
@@ -655,6 +669,13 @@ function validateAdminUdsHardening(value, target) {
   validateSha256(
     value.adapted_json_sha256,
     "target.admin_uds_hardening.adapted_json_sha256",
+  );
+  if (value.plan_schema_version !== 2 || value.receipt_schema_version !== 2) {
+    fail("target.admin_uds_hardening must bind schema-v2 plan and receipt evidence");
+  }
+  validateSha256(
+    value.publisher_netns_dropin_sha256,
+    "target.admin_uds_hardening.publisher_netns_dropin_sha256",
   );
   validateSha256(value.approved_plan_sha256, "target.admin_uds_hardening.approved_plan_sha256");
   validateSha256(
@@ -702,6 +723,61 @@ function validateAdminUdsHardening(value, target) {
     if (value[key] !== expected) {
       fail(`target.admin_uds_hardening.${key} must equal ${String(expected)}`);
     }
+  }
+}
+
+function validatePublisherNetnsCeremony(value) {
+  exactKeys(
+    value,
+    [
+      "approved_plan_sha256",
+      "ceremony_id",
+      "dropin",
+      "namespace_device",
+      "namespace_inode",
+      "netns_invocation_id",
+      "plan",
+      "plan_schema_version",
+      "receipt",
+      "receipt_schema_version",
+      "topology_sha256",
+    ],
+    "target.publisher_netns_ceremony",
+  );
+  validateSlug(value.ceremony_id, "target.publisher_netns_ceremony.ceremony_id");
+  validateSha256(
+    value.approved_plan_sha256,
+    "target.publisher_netns_ceremony.approved_plan_sha256",
+  );
+  validateSha256(value.topology_sha256, "target.publisher_netns_ceremony.topology_sha256");
+  if (value.plan_schema_version !== 2 || value.receipt_schema_version !== 2) {
+    fail("target.publisher_netns_ceremony must bind schema-v2 plan and receipt evidence");
+  }
+  if (!SYSTEMD_INVOCATION_ID.test(value.netns_invocation_id)) {
+    fail("target.publisher_netns_ceremony.netns_invocation_id is malformed");
+  }
+  for (const key of ["namespace_device", "namespace_inode"]) {
+    validateDecimal(value[key], `target.publisher_netns_ceremony.${key}`);
+  }
+  if (value.namespace_inode === "0") {
+    fail("target.publisher_netns_ceremony.namespace_inode must be positive");
+  }
+  validateRegularPin(value.dropin, "target.publisher_netns_ceremony.dropin", {
+    paths: [PUBLISHER_NETNS_DROPIN_PATH],
+    modes: ["0644"],
+  });
+  const planPath = `${PUBLISHER_NETNS_ROOT}/plans/${value.ceremony_id}.json`;
+  const receiptPath = `${PUBLISHER_NETNS_ROOT}/receipts/${value.ceremony_id}.json`;
+  validateRegularPin(value.plan, "target.publisher_netns_ceremony.plan", {
+    paths: [planPath],
+    modes: ["0400"],
+  });
+  validateRegularPin(value.receipt, "target.publisher_netns_ceremony.receipt", {
+    paths: [receiptPath],
+    modes: ["0400"],
+  });
+  if (value.plan.sha256 !== value.approved_plan_sha256) {
+    fail("target.publisher_netns_ceremony.plan does not equal its approved digest");
   }
 }
 
@@ -1295,7 +1371,7 @@ export function buildOverlayCandidate({
 function expectedCaddyEffectiveUnit(plan, environmentNames) {
   const binary = plan.target.binary.path;
   return {
-    dropin_paths: [],
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
     environment_names: environmentNames,
     environment_files: [],
     exec_reload: {
@@ -1314,6 +1390,15 @@ function expectedCaddyEffectiveUnit(plan, environmentNames) {
     memory_swap_max: "0",
     need_daemon_reload: "no",
     pass_environment: [],
+    publisher_netns_dependency: {
+      after_namespace_owner: true,
+      binds_to_namespace_owner: false,
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+      need_daemon_reload: "no",
+      part_of_namespace_owner: false,
+      requires_namespace_owner: false,
+      wants_namespace_owner: true,
+    },
     runtime_directory: ["bitcoinpir-caddy-admin"],
     runtime_directory_mode: "0700",
     runtime_directory_preserve: "no",
@@ -1648,6 +1733,7 @@ export function validateOverlayReceipt({
       "installation",
       "outcome",
       "preparation",
+      "publisher_netns_ceremony",
       "reload",
       "rollback",
       "schema_version",
@@ -1661,6 +1747,12 @@ export function validateOverlayReceipt({
   if (receipt.collector !== OVERLAY_COLLECTOR) fail("overlay receipt collector is not reviewed");
   if (receipt.approved_plan_sha256 !== approvedPlanSha256) fail("overlay receipt does not bind its approved plan");
   if (receipt.transaction_id !== plan.transaction_id) fail("overlay receipt transaction_id drifted");
+  if (
+    canonicalJson(receipt.publisher_netns_ceremony) !==
+    canonicalJson(plan.target.publisher_netns_ceremony)
+  ) {
+    fail("overlay receipt publisher namespace ceremony binding drifted");
+  }
   validateOverlayPreparedContext({
     approvedPlanSha256,
     context: {

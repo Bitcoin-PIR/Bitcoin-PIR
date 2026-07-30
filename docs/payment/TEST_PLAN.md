@@ -971,8 +971,11 @@ remain separate acceptance gates.
   the exact loaded Caddy `Wants+After` drop-in relation with no reverse edge or
   pending daemon reload; inactive publisher/netns units with no pending reload;
   an exact two-module local import closure for the executor;
-  and apply/rollback approvals with independent canonical digests and validity
-  windows no longer than one hour;
+  the exact loaded namespace-unit fragment, commands, conditions, relationships
+  and hardening plus the PID 1 manager generation; a content-addressed native
+  launcher and exact four-entry Node/executor/import manifest; and schema-v2
+  apply/rollback approvals binding both launcher digests, with independent
+  canonical digests and validity windows no longer than one hour;
 - apply starts only the exact namespace unit after an inactive/absent preimage,
   repeats that absence immediately before writing its durable start intent,
   while ordinary replay refuses to adopt an active unit. Lost-start recovery
@@ -995,12 +998,20 @@ remain separate acceptance gates.
   namespace. The native helper harness injects crashes around namespace mount,
   veth creation/move and cleanup, then proves exact recovery plus fail-closed
   monitoring for link/default-route drift and unknown fixed-name preimages;
+- a disposable Ubuntu 24.04 `CAP_NET_ADMIN` firewall test installs the exact
+  UFW policy, reloads it, captures UFW/raw/nft state twice and requires the
+  semantic gate to accept both generations; the launcher container proves a
+  tampered import and `NODE_OPTIONS` payload cannot execute before rejection;
 - runtime-evidence accepts only exact paired `files` or paired
   `files systemd` NSS sources for passwd/group, with files first and inherited
   initgroups; mixed/reversed sequences, action brackets and every other source
   fail closed. It checks stable root-owned policy snapshots,
   identity-relevant `getent` projections, every user's `id -G`, UID/GID
   uniqueness and protected-group closure;
+- live runtime schema v7 parses the typed D-Bus `WatchdogUSec` uint64 token
+  lexically, preserving `UINT64_MAX` exactly for non-watchdog services while
+  retaining systemctl's human `infinity`; numeric rounding, quoted values,
+  schema-v6 evidence and wrong preflight intervals fail closed;
 - render plans, runtime service-account policy, and the Caddy service-UID
   inventory reject IDs outside static `1..60000`, including systemd
   `DynamicUser` `61184..65519` and `nobody` `65534`; checked-in Payment V1

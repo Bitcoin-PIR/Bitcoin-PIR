@@ -118,6 +118,16 @@
   "host": {
     "boot_id": "INVALID_REPLACE_WITH_CURRENT_BOOT_ID",
     "machine_id_sha256": "INVALID_REPLACE_WITH_MACHINE_ID_FILE_SHA256",
+    "systemd_manager_generation": {
+      "generators_finish_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "generators_start_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "pid1_exe_device": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "pid1_exe_inode": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "pid1_exe_path": "/usr/lib/systemd/systemd",
+      "pid1_start_ticks": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "units_load_finish_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+      "units_load_start_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL"
+    },
     "systemd_version": "INVALID_REPLACE_WITH_EXACT_SYSTEMD_255_VERSION_LINE"
   },
   "installed_files": [
@@ -285,6 +295,108 @@
   "kind": "bitcoinpir-payment-v1-publisher-netns-ceremony-v1",
   "preimage": {
     "host_interface": "absent",
+    "loaded_netns_unit": {
+      "condition_paths": [
+        "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+        "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+        "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+        "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+        "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED"
+      ],
+      "condition_source": "exact-fragment-pin-plus-NeedDaemonReload=no",
+      "dropin_paths": [],
+      "exec": {
+        "start": [
+          {
+            "argv": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH run",
+            "ignore_errors": "no",
+            "path": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH"
+          }
+        ],
+        "start_pre": [
+          {
+            "argv": "/usr/bin/test -x INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH",
+            "ignore_errors": "no",
+            "path": "/usr/bin/test"
+          },
+          {
+            "argv": "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+            "ignore_errors": "no",
+            "path": "/usr/bin/sha256sum"
+          },
+          {
+            "argv": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH self-test",
+            "ignore_errors": "no",
+            "path": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH"
+          }
+        ],
+        "stop_post": [
+          {
+            "argv": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH cleanup",
+            "ignore_errors": "no",
+            "path": "INVALID_REPLACE_WITH_CONTENT_ADDRESSED_HELPER_PATH"
+          }
+        ]
+      },
+      "fragment_path": "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+      "need_daemon_reload": "no",
+      "relationships": {
+        "after": [
+          "basic.target",
+          "local-fs.target"
+        ],
+        "before": [
+          "bhtm-caddy.service",
+          "bitcoinpir-payment-v1-source-fair-edge.service"
+        ],
+        "binds_to": [],
+        "part_of": [
+          "bhtm-caddy.service"
+        ],
+        "requires": [],
+        "wants": []
+      },
+      "service": {
+        "ambient_capabilities": [],
+        "capability_bounding_set": [
+          "CAP_NET_ADMIN",
+          "CAP_SYS_ADMIN"
+        ],
+        "group": "root",
+        "kill_mode": "control-group",
+        "limit_core": "0",
+        "lock_personality": "yes",
+        "memory_deny_write_execute": "yes",
+        "memory_max": "67108864",
+        "memory_swap_max": "0",
+        "no_new_privileges": "yes",
+        "notify_access": "main",
+        "restart": "no",
+        "restrict_address_families": [
+          "AF_NETLINK",
+          "AF_UNIX"
+        ],
+        "restrict_namespaces": "net",
+        "restrict_realtime": "yes",
+        "restrict_suid_sgid": "yes",
+        "standard_error": "null",
+        "standard_output": "null",
+        "state_directory": [
+          "bitcoinpir-publisher-netns"
+        ],
+        "state_directory_mode": "0700",
+        "system_call_architectures": [
+          "native"
+        ],
+        "tasks_max": "8",
+        "timeout_start_usec": "30s",
+        "timeout_stop_usec": "30s",
+        "type": "notify",
+        "umask": "0077",
+        "user": "root",
+        "working_directory": "/var/lib/bitcoinpir-publisher-netns"
+      }
+    },
     "namespace_path": "absent",
     "netns_unit": {
       "active_enter_timestamp_monotonic": "0",
@@ -357,6 +469,32 @@
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
     },
+    "launcher": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/opt/bitcoinpir/publisher-netns-launcher/INVALID_REPLACE_WITH_LAUNCHER_SHA256/payment-v1-publisher-netns-launcher",
+      "sha256": "INVALID_REPLACE_WITH_LAUNCHER_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "launcher_manifest": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0444",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256",
+      "sha256": "INVALID_REPLACE_WITH_LAUNCHER_MANIFEST_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
     "node": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
       "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -397,7 +535,7 @@
       "uid": 0
     }
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "source_commit": "INVALID_REPLACE_WITH_40_LOWER_HEX_SOURCE_COMMIT",
   "topology": {
     "address_family": "ipv4",

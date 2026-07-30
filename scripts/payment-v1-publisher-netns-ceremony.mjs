@@ -14,9 +14,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   rmdirSync,
   statfsSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -49,6 +51,8 @@ const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
 const CADDY_UNIT = "bhtm-caddy.service";
 const CADDY_NETNS_DROP_IN =
   "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
+const NETNS_UNIT_FRAGMENT =
+  "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service";
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 const MAX_APPROVAL_WINDOW_SECONDS = 60 * 60;
@@ -297,6 +301,150 @@ function validateUnitState(value, label, { active, name }) {
   }
 }
 
+function validateCanonicalWordSet(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (entry, index) =>
+        typeof entry !== "string" ||
+        entry.length < 1 ||
+        /[\0\r\n\t ]/u.test(entry) ||
+        (index > 0 && value[index - 1] >= entry),
+    )
+  ) {
+    fail(`${label} must be a unique sorted non-empty systemd word set`);
+  }
+}
+
+function expectedLoadedExec(plan) {
+  const helper = plan.installed_files.find((entry) => entry.id === "helper-binary")?.pin;
+  if (helper === undefined) fail("loaded namespace unit lacks its helper pin");
+  return {
+    start: [{ argv: `${helper.path} run`, ignore_errors: "no", path: helper.path }],
+    start_pre: [
+      {
+        argv: `/usr/bin/test -x ${helper.path}`,
+        ignore_errors: "no",
+        path: "/usr/bin/test",
+      },
+      {
+        argv: "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+      },
+      {
+        argv: `${helper.path} self-test`,
+        ignore_errors: "no",
+        path: helper.path,
+      },
+    ],
+    stop_post: [{
+      argv: `${helper.path} cleanup`,
+      ignore_errors: "no",
+      path: helper.path,
+    }],
+  };
+}
+
+function expectedLoadedServicePolicy() {
+  return {
+    ambient_capabilities: [],
+    capability_bounding_set: ["CAP_NET_ADMIN", "CAP_SYS_ADMIN"],
+    group: "root",
+    kill_mode: "control-group",
+    limit_core: "0",
+    lock_personality: "yes",
+    memory_deny_write_execute: "yes",
+    memory_max: "67108864",
+    memory_swap_max: "0",
+    no_new_privileges: "yes",
+    notify_access: "main",
+    restart: "no",
+    restrict_address_families: ["AF_NETLINK", "AF_UNIX"],
+    restrict_namespaces: "net",
+    restrict_realtime: "yes",
+    restrict_suid_sgid: "yes",
+    standard_error: "null",
+    standard_output: "null",
+    state_directory: ["bitcoinpir-publisher-netns"],
+    state_directory_mode: "0700",
+    system_call_architectures: ["native"],
+    tasks_max: "8",
+    timeout_start_usec: "30s",
+    timeout_stop_usec: "30s",
+    type: "notify",
+    umask: "0077",
+    user: "root",
+    working_directory: "/var/lib/bitcoinpir-publisher-netns",
+  };
+}
+
+function validateLoadedNetnsUnit(value, plan, label) {
+  exactKeys(value, [
+    "condition_paths",
+    "condition_source",
+    "dropin_paths",
+    "exec",
+    "fragment_path",
+    "need_daemon_reload",
+    "relationships",
+    "service",
+  ], label);
+  if (
+    value.fragment_path !== NETNS_UNIT_FRAGMENT ||
+    canonicalJson(value.dropin_paths) !== canonicalJson([]) ||
+    value.need_daemon_reload !== "no" ||
+    value.condition_source !== "exact-fragment-pin-plus-NeedDaemonReload=no" ||
+    canonicalJson(value.condition_paths) !== canonicalJson(EXPECTED_SENTINELS) ||
+    canonicalJson(value.exec) !== canonicalJson(expectedLoadedExec(plan)) ||
+    canonicalJson(value.service) !== canonicalJson(expectedLoadedServicePolicy())
+  ) {
+    fail(`${label} drifted from the exact loaded publisher namespace unit policy`);
+  }
+  exactKeys(value.relationships, [
+    "after", "before", "binds_to", "part_of", "requires", "wants",
+  ], `${label}.relationships`);
+  for (const key of ["after", "before", "binds_to", "part_of", "requires", "wants"]) {
+    validateCanonicalWordSet(value.relationships[key], `${label}.relationships.${key}`);
+  }
+  if (
+    !value.relationships.after.includes("local-fs.target") ||
+    !value.relationships.before.includes(CADDY_UNIT) ||
+    !value.relationships.before.includes("bitcoinpir-payment-v1-source-fair-edge.service") ||
+    canonicalJson(value.relationships.binds_to) !== canonicalJson([]) ||
+    canonicalJson(value.relationships.part_of) !== canonicalJson([CADDY_UNIT]) ||
+    canonicalJson(value.relationships.requires) !== canonicalJson([]) ||
+    canonicalJson(value.relationships.wants) !== canonicalJson([])
+  ) {
+    fail(`${label}.relationships drifted from the reviewed one-way ordering contract`);
+  }
+}
+
+function validateManagerGeneration(value, label) {
+  exactKeys(value, [
+    "generators_finish_timestamp_monotonic",
+    "generators_start_timestamp_monotonic",
+    "pid1_exe_device",
+    "pid1_exe_inode",
+    "pid1_exe_path",
+    "pid1_start_ticks",
+    "units_load_finish_timestamp_monotonic",
+    "units_load_start_timestamp_monotonic",
+  ], label);
+  for (const key of [
+    "generators_finish_timestamp_monotonic",
+    "generators_start_timestamp_monotonic",
+    "pid1_exe_device",
+    "pid1_exe_inode",
+    "pid1_start_ticks",
+    "units_load_finish_timestamp_monotonic",
+    "units_load_start_timestamp_monotonic",
+  ]) {
+    validateDecimal(value[key], `${label}.${key}`, { nonzero: true });
+  }
+  validateCanonicalAbsolute(value.pid1_exe_path, `${label}.pid1_exe_path`);
+}
+
 function validateCaddyState(value, label) {
   exactKeys(value, ["config", "dependency", "unit"], label);
   validateFilePin(value.config, `${label}.config`, {
@@ -441,9 +589,21 @@ function validateInstalledFiles(plan) {
 
 function validateRuntime(value) {
   exactKeys(value, [
-    "executor", "integrated_caddy_gate", "ip", "node",
-    "publisher_netns_gate", "systemctl",
+    "executor", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest",
+    "node", "publisher_netns_gate", "systemctl",
   ], "runtime");
+  validateFilePin(value.launcher, "runtime.launcher", {
+    paths: [
+      `/opt/bitcoinpir/publisher-netns-launcher/${value.launcher.sha256}/payment-v1-publisher-netns-launcher`,
+    ],
+    modes: ["0555"],
+  });
+  validateFilePin(value.launcher_manifest, "runtime.launcher_manifest", {
+    paths: [
+      "/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256",
+    ],
+    modes: ["0444"],
+  });
   validateFilePin(value.executor, "runtime.executor", {
     paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs"],
     modes: ["0555"],
@@ -467,6 +627,15 @@ function validateRuntime(value) {
   validateFilePin(value.ip, "runtime.ip", {
     paths: ["/usr/bin/ip"], modes: ["0555", "0755"],
   });
+}
+
+function expectedLauncherManifestBytes(runtime) {
+  return Buffer.from([
+    runtime.node,
+    runtime.integrated_caddy_gate,
+    runtime.executor,
+    runtime.publisher_netns_gate,
+  ].map((pin) => `${pin.sha256}  ${pin.path}\n`).join(""), "utf8");
 }
 
 function validateTransaction(value, ceremonyId) {
@@ -532,7 +701,7 @@ export function validateCeremonyPlan(plan) {
     "host", "installed_files", "kind", "preimage", "publisher_private_key_installed",
     "relationship", "runtime", "schema_version", "source_commit", "topology", "transaction",
   ], "plan");
-  if (plan.schema_version !== 1 || plan.kind !== CEREMONY_KIND) fail("plan kind/schema drifted");
+  if (plan.schema_version !== 2 || plan.kind !== CEREMONY_KIND) fail("plan kind/schema drifted");
   validateSlug(plan.ceremony_id, "plan.ceremony_id");
   if (typeof plan.source_commit !== "string" || !/^[0-9a-f]{40}$/u.test(plan.source_commit)) {
     fail("plan.source_commit must be an exact lowercase Git commit");
@@ -556,7 +725,9 @@ export function validateCeremonyPlan(plan) {
     paths: ["/var/lib/bitcoinpir/payment-v1/publisher-netns/evidence/firewall.json"],
     modes: ["0400"],
   });
-  exactKeys(plan.host, ["boot_id", "machine_id_sha256", "systemd_version"], "host");
+  exactKeys(plan.host, [
+    "boot_id", "machine_id_sha256", "systemd_manager_generation", "systemd_version",
+  ], "host");
   if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(plan.host.boot_id)) {
     fail("host.boot_id is malformed");
   }
@@ -565,8 +736,11 @@ export function validateCeremonyPlan(plan) {
       !/^systemd 255(?: \(255\.[0-9]+-[^)]+\))?$/u.test(plan.host.systemd_version)) {
     fail("host.systemd_version must be the exact reviewed systemd 255 line");
   }
+  validateManagerGeneration(plan.host.systemd_manager_generation, "host.systemd_manager_generation");
   validateCaddyState(plan.caddy_preimage, "caddy_preimage");
-  exactKeys(plan.preimage, ["namespace_path", "publisher_unit", "host_interface", "netns_unit"],
+  exactKeys(plan.preimage, [
+    "host_interface", "loaded_netns_unit", "namespace_path", "netns_unit", "publisher_unit",
+  ],
     "preimage");
   if (plan.preimage.namespace_path !== "absent" || plan.preimage.host_interface !== "absent") {
     fail("preimage namespace path and host interface must both be absent");
@@ -577,6 +751,7 @@ export function validateCeremonyPlan(plan) {
   validateUnitState(plan.preimage.publisher_unit, `preimage.${PUBLISHER_UNIT}`, {
     active: false, name: PUBLISHER_UNIT,
   });
+  validateLoadedNetnsUnit(plan.preimage.loaded_netns_unit, plan, "preimage.loaded_netns_unit");
   exactKeys(plan.relationship, [
     "caddy_dependency", "integrated_profile", "network_before_caddy",
     "publisher_requires_namespace", "receipt_generation_scope", "reboot_recreation",
@@ -616,16 +791,21 @@ function validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, rol
   const expectedKeys = rollback ? [
     "acknowledgements", "approved_at_utc", "approved_by", "ceremony_id",
     "committed_receipt_sha256", "decision", "executor_sha256", "expires_at_utc",
-    "kind", "plan_sha256", "schema_version",
+    "kind", "launcher_manifest_sha256", "launcher_sha256", "plan_sha256", "schema_version",
   ] : [
     "acknowledgements", "approved_at_utc", "approved_by", "ceremony_id", "decision",
-    "executor_sha256", "expires_at_utc", "kind", "plan_sha256", "schema_version",
+    "executor_sha256", "expires_at_utc", "kind", "launcher_manifest_sha256",
+    "launcher_sha256", "plan_sha256", "schema_version",
   ];
   exactKeys(approval, expectedKeys, rollback ? "rollback approval" : "apply approval");
-  if (approval.schema_version !== 1 || approval.kind !==
+  if (approval.schema_version !== 2 || approval.kind !==
       (rollback ? ROLLBACK_APPROVAL_KIND : APPLY_APPROVAL_KIND)) fail("approval kind/schema drifted");
   if (approval.ceremony_id !== plan.ceremony_id || approval.plan_sha256 !== approvedPlanSha256 ||
-      approval.executor_sha256 !== plan.runtime.executor.sha256) fail("approval binding drifted");
+      approval.executor_sha256 !== plan.runtime.executor.sha256 ||
+      approval.launcher_sha256 !== plan.runtime.launcher.sha256 ||
+      approval.launcher_manifest_sha256 !== plan.runtime.launcher_manifest.sha256) {
+    fail("approval binding drifted");
+  }
   if (typeof approval.approved_by !== "string" ||
       !/^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u.test(approval.approved_by)) {
     fail("approval approved_by identifier is malformed");
@@ -749,10 +929,10 @@ function validateReceipt(receipt, plan, approvedPlanSha256) {
     "activation_approval_sha256", "approved_approval_sha256", "approved_plan_sha256",
     "caddy_after", "caddy_before",
     "ceremony_id", "firewall_evidence_sha256", "host", "installed_files",
-    "kind", "netns_unit", "outcome", "publisher_unit", "runtime", "schema_version",
+    "kind", "loaded_netns_unit", "netns_unit", "outcome", "publisher_unit", "runtime", "schema_version",
     "sentinels", "topology",
   ], "receipt");
-  if (receipt.schema_version !== 1 || receipt.kind !== RECEIPT_KIND ||
+  if (receipt.schema_version !== 2 || receipt.kind !== RECEIPT_KIND ||
       receipt.ceremony_id !== plan.ceremony_id || receipt.approved_plan_sha256 !== approvedPlanSha256 ||
       receipt.outcome !== "committed") fail("receipt identity/outcome drifted");
   validateSha256(receipt.approved_approval_sha256, "receipt approved approval SHA-256");
@@ -764,6 +944,8 @@ function validateReceipt(receipt, plan, approvedPlanSha256) {
       canonicalJson(receipt.caddy_after) !== canonicalJson(plan.caddy_preimage) ||
       canonicalJson(receipt.installed_files) !== canonicalJson(plan.installed_files.map((entry) => entry.pin)) ||
       canonicalJson(receipt.runtime) !== canonicalJson(plan.runtime) ||
+      canonicalJson(receipt.loaded_netns_unit) !==
+        canonicalJson(plan.preimage.loaded_netns_unit) ||
       canonicalJson(receipt.sentinels) !== canonicalJson(plan.activation_sentinels)) {
     fail("receipt closed input/runtime pins drifted");
   }
@@ -836,6 +1018,10 @@ async function collectClosedInputs(plan, ops) {
     if (canonicalJson(observed.snapshot) !== canonicalJson(pin)) {
       fail(`runtime command ${name} drifted`);
     }
+    if (name === "launcher_manifest" &&
+        !observed.bytes.equals(expectedLauncherManifestBytes(plan.runtime))) {
+      fail("launcher manifest does not bind the exact Node/executor/import closure");
+    }
     runtime[name] = observed.snapshot;
   }
   const sentinels = [];
@@ -864,8 +1050,28 @@ async function commonPreflight(plan, ops) {
   if (canonicalJson(publisher) !== canonicalJson(plan.preimage.publisher_unit)) {
     fail("publisher service is not the exact inactive preimage");
   }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit drifted from the approved effective policy");
+  }
   const closed = await collectClosedInputs(plan, ops);
-  return { caddy, closed, host, publisher };
+  return { caddy, closed, host, loadedNetnsUnit, publisher };
+}
+
+async function assertAdjacentPreStartClosure(plan, ops, label) {
+  // Re-read the complete closed input set at the activation boundary.  The
+  // earlier preflight is only an observation: a runtime binary, manifest,
+  // sentinel, firewall receipt, Caddy generation, or loaded unit may change
+  // after it.  In particular, the second call happens after the durable start
+  // intent and immediately before systemctl start.
+  await commonPreflight(plan, ops);
+  const state = await ops.unitState(NETNS_UNIT);
+  if (
+    canonicalJson(state) !== canonicalJson(plan.preimage.netns_unit) ||
+    !(await ops.networkAbsent(plan))
+  ) {
+    fail(`${label} publisher namespace preimage changed`);
+  }
 }
 
 async function buildCommittedReceipt({
@@ -896,6 +1102,10 @@ async function buildCommittedReceipt({
   if (canonicalJson(hostAfter) !== canonicalJson(before.host)) {
     fail("host boot/systemd identity changed during namespace start");
   }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit changed during namespace start");
+  }
   return {
     activation_approval_sha256: activationApprovalSha256,
     approved_approval_sha256: approvedApprovalSha256,
@@ -907,11 +1117,12 @@ async function buildCommittedReceipt({
     host: before.host,
     installed_files: closedAfter.installed,
     kind: RECEIPT_KIND,
+    loaded_netns_unit: loadedNetnsUnit,
     netns_unit: netns,
     outcome: "committed",
     publisher_unit: publisher,
     runtime: closedAfter.runtime,
-    schema_version: 1,
+    schema_version: 2,
     sentinels: closedAfter.sentinels,
     topology,
   };
@@ -941,6 +1152,8 @@ async function applyLocked({ approvedApprovalSha256, approvedPlanSha256, ops, pl
     return receipt;
   }
   const current = await ops.unitState(NETNS_UNIT);
+  const intentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
+  const observedIntent = await ops.readOptionalRegular(intentPath);
   if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit) &&
       !(await ops.networkAbsent(plan))) {
     fail("inactive namespace unit has an unknown namespace path or host-interface preimage");
@@ -948,25 +1161,28 @@ async function applyLocked({ approvedApprovalSha256, approvedPlanSha256, ops, pl
   if (canonicalJson(current) !== canonicalJson(plan.preimage.netns_unit) && !recover) {
     fail("publisher namespace is not the inactive preimage; use recover-commit for a lost start response");
   }
+  if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit)) {
+    if (observedIntent !== null) {
+      fail("inactive publisher namespace has an existing durable start intent; it cannot be started again");
+    }
+    if (recover) {
+      fail("recover-commit cannot start an inactive publisher namespace");
+    }
+  }
   const before = await commonPreflight(plan, ops);
   let started = false;
   let activationApprovalSha256 = approvedApprovalSha256;
   if (canonicalJson(current) === canonicalJson(plan.preimage.netns_unit)) {
-    const finalPreStart = await ops.unitState(NETNS_UNIT);
-    if (canonicalJson(finalPreStart) !== canonicalJson(plan.preimage.netns_unit) ||
-        !(await ops.networkAbsent(plan))) {
-      fail("publisher namespace preimage changed during apply preflight");
-    }
+    await assertAdjacentPreStartClosure(plan, ops, "final pre-start");
     await ops.writeState(plan.transaction.state_directory, "00-prepared.json",
       stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "prepared"));
     await ops.writeState(plan.transaction.state_directory, "05-start-intent.json",
       stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "start-intent"));
+    await assertAdjacentPreStartClosure(plan, ops, "start-adjacent");
     const result = await ops.systemctl(["start", NETNS_UNIT]);
     if (result.status !== 0) fail("exact publisher namespace unit start failed");
     started = true;
   } else {
-    const intentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
-    const observedIntent = await ops.readOptionalRegular(intentPath);
     if (observedIntent === null) {
       fail("recover-commit found an active namespace without the durable start intent");
     }
@@ -1039,14 +1255,16 @@ function validateRollbackReceipt(
   exactKeys(receipt, [
     "approved_plan_sha256", "approved_rollback_approval_sha256",
     "ceremony_id", "committed_receipt_sha256", "caddy_after", "kind",
-    "netns_unit", "outcome", "publisher_unit", "schema_version",
+    "loaded_netns_unit", "netns_unit", "outcome", "publisher_unit", "schema_version",
     "stop_approval_sha256", "topology_absent",
   ], "rollback receipt");
-  if (receipt.schema_version !== 1 || receipt.kind !== ROLLBACK_RECEIPT_KIND ||
+  if (receipt.schema_version !== 2 || receipt.kind !== ROLLBACK_RECEIPT_KIND ||
       receipt.ceremony_id !== plan.ceremony_id || receipt.approved_plan_sha256 !== approvedPlanSha256 ||
       receipt.outcome !== "rolled-back" || receipt.topology_absent !== true ||
       receipt.committed_receipt_sha256 !== committedReceiptSha256 ||
-      canonicalJson(receipt.caddy_after) !== canonicalJson(committed.caddy_after)) {
+      canonicalJson(receipt.caddy_after) !== canonicalJson(committed.caddy_after) ||
+      canonicalJson(receipt.loaded_netns_unit) !==
+        canonicalJson(plan.preimage.loaded_netns_unit)) {
     fail("rollback receipt identity/outcome drifted");
   }
   validateSha256(
@@ -1167,6 +1385,10 @@ async function rollbackLocked({
   if (canonicalJson(hostAfter) !== canonicalJson(before.host)) {
     fail("host boot/systemd identity changed during namespace stop");
   }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit changed during namespace stop");
+  }
   const receipt = {
     approved_plan_sha256: approvedPlanSha256,
     approved_rollback_approval_sha256: approvedRollbackApprovalSha256,
@@ -1174,10 +1396,11 @@ async function rollbackLocked({
     ceremony_id: plan.ceremony_id,
     committed_receipt_sha256: committedReceiptSha256,
     kind: ROLLBACK_RECEIPT_KIND,
+    loaded_netns_unit: loadedNetnsUnit,
     netns_unit: netnsAfter,
     outcome: "rolled-back",
     publisher_unit: publisher,
-    schema_version: 1,
+    schema_version: 2,
     stop_approval_sha256: stopApprovalSha256,
     topology_absent: true,
   };
@@ -1529,6 +1752,191 @@ function systemctlUnit(name, systemctlPin) {
   };
 }
 
+function systemdWords(value, label) {
+  if (value === "") return [];
+  const words = value.split(/[\t ]+/u).sort();
+  if (
+    words.some((word) => word.length < 1 || /[\0\r\n]/u.test(word)) ||
+    new Set(words).size !== words.length
+  ) {
+    fail(`${label} is not a unique systemd word set`);
+  }
+  return words;
+}
+
+export function parseSystemdExecRecordsV1(value, label = "systemd Exec property") {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > 256 * 1024 ||
+    /[\r\0]/u.test(value)
+  ) {
+    fail(`${label} is not a non-empty systemd Exec command list`);
+  }
+  const result = [];
+  const recordPattern = /\{[^{}\r\n]*\}/gu;
+  let cursor = 0;
+  for (const [index, match] of [...value.matchAll(recordPattern)].entries()) {
+    const separator = value.slice(cursor, match.index);
+    if (
+      (cursor === 0 && separator !== "") ||
+      (cursor !== 0 && !/^(?:\n|[ \t]*;[ \t]*)$/u.test(separator))
+    ) {
+      fail(`${label} has an unreviewed record separator`);
+    }
+    const record = match[0];
+    const path = /(?:^\{[\t ]*|[\t ]*;[\t ]*)path=([^ ;]+)[\t ]*;/u.exec(record)?.[1];
+    const argv = /(?:^\{[\t ]*|[\t ]*;[\t ]*)argv\[\]=(.+?)[\t ]*;[\t ]*ignore_errors=/u.exec(record)?.[1]?.trim();
+    const ignoreErrors = /(?:^\{[\t ]*|[\t ]*;[\t ]*)ignore_errors=(yes|no)[\t ]*;/u.exec(record)?.[1];
+    if (
+      path === undefined ||
+      argv === undefined ||
+      ignoreErrors === undefined ||
+      !/^\/[A-Za-z0-9_./@+-]+(?:[\t ]+[A-Za-z0-9_./@+=:-]+)*$/u.test(argv)
+    ) {
+      fail(`${label}[${index}] has an unreviewed systemd Exec serialization`);
+    }
+    result.push({ argv, ignore_errors: ignoreErrors, path });
+    cursor = match.index + record.length;
+  }
+  if (result.length === 0 || cursor !== value.length) {
+    fail(`${label} has an unreviewed systemd Exec serialization`);
+  }
+  return result;
+}
+
+function systemctlLoadedNetnsUnit(systemctlPin) {
+  const properties = [
+    "After", "AmbientCapabilities", "Before", "BindsTo", "CapabilityBoundingSet",
+    "DropInPaths", "ExecStart", "ExecStartPre", "ExecStopPost", "FragmentPath", "Group",
+    "KillMode", "LimitCORE", "LockPersonality", "MemoryDenyWriteExecute", "MemoryMax",
+    "MemorySwapMax", "NeedDaemonReload", "NoNewPrivileges", "NotifyAccess", "PartOf",
+    "Requires", "Restart", "RestrictAddressFamilies", "RestrictNamespaces",
+    "RestrictRealtime", "RestrictSUIDSGID", "StandardError", "StandardOutput",
+    "StateDirectory", "StateDirectoryMode", "SystemCallArchitectures", "TasksMax",
+    "TimeoutStartUSec", "TimeoutStopUSec", "Type", "UMask", "User", "Wants",
+    "WorkingDirectory",
+  ];
+  const values = systemctlProperties(NETNS_UNIT, properties, systemctlPin);
+  return {
+    condition_paths: [...EXPECTED_SENTINELS],
+    condition_source: "exact-fragment-pin-plus-NeedDaemonReload=no",
+    dropin_paths: systemdWords(values.get("DropInPaths"), "publisher namespace DropInPaths"),
+    exec: {
+      start: parseSystemdExecRecordsV1(values.get("ExecStart"), "publisher namespace ExecStart"),
+      start_pre: parseSystemdExecRecordsV1(
+        values.get("ExecStartPre"),
+        "publisher namespace ExecStartPre",
+      ),
+      stop_post: parseSystemdExecRecordsV1(
+        values.get("ExecStopPost"),
+        "publisher namespace ExecStopPost",
+      ),
+    },
+    fragment_path: values.get("FragmentPath"),
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    relationships: {
+      after: systemdWords(values.get("After"), "publisher namespace After"),
+      before: systemdWords(values.get("Before"), "publisher namespace Before"),
+      binds_to: systemdWords(values.get("BindsTo"), "publisher namespace BindsTo"),
+      part_of: systemdWords(values.get("PartOf"), "publisher namespace PartOf"),
+      requires: systemdWords(values.get("Requires"), "publisher namespace Requires"),
+      wants: systemdWords(values.get("Wants"), "publisher namespace Wants"),
+    },
+    service: {
+      ambient_capabilities: systemdWords(
+        values.get("AmbientCapabilities"),
+        "publisher namespace AmbientCapabilities",
+      ),
+      capability_bounding_set: systemdWords(
+        values.get("CapabilityBoundingSet"),
+        "publisher namespace CapabilityBoundingSet",
+      ),
+      group: values.get("Group"),
+      kill_mode: values.get("KillMode"),
+      limit_core: values.get("LimitCORE"),
+      lock_personality: values.get("LockPersonality"),
+      memory_deny_write_execute: values.get("MemoryDenyWriteExecute"),
+      memory_max: values.get("MemoryMax"),
+      memory_swap_max: values.get("MemorySwapMax"),
+      no_new_privileges: values.get("NoNewPrivileges"),
+      notify_access: values.get("NotifyAccess"),
+      restart: values.get("Restart"),
+      restrict_address_families: systemdWords(
+        values.get("RestrictAddressFamilies"),
+        "publisher namespace RestrictAddressFamilies",
+      ),
+      restrict_namespaces: values.get("RestrictNamespaces"),
+      restrict_realtime: values.get("RestrictRealtime"),
+      restrict_suid_sgid: values.get("RestrictSUIDSGID"),
+      standard_error: values.get("StandardError"),
+      standard_output: values.get("StandardOutput"),
+      state_directory: systemdWords(
+        values.get("StateDirectory"),
+        "publisher namespace StateDirectory",
+      ),
+      state_directory_mode: values.get("StateDirectoryMode"),
+      system_call_architectures: systemdWords(
+        values.get("SystemCallArchitectures"),
+        "publisher namespace SystemCallArchitectures",
+      ),
+      tasks_max: values.get("TasksMax"),
+      timeout_start_usec: values.get("TimeoutStartUSec"),
+      timeout_stop_usec: values.get("TimeoutStopUSec"),
+      type: values.get("Type"),
+      umask: values.get("UMask"),
+      user: values.get("User"),
+      working_directory: values.get("WorkingDirectory"),
+    },
+  };
+}
+
+function systemctlManagerGeneration(systemctlPin) {
+  const properties = [
+    "GeneratorsFinishTimestampMonotonic",
+    "GeneratorsStartTimestampMonotonic",
+    "UnitsLoadFinishTimestampMonotonic",
+    "UnitsLoadStartTimestampMonotonic",
+  ];
+  const result = invokePinned(systemctlPin, [
+    "show",
+    ...properties.flatMap((property) => ["-p", property]),
+  ]);
+  if (result.status !== 0 || result.stderr.length !== 0) {
+    fail("systemctl manager-generation show failed");
+  }
+  const values = new Map();
+  for (const line of result.stdout.toString("utf8").trimEnd().split("\n")) {
+    const equals = line.indexOf("=");
+    if (equals < 1 || values.has(line.slice(0, equals))) {
+      fail("malformed systemctl manager-generation output");
+    }
+    values.set(line.slice(0, equals), line.slice(equals + 1));
+  }
+  if (values.size !== properties.length || properties.some((key) => !values.has(key))) {
+    fail("systemctl manager-generation show omitted a property");
+  }
+  const stat = readFileSync("/proc/1/stat", "utf8");
+  const close = stat.lastIndexOf(")");
+  const startTicks = close < 1 ? undefined : stat.slice(close + 2).trim().split(" ")[19];
+  if (!/^[1-9][0-9]*$/u.test(startTicks ?? "")) fail("PID 1 start ticks are malformed");
+  const exePath = readlinkSync("/proc/1/exe");
+  validateCanonicalAbsolute(exePath, "PID 1 executable path");
+  const exe = statSync("/proc/1/exe", { bigint: true, throwIfNoEntry: true });
+  const generation = {
+    generators_finish_timestamp_monotonic: values.get("GeneratorsFinishTimestampMonotonic"),
+    generators_start_timestamp_monotonic: values.get("GeneratorsStartTimestampMonotonic"),
+    pid1_exe_device: exe.dev.toString(),
+    pid1_exe_inode: exe.ino.toString(),
+    pid1_exe_path: exePath,
+    pid1_start_ticks: startTicks,
+    units_load_finish_timestamp_monotonic: values.get("UnitsLoadFinishTimestampMonotonic"),
+    units_load_start_timestamp_monotonic: values.get("UnitsLoadStartTimestampMonotonic"),
+  };
+  validateManagerGeneration(generation, "live systemd manager generation");
+  return generation;
+}
+
 function systemctlCaddyDependency(systemctlPin) {
   const properties = [
     "After", "BindsTo", "DropInPaths", "PartOf", "Requires", "Wants",
@@ -1625,8 +2033,12 @@ export function linuxOps(plan) {
       return {
         boot_id: currentBootId(),
         machine_id_sha256: sha256(readFileSync("/etc/machine-id")),
+        systemd_manager_generation: systemctlManagerGeneration(systemctl),
         systemd_version: version.stdout.toString("utf8").split("\n")[0],
       };
+    },
+    async loadedNetnsUnit() {
+      return systemctlLoadedNetnsUnit(systemctl);
     },
     async networkAbsent(plan) {
       try { lstatSync(plan.topology.namespace_path); return false; } catch (error) { if (error.code !== "ENOENT") throw error; }

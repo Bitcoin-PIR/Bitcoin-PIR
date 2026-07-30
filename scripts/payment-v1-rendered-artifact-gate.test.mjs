@@ -97,6 +97,15 @@ const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
   "txprepare",
   "wss-proxy",
 ]);
+const PUBLISHER_NETNS_TEMPLATES = [
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+];
 
 function hashBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -1415,6 +1424,114 @@ test("service identities and numeric identity placeholders stay below systemd Dy
   );
 });
 
+test("directory publisher namespace profile renders, verifies, and emits its closed runtime request", (t) => {
+  const fixture = makePublisherNetnsFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(model.manifest.deployment_profile, "directory-publisher-netns-v1");
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+  assert.deepEqual(
+    model.manifest.runtime_units.map(({ unit_name }) => unit_name),
+    ["bitcoinpir-payment-v1-directory-publisher.service"],
+  );
+  assert.deepEqual(model.request.publisher_network, {
+    caddy_drop_in_path:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    caddy_service_unit: "bhtm-caddy.service",
+    firewall: {
+      forwarding_sysctls: {
+        "net.ipv4.ip_forward": 0,
+        "net.ipv6.conf.all.forwarding": 0,
+      },
+      interface: "bpir-pub-h",
+      semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+      ufw_rules_in_install_order: [
+        "prepend deny in on bpir-pub-h from any to any",
+        "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+        "route prepend deny in on bpir-pub-h from any to any",
+        "route prepend deny out on bpir-pub-h from any to any",
+      ],
+    },
+    forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+    namespace: {
+      client: "10.203.0.2/30",
+      host: "10.203.0.1/30",
+      name: "bpir-directory-publisher",
+      path: "/run/netns/bpir-directory-publisher",
+    },
+    namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+    network_policy_sha256: model.manifest.artifacts.find(
+      ({ target_path }) =>
+        target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    ).rendered_sha256,
+    publication_mode: {
+      centralized: true,
+      degraded: true,
+      name: "centralized-single-relay",
+    },
+    publication_time_firewall_binding: {
+      activation_blocked: true,
+      implemented: false,
+      point_in_time_evidence_only: true,
+    },
+    publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+  });
+
+  const missingPublicationGuard = makePublisherNetnsFixture(t);
+  const publisherTemplate =
+    "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in";
+  const publisherTemplatePath = join(missingPublicationGuard.sourceRoot, publisherTemplate);
+  const guardedBytes = readFileSync(publisherTemplatePath, "utf8");
+  assert.match(
+    guardedBytes,
+    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED$/mu,
+  );
+  writeFileSync(
+    publisherTemplatePath,
+    guardedBytes.replace(
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED\n",
+      "",
+    ),
+  );
+  missingPublicationGuard.plan.rendered_artifacts.find(
+    ({ source_path: sourcePath }) => sourcePath === publisherTemplate,
+  ).source_sha256 = hashFile(publisherTemplatePath);
+  assert.throws(
+    () => renderFixture(missingPublicationGuard),
+    /must retain the exact global and profile-specific activation conditions/u,
+  );
+
+  for (const artifact of fixture.plan.rendered_artifacts) {
+    const missing = makePublisherNetnsFixture(t);
+    missing.plan.rendered_artifacts = missing.plan.rendered_artifacts.filter(
+      ({ target_path }) => target_path !== artifact.target_path,
+    );
+    assert.throws(
+      () => renderFixture(missing),
+      /deployment profile templates|dependency is missing|references missing artifact/u,
+      artifact.target_path,
+    );
+  }
+  for (const artifact of fixture.plan.payload_artifacts) {
+    const missing = makePublisherNetnsFixture(t);
+    missing.plan.payload_artifacts = missing.plan.payload_artifacts.filter(
+      ({ target_path }) => target_path !== artifact.target_path,
+    );
+    assert.throws(
+      () => renderFixture(missing),
+      /dependency is missing|references missing artifact/u,
+      artifact.target_path,
+    );
+  }
+
+  for (const id of [60_001, 62_900, 62_999, 65_534]) {
+    const invalid = makePublisherNetnsFixture(t);
+    invalid.plan.service_identities[0].uid = id;
+    invalid.plan.service_identities[0].gid = id;
+    assert.throws(() => renderFixture(invalid), /static service uid\/gid/u);
+  }
+});
+
 test("integrated existing-Caddy profile closes and proves its HAProxy socket boundary", (t) => {
   const fixture = makeIntegratedCaddySourceFairFixture(t);
   const model = renderFixture(fixture);
@@ -1508,8 +1625,8 @@ test("integrated admin gate rejects additional module dependencies", (t) => {
   writeFileSync(
     gatePath,
     readFileSync(gatePath, "utf8").replace(
-      "export const PLAN_SCHEMA_VERSION = 1;",
-      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 1;',
+      "export const PLAN_SCHEMA_VERSION = 2;",
+      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 2;',
     ),
   );
   const gate = fixture.plan.rendered_artifacts.find(
@@ -1531,8 +1648,8 @@ test("integrated overlay gate rejects added dependencies and semantic drift", (t
   );
   for (const changed of [
     original.replace(
-      "export const OVERLAY_PLAN_SCHEMA_VERSION = 1;",
-      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 1;',
+      "export const OVERLAY_PLAN_SCHEMA_VERSION = 2;",
+      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 2;',
     ),
     original.replace(
       'export const OVERLAY_PROFILE = "integrated-existing-bhtm-caddy-v1";',

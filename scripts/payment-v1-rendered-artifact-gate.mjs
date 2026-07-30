@@ -222,6 +222,7 @@ const PROFILE_CATALOG = Object.freeze({
 
 const MANAGED_FILE_PREFIXES = Object.freeze([
   "/etc/bitcoinpir/payment-v1/",
+  "/etc/netns/bpir-directory-publisher/",
   "/opt/bitcoinpir/",
   "/usr/local/libexec/bitcoinpir/",
   "/var/lib/bitcoinpir-directory-publisher/artifacts/",
@@ -2031,6 +2032,24 @@ function parseSystemdUnit(text, label, deploymentProfile) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "directory-publisher-netns-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
   "directory-relay-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2649,11 +2668,11 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "bd4a99dc4a77691c89f1861b93c28b1715f072d266e9cb42ec45a1f0dd474f9b",
+  adminGate: "651ef7072a3dccdfd640a9c70c801da32afbde599348985f5b93000ce3c3dbe0",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
-  adminTransaction: "c56190d9db34bc7481e554f7f81039ee67496cca5d666f141faa0bd652040ccc",
-  overlayGate: "cbc060dc48c164de8ee6faebc1e05ffe7bf7ce1c94b98dad3ec12e96e424b6ab",
-  overlayTransaction: "7d215529237a9b00da5fd162806f291e2802cb1813ee5c63f02a7d8862cd2dcf",
+  adminTransaction: "de06f1d67ac27626f57f7106c03d19e8327638a7a9d094213adce913e0ca52c8",
+  overlayGate: "963540df059609adc6b9168d346db32bb4373c3aeddcd66db7fb4a31cef6c4ac",
+  overlayTransaction: "9babddd3d29a386a12b65037e05fbe7ecd1afbe9c24fae053f28d0f220ef81f4",
 });
 
 const OVERLAY_TRANSACTION_IMPORT_HEADER = [
@@ -2685,6 +2704,8 @@ const OVERLAY_TRANSACTION_IMPORT_HEADER = [
   "",
   "import {",
   "  OVERLAY_COLLECTOR,",
+  "  OVERLAY_RECEIPT_SCHEMA_VERSION,",
+  "  PUBLISHER_NETNS_DROPIN_PATH,",
   "  buildOverlayCandidateFromRendered,",
   "  canonicalJson,",
   "  computeApprovedOverlayPlanSha256,",
@@ -2703,6 +2724,7 @@ const OVERLAY_TRANSACTION_IMPORT_HEADER = [
   "  canonicalizeAdaptedCaddyJson,",
   "  computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,",
   "  validateCommittedReceipt as validateAdminUdsCommittedReceipt,",
+  "  validatePublisherNetnsDropInBytes,",
   '} from "./payment-v1-caddy-admin-uds-gate.mjs";',
   "",
   "",
@@ -3044,7 +3066,7 @@ function validateHashManifestScope(manifestPath, entries, plan) {
         "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
         "/etc/netns/bpir-directory-publisher/nsswitch.conf",
         "/etc/netns/bpir-directory-publisher/resolv.conf",
-      ];
+      ].sort(asciiCompare);
       if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
         fail(`hash manifest ${manifestPath} must bind the four exact network inputs`);
       }

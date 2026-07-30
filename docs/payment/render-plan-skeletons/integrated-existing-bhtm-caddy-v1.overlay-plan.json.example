@@ -185,7 +185,7 @@
       "uid": 0
     }
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "source_fair": {
     "deployment_manifest_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
     "deployment_profile": "integrated-existing-bhtm-caddy-v1",
@@ -287,6 +287,8 @@
       "cold_new_generation": true,
       "config_sha256": "INVALID_REPLACE_WITH_HARDENED_CADDYFILE_SHA256",
       "deployment_profile": "bhtm-caddy-admin-uds-v1",
+      "plan_schema_version": 2,
+      "publisher_netns_dropin_sha256": "INVALID_REPLACE_WITH_EXACT_PUBLISHER_NETNS_DROPIN_SHA256",
       "plan": {
         "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
         "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -313,6 +315,7 @@
         "size": "INVALID_REPLACE_WITH_SIZE",
         "uid": 0
       },
+      "receipt_schema_version": 2,
       "runtime_directory": "/run/bitcoinpir-caddy-admin",
       "runtime_directory_mode": "0700",
       "service_uid_inventory_sha256": "INVALID_REPLACE_WITH_COMPLETE_SERVICE_UID_INVENTORY_SHA256",
@@ -357,6 +360,55 @@
       "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
+    },
+    "publisher_netns_ceremony": {
+      "approved_plan_sha256": "INVALID_REPLACE_WITH_APPROVED_PUBLISHER_NETNS_PLAN_SHA256",
+      "ceremony_id": "INVALID_REPLACE_WITH_PUBLISHER_NETNS_CEREMONY_ID",
+      "dropin": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0644",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+        "sha256": "INVALID_REPLACE_WITH_EXACT_PUBLISHER_NETNS_DROPIN_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      },
+      "namespace_device": "INVALID_REPLACE_WITH_NSFS_DEVICE",
+      "namespace_inode": "INVALID_REPLACE_WITH_NSFS_INODE",
+      "netns_invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
+      "plan": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0400",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/var/lib/bitcoinpir/payment-v1/publisher-netns/plans/INVALID_REPLACE_WITH_PUBLISHER_NETNS_CEREMONY_ID.json",
+        "sha256": "INVALID_REPLACE_WITH_APPROVED_PUBLISHER_NETNS_PLAN_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      },
+      "plan_schema_version": 2,
+      "receipt": {
+        "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+        "device": "INVALID_REPLACE_WITH_DEVICE",
+        "gid": 0,
+        "inode": "INVALID_REPLACE_WITH_INODE",
+        "mode": "0400",
+        "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+        "nlink": 1,
+        "path": "/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/INVALID_REPLACE_WITH_PUBLISHER_NETNS_CEREMONY_ID.json",
+        "sha256": "INVALID_REPLACE_WITH_TRUSTED_PUBLISHER_NETNS_RECEIPT_SHA256",
+        "size": "INVALID_REPLACE_WITH_SIZE",
+        "uid": 0
+      },
+      "receipt_schema_version": 2,
+      "topology_sha256": "INVALID_REPLACE_WITH_CANONICAL_PUBLISHER_NETNS_TOPOLOGY_SHA256"
     },
     "unit_fragment": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",

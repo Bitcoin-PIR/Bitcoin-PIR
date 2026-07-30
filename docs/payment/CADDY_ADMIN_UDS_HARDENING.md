@@ -18,8 +18,18 @@ separately authorized outage remain mandatory.
 unix//run/bitcoinpir-caddy-admin/admin.sock|0200
 ```
 
-The hardened unit must run as `root:root`, have no drop-ins, expose no
-`CADDY_ADMIN` environment value, and read back these exact properties:
+The hardened unit must run as `root:root`, expose no `CADDY_ADMIN` environment
+value, and have exactly one loaded drop-in:
+
+```text
+/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf
+```
+
+That root-owned pinned file may contain only the one-way
+`Wants=` plus `After=` relation toward
+`bitcoinpir-payment-v1-publisher-netns.service`; `Requires=`, `BindsTo=` and
+reverse stop propagation are forbidden. The unit must also read back these
+exact properties:
 
 ```text
 RuntimeDirectory=bitcoinpir-caddy-admin
@@ -182,7 +192,8 @@ The approved transaction is:
 
 1. Hold the exact single-use lock and re-read the approved old binary,
    Caddyfile, unit, active PID, `InvocationID`, and site health. Require the
-   loaded unit's exact fragment, no drop-ins, no `EnvironmentFile` or
+   loaded unit's exact fragment, the singleton approved publisher-namespace
+   drop-in and exact one-way relationship, no `EnvironmentFile` or
    `PassEnvironment`, exact old `ExecStart`/`ExecReload`, and
    `NeedDaemonReload=no`. Adapt the exact disk Caddyfile bytes with the pinned
    Caddy descriptor and require its approved canonical digest to equal the
@@ -206,7 +217,8 @@ The approved transaction is:
    are not substitutes for this proof.
    For an inactive unit the collector normalizes either an empty value or
    systemd's 32-zero sentinel to the receipt's canonical empty string.
-6. Require `NeedDaemonReload=no`, the exact main fragment, no drop-ins, no
+6. Require `NeedDaemonReload=no`, the exact main fragment, the same singleton
+   publisher-namespace drop-in and one-way relationship, no
    effective `CADDY_ADMIN`, exact effective `LimitCORE=0`, `MemorySwapMax=0`,
    `StandardOutput=null` and `StandardError=null`, root API `GET /config/`
    success over the UDS with the same canonical adapted-JSON digest,
@@ -277,16 +289,20 @@ evidence, not target-host activation evidence: the target still needs the
 approved plan, stopped-host inventory, complete UID probes, site probes,
 transaction/rollback ceremony and committed receipt described above.
 
+Plan and receipt schema v2 bind the complete drop-in inode/content pin before,
+during and after the cold transition. Schema v1 plans and receipts are invalid;
+they cannot be upgraded into authority by adding fields after the fact.
+
 The dependent integrated-overlay executor additionally re-reads the current
 effective systemd properties and `/proc` process identity around each admin
 probe and immediately before each file exchange or reload. It requires the
-exact fragment, no drop-ins or environment files, the approved `ExecStart` and
+exact fragment, the singleton approved drop-in and no environment files, the approved `ExecStart` and
 UDS `ExecReload`, `NeedDaemonReload=no`, the reviewed runtime-directory,
 identity, zero core/swap limits, null output/error streams, umask and
 environment-name policy, and the exact MainPID argv/start
 ticks with no process `CADDY_ADMIN`. Environment values are not placed in the
 receipt. Stable before/after snapshots bind those checks to the same boot,
-unit generation and process. This closes a no-op reload or effective-drop-in
+unit generation and process. This closes a no-op reload or additional/drop-in
 bypass for the overlay; it is not a substitute for a target-host run and its
 real PID 1 evidence.
 

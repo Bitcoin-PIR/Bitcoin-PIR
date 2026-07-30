@@ -22,6 +22,7 @@ import {
   NODE_AMD64_MANIFEST,
   NODE_IMAGE_INDEX,
   PROFILE,
+  PUBLISHER_NETNS_DROPIN_PATH,
   SETPRIV_PATH,
   buildHardenedCaddyfile,
   buildHardenedUnit,
@@ -51,6 +52,16 @@ ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter c
 [Install]
 WantedBy=multi-user.target
 `);
+export const PUBLISHER_NETNS_DROPIN = Buffer.from(`# Reviewed drop-in for the pre-existing bhtm-caddy.service. Do not install alone.
+[Unit]
+Wants=bitcoinpir-payment-v1-publisher-netns.service
+After=bitcoinpir-payment-v1-publisher-netns.service
+
+# This dependency is intentionally one-way. Caddy asks systemd to prepare the
+# private bind before Caddy starts, but namespace teardown must never propagate
+# a stop to the shared Caddy process. A missing bind still fails a new Caddy
+# start closed; an already-running Caddy keeps its unrelated public listeners.
+`);
 export const TEST_HARDENED_ADAPTED_JSON = {
   admin: { listen: ADMIN_LISTEN },
   apps: {},
@@ -70,6 +81,7 @@ export const TEST_OVERLAY_ADAPTED_JSON = {
   },
 };
 const TEST_HARDENING_EVIDENCE = new WeakMap();
+const TEST_NETNS_EVIDENCE = new WeakMap();
 
 export function testSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -115,7 +127,7 @@ function generation(unitName, { canReload, pid }) {
 export function testCaddyEffectiveUnit(plan) {
   const binary = plan.target.binary.path;
   return {
-    dropin_paths: [],
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
     environment_names: [],
     environment_files: [],
     exec_reload: {
@@ -134,6 +146,15 @@ export function testCaddyEffectiveUnit(plan) {
     memory_swap_max: "0",
     need_daemon_reload: "no",
     pass_environment: [],
+    publisher_netns_dependency: {
+      after_namespace_owner: true,
+      binds_to_namespace_owner: false,
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+      need_daemon_reload: "no",
+      part_of_namespace_owner: false,
+      requires_namespace_owner: false,
+      wants_namespace_owner: true,
+    },
     runtime_directory: ["bitcoinpir-caddy-admin"],
     runtime_directory_mode: "0700",
     runtime_directory_preserve: "no",
@@ -244,7 +265,7 @@ export function makeHardeningEvidence(targetGeneration) {
         admin_dial: ADMIN_DIAL,
         admin_listen: ADMIN_LISTEN,
         caddy_admin_environment_absent: true,
-        dropins: [],
+        dropins: [PUBLISHER_NETNS_DROPIN_PATH],
         runtime_directory: ADMIN_DIRECTORY,
         runtime_directory_mode: "0700",
         runtime_directory_preserve: "no",
@@ -280,6 +301,12 @@ export function makeHardeningEvidence(targetGeneration) {
       root_or_cap_dac_override_not_isolated: true,
       scope: "capability-free-unprivileged-non-root-dac-only",
     },
+    publisher_netns_dropin: testPin(
+      PUBLISHER_NETNS_DROPIN_PATH,
+      testSha256(PUBLISHER_NETNS_DROPIN),
+      "0644",
+      { size: String(PUBLISHER_NETNS_DROPIN.length), inode: "52009" },
+    ),
     runtime: {
       executor: testPin(EXECUTOR_PATH, "b".repeat(64), "0555", {
         inode: "52008",
@@ -301,7 +328,7 @@ export function makeHardeningEvidence(targetGeneration) {
       }),
       systemd_version: "255",
     },
-    schema_version: 1,
+    schema_version: 2,
     service_uid_inventory: serviceUidInventory,
     site_preservation: {
       acme_storage_migration: "none",
@@ -389,7 +416,7 @@ export function makeHardeningEvidence(targetGeneration) {
   const receipt = {
     activation: {
       binary_version: "v2.11.4",
-      dropin_paths: [],
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
       effective_environment_names: [],
       fragment_path: "/etc/systemd/system/bhtm-caddy.service",
       need_daemon_reload: "no",
@@ -405,6 +432,15 @@ export function makeHardeningEvidence(targetGeneration) {
         UMask: "0077",
         UnsetEnvironment: ["CADDY_ADMIN"],
         User: "root",
+      },
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
       },
       unit_generation: activationGeneration,
     },
@@ -438,6 +474,16 @@ export function makeHardeningEvidence(targetGeneration) {
     before: {
       binary: plan.preimage.binary,
       config: plan.preimage.config,
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
+      },
+      publisher_netns_dropin: plan.publisher_netns_dropin,
       unit: plan.preimage.unit,
       unit_generation: plan.preimage.unit_generation,
     },
@@ -448,14 +494,16 @@ export function makeHardeningEvidence(targetGeneration) {
     installed: {
       binary: installed(plan.candidate.binary, "53001"),
       config: installed(plan.candidate.config, "53002"),
+      publisher_netns_dropin: plan.publisher_netns_dropin,
       unit: installed(plan.candidate.unit, "53003"),
     },
     outcome: "committed",
     privileged_access_inventory: plan.privileged_access_inventory,
+    publisher_netns_dropin: plan.publisher_netns_dropin,
     recovery_classification: "candidate/candidate-new-generation",
     rollback: { outcome: "not-required", performed: false },
     runtime: plan.runtime,
-    schema_version: 1,
+    schema_version: 2,
     site_health: plan.site_preservation.probe_ids.map((id) => ({
       after: "passed",
       before: "passed",
@@ -498,6 +546,18 @@ export function testHardeningReceiptBytes(plan) {
   return Buffer.from(evidence.receiptBytes);
 }
 
+export function testPublisherNetnsPlanBytes(plan) {
+  const evidence = TEST_NETNS_EVIDENCE.get(plan);
+  if (evidence === undefined) throw new Error("unknown integrated overlay test plan");
+  return Buffer.from(evidence.planBytes);
+}
+
+export function testPublisherNetnsReceiptBytes(plan) {
+  const evidence = TEST_NETNS_EVIDENCE.get(plan);
+  if (evidence === undefined) throw new Error("unknown integrated overlay test plan");
+  return Buffer.from(evidence.receiptBytes);
+}
+
 export function makeIntegratedOverlayTestPlan() {
   const placeholders = {
     DIRECTORY_PUBLISHER_CLIENT_IP: "10.23.0.6",
@@ -516,12 +576,126 @@ export function makeIntegratedOverlayTestPlan() {
     `/opt/bitcoinpir/payment-v1-rename-exchange/${exchangeSha}/payment-v1-rename-exchange`;
   const exchangeManifest = Buffer.from(`${exchangeSha}  ${exchangePath}\n`);
   const preimageSha = testSha256(TEST_PREIMAGE);
+  const overlayConfigPreimage = testPin(
+    "/etc/caddy/Caddyfile",
+    preimageSha,
+    "0644",
+    { size: String(TEST_PREIMAGE.length) },
+  );
   const transactionId = "integrated-caddy-test-1";
   const targetGeneration = generation("bhtm-caddy.service", {
     canReload: "yes",
     pid: "4343",
   });
   const hardeningEvidence = makeHardeningEvidence(targetGeneration);
+  const publisherCeremonyCaddyState = {
+    config: overlayConfigPreimage,
+    dependency: {
+      after_namespace_owner: true,
+      binds_to_namespace_owner: false,
+      drop_in_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+      part_of_namespace_owner: false,
+      requires_namespace_owner: false,
+      wants_namespace_owner: true,
+    },
+    unit: {
+      active_enter_timestamp_monotonic:
+        targetGeneration.active_enter_timestamp_monotonic,
+      active_state: targetGeneration.active_state,
+      invocation_id: targetGeneration.invocation_id,
+      load_state: "loaded",
+      main_pid: targetGeneration.main_pid,
+      name: targetGeneration.unit_name,
+      need_daemon_reload: "no",
+      sub_state: targetGeneration.sub_state,
+    },
+  };
+  const publisherNetnsCeremonyId = "publisher-netns-test-1";
+  const publisherNetnsPlanPath =
+    `/var/lib/bitcoinpir/payment-v1/publisher-netns/plans/${publisherNetnsCeremonyId}.json`;
+  const publisherNetnsReceiptPath =
+    `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${publisherNetnsCeremonyId}.json`;
+  const publisherNetnsTopology = {
+    namespace: {
+      device: "13",
+      inode: "9001",
+      path: "/run/netns/bpir-directory-publisher",
+      type: "nsfs",
+    },
+  };
+  const publisherNetnsPlan = {
+    activation_sentinels: [],
+    caddy_preimage: publisherCeremonyCaddyState,
+    ceremony_id: publisherNetnsCeremonyId,
+    firewall_evidence: {},
+    host: {
+      boot_id: "22345678-1234-4234-9234-123456789abc",
+      machine_id_sha256: "9".repeat(64),
+      systemd_version: "systemd 255 (fixture)",
+    },
+    installed_files: [{
+      id: "caddy-netns-dropin",
+      pin: hardeningEvidence.plan.publisher_netns_dropin,
+    }],
+    kind: "bitcoinpir-payment-v1-publisher-netns-ceremony-v1",
+    preimage: {},
+    publisher_private_key_installed: false,
+    relationship: {},
+    runtime: {},
+    schema_version: 2,
+    source_commit: "8".repeat(40),
+    topology: {},
+    transaction: { receipt_path: publisherNetnsReceiptPath },
+  };
+  const publisherNetnsPlanBytes = Buffer.from(
+    canonicalJson(publisherNetnsPlan),
+    "utf8",
+  );
+  const publisherNetnsPlanSha256 = testSha256(publisherNetnsPlanBytes);
+  const publisherNetnsUnit = {
+    active_enter_timestamp_monotonic: "1500000",
+    active_state: "active",
+    invocation_id: "a".repeat(32),
+    load_state: "loaded",
+    main_pid: "5151",
+    name: "bitcoinpir-payment-v1-publisher-netns.service",
+    need_daemon_reload: "no",
+    sub_state: "running",
+  };
+  const publisherUnit = {
+    active_enter_timestamp_monotonic: "0",
+    active_state: "inactive",
+    invocation_id: "0".repeat(32),
+    load_state: "loaded",
+    main_pid: "0",
+    name: "bitcoinpir-payment-v1-directory-publisher.service",
+    need_daemon_reload: "no",
+    sub_state: "dead",
+  };
+  const publisherNetnsReceipt = {
+    activation_approval_sha256: "1".repeat(64),
+    approved_approval_sha256: "2".repeat(64),
+    approved_plan_sha256: publisherNetnsPlanSha256,
+    caddy_after: publisherCeremonyCaddyState,
+    caddy_before: publisherCeremonyCaddyState,
+    ceremony_id: publisherNetnsCeremonyId,
+    firewall_evidence_sha256: "3".repeat(64),
+    host: publisherNetnsPlan.host,
+    installed_files: [hardeningEvidence.plan.publisher_netns_dropin],
+    kind: "bitcoinpir-payment-v1-publisher-netns-receipt-v1",
+    loaded_netns_unit: {},
+    netns_unit: publisherNetnsUnit,
+    outcome: "committed",
+    publisher_unit: publisherUnit,
+    runtime: {},
+    schema_version: 2,
+    sentinels: [],
+    topology: publisherNetnsTopology,
+  };
+  const publisherNetnsReceiptBytes = Buffer.from(
+    canonicalJson(publisherNetnsReceipt),
+    "utf8",
+  );
   const hardeningSummary = {
     admin_listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
     adapted_json_sha256: hardeningEvidence.plan.candidate.adapted_json_sha256,
@@ -531,6 +705,9 @@ export function makeIntegratedOverlayTestPlan() {
     cold_new_generation: true,
     config_sha256: preimageSha,
     deployment_profile: "bhtm-caddy-admin-uds-v1",
+    plan_schema_version: 2,
+    publisher_netns_dropin_sha256:
+      hardeningEvidence.plan.publisher_netns_dropin.sha256,
     runtime_directory: "/run/bitcoinpir-caddy-admin",
     runtime_directory_mode: "0700",
     setpriv_binary_sha256: hardeningEvidence.plan.runtime.setpriv_binary.sha256,
@@ -541,6 +718,7 @@ export function makeIntegratedOverlayTestPlan() {
     socket_path: "/run/bitcoinpir-caddy-admin/admin.sock",
     tcp_admin_absent: true,
     transaction_id: "caddy-admin-uds-test-1",
+    receipt_schema_version: 2,
     unit_invocation_id: targetGeneration.invocation_id,
     unit_sha256: hardeningEvidence.plan.candidate.unit.sha256,
   };
@@ -641,7 +819,7 @@ export function makeIntegratedOverlayTestPlan() {
         inode: "42013",
       },
     },
-    schema_version: 1,
+    schema_version: 2,
     source_fair: {
       deployment_manifest_sha256: "1".repeat(64),
       deployment_profile: "integrated-existing-bhtm-caddy-v1",
@@ -713,12 +891,32 @@ export function makeIntegratedOverlayTestPlan() {
         path: "/etc/caddy",
         uid: 0,
       },
-      config_preimage: testPin(
-        "/etc/caddy/Caddyfile",
-        preimageSha,
-        "0644",
-        { size: String(TEST_PREIMAGE.length) },
-      ),
+      config_preimage: overlayConfigPreimage,
+      publisher_netns_ceremony: {
+        approved_plan_sha256: publisherNetnsPlanSha256,
+        ceremony_id: publisherNetnsCeremonyId,
+        dropin: hardeningEvidence.plan.publisher_netns_dropin,
+        namespace_device: publisherNetnsTopology.namespace.device,
+        namespace_inode: publisherNetnsTopology.namespace.inode,
+        netns_invocation_id: publisherNetnsUnit.invocation_id,
+        plan: testPin(
+          publisherNetnsPlanPath,
+          publisherNetnsPlanSha256,
+          "0400",
+          { size: String(publisherNetnsPlanBytes.length), inode: "42014" },
+        ),
+        plan_schema_version: 2,
+        receipt: testPin(
+          publisherNetnsReceiptPath,
+          testSha256(publisherNetnsReceiptBytes),
+          "0400",
+          { size: String(publisherNetnsReceiptBytes.length), inode: "42015" },
+        ),
+        receipt_schema_version: 2,
+        topology_sha256: testSha256(
+          Buffer.from(canonicalJson(publisherNetnsTopology), "utf8"),
+        ),
+      },
       unit_fragment: testPin(
         "/etc/systemd/system/bhtm-caddy.service",
         hardeningEvidence.plan.candidate.unit.sha256,
@@ -815,6 +1013,10 @@ export function makeIntegratedOverlayTestPlan() {
     },
   };
   TEST_HARDENING_EVIDENCE.set(overlayPlan, hardeningEvidence);
+  TEST_NETNS_EVIDENCE.set(overlayPlan, {
+    planBytes: publisherNetnsPlanBytes,
+    receiptBytes: publisherNetnsReceiptBytes,
+  });
   return overlayPlan;
 }
 

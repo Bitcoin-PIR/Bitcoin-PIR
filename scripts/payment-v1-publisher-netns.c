@@ -99,13 +99,20 @@
 
 #define NETNS_DIRECTORY "/run/netns"
 #define ACTIVE_RECORD "active.v1"
+#define PENDING_RECORD "pending.v1"
 #define JOURNAL_VERSION 1U
 #define ADDRESS_PREFIX 30U
 #define IF_ALIAS_PREFIX "bitcoinpir-payment-v1-publisher-netns:"
 #define TX_NAMESPACE_PREFIX NETNS_DIRECTORY "/.bpir-pub-"
 
 static volatile sig_atomic_t stop_requested;
+struct topology;
 static int write_all(int fd, const void *bytes, size_t length);
+static int remove_owned_mount_target(const char *path,
+                                     const struct topology *topology,
+                                     uint64_t placeholder_dev,
+                                     uint64_t placeholder_ino,
+                                     bool may_be_missing);
 
 #ifdef BPIR_PUBLISHER_NETNS_TEST_PROFILE
 #define TEST_PAUSE_MARKER "/tmp/bitcoinpir-publisher-netns-test-pause"
@@ -157,6 +164,7 @@ struct link_snapshot {
     unsigned flags;
     char name[IFNAMSIZ];
     char alias[128];
+    char kind[32];
     unsigned char mac[6];
     bool has_mac;
 };
@@ -322,6 +330,44 @@ static bool valid_boot_id(const char *value)
         }
     }
     return true;
+}
+
+static int format_pending(const struct topology *topology, char output[MAX_RECORD])
+{
+    int count = snprintf(output, MAX_RECORD,
+        "version=1\ntxid=%s\nboot_id=%s\ntx_namespace_path=%s\n"
+        "final_placeholder_path=%s\n",
+        topology->txid, topology->boot_id, topology->tx_namespace_path,
+        topology->final_placeholder_path);
+    return count > 0 && count < MAX_RECORD ? 0 : -1;
+}
+
+static int parse_pending(const char *record, struct topology *topology)
+{
+    char trailing;
+    unsigned version;
+    int count = sscanf(record,
+        "version=%u\ntxid=%32[a-f0-9]\nboot_id=%36[a-f0-9-]\n"
+        "tx_namespace_path=%127s\nfinal_placeholder_path=%127s\n%c",
+        &version, topology->txid, topology->boot_id,
+        topology->tx_namespace_path, topology->final_placeholder_path,
+        &trailing);
+    if (count != 5 || version != JOURNAL_VERSION ||
+        !valid_hex(topology->txid, 32) || !valid_boot_id(topology->boot_id) ||
+        strncmp(topology->tx_namespace_path, TX_NAMESPACE_PREFIX,
+                sizeof(TX_NAMESPACE_PREFIX) - 1) != 0 ||
+        strcmp(topology->tx_namespace_path + sizeof(TX_NAMESPACE_PREFIX) - 1,
+               topology->txid) != 0 ||
+        strncmp(topology->final_placeholder_path,
+                NETNS_DIRECTORY "/.bpir-final-",
+                sizeof(NETNS_DIRECTORY "/.bpir-final-") - 1) != 0 ||
+        strcmp(topology->final_placeholder_path +
+                   sizeof(NETNS_DIRECTORY "/.bpir-final-") - 1,
+               topology->txid) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 static int read_boot_id(char output[37])
@@ -697,6 +743,18 @@ static void parse_link(struct nlmsghdr *header, struct link_snapshot *snapshot)
         } else if (attr->rta_type == IFLA_ADDRESS && RTA_PAYLOAD(attr) == 6) {
             memcpy(snapshot->mac, RTA_DATA(attr), 6);
             snapshot->has_mac = true;
+        } else if ((attr->rta_type & NLA_TYPE_MASK) == IFLA_LINKINFO) {
+            int nested_length = RTA_PAYLOAD(attr);
+            for (struct rtattr *nested = RTA_DATA(attr);
+                 RTA_OK(nested, nested_length);
+                 nested = RTA_NEXT(nested, nested_length)) {
+                if ((nested->rta_type & NLA_TYPE_MASK) == IFLA_INFO_KIND &&
+                    RTA_PAYLOAD(nested) > 1 &&
+                    memchr(RTA_DATA(nested), '\0', RTA_PAYLOAD(nested)) != NULL) {
+                    snprintf(snapshot->kind, sizeof(snapshot->kind), "%s",
+                             (char *)RTA_DATA(nested));
+                }
+            }
         }
     }
 }
@@ -753,13 +811,20 @@ static int count_links(int fd, unsigned *count, bool *only_expected)
             parse_link(header, &link);
             ++*count;
             if (strcmp(link.name, "lo") != 0 && strcmp(link.name, CLIENT_IFNAME) != 0) {
-                static const char *const inert_kernel_links[] = {
-                    "erspan0", "gre0", "gretap0", "ip6_vti0", "ip6gre0",
-                    "ip6tnl0", "ip_vti0", "sit0", "tunl0",
+                static const struct {
+                    const char *name;
+                    const char *kind;
+                } inert_kernel_links[] = {
+                    { "erspan0", "erspan" }, { "gre0", "gre" },
+                    { "gretap0", "gretap" }, { "ip6_vti0", "vti6" },
+                    { "ip6gre0", "ip6gre" }, { "ip6tnl0", "ip6tnl" },
+                    { "ip_vti0", "vti" }, { "sit0", "sit" },
+                    { "tunl0", "ipip" },
                 };
                 bool known_inert = false;
                 for (size_t i = 0; i < ARRAY_LEN(inert_kernel_links); ++i) {
-                    if (strcmp(link.name, inert_kernel_links[i]) == 0) {
+                    if (strcmp(link.name, inert_kernel_links[i].name) == 0 &&
+                        strcmp(link.kind, inert_kernel_links[i].kind) == 0) {
                         known_inert = true;
                         break;
                     }
@@ -1100,6 +1165,117 @@ static int open_transaction(int state_fd, const char *txid)
     return tx_fd;
 }
 
+static int remove_pending_record(int state_fd, const char *txid,
+                                 bool may_be_missing)
+{
+    char record[MAX_RECORD];
+    if (read_exact_file_at(state_fd, PENDING_RECORD, record, sizeof(record)) != 0) {
+        if (may_be_missing && errno == ENOENT) return 0;
+        return -1;
+    }
+    struct topology pending;
+    memset(&pending, 0, sizeof(pending));
+    if (parse_pending(record, &pending) != 0 || strcmp(pending.txid, txid) != 0) {
+        errno = ESTALE;
+        return -1;
+    }
+    if (unlinkat(state_fd, PENDING_RECORD, 0) != 0 || fsync(state_fd) != 0)
+        return -1;
+    return 0;
+}
+
+static int remove_unrecorded_placeholder(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_gid != 0 ||
+        st.st_nlink != 1 || (st.st_mode & 0777) != 0600 || st.st_size != 0) {
+        errno = ESTALE;
+        return -1;
+    }
+    return unlink(path);
+}
+
+static int cleanup_pending_before_active(int state_fd)
+{
+    char pending_record[MAX_RECORD];
+    if (read_exact_file_at(state_fd, PENDING_RECORD, pending_record,
+                           sizeof(pending_record)) != 0)
+        return errno == ENOENT ? 0 : -1;
+    struct topology pending;
+    memset(&pending, 0, sizeof(pending));
+    if (parse_pending(pending_record, &pending) != 0) return -1;
+    int tx_fd = open_transaction(state_fd, pending.txid);
+    if (tx_fd < 0) {
+        if (errno != ENOENT ||
+            remove_unrecorded_placeholder(pending.tx_namespace_path) != 0 ||
+            remove_unrecorded_placeholder(pending.final_placeholder_path) != 0)
+            return -1;
+        return remove_pending_record(state_fd, pending.txid, false);
+    }
+    char intent[MAX_RECORD];
+    bool intent_present =
+        read_exact_file_at(tx_fd, "00-placeholder-intent", intent,
+                           sizeof(intent)) == 0;
+    if (!intent_present && errno != ENOENT) {
+        close(tx_fd);
+        return -1;
+    }
+    if (intent_present && strcmp(intent, pending_record) != 0) {
+        close(tx_fd);
+        errno = ESTALE;
+        return -1;
+    }
+    char prepared[MAX_RECORD];
+    struct topology recorded;
+    memset(&recorded, 0, sizeof(recorded));
+    bool prepared_present =
+        read_exact_file_at(tx_fd, "00-prepared", prepared, sizeof(prepared)) == 0;
+    if (!prepared_present && errno != ENOENT) {
+        close(tx_fd);
+        return -1;
+    }
+    if (prepared_present) {
+        if (parse_prepared(prepared, &recorded) != 0 ||
+            strcmp(recorded.txid, pending.txid) != 0 ||
+            strcmp(recorded.boot_id, pending.boot_id) != 0 ||
+            strcmp(recorded.tx_namespace_path, pending.tx_namespace_path) != 0 ||
+            strcmp(recorded.final_placeholder_path,
+                   pending.final_placeholder_path) != 0 ||
+            (remove_owned_mount_target(recorded.tx_namespace_path, &recorded,
+                                       recorded.tx_placeholder_dev,
+                                       recorded.tx_placeholder_ino, true) != 0) ||
+            (remove_owned_mount_target(recorded.final_placeholder_path, &recorded,
+                                       recorded.final_placeholder_dev,
+                                       recorded.final_placeholder_ino, true) != 0)) {
+            close(tx_fd);
+            return -1;
+        }
+    } else if (intent_present) {
+        if (remove_unrecorded_placeholder(pending.tx_namespace_path) != 0 ||
+            remove_unrecorded_placeholder(pending.final_placeholder_path) != 0) {
+            close(tx_fd);
+            return -1;
+        }
+    } else {
+        bool tx_exists = false;
+        bool final_exists = false;
+        if (path_exists_nofollow(pending.tx_namespace_path, &tx_exists) != 0 ||
+            path_exists_nofollow(pending.final_placeholder_path,
+                                 &final_exists) != 0 ||
+            tx_exists || final_exists) {
+            close(tx_fd);
+            errno = ESTALE;
+            return -1;
+        }
+    }
+    int result = durable_no_replace_at(tx_fd, "90-clean-preactive",
+                                       "clean_preactive=1\n");
+    if (result == 0) result = remove_pending_record(state_fd, pending.txid, false);
+    close(tx_fd);
+    return result;
+}
+
 static int load_active(int state_fd, struct topology *topology, int *tx_fd_out)
 {
     char active[64];
@@ -1183,7 +1359,8 @@ static int exact_link(const struct link_snapshot *link, const struct topology *t
                          : alias_state == 2 ? (link->alias[0] == '\0' ||
                                                strcmp(link->alias, alias) == 0)
                                             : link->alias[0] == '\0';
-    if (!link->found || !link->has_mac || !alias_matches ||
+    if (!link->found || !link->has_mac || strcmp(link->kind, "veth") != 0 ||
+        !alias_matches ||
         memcmp(link->mac, mac, 6) != 0 || (require_index && link->ifindex != index)) {
         errno = ESTALE;
         return -1;
@@ -1664,7 +1841,8 @@ static int finish_transaction(int state_fd, int tx_fd, const char *txid)
         errno = ESTALE;
         return -1;
     }
-    if (unlinkat(state_fd, ACTIVE_RECORD, 0) != 0 || fsync(state_fd) != 0) return -1;
+    if (unlinkat(state_fd, ACTIVE_RECORD, 0) != 0 || fsync(state_fd) != 0 ||
+        remove_pending_record(state_fd, txid, true) != 0) return -1;
     return 0;
 }
 
@@ -1860,26 +2038,43 @@ static int setup_transaction(int state_fd, int host_nl, struct topology *topolog
              "bph%.12s", topology->txid);
     snprintf(topology->client_temp_ifname, sizeof(topology->client_temp_ifname),
              "bpc%.12s", topology->txid);
+    char pending[MAX_RECORD];
+    stage = "publish-pre-mutation-journal";
+    if (format_pending(topology, pending) != 0 ||
+        durable_no_replace_at(state_fd, PENDING_RECORD, pending) != 0)
+        return -1;
+    test_pause_at("after-pre-mutation-journal");
+    stage = "create-transaction-directory";
+    if (mkdirat(state_fd, topology->txid, 0700) != 0 || fsync(state_fd) != 0) return -1;
+    test_pause_at("after-transaction-directory");
+    int tx_fd = open_transaction(state_fd, topology->txid);
+    if (tx_fd < 0) return -1;
+    stage = "publish-placeholder-intent";
+    if (durable_no_replace_at(tx_fd, "00-placeholder-intent", pending) != 0)
+        goto failed;
+    test_pause_at("after-placeholder-intent");
     stage = "create-identity-bound-mount-placeholders";
     if (create_placeholder(topology->tx_namespace_path,
                            &topology->tx_placeholder_dev,
-                           &topology->tx_placeholder_ino) != 0 ||
-        create_placeholder(topology->final_placeholder_path,
+                           &topology->tx_placeholder_ino) != 0)
+        goto failed;
+    test_pause_at("after-transaction-placeholder");
+    if (create_placeholder(topology->final_placeholder_path,
                            &topology->final_placeholder_dev,
                            &topology->final_placeholder_ino) != 0)
-        return -1;
-    stage = "create-transaction-directory";
-    if (mkdirat(state_fd, topology->txid, 0700) != 0 || fsync(state_fd) != 0) return -1;
-    int tx_fd = open_transaction(state_fd, topology->txid);
-    if (tx_fd < 0) return -1;
+        goto failed;
+    test_pause_at("after-final-placeholder");
     char prepared[MAX_RECORD];
     stage = "publish-prepared-record";
     if (format_prepared(topology, prepared) != 0 ||
         durable_no_replace_at(tx_fd, "00-prepared", prepared) != 0) goto failed;
+    test_pause_at("after-prepared-record");
     char active[40];
     snprintf(active, sizeof(active), "%s\n", topology->txid);
     stage = "publish-active-record";
     if (durable_no_replace_at(state_fd, ACTIVE_RECORD, active) != 0) goto failed;
+    test_pause_at("after-active-record");
+    if (remove_pending_record(state_fd, topology->txid, false) != 0) goto failed;
     stage = "create-transaction-namespace-mount";
     if (create_namespace_mount(topology, tx_fd) != 0) goto failed;
     char namespace_record[128];
@@ -1980,7 +2175,8 @@ static int recover_before_start(int state_fd, int host_nl)
         }
         close(tx_fd);
     } else if (errno == ENOENT) {
-        if (inspect_no_owned_names(host_nl) != 0) return -1;
+        if (cleanup_pending_before_active(state_fd) != 0 ||
+            inspect_no_owned_names(host_nl) != 0) return -1;
     } else {
         return -1;
     }
@@ -2253,7 +2449,9 @@ static int cleanup_service(void)
     if (load_active(state_fd, &topology, &tx_fd) == 0) {
         if (cleanup_active(state_fd, &topology, tx_fd) != 0) result = -1;
         close(tx_fd);
-    } else if (errno != ENOENT) {
+    } else if (errno == ENOENT) {
+        if (cleanup_pending_before_active(state_fd) != 0) result = -1;
+    } else {
         result = -1;
     }
     close(lock_fd);
@@ -2285,6 +2483,15 @@ static int self_test(void)
     memcpy(first.host_mac, host_mac, 6);
     memcpy(first.client_mac, client_mac, 6);
     char record[MAX_RECORD];
+    if (format_pending(&first, record) != 0) return 1;
+    struct topology pending;
+    memset(&pending, 0, sizeof(pending));
+    if (parse_pending(record, &pending) != 0 ||
+        strcmp(first.txid, pending.txid) != 0 ||
+        strcmp(first.boot_id, pending.boot_id) != 0 ||
+        strcmp(first.tx_namespace_path, pending.tx_namespace_path) != 0 ||
+        strcmp(first.final_placeholder_path, pending.final_placeholder_path) != 0 ||
+        parse_pending("version=1\ntxid=../bad\n", &pending) == 0) return 1;
     if (format_prepared(&first, record) != 0) return 1;
     struct topology second;
     memset(&second, 0, sizeof(second));

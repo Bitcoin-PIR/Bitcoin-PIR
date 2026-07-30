@@ -58,6 +58,12 @@ ceremony plan, it must have installed and independently pinned:
   `payment-v1-integrated-caddy-overlay-gate.mjs` and
   `payment-v1-publisher-netns-gate.mjs`, installed root-owned and pinned in
   the same plan;
+- the independently compiled, statically linked, content-addressed native launcher at
+  `/opt/bitcoinpir/publisher-netns-launcher/<launcher-sha256>/payment-v1-publisher-netns-launcher`;
+- the exact four-entry, root-owned `0444` launcher manifest at
+  `/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256`, in this
+  canonical order: `/usr/bin/node`, integrated-Caddy gate, ceremony executor,
+  publisher-netns gate;
 - regular, no-follow `/usr/bin/node`, `/usr/bin/systemctl` and `/usr/bin/ip`;
 - root-owned `0700` transaction parents
   `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts` and
@@ -103,6 +109,22 @@ content-addressed helper. The network-input manifest must canonically bind the
 four pinned hosts, NSS, resolver and network-policy files. A plan cannot approve
 manifest bytes that point at a different helper or network input.
 
+Build the launcher on reviewed Linux and install only its content-addressed
+static result; the following is a build recipe, not deployment authority:
+
+```sh
+cc -std=c11 -O2 -static -Wall -Wextra -Werror \
+  scripts/payment-v1-publisher-netns-launcher.c \
+  -o /absolute/staging/payment-v1-publisher-netns-launcher
+ldd /absolute/staging/payment-v1-publisher-netns-launcher 2>&1 |
+  grep -E 'not a dynamic executable|statically linked'
+sha256sum /absolute/staging/payment-v1-publisher-netns-launcher
+```
+
+Create `launcher-inputs.sha256` with ordinary `sha256sum` output in the exact
+four-path order listed above. Its bytes and its SHA-256 are independent review
+inputs; the launcher accepts neither reordered nor additional entries.
+
 ## Plan and short-lived approvals
 
 Start from the three inert skeletons:
@@ -120,7 +142,22 @@ reverse stop edge or pending daemon reload, inactive publisher/netns
 generations with no pending daemon reload, fixed topology, source commit,
 runtime executables and transaction paths. The executor's local import
 closure is exactly the two sibling gates above; both are runtime pins and are
-re-read before and after namespace mutation.
+re-read before and after namespace mutation. Plan schema v2 additionally binds
+the loaded namespace unit, the current PID 1/systemd manager generation, the
+native launcher and its exact manifest. Apply and rollback approval schema v2
+bind both launcher digests. Schema v1 plans, approvals and receipts are invalid
+and must never be migrated or replayed as v2 authority.
+
+The launcher first hashes its own `/proc/self/exe` and requires both the
+independently approved launcher digest and its exact content-addressed path. It
+then verifies the approved manifest, opens and hashes Node, the executor and
+both imports before Node can load any JavaScript. The production build must be
+static so a dynamic loader cannot act on `LD_PRELOAD` before `main`; the test
+harness checks this. The launcher rejects Node, shell and dynamic-loader
+influence variables, rechecks every descriptor/path identity, clears the
+environment and executes the pinned Node descriptor. Production ceremony
+commands must go through this launcher; direct `sudo /usr/bin/node ...` is
+test-only and is not an approved operator path.
 
 The independently reviewed digest is SHA-256 over canonical JSON, not the
 whitespace of the source file. A reviewer can calculate it without trusting the
@@ -148,34 +185,42 @@ drift fails before the lock or systemd mutation.
 ## Required activation order
 
 1. Complete the separately reviewed installation/render transaction and
-   `daemon-reload`. Keep Caddy on its pinned preimage; keep the directory
-   publisher inactive.
-2. Independently verify absence of `/run/netns/bpir-directory-publisher` and
+   `daemon-reload` while the publisher-netns activation sentinel is absent.
+   This loads the exact Caddy `Wants+After` drop-in without allowing it to
+   start the namespace. Keep the directory publisher inactive.
+2. Complete the schema-v2 Caddy admin-UDS cold transaction and retain its
+   committed receipt. Independently prove the publisher namespace remained
+   inactive. The
+   later namespace ceremony must bind that exact hardened Caddy
+   PID/InvocationID/config generation.
+3. Independently verify absence of `/run/netns/bpir-directory-publisher` and
    `bpir-pub-h`, the exact inactive unit preimages and absence of a publisher
    private key.
-3. Install/review the external sentinels and validated firewall evidence under
+4. Install/review the external sentinels and validated firewall evidence under
    their separate authorities. Do not create the publication-only firewall
    generation sentinel.
-4. Produce the closed plan from two stable target observations. Compute and
+5. Produce the closed plan from two stable target observations. Compute and
    transfer its canonical digest independently.
-5. Produce a fresh apply approval no longer than one hour and independently
+6. Produce a fresh apply approval no longer than one hour and independently
    transfer its canonical digest.
-6. Run read-only validation on the target:
+7. Run read-only validation on the target:
 
    ```sh
-   sudo /usr/bin/node \
-     /usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs \
+   sudo /opt/bitcoinpir/publisher-netns-launcher/LAUNCHER_SHA256/payment-v1-publisher-netns-launcher \
+     --approved-launcher-sha256 LAUNCHER_SHA256 \
+     --approved-manifest-sha256 LAUNCHER_MANIFEST_SHA256 -- \
      validate-plan \
      --plan /absolute/review/publisher-netns.plan.json \
      --approved-plan-sha256 PLAN_SHA256 \
      --approved-source-sha256 EXECUTOR_SHA256
    ```
 
-7. Run apply with the same plan/digests and the absolute approval path:
+8. Run apply with the same plan/digests and the absolute approval path:
 
    ```sh
-   sudo /usr/bin/node \
-     /usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs \
+   sudo /opt/bitcoinpir/publisher-netns-launcher/LAUNCHER_SHA256/payment-v1-publisher-netns-launcher \
+     --approved-launcher-sha256 LAUNCHER_SHA256 \
+     --approved-manifest-sha256 LAUNCHER_MANIFEST_SHA256 -- \
      apply \
      --plan /absolute/review/publisher-netns.plan.json \
      --approved-plan-sha256 PLAN_SHA256 \
@@ -184,15 +229,17 @@ drift fails before the lock or systemd mutation.
      --approved-approval-sha256 APPLY_APPROVAL_SHA256
    ```
 
-8. Independently transfer and verify the owner-only receipt. It binds both the
+9. Independently transfer and verify the owner-only receipt. It binds both the
    approval that authorized `systemctl start` and, after crash recovery, the
    fresh approval that authorized terminalization; exact Caddy/publisher
    preimages; all installed/runtime/sentinel pins; firewall evidence; systemd
    generation; nsfs inode; veth indices/MACs/transaction aliases; loopback;
    inert fallback subset; connected routes; and forwarding sysctls.
-9. A later integrated-Caddy overlay plan must bind this exact committed receipt
-   as a prerequisite. The ceremony itself does not modify or reload Caddy.
-10. Only after the integrated overlay, fresh edge/runtime evidence, a reviewed
+10. A later integrated-Caddy overlay plan must bind both the exact admin-UDS
+    receipt and this exact namespace receipt, and prove the namespace ceremony
+    occurred on the same hardened Caddy generation, before any Caddy change.
+    The ceremony itself does not modify or reload Caddy.
+11. Only after the integrated overlay, fresh edge/runtime evidence, a reviewed
     firewall-generation guard and a distinct publication approval may the
     one-shot publisher be considered. This ceremony grants no Nostr write.
 
@@ -244,8 +291,9 @@ Before preparing a fresh rollback approval:
 Run:
 
 ```sh
-sudo /usr/bin/node \
-  /usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs \
+sudo /opt/bitcoinpir/publisher-netns-launcher/LAUNCHER_SHA256/payment-v1-publisher-netns-launcher \
+  --approved-launcher-sha256 LAUNCHER_SHA256 \
+  --approved-manifest-sha256 LAUNCHER_MANIFEST_SHA256 -- \
   rollback \
   --plan /absolute/review/publisher-netns.plan.json \
   --approved-plan-sha256 PLAN_SHA256 \
@@ -311,6 +359,12 @@ rollback authority and both receipt crash windows.
 Privileged disposable-Linux tests execute pinned command descriptors across a
 real network namespace and exercise the native helper's setup, monitoring,
 fault injection and exact cleanup.
+The native launcher harness also proves that a tampered imported module,
+malicious `NODE_OPTIONS` and an `LD_PRELOAD` constructor are rejected before
+any payload can execute.
+A separate disposable Ubuntu 24.04 `CAP_NET_ADMIN` harness applies the exact UFW
+rules, reloads UFW, captures raw iptables/nftables state twice and requires the
+semantic firewall gate to accept both generations.
 
 Passing them does not remove these deployment gates:
 

@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const PLAN_SCHEMA_VERSION = 1;
-export const RECEIPT_SCHEMA_VERSION = 1;
+export const PLAN_SCHEMA_VERSION = 2;
+export const RECEIPT_SCHEMA_VERSION = 2;
 export const PROFILE = "bhtm-caddy-admin-uds-v1";
 export const COLLECTOR = "bitcoinpir-bhtm-caddy-admin-uds-cold-migration-v1";
 export const TARGET_UNIT = "bhtm-caddy.service";
@@ -21,6 +21,10 @@ export const ADMIN_PROBE_PATH =
 export const EXECUTOR_PATH =
   "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs";
 export const SETPRIV_PATH = "/usr/bin/setpriv";
+export const PUBLISHER_NETNS_UNIT =
+  "bitcoinpir-payment-v1-publisher-netns.service";
+export const PUBLISHER_NETNS_DROPIN_PATH =
+  "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
 export const DAC_BOUNDARY = "capability-free-unprivileged-non-root-dac-only";
 export const MAX_ADAPTED_JSON_BYTES = 2 * 1024 * 1024;
 export const CADDY_IMAGE_INDEX =
@@ -1115,8 +1119,65 @@ function validateCandidate(value) {
   for (const [key, expected] of Object.entries(exact)) {
     if (value.unit_policy[key] !== expected) fail(`candidate.unit_policy.${key} must equal ${expected}`);
   }
-  if (!Array.isArray(value.unit_policy.dropins) || value.unit_policy.dropins.length !== 0) {
-    fail("candidate.unit_policy.dropins must be empty");
+  if (
+    !Array.isArray(value.unit_policy.dropins) ||
+    canonicalJson(value.unit_policy.dropins) !==
+      canonicalJson([PUBLISHER_NETNS_DROPIN_PATH])
+  ) {
+    fail("candidate.unit_policy.dropins must contain only the publisher namespace drop-in");
+  }
+}
+
+export function validatePublisherNetnsDropInBytes(bytes, expectedSha256) {
+  const buffer = Buffer.from(bytes);
+  validateHex64(expectedSha256, "publisher namespace drop-in SHA-256");
+  if (sha256(buffer) !== expectedSha256) {
+    fail("publisher namespace drop-in bytes do not match the approved SHA-256");
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    fail("publisher namespace drop-in must be valid UTF-8");
+  }
+  if (text.includes("\0") || text.includes("\r") || !text.endsWith("\n")) {
+    fail("publisher namespace drop-in must be canonical LF text");
+  }
+  const semantic = text.split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  const expected = [
+    "[Unit]",
+    `Wants=${PUBLISHER_NETNS_UNIT}`,
+    `After=${PUBLISHER_NETNS_UNIT}`,
+  ];
+  if (canonicalJson(semantic) !== canonicalJson(expected)) {
+    fail("publisher namespace drop-in must contain only the exact Unit Wants+After relation");
+  }
+  return true;
+}
+
+function validatePublisherNetnsDependency(value, label) {
+  exactKeys(value, [
+    "after_namespace_owner",
+    "binds_to_namespace_owner",
+    "dropin_paths",
+    "need_daemon_reload",
+    "part_of_namespace_owner",
+    "requires_namespace_owner",
+    "wants_namespace_owner",
+  ], label);
+  const expected = {
+    after_namespace_owner: true,
+    binds_to_namespace_owner: false,
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+    need_daemon_reload: "no",
+    part_of_namespace_owner: false,
+    requires_namespace_owner: false,
+    wants_namespace_owner: true,
+  };
+  if (canonicalJson(value) !== canonicalJson(expected)) {
+    fail(`${label} must equal the exact loaded one-way publisher namespace dependency`);
   }
 }
 
@@ -1270,6 +1331,7 @@ export function validatePlan(plan) {
       "deployment_profile",
       "preimage",
       "privileged_access_inventory",
+      "publisher_netns_dropin",
       "runtime",
       "schema_version",
       "service_uid_inventory",
@@ -1287,6 +1349,10 @@ export function validatePlan(plan) {
   if (!CONFIG_EDIT_MODES.has(plan.config_edit_mode)) fail("config_edit_mode is not reviewed");
   validatePreimage(plan.preimage);
   validateCandidate(plan.candidate);
+  validateSnapshot(plan.publisher_netns_dropin, "publisher_netns_dropin", {
+    modes: ["0644"],
+    path: PUBLISHER_NETNS_DROPIN_PATH,
+  });
   if (
     plan.preimage.binary.path !== plan.candidate.binary.path ||
     plan.preimage.binary.sha256 !== plan.candidate.binary.sha256 ||
@@ -1442,6 +1508,7 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
       "installed",
       "outcome",
       "privileged_access_inventory",
+      "publisher_netns_dropin",
       "recovery_classification",
       "rollback",
       "runtime",
@@ -1476,7 +1543,10 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   if (receipt.host.boot_id !== plan.privileged_access_inventory.boot_id) {
     fail("receipt host boot_id does not match the approved privileged access inventory boot");
   }
-  exactKeys(receipt.before, ["binary", "config", "unit", "unit_generation"], "receipt.before");
+  exactKeys(receipt.before, [
+    "binary", "config", "publisher_netns_dependency", "publisher_netns_dropin",
+    "unit", "unit_generation",
+  ], "receipt.before");
   for (const key of ["binary", "config", "unit"]) {
     if (canonicalJson(receipt.before[key]) !== canonicalJson(plan.preimage[key])) {
       fail(`receipt.before.${key} drifted from the approved preimage`);
@@ -1485,6 +1555,14 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   if (canonicalJson(receipt.before.unit_generation) !== canonicalJson(plan.preimage.unit_generation)) {
     fail("receipt.before.unit_generation drifted from the approved preimage generation");
   }
+  if (canonicalJson(receipt.before.publisher_netns_dropin) !==
+      canonicalJson(plan.publisher_netns_dropin)) {
+    fail("receipt.before.publisher_netns_dropin drifted from the approved pin");
+  }
+  validatePublisherNetnsDependency(
+    receipt.before.publisher_netns_dependency,
+    "receipt.before.publisher_netns_dependency",
+  );
   exactKeys(
     receipt.stopped,
     ["admin_socket_absent", "tcp_admin", "unit_generation", "unit_job_absent"],
@@ -1495,9 +1573,13 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   }
   validateTcpProbes(receipt.stopped.tcp_admin, "receipt.stopped.tcp_admin");
   validateUnitGeneration(receipt.stopped.unit_generation, "receipt.stopped.unit_generation", { active: false });
-  exactKeys(receipt.installed, ["binary", "config", "unit"], "receipt.installed");
+  exactKeys(receipt.installed, ["binary", "config", "publisher_netns_dropin", "unit"], "receipt.installed");
   for (const key of ["binary", "config", "unit"]) {
     exactContentSnapshot(receipt.installed[key], plan.candidate[key], `receipt.installed.${key}`);
+  }
+  if (canonicalJson(receipt.installed.publisher_netns_dropin) !==
+      canonicalJson(plan.publisher_netns_dropin)) {
+    fail("receipt.installed.publisher_netns_dropin drifted from the approved pin");
   }
   exactKeys(
     receipt.activation,
@@ -1508,6 +1590,7 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
       "fragment_path",
       "need_daemon_reload",
       "properties",
+      "publisher_netns_dependency",
       "unit_generation",
     ],
     "receipt.activation",
@@ -1526,8 +1609,17 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   if (receipt.activation.fragment_path !== TARGET_FRAGMENT || receipt.activation.need_daemon_reload !== "no") {
     fail("activation must bind the exact fragment with NeedDaemonReload=no");
   }
-  if (!Array.isArray(receipt.activation.dropin_paths) || receipt.activation.dropin_paths.length !== 0) {
-    fail("activation must have no unit drop-ins");
+  if (canonicalJson(receipt.activation.dropin_paths) !==
+      canonicalJson([PUBLISHER_NETNS_DROPIN_PATH])) {
+    fail("activation must have only the approved publisher namespace drop-in");
+  }
+  validatePublisherNetnsDependency(
+    receipt.activation.publisher_netns_dependency,
+    "receipt.activation.publisher_netns_dependency",
+  );
+  if (canonicalJson(receipt.publisher_netns_dropin) !==
+      canonicalJson(plan.publisher_netns_dropin)) {
+    fail("receipt publisher namespace drop-in pin drifted");
   }
   if (
     !Array.isArray(receipt.activation.effective_environment_names) ||

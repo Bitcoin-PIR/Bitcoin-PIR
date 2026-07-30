@@ -7,6 +7,7 @@ import {
   ADMIN_LISTEN,
   ADMIN_SOCKET,
   CADDY_BINARY_PATH,
+  PUBLISHER_NETNS_DROPIN_PATH,
   TARGET_CONFIG,
   TARGET_FRAGMENT,
   canonicalJson,
@@ -22,7 +23,10 @@ import {
   parseSystemdVersionOutput,
   validateSiteInventory,
 } from "./payment-v1-caddy-admin-uds-transaction.mjs";
-import { makeHardeningEvidence } from "./payment-v1-integrated-caddy-overlay-test-fixture.mjs";
+import {
+  PUBLISHER_NETNS_DROPIN,
+  makeHardeningEvidence,
+} from "./payment-v1-integrated-caddy-overlay-test-fixture.mjs";
 
 function canonicalBytes(value) {
   return Buffer.from(canonicalJson(value), "utf8");
@@ -140,6 +144,8 @@ function fakeOps(fixture, { failAt } = {}) {
   add(TARGET_CONFIG, fixture.configPreimage, plan.preimage.config);
   add(TARGET_FRAGMENT, fixture.unitPreimage, plan.preimage.unit);
   add(CADDY_BINARY_PATH, Buffer.from("binary"), plan.preimage.binary);
+  add(PUBLISHER_NETNS_DROPIN_PATH, PUBLISHER_NETNS_DROPIN,
+    plan.publisher_netns_dropin);
   for (const pin of [
     plan.runtime.executor,
     plan.runtime.gate,
@@ -285,7 +291,7 @@ function fakeOps(fixture, { failAt } = {}) {
     },
     async readEffectiveUnit() {
       return {
-        dropin_paths: [],
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
         effective_environment_names: ["PATH"],
         fragment_path: TARGET_FRAGMENT,
         need_daemon_reload: "no",
@@ -302,12 +308,21 @@ function fakeOps(fixture, { failAt } = {}) {
           UnsetEnvironment: ["CADDY_ADMIN"],
           User: "root",
         },
+        publisher_netns_dependency: {
+          after_namespace_owner: true,
+          binds_to_namespace_owner: false,
+          dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+          need_daemon_reload: "no",
+          part_of_namespace_owner: false,
+          requires_namespace_owner: false,
+          wants_namespace_owner: true,
+        },
       };
     },
     async readPreimageEffectiveUnit() {
       fault("preimage-effective-unit");
       return {
-        dropin_paths: [],
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
         environment_files: [],
         exec_reload: {
           argv: `${CADDY_BINARY_PATH} reload --config ${TARGET_CONFIG} --adapter caddyfile --force`,
@@ -322,6 +337,15 @@ function fakeOps(fixture, { failAt } = {}) {
         fragment_path: TARGET_FRAGMENT,
         need_daemon_reload: "no",
         pass_environment: [],
+        publisher_netns_dependency: {
+          after_namespace_owner: true,
+          binds_to_namespace_owner: false,
+          dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+          need_daemon_reload: "no",
+          part_of_namespace_owner: false,
+          requires_namespace_owner: false,
+          wants_namespace_owner: true,
+        },
       };
     },
     async readProcessRuntime() { return processRuntime(); },
@@ -468,16 +492,21 @@ test("legacy readback accepts only explicit loopback admin or the proven implici
 test("systemd 255 preimage serialization binds the loaded unit to the disk profile", () => {
   assert.deepEqual(
     CADDY_ADMIN_UDS_TEST_ONLY_IO.normalizePreimageEffectiveUnitProperties({
-      DropInPaths: "",
+      After: "bitcoinpir-payment-v1-publisher-netns.service network.target",
+      BindsTo: "",
+      DropInPaths: PUBLISHER_NETNS_DROPIN_PATH,
       EnvironmentFiles: "",
       ExecReload: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
       ExecStart: "{ path=/usr/local/bin/caddy ; argv[]=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile ; ignore_errors=no ; start_time=[Wed 2026-06-24 17:19:40 CEST] ; stop_time=[n/a] ; pid=639667 ; code=(null) ; status=0/0 }",
       FragmentPath: TARGET_FRAGMENT,
       NeedDaemonReload: "no",
+      PartOf: "",
       PassEnvironment: "",
+      Requires: "",
+      Wants: "bitcoinpir-payment-v1-publisher-netns.service",
     }),
     {
-      dropin_paths: [],
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
       environment_files: [],
       exec_reload: {
         argv: "/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force",
@@ -492,6 +521,15 @@ test("systemd 255 preimage serialization binds the loaded unit to the disk profi
       fragment_path: TARGET_FRAGMENT,
       need_daemon_reload: "no",
       pass_environment: [],
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
+      },
     },
   );
 });
@@ -610,6 +648,28 @@ test("unloaded or drifted disk unit and hot-loaded Caddy config fail before stop
     assert.equal(ops.calls.some((call) => call.startsWith("replace:")), false, drift);
     assert.equal(ops.released, true, drift);
   }
+});
+
+test("publisher namespace drop-in byte tamper fails before Caddy stop", async () => {
+  const fixture = makePlanAndInventory();
+  const ops = fakeOps(fixture);
+  ops.files.get(PUBLISHER_NETNS_DROPIN_PATH).bytes = Buffer.from(
+    PUBLISHER_NETNS_DROPIN.toString("utf8").replace(
+      "Wants=bitcoinpir-payment-v1-publisher-netns.service",
+      "Requires=bitcoinpir-payment-v1-publisher-netns.service",
+    ),
+    "utf8",
+  );
+  await assert.rejects(
+    executeCaddyAdminUdsTransaction({
+      approvedPlanSha256: fixture.approvedPlanSha256,
+      ops,
+      plan: fixture.plan,
+      siteInventoryBytes: fixture.inventoryBytes,
+    }),
+    /drop-in bytes do not match the approved SHA-256/u,
+  );
+  assert.equal(ops.calls.includes("run:stop"), false);
 });
 
 test("disk preimage adapt output must match the approved canonical digest before stop", async () => {

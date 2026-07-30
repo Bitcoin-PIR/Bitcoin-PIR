@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   MANAGED_BLOCK_SOURCE,
   OVERLAY_COLLECTOR,
+  PUBLISHER_NETNS_DROPIN_PATH,
   buildOverlayCandidate,
   canonicalJson,
   computeApprovedOverlayPlanSha256,
@@ -91,6 +92,8 @@ function makePlan() {
   const exchangeManifest = Buffer.from(`${exchangeSha}  ${exchangePath}\n`);
   const preimageSha = sha256(PREIMAGE);
   const transactionId = "integrated-caddy-test-1";
+  const netnsCeremonyId = "publisher-netns-test-1";
+  const netnsDropinSha256 = "8".repeat(64);
   const targetGeneration = generation("bhtm-caddy.service", {
     canReload: "yes",
     pid: "4343",
@@ -192,7 +195,7 @@ function makePlan() {
       node_binary: pin("/usr/bin/node", "f".repeat(64), "0755"),
       setpriv_binary: pin("/usr/bin/setpriv", "4".repeat(64), "0755"),
     },
-    schema_version: 1,
+    schema_version: 2,
     source_fair: {
       deployment_manifest_sha256: "1".repeat(64),
       deployment_profile: "integrated-existing-bhtm-caddy-v1",
@@ -249,6 +252,8 @@ function makePlan() {
         cold_new_generation: true,
         config_sha256: preimageSha,
         deployment_profile: "bhtm-caddy-admin-uds-v1",
+        plan_schema_version: 2,
+        publisher_netns_dropin_sha256: netnsDropinSha256,
         plan: pin(
           "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/plans/caddy-admin-uds-test-1.json",
           "9".repeat(64),
@@ -259,6 +264,7 @@ function makePlan() {
           "d".repeat(64),
           "0400",
         ),
+        receipt_schema_version: 2,
         runtime_directory: "/run/bitcoinpir-caddy-admin",
         runtime_directory_mode: "0700",
         setpriv_binary_sha256: "4".repeat(64),
@@ -290,6 +296,27 @@ function makePlan() {
         "0644",
         { size: String(PREIMAGE.length) },
       ),
+      publisher_netns_ceremony: {
+        approved_plan_sha256: "a".repeat(64),
+        ceremony_id: netnsCeremonyId,
+        dropin: pin(PUBLISHER_NETNS_DROPIN_PATH, netnsDropinSha256, "0644"),
+        namespace_device: "13",
+        namespace_inode: "9001",
+        netns_invocation_id: "a".repeat(32),
+        plan: pin(
+          `/var/lib/bitcoinpir/payment-v1/publisher-netns/plans/${netnsCeremonyId}.json`,
+          "a".repeat(64),
+          "0400",
+        ),
+        plan_schema_version: 2,
+        receipt: pin(
+          `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${netnsCeremonyId}.json`,
+          "b".repeat(64),
+          "0400",
+        ),
+        receipt_schema_version: 2,
+        topology_sha256: "c".repeat(64),
+      },
       unit_fragment: pin(
         "/etc/systemd/system/bhtm-caddy.service",
         "6".repeat(64),
@@ -409,7 +436,7 @@ function adminRuntime(plan, start, adaptedJsonSha256) {
       { cap_eff: "0000000000000000", error: "EACCES", gid: 52902, groups: [52902], name: "pir", uid: 52902 },
     ],
     effective_unit: {
-      dropin_paths: [],
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
       environment_names: [],
       environment_files: [],
       exec_reload: {
@@ -428,6 +455,15 @@ function adminRuntime(plan, start, adaptedJsonSha256) {
       memory_swap_max: "0",
       need_daemon_reload: "no",
       pass_environment: [],
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
+      },
       runtime_directory: ["bitcoinpir-caddy-admin"],
       runtime_directory_mode: "0700",
       runtime_directory_preserve: "no",
@@ -575,6 +611,7 @@ function makeReceipt(plan, outcome = "committed") {
       validate_argv: clone(plan.transaction.validate_argv),
       validate_exit_status: 0,
     },
+    publisher_netns_ceremony: clone(plan.target.publisher_netns_ceremony),
     reload: {
       argv: clone(plan.transaction.reload_argv),
       exit_status: committed ? 0 : 1,
@@ -600,7 +637,7 @@ function makeReceipt(plan, outcome = "committed") {
           reload_exit_status: 0,
           runtime_before: clone(runtimeBefore),
         },
-    schema_version: 1,
+    schema_version: 2,
     transaction_id: plan.transaction_id,
   };
   return receipt;
@@ -643,6 +680,21 @@ test("committed and exact rolled-back receipts pass", () => {
 });
 
 for (const [label, mutate, expected] of [
+  [
+    "schema-v1 plan",
+    (plan) => { plan.schema_version = 1; },
+    /schema_version must equal 2/,
+  ],
+  [
+    "schema-v1 admin UDS evidence",
+    (plan) => { plan.target.admin_uds_hardening.plan_schema_version = 1; },
+    /schema-v2 plan and receipt evidence/,
+  ],
+  [
+    "schema-v1 publisher namespace evidence",
+    (plan) => { plan.target.publisher_netns_ceremony.receipt_schema_version = 1; },
+    /schema-v2 plan and receipt evidence/,
+  ],
   [
     "different Caddy unit",
     (plan) => { plan.target.unit_generation.unit_name = "caddy.service"; },
@@ -803,6 +855,11 @@ test("candidate rejects changed preimage, duplicate marker and changed source", 
 });
 
 for (const [label, mutate, expected] of [
+  [
+    "schema-v1 receipt",
+    (receipt) => { receipt.schema_version = 1; },
+    /schema_version must equal 2/,
+  ],
   [
     "restart invocation",
     (receipt) => { receipt.reload.restart_invoked = true; },

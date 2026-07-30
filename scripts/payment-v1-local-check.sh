@@ -109,6 +109,8 @@ node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
   scripts/payment-v1-publisher-netns-gate.test.mjs \
@@ -416,6 +418,8 @@ node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
   scripts/payment-v1-publisher-netns-gate.test.mjs \

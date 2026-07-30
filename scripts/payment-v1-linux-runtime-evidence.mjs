@@ -58,6 +58,7 @@ const STOPPED_EDGE_SCHEMA_VERSION = 5;
 const STOPPED_RELAY_SCHEMA_VERSION = 4;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_COMMAND_BYTES = 256 * 1024 * 1024;
 const MAX_COLLECTION_SECONDS = 120;
 const MAX_NSS_EVIDENCE_BYTES = 2 * 1024 * 1024;
 const MAX_NSS_USERS = 4096;
@@ -160,6 +161,7 @@ const REQUIRED_COMMANDS = Object.freeze([
   "/usr/sbin/getcap",
 ]);
 const PUBLISHER_NETWORK_COMMANDS = Object.freeze([
+  "/usr/bin/python3.12",
   "/usr/sbin/nft",
   "/usr/sbin/ufw",
 ]);
@@ -272,52 +274,308 @@ function readPinnedBundle(bundleRoot, manifestPin, planPin) {
   return { manifest, request };
 }
 
+let activeTrustedCommandPins;
+
+function inspectCommandPin(path, { requireRootOwner = true } = {}) {
+  validateAbsolutePath(path, "runtime command path");
+  const observed = readOneLinkRegularBoundToDescriptor(
+    path,
+    "runtime command",
+    MAX_COMMAND_BYTES,
+  );
+  const fingerprint = observed.fingerprint;
+  if (
+    (requireRootOwner && fingerprint.uid !== 0) ||
+    fingerprint.nlink !== 1 ||
+    (Number.parseInt(fingerprint.mode, 8) & 0o022) !== 0 ||
+    (Number.parseInt(fingerprint.mode, 8) & 0o111) === 0
+  ) {
+    fail(`runtime helper is not an approved-owner, one-link, non-writable executable: ${path}`);
+  }
+  return {
+    ctime_ns: fingerprint.ctime_ns,
+    dev: fingerprint.dev,
+    gid: fingerprint.gid,
+    ino: fingerprint.ino,
+    mode: fingerprint.mode,
+    mtime_ns: fingerprint.mtime_ns,
+    nlink: fingerprint.nlink,
+    path,
+    sha256: hashBytes(observed.bytes),
+    size: fingerprint.size,
+    uid: fingerprint.uid,
+  };
+}
+
+function assertCommandPinUnchanged(expected, observed, label) {
+  if (canonicalJson(observed) !== canonicalJson(expected)) {
+    fail(`${label} pathname, inode, metadata, or SHA-256 changed: ${expected.path}`);
+  }
+}
+
+function beginTrustedCommandSession(paths) {
+  if (activeTrustedCommandPins !== undefined) {
+    fail("runtime command-pin session is already active");
+  }
+  const pins = paths.map(inspectTrustedCommand);
+  activeTrustedCommandPins = new Map(pins.map((pin) => [pin.path, pin]));
+  return pins;
+}
+
+function finishTrustedCommandSession(pins) {
+  if (
+    activeTrustedCommandPins === undefined ||
+    !Array.isArray(pins) ||
+    pins.length !== activeTrustedCommandPins.size
+  ) {
+    fail("runtime command-pin session is incomplete at final sealing");
+  }
+  for (const pin of pins) {
+    const active = activeTrustedCommandPins.get(pin.path);
+    if (active === undefined) fail(`runtime command pin disappeared: ${pin.path}`);
+    assertCommandPinUnchanged(pin, active, "runtime command session");
+    assertCommandPinUnchanged(
+      pin,
+      inspectTrustedCommand(pin.path),
+      "final runtime command pin",
+    );
+  }
+  activeTrustedCommandPins = undefined;
+}
+
+function openPinnedCommandDescriptor(pin, label) {
+  const command = pin.path;
+  const before = lstatSync(command, { bigint: true });
+  assertOneLinkCanonicalRegular(command, before, label, MAX_COMMAND_BYTES);
+  const fd = openSync(
+    command,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(before, opened, `${label} pathname and opened descriptor`, command);
+    assertSamePreciseInstalledFileSnapshot(
+      before,
+      opened,
+      `${label} pathname and opened descriptor`,
+      command,
+    );
+    const bytes = readExactDescriptorBytes(fd, opened.size, label, command);
+    const afterRead = fstatSync(fd, { bigint: true });
+    assertSameInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, command);
+    assertSamePreciseInstalledFileSnapshot(opened, afterRead, `${label} descriptor read`, command);
+    const openedPin = {
+      ctime_ns: statNanoseconds(afterRead, "ctime"),
+      dev: afterRead.dev.toString(),
+      gid: statInteger(afterRead.gid, `${label} GID`),
+      ino: afterRead.ino.toString(),
+      mode: statMode(afterRead),
+      mtime_ns: statNanoseconds(afterRead, "mtime"),
+      nlink: statInteger(afterRead.nlink, `${label} link count`),
+      path: command,
+      sha256: hashBytes(bytes),
+      size: statInteger(afterRead.size, `${label} size`),
+      uid: statInteger(afterRead.uid, `${label} UID`),
+    };
+    assertCommandPinUnchanged(pin, openedPin, `${label} descriptor`);
+    return { fd, label, pin, snapshot: afterRead };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function confirmPinnedCommandDescriptor(binding, stage) {
+  const current = fstatSync(binding.fd, { bigint: true });
+  const bytes = readExactDescriptorBytes(
+    binding.fd,
+    current.size,
+    `${binding.label} ${stage}`,
+    binding.pin.path,
+  );
+  if (hashBytes(bytes) !== binding.pin.sha256) {
+    fail(`${binding.label} SHA-256 changed ${stage}: ${binding.pin.path}`);
+  }
+  assertSameInstalledFileSnapshot(
+    binding.snapshot,
+    current,
+    `${binding.label} descriptor ${stage}`,
+    binding.pin.path,
+  );
+  assertSamePreciseInstalledFileSnapshot(
+    binding.snapshot,
+    current,
+    `${binding.label} descriptor ${stage}`,
+    binding.pin.path,
+  );
+  return current;
+}
+
+function confirmPinnedCommandPath(binding, stage) {
+  assertCommandPinUnchanged(
+    binding.pin,
+    inspectCommandPin(binding.pin.path, { requireRootOwner: binding.pin.uid === 0 }),
+    `${binding.label} ${stage}`,
+  );
+}
+
+function commandPinForExecution(command) {
+  const pin = activeTrustedCommandPins?.get(command) ?? inspectTrustedCommand(command);
+  if (activeTrustedCommandPins !== undefined && !activeTrustedCommandPins.has(command)) {
+    fail(`subprocess executable is outside the active command-pin closure: ${command}`);
+  }
+  return pin;
+}
+
+function executePinnedCommand(
+  pin,
+  args,
+  {
+    allowOutput = true,
+    timeout = 10_000,
+    testHooks = undefined,
+  } = {},
+) {
+  const command = pin.path;
+  const binding = openPinnedCommandDescriptor(pin, "runtime command");
+  let nestedBinding;
+  let interpreterBinding;
+  try {
+    testHooks?.afterDescriptorVerification?.();
+
+    // Re-read the still-open descriptor after the test-only race hook and
+    // execute that descriptor through procfs. The pathname is never passed to
+    // execve after its pin has been accepted.
+    confirmPinnedCommandDescriptor(binding, "before descriptor execution");
+    let descriptorPath = `/proc/${process.pid}/fd/${binding.fd}`;
+    let spawnArgs = args;
+    let stdio;
+    let argv0 = command;
+    if (command === "/usr/sbin/ufw") {
+      // Ubuntu 24.04's reviewed UFW entry point is a Python script. Bypass its
+      // pathname shebang resolution: execute the pinned canonical interpreter
+      // descriptor and pass the already-open UFW script as inherited fd 3.
+      interpreterBinding = openPinnedCommandDescriptor(
+        commandPinForExecution("/usr/bin/python3.12"),
+        "runtime command interpreter",
+      );
+      confirmPinnedCommandDescriptor(interpreterBinding, "before descriptor execution");
+      descriptorPath = `/proc/${process.pid}/fd/${interpreterBinding.fd}`;
+      argv0 = "/usr/bin/python3.12";
+      spawnArgs = ["/proc/self/fd/3", ...args];
+      stdio = ["ignore", "pipe", "pipe", binding.fd];
+    } else if (command === "/usr/bin/setpriv") {
+      const separators = args.flatMap((value, index) => value === "--" ? [index] : []);
+      if (
+        separators.length !== 1 ||
+        separators[0] + 2 > args.length ||
+        args[separators[0] + 1] !== "/usr/bin/test"
+      ) {
+        fail("setpriv runtime probe must execute only the reviewed /usr/bin/test command");
+      }
+      nestedBinding = openPinnedCommandDescriptor(
+        commandPinForExecution("/usr/bin/test"),
+        "nested runtime command",
+      );
+      confirmPinnedCommandDescriptor(nestedBinding, "before descriptor execution");
+      spawnArgs = [...args];
+      spawnArgs[separators[0] + 1] = "/proc/self/fd/3";
+      stdio = ["ignore", "pipe", "pipe", nestedBinding.fd];
+    }
+    const result = spawnSync(descriptorPath, spawnArgs, {
+      argv0,
+      encoding: "utf8",
+      env: { LC_ALL: "C", PATH: "/usr/sbin:/usr/bin" },
+      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+      shell: false,
+      ...(stdio === undefined ? {} : { stdio }),
+      timeout,
+    });
+    testHooks?.afterSpawn?.();
+
+    confirmPinnedCommandDescriptor(binding, "after descriptor execution");
+    confirmPinnedCommandPath(binding, "final pathname");
+    if (nestedBinding !== undefined) {
+      confirmPinnedCommandDescriptor(nestedBinding, "after descriptor execution");
+      confirmPinnedCommandPath(nestedBinding, "final pathname");
+    }
+    if (interpreterBinding !== undefined) {
+      confirmPinnedCommandDescriptor(interpreterBinding, "after descriptor execution");
+      confirmPinnedCommandPath(interpreterBinding, "final pathname");
+    }
+    if (result.error) fail(`${command} failed to execute: ${result.error.message}`);
+    const record = {
+      argv: [command, ...args],
+      exit_status: result.status,
+      stderr: result.stderr ?? "",
+      stdout: result.stdout ?? "",
+    };
+    if (!allowOutput && (record.stdout !== "" || record.stderr !== "")) {
+      fail(`${command} unexpectedly produced output`);
+    }
+    return record;
+  } finally {
+    if (interpreterBinding !== undefined) closeSync(interpreterBinding.fd);
+    if (nestedBinding !== undefined) closeSync(nestedBinding.fd);
+    closeSync(binding.fd);
+  }
+}
+
 function runAbsolute(command, args, { allowOutput = true, timeout = 10_000 } = {}) {
   validateAbsolutePath(command, "subprocess executable");
   if (!ALLOWED_COMMANDS.includes(command)) fail(`subprocess executable is not reviewed: ${command}`);
   if (!Array.isArray(args) || args.some((entry) => typeof entry !== "string" || /[\0\r\n]/u.test(entry))) {
     fail(`subprocess argv is malformed for ${command}`);
   }
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    env: { LC_ALL: "C", PATH: "/usr/sbin:/usr/bin" },
-    maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-    shell: false,
-    timeout,
-  });
-  if (result.error) fail(`${command} failed to execute: ${result.error.message}`);
-  const record = {
-    argv: [command, ...args],
-    exit_status: result.status,
-    stderr: result.stderr ?? "",
-    stdout: result.stdout ?? "",
-  };
-  if (!allowOutput && (record.stdout !== "" || record.stderr !== "")) {
-    fail(`${command} unexpectedly produced output`);
-  }
-  return record;
+  return executePinnedCommand(commandPinForExecution(command), args, { allowOutput, timeout });
 }
 
 function inspectTrustedCommand(path) {
-  const stat = lstatSync(path);
-  if (
-    !stat.isFile() ||
-    stat.isSymbolicLink() ||
-    stat.uid !== 0 ||
-    stat.nlink !== 1 ||
-    (stat.mode & 0o022) !== 0 ||
-    realpathSync(path) !== path
-  ) {
-    fail(`runtime helper is not a root-owned, one-link, non-writable regular file: ${path}`);
+  return inspectCommandPin(path);
+}
+
+export function runDescriptorBoundCommandForTestV1(command, args, testHooks) {
+  validateAbsolutePath(command, "test runtime command");
+  if (!Array.isArray(args) || args.some((entry) => typeof entry !== "string" || /[\0\r\n]/u.test(entry))) {
+    fail("test runtime command argv is malformed");
   }
-  return {
-    gid: stat.gid,
-    mode: (stat.mode & 0o7777).toString(8).padStart(4, "0"),
-    nlink: stat.nlink,
-    path,
-    sha256: hashBytes(readFileSync(path)),
-    uid: stat.uid,
-  };
+  const pin = inspectCommandPin(command, { requireRootOwner: false });
+  return executePinnedCommand(pin, args, { testHooks });
+}
+
+export function runDescriptorBoundSetprivProbeForTestV1() {
+  return runAbsolute("/usr/bin/setpriv", [
+    "--no-new-privs",
+    "--inh-caps=-all",
+    "--ambient-caps=-all",
+    "--bounding-set=-all",
+    "--",
+    "/usr/bin/test",
+    "-r",
+    "/proc/self/status",
+  ]);
+}
+
+export function confirmDescriptorBoundCommandPinsForTestV1(paths, betweenChecks) {
+  if (
+    !Array.isArray(paths) ||
+    paths.length < 1 ||
+    paths.some((path, index) =>
+      typeof path !== "string" || (index > 0 && paths[index - 1] >= path)) ||
+    typeof betweenChecks !== "function"
+  ) {
+    fail("test command pin set must be a non-empty sorted unique path array");
+  }
+  const pins = paths.map((path) => inspectCommandPin(path, { requireRootOwner: false }));
+  betweenChecks();
+  for (const pin of pins) {
+    assertCommandPinUnchanged(
+      pin,
+      inspectCommandPin(pin.path, { requireRootOwner: false }),
+      "test final runtime command pin",
+    );
+  }
+  return pins;
 }
 
 function statInteger(value, label) {
@@ -2681,6 +2939,27 @@ function validateCanonicalUint64DecimalV1(value, label) {
   return parsed;
 }
 
+// busctl serializes D-Bus `t` values as JSON number tokens. JavaScript cannot
+// represent UINT64_MAX exactly, so the live-v7 watchdog field preserves the
+// reviewed token as canonical decimal text instead of silently rounding it.
+export function parseBusctlWatchdogUsecJsonV2(
+  text,
+  label = "systemd WatchdogUSec property",
+) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
+    fail(`${label} is not bounded busctl JSON`);
+  }
+  const trimmed = text.trim();
+  const match = /^(?:\{"type":"t","data":(0|[1-9][0-9]*)\}|\{"data":(0|[1-9][0-9]*),"type":"t"\})$/u.exec(
+    trimmed,
+  );
+  const decimal = match?.[1] ?? match?.[2];
+  if (decimal === undefined || decimal.length > 20 || BigInt(decimal) > 18_446_744_073_709_551_615n) {
+    fail(`${label} does not have one canonical uint64 t token`);
+  }
+  return decimal;
+}
+
 export function parseBusctlBooleanJsonV1(text, label = "systemd boolean property") {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 4096) {
     fail(`${label} is not bounded busctl JSON`);
@@ -2850,7 +3129,7 @@ function collectEffectiveServicePropertiesV1(unitName) {
       unitName,
       "org.freedesktop.systemd1.Service",
       "WatchdogUSec",
-      parseBusctlUnsignedJsonV1,
+      parseBusctlWatchdogUsecJsonV2,
     ),
   };
 }
@@ -4921,10 +5200,29 @@ function validateTrustedCommandClosure(commands, label, request) {
     fail(`${label} does not bind the complete command TCB`);
   }
   for (const command of commands) {
-    exactKeys(command, ["gid", "mode", "nlink", "path", "sha256", "uid"], `${label} command`);
+    exactKeys(
+      command,
+      [
+        "ctime_ns", "dev", "gid", "ino", "mode", "mtime_ns", "nlink",
+        "path", "sha256", "size", "uid",
+      ],
+      `${label} command`,
+    );
     validateAbsolutePath(command.path, `${label} command path`);
     validateDigest(command.sha256, `${label} command digest`);
-    if (command.uid !== 0 || command.nlink !== 1 || (Number.parseInt(command.mode, 8) & 0o022) !== 0) {
+    if (
+      typeof command.dev !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(command.dev) ||
+      typeof command.ino !== "string" || !/^[1-9][0-9]*$/u.test(command.ino) ||
+      typeof command.ctime_ns !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(command.ctime_ns) ||
+      typeof command.mtime_ns !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(command.mtime_ns) ||
+      !Number.isSafeInteger(command.gid) || command.gid < 0 || command.gid > 0xffff_ffff ||
+      !Number.isSafeInteger(command.size) || command.size < 1 || command.size > MAX_COMMAND_BYTES ||
+      command.uid !== 0 ||
+      command.nlink !== 1 ||
+      !/^[0-7]{4}$/u.test(command.mode) ||
+      (Number.parseInt(command.mode, 8) & 0o022) !== 0 ||
+      (Number.parseInt(command.mode, 8) & 0o111) === 0
+    ) {
       fail(`${label} has untrusted runtime command metadata: ${command.path}`);
     }
   }
@@ -5226,7 +5524,11 @@ export function validateStoppedRelayPreparationEvidence({
     expectedBootId,
     "directory-relay-v1",
   );
-  validateTrustedCommandClosure(evidence.trusted_commands, "stopped directory-relay evidence");
+  validateTrustedCommandClosure(
+    evidence.trusted_commands,
+    "stopped directory-relay evidence",
+    request,
+  );
   const expectedProtected = validateStoppedNssEvidence(evidence.nss, request);
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
   validateStoppedInstalledFilePasses(evidence.installed_file_passes, request);
@@ -5258,6 +5560,7 @@ const PUBLISHER_NETNS_FRAGMENT =
   "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service";
 const PUBLISHER_CADDY_DROP_IN =
   "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
+const PUBLISHER_CADDY_CONFIG = "/etc/caddy/Caddyfile";
 const NSFS_MAGIC = 0x6e736673;
 const PUBLISHER_MONITOR_BOUNDING_CAPABILITIES = "0000000000201000";
 const PUBLISHER_OWNER_CONDITION_PATHS = Object.freeze([
@@ -5490,26 +5793,80 @@ function collectPublisherSysctls() {
   };
 }
 
+function collectPublisherCaddyConfigGeneration() {
+  const observed = readOneLinkRegularBoundToDescriptor(
+    PUBLISHER_CADDY_CONFIG,
+    "publisher Caddy config generation",
+    MAX_JSON_BYTES,
+  );
+  const generation = {
+    ...observed.fingerprint,
+    path: PUBLISHER_CADDY_CONFIG,
+    sha256: hashBytes(observed.bytes),
+  };
+  if (
+    generation.uid !== 0 ||
+    generation.gid !== 0 ||
+    generation.mode !== "0644" ||
+    generation.nlink !== 1
+  ) {
+    fail("publisher Caddy config generation is not root:root mode 0644 with one link");
+  }
+  return generation;
+}
+
+function collectPublisherCaddyUnitGeneration() {
+  const generation = {
+    active_enter_timestamp_monotonic: collectSystemctlValue(
+      PUBLISHER_CADDY_UNIT,
+      "ActiveEnterTimestampMonotonic",
+    ),
+    active_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "ActiveState"),
+    invocation_id: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "InvocationID"),
+    load_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "LoadState"),
+    main_pid: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "MainPID"),
+    need_daemon_reload: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "NeedDaemonReload"),
+    sub_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "SubState"),
+  };
+  if (
+    generation.active_state !== "active" ||
+    generation.sub_state !== "running" ||
+    generation.load_state !== "loaded" ||
+    generation.need_daemon_reload !== "no" ||
+    !/^[1-9][0-9]*$/u.test(generation.active_enter_timestamp_monotonic) ||
+    !/^[1-9][0-9]*$/u.test(generation.main_pid) ||
+    !/^[0-9a-f]{32}$/u.test(generation.invocation_id) ||
+    /^0{32}$/u.test(generation.invocation_id)
+  ) {
+    fail("shared Caddy is not one loaded active generation with NeedDaemonReload=no");
+  }
+  return generation;
+}
+
 function collectPublisherCaddyDependency() {
   const words = (property) => splitLiteralWords(collectSystemctlValue(PUBLISHER_CADDY_UNIT, property));
   const owner = PUBLISHER_NETNS_UNIT;
+  const generationBefore = collectPublisherCaddyUnitGeneration();
+  const configBefore = collectPublisherCaddyConfigGeneration();
   const dropIns = words("DropInPaths");
-  if (!dropIns.includes(PUBLISHER_CADDY_DROP_IN)) {
-    fail("shared Caddy does not load the reviewed publisher namespace drop-in");
+  if (
+    new Set(dropIns).size !== dropIns.length ||
+    canonicalJson(dropIns) !== canonicalJson([PUBLISHER_CADDY_DROP_IN])
+  ) {
+    fail("shared Caddy DropInPaths is not the singleton reviewed publisher namespace drop-in");
   }
   const snapshot = {
-    active_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "ActiveState"),
     after_namespace_owner: words("After").includes(owner),
     binds_to_namespace_owner: words("BindsTo").includes(owner),
+    config_generation_confirmations: [],
+    drop_in_paths: dropIns,
     drop_in_paths_sha256: hashBytes(Buffer.from(canonicalJson(dropIns))),
-    load_state: collectSystemctlValue(PUBLISHER_CADDY_UNIT, "LoadState"),
+    generation_confirmations: [],
     part_of_namespace_owner: words("PartOf").includes(owner),
     requires_namespace_owner: words("Requires").includes(owner),
     wants_namespace_owner: words("Wants").includes(owner),
   };
   if (
-    snapshot.active_state !== "active" ||
-    snapshot.load_state !== "loaded" ||
     !snapshot.after_namespace_owner ||
     !snapshot.wants_namespace_owner ||
     snapshot.binds_to_namespace_owner ||
@@ -5518,6 +5875,16 @@ function collectPublisherCaddyDependency() {
   ) {
     fail("shared Caddy has an unsafe or incomplete effective publisher dependency graph");
   }
+  const configAfter = collectPublisherCaddyConfigGeneration();
+  const generationAfter = collectPublisherCaddyUnitGeneration();
+  if (
+    canonicalJson(configBefore) !== canonicalJson(configAfter) ||
+    canonicalJson(generationBefore) !== canonicalJson(generationAfter)
+  ) {
+    fail("shared Caddy config or systemd generation changed during dependency collection");
+  }
+  snapshot.config_generation_confirmations.push(configBefore, configAfter);
+  snapshot.generation_confirmations.push(generationBefore, generationAfter);
   return snapshot;
 }
 
@@ -5660,15 +6027,15 @@ function validatePublisherOwnerEffectiveProperties(properties, artifacts) {
   }
   const helper = artifacts.helper_path;
   if (
-    canonicalJson(extractExecArgv(properties.ExecStartPre, "publisher namespace-owner ExecStartPre")) !==
+    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStartPre, "publisher namespace-owner ExecStartPre")) !==
       canonicalJson([
         `/usr/bin/test -x ${helper}`,
         "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
         `${helper} self-test`,
       ]) ||
-    canonicalJson(extractExecArgv(properties.ExecStart, "publisher namespace-owner ExecStart")) !==
+    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStart, "publisher namespace-owner ExecStart")) !==
       canonicalJson([`${helper} run`]) ||
-    canonicalJson(extractExecArgv(properties.ExecStopPost, "publisher namespace-owner ExecStopPost")) !==
+    canonicalJson(parseSystemctlExecArgvV1(properties.ExecStopPost, "publisher namespace-owner ExecStopPost")) !==
       canonicalJson([`${helper} cleanup`])
   ) {
     fail("publisher namespace-owner effective executable argv drifted from the pinned helper");
@@ -6104,6 +6471,7 @@ function sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork) {
     fail("publisher boundary changed before final namespace-owner sealing");
   }
   const referenceOwner = boundaries[1].namespace_owner;
+  const referenceCaddy = boundaries[1].caddy_dependency;
   const finalConditions = collectEffectiveConditions(PUBLISHER_NETNS_UNIT);
   validatePublisherOwnerConditions(finalConditions);
   assertEffectiveConditionSnapshotUnchangedV1(
@@ -6114,20 +6482,34 @@ function sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork) {
   const finalGeneration = collectPublisherOwnerGeneration(
     referenceOwner.effective_properties,
   );
+  const finalCaddyConfig = collectPublisherCaddyConfigGeneration();
+  const finalCaddyGeneration = collectPublisherCaddyUnitGeneration();
+  if (
+    canonicalJson(finalCaddyConfig) !==
+      canonicalJson(referenceCaddy.config_generation_confirmations.at(-1)) ||
+    canonicalJson(finalCaddyGeneration) !==
+      canonicalJson(referenceCaddy.generation_confirmations.at(-1))
+  ) {
+    fail("publisher Caddy config or systemd generation changed before final sealing");
+  }
   for (const boundary of boundaries) {
     const owner = boundary.namespace_owner;
+    const caddy = boundary.caddy_dependency;
     if (
       canonicalJson(owner.effective_properties) !==
         canonicalJson(referenceOwner.effective_properties) ||
       canonicalJson(owner.condition_confirmations.at(-1)) !==
         canonicalJson(referenceOwner.condition_confirmations.at(-1)) ||
       canonicalJson(owner.generation_confirmations.at(-1)) !==
-        canonicalJson(referenceOwner.generation_confirmations.at(-1))
+        canonicalJson(referenceOwner.generation_confirmations.at(-1)) ||
+      canonicalJson(caddy) !== canonicalJson(referenceCaddy)
     ) {
-      fail("publisher namespace-owner evidence diverged before final sealing");
+      fail("publisher namespace-owner or Caddy evidence diverged before final sealing");
     }
     owner.condition_confirmations.push(finalConditions.map((entry) => ({ ...entry })));
     owner.generation_confirmations.push({ ...finalGeneration });
+    caddy.config_generation_confirmations.push({ ...finalCaddyConfig });
+    caddy.generation_confirmations.push({ ...finalCaddyGeneration });
   }
 }
 
@@ -6208,6 +6590,61 @@ function validatePublisherNamespaceOwnerEvidence(owner, request, namespaceMount)
   }
 }
 
+function validatePublisherCaddyConfigGenerationV1(generation, label) {
+  exactKeys(
+    generation,
+    [
+      "ctime_ns", "dev", "gid", "ino", "mode", "mtime_ns", "nlink",
+      "path", "sha256", "size", "uid",
+    ],
+    label,
+  );
+  validateDigest(generation.sha256, `${label} digest`);
+  if (
+    generation.path !== PUBLISHER_CADDY_CONFIG ||
+    generation.uid !== 0 ||
+    generation.gid !== 0 ||
+    generation.mode !== "0644" ||
+    generation.nlink !== 1 ||
+    typeof generation.dev !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(generation.dev) ||
+    typeof generation.ino !== "string" ||
+    !/^[1-9][0-9]*$/u.test(generation.ino) ||
+    typeof generation.ctime_ns !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(generation.ctime_ns) ||
+    typeof generation.mtime_ns !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(generation.mtime_ns) ||
+    !Number.isSafeInteger(generation.size) ||
+    generation.size < 1 ||
+    generation.size > MAX_JSON_BYTES
+  ) {
+    fail(`${label} is not the exact descriptor-bound root Caddyfile generation`);
+  }
+}
+
+function validatePublisherCaddyUnitGenerationV1(generation, label) {
+  exactKeys(
+    generation,
+    [
+      "active_enter_timestamp_monotonic", "active_state", "invocation_id",
+      "load_state", "main_pid", "need_daemon_reload", "sub_state",
+    ],
+    label,
+  );
+  if (
+    generation.active_state !== "active" ||
+    generation.sub_state !== "running" ||
+    generation.load_state !== "loaded" ||
+    generation.need_daemon_reload !== "no" ||
+    !/^[1-9][0-9]*$/u.test(generation.active_enter_timestamp_monotonic) ||
+    !/^[1-9][0-9]*$/u.test(generation.main_pid) ||
+    !/^[0-9a-f]{32}$/u.test(generation.invocation_id) ||
+    /^0{32}$/u.test(generation.invocation_id)
+  ) {
+    fail(`${label} does not bind one loaded active Caddy generation`);
+  }
+}
+
 export function validatePublisherNetworkRuntimeEvidenceV1(evidence, request) {
   if (request.publisher_network === undefined) {
     if (evidence !== undefined) fail("non-publisher evidence contains a publisher network section");
@@ -6253,15 +6690,15 @@ export function validatePublisherNetworkRuntimeEvidenceV1(evidence, request) {
     exactKeys(
       boundary.caddy_dependency,
       [
-        "active_state", "after_namespace_owner", "binds_to_namespace_owner",
-        "drop_in_paths_sha256", "load_state", "part_of_namespace_owner",
-        "requires_namespace_owner", "wants_namespace_owner",
+        "after_namespace_owner", "binds_to_namespace_owner",
+        "config_generation_confirmations", "drop_in_paths",
+        "drop_in_paths_sha256", "generation_confirmations",
+        "part_of_namespace_owner", "requires_namespace_owner",
+        "wants_namespace_owner",
       ],
       "publisher Caddy dependency evidence",
     );
     if (
-      boundary.caddy_dependency.active_state !== "active" ||
-      boundary.caddy_dependency.load_state !== "loaded" ||
       !boundary.caddy_dependency.after_namespace_owner ||
       !boundary.caddy_dependency.wants_namespace_owner ||
       boundary.caddy_dependency.binds_to_namespace_owner ||
@@ -6270,10 +6707,51 @@ export function validatePublisherNetworkRuntimeEvidenceV1(evidence, request) {
     ) {
       fail("publisher Caddy evidence contains a reverse stop edge or missing ordering edge");
     }
+    if (
+      canonicalJson(boundary.caddy_dependency.drop_in_paths) !==
+        canonicalJson([PUBLISHER_CADDY_DROP_IN]) ||
+      boundary.caddy_dependency.drop_in_paths_sha256 !== hashBytes(
+        Buffer.from(canonicalJson([PUBLISHER_CADDY_DROP_IN])),
+      )
+    ) {
+      fail("publisher Caddy DropInPaths is not the singleton reviewed drop-in");
+    }
     validateDigest(
       boundary.caddy_dependency.drop_in_paths_sha256,
       "publisher Caddy drop-in-set digest",
     );
+    if (
+      !Array.isArray(boundary.caddy_dependency.config_generation_confirmations) ||
+      boundary.caddy_dependency.config_generation_confirmations.length !== 3 ||
+      boundary.caddy_dependency.config_generation_confirmations.some((confirmation) =>
+        canonicalJson(confirmation) !==
+          canonicalJson(boundary.caddy_dependency.config_generation_confirmations[0]))
+    ) {
+      fail("publisher Caddy config generation was not stable across three sealing passes");
+    }
+    for (const [index, generation] of
+      boundary.caddy_dependency.config_generation_confirmations.entries()) {
+      validatePublisherCaddyConfigGenerationV1(
+        generation,
+        `publisher Caddy config generation[${index}]`,
+      );
+    }
+    if (
+      !Array.isArray(boundary.caddy_dependency.generation_confirmations) ||
+      boundary.caddy_dependency.generation_confirmations.length !== 3 ||
+      boundary.caddy_dependency.generation_confirmations.some((confirmation) =>
+        canonicalJson(confirmation) !==
+          canonicalJson(boundary.caddy_dependency.generation_confirmations[0]))
+    ) {
+      fail("publisher Caddy systemd generation was not stable across three sealing passes");
+    }
+    for (const [index, generation] of
+      boundary.caddy_dependency.generation_confirmations.entries()) {
+      validatePublisherCaddyUnitGenerationV1(
+        generation,
+        `publisher Caddy systemd generation[${index}]`,
+      );
+    }
     if (canonicalJson(boundary.forwarding_sysctls) !== canonicalJson({
       "net.ipv4.ip_forward": 0,
       "net.ipv6.conf.all.forwarding": 0,
@@ -7139,9 +7617,9 @@ function collectStoppedPreparationEvidence({
   if (request.deployment_profile !== profile) {
     fail(`${command} only accepts the reviewed ${profile} profile`);
   }
-  const trustedCommands = [...requiredCommandsForRequest(request), process.execPath]
-    .sort()
-    .map(inspectTrustedCommand);
+  const trustedCommands = beginTrustedCommandSession(
+    [...requiredCommandsForRequest(request), process.execPath].sort(),
+  );
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) {
@@ -7233,6 +7711,7 @@ function collectStoppedPreparationEvidence({
     "final stopped systemd manager properties",
   );
   const finished = Math.floor(Date.now() / 1000);
+  finishTrustedCommandSession(trustedCommands);
   const evidence = {
     account_policy: accountPolicyFinished,
     approved_plan_sha256: approvedPlanSha256,
@@ -7353,9 +7832,9 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (request.deployment_profile === "directory-relay-v1") {
     validateResolvedDirectoryRelayLiveRequestShape(request);
   }
-  const trustedCommands = [...requiredCommandsForRequest(request), process.execPath]
-    .sort()
-    .map(inspectTrustedCommand);
+  const trustedCommands = beginTrustedCommandSession(
+    [...requiredCommandsForRequest(request), process.execPath].sort(),
+  );
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) fail("collector is running on an unapproved host");
@@ -7497,6 +7976,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   if (!sameHostGeneration(hostStarted, hostSealed)) {
     fail("host or boot identity changed during publisher network sealing");
   }
+  finishTrustedCommandSession(trustedCommands);
   const finished = Math.floor(Date.now() / 1000);
   const evidence = {
     approved_plan_sha256: approvedPlanSha256,
