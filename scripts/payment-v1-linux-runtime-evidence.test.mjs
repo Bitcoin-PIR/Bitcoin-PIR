@@ -578,11 +578,32 @@ test("systemctl Exec serialization accepts the real systemd 255 multi-command de
 
   assert.deepEqual(
     parseSystemctlExecArgvV1(`${first}\n${second}`, "real systemd 255 ExecStartPre"),
-    [firstCommand, secondCommand],
+    [
+      {
+        argv: firstCommand,
+        code: "(null)",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+        pid: "0",
+        start_time: "[n/a]",
+        status: "0/0",
+        stop_time: "[n/a]",
+      },
+      {
+        argv: secondCommand,
+        code: "(null)",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+        pid: "0",
+        start_time: "[n/a]",
+        status: "0/0",
+        stop_time: "[n/a]",
+      },
+    ],
   );
   assert.deepEqual(
     parseSystemctlExecArgvV1(`${first} ; ${second}`, "legacy fixture ExecStartPre"),
-    [firstCommand, secondCommand],
+    parseSystemctlExecArgvV1(`${first}\n${second}`, "real systemd 255 ExecStartPre"),
   );
   assert.deepEqual(parseSystemctlExecArgvV1("", "empty ExecStartPre"), []);
 
@@ -597,6 +618,27 @@ test("systemctl Exec serialization accepts the real systemd 255 multi-command de
     assert.throws(
       () => parseSystemctlExecArgvV1(malformed, "malformed ExecStartPre"),
       /unreviewed systemctl Exec serialization/,
+    );
+  }
+});
+
+test("systemctl Exec serialization rejects unreviewed record metadata", () => {
+  const command = "/usr/bin/sha256sum --check /tmp/reviewed.sha256";
+  const record =
+    `{ path=/usr/bin/sha256sum ; argv[]=${command} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+  for (const [label, malformed, pattern] of [
+    ["path drift", record.replace("path=/usr/bin/sha256sum", "path=/usr/bin/true"), /path does not match argv\[0\]/],
+    ["ignore errors", record.replace("ignore_errors=no", "ignore_errors=yes"), /permits systemctl Exec ignore_errors/],
+    ["unknown field", record.replace("status=0/0", "status=0/0 ; unreviewed=yes"), /unknown systemctl Exec field/],
+    ["duplicate field", record.replace("status=0/0", "status=0/0 ; path=/usr/bin/sha256sum"), /repeats systemctl Exec field path/],
+    ["missing field", record.replace(" ; stop_time=[n/a]", ""), /keys must equal/],
+    ["argv/path mismatch", record.replace(`argv[]=${command}`, "argv[]=/usr/bin/true"), /path does not match argv\[0\]/],
+  ]) {
+    assert.throws(
+      () => parseSystemctlExecArgvV1(malformed, label),
+      pattern,
+      label,
     );
   }
 });
@@ -857,7 +899,10 @@ function sortNssEvidence(nss) {
 }
 
 function execValue(command) {
-  return `{ path=${command.split(" ", 1)[0]} ; argv[]=${command} ; ignore_errors=no ; start_time=[n/a] ; }`;
+  return (
+    `{ path=${command.split(" ", 1)[0]} ; argv[]=${command} ; ignore_errors=no ; ` +
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+  );
 }
 
 function protectedHolder({
@@ -3048,6 +3093,30 @@ test("stopped directory-relay preparation is closed and can never become live ev
   effectiveStart.evidence.unit_configuration_passes[1][0].properties.ExecStart =
     execValue("/usr/bin/true");
   assert.throws(() => validateStoppedRelay(effectiveStart), /effective ExecStart drift/);
+
+  const forgedEffectiveStartPath = stoppedRelayFixture();
+  forgedEffectiveStartPath.evidence.unit_configuration_passes[1][0]
+    .properties.ExecStart = forgedEffectiveStartPath.evidence
+      .unit_configuration_passes[1][0].properties.ExecStart.replace(
+        /\{ path=[^ ]+/u,
+        "{ path=/usr/bin/true",
+      );
+  assert.throws(
+    () => validateStoppedRelay(forgedEffectiveStartPath),
+    /path does not match argv\[0\]/,
+  );
+
+  const ignoredEffectiveFailure = stoppedRelayFixture();
+  ignoredEffectiveFailure.evidence.unit_configuration_passes[1][0]
+    .properties.ExecStart = ignoredEffectiveFailure.evidence
+      .unit_configuration_passes[1][0].properties.ExecStart.replace(
+        "ignore_errors=no",
+        "ignore_errors=yes",
+      );
+  assert.throws(
+    () => validateStoppedRelay(ignoredEffectiveFailure),
+    /permits systemctl Exec ignore_errors/,
+  );
 
   const resolvedSelection = stoppedRelayFixture();
   for (const pass of resolvedSelection.evidence.unit_configuration_passes) {

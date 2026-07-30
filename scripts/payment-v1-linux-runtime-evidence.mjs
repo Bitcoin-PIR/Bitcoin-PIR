@@ -3071,9 +3071,18 @@ export function parseSystemctlExecArgvV1(value, label = "systemd Exec property")
   ) {
     fail(`${label} has an unreviewed systemctl Exec serialization`);
   }
+  const expectedFields = [
+    "argv[]",
+    "code",
+    "ignore_errors",
+    "path",
+    "pid",
+    "start_time",
+    "status",
+    "stop_time",
+  ];
   const result = [];
-  const recordPattern =
-    /\{[^{}\r\n]*?argv\[\]=([^{}\r\n]+?)\s*;\s*ignore_errors=[^{}\r\n]*\}/gu;
+  const recordPattern = /\{[^{}\r\n]*\}/gu;
   let cursor = 0;
   for (const match of value.matchAll(recordPattern)) {
     const separator = value.slice(cursor, match.index);
@@ -3083,13 +3092,101 @@ export function parseSystemctlExecArgvV1(value, label = "systemd Exec property")
     ) {
       fail(`${label} has an unreviewed systemctl Exec serialization`);
     }
-    result.push(match[1].trim());
+    const serializedFields = match[0].slice(1, -1).split(";");
+    const fields = {};
+    for (const rawField of serializedFields) {
+      const field = rawField.trim();
+      const parsed = /^([A-Za-z][A-Za-z0-9_]*(?:\[\])?)=(.*)$/u.exec(field);
+      if (parsed === null || !expectedFields.includes(parsed[1])) {
+        fail(`${label} has an unknown systemctl Exec field`);
+      }
+      if (Object.hasOwn(fields, parsed[1])) {
+        fail(`${label} repeats systemctl Exec field ${parsed[1]}`);
+      }
+      fields[parsed[1]] = parsed[2];
+    }
+    exactKeys(fields, expectedFields, `${label} systemctl Exec record`);
+
+    const path = fields.path;
+    const argv = fields["argv[]"];
+    if (
+      !/^\/[^\s;{}=]{0,4094}$/u.test(path) ||
+      argv === "" ||
+      argv.trim() !== argv ||
+      /[;{}\r\n\0]/u.test(argv)
+    ) {
+      fail(`${label} has malformed systemctl Exec path or argv`);
+    }
+    const argv0 = /^(\S+)(?:\s|$)/u.exec(argv)?.[1];
+    if (argv0 !== path) {
+      fail(`${label} systemctl Exec path does not match argv[0]`);
+    }
+    if (fields.ignore_errors !== "no") {
+      fail(`${label} permits systemctl Exec ignore_errors`);
+    }
+    for (const timeField of ["start_time", "stop_time"]) {
+      if (!/^\[[^\[\]{};\r\n\0]{1,256}\]$/u.test(fields[timeField])) {
+        fail(`${label} has malformed systemctl Exec ${timeField}`);
+      }
+    }
+    if (!/^(?:0|[1-9][0-9]{0,19})$/u.test(fields.pid)) {
+      fail(`${label} has malformed systemctl Exec pid`);
+    }
+    if (!new Set(["(null)", "dumped", "exited", "killed"]).has(fields.code)) {
+      fail(`${label} has malformed systemctl Exec code`);
+    }
+    if (!/^(?:0|[1-9][0-9]{0,9})\/(?:0|[1-9][0-9]{0,9}|[A-Z][A-Z0-9_-]{0,63})$/u.test(fields.status)) {
+      fail(`${label} has malformed systemctl Exec status`);
+    }
+    result.push({
+      argv,
+      code: fields.code,
+      ignore_errors: fields.ignore_errors,
+      path,
+      pid: fields.pid,
+      start_time: fields.start_time,
+      status: fields.status,
+      stop_time: fields.stop_time,
+    });
     cursor = match.index + match[0].length;
   }
   if (result.length === 0 || cursor !== value.length) {
     fail(`${label} has an unreviewed systemctl Exec serialization`);
   }
   return result;
+}
+
+function reviewedExecPolicy(commands, label) {
+  if (!Array.isArray(commands)) fail(`${label} is not an argv list`);
+  return commands.map((argv, index) => {
+    if (
+      typeof argv !== "string" ||
+      argv === "" ||
+      argv.trim() !== argv ||
+      /[;{}\r\n\0]/u.test(argv)
+    ) {
+      fail(`${label}[${index}] is not a reviewed literal argv`);
+    }
+    const path = /^(\S+)(?:\s|$)/u.exec(argv)?.[1];
+    if (!/^\/[^\s;{}=]{0,4094}$/u.test(path ?? "")) {
+      fail(`${label}[${index}] has an unreviewed executable path`);
+    }
+    return { argv, ignore_errors: "no", path };
+  });
+}
+
+function effectiveExecPolicy(records, label) {
+  return records.map((record, index) => {
+    const argv0 = /^(\S+)(?:\s|$)/u.exec(record.argv)?.[1];
+    if (record.ignore_errors !== "no" || argv0 !== record.path) {
+      fail(`${label}[${index}] has an unreviewed execution policy`);
+    }
+    return {
+      argv: record.argv,
+      ignore_errors: record.ignore_errors,
+      path: record.path,
+    };
+  });
 }
 
 function parseUnsignedDecimal(value, label, { allowZero = true } = {}) {
@@ -3161,16 +3258,18 @@ function validateEffectiveUnitStaticProperties(
   ]) {
     if (properties[forbidden] !== "") fail(`effective ${forbidden} is forbidden: ${unit.unit_name}`);
   }
-  const actualStart = parseSystemctlExecArgvV1(
-    properties.ExecStart,
+  const actualStart = effectiveExecPolicy(
+    parseSystemctlExecArgvV1(properties.ExecStart, `${unit.unit_name}.ExecStart`),
     `${unit.unit_name}.ExecStart`,
   );
-  const actualPre = parseSystemctlExecArgvV1(
-    properties.ExecStartPre,
+  const actualPre = effectiveExecPolicy(
+    parseSystemctlExecArgvV1(properties.ExecStartPre, `${unit.unit_name}.ExecStartPre`),
     `${unit.unit_name}.ExecStartPre`,
   );
-  if (canonicalJson(actualStart) !== canonicalJson(unit.exec_start)) fail(`effective ExecStart drift: ${unit.unit_name}`);
-  if (canonicalJson(actualPre) !== canonicalJson(unit.exec_start_pre)) fail(`effective ExecStartPre drift: ${unit.unit_name}`);
+  const approvedStart = reviewedExecPolicy(unit.exec_start, `${unit.unit_name}.exec_start`);
+  const approvedPre = reviewedExecPolicy(unit.exec_start_pre, `${unit.unit_name}.exec_start_pre`);
+  if (canonicalJson(actualStart) !== canonicalJson(approvedStart)) fail(`effective ExecStart drift: ${unit.unit_name}`);
+  if (canonicalJson(actualPre) !== canonicalJson(approvedPre)) fail(`effective ExecStartPre drift: ${unit.unit_name}`);
   if (canonicalJson(splitLiteralWords(properties.Environment)) !== canonicalJson([...unit.environment].sort())) {
     fail(`effective Environment drift: ${unit.unit_name}`);
   }
