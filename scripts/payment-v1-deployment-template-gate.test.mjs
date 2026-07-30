@@ -640,8 +640,37 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
     ],
     [
       "deploy/payment-v1/lightning/lightningd.conf.in",
-      (text) => text.replace("clear-plugins", "plugin=/tmp/evil-plugin"),
+      (text) => text.replace("disable-plugin=commando", "plugin=/tmp/evil-plugin"),
       /closed-world configuration|dynamic plugin/,
+    ],
+    [
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      (text) => text.replace("disable-plugin=commando\n", ""),
+      /closed-world configuration/,
+    ],
+    [
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      (text) => text.replace(
+        "disable-plugin=commando",
+        "disable-plugin=commando\ndisable-plugin=commando",
+      ),
+      /closed-world configuration/,
+    ],
+    [
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      (text) => text.replace(
+        "disable-plugin=commando",
+        "clear-plugins\ndisable-plugin=commando",
+      ),
+      /closed-world configuration|dynamic plugin/,
+    ],
+    [
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      (text) => text.replace(
+        "disable-dns",
+        "disable-dns\ninvoices-onchain-fallback=false",
+      ),
+      /closed-world configuration|on-chain invoice fallback/,
     ],
     [
       "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
@@ -708,6 +737,14 @@ test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
       (text) => text.replace("User=bitcoinpir-lightning", "User=root"),
       /Service\.User must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replace(
+        "InaccessiblePaths=-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins\n",
+        "",
+      ),
+      /InaccessiblePaths|Service directive keys/,
     ],
     [
       "deploy/payment-v1/systemd/payment-v1-edge.service.in",
@@ -1095,6 +1132,14 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
       /SupplementaryGroups/,
     ],
     [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replace(
+        "Environment=LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@",
+        "Environment=LD_PRELOAD=/tmp/evil.so",
+      ),
+      /Service\.Environment must equal/,
+    ],
+    [
       "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
       (text) => text.replace("User=bitcoinpir-cln-rpc-guard", "User=root"),
       /Service\.User must equal/,
@@ -1111,6 +1156,14 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
         ': # omitted restored identity check',
       ),
       /exact native hsm_secret boundary/,
+    ],
+    [
+      "deploy/payment-v1/lightning/verify-layout.sh.in",
+      (text) => text.replace(
+        '    "${bpir_lightning_base}/plugins" \\\n',
+        "",
+      ),
+      /Lightning layout verifier template (?:must contain|is missing required text)/,
     ],
   ];
 

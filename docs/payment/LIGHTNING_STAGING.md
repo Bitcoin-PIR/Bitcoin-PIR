@@ -496,6 +496,27 @@ process image. The service manager must therefore use the same canonical
 pinned daemon paths; process-executable evidence remains a deployment and
 manual-acceptance gate.
 
+For the pinned v26.06.6 Ubuntu 24.04 runtime, `lightningd` also requires the
+reviewed private `libpq.so.5`. Its separate one-entry manifest and
+digest-equals-file root permit no other loader object, and the systemd unit
+permits exactly one literal `LD_LIBRARY_PATH` selecting that root. This keeps
+the upstream CLN archive identity separate from the Ubuntu library identity. Target evidence
+must resolve `libpq.so.5` to that exact regular file and reject a system,
+alternate or injected loader result.
+
+That release also contains a deterministic `clear-plugins` NULL dereference
+when later config variables are still unparsed. The production profile never
+uses it. Its bundle carries the exact 27 built-in plugin files in the official
+`libexec/c-lightning/plugins` directory, installs the 25 disallowed members as
+root-owned non-executable `0444`, and has one exact `disable-plugin` line for
+each basename. Only `bcli` and `chanbackup` are `0555`. Live preflight requires
+both to be active and non-dynamic and rejects any third plugin. The layout and
+unit independently reject/mask both `/srv/lightning/plugins` (CLN's real base
+scan path) and `/srv/lightning/<network>/plugins`. `--test-daemons-only` exits
+before plugin initialization and final config parsing, so deployment evidence
+must also include a complete isolated no-funds start; the early probe is not a
+substitute.
+
 This preflight deliberately does not call `getpeerinfo`. Its
 `spendable_msat`/`receivable_msat` checks are CLN estimates that can change with
 HTLCs and on-chain fees; they are not routing or payment proofs. Therefore

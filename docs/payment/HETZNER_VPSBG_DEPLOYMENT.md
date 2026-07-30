@@ -334,6 +334,26 @@ bounded anonymous `invoice`, and exposes a guard-UID/issuer-GID `0660` socket
 below a distinct `0710` directory. The issuer mount namespace also marks
 `/srv/lightning` and `/srv/bitcoin` inaccessible.
 
+The pinned CLN v26.06.6 runtime is also independent of the host's broken
+package-manager state. Its content-addressed bundle contains the complete
+reviewed executable/plugin set identified by the approved upstream archive
+hash. A separate digest-equals-file root and one-entry manifest contain exactly
+`libpq.so.5`; the service's only environment assignment selects that root. Do not install
+`libpq5` with `apt` as a deployment workaround, and do not widen the loader
+path. Both render manifests, the unit gate and target-host runtime evidence must all
+agree on the same regular-file digest and resolved dynamic dependency.
+
+For v26.06.6, do not use `clear-plugins`: the pinned release crashes while it
+walks not-yet-parsed later config variables. Install the exact official
+27-plugin directory at `libexec/c-lightning/plugins`; set only `bcli` and
+`chanbackup` to `0555`, set the other exact 25 to root-owned `0444`, and retain
+the exact 25 basename disables from the reviewed config. The unit must mask
+both `/srv/lightning/plugins` and `/srv/lightning/signet/plugins`; the former is
+the actual default scan path. A successful `--test-daemons-only` is necessary
+but not sufficient because it exits before plugin initialization and final
+config parsing. Require a complete no-funds start plus an exact
+`active=true,dynamic=false` two-plugin live receipt before issuer activation.
+
 The guard unit uses `Restart=no`. Its finite per-runtime invoice counter is a
 custody deadman, so an automatic crash loop must not reset it. Guard exit stops
 the issuer through the unit dependency; starting a new generation requires an

@@ -204,13 +204,47 @@ const MANAGED_FILE_PREFIXES = Object.freeze([
   "/usr/local/libexec/bitcoinpir/",
 ]);
 
-// Core Lightning v26.06.6 refuses startup when any mandatory subdaemon is
-// absent or reports a different version. The operator ceremony also needs the
-// exact CLI and hsmtool; treating only lightningd plus two plugins as the
-// bundle would make the rendered-artifact receipt materially incomplete.
+const CLN_ACTIVE_PLUGIN_NAMES_V26066 = Object.freeze(["bcli", "chanbackup"]);
+const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
+  "autoclean",
+  "bookkeeper",
+  "cln-askrene",
+  "cln-bip353",
+  "cln-bwatch",
+  "cln-currencyrate",
+  "cln-grpc",
+  "cln-lsps-client",
+  "cln-lsps-service",
+  "cln-renepay",
+  "cln-xpay",
+  "clnrest",
+  "commando",
+  "exposesecret",
+  "funder",
+  "keysend",
+  "offers",
+  "pay",
+  "recklessrpc",
+  "recover",
+  "spenderp",
+  "sql",
+  "topology",
+  "txprepare",
+  "wss-proxy",
+]);
+const CLN_PLUGIN_NAMES_V26066 = Object.freeze([
+  ...CLN_ACTIVE_PLUGIN_NAMES_V26066,
+  ...CLN_INERT_PLUGIN_NAMES_V26066,
+].sort(asciiCompare));
+
+// This is the exact selected runtime closure from the independently approved
+// official v26.06.6 archive. Disabled built-ins remain present at their
+// compiled path but are installed non-executable; this avoids both the
+// clear-plugins NULL dereference and noisy missing-built-in startup behavior.
 const REQUIRED_CLN_BUNDLE_PATHS_V26066 = Object.freeze([
   "bin/lightning-cli",
   "bin/lightning-hsmtool",
+  "bin/lightningd",
   "libexec/c-lightning/lightning_channeld",
   "libexec/c-lightning/lightning_closingd",
   "libexec/c-lightning/lightning_connectd",
@@ -219,9 +253,9 @@ const REQUIRED_CLN_BUNDLE_PATHS_V26066 = Object.freeze([
   "libexec/c-lightning/lightning_hsmd",
   "libexec/c-lightning/lightning_onchaind",
   "libexec/c-lightning/lightning_openingd",
-  "bin/lightningd",
-  "plugins/bcli",
-  "plugins/chanbackup",
+  ...CLN_PLUGIN_NAMES_V26066.map(
+    (name) => `libexec/c-lightning/plugins/${name}`,
+  ),
 ]);
 
 const REQUIRED_SYSTEMD_HARDENING = Object.freeze({
@@ -512,6 +546,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "CADDY_SHA256",
   "CASHU_MINT_ID_HEX",
   "CLN_BUNDLE_SHA256",
+  "CLN_LIBPQ_SHA256",
   "CLN_RPC_GUARD_SHA256",
   "DIRECTORY_PUBLISHER_PUBKEY_HEX",
   "HAPROXY_SHA256",
@@ -1133,6 +1168,14 @@ function expectedPayloadClass(targetPath) {
   return "config";
 }
 
+function isClnInertPluginTargetV26066(targetPath) {
+  const match =
+    /^\/opt\/bitcoinpir\/core-lightning\/[0-9a-f]{64}\/libexec\/c-lightning\/plugins\/([a-z0-9-]+)$/u.exec(
+      targetPath,
+    );
+  return match !== null && CLN_INERT_PLUGIN_NAMES_V26066.includes(match[1]);
+}
+
 function validatePrivateReadableMetadata(artifact, label) {
   const ownerPrivate = artifact.uid > 0 && artifact.gid >= 0 && artifact.mode === "0400";
   const groupPrivate = artifact.uid === 0 && artifact.gid > 0 && artifact.mode === "0440";
@@ -1151,8 +1194,12 @@ function validatePayloadMetadata(artifact, label) {
   }
   switch (artifact.class) {
     case "binary":
-      if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0555") {
-        fail(`${label} binary must be immutable root:root mode 0555`);
+      if (isClnInertPluginTargetV26066(artifact.target_path)) {
+        if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0444") {
+          fail(`${label} disabled CLN plugin must be immutable root:root mode 0444`);
+        }
+      } else if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0555") {
+        fail(`${label} executable binary must be immutable root:root mode 0555`);
       }
       break;
     case "hash-manifest":
@@ -2016,6 +2063,7 @@ function validateProfileUnitPolicy(
   deploymentProfile,
   fragmentPath,
   conditions,
+  environment,
   hardening,
   execStart,
   execStartPre,
@@ -2037,6 +2085,48 @@ function validateProfileUnitPolicy(
     ]).has(fragmentPath);
   if (!approvalConsumer && execStartPreEx.some((command) => command.flags.length !== 0)) {
     fail(`${label} contains closed-world forbidden directive: privileged ExecStartPre flags`);
+  }
+  if (
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    fragmentPath === "/etc/systemd/system/bitcoinpir-core-lightning.service"
+  ) {
+    const commandMatch =
+      /^(\/opt\/bitcoinpir\/core-lightning\/[0-9a-f]{64})\/bin\/lightningd --conf=\/etc\/bitcoinpir\/payment-v1\/lightning\/lightningd\.conf$/u.exec(
+        execStart[0] ?? "",
+      );
+    if (commandMatch === null) {
+      fail(`${label} must execute lightningd from one content-addressed CLN root`);
+    }
+    const loaderMatch =
+      /^LD_LIBRARY_PATH=(\/opt\/bitcoinpir\/core-lightning-libpq\/[0-9a-f]{64})$/u.exec(
+        environment[0] ?? "",
+      );
+    if (environment.length !== 1 || loaderMatch === null) {
+      fail(`${label} must expose only the selected content-addressed libpq root`);
+    }
+    const readOnlyTokens = (hardening.ReadOnlyPaths ?? []).flatMap((value) =>
+      value.split(/\s+/u),
+    );
+    const bitcoinRoots = readOnlyTokens.filter((value) =>
+      /^\/opt\/bitcoinpir\/bitcoin-core\/[0-9a-f]{64}\/$/u.test(value),
+    );
+    if (
+      bitcoinRoots.length !== 1 ||
+      canonicalize(readOnlyTokens) !== canonicalize([
+        "/etc/bitcoinpir/payment-v1/lightning",
+        `${commandMatch[1]}/`,
+        `${loaderMatch[1]}/`,
+        bitcoinRoots[0],
+      ])
+    ) {
+      fail(`${label} must mount exactly its config, CLN, libpq and Bitcoin Core roots read-only`);
+    }
+    if (
+      canonicalize(hardening.InaccessiblePaths ?? []) !==
+      canonicalize(["-/srv/lightning/plugins -/srv/lightning/signet/plugins"])
+    ) {
+      fail(`${label} must mask the exact CLN base and network plugin directories`);
+    }
   }
   if (deploymentProfile === "directory-relay-v1") {
     const blocked =
@@ -2799,13 +2889,18 @@ function validateHashManifestScope(manifestPath, entries, plan) {
       if (entries.some((entry) => !entry.target_path.startsWith(prefix))) {
         fail(`hash manifest ${manifestPath} must remain inside the selected CLN bundle`);
       }
-      for (const required of REQUIRED_CLN_BUNDLE_PATHS_V26066) {
-        if (!entries.some((entry) => entry.target_path === `${prefix}${required}`)) {
-          fail(`hash manifest ${manifestPath} is missing ${required}`);
-        }
-      }
+      assertSameStringSet(
+        entries.map((entry) => entry.target_path),
+        REQUIRED_CLN_BUNDLE_PATHS_V26066.map((required) => `${prefix}${required}`),
+        `hash manifest ${manifestPath} targets`,
+      );
       return;
     }
+    case "/etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256":
+      oneExact(
+        `/opt/bitcoinpir/core-lightning-libpq/${plan.placeholders.CLN_LIBPQ_SHA256}/libpq.so.5`,
+      );
+      return;
     case "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256": {
       const prefix = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}/`;
       if (entries.length < 1 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
@@ -2896,6 +2991,7 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
       true,
     ],
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
+    ["CLN_LIBPQ_SHA256", "/opt/bitcoinpir/core-lightning-libpq/", "/libpq.so.5", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
     ["UNIFIED_SERVER_SHA256", "/opt/bitcoinpir/unified-server/", "/unified_server", true],
@@ -3048,6 +3144,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         plan.deployment_profile,
         specification.target_path,
         parsed.conditions,
+        parsed.environment,
         parsed.hardening,
         parsed.exec_start,
         parsed.exec_start_pre,
@@ -3377,6 +3474,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       manifest.deployment_profile,
       unit.fragment_path,
       unit.conditions,
+      unit.environment,
       unit.hardening,
       unit.exec_start,
       unit.exec_start_pre,

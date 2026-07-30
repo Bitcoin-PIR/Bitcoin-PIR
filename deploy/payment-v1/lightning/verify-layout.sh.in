@@ -44,6 +44,7 @@ esac
 # configuration or dynamic plugins.
 for bpir_forbidden in \
     "${bpir_lightning_base}/config" \
+    "${bpir_lightning_base}/plugins" \
     "${bpir_lightning_dir}/config" \
     "${bpir_lightning_dir}/config.setconfig" \
     "${bpir_lightning_dir}/plugins"

@@ -93,6 +93,29 @@ hardlink, reset, drop-in, environment-file, credential or cross-profile path.
 Secret ownership is bound to the exact consuming service identity rather than
 an arbitrary non-root UID/GID.
 
+The official Ubuntu 24.04 CLN v26.06.6 archive has a runtime dependency on
+`libpq.so.5`, which is absent from the inspected Hetzner host. Installing a
+package is not an acceptable workaround while dpkg is unhealthy. The closed
+issuer profile instead requires one private `libpq.so.5` below an independent
+digest-equals-file root, permits no second object in that loader directory, and binds
+the CLN unit to that directory with its sole literal environment assignment.
+Source, rendered and offline-runtime gates reject omission, path widening and
+`LD_PRELOAD`; this keeps the upstream CLN archive identity distinct from the
+Ubuntu library identity. Live evidence must still prove the target loader resolution.
+
+Target-host probing also found two release-specific configuration hazards.
+CLN v26.06.6 dereferences a null later-config entry in `clear-plugins`, and
+`invoices-onchain-fallback=false` is invalid because that option is a
+no-argument opt-in whose secure default is already false. Both spellings are
+now forbidden. The exact official 27-plugin tree is retained at its compiled
+path, 25 disallowed members are exact-disabled and installed mode `0444`, and
+only `bcli`/`chanbackup` remain executable. This double condition is needed
+because the documented `plugin start` RPC can bypass a disable list. The unit
+also masks `/srv/lightning/plugins`, while layout verification rejects it and
+the network-local lookalike; the prior verifier checked only the latter even
+though CLN scans the former. Runtime acceptance must prove exactly two active,
+non-dynamic plugins after a complete start.
+
 A post-merge independent deployment-plan review found one P1 ambiguity and six
 P2 documentation/gate drifts before activation. The current `provider-v1`
 profile was incorrectly described as renderable after omitting Standard-Cashu

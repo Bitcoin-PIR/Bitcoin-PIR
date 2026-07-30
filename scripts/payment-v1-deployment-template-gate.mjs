@@ -40,11 +40,11 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/issuer-cln.args.in":
     "1da053febf373f7166935e0d57abe140e129931accbb856d93889c4fc979b6f4",
   "deploy/payment-v1/lightning/lightningd.conf.in":
-    "58973f2b3992a6eb0a2cd4b94b6d878f01240b5ba92d84da5a91ef0c442159f9",
+    "b0402cc1caa0c1daa8244c85af7b728ffefb324ba9e510bfad029b972aadc847",
   "deploy/payment-v1/lightning/verify-layout.sh.in":
-    "d43ff49520b4208d1550e77613cfbf3936653465841c53579617ad08d0fd1dac",
+    "84214eeb72316fad5bc2e2bbdc73df1ac8d278b683a48c2f00983d31a4459470",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "ba42a3edf60c55664b32edc89977b222f9011ed857ded45c38d228a4941be49b",
+    "f34b8ce2441926e4ab44e360b71ab8a533cc0bef00520ebe368a1ac8c42093ff",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
     "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
@@ -96,6 +96,33 @@ const ACTIVATION_SENTINEL =
 const UNSAFE_RELAY_COMMITS = new Set([
   "ff65ec2acd781150a585a78e1c60b0cdb104698e",
   "b5c1f642e4f4c3b9c54f5d18d66f4c53642076b4",
+]);
+const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
+  "autoclean",
+  "bookkeeper",
+  "cln-askrene",
+  "cln-bip353",
+  "cln-bwatch",
+  "cln-currencyrate",
+  "cln-grpc",
+  "cln-lsps-client",
+  "cln-lsps-service",
+  "cln-renepay",
+  "cln-xpay",
+  "clnrest",
+  "commando",
+  "exposesecret",
+  "funder",
+  "keysend",
+  "offers",
+  "pay",
+  "recklessrpc",
+  "recover",
+  "spenderp",
+  "sql",
+  "topology",
+  "txprepare",
+  "wss-proxy",
 ]);
 const HASH_FIELDS = Object.freeze([
   "source_archive_sha256",
@@ -872,14 +899,14 @@ function validateCoreLightningUnit(text) {
     "Service",
     [
       "Type", "User", "Group", "SupplementaryGroups", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
-      "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
+      "WorkingDirectory", "Environment", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
       "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE", "NoNewPrivileges",
       "PrivateDevices", "PrivateTmp", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
       "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
       "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
       "RestrictNamespaces", "SystemCallArchitectures", "CapabilityBoundingSet",
-      "AmbientCapabilities", "RestrictAddressFamilies", "ReadOnlyPaths", "ReadWritePaths",
+      "AmbientCapabilities", "RestrictAddressFamilies", "InaccessiblePaths", "ReadOnlyPaths", "ReadWritePaths",
     ],
     label,
   );
@@ -894,6 +921,13 @@ function validateCoreLightningUnit(text) {
   exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-core-lightning"], label);
   exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0700"], label);
   exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/srv/lightning/@LIGHTNING_NETWORK@"], label);
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "Environment",
+    ["LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@"],
+    label,
+  );
   exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
   exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
   exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["120"], label);
@@ -906,6 +940,7 @@ function validateCoreLightningUnit(text) {
     [
       "/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
@@ -924,8 +959,15 @@ function validateCoreLightningUnit(text) {
   exactDirectiveValues(
     unit,
     "Service",
+    "InaccessiblePaths",
+    ["-/srv/lightning/plugins -/srv/lightning/@LIGHTNING_NETWORK@/plugins"],
+    label,
+  );
+  exactDirectiveValues(
+    unit,
+    "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/ /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/"],
     label,
   );
   exactDirectiveValues(
@@ -1390,7 +1432,6 @@ function validateLightningdConfig(text) {
     "announce-addr-discovered=false",
     "autoconnect-seeker-peers=0",
     "disable-dns",
-    "invoices-onchain-fallback=false",
     "log-level=unusual",
     "log-timestamps=true",
     "bitcoin-cli=/opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoin-cli",
@@ -1399,9 +1440,7 @@ function validateLightningdConfig(text) {
     "bitcoin-rpcport=@BITCOIN_RPC_PORT@",
     "bitcoin-rpcclienttimeout=30",
     "bitcoin-retry-timeout=30",
-    "clear-plugins",
-    "important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/bcli",
-    "important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/chanbackup",
+    ...CLN_INERT_PLUGIN_NAMES_V26066.map((name) => `disable-plugin=${name}`),
   ];
   if (
     actual.length !== expected.length ||
@@ -1411,9 +1450,15 @@ function validateLightningdConfig(text) {
   }
   rejectPattern(
     text,
-    /(?:^|\n)\s*(?:include|plugin|plugin-dir|rpcuser|rpcpassword|grpc-port|commando|developer)(?:=|\s|$)/iu,
+    /(?:^|\n)\s*(?:clear-plugins|important-plugin|include|plugin|plugin-dir|rpcuser|rpcpassword|grpc-port|commando|developer)(?:=|\s|$)/iu,
     label,
     "dynamic plugin, include, credential, or remote-RPC option",
+  );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*invoices-onchain-fallback(?:=|\s|$)/iu,
+    label,
+    "on-chain invoice fallback opt-in",
   );
 }
 
@@ -2424,6 +2469,8 @@ export function validateDeploymentTree(rootInput) {
   }
   for (const required of [
     "[ \"${bpir_lightning_network}\" = 'signet' ] || bpir_fail",
+    '"${bpir_lightning_base}/plugins" \\',
+    '"${bpir_lightning_dir}/plugins"',
     "-perm /077",
     "-links +1",
     "/usr/bin/getfacl",

@@ -424,6 +424,36 @@ acquisition/recovery and joined synthetic two-provider DPF/Merkle boundary. It
 is not Signet, public-network, real-funds, production-ingress, production
 attestation or deployed-origin acceptance; ARC remains experimental.
 
+### 2026-07-30 Hetzner CLN v26.06.6 final-parse/plugin probe
+
+An isolated, no-funds probe ran the exact official Ubuntu 24.04 amd64 CLN
+archive (`3214d71227f780a9a53cf264ab35cf452e0bdf43c1497ea406beedf2ad0af058`)
+on the target Hetzner host with the separately pinned private `libpq.so.5`
+(`ad59c3cee64268b3cf6c245ea623610ca32eab3c0bfe39d90cabf27e46ad4203`)
+and Bitcoin Core 31.1 in disposable regtest state. Bitcoin Core listened only
+on loopback with wallet and P2P disabled; CLN used `--offline`, a loopback-only
+test bind and a disposable identity. No Signet/mainnet address, channel, coin or
+payment was created.
+
+The checked-in pre-probe shape found two fail-closed but production-blocking
+release facts: config-file `clear-plugins` deterministically segfaulted in
+v26.06.6, and `invoices-onchain-fallback=false` was rejected in the final
+config pass because the secure-default option is a no-argument opt-in. The
+early `--test-daemons-only` probe had exited before the latter check. With both
+spellings removed, all 27 official built-ins present at their compiled path,
+25 exact basename disables, the same 25 files root-owned `0444`, and only
+`bcli`/`chanbackup` mode `0555`, the daemon completed startup. `plugin list`
+contained exactly those two canonical paths with `active=true` and
+`dynamic=false`. An explicit `plugin start` of the inert `commando` member was
+rejected with `Permission denied`, after which the two-plugin set was unchanged.
+
+The temporary CLN and Core processes were then stopped, their three test ports
+were verified absent, and both exact diagnostic staging directories were
+deleted. `bitcoinpir-core-lightning.service` remained inactive. This is target
+runtime evidence for the workaround and private-libpq closure, not production
+Signet identity, custody, liquidity, payment, persistent installation or
+activation evidence.
+
 ### 2026-07-29 CLN bootstrap and bundle-layout gate
 
 The current-tree bootstrap work was exercised without creating a persistent

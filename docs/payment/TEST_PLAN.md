@@ -1043,11 +1043,27 @@ The default-Signet staging preflight focused suite additionally requires:
   fails on any pre-existing state; the pre-start layout verifier also requires
   an exact owner-read-only native 32-byte `hsm_secret` so omission cannot create
   a replacement identity;
-- the v26.06.6 bundle manifest requires CLI/hsmtool, all eight mandatory
-  `libexec/c-lightning` subdaemons, `lightningd`, `bcli` and `chanbackup`; a
-  missing `lightning_hsmd` fails rendering, while the exact systemd pre-start
+- the v26.06.6 bundle manifest is an exact 38-file set: CLI/hsmtool,
+  `lightningd`, all eight mandatory `libexec/c-lightning` subdaemons and the
+  27 official built-in plugin files at their compiled path. Only `bcli` and
+  `chanbackup` are executable (`0555`); the other 25 are root-owned `0444` and
+  each has one exact basename `disable-plugin` line. Missing/extra members,
+  legacy plugin paths, wrong modes, `clear-plugins`, duplicate explicit
+  important-plugin registration, or an on-chain invoice fallback opt-in fail;
+  `/srv/lightning/plugins` and the network-local plugin directory must be both
+  absent in the host layout and masked in the service namespace. Live
+  `plugin list` must contain exactly the two allowed entries with
+  `active=true,dynamic=false`; an attempted `plugin start` of an inert member
+  must fail. A
+  separate one-entry manifest requires the sole private loader object
+  `libpq.so.5` below a digest-equals-file root. Missing `lightning_hsmd` or
+  libpq, an additional loader object, an alternate/combined
+  `LD_LIBRARY_PATH`, or any `LD_PRELOAD` fails rendering and offline-manifest
+  verification, while the exact systemd pre-start
   command runs `lightningd --test-daemons-only --offline` before the datastore
-  layout verifier or daemon start;
+  layout verifier or daemon start. Because that CLN option exits during early
+  parsing, integration must additionally exercise a complete no-funds start;
+  the early probe alone is not final-config or plugin-initialization evidence;
 - all three role-specific channel/gossip topologies pass only with exact,
   distinct compressed node keys, public active channels and same-SCID
   bidirectional gossip; payer/router/issuer also enforce the configured
