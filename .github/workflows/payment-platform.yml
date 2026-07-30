@@ -33,10 +33,16 @@ on:
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
       - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-integrated-caddy-*'
+      - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -78,10 +84,16 @@ on:
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
       - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-integrated-caddy-*'
+      - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -358,11 +370,13 @@ jobs:
             echo "test-only query logging unexpectedly compiled in release mode" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016 # Backticks are expected literally in the compiler diagnostic.
           grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
           if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then
             echo "test-only query logging unexpectedly compiled in assertions-enabled release mode" >&2
             exit 1
           fi
+          # shellcheck disable=SC2016 # Backticks are expected literally in the compiler diagnostic.
           grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
       - name: Compile opt-in real-CDK provider interoperability test
         run: >-
@@ -382,6 +396,7 @@ jobs:
           bash -n scripts/payment-v1-cdk-regtest-e2e.sh
           grep -F 'standard_cashu_real_cdk_browser_provider_two_server_e2e' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
           grep -F 'standard_cashu_cdk_tls_proxy_subprocess' apps/server/tests/payment_v1_standard_cashu_process_e2e.rs >/dev/null
+          # shellcheck disable=SC2016 # The arithmetic expression is an asserted literal in the target script.
           grep -F 'total_mint_amount=$((expected_amount * 2))' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
           bash -n scripts/payment-v1-cln-regtest-e2e.sh
           bash scripts/payment-v1-cln-regtest-e2e.sh --help | grep -F -- '--acknowledge-local-regtest-only' >/dev/null
@@ -408,6 +423,34 @@ jobs:
           rustup target add wasm32-unknown-unknown
       - name: Check WASM without native provider storage
         run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
+
+  directory-relay-artifact:
+    name: Reproduce stopped directory-relay artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.18.0'
+      - name: Pull the exact reviewed build image
+        run: >-
+          docker pull
+          docker.io/library/rust@sha256:4ec71e955e6c08aeb238885083222ddff79d82eb87654a96c76e38e94da1a53b
+      - name: Build, atomically publish, and fully reverify the preparation artifact
+        run: |
+          bpir_source_commit="$(git rev-parse HEAD)"
+          bpir_artifact_parent="$(mktemp -d "${RUNNER_TEMP}/bpir-directory-relay-build.XXXXXX")"
+          bash scripts/build-payment-v1-directory-relay.sh \
+            --repository "$GITHUB_WORKSPACE" \
+            --source-commit "$bpir_source_commit" \
+            --output "$bpir_artifact_parent/artifact"
+          test -f "$bpir_artifact_parent/artifact/build-manifest.json"
+          test -x "$bpir_artifact_parent/artifact/bitcoinpir-directory-relay"
 
   browser-storage-boundary:
     name: Chromium vault and real no-funds issuer boundaries
@@ -451,11 +494,13 @@ jobs:
           sudo apt-get install --yes --no-install-recommends haproxy
           /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
           /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
-          caddy_container="$(docker create caddy@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794)"
+          caddy_container="$(docker create caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)"
           docker cp "$caddy_container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
           docker rm "$caddy_container"
           chmod 0555 "$RUNNER_TEMP/caddy"
-          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.3'
+          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.4'
+          test "$(sha256sum "$RUNNER_TEMP/caddy" | awk '{print $1}')" = 'b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9'
+          sudo install -o root -g root -m 0555 "$RUNNER_TEMP/caddy" /usr/bin/caddy
           echo 'BPIR_HAPROXY_BIN=/usr/sbin/haproxy' >> "$GITHUB_ENV"
           echo "BPIR_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
       - name: Validate non-activating Payment V1 deployment templates
@@ -463,15 +508,50 @@ jobs:
           node --check scripts/payment-v1-deployment-template-gate.mjs
           node --test scripts/payment-v1-deployment-template-gate.test.mjs
           node scripts/payment-v1-deployment-template-gate.mjs
+          bash -n scripts/build-payment-v1-directory-relay.sh
+          bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+          node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+          node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+          node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
           node --check scripts/payment-v1-rendered-artifact-gate.mjs
           node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
+          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
+          node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-gate.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
+          node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
+          node scripts/payment-v1-caddy-admin-uds-gate.mjs --help >/dev/null
           node --check scripts/payment-v1-source-fair-edge.test.mjs
-          node --test \
+          node --test --test-concurrency=1 \
+            scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
+            scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
             scripts/payment-v1-rendered-artifact-gate.test.mjs \
             scripts/payment-v1-linux-runtime-evidence.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs
+          node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          systemd-analyze verify scripts/fixtures/payment-v1-caddy-admin-uds-hardened.service
+          sudo "$(command -v node)" --test \
+            scripts/payment-v1-integrated-caddy-lock.test.mjs \
+            scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
+            node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+          sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
+          scripts/payment-v1-caddy-admin-uds-process.test.sh
+          sh -n scripts/payment-v1-caddy-admin-uds-systemd.test.sh
+          scripts/payment-v1-caddy-admin-uds-systemd.test.sh
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

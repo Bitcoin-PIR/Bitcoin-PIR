@@ -1,0 +1,261 @@
+{
+  "candidate": {
+    "adapted_json_sha256": "INVALID_REPLACE_WITH_CANONICAL_ADAPTED_JSON_SHA256",
+    "adapted_json_size": "INVALID_REPLACE_WITH_CANONICAL_ADAPTED_JSON_SIZE",
+    "binary": {
+      "gid": 0,
+      "mode": "0755",
+      "path": "/usr/bin/caddy",
+      "sha256": "INVALID_REPLACE_WITH_EXACT_PRODUCTION_CADDY_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "config": {
+      "gid": 0,
+      "mode": "0644",
+      "path": "/etc/caddy/Caddyfile",
+      "sha256": "INVALID_REPLACE_WITH_HARDENED_CADDYFILE_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit": {
+      "gid": 0,
+      "mode": "0644",
+      "path": "/etc/systemd/system/bhtm-caddy.service",
+      "sha256": "INVALID_REPLACE_WITH_HARDENED_UNIT_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit_policy": {
+      "admin_dial": "unix//run/bitcoinpir-caddy-admin/admin.sock",
+      "admin_listen": "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+      "caddy_admin_environment_absent": true,
+      "dropins": [],
+      "runtime_directory": "/run/bitcoinpir-caddy-admin",
+      "runtime_directory_mode": "0700",
+      "runtime_directory_preserve": "no",
+      "service_gid": 0,
+      "service_uid": 0,
+      "limit_core": "0",
+      "memory_swap_max": "0",
+      "standard_error": "null",
+      "standard_output": "null",
+      "umask": "0077"
+    }
+  },
+  "config_edit_mode": "INVALID_REPLACE_WITH_ONE_REVIEWED_CONFIG_EDIT_MODE",
+  "deployment_profile": "bhtm-caddy-admin-uds-v1",
+  "preimage": {
+    "admin": {
+      "kind": "tcp",
+      "listen": "127.0.0.1:2019"
+    },
+    "binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/caddy",
+      "sha256": "INVALID_REPLACE_WITH_EXACT_PRODUCTION_CADDY_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "config": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0644",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/caddy/Caddyfile",
+      "sha256": "INVALID_REPLACE_WITH_OLD_CADDYFILE_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0644",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/systemd/system/bhtm-caddy.service",
+      "sha256": "INVALID_REPLACE_WITH_OLD_UNIT_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "unit_generation": {
+      "active_enter_timestamp_monotonic": "INVALID_REPLACE_WITH_MONOTONIC_TIMESTAMP",
+      "active_state": "active",
+      "control_group": "/system.slice/bhtm-caddy.service",
+      "invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
+      "main_pid": "INVALID_REPLACE_WITH_MAIN_PID",
+      "sub_state": "running",
+      "unit_name": "bhtm-caddy.service"
+    }
+  },
+  "privileged_access_inventory": {
+    "boot_id": "INVALID_REPLACE_WITH_CURRENT_BOOT_LOWERCASE_UUID",
+    "captured_monotonic_ns": "INVALID_REPLACE_WITH_POSITIVE_MONOTONIC_NS",
+    "evidence_sha256": "INVALID_REPLACE_WITH_CANONICAL_PROCESS_AND_CAPABILITY_INVENTORY_SHA256",
+    "process_count": "INVALID_REPLACE_WITH_POSITIVE_PROCESS_COUNT",
+    "root_or_cap_dac_override_not_isolated": true,
+    "scope": "capability-free-unprivileged-non-root-dac-only"
+  },
+  "runtime": {
+    "gate": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "sha256": "INVALID_REPLACE_WITH_GATE_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "node_binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/node",
+      "sha256": "INVALID_REPLACE_WITH_NODE_22_22_2_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "node_version": "v22.22.2",
+    "probe": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+      "sha256": "INVALID_REPLACE_WITH_PROBE_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "setpriv_binary": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0755",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/bin/setpriv",
+      "sha256": "INVALID_REPLACE_WITH_SETPRIV_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    }
+  },
+  "schema_version": 1,
+  "service_uid_inventory": [
+    {
+      "name": "cloudflared",
+      "uid": "INVALID_REPLACE_WITH_CLOUDFLARED_UID"
+    },
+    {
+      "name": "pir",
+      "uid": "INVALID_REPLACE_WITH_PIR_UID"
+    }
+  ],
+  "site_preservation": {
+    "acme_storage_migration": "none",
+    "existing_site_inventory_sha256": "INVALID_REPLACE_WITH_COMPLETE_SITE_INVENTORY_SHA256",
+    "probe_ids": [
+      "INVALID_REPLACE_WITH_SORTED_EXISTING_SITE_PROBE_ID"
+    ]
+  },
+  "supply_chain": {
+    "caddy": {
+      "amd64_binary_sha256": "b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9",
+      "amd64_manifest_digest": "sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a3411ad798f7a423a",
+      "image": "docker.io/library/caddy",
+      "image_index_digest": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
+      "production_binary_sha256": "INVALID_REPLACE_WITH_EXACT_PRODUCTION_CADDY_SHA256",
+      "resolved_tag": "2.11.4",
+      "version": "v2.11.4"
+    },
+    "node": {
+      "amd64_manifest_digest": "sha256:868499d55378719bffa87b0ed1f099591823c029b543043c09c2483468e93201",
+      "image": "docker.io/library/node",
+      "image_index_digest": "sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e",
+      "resolved_tag": "22.22.2-bookworm-slim",
+      "version": "v22.22.2"
+    }
+  },
+  "transaction": {
+    "activation_mode": "cold-stop-install-daemon-reload-start-new-generation",
+    "automatic_rollback_after_ambiguous_start": false,
+    "backup_config_path": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/backups/replace-bhtm-caddy-admin-uds-v1.old.Caddyfile",
+    "backup_unit_path": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/backups/replace-bhtm-caddy-admin-uds-v1.old.service",
+    "candidate_config_path": "/etc/caddy/.bitcoinpir-replace-bhtm-caddy-admin-uds-v1.candidate",
+    "candidate_unit_path": "/etc/systemd/system/.bitcoinpir-replace-bhtm-caddy-admin-uds-v1.candidate",
+    "classification": {
+      "allowed_stopped_pairs": [
+        "old/old",
+        "candidate/old",
+        "candidate/candidate",
+        "old/candidate"
+      ],
+      "unknown_pair_action": "leave-stopped-fail-closed"
+    },
+    "daemon_reload_argv": [
+      "/usr/bin/systemctl",
+      "daemon-reload"
+    ],
+    "installation_mode": "service-stopped-two-exact-rename-replacements-with-parent-fsync",
+    "lock_path": "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+    "new_invocation_required": true,
+    "outcome_unknown_conditions": [
+      "systemctl-command-error-after-start-request",
+      "unclassified-config-unit-digest-pair",
+      "active-generation-with-unproven-admin-readback",
+      "receipt-publication-or-parent-fsync-uncertain"
+    ],
+    "receipt_path": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/receipts/replace-bhtm-caddy-admin-uds-v1.json",
+    "reload_forbidden": true,
+    "rollback_mode": "stop-classify-exact-pair-restore-both-old-preimages-daemon-reload-start-old-generation",
+    "runtime_directory_creation": "systemd-first-cold-start-only",
+    "start_argv": [
+      "/usr/bin/systemctl",
+      "start",
+      "bhtm-caddy.service"
+    ],
+    "state_directory": "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/transactions/replace-bhtm-caddy-admin-uds-v1",
+    "stop_argv": [
+      "/usr/bin/systemctl",
+      "stop",
+      "bhtm-caddy.service"
+    ]
+  },
+  "transaction_id": "replace-bhtm-caddy-admin-uds-v1",
+  "trust_acknowledgements": {
+    "acme_storage_not_migrated": true,
+    "append_only_overlay_cannot_perform_this_hardening": true,
+    "automatic_rollback_forbidden_after_ambiguous_start": true,
+    "candidate_config_changes_only_admin_endpoint_bytes": true,
+    "candidate_unit_changes_only_reviewed_admin_runtime_directives": true,
+    "existing_site_inventory_complete": true,
+    "no_remote_action_authorized": true,
+    "outcome_unknown_fails_closed": true,
+    "privileged_access_inventory_complete_for_boot": true,
+    "root_and_cap_dac_override_not_isolated": true,
+    "runtime_directory_requires_cold_start": true,
+    "service_uid_inventory_complete": true
+  }
+}

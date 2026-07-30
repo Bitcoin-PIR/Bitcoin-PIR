@@ -87,10 +87,18 @@ artifact back without exposing a signing key:
 node scripts/payment-v1-nostr-readback.mjs \
   --artifact directory-checkpoints.json \
   --relay wss://relay-one.example \
-  --relay wss://relay-two.example/nostr \
+  --relay wss://relay-two.example:8443 \
   --expected-set-digest-hex "$EVENT_SET_DIGEST_FROM_PUBLISH" \
   --timeout-ms 60000
 ```
+
+For the explicitly accepted centralized/degraded profile, both publisher and
+readback use exactly one `--relay` plus `--centralized-single-relay`. One relay
+without that flag, or two relays with it, is rejected before network I/O. The
+strict default remains two to eight origins and never falls back after failure.
+Publisher, readback, Web, and Rust production relay inputs all use the exact
+credential-free `wss://host[:nondefault-port]` origin grammar; relay paths and
+URL-normalization aliases are rejected.
 
 This helper requires the lockfile-pinned `ws` development dependency already
 installed under `web/node_modules`. It disables redirects and compression,

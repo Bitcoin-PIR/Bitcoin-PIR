@@ -63,15 +63,17 @@ function replaceRelayField(text, field, value) {
 function resolvedRelaySelection(text, overrides = {}) {
   const values = {
     status: "RESOLVED",
+    directory_mode: "strict-multi-relay",
     implementation: "bitcoinpir-directory-only",
     source_repository: "https://github.com/Bitcoin-PIR/Bitcoin-PIR.git",
     source_commit: "1".repeat(40),
     source_archive_sha256: "2".repeat(64),
     cargo_lock_sha256: "3".repeat(64),
+    build_manifest_sha256: "7".repeat(64),
     binary_sha256: "4".repeat(64),
     binary_version_output: "bitcoinpir-directory-relay 0.1.0",
     config_sha256: "5".repeat(64),
-    publisher_pubkey_hex: "6".repeat(64),
+    publisher_pubkey_hex: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
     ...overrides,
   };
   let output = text;
@@ -735,6 +737,59 @@ test("public issuer edge exposes ledger accrual only", () => {
   });
 });
 
+test("integrated existing-Caddy managed block rejects trust and privacy bypasses", () => {
+  const path =
+    "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
+  for (const [transform, expected] of [
+    [
+      (text) => `{\n\tadmin off\n}\n${text}`,
+      /global options block|four reviewed hostname blocks/,
+    ],
+    [
+      (text) => text.replace("header_up -*", "header_up Authorization {http.request.header.Authorization}"),
+      /header_up -\*|auth/,
+    ],
+    [
+      (text) => text.replace(
+        "reverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock",
+        "reverse_proxy 127.0.0.1:8191",
+      ),
+      /source-fair Unix socket|direct application bypass/,
+    ],
+    [
+      (text) => text.replace("proxy_protocol v2", "proxy_protocol v1"),
+      /proxy_protocol v2/,
+    ],
+    [
+      (text) => text.replace('respond "" 404', 'respond "" 200'),
+      /respond.*404/,
+    ],
+    [
+      (text) => text.replace(
+        "@PROVIDER_WSS_HOST@ {",
+        "@PROVIDER_WSS_HOST@ {\n\tlog",
+      ),
+      /access logging/,
+    ],
+    [
+      (text) => text.replace(
+        "bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@",
+        "bind @PUBLIC_HTTPS_BIND@",
+      ),
+      /PUBLIC_HTTPS_BIND.*exactly 3|PRIVATE_BIND.*exactly 1/,
+    ],
+    [
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*origin-root path/,
+    ],
+  ]) {
+    withFixture((root) => {
+      mutate(root, path, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
 test("source-fair edge rejects identity leaks, persistence, bypasses, and unbounded lanes", () => {
   const mutations = [
     [
@@ -757,6 +812,11 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
         "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {\n\tbind @DIRECTORY_PUBLISHER_PRIVATE_BIND@\n\tbind @PUBLIC_HTTPS_BIND@",
       ),
       /site binds must equal/,
+    ],
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("\t\tpath /\n", "\t\tpath /v1/directory\n"),
+      /public directory site.*path/,
     ],
     [
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
@@ -824,6 +884,14 @@ test("source-fair edge rejects identity leaks, persistence, bypasses, and unboun
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
       (text) => text.replace("    no log\n", "    log stdout format raw local0\n"),
       /no log|logging|persistent/,
+    ],
+    [
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      (text) => text.replace(
+        "http-request deny deny_status 404 unless { path -m str / }",
+        "http-request deny deny_status 404 unless { path -m str /v1/directory }",
+      ),
+      /exact origin-root path/,
     ],
     [
       "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
@@ -1042,6 +1110,11 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
   );
   assert.deepEqual(validateRelaySelection(unresolved), { status: "UNRESOLVED" });
 
+  assert.throws(
+    () => validateRelaySelection(`${unresolved}\nunreviewed_field = true\n`),
+    /fields must equal/,
+  );
+
   const thirdParty = replaceRelayField(
     unresolved,
     "implementation",
@@ -1061,6 +1134,35 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
     publisher_pubkey_hex: "0".repeat(64),
   });
   assert.throws(() => validateRelaySelection(zeroPublisher), /must be non-zero/);
+
+  for (const invalidPublisher of ["06".repeat(32), "ff".repeat(32)]) {
+    assert.throws(
+      () => validateRelaySelection(resolvedRelaySelection(unresolved, {
+        publisher_pubkey_hex: invalidPublisher,
+      })),
+      /must be a valid secp256k1 x-only key/,
+    );
+  }
+
+  const zeroArtifactHash = resolvedRelaySelection(unresolved, {
+    build_manifest_sha256: "0".repeat(64),
+  });
+  assert.throws(() => validateRelaySelection(zeroArtifactHash), /non-zero lowercase SHA-256/);
+
+  const implicitOrUnknownMode = resolvedRelaySelection(unresolved, {
+    directory_mode: "single",
+  });
+  assert.throws(
+    () => validateRelaySelection(implicitOrUnknownMode),
+    /directory_mode must be strict-multi-relay or centralized-single-relay/,
+  );
+
+  assert.equal(
+    validateRelaySelection(resolvedRelaySelection(unresolved, {
+      directory_mode: "centralized-single-relay",
+    })).directoryMode,
+    "centralized-single-relay",
+  );
 });
 
 test("a future directory-only exact-hash relay selection is accepted", () => {
@@ -1070,8 +1172,15 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
   );
   assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
     status: "RESOLVED",
+    directoryMode: "strict-multi-relay",
+    sourceCommit: "1".repeat(40),
+    sourceArchiveSha256: "2".repeat(64),
+    cargoLockSha256: "3".repeat(64),
+    buildManifestSha256: "7".repeat(64),
     binarySha256: "4".repeat(64),
-    publisherPubkey: "6".repeat(64),
+    binaryVersionOutput: "bitcoinpir-directory-relay 0.1.0",
+    configSha256: "5".repeat(64),
+    publisherPubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   });
 
   withFixture((root) => {
@@ -1086,7 +1195,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(
@@ -1096,7 +1205,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
         text
           .replace(
             "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml`,
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml`,
           )
           .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
     );
@@ -1115,7 +1224,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(
@@ -1125,7 +1234,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
         text
           .replace(
             "ExecStart=/usr/bin/false",
-            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml --listen 0.0.0.0:8080`,
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/config.toml --listen 0.0.0.0:8080`,
           )
           .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
     );

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
@@ -25,12 +25,14 @@ export const ACTIVE_BASELINES = Object.freeze({
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
+    "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
-    "31b981a179fe1af292704d983ce97b3401da4c18cd64002510b22bb7f21a4adf",
+    "6a52ff0034390ffda572bd785e766653dc749736bd942f497a4b897778113983",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
     "237162cb5d57333adf789e612fcdb4be602bf6e0c9cd99a03ecd079ab8aa257f",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
-    "5d3e28438563f592aea4d4a26a7e260f3e313a9e505a0b945bb9f602f0436653",
+    "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "2057e23b4f06c3394f1c4505e3d11b8bc44e046a4af7e2bbb0672450578a8e9f",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
@@ -62,6 +64,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
@@ -97,16 +100,39 @@ const UNSAFE_RELAY_COMMITS = new Set([
 const HASH_FIELDS = Object.freeze([
   "source_archive_sha256",
   "cargo_lock_sha256",
+  "build_manifest_sha256",
   "binary_sha256",
   "config_sha256",
 ]);
 const UNRESOLVED_FIELDS = Object.freeze([
+  "directory_mode",
   "implementation",
   "source_repository",
   "source_commit",
   ...HASH_FIELDS,
   "binary_version_output",
   "publisher_pubkey_hex",
+]);
+const RELAY_SELECTION_FIELDS = Object.freeze([
+  "version",
+  "status",
+  "directory_mode",
+  "implementation",
+  "source_repository",
+  "source_commit",
+  ...HASH_FIELDS,
+  "binary_version_output",
+  "publisher_pubkey_hex",
+  "listen_host",
+  "allowed_kind",
+  "max_event_message_bytes",
+  "max_content_bytes",
+  "config_max_bytes",
+  "config_profile",
+  "publisher_private_key_installed",
+  "nip42_auth",
+  "access_logging",
+  "mutable_source_ref",
 ]);
 
 function fail(message) {
@@ -1556,6 +1582,115 @@ function validateCaddyTemplate(text, label, expectedUpstreams, expectedTopLevelH
   }
 }
 
+function validateIntegratedExistingCaddyManagedBlock(text) {
+  const label = "integrated existing bhtm-Caddy managed block";
+  const begin =
+    "# BEGIN BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-v1";
+  const end =
+    "# END BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-v1";
+  if ((text.match(new RegExp(begin, "gu")) ?? []).length !== 1 ||
+      (text.match(new RegExp(end, "gu")) ?? []).length !== 1) {
+    fail(`${label} must contain one exact transaction marker pair`);
+  }
+  if (!text.endsWith("\n")) fail(`${label} must end in canonical LF`);
+  rejectPattern(text, /\r|\0/u, label, "non-canonical text");
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*\{\s*(?:\n|$)/mu,
+    label,
+    "global options block that cannot be safely appended",
+  );
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*(?:log|log_append|log_name)(?:\s|$)/mu,
+    label,
+    "application access logging",
+  );
+  rejectPattern(
+    text,
+    /\b(?:import|invoke|forward_auth|php_fastcgi|file_server|redir)\b/mu,
+    label,
+    "unreviewed expansion or handler",
+  );
+  const expectedTopLevelHeaders = [
+    "@PROVIDER_WSS_HOST@ {",
+    "@PAYMENT_ISSUER_HTTPS_HOST@ {",
+    "@DIRECTORY_RELAY_WSS_HOST@ {",
+    "@DIRECTORY_PUBLISHER_HTTPS_HOST@ {",
+  ];
+  const actualTopLevelHeaders = topLevelCaddyBlockHeaders(text, label);
+  if (JSON.stringify(actualTopLevelHeaders) !== JSON.stringify(expectedTopLevelHeaders)) {
+    fail(`${label} must contain exactly its four reviewed hostname blocks`);
+  }
+  for (const [siteAddress, siteLabel] of [
+    ["@DIRECTORY_RELAY_WSS_HOST@", "public directory site"],
+    ["@DIRECTORY_PUBLISHER_HTTPS_HOST@", "publisher directory site"],
+  ]) {
+    const siteActive = activeTemplateLines(
+      caddySiteBlock(text, siteAddress, label),
+      `${label} ${siteLabel}`,
+    );
+    const pathLines = siteActive.filter((line) => line.startsWith("path "));
+    if (JSON.stringify(pathLines) !== JSON.stringify(["path /"])) {
+      fail(`${label} ${siteLabel} must admit only the exact origin-root path`);
+    }
+    const uriExpressions = siteActive.filter((line) =>
+      line.includes("{http.request.uri}"));
+    if (
+      JSON.stringify(uriExpressions) !==
+      JSON.stringify(['expression {http.request.uri} == "/"'])
+    ) {
+      fail(`${label} ${siteLabel} must bind the exact origin-root request URI`);
+    }
+  }
+  const expectedUpstreams = [
+    "unix//run/bitcoinpir-source-fair-edge/provider.sock",
+    ...Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
+    "unix//run/bitcoinpir-source-fair-edge/directory-public.sock",
+    "unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+  ].sort();
+  const active = activeTemplateLines(text, label);
+  const upstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => {
+      const match = /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line);
+      if (!match) fail(`${label} contains a malformed reverse_proxy directive`);
+      return match[1];
+    })
+    .sort();
+  if (JSON.stringify(upstreams) !== JSON.stringify(expectedUpstreams)) {
+    fail(`${label} must use only the exact source-fair Unix socket multiset`);
+  }
+  for (const [line, count] of [
+    ["header_up -*", 7],
+    ["proxy_protocol v2", 7],
+    ["respond \"\" 404", 4],
+    ["bind @PUBLIC_HTTPS_BIND@", 3],
+    ["bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@", 1],
+    ["remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@", 1],
+    [
+      "tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+      1,
+    ],
+  ]) {
+    if (active.filter((entry) => entry === line).length !== count) {
+      fail(`${label} must contain ${JSON.stringify(line)} exactly ${count} time(s)`);
+    }
+  }
+  rejectPattern(
+    text,
+    /header_up\s+(?:Authorization|Cookie|Forwarded|Proxy-Authorization|Traceparent|Tracestate|Baggage|X-Forwarded(?:-[A-Za-z0-9-]+)?|X-Real-IP|X-Request-ID)\b/iu,
+    label,
+    "identity, auth, cookie or trace forwarding",
+  );
+  rejectPattern(
+    text,
+    /reverse_proxy\s+(?:https?:\/\/|127\.0\.0\.1|localhost|\[?::1\]?)/iu,
+    label,
+    "direct application bypass",
+  );
+}
+
 function caddySiteBlock(text, siteAddress, label) {
   const lines = text.split("\n");
   const header = `${siteAddress} {`;
@@ -1634,7 +1769,7 @@ function validateHetznerPublicCaddyLaneBindings(text) {
     Array(4).fill("unix//run/bitcoinpir-source-fair-edge/issuer.sock"),
     label,
   );
-  exactCaddySiteBindingsAndUpstreams(
+  const reader = exactCaddySiteBindingsAndUpstreams(
     text,
     "@DIRECTORY_RELAY_WSS_HOST@",
     ["bind @PUBLIC_HTTPS_BIND@"],
@@ -1657,6 +1792,30 @@ function validateHetznerPublicCaddyLaneBindings(text) {
     ],
     [],
     label,
+  );
+  requireExactActiveLine(
+    reader.active,
+    "path /",
+    1,
+    `${label} public directory site`,
+  );
+  requireExactActiveLine(
+    reader.active,
+    'expression {http.request.uri} == "/"',
+    1,
+    `${label} public directory site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    "path /",
+    1,
+    `${label} publisher site`,
+  );
+  requireExactActiveLine(
+    publisher.active,
+    'expression {http.request.uri} == "/"',
+    1,
+    `${label} publisher site`,
   );
   requireExactActiveLine(
     publisher.active,
@@ -1776,6 +1935,13 @@ function validateSourceFairHaproxy(text) {
   if (allocationGuardCount !== trackedAllocationGuards.length) {
     fail(`${label} must have exactly six post-allocation tracking guards`);
   }
+  if (
+    active.filter((line) =>
+      line === "http-request deny deny_status 404 unless { path -m str / }"
+    ).length !== 2
+  ) {
+    fail(`${label} must admit the exact origin-root path on both directory lanes`);
+  }
   const egressFilters = active.filter((line) => line.startsWith("filter bwlim-out "));
   const enabledEgressFilters = active.filter((line) => line.startsWith("http-request set-bandwidth-limit "));
   if (egressFilters.length !== 8 || enabledEgressFilters.length !== 8) {
@@ -1890,6 +2056,16 @@ function stringField(selection, name) {
 
 export function validateRelaySelection(text) {
   const selection = parseRelaySelection(text);
+  const actualFields = [...selection.keys()].sort();
+  const expectedFields = [...RELAY_SELECTION_FIELDS].sort();
+  if (
+    actualFields.length !== expectedFields.length ||
+    actualFields.some((field, index) => field !== expectedFields[index])
+  ) {
+    fail(
+      `relay selection fields must equal ${JSON.stringify(expectedFields)}, got ${JSON.stringify(actualFields)}`,
+    );
+  }
   exactField(selection, "version", 1);
   exactField(selection, "listen_host", "127.0.0.1");
   exactField(selection, "allowed_kind", 30078);
@@ -1922,6 +2098,16 @@ export function validateRelaySelection(text) {
     fail("relay selection status must be UNRESOLVED or RESOLVED");
   }
 
+  const directoryMode = stringField(selection, "directory_mode");
+  if (
+    directoryMode !== "strict-multi-relay" &&
+    directoryMode !== "centralized-single-relay"
+  ) {
+    fail(
+      "resolved relay directory_mode must be strict-multi-relay or centralized-single-relay",
+    );
+  }
+
   exactField(selection, "implementation", "bitcoinpir-directory-only");
   exactField(
     selection,
@@ -1936,8 +2122,9 @@ export function validateRelaySelection(text) {
     fail(`relay selection refuses audited unsafe commit ${sourceCommit}`);
   }
   for (const field of HASH_FIELDS) {
-    if (!/^[0-9a-f]{64}$/.test(stringField(selection, field))) {
-      fail(`resolved relay ${field} must be a lowercase SHA-256`);
+    const digest = stringField(selection, field);
+    if (!/^[0-9a-f]{64}$/.test(digest) || /^0{64}$/.test(digest)) {
+      fail(`resolved relay ${field} must be a non-zero lowercase SHA-256`);
     }
   }
   if (!/^bitcoinpir-directory-relay [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(
@@ -1952,14 +2139,27 @@ export function validateRelaySelection(text) {
   if (/^0{64}$/.test(publisherPubkey)) {
     fail("resolved relay publisher_pubkey_hex must be non-zero");
   }
+  try {
+    const key = createECDH("secp256k1");
+    key.setPublicKey(Buffer.from(`02${publisherPubkey}`, "hex"));
+  } catch {
+    fail("resolved relay publisher_pubkey_hex must be a valid secp256k1 x-only key");
+  }
   return {
     status,
+    directoryMode,
+    sourceCommit,
+    sourceArchiveSha256: stringField(selection, "source_archive_sha256"),
+    cargoLockSha256: stringField(selection, "cargo_lock_sha256"),
+    buildManifestSha256: stringField(selection, "build_manifest_sha256"),
     binarySha256: stringField(selection, "binary_sha256"),
+    binaryVersionOutput: stringField(selection, "binary_version_output"),
+    configSha256: stringField(selection, "config_sha256"),
     publisherPubkey,
   };
 }
 
-function validateRelayConfigExample(text, selection) {
+export function validateRelayConfigExample(text, selection) {
   const label = "directory relay configuration example";
   if (Buffer.byteLength(text, "utf8") > 16 * 1024) {
     fail(`${label} exceeds the application 16 KiB input bound`);
@@ -2310,6 +2510,12 @@ export function validateDeploymentTree(rootInput) {
     "production payout route",
   );
 
+  const integratedExistingCaddyBlock = readRequired(
+    root,
+    "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+  );
+  validateIntegratedExistingCaddyManagedBlock(integratedExistingCaddyBlock.text);
+
   const authorityEdge = readRequired(
     root,
     "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
@@ -2377,9 +2583,11 @@ export function validateDeploymentTree(rootInput) {
     [
       "Type", "User", "Group", "UMask", "StateDirectory", "StateDirectoryMode",
       "WorkingDirectory", "Environment", "ExecStart", "Restart", "TimeoutStopSec",
+      "LimitCORE", "LimitNOFILE", "MemoryMax", "MemorySwapMax", "TasksMax",
+      "StandardOutput", "StandardError",
       "NoNewPrivileges", "PrivateTmp", "PrivateDevices", "ProtectSystem", "ProtectHome",
       "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
-      "ProtectControlGroups", "LockPersonality", "MemoryDenyWriteExecute",
+      "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality", "MemoryDenyWriteExecute",
       "RestrictSUIDSGID", "RestrictNamespaces", "RestrictRealtime",
       "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
       "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths",
@@ -2398,6 +2606,15 @@ export function validateDeploymentTree(rootInput) {
   exactDirectiveValues(relayParsed, "Service", "StateDirectory", ["bitcoinpir-directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-directory-relay"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "Environment", ["RUST_LOG=error"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "LimitCORE", ["0"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "LimitNOFILE", ["4096"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "MemoryMax", ["536870912"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "MemorySwapMax", ["0"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "TasksMax", ["128"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "StandardOutput", ["null"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "StandardError", ["null"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProtectClock", ["true"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "ProtectHostname", ["true"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressDeny", ["any"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "IPAddressAllow", ["localhost"], relayLabel);
   exactDirectiveValues(relayParsed, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/directory-relay"], relayLabel);
@@ -2420,7 +2637,7 @@ export function validateDeploymentTree(rootInput) {
     const expectedExecStart =
       `/opt/bitcoinpir/directory-relay/${selection.binarySha256}/` +
       "bitcoinpir-directory-relay --config " +
-      "/etc/bitcoinpir/payment-v1/directory-relay/relay.toml";
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
     if (relayCommand !== expectedExecStart) {
       fail("resolved relay template must use only the pinned binary and one absolute --config path");
     }

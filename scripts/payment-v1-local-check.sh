@@ -87,12 +87,17 @@ cargo test --locked --offline -p pir-sdk-wasm --lib
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node --test scripts/payment-v1-deployment-template-gate.test.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
+bash -n scripts/build-payment-v1-directory-relay.sh
+bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
-node --test \
+node --test --test-concurrency=1 \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
   scripts/payment-v1-linux-runtime-evidence.test.mjs \
   scripts/payment-v1-source-fair-edge.test.mjs
@@ -371,12 +376,17 @@ node scripts/payment-v1-pages-deploy-gate.mjs
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node --test scripts/payment-v1-deployment-template-gate.test.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
+bash -n scripts/build-payment-v1-directory-relay.sh
+bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
-node --test \
+node --test --test-concurrency=1 \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
   scripts/payment-v1-linux-runtime-evidence.test.mjs \
   scripts/payment-v1-source-fair-edge.test.mjs

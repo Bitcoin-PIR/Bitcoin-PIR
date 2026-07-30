@@ -4,14 +4,15 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
-  lstatSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -27,6 +28,7 @@ import {
   assertLocalFilesNssPolicyUnchanged,
   LIVE_EVIDENCE_KIND,
   STOPPED_EDGE_EVIDENCE_KIND,
+  STOPPED_RELAY_EVIDENCE_KIND,
   NSS_BACKEND_PROFILE,
   NSS_ENUMERATION_KIND,
   PROTECTED_PROCESS_ENUMERATION_KIND,
@@ -44,11 +46,13 @@ import {
   parseLockedServiceAccountPolicyV1,
   parsePasswdEnumerationV2,
   parseProcStatus,
-  readOneLinkRegularForTestV1,
   systemdUnitObjectPathV1,
+  readOneLinkRegular,
+  readOneLinkRegularForTestV1,
   validateNonRootEdgeCapabilitiesV1,
   validateLiveRuntimeEvidence,
   validateStoppedEdgeActivationEvidence,
+  validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
@@ -321,6 +325,37 @@ test("live collector seals expensive secrets before its final Conditions and gen
   );
 });
 
+test("stopped relay collector seals its private loader before final Conditions and stopped state", () => {
+  const source = readFileSync(COLLECTOR, "utf8");
+  const collectorMarker = source.indexOf("function collectStoppedPreparationEvidence(");
+  const secretSealMarker = source.indexOf(
+    "      \"at the stopped-loader final seal\",",
+    collectorMarker,
+  );
+  const finalStateMarker = source.indexOf(
+    "// Typed Conditions and the stopped generation are deliberately collected",
+    secretSealMarker,
+  );
+  const accountPolicyMarker = source.indexOf(
+    "  const accountPolicyFinished = collectLockedServiceAccountPolicy(request, nss);",
+    finalStateMarker,
+  );
+
+  assert.ok(collectorMarker >= 0, "missing stopped collector");
+  assert.ok(secretSealMarker > collectorMarker, "missing stopped private-loader final seal");
+  assert.ok(finalStateMarker > secretSealMarker, "final stopped state must follow the private-loader seal");
+  assert.ok(accountPolicyMarker > finalStateMarker, "account-policy confirmation must follow final stopped state");
+
+  const finalStatePass = source.slice(finalStateMarker, accountPolicyMarker);
+  assert.match(finalStatePass, /collectStoppedUnitConfigurations\(/);
+  assert.match(finalStatePass, /collectStoppedUnitStates\(/);
+  assert.doesNotMatch(
+    finalStatePass,
+    /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectSecretAccessChecks/,
+    "private-loader or expensive access probes must not run after final Conditions/stopped-state sealing",
+  );
+});
+
 function capabilityRecord(overrides = {}) {
   return {
     ambient: "0000000000000000",
@@ -384,6 +419,7 @@ function fixture() {
       CapabilityBoundingSet: [""],
       Group: ["bitcoinpir-test"],
       LimitCORE: ["0"],
+      LimitNOFILE: ["4096"],
       LockPersonality: ["true"],
       MemoryDenyWriteExecute: ["true"],
       MemoryMax: ["268435456"],
@@ -486,6 +522,8 @@ function fixture() {
     LockPersonality: "yes",
     LimitCORE: "0",
     LimitCORESoft: "0",
+    LimitNOFILE: "4096",
+    LimitNOFILESoft: "4096",
     MainPID: "4242",
     MemoryDenyWriteExecute: "yes",
     MemoryMax: "268435456",
@@ -804,6 +842,192 @@ function stoppedEdgeFixture() {
   return { ...live, evidence };
 }
 
+function stoppedRelayFixture() {
+  const live = fixture();
+  const value = stoppedEdgeFixture();
+  const previousUid = value.request.service_identities[0].uid;
+  const previousGid = value.request.service_identities[0].gid;
+  const relayUid = 62951;
+  const relayGid = 62952;
+  value.request.deployment_profile = "directory-relay-v1";
+  value.request.runtime_paths = [];
+  value.request.secret_files = [];
+  value.request.tmpfiles_directories = [];
+  const relayConfigPath =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  const relayFragmentPath =
+    "/etc/systemd/system/bitcoinpir-directory-relay.service";
+  value.request.units[0].unit_name = "bitcoinpir-directory-relay.service";
+  value.request.units[0].fragment_path = relayFragmentPath;
+  value.request.units[0].exec_start = ["/usr/bin/false"];
+  value.request.units[0].exec_start_pre = [];
+  value.request.units[0].conditions = [
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+  ];
+  Object.assign(value.request.units[0].hardening, {
+    LimitCORE: ["0"],
+    LimitNOFILE: ["4096"],
+    MemoryMax: ["536870912"],
+    MemorySwapMax: ["0"],
+    ProtectClock: ["true"],
+    ProtectHostname: ["true"],
+    Restart: ["no"],
+    StandardError: ["null"],
+    StandardOutput: ["null"],
+    TasksMax: ["128"],
+  });
+  value.request.service_identities[0].unit_name =
+    "bitcoinpir-directory-relay.service";
+  value.request.service_identities[0].uid = relayUid;
+  value.request.service_identities[0].gid = relayGid;
+  const relayUser = value.evidence.nss.users.find((entry) => entry.uid === previousUid);
+  relayUser.uid = relayUid;
+  relayUser.primary_gid = relayGid;
+  relayUser.supplementary_gids = relayUser.supplementary_gids
+    .map((gid) => gid === previousGid ? relayGid : gid)
+    .sort((left, right) => left - right);
+  const relayGroup = value.evidence.nss.groups.find((entry) => entry.gid === previousGid);
+  relayGroup.gid = relayGid;
+  value.evidence.account_policy.accounts[0].uid = relayUid;
+  value.evidence.account_policy.accounts[0].gid = relayGid;
+  value.evidence.protected_process_closure.protected_uids = [relayUid];
+  value.evidence.protected_process_closure.protected_gids = [732, relayGid];
+  sortNssEvidence(value.evidence.nss);
+  value.request.installed_files = [
+    {
+      file_type: "regular",
+      gid: value.request.service_identities[0].gid,
+      mode: "0400",
+      nlink: 1,
+      sha256: hash("relay-config"),
+      target_path: relayConfigPath,
+      uid: value.request.service_identities[0].uid,
+    },
+    {
+      file_type: "regular",
+      gid: 0,
+      mode: "0644",
+      nlink: 1,
+      sha256: hash("relay-fragment"),
+      target_path: relayFragmentPath,
+      uid: 0,
+    },
+  ];
+  value.request.secret_files = [{
+    consumer_unit_name: "bitcoinpir-directory-relay.service",
+    gid: relayGid,
+    mode: "0400",
+    target_path: relayConfigPath,
+    uid: relayUid,
+  }];
+  value.request.systemd_analyze_argv = [
+    "/usr/bin/systemd-analyze",
+    "verify",
+    relayFragmentPath,
+  ];
+  value.evidence.evidence_kind = STOPPED_RELAY_EVIDENCE_KIND;
+  value.evidence.schema_version = 2;
+  value.evidence.runtime_socket_absence_passes = [[], []];
+  for (const pass of value.evidence.stopped_unit_passes) {
+    pass[0].unit_name = "bitcoinpir-directory-relay.service";
+    pass[0].fragment_path = relayFragmentPath;
+  }
+  const richInstalledFile = (expected, source, index) => ({
+    ...clone(source),
+    ...expected,
+    ino: String(900 + index),
+    size: 200 + index,
+  });
+  const installedFiles = value.request.installed_files.map((expected, index) =>
+    richInstalledFile(expected, live.evidence.installed_files[index], index),
+  );
+  value.evidence.installed_file_passes = [
+    clone(installedFiles),
+    clone(installedFiles),
+  ];
+  const properties = clone(live.evidence.units[0].properties);
+  Object.assign(properties, {
+    ActiveEnterTimestampMonotonic: "0",
+    ActiveState: "inactive",
+    ConditionResult: "no",
+    ControlGroup: "",
+    ExecStart: execValue("/usr/bin/false"),
+    ExecStartPre: "",
+    FragmentPath: relayFragmentPath,
+    InvocationID: "",
+    LimitNOFILE: "4096",
+    LimitNOFILESoft: "4096",
+    MainPID: "0",
+    MemoryMax: "536870912",
+    MemorySwapCurrent: "[not set]",
+    ProtectClock: "yes",
+    ProtectHostname: "yes",
+    SubState: "dead",
+  });
+  const conditions = value.request.units[0].conditions.map((condition) => ({
+    negate: false,
+    parameter: condition.slice("ConditionPathExists=".length),
+    path_exists: false,
+    result: -1,
+    trigger: false,
+    type: "ConditionPathExists",
+  }));
+  const unitConfiguration = {
+    conditions,
+    fragment_sha256: value.request.installed_files[1].sha256,
+    properties,
+    unit_name: "bitcoinpir-directory-relay.service",
+  };
+  value.evidence.unit_configuration_passes = [
+    [clone(unitConfiguration)],
+    [clone(unitConfiguration)],
+  ];
+  value.evidence.systemd_analyze_verify = {
+    argv: clone(value.request.systemd_analyze_argv),
+    exit_status: 0,
+    stderr: "",
+    stdout: "",
+  };
+  const relayParents = [
+    "/",
+    "/etc",
+    "/etc/bitcoinpir",
+    "/etc/bitcoinpir/payment-v1",
+    "/etc/bitcoinpir/payment-v1/directory-relay",
+  ];
+  value.evidence.secret_parent_directories = relayParents.map((target, index) => ({
+    acl_sha256: hash(`relay-parent-acl-${index}`),
+    capability_sha256: hash(""),
+    dev: "1",
+    expected_type: "directory",
+    file_type: "directory",
+    gid: index === relayParents.length - 1 ? relayGid : 0,
+    ino: String(950 + index),
+    mode: index === relayParents.length - 1 ? "0700" : "0755",
+    nlink: 2,
+    size: 40,
+    stat_command_sha256: hash(`relay-parent-stat-${index}`),
+    target_path: target,
+    uid: index === relayParents.length - 1 ? relayUid : 0,
+    xattr_sha256: hash(`relay-parent-xattr-${index}`),
+  }));
+  value.evidence.secret_access_checks = [{
+    argv: testProbeArgv(
+      { gid: relayGid, groups: [732, relayGid].sort((left, right) => left - right), uid: relayUid },
+      relayConfigPath,
+    ),
+    exit_status: 0,
+    expected_readable: true,
+    stderr: "",
+    stdout: "",
+    target_path: relayConfigPath,
+    unit_name: "bitcoinpir-directory-relay.service",
+  }];
+  return value;
+}
+
 function validate(value) {
   return validateLiveRuntimeEvidence({
     evidence: value.evidence,
@@ -817,6 +1041,17 @@ function validate(value) {
 
 function validateStopped(value) {
   return validateStoppedEdgeActivationEvidence({
+    evidence: value.evidence,
+    expectedBootId: value.boot,
+    expectedMachineIdSha256: value.machine,
+    maxAgeSeconds: 30,
+    nowUnixSeconds: 1_800_000_020,
+    request: value.request,
+  });
+}
+
+function validateStoppedRelay(value) {
+  return validateStoppedRelayPreparationEvidence({
     evidence: value.evidence,
     expectedBootId: value.boot,
     expectedMachineIdSha256: value.machine,
@@ -1541,7 +1776,7 @@ for (const replacedComponent of ["final", "intermediate"]) {
               target,
             }),
           ),
-          /pinned secret directory metadata changed during probes|pinned\/final descriptor mismatch/,
+          /independent stat mismatch|pinned secret directory metadata changed during probes|pinned\/final descriptor mismatch/,
         );
         assert.equal(lstatSync(target).ino, originalInode, "ABA restored original inode");
       } finally {
@@ -1793,6 +2028,119 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
   const legacySchema = stoppedEdgeFixture();
   legacySchema.evidence.schema_version = 1;
   assert.throws(() => validateStopped(legacySchema), /evidence schema, collector/);
+});
+
+test("stopped directory-relay preparation is closed and can never become live evidence", () => {
+  const value = stoppedRelayFixture();
+  assert.equal(validateStoppedRelay(value), true);
+
+  const active = stoppedRelayFixture();
+  active.evidence.stopped_unit_passes[1][0].active_state = "active";
+  assert.throws(() => validateStoppedRelay(active), /not fully stopped/);
+
+  const executable = stoppedRelayFixture();
+  executable.request.units[0].exec_start = ["/usr/bin/true"];
+  assert.throws(() => validateStoppedRelay(executable), /blocked-unit binding/);
+
+  const preStart = stoppedRelayFixture();
+  preStart.request.units[0].exec_start_pre = ["/usr/bin/true"];
+  assert.throws(() => validateStoppedRelay(preStart), /blocked-unit binding/);
+
+  const wrongConfigOwner = stoppedRelayFixture();
+  wrongConfigOwner.request.installed_files[0].uid = 0;
+  assert.throws(() => validateStoppedRelay(wrongConfigOwner), /blocked-unit binding/);
+
+  const runtimeSocket = stoppedRelayFixture();
+  runtimeSocket.request.runtime_paths = [{
+    file_type: "socket",
+    gid: 731,
+    mode: "0660",
+    target_path: "/run/bitcoinpir-directory-relay/relay.sock",
+    uid: 730,
+  }];
+  assert.throws(() => validateStoppedRelay(runtimeSocket), /blocked-unit binding/);
+
+  const installedTamper = stoppedRelayFixture();
+  installedTamper.evidence.installed_file_passes[1][0].sha256 = hash("tampered-config");
+  assert.throws(() => validateStoppedRelay(installedTamper), /installed-file sha256 drift/);
+
+  const effectiveStart = stoppedRelayFixture();
+  effectiveStart.evidence.unit_configuration_passes[1][0].properties.ExecStart =
+    execValue("/usr/bin/true");
+  assert.throws(() => validateStoppedRelay(effectiveStart), /effective ExecStart drift/);
+
+  const resolvedSelection = stoppedRelayFixture();
+  for (const pass of resolvedSelection.evidence.unit_configuration_passes) {
+    const selection = pass[0].conditions.find((condition) =>
+      condition.parameter.endsWith("/RELAY-SELECTION-RESOLVED"));
+    selection.path_exists = true;
+    selection.result = 1;
+  }
+  assert.throws(
+    () => validateStoppedRelay(resolvedSelection),
+    /selection condition is not unresolved/,
+  );
+
+  const untypedCondition = stoppedRelayFixture();
+  untypedCondition.evidence.unit_configuration_passes[0][0].conditions[0].result =
+    "-1";
+  assert.throws(
+    () => validateStoppedRelay(untypedCondition),
+    /condition result is incoherent/,
+  );
+
+  const unreadableConfig = stoppedRelayFixture();
+  unreadableConfig.evidence.secret_access_checks[0].exit_status = 1;
+  assert.throws(
+    () => validateStoppedRelay(unreadableConfig),
+    /access isolation failed/,
+  );
+
+  const unsafeConfigParent = stoppedRelayFixture();
+  unsafeConfigParent.evidence.secret_parent_directories.at(-1).uid = 0;
+  assert.throws(
+    () => validateStoppedRelay(unsafeConfigParent),
+    /final parent must be consumer-owned mode 0700/,
+  );
+
+  const unreviewedSwapCurrent = stoppedRelayFixture();
+  unreviewedSwapCurrent.evidence.unit_configuration_passes[0][0].properties.MemorySwapCurrent =
+    "18446744073709551615";
+  assert.throws(
+    () => validateStoppedRelay(unreviewedSwapCurrent),
+    /unreviewed MemorySwapCurrent/,
+  );
+
+  const legacyRelaySchema = stoppedRelayFixture();
+  legacyRelaySchema.evidence.schema_version = 1;
+  legacyRelaySchema.evidence.evidence_kind =
+    "bitcoinpir-payment-v1-linux-root-stopped-directory-relay-v1";
+  assert.throws(
+    () => validateStoppedRelay(legacyRelaySchema),
+    /schema, collector, profile/,
+  );
+
+  const live = fixture();
+  live.request.deployment_profile = "directory-relay-v1";
+  assert.throws(() => validate(live), /stopped-only/);
+});
+
+test("runtime evidence regular-file reads use no-follow one-link fd semantics", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-runtime-read-")));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const path = join(root, "evidence.json");
+  writeFileSync(path, "{}\n");
+  assert.equal(readOneLinkRegular(path, "test evidence").toString("utf8"), "{}\n");
+
+  const link = join(root, "link.json");
+  symlinkSync(path, link);
+  assert.throws(() => readOneLinkRegular(link, "linked evidence"), /one-link regular file/u);
+
+  const hardlink = join(root, "hardlink.json");
+  linkSync(path, hardlink);
+  assert.throws(() => readOneLinkRegular(path, "hardlinked evidence"), /one-link regular file/u);
+  unlinkSync(hardlink);
+  assert.equal(readFileSync(path, "utf8"), "{}\n");
 });
 
 test("live verifier closes protected NSS primary, explicit, effective, UID, and GID aliases", () => {
@@ -2189,6 +2537,8 @@ for (const [label, mutate, expected] of [
   ["effective Restart drift", (f) => { f.evidence.units[0].properties.Restart = "on-failure"; }, /Restart drift/],
   ["effective LimitCORE drift", (f) => { f.evidence.units[0].properties.LimitCORE = "infinity"; }, /LimitCORE drift/],
   ["effective LimitCORESoft drift", (f) => { f.evidence.units[0].properties.LimitCORESoft = "infinity"; }, /LimitCORESoft drift/],
+  ["effective LimitNOFILE drift", (f) => { f.evidence.units[0].properties.LimitNOFILE = "infinity"; }, /LimitNOFILE drift/],
+  ["effective LimitNOFILESoft drift", (f) => { f.evidence.units[0].properties.LimitNOFILESoft = "1024"; }, /LimitNOFILESoft drift/],
   ["effective MemoryMax drift", (f) => { f.evidence.units[0].properties.MemoryMax = "infinity"; }, /MemoryMax drift/],
   ["effective MemorySwapCurrent drift", (f) => { f.evidence.units[0].properties.MemorySwapCurrent = "1"; }, /MemorySwapCurrent drift/],
   ["effective MemorySwapMax drift", (f) => { f.evidence.units[0].properties.MemorySwapMax = "infinity"; }, /MemorySwapMax drift/],
@@ -2257,9 +2607,15 @@ test("collect-live rejects caller JSON, caller challenge, and offline verificati
   const stoppedCallerJson = spawnSync(process.execPath, [COLLECTOR, "collect-stopped-edge", ...base, "--output", "/tmp/output", "--evidence", "/tmp/forged.json"], { encoding: "utf8" });
   assert.notEqual(stoppedCallerJson.status, 0);
   assert.match(stoppedCallerJson.stderr, /collect-stopped-edge forbids caller evidence/);
+  const stoppedRelayCallerJson = spawnSync(process.execPath, [COLLECTOR, "collect-stopped-relay", ...base, "--output", "/tmp/output", "--evidence", "/tmp/forged.json"], { encoding: "utf8" });
+  assert.notEqual(stoppedRelayCallerJson.status, 0);
+  assert.match(stoppedRelayCallerJson.stderr, /collect-stopped-relay forbids caller evidence/);
   const stoppedOffline = spawnSync(process.execPath, [COLLECTOR, "verify-stopped-edge-offline", ...base, "--evidence", "/tmp/forged.json", "--expected-boot-id", "12345678-1234-4abc-8def-123456789abc"], { encoding: "utf8" });
   assert.notEqual(stoppedOffline.status, 0);
   assert.match(stoppedOffline.stderr, /trusted-evidence-sha256/);
+  const stoppedRelayOffline = spawnSync(process.execPath, [COLLECTOR, "verify-stopped-relay-offline", ...base, "--evidence", "/tmp/forged.json", "--expected-boot-id", "12345678-1234-4abc-8def-123456789abc"], { encoding: "utf8" });
+  assert.notEqual(stoppedRelayOffline.status, 0);
+  assert.match(stoppedRelayOffline.stderr, /trusted-evidence-sha256/);
 });
 
 test("collect-live is Linux-only and root-only before any runtime evidence can be claimed", () => {

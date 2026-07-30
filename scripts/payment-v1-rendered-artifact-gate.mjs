@@ -118,6 +118,28 @@ const SYSTEMD_SERVICE_KEYS = Object.freeze([
 ]);
 
 const PROFILE_CATALOG = Object.freeze({
+  "directory-relay-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/directory-relay.toml.example",
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    // The existing root Caddy process is deliberately not represented as a
+    // bundle-owned systemd unit. This profile closes and proves the HAProxy
+    // half of the composite overlay. The separate integrated-Caddy overlay
+    // plan binds the mutable Caddy preimage, managed block, unit, binary,
+    // process generation, TLS inputs, transaction, rollback and health proof.
+    templates: Object.freeze([
+      "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "scripts/payment-v1-caddy-admin-uds-gate.mjs",
+      "scripts/payment-v1-caddy-admin-uds-probe.mjs",
+      "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
@@ -234,6 +256,8 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "InvocationID",
   "LimitCORE",
   "LimitCORESoft",
+  "LimitNOFILE",
+  "LimitNOFILESoft",
   "LoadCredential",
   "LoadState",
   "LockPersonality",
@@ -294,6 +318,41 @@ export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
 ]);
 
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-probe.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-core-lightning.service",
@@ -411,7 +470,7 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/directory-relay.toml.example": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-    modes: ["0400", "0440", "0600"],
+    modes: ["0400"],
     rootOwned: false,
   },
 });
@@ -426,6 +485,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "CLN_RPC_GUARD_SHA256",
   "DIRECTORY_PUBLISHER_PUBKEY_HEX",
   "HAPROXY_SHA256",
+  "OVERLAY_EXCHANGE_SHA256",
   "HETZNER_OPERATOR_PUBKEY_HEX",
   "HETZNER_POLICY_PUBKEY_HEX",
   "HETZNER_PROVIDER_ID_HEX",
@@ -1080,6 +1140,10 @@ function validateRenderedMetadata(artifact, catalog, label) {
 
 function secretConsumerUnit(deploymentProfile, targetPath) {
   const mappings = {
+    "directory-relay-v1": [[
+      "/etc/bitcoinpir/payment-v1/directory-relay/",
+      "bitcoinpir-directory-relay.service",
+    ]],
     "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-public-edge.service"]],
     "edge-rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
     "issuer-lightning-signet-v1": [
@@ -1098,6 +1162,21 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
     "rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/rollback-authority/", "bitcoinpir-rollback-authority.service"]],
   };
   return mappings[deploymentProfile]?.find(([prefix]) => targetPath.startsWith(prefix))?.[1];
+}
+
+function privateLoaderConsumerUnit(deploymentProfile, artifact) {
+  if (artifact.artifact_class === "secret") {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  if (
+    deploymentProfile === "directory-relay-v1" &&
+    artifact.artifact_class === "config" &&
+    artifact.target_path ===
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml"
+  ) {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  return undefined;
 }
 
 function validateSecretOwnerBindings(plan) {
@@ -1237,6 +1316,26 @@ function validateIssuerLightningPreflightPayloadContract(plan) {
   }
 }
 
+function validateDirectoryRelayConfigOwnerBinding(document) {
+  if (document.deployment_profile !== "directory-relay-v1") return;
+  const identities = document.service_identities ?? [];
+  if (
+    identities.length !== 1 ||
+    identities[0].unit_name !== "bitcoinpir-directory-relay.service" ||
+    identities[0].uid !== 62951 ||
+    identities[0].gid !== 62952
+  ) {
+    fail("directory-relay-v1 must bind the reviewed relay UID 62951 and GID 62952");
+  }
+  const artifacts = document.rendered_artifacts ?? document.artifacts ?? [];
+  const config = artifacts.find(
+    (artifact) => artifact.target_path === "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+  );
+  if (!config || config.uid !== 62951 || config.gid !== 62952 || config.mode !== "0400") {
+    fail("directory-relay-v1 config must be relay-owned UID 62951 GID 62952 mode 0400");
+  }
+}
+
 function validatePlan(plan) {
   exactKeys(
     plan,
@@ -1364,6 +1463,7 @@ function validatePlan(plan) {
   validateProviderPayloadClosure(plan);
   validateIssuerLightningPreflightPayloadContract(plan);
   validateRemoteRollbackPayloadMetadata(plan);
+  validateDirectoryRelayConfigOwnerBinding(plan);
   validateSecretOwnerBindings(plan);
 }
 
@@ -1571,6 +1671,21 @@ function parseSystemdUnit(text, label) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "directory-relay-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -1664,6 +1779,7 @@ function validateProfileUnitPolicy(
   conditions,
   hardening,
   execStart,
+  execStartPre,
   label,
 ) {
   const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
@@ -1673,7 +1789,33 @@ function validateProfileUnitPolicy(
   if (canonicalize(conditions) !== canonicalize([...expectedConditions].sort(asciiCompare))) {
     fail(`${label} must retain the exact global and profile-specific activation conditions`);
   }
+  if (deploymentProfile === "directory-relay-v1") {
+    if (
+      canonicalize(execStart) !== canonicalize(["/usr/bin/false"]) ||
+      canonicalize(execStartPre) !== canonicalize([])
+    ) {
+      fail(`${label} directory-relay-v1 must remain stopped-only with ExecStart=/usr/bin/false`);
+    }
+    for (const [key, expected] of [
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "4096"],
+      ["MemoryMax", "536870912"],
+      ["MemorySwapMax", "0"],
+      ["TasksMax", "128"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["Restart", "no"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep directory-relay-v1 ${key}=${expected}`);
+      }
+    }
+  }
   const privateRequestEdge =
+    (deploymentProfile === "integrated-existing-bhtm-caddy-v1" &&
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service") ||
     (deploymentProfile === "edge-hetzner-v1" &&
       new Set([
         "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
@@ -1879,7 +2021,233 @@ function hashBindingClass(artifactClass) {
   return "config";
 }
 
-function configManagedReferences(sourcePath, text) {
+const ADMIN_GATE_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash } from "node:crypto";',
+  'import { readFileSync } from "node:fs";',
+  'import { pathToFileURL } from "node:url";',
+  "",
+  "",
+].join("\n");
+
+const ADMIN_PROBE_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash } from "node:crypto";',
+  'import { readFileSync } from "node:fs";',
+  'import { request } from "node:http";',
+  "",
+  "const MAX_GATE_SOURCE_BYTES = 8 * 1024 * 1024;",
+  "const expectedGateSha256 = process.env.BPIR_ADMIN_GATE_SHA256;",
+  'if (!/^[0-9a-f]{64}$/u.test(expectedGateSha256 ?? "")) {',
+  '  throw new Error("BPIR_ADMIN_GATE_SHA256 must be one lowercase SHA-256 digest");',
+  "}",
+  "const gateChunks = [];",
+  "let gateSize = 0;",
+  "for await (const chunk of process.stdin) {",
+  "  gateSize += chunk.length;",
+  "  if (gateSize > MAX_GATE_SOURCE_BYTES) {",
+  "    throw new Error(`admin gate source exceeded ${MAX_GATE_SOURCE_BYTES} bytes`);",
+  "  }",
+  "  gateChunks.push(chunk);",
+  "}",
+  'if (gateSize === 0) throw new Error("admin gate source stdin was empty");',
+  "const gateSource = Buffer.concat(gateChunks);",
+  'const observedGateSha256 = createHash("sha256").update(gateSource).digest("hex");',
+  "if (observedGateSha256 !== expectedGateSha256) {",
+  '  throw new Error("admin gate source stdin did not match BPIR_ADMIN_GATE_SHA256");',
+  "}",
+  'new TextDecoder("utf-8", { fatal: true }).decode(gateSource);',
+  "const {",
+  "  MAX_ADAPTED_JSON_BYTES,",
+  "  canonicalizeAdaptedCaddyJson,",
+  "  sha256,",
+  '} = await import(`data:text/javascript;base64,${gateSource.toString("base64")}`);',
+  "if (",
+  "  !Number.isSafeInteger(MAX_ADAPTED_JSON_BYTES) ||",
+  "  MAX_ADAPTED_JSON_BYTES < 1 ||",
+  '  typeof canonicalizeAdaptedCaddyJson !== "function" ||',
+  '  typeof sha256 !== "function"',
+  ") {",
+  '  throw new Error("admin gate source did not export the exact probe interface");',
+  "}",
+  "",
+  "",
+].join("\n");
+
+const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
+  adminGate: "2dd2c136a31edb952c0c095bef7c2f796d9591a787333921999ed361e158a3a4",
+  adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
+  overlayGate: "6c9db37516596974ba6468235a31655f0301781744a0dea46352ab8b4f712f9c",
+  overlayTransaction: "2c2276ee9306b37e7db7d87c89d443e1fc1306cba077555f12c05b4a33723ba1",
+});
+
+const OVERLAY_TRANSACTION_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash, randomBytes } from "node:crypto";',
+  'import { spawnSync } from "node:child_process";',
+  "import {",
+  "  closeSync,",
+  "  constants,",
+  "  fchmodSync,",
+  "  fchownSync,",
+  "  fstatSync,",
+  "  fsyncSync,",
+  "  lstatSync,",
+  "  mkdirSync,",
+  "  openSync,",
+  "  readFileSync,",
+  "  readdirSync,",
+  "  renameSync,",
+  "  rmdirSync,",
+  "  unlinkSync,",
+  "  writeFileSync,",
+  '} from "node:fs";',
+  'import tls from "node:tls";',
+  'import { connect as netConnect } from "node:net";',
+  'import { basename, dirname, isAbsolute, resolve } from "node:path";',
+  'import { fileURLToPath, pathToFileURL } from "node:url";',
+  "",
+  "import {",
+  "  OVERLAY_COLLECTOR,",
+  "  buildOverlayCandidateFromRendered,",
+  "  canonicalJson,",
+  "  computeApprovedOverlayPlanSha256,",
+  "  parseStrictJson,",
+  "  validateOverlayPlan,",
+  "  validateOverlayPreparedContext,",
+  "  validateOverlayReceipt,",
+  '} from "./payment-v1-integrated-caddy-overlay-gate.mjs";',
+  "import {",
+  "  ADMIN_DIRECTORY,",
+  "  ADMIN_DIAL,",
+  "  ADMIN_LISTEN,",
+  "  ADMIN_SOCKET,",
+  "  DAC_BOUNDARY,",
+  "  canonicalJson as canonicalAdminUdsJson,",
+  "  canonicalizeAdaptedCaddyJson,",
+  "  computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,",
+  "  validateCommittedReceipt as validateAdminUdsCommittedReceipt,",
+  '} from "./payment-v1-caddy-admin-uds-gate.mjs";',
+  "",
+  "",
+].join("\n");
+
+function requireClosedJavaScriptImportHeader(text, expectedHeader, label) {
+  if (!text.startsWith(expectedHeader)) {
+    fail(`${label} does not have its exact reviewed import header`);
+  }
+}
+
+function requireExactReviewedJavaScript(text, expectedSha256, label) {
+  if (sha256(Buffer.from(text, "utf8")) !== expectedSha256) {
+    fail(`${label} does not equal its exact reviewed source`);
+  }
+}
+
+function normalizedOverlayTransactionSource(text, expectedHelperSha256) {
+  if (!/^[0-9a-f]{64}$/u.test(expectedHelperSha256 ?? "")) {
+    fail("rendered integrated-Caddy transaction executor lacks the exact plan helper digest");
+  }
+  let replacements = 0;
+  let observedHelperSha256;
+  const normalized = text.replace(
+    /\/opt\/bitcoinpir\/payment-v1-rename-exchange\/([0-9a-f]{64})\/payment-v1-rename-exchange/gu,
+    (_match, digest) => {
+      replacements += 1;
+      observedHelperSha256 = digest;
+      return "/opt/bitcoinpir/payment-v1-rename-exchange/@OVERLAY_EXCHANGE_SHA256@/payment-v1-rename-exchange";
+    },
+  );
+  if (replacements !== 1) {
+    fail("rendered integrated-Caddy transaction executor does not have one exact helper substitution");
+  }
+  if (observedHelperSha256 !== expectedHelperSha256) {
+    fail("rendered integrated-Caddy transaction executor helper digest differs from the render plan");
+  }
+  return normalized;
+}
+
+function configManagedReferences(sourcePath, text, plan) {
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-gate.mjs") {
+    requireClosedJavaScriptImportHeader(
+      text,
+      ADMIN_GATE_IMPORT_HEADER,
+      "rendered Caddy admin UDS gate",
+    );
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminGate,
+      "rendered Caddy admin UDS gate",
+    );
+    return [];
+  }
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-probe.mjs") {
+    requireClosedJavaScriptImportHeader(
+      text,
+      ADMIN_PROBE_IMPORT_HEADER,
+      "rendered Caddy admin UDS probe",
+    );
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminProbe,
+      "rendered Caddy admin UDS probe",
+    );
+    return [
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    ];
+  }
+  if (sourcePath === "scripts/payment-v1-integrated-caddy-overlay-gate.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.overlayGate,
+      "rendered integrated-Caddy overlay gate",
+    );
+    return [];
+  }
+  if (
+    sourcePath ===
+    "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs"
+  ) {
+    requireClosedJavaScriptImportHeader(
+      text,
+      OVERLAY_TRANSACTION_IMPORT_HEADER,
+      "rendered integrated-Caddy transaction executor",
+    );
+    requireExactReviewedJavaScript(
+      normalizedOverlayTransactionSource(
+        text,
+        plan.placeholders.OVERLAY_EXCHANGE_SHA256,
+      ),
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.overlayTransaction,
+      "rendered integrated-Caddy transaction executor",
+    );
+    if (/@OVERLAY_EXCHANGE_SHA256@/u.test(text)) {
+      fail("rendered integrated-Caddy transaction executor retains its helper placeholder");
+    }
+    const binary = text.match(
+      /"(\/opt\/bitcoinpir\/payment-v1-rename-exchange\/[0-9a-f]{64}\/payment-v1-rename-exchange)"/u,
+    )?.[1];
+    const manifest = text.match(
+      /"(\/etc\/bitcoinpir\/payment-v1\/integrated-existing-bhtm-caddy\/rename-exchange\.sha256)"/u,
+    )?.[1];
+    if (binary === undefined || manifest === undefined) {
+      fail("rendered integrated-Caddy transaction executor does not close its exchange helper dependencies");
+    }
+    const expectedBinary =
+      `/opt/bitcoinpir/payment-v1-rename-exchange/${plan.placeholders.OVERLAY_EXCHANGE_SHA256}/payment-v1-rename-exchange`;
+    if (binary !== expectedBinary) {
+      fail("rendered integrated-Caddy transaction executor helper path differs from the render plan");
+    }
+    return [
+      manifest,
+      binary,
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    ].sort(asciiCompare);
+  }
   const edgeReferences = {
     "deploy/payment-v1/edge/hetzner-public.Caddyfile.in": [
       "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
@@ -2009,6 +2377,11 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg");
       return;
+    case "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256":
+      oneExact(
+        `/opt/bitcoinpir/payment-v1-rename-exchange/${plan.placeholders.OVERLAY_EXCHANGE_SHA256}/payment-v1-rename-exchange`,
+      );
+      return;
     case "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256":
       oneExact(`/opt/bitcoinpir/payment-issuer/${plan.placeholders.PAYMENT_ISSUER_SHA256}/payment-issuer`);
       return;
@@ -2107,6 +2480,12 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
   const pathChecks = [
     ["CADDY_SHA256", "/opt/bitcoinpir/caddy/", "/caddy", true],
     ["HAPROXY_SHA256", "/opt/bitcoinpir/haproxy/", "/haproxy", true],
+    [
+      "OVERLAY_EXCHANGE_SHA256",
+      "/opt/bitcoinpir/payment-v1-rename-exchange/",
+      "/payment-v1-rename-exchange",
+      true,
+    ],
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
@@ -2247,6 +2626,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         parsed.conditions,
         parsed.hardening,
         parsed.exec_start,
+        parsed.exec_start_pre,
         `rendered unit ${specification.target_path}`,
       );
       for (const reference of parsed.managed_references) initialReferences.add(reference);
@@ -2257,7 +2637,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         unit_name: basename(specification.target_path),
       });
     }
-    for (const reference of configManagedReferences(specification.source_path, renderedText)) {
+    for (const reference of configManagedReferences(specification.source_path, renderedText, plan)) {
       initialReferences.add(reference);
     }
     tmpfilesDirectories.push(...parseTmpfilesDirectories(specification.source_path, renderedText));
@@ -2461,6 +2841,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       fail("rendered manifest artifacts must be unique bytewise ASCII sorted targets");
     }
   }
+  validateDirectoryRelayConfigOwnerBinding(manifest);
   const expectedHashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
   for (const artifact of manifest.artifacts) {
     expectedHashBindings[hashBindingClass(artifact.artifact_class)].push({
@@ -2544,6 +2925,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       unit.conditions,
       unit.hardening,
       unit.exec_start,
+      unit.exec_start_pre,
       label,
     );
   }
@@ -2592,21 +2974,33 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     ...manifest.runtime_units.map((unit) => unit.fragment_path),
   ];
   const secretFiles = manifest.artifacts
-    .filter((artifact) => artifact.artifact_class === "secret")
     .map((artifact) => ({
-      consumer_unit_name: secretConsumerUnit(manifest.deployment_profile, artifact.target_path),
+      artifact,
+      consumerUnitName: privateLoaderConsumerUnit(
+        manifest.deployment_profile,
+        artifact,
+      ),
+    }))
+    .filter(({ consumerUnitName }) => consumerUnitName !== undefined)
+    .map(({ artifact, consumerUnitName }) => ({
+      consumer_unit_name: consumerUnitName,
       gid: artifact.gid,
       mode: artifact.mode,
       target_path: artifact.target_path,
       uid: artifact.uid,
     }));
   const runtimePaths = [];
-  if (manifest.deployment_profile === "edge-hetzner-v1") {
+  if (
+    new Set([
+      "edge-hetzner-v1",
+      "integrated-existing-bhtm-caddy-v1",
+    ]).has(manifest.deployment_profile)
+  ) {
     const sourceFairIdentity = manifest.service_identities.find(
       (identity) => identity.unit_name === "bitcoinpir-payment-v1-source-fair-edge.service",
     );
     if (!sourceFairIdentity) {
-      fail("Hetzner edge runtime request is missing the source-fair service identity");
+      fail("Hetzner source-fair runtime request is missing its service identity");
     }
     runtimePaths.push({
       file_type: "directory",
@@ -2818,6 +3212,9 @@ function canonicalEqual(actual, expected, label) {
 }
 
 export function validateRuntimeEvidence({ model, evidence }) {
+  if (model.manifest.deployment_profile === "directory-relay-v1") {
+    fail("directory-relay-v1 is stopped-only and requires the Linux stopped-relay evidence gate");
+  }
   exactKeys(
     evidence,
     [

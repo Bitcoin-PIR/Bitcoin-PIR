@@ -30,9 +30,9 @@ pub use entry::{
 };
 pub use error::{DirectoryAcceptErrorV1, DirectoryErrorV1};
 pub use event::{
-    nip01_addressable_replacement_order_v1, NostrEventV1, BITCOINPIR_DIRECTORY_KIND_V1,
-    MAX_NOSTR_CONTENT_BYTES_V1, MAX_NOSTR_EVENT_BYTES_V1, MAX_NOSTR_TAGS_V1,
-    MAX_NOSTR_TAG_ITEMS_V1, MAX_NOSTR_TAG_VALUE_BYTES_V1,
+    nip01_addressable_replacement_order_v1, validate_directory_xonly_public_key_v1, NostrEventV1,
+    BITCOINPIR_DIRECTORY_KIND_V1, MAX_NOSTR_CONTENT_BYTES_V1, MAX_NOSTR_EVENT_BYTES_V1,
+    MAX_NOSTR_TAGS_V1, MAX_NOSTR_TAG_ITEMS_V1, MAX_NOSTR_TAG_VALUE_BYTES_V1,
 };
 pub use publisher::{
     catalog_req_json_v1, full_catalog_req_json_v1, DirectoryPublisherKeyV1,

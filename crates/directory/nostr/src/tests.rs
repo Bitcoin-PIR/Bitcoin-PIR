@@ -297,6 +297,22 @@ fn nip01_canonical_preimage_and_event_id_fixture_are_locked() {
 }
 
 #[test]
+fn directory_xonly_public_key_validation_rejects_non_points() {
+    let generator_x = super::hex::decode_lower_hex(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    )
+    .unwrap();
+    assert_eq!(validate_directory_xonly_public_key_v1(&generator_x), Ok(()));
+
+    for invalid in [[0_u8; 32], [0x06_u8; 32], [0xff_u8; 32]] {
+        assert_eq!(
+            validate_directory_xonly_public_key_v1(&invalid),
+            Err(DirectoryErrorV1::InvalidDirectoryPublicKey)
+        );
+    }
+}
+
+#[test]
 fn nip01_addressable_order_and_strict_nip78_profile_are_enforced() {
     let publisher = DirectoryPublisherKeyV1::from_secret_bytes([11; 32]).unwrap();
     publisher

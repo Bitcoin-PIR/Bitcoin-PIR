@@ -12,6 +12,7 @@ pub enum DirectoryErrorV1 {
     WrongEventKind,
     InvalidEventId,
     InvalidEventSignature,
+    InvalidDirectoryPublicKey,
     InvalidTags,
     DifferentAddressableCoordinate,
     ReplaceableTimestampNotAdvanced,
@@ -50,6 +51,9 @@ impl fmt::Display for DirectoryErrorV1 {
             Self::WrongEventKind => "Nostr event kind is not BitcoinPIR NIP-78 v1",
             Self::InvalidEventId => "Nostr event id does not match its canonical NIP-01 preimage",
             Self::InvalidEventSignature => "Nostr event BIP340 signature is invalid",
+            Self::InvalidDirectoryPublicKey => {
+                "directory public key is not a valid secp256k1 x-only key"
+            }
             Self::InvalidTags => "Nostr event tags are malformed or outside their v1 bound",
             Self::DifferentAddressableCoordinate => {
                 "Nostr events do not have the same addressable coordinate"

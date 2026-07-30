@@ -25,6 +25,10 @@ const CADDY_TEMPLATE = join(
   REPOSITORY,
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
 );
+const INTEGRATED_CADDY_BLOCK = join(
+  REPOSITORY,
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+);
 const ROLLBACK_CADDY_TEMPLATE = join(
   REPOSITORY,
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
@@ -301,6 +305,69 @@ test("the selected Caddy binary validates complete IPv4 and IPv6-ULA public temp
       `${profile.label} complete Caddy template validation failed:\n${validation.stdout}\n${validation.stderr}`,
     );
   }
+});
+
+test("the selected Caddy binary validates an exact existing-config plus integrated managed block", {
+  skip: CADDY === undefined || OPENSSL === undefined,
+}, (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "bpir-integrated-caddy-template-"));
+  chmodSync(directory, 0o700);
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const certificate = join(directory, "publisher.crt");
+  const key = join(directory, "publisher.key");
+  const generated = spawnSync(OPENSSL, [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", key,
+    "-out", certificate,
+    "-days", "1",
+    "-subj", "/CN=publisher.example.net",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(generated.status, 0, generated.stderr);
+  let block = readFileSync(INTEGRATED_CADDY_BLOCK, "utf8");
+  for (const [placeholder, value] of Object.entries({
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.77.0.1",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.77.0.2",
+    DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
+    PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
+    PROVIDER_WSS_HOST: "pir.example.net",
+    PUBLIC_HTTPS_BIND: "198.51.100.23",
+  })) {
+    block = block.replaceAll(`@${placeholder}@`, value);
+  }
+  block = block
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+      certificate,
+    )
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+      key,
+    );
+  assert.doesNotMatch(block, /@[A-Z][A-Z0-9_]+@/u);
+  const config = join(directory, "integrated.Caddyfile");
+  writeFileSync(
+    config,
+    `existing.example.net {\n\trespond "existing" 200\n}\n\n${block}`,
+    { mode: 0o600 },
+  );
+  const adapted = spawnSync(CADDY, [
+    "adapt", "--config", config, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    adapted.status,
+    0,
+    `integrated Caddy adapt failed:\n${adapted.stdout}\n${adapted.stderr}`,
+  );
+  assert.doesNotThrow(() => JSON.parse(adapted.stdout));
+  const validation = spawnSync(CADDY, [
+    "validate", "--config", config, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    validation.status,
+    0,
+    `integrated Caddy validate failed:\n${validation.stdout}\n${validation.stderr}`,
+  );
 });
 
 test("the selected Caddy binary validates the private rollback template", {
@@ -733,7 +800,7 @@ const providerRequest =
 const quoteRequest =
   "POST /v1/quotes/bolt11 HTTP/1.1\r\nHost: pay.example.net\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const directoryPublisherRequest =
-  "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
+  "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nConnection: close\r\n\r\n";
 
 test("HAProxy enforces per-source upgraded-connection slots without cross-source starvation", {
   skip: HAPROXY === undefined,
@@ -1063,7 +1130,7 @@ http://:${port} {
   @publisher {
     remote_ip 127.0.0.1
     method GET
-    path /v1/directory
+    path /
     header Host publisher.example.net
   }
   handle @publisher {
@@ -1092,7 +1159,7 @@ http://:${port} {
   await waitForTcpListener(port, caddy, () => output);
 
   const request =
-    "GET /v1/directory HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    "GET / HTTP/1.1\r\nHost: publisher.example.net\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n";
   const unauthorizedAddress = nonLoopbackIpv4Address();
   assert.ok(unauthorizedAddress, "test host has no non-loopback IPv4 address");
   assert.equal(
@@ -1313,9 +1380,9 @@ function renderedCaddyLaneHarnessConfig(
   return rendered;
 }
 
-function websocketDirectoryRequest(host, extraHeaders = []) {
+function websocketDirectoryRequest(host, extraHeaders = [], requestTarget = "/") {
   return [
-    "GET /v1/directory HTTP/1.1",
+    `GET ${requestTarget} HTTP/1.1`,
     `Host: ${host}`,
     "Connection: Upgrade",
     "Upgrade: websocket",
@@ -1404,8 +1471,27 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
     provider: 0,
   });
 
-  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
   let before = laneRecordCounts(harness);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublicStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publicClientIp,
+        websocketDirectoryRequest("directory.example.net", [], rejectedTarget),
+        "127.0.0.1",
+        "directory.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublicStatus >= 400 && rejectedPublicStatus < 500,
+      true,
+      `unexpected public status ${rejectedPublicStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
+
+  const publisherRequest = websocketDirectoryRequest("publisher.example.net");
+  before = laneRecordCounts(harness);
   const publicBindPublisherStatus = statusOf(
     await tlsHttpResponseHeaders(
       edgePort,
@@ -1447,6 +1533,25 @@ test("complete rendered Caddy and HAProxy keep public and publisher relay lanes 
   );
   assert.equal(spoofedPublisherStatus >= 400 && spoofedPublisherStatus < 500, true);
   assert.deepEqual(laneRecordCounts(harness), before);
+
+  before = laneRecordCounts(harness);
+  for (const rejectedTarget of ["/v1/directory", "/?x=1", "//", "/%2f"]) {
+    const rejectedPublisherStatus = statusOf(
+      await tlsHttpResponseHeaders(
+        edgePort,
+        publisherClientIp,
+        websocketDirectoryRequest("publisher.example.net", [], rejectedTarget),
+        "127.0.0.2",
+        "publisher.example.net",
+      ),
+    );
+    assert.equal(
+      rejectedPublisherStatus >= 400 && rejectedPublisherStatus < 500,
+      true,
+      `unexpected publisher status ${rejectedPublisherStatus} for ${rejectedTarget}`,
+    );
+    assert.deepEqual(laneRecordCounts(harness), before);
+  }
 
   assert.equal(
     statusOf(

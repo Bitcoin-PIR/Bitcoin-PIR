@@ -325,8 +325,12 @@ export type {
   ResumeBolt11AcquisitionV1,
 } from './service-acquisition.js';
 
-// Complete multi-relay Nostr directory refresh and durable rollback storage.
-export { DirectoryRollbackVaultV1 } from './directory-vault.js';
+// Explicit strict-multi or centralized/degraded Nostr directory refresh and
+// durable rollback storage. Centralized mode never activates implicitly.
+export {
+  assertSelectableDirectoryCatalogFreshV1,
+  DirectoryRollbackVaultV1,
+} from './directory-vault.js';
 export type {
   DirectoryDiscoveryEntryJsonV1,
   SelectableDirectoryCatalogV1,
@@ -338,6 +342,19 @@ export {
   directoryProviderTrustMaterialV1,
   refreshNostrDirectoryV1,
 } from './nostr-directory.js';
+export {
+  directoryRefreshFailureStateV1,
+} from './directory-refresh-status.js';
+export { DirectoryRefreshIntentGuardV1 } from './directory-refresh-intent.js';
+export type {
+  DirectoryRefreshInputV1,
+  DirectoryRefreshIntentV1,
+} from './directory-refresh-intent.js';
+export { trustedNowUnixV1 } from './trusted-time.js';
+export type {
+  DirectoryRefreshFailureStateV1,
+  RetainedDirectoryCatalogAssuranceV1,
+} from './directory-refresh-status.js';
 
 // Product application admission lifecycle. These controllers contain no
 // address/query payloads and never persist payment material in localStorage.
@@ -393,6 +410,7 @@ export type {
 } from './product-provider-bootstrap.js';
 export type { HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
 export type {
+  DirectoryRelayModeV1,
   DirectoryProviderTrustMaterialV1,
   DirectoryWebSocketV1,
   NostrDirectoryRefreshOptionsV1,

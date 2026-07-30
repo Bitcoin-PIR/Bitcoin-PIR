@@ -19,6 +19,12 @@ Every skeleton is deliberately unusable:
 The gate must reject an untouched skeleton. Making one syntactically acceptable
 is not approval to install or activate it.
 
+The integrated existing-Caddy overlay plan carries two distinct adapted-JSON
+pins. `target.admin_uds_hardening.adapted_json_sha256` is the exact live
+hardened-preimage digest; `managed_block.candidate_adapted_json_sha256` is the
+exact post-overlay digest. Both use the admin-UDS gate canonicalizer, not the
+newline-terminated overlay plan/receipt encoding.
+
 The three provider skeletons are separate closed profiles, not optional-field
 variants. `provider-v1` retains its complete Standard Cashu inputs unchanged.
 `provider-no-standard-cashu-v1` uses a distinct unit, service identity, state
@@ -67,6 +73,7 @@ initializing a blank store and calling it a switch.
 
 | File | Gate profile | Scope |
 | --- | --- | --- |
+| `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One stopped-only relay config fixed to UID 62951/GID 62952/mode 0400 for the real loader, plus blocked unit preparation; v2 stopped evidence additionally requires a consumer-owned 0700 final parent and real-EUID readability. No binary, key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
@@ -75,9 +82,49 @@ initializing a blank store and calling it a switch.
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 
-There is intentionally no directory-relay plan. The gate's deployment profile
-catalog does not contain one. A source template existing in the repository does
-not authorize inventing a profile or bypassing dependency closure.
+The separate `bhtm-caddy-admin-uds-v1.plan.json.example` is not a rendered
+service profile and is not part of `payment-v1-rendered-artifact-gate.mjs`.
+It describes one stopped-service maintenance transaction for the exact existing
+root `bhtm-caddy.service`. Its dedicated read-only gate deterministically
+derives a hardened Caddyfile and unit from their exact preimages, canonicalizes
+an externally generated adapted-JSON artifact, rejects configured log sinks,
+and binds its exact digest and size into the candidate. It neither
+renders an install bundle nor executes the cold stop/start. See
+[`../CADDY_ADMIN_UDS_HARDENING.md`](../CADDY_ADMIN_UDS_HARDENING.md).
+The read-only gate does not itself prove that Caddy generated the supplied
+artifact; a future executor must run the plan-pinned Caddy binary against the
+exact candidate and compare the same tuple before mutation.
+Its runtime closure includes the exact admin-UDS gate, Node, probe and `setpriv`
+binaries plus a
+same-boot privileged process/capability inventory. The integrated-existing-Caddy
+overlay skeleton separately pins both this canonical plan and its complete
+committed receipt, the canonical adapted-JSON digest, and the fresh runtime
+probe executables; a receipt summary alone is not sufficient. Its rendered
+bundle also carries the exact admin-UDS gate and probe sources. The executor
+descriptor-pins the gate generation, reads its exact bytes once and supplies
+those bytes with their reviewed SHA-256 on the probe's stdin; the probe verifies
+that digest before a data-URL import, so it never resolves the gate by pathname.
+The root-owned overlay executor statically imports both the admin-UDS gate and
+overlay gate as part of its own exact full-source bootstrap TCB; those imports
+are not claimed to be descriptor-loaded. Install the admin-UDS gate and probe
+before the cold admin-UDS transaction and pin their resulting
+regular-file generations as `runtime.gate` and `runtime.probe` in the hardening
+plan. The later overlay plan must repeat those exact full pins as
+`runtime.admin_uds_gate` and `runtime.admin_probe`; replacing either installed
+artifact after the hardening receipt requires a new cold hardening transaction
+and receipt.
+
+The directory-relay skeleton is intentionally weaker than an activation plan:
+it has no payload artifacts, its unit remains exactly `ExecStart=/usr/bin/false`,
+and the live collector rejects the profile. Materializing its public-key
+placeholder permits only offline review of the bounded config bytes. Relay
+selection must still move through its separate artifact gate and reviewed PR;
+installation, start, private-key use, routing and publication remain separately
+approved actions. The fixed unit/NSS/config/state paths describe one instance;
+under the default `strict-multi-relay` client contract, a second origin remains
+blocked. The implemented explicit `centralized-single-relay` browser mode may
+accept this one-origin topology only with its degraded assurance label; this
+skeleton selects neither mode and cannot silently downgrade the default.
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.

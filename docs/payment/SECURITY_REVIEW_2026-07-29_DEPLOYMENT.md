@@ -273,9 +273,112 @@ initial host PID namespace, followed by a fresh live proof; a warm-reload
 snapshot is rejected. Linux pipe core handlers
 may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 
+A read-only 2026-07-30 target snapshot confirms why this remains a live gate:
+the existing Caddy unit has `MemorySwapMax=infinity`, hard
+`LimitCORE=infinity`, `StandardOutput=journal` and `StandardError=inherit`;
+the host has an 8 GiB active swap device and an apport pipe core handler. The
+current Caddy process had zero `VmSwap` at that instant, and its adapted JSON
+had no configured global or access log sink, but journald already contained
+structured request-error records with remote-address metadata. These are
+pre-migration observations, not reusable activation evidence. Clearing the old
+mixed-service journal is a separate destructive retention decision.
+
 The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
+
+A follow-up non-activating `bhtm-caddy-admin-uds-v1` maintenance gate addresses
+two parts of the existing-root-Caddy TCB: its admin endpoint and implicit
+stdout/stderr-to-journald path. It derives only an
+exact config/unit candidate from exact old bytes, rejects Caddy imports and
+environment indirection, strips `--environ`, pins the independently inventoried
+production Caddy v2.11.4 binary plus the admin-UDS gate, Node v22.22.2, probe
+and `setpriv`, and
+forces effective `LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null` and
+`StandardError=null`. The adapted
+JSON privacy gate rejects explicit global, access and request-scoped log sinks.
+The cold candidate now binds the strict-parsed canonical adapted JSON digest
+and size, and a committed root `/config/` readback must reproduce that digest.
+The validation-only gate does not invoke Caddy; a future cold executor must run
+the plan-pinned binary against the exact candidate rather than accept an
+unproven caller-supplied adapter artifact.
+It requires a cold new systemd generation before a root-owned `0700` runtime
+directory can exist. The isolation claim covers only capability-free
+unprivileged non-root processes; UID 0 and `CAP_DAC_OVERRIDE` remain trusted.
+Committed evidence requires root readback through a mode-`0200` UDS,
+`CapEff=0`, cleared groups and `EACCES` for the complete approved non-root
+service-UID inventory, absent IPv4 and IPv6 TCP 2019, and unchanged site health.
+A mixed or unknown config/unit
+pair stays stopped; an ambiguous start is outcome-unknown and prohibits
+automatic rollback. This gate does not yet include an executor and is not host
+or deployment evidence.
+
+Boot identity remains a hyphenated UUID, while a live systemd `InvocationID`
+is independently bound as a nonzero 32-character lowercase hexadecimal value.
+Using UUID syntax for both would make every real overlay activation fail
+closed, so the real PID 1 lifecycle feeds its actual InvocationIDs through the
+same production validator.
+
+An undeployed `integrated-existing-bhtm-caddy-v1` alternative now models the
+actual existing `bhtm-caddy.service` edge without pretending it is the isolated
+stock-Caddy unit above. Its bundle closes the source-fair half and its separate
+plan pins the exact mutable preimage/process generation. Installation uses a
+content-addressed `renameat2(RENAME_EXCHANGE)` helper, keeps the swapped-out
+preimage until a terminal receipt is durably and atomically published with
+`RENAME_NOREPLACE`, and has deterministic digest-pair recovery. This closes
+ordinary read-to-rename, partial-final-receipt and crash windows, but expands
+the TCB to the existing root Caddy's remaining global options, ACME, zero-RTT,
+plugin, site, UID-0 and other resource configuration. The overlay now requires a
+canonical committed admin-UDS receipt whose hardened binary/config/unit and
+InvocationID equal its target preimage; it cannot perform that cold migration
+itself. Its executor now revalidates the full canonical hardening plan/receipt,
+pins canonical adapted JSON, and repeats fresh descriptor-sealed UDS/root/UID/
+TCP/boot/generation probes before exchange and after reload/health. Live root
+readback must equal the hardening prerequisite's adapted digest before exchange
+and the overlay candidate's adapted digest after reload/health. Recovery may
+initially accept either reviewed digest across an ambiguous exchange/reload
+boundary, but must re-probe the exact outcome-specific generation before
+terminal state, cleanup or return. It also
+binds current effective unit properties (including no drop-ins, the approved
+`ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
+runtime-directory/identity/umask/core/swap/output settings) plus exact MainPID
+argv/start ticks
+and absence of process `CADDY_ADMIN`; environment values are not retained.
+Stable runtime boundaries are repeated immediately before exchange and reload.
+Recovery validates persisted monotonic windows unchanged, so corrupt evidence
+cannot be made acceptable by in-memory timestamp normalization. The profile
+cannot erase the remaining risk or substitute a warm reload receipt for cold
+stopped-edge/fresh-live evidence.
+It also retains the exact RFC1918/ULA private-publisher prerequisite; the
+currently inspected Hetzner host has no such route, so the profile is not yet
+deployable there.
+
+The transaction's crash boundary additionally treats a helper error as an
+unknown return value rather than evidence that no rename occurred. It
+supplementally fsyncs and twice classifies the exact pair; any unclassified pair
+forbids rollback, terminalization and cleanup. Phase journals and the lock owner
+publish through owner-only pending files, file fsync, no-replace rename and
+parent fsync. Recovery supplementally fsyncs and stably rereads the complete
+visible phase journal before it can authorize a file-pair mutation. A visible
+final receipt is not durable evidence until its parent
+fsync and root:root/mode-0400/single-link metadata are reconfirmed. Prepared
+state binds every mutable transaction directory identity across recovery.
+Automatic rollback is forbidden until the installed pair's `exchanged`
+predecessor is durable, and any failed abort-state publication preserves its
+candidate for explicit recovery. A durable committed receipt remains attached
+to later journal-finalization errors, while non-terminal cleanup errors remain
+secondary evidence rather than masking the initiating failure. The
+rename helper protocol v4 verifies the expected supervisor PID and
+`/proc/<pid>/stat` start ticks before and after installing its parent-death
+signal; subreaper adoption therefore cannot authorize a delayed mutation. The
+tested delayed child cannot rename after its supervisor dies, while an already in-flight atomic
+rename remains subject to the exact-pair classification above. Real Linux fault
+tests cover open, partial/complete write,
+file fsync, rename, parent fsync, applied-then-error, parent death and repeated
+recovery boundaries. The root-only publication and lock suites run under the
+CI root invocation rather than being accepted as skipped tests. These are
+source/test properties, not host activation
+evidence.
 
 After source merge, an independent read-only audit of merge
 `49dc56bb735a6df6a1665c91f0636188d65a66b5` and exact Payment V1 source parent
