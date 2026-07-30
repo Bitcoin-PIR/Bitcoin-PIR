@@ -309,22 +309,22 @@ binary-dependent skip.
 See `docs/payment/HETZNER_VPSBG_DEPLOYMENT.md` for topology, rendering,
 activation, rollback, and remote-approval boundaries.
 
-The directory service is still deliberately non-activatable while
-`relay-selection.toml.example` is `UNRESOLVED`. Do not include it in a public
-render, install a publisher key, or publish a catalog merely because the rest
-of a profile passes. Relay resolution, key installation/use and public Nostr
-publication are distinct reviewed/approved steps. Resolution also records one
+The checked-in directory selection is `RESOLVED`, but the service remains
+non-activatable until all three exact approval/selection sentinels exist.
+Resolution permits a closed stopped render and separately approved install;
+it does not authorize creating a sentinel, installing or using a publisher
+private key, starting a listener, routing traffic, or publishing a catalog.
+Those remain distinct reviewed/approved steps. Resolution also records one
 explicit directory transport mode: strict mode retains two to eight distinct
 exact credential-free origin-only WSS URLs, while centralized mode accepts
-exactly one and must be presented
-as degraded. No render infers independent operators or failure domains from
-origin count.
+exactly one and must be presented as degraded. No render infers independent
+operators or failure domains from origin count.
 
-This closed profile has one fixed unit/NSS/config/state identity. The current
-default browser/publisher contract still uses strict mode and requires `2..8`
-distinct WSS origins. The explicit `centralized-single-relay` mode instead
-accepts exactly one origin and must remain visibly degraded. This stopped
-profile does not select either mode and never authorizes an automatic fallback.
+This closed profile has one fixed unit/NSS/config/state identity. The protocol's
+strict mode requires `2..8` distinct WSS origins; the checked-in deployment
+selection explicitly chooses `centralized-single-relay`, accepts exactly one
+origin, and must remain visibly degraded. The selection never authorizes an
+automatic fallback between modes.
 
 `scripts/build-payment-v1-directory-relay.sh` is the closed Linux-amd64 build
 recipe. It uses a registry-digest-pinned Rust container already present on the
@@ -345,7 +345,7 @@ copies, rechecks the exact recorded Git/Tar versions, executes `--version` in
 the same pinned networkless container, independently rebuilds the verified
 archive twice from private snapshots and requires both outputs to equal the
 selected binary, and binds the actual config bytes and publisher public key to
-a future resolved selection. The selection also pins the canonical
+the resolved selection. The selection also pins the canonical
 build-manifest SHA-256.
 The artifact root must remain owned by the verifier's effective UID with exact
 mode `0700`; its descriptor-bound parent chain and nanosecond leaf fingerprint
@@ -377,22 +377,26 @@ separately reviewed root-owned target without granting the build EUID write
 authority.
 Two clean builds on one Docker daemon prove local determinism, not independent
 supply-chain consensus: that daemon and host remain trusted execution
-boundaries. Before `RESOLVED`, a second operator on an independently prepared
-clean host must reproduce the same source archive, lockfile, Git/Tar versions,
-manifest and binary digests.
-Repeated-digit fixture hashes cannot satisfy this verifier. No current local
-artifact hash or production publisher key is committed here.
+boundaries. Any selection resolution or replacement requires a second operator
+on an independently prepared clean host to reproduce the same source archive,
+lockfile, Git/Tar versions, manifest and binary digests.
+Repeated-digit fixture hashes cannot satisfy this verifier. The exact selected
+artifact/config hashes and publisher public key are committed; no publisher
+private key or mutable local artifact path is committed.
 
-The closed `directory-relay-v1` render profile and skeleton are preparation
-only. The generic and Linux live collectors reject it. Only
-`collect-stopped-relay` / `verify-stopped-relay-offline` are valid, and they
-require the unit to remain inactive/dead with `ExecStart=/usr/bin/false`, no
-pre-start command, two stable passes over every manifest-bound installed file
-and effective unit property, strict typed `a(sbbsi)` systemd Conditions proving
-that `RELAY-SELECTION-RESOLVED` is absent, successful `systemd-analyze verify`,
-no runtime socket request, and no protected service-account credential holder.
+The closed `directory-relay-v1` render profile and skeleton remain preparation
+only until separately approved activation. Before any start,
+`collect-stopped-relay` / `verify-stopped-relay-offline` are mandatory and
+require the resolved unit to remain inactive/dead with its exact
+content-addressed `ExecStart`, two exact `sha256sum` pre-start commands, two
+stable passes over every manifest-bound installed file and effective unit
+property, strict typed `a(sbbsi)` systemd Conditions proving that
+`RELAY-SELECTION-RESOLVED` is absent, successful `systemd-analyze verify`, no
+runtime socket request, and no protected service-account credential holder.
 The v2 stopped-relay evidence also descriptor-binds the config's complete
 parent chain, proves the exact consumer EUID can read it, requires its final
 parent to be consumer-owned mode `0700`, and performs a final private-input
-seal before the last Conditions/generation pass. This is not installation,
-activation or publication evidence.
+seal before the last Conditions/generation pass. This stopped evidence is not
+activation or publication authority. The generic live path still rejects an
+unresolved/blocked request; only the exact resolved request may use
+`collect-live`, and only after separately approved activation.
