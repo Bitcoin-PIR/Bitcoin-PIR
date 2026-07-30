@@ -135,6 +135,7 @@ first_pid=$(systemctl show "$unit_name" --property=MainPID --value)
 case "$first_invocation" in
   ''|*[!0-9a-f]*) exit 1 ;;
 esac
+test "${#first_invocation}" -eq 32
 run_root systemctl reload "$unit_name"
 test "$(systemctl show "$unit_name" --property=MainPID --value)" = "$first_pid"
 verify_live
@@ -148,8 +149,13 @@ run_root systemctl start "$unit_name"
 wait_live
 verify_live
 second_invocation=$(systemctl show "$unit_name" --property=InvocationID --value)
+case "$second_invocation" in
+  ''|*[!0-9a-f]*) exit 1 ;;
+esac
+test "${#second_invocation}" -eq 32
 test "$second_invocation" != "$first_invocation"
 run_root systemctl stop "$unit_name"
+test "$(systemctl is-active "$unit_name" 2>/dev/null || true)" = "inactive"
 test ! -e "$runtime_directory"
 test ! -L "$runtime_directory"
 
