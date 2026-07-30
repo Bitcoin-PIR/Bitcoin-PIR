@@ -1,0 +1,18 @@
+{
+  "acknowledgements": [
+    "host-wide-native-core-diagnostics-will-be-restored",
+    "apport-will-be-enabled-and-started",
+    "restored-crash-material-may-contain-secrets-or-request-correlating-data",
+    "this-approval-does-not-authorize-reboot-payment-service-activation-or-history-deletion"
+  ],
+  "approved_at_utc": "@WHOLE_SECOND_UTC@",
+  "approved_by": "@OPERATOR_ID@",
+  "ceremony_id": "@FRESH_LOWERCASE_CEREMONY_ID@",
+  "committed_receipt_sha256": "@COMMITTED_RECEIPT_SHA256@",
+  "decision": "approve-restore-host-core-diagnostics",
+  "executor_sha256": "@EXECUTOR_SOURCE_SHA256@",
+  "expires_at_utc": "@WHOLE_SECOND_UTC_WITHIN_24_HOURS@",
+  "kind": "bitcoinpir-payment-v1-core-pattern-rollback-approval-v1",
+  "plan_sha256": "@CANONICAL_PLAN_SHA256@",
+  "schema_version": 1
+}

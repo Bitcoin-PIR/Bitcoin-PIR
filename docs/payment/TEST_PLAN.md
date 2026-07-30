@@ -28,6 +28,20 @@ browser/issuer/two-provider E2E. One authorized short-lived public-relay
 publish/readback smoke with disposable keys has run; production-catalog
 publication and monitored relay operation remain unexecuted.
 
+The host-global core-pattern prerequisite has a separate Node conformance suite:
+
+```sh
+node --check scripts/payment-v1-core-pattern-ceremony.mjs
+node --test scripts/payment-v1-core-pattern-ceremony.test.mjs
+```
+
+It covers canonical plan/source/approval digest binding, exact Apport and sysctl
+preimages, transaction ordering, every mutation-stage failure, fail-closed
+containment, exact-candidate recovery, terminal receipt/lock ambiguity, separate
+rollback approval and rollback-stage re-containment. These are mock-host and
+temporary-filesystem transaction tests. They do not claim a production host
+mutation, reboot persistence or target-host Apport behavior.
+
 ## Positive conformance matrix
 
 Every cell must exercise a real secure-channel authorization frame, durable

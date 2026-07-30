@@ -130,6 +130,14 @@ plan. The later overlay plan must repeat those exact full pins as
 artifact after the hardening receipt requires a new cold hardening transaction
 and receipt.
 
+The three `core-pattern-ceremony-v1.*.json.example` files are another
+non-rendered maintenance contract. The technical plan, application approval and
+rollback approval are deliberately separate, unusable skeletons. Application
+disables host-wide native core diagnostics and therefore requires the exact
+fixed risk acknowledgements; rollback restores that risk and additionally binds
+the committed receipt. Neither document is a service activation approval. See
+[`../CORE_PATTERN_CEREMONY.md`](../CORE_PATTERN_CEREMONY.md).
+
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.
 

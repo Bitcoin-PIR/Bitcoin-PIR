@@ -1,0 +1,17 @@
+{
+  "acknowledgements": [
+    "host-wide-native-core-diagnostics-will-be-unavailable",
+    "apport-will-be-disabled-and-new-var-crash-reports-will-not-be-produced",
+    "existing-var-crash-files-and-journal-records-will-be-retained",
+    "this-approval-does-not-authorize-reboot-payment-service-activation-or-history-deletion"
+  ],
+  "approved_at_utc": "@WHOLE_SECOND_UTC@",
+  "approved_by": "@OPERATOR_ID@",
+  "ceremony_id": "@FRESH_LOWERCASE_CEREMONY_ID@",
+  "decision": "approve-disable-host-core-diagnostics",
+  "executor_sha256": "@EXECUTOR_SOURCE_SHA256@",
+  "expires_at_utc": "@WHOLE_SECOND_UTC_WITHIN_24_HOURS@",
+  "kind": "bitcoinpir-payment-v1-core-pattern-apply-approval-v1",
+  "plan_sha256": "@CANONICAL_PLAN_SHA256@",
+  "schema_version": 1
+}

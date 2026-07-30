@@ -239,6 +239,10 @@ and modes. Edge live evidence additionally requires hard/soft core limits of
 zero, zero current/max cgroup swap, and the host-wide
 `kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
 that exact root-owned, canonical, one-link, non-writable handler.
+The host-wide change is not delegated to an edge or Caddy executor. It requires
+the separately digest-approved, fail-closed transaction and explicit lost-core-
+diagnostics acknowledgement in
+[`../../docs/payment/CORE_PATTERN_CEREMONY.md`](../../docs/payment/CORE_PATTERN_CEREMONY.md).
 For every manifest secret, live evidence mirrors the Linux private-file
 loader's DAC contract: the final parent must be owned by the consuming service
 EUID at exact mode `0700`, while every ancestor must satisfy the root/EUID

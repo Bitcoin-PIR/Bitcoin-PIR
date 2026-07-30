@@ -1,0 +1,136 @@
+{
+  "candidate": {
+    "apport_default": {
+      "bytes_base64": "ZW5hYmxlZD0wCg==",
+      "gid": 0,
+      "mode": "0644",
+      "nlink": 1,
+      "path": "/etc/default/apport",
+      "sha256": "825f9535b105f0903b59617eff997f11f9b8682a0af039c0badc4b5685c55c5f",
+      "size": 10,
+      "uid": 0
+    },
+    "core_pattern": "|/usr/bin/false",
+    "persistent_policy": {
+      "bytes_base64": "a2VybmVsLmNvcmVfcGF0dGVybj18L3Vzci9iaW4vZmFsc2UK",
+      "gid": 0,
+      "mode": "0644",
+      "nlink": 1,
+      "path": "/etc/sysctl.d/99-z-bitcoinpir-payment-v1-no-core.conf",
+      "sha256": "1f942d6bfc5bcb1f63f96a94e078c702fcfa3d0552649e783ffc40f50678bad6",
+      "size": 36,
+      "uid": 0
+    }
+  },
+  "ceremony_id": "@FRESH_LOWERCASE_CEREMONY_ID@",
+  "executor": {
+    "false_handler": {
+      "gid": 0,
+      "mode": "0755",
+      "nlink": 1,
+      "path": "/usr/bin/false",
+      "sha256": "@FALSE_SHA256@",
+      "size": 0,
+      "uid": 0
+    },
+    "node": {
+      "gid": 0,
+      "mode": "0755",
+      "nlink": 1,
+      "path": "/usr/bin/node",
+      "sha256": "@NODE_SHA256@",
+      "size": 0,
+      "uid": 0
+    },
+    "source": {
+      "gid": 0,
+      "mode": "0555",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-core-pattern-ceremony.mjs",
+      "sha256": "@EXECUTOR_SOURCE_SHA256@",
+      "size": 0,
+      "uid": 0
+    },
+    "systemctl": {
+      "gid": 0,
+      "mode": "0755",
+      "nlink": 1,
+      "path": "/usr/bin/systemctl",
+      "sha256": "@SYSTEMCTL_SHA256@",
+      "size": 0,
+      "uid": 0
+    }
+  },
+  "host": {
+    "boot_id": "@CURRENT_BOOT_ID@",
+    "machine_id_sha256": "@MACHINE_ID_FILE_SHA256@",
+    "os_release": {
+      "gid": 0,
+      "mode": "0644",
+      "nlink": 1,
+      "path": "/usr/lib/os-release",
+      "sha256": "@OS_RELEASE_SHA256@",
+      "size": 0,
+      "uid": 0
+    },
+    "systemd_version": "@SYSTEMCTL_VERSION_FIRST_LINE@"
+  },
+  "kind": "bitcoinpir-payment-v1-core-pattern-ceremony-v1",
+  "preimage": {
+    "apport_default": {
+      "bytes_base64": "ZW5hYmxlZD0xCg==",
+      "gid": 0,
+      "mode": "0644",
+      "nlink": 1,
+      "path": "/etc/default/apport",
+      "sha256": "16f4affa3003cb1ae3f22d5e0be86a5b6fc16bbf40662629df0aa5ad0ff52e15",
+      "size": 10,
+      "uid": 0
+    },
+    "apport_service": {
+      "active_state": "active",
+      "dropin_paths": [],
+      "fragment": {
+        "gid": 0,
+        "mode": "0644",
+        "nlink": 1,
+        "path": "/usr/lib/systemd/system/apport.service",
+        "sha256": "@APPORT_UNIT_SHA256@",
+        "size": 0,
+        "uid": 0
+      },
+      "load_state": "loaded",
+      "name": "apport.service",
+      "need_daemon_reload": "no",
+      "sub_state": "@EXACT_ACTIVE_SUBSTATE@",
+      "unit_file_state": "enabled"
+    },
+    "core_pattern": "|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E",
+    "core_pattern_assignment_files": [
+      {
+        "assignments": [
+          "@EXACT_CORE_PATTERN_ASSIGNMENT_LINE@"
+        ],
+        "file": {
+          "gid": 0,
+          "mode": "0644",
+          "nlink": 1,
+          "path": "/usr/lib/sysctl.d/@EXACT_PREEXISTING_FILE@",
+          "sha256": "@PREEXISTING_SYSCTL_FILE_SHA256@",
+          "size": 0,
+          "uid": 0
+        }
+      }
+    ],
+    "crash_entries": [],
+    "persistent_policy_state": "absent"
+  },
+  "rollback_policy": "separate-digest-approved-rollback-document-v1",
+  "schema_version": 1,
+  "transaction": {
+    "lock_path": "/run/bitcoinpir-payment-v1-core-pattern.lock",
+    "receipt_path": "/var/lib/bitcoinpir/payment-v1/core-pattern/receipts/@FRESH_LOWERCASE_CEREMONY_ID@.json",
+    "rollback_receipt_path": "/var/lib/bitcoinpir/payment-v1/core-pattern/receipts/@FRESH_LOWERCASE_CEREMONY_ID@.rollback.json",
+    "state_directory": "/var/lib/bitcoinpir/payment-v1/core-pattern/transactions/@FRESH_LOWERCASE_CEREMONY_ID@"
+  }
+}

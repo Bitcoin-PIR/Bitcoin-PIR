@@ -282,6 +282,16 @@ structured request-error records with remote-address metadata. These are
 pre-migration observations, not reusable activation evidence. Clearing the old
 mixed-service journal is a separate destructive retention decision.
 
+The repository now has an independent, non-deployed host transaction for this
+one sysctl/Apport prerequisite. It binds exact canonical plan, separate
+short-lived risk approval and executor-source digests; applies the persistent
+policy before changing the live handler; retains crash/journal history; and
+contains failures to the diagnostics-disabled state instead of automatically
+restoring the privacy-weaker pipe. Rollback is a second receipt-bound approval.
+This closes the missing source/test ceremony, not the activation blocker: the
+actual host still requires newly materialized inputs, approval, execution and
+fresh stopped/live evidence. See `CORE_PATTERN_CEREMONY.md`.
+
 The directory selection is now resolved to exact source, binary, manifest,
 config and publisher-public-key pins in an explicitly degraded centralized
 mode. Resolution is not activation: the unit has no `[Install]` section and

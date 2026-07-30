@@ -777,6 +777,17 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Implemented but not production-activated
 
+- [x] The independent host-global core-pattern ceremony is implemented and
+      covered by deterministic negative tests. It binds canonical plan,
+      separate short-lived approval and executor-source digests; exact Apport,
+      sysctl, boot/host/systemd/tool preimages; atomic persistent/live changes;
+      immediate/final readback; fail-closed containment; exact-state recovery;
+      and a separately approved receipt-bound rollback. It accepts only the
+      observed empty `/var/crash` inventory and never cleans crash/journal
+      history or reboots; the apply path activates no service, while only the
+      explicit rollback starts Apport. This is source/test
+      evidence only: no production plan/approval has been materialized and no
+      host mutation has been performed. See `CORE_PATTERN_CEREMONY.md`.
 - [x] `bpir-admin lightning-staging preflight` implements a read-only,
       fail-closed default-Signet gate for one local payer/router/issuer role.
       It pins Core/CLN/CLI/plugin binaries below explicit protected parents,

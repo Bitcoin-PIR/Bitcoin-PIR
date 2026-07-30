@@ -96,6 +96,9 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
+node --test scripts/payment-v1-core-pattern-ceremony.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \
@@ -385,6 +388,9 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
+node --test scripts/payment-v1-core-pattern-ceremony.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
   scripts/payment-v1-rendered-artifact-gate.test.mjs \

@@ -43,6 +43,7 @@ on:
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-caddy-admin-uds-*'
+      - 'scripts/payment-v1-core-pattern-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -94,6 +95,7 @@ on:
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-caddy-admin-uds-*'
+      - 'scripts/payment-v1-core-pattern-*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -545,6 +547,9 @@ jobs:
           node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
           node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
           node scripts/payment-v1-caddy-admin-uds-gate.mjs --help >/dev/null
+          node --check scripts/payment-v1-core-pattern-ceremony.mjs
+          node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
+          node --test scripts/payment-v1-core-pattern-ceremony.test.mjs
           node --check scripts/payment-v1-source-fair-edge.test.mjs
           node --test --test-concurrency=1 \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
