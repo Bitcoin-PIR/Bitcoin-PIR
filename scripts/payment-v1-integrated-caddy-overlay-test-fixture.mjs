@@ -13,10 +13,12 @@ import {
   ADMIN_LISTEN,
   ADMIN_PROBE_PATH,
   ADMIN_SOCKET,
+  CADDY_BINARY_PATH,
   CADDY_AMD64_BINARY,
   CADDY_AMD64_MANIFEST,
   CADDY_IMAGE_INDEX,
   COLLECTOR,
+  EXECUTOR_PATH,
   NODE_AMD64_MANIFEST,
   NODE_IMAGE_INDEX,
   PROFILE,
@@ -29,13 +31,13 @@ import {
 
 export const TEST_REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const TEST_SOURCE = readFileSync(join(TEST_REPOSITORY, MANAGED_BLOCK_SOURCE));
-const HARDENING_CONFIG_PREIMAGE = Buffer.from(
+export const HARDENING_CONFIG_PREIMAGE = Buffer.from(
   "{\n\tadmin 127.0.0.1:2019\n}\n\nexisting.example.net {\n\treverse_proxy 127.0.0.1:18080\n}\n",
 );
 export const TEST_PREIMAGE = Buffer.from(
   `{\n\tadmin ${ADMIN_LISTEN}\n}\n\nexisting.example.net {\n\treverse_proxy 127.0.0.1:18080\n}\n`,
 );
-const HARDENING_UNIT_PREIMAGE = Buffer.from(`[Unit]
+export const HARDENING_UNIT_PREIMAGE = Buffer.from(`[Unit]
 Description=Existing bhtm Caddy
 
 [Service]
@@ -43,14 +45,18 @@ Type=notify
 User=root
 Group=root
 Environment=CADDY_ADMIN=127.0.0.1:2019
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 
 [Install]
 WantedBy=multi-user.target
 `);
 export const TEST_HARDENED_ADAPTED_JSON = {
   admin: { listen: ADMIN_LISTEN },
+  apps: {},
+};
+export const TEST_PREIMAGE_ADAPTED_JSON = {
+  admin: { listen: "127.0.0.1:2019" },
   apps: {},
 };
 export const TEST_OVERLAY_ADAPTED_JSON = {
@@ -184,7 +190,7 @@ function stoppedHardeningGeneration() {
   };
 }
 
-function makeHardeningEvidence(targetGeneration) {
+export function makeHardeningEvidence(targetGeneration) {
   const candidateConfig = buildHardenedCaddyfile(
     HARDENING_CONFIG_PREIMAGE,
     "replace-explicit-tcp-admin",
@@ -195,7 +201,11 @@ function makeHardeningEvidence(targetGeneration) {
     canonicalAdminUdsJson(TEST_HARDENED_ADAPTED_JSON),
     "utf8",
   );
-  const binaryPreimage = testPin("/usr/bin/caddy", "5".repeat(64), "0755", {
+  const preimageAdaptedJson = Buffer.from(
+    canonicalAdminUdsJson(TEST_PREIMAGE_ADAPTED_JSON),
+    "utf8",
+  );
+  const binaryPreimage = testPin(CADDY_BINARY_PATH, "5".repeat(64), "0755", {
     size: "48521378",
     inode: "52001",
   });
@@ -223,7 +233,7 @@ function makeHardeningEvidence(targetGeneration) {
       binary: {
         gid: 0,
         mode: "0755",
-        path: "/usr/bin/caddy",
+        path: CADDY_BINARY_PATH,
         sha256: binaryPreimage.sha256,
         size: binaryPreimage.size,
         uid: 0,
@@ -250,6 +260,8 @@ function makeHardeningEvidence(targetGeneration) {
     config_edit_mode: "replace-explicit-tcp-admin",
     deployment_profile: PROFILE,
     preimage: {
+      adapted_json_sha256: testSha256(preimageAdaptedJson),
+      adapted_json_size: String(preimageAdaptedJson.length),
       admin: { kind: "tcp", listen: "127.0.0.1:2019" },
       binary: binaryPreimage,
       config: configPreimage,
@@ -269,6 +281,9 @@ function makeHardeningEvidence(targetGeneration) {
       scope: "capability-free-unprivileged-non-root-dac-only",
     },
     runtime: {
+      executor: testPin(EXECUTOR_PATH, "b".repeat(64), "0555", {
+        inode: "52008",
+      }),
       gate: testPin(
         "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
         "a".repeat(64),
@@ -284,13 +299,14 @@ function makeHardeningEvidence(targetGeneration) {
       setpriv_binary: testPin(SETPRIV_PATH, "6".repeat(64), "0755", {
         inode: "52007",
       }),
+      systemd_version: "255",
     },
     schema_version: 1,
     service_uid_inventory: serviceUidInventory,
     site_preservation: {
       acme_storage_migration: "none",
       existing_site_inventory_sha256: "e".repeat(64),
-      probe_ids: ["existing-site"],
+      probe_ids: ["direct-upstream", "public-site", "tls-site"],
     },
     supply_chain: {
       caddy: {
@@ -326,6 +342,7 @@ function makeHardeningEvidence(targetGeneration) {
       lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
       new_invocation_required: true,
       outcome_unknown_conditions: [
+        "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
         "systemctl-command-error-after-start-request",
         "unclassified-config-unit-digest-pair",
         "active-generation-with-unproven-admin-readback",
@@ -439,7 +456,11 @@ function makeHardeningEvidence(targetGeneration) {
     rollback: { outcome: "not-required", performed: false },
     runtime: plan.runtime,
     schema_version: 1,
-    site_health: [{ after: "passed", before: "passed", id: "existing-site" }],
+    site_health: plan.site_preservation.probe_ids.map((id) => ({
+      after: "passed",
+      before: "passed",
+      id,
+    })),
     stopped: {
       admin_socket_absent: true,
       tcp_admin: [
@@ -447,16 +468,21 @@ function makeHardeningEvidence(targetGeneration) {
         { endpoint: "[::1]:2019", result: "connection-refused" },
       ],
       unit_generation: stoppedHardeningGeneration(),
+      unit_job_absent: true,
     },
     transaction_id: plan.transaction_id,
   };
   return {
+    candidateAdaptedJson,
+    candidateConfig,
     candidateUnit,
+    configPreimage: HARDENING_CONFIG_PREIMAGE,
     plan,
     planBytes: Buffer.from(canonicalAdminUdsJson(plan), "utf8"),
     probeBytes,
     receipt,
     receiptBytes: Buffer.from(canonicalAdminUdsJson(receipt), "utf8"),
+    unitPreimage: HARDENING_UNIT_PREIMAGE,
   };
 }
 
@@ -678,7 +704,7 @@ export function makeIntegratedOverlayTestPlan() {
           { size: String(hardeningReceiptBytes.length) },
         ),
       },
-      binary: testPin("/usr/bin/caddy", "5".repeat(64), "0755"),
+      binary: testPin(CADDY_BINARY_PATH, "5".repeat(64), "0755"),
       config_parent: {
         device: "2049",
         gid: 0,
@@ -737,7 +763,7 @@ export function makeIntegratedOverlayTestPlan() {
     ],
     transaction: {
       adapt_argv: [
-        "/usr/bin/caddy",
+        CADDY_BINARY_PATH,
         "adapt",
         "--config",
         `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,
@@ -768,7 +794,7 @@ export function makeIntegratedOverlayTestPlan() {
       state_directory:
         `/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/transactions/${transactionId}`,
       validate_argv: [
-        "/usr/bin/caddy",
+        CADDY_BINARY_PATH,
         "validate",
         "--config",
         `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,

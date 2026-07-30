@@ -992,8 +992,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
       drop-ins or effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
       substitutions, and an explicit UDS reload address. It pins the exact
-      production Caddy v2.11.4 preimage independently from the resolved Caddy
-      2.11.4 test image, and pins Node v22.22.2 independently from Node 24
+      production Caddy v2.11.4 preimage at the host's exact
+      `/usr/local/bin/caddy` independently from the resolved Caddy 2.11.4 test
+      image, and pins Node v22.22.2 independently from Node 24
       browser CI. A real Linux container process test proves root `/config/`
       readback, descriptor-pinned `setpriv` execution with zero effective
       capabilities/cleared groups, `EACCES` for six simulated non-root service
@@ -1005,15 +1006,27 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       by the closed-profile lexer. Canonical adapted JSON additionally rejects
       global, access and request-scoped log sinks; the candidate binds its
       canonical digest and size, and the committed root readback must reproduce
-      that digest. The read-only gate consumes an externally generated adapter
-      artifact, so a future executor must still prove it ran the plan-pinned
-      Caddy binary on the exact candidate. The plan requires a cold
+      that digest. The read-only gate still consumes an externally generated
+      adapter artifact for offline review. A separate source-hash-closed,
+      local-host-only cold executor now runs the plan-pinned Caddy binary on
+      both the exact disk preimage bytes and the exact candidate before mutation.
+      It requires the approved canonical old adapted-JSON digest to equal the
+      live TCP-admin readback and requires the loaded old unit to have the
+      exact fragment and old Exec commands, `NeedDaemonReload=no`, no drop-ins,
+      `EnvironmentFile`, or `PassEnvironment`. It requires root, Linux, systemd
+      `255`, same-boot/PID/Invocation/preimage pins and a pre-existing exact
+      `kernel.core_pattern=|/usr/bin/false`; it never changes the sysctl. The
+      plan requires a cold
       stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
       systemd InvocationID, complete actual
       service-UID and existing-site inventories, exact old-config+old-unit
-      rollback, and outcome-unknown handling after an ambiguous start. This
-      slice is validation-only: no executor, installation, host mutation or
-      activation is claimed. In addition to static `systemd-analyze verify`, an
+      rollback, and outcome-unknown handling after an ambiguous start. The
+      executor uses an exclusive lock, exact-byte/root-only backups,
+      same-parent fsynced atomic replacements, closed public/direct/TLS probes,
+      verified pre-start rollback, and never auto-rolls back after a candidate
+      start request. Fake-ops fault tests cover each outcome region and durable
+      receipt ordering. No installation, host mutation or activation is
+      claimed. In addition to static `systemd-analyze verify`, an
       isolated real-systemd-PID-1 compatibility test now proves two distinct
       cold generations plus stop-time removal and start-time recreation of the
       runtime directory/socket. It feeds each real InvocationID into the

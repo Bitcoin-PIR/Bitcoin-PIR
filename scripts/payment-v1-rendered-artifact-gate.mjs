@@ -146,6 +146,7 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
       "scripts/payment-v1-caddy-admin-uds-gate.mjs",
       "scripts/payment-v1-caddy-admin-uds-probe.mjs",
+      "scripts/payment-v1-caddy-admin-uds-transaction.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
     ]),
@@ -361,6 +362,13 @@ const TEMPLATE_CATALOG = Object.freeze({
     artifactClass: "executable-config",
     targetPath:
       "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-transaction.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs",
     modes: ["0555"],
     rootOwned: true,
   },
@@ -2390,10 +2398,11 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "d400c5979c4fabdae82f7773081619626a4174b4077f580d5778da1e84f96c57",
+  adminGate: "bd4a99dc4a77691c89f1861b93c28b1715f072d266e9cb42ec45a1f0dd474f9b",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
-  overlayGate: "6c9db37516596974ba6468235a31655f0301781744a0dea46352ab8b4f712f9c",
-  overlayTransaction: "2c2276ee9306b37e7db7d87c89d443e1fc1306cba077555f12c05b4a33723ba1",
+  adminTransaction: "c56190d9db34bc7481e554f7f81039ee67496cca5d666f141faa0bd652040ccc",
+  overlayGate: "cbc060dc48c164de8ee6faebc1e05ffe7bf7ce1c94b98dad3ec12e96e424b6ab",
+  overlayTransaction: "7d215529237a9b00da5fd162806f291e2802cb1813ee5c63f02a7d8862cd2dcf",
 });
 
 const OVERLAY_TRANSACTION_IMPORT_HEADER = [
@@ -2510,6 +2519,17 @@ function configManagedReferences(sourcePath, text, plan) {
     );
     return [
       "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    ];
+  }
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-transaction.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminTransaction,
+      "rendered Caddy admin UDS cold transaction executor",
+    );
+    return [
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
     ];
   }
   if (sourcePath === "scripts/payment-v1-integrated-caddy-overlay-gate.mjs") {

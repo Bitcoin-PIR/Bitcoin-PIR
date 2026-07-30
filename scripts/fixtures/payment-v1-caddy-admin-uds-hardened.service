@@ -18,9 +18,9 @@ StandardOutput=null
 StandardError=null
 UMask=0077
 UnsetEnvironment=CADDY_ADMIN
-ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock
 # END BITCOINPIR CADDY ADMIN UDS V1
 [Install]
 WantedBy=multi-user.target

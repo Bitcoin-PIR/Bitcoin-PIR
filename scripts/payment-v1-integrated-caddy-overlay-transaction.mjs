@@ -2512,7 +2512,7 @@ function realReadRegular(path, maxBytes = MAX_FILE_BYTES) {
 
 function pinnedReadLimit(path) {
   if (
-    new Set(["/usr/bin/caddy", "/usr/bin/node", "/usr/bin/setpriv"]).has(path) ||
+    new Set(["/usr/local/bin/caddy", "/usr/bin/node", "/usr/bin/setpriv"]).has(path) ||
     /^\/opt\/bitcoinpir\/(?:haproxy|payment-v1-rename-exchange)\/[0-9a-f]{64}\//u.test(path)
   ) {
     return MAX_EXECUTABLE_BYTES;
