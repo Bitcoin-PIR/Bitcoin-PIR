@@ -203,8 +203,10 @@ enum CoreRpcCookieAccessPolicyV1 {
     #[default]
     SameUidOwnerOnly,
     /// Split-UID layout: a short-lived preflight unit traverses an exact
-    /// bitcoind-owner/cookie-group mode-0710 directory and reads a 0640 cookie.
-    CrossUidSharedGroup,
+    /// bitcoind-owner/cookie-group mode-2710 setgid directory and reads a 0640
+    /// cookie. The explicit policy name prevents an old mode-0710 config from
+    /// silently acquiring the new directory-inheritance semantics.
+    CrossUidSetgidSharedGroup,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -497,15 +499,18 @@ struct ClnGetInfoV1 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClnPluginListV1 {
     command: String,
     plugins: Vec<ClnPluginV1>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 struct ClnPluginV1 {
     name: String,
     active: bool,
+    dynamic: bool,
 }
 
 #[derive(Deserialize)]
@@ -572,7 +577,7 @@ struct PreflightSnapshotV1 {
     cln_version: String,
     cln_network: String,
     cln_blockheight: u64,
-    plugins: Vec<(String, bool)>,
+    plugins: Vec<ClnPluginV1>,
     peer_channels: Vec<ClnPeerChannelV1>,
     gossip_channels: Vec<ClnGossipChannelV1>,
     scb_digest: [u8; 32],
@@ -593,7 +598,7 @@ struct BootstrapPreflightSnapshotV1 {
     cln_version: String,
     cln_network: String,
     cln_blockheight: u64,
-    plugins: Vec<(String, bool)>,
+    plugins: Vec<ClnPluginV1>,
     peer_channel_count: usize,
     onchain_output_count: usize,
     funding_channel_count: usize,
@@ -1477,10 +1482,10 @@ fn validate_core_rpc_cookie_access_policy_v1(
             check,
             "cross-uid-fields-with-same-uid-policy",
         )),
-        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, None) => {
+        (CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup, None) => {
             Err(PreflightFailureV1::new(check, "missing-cross-uid-fields"))
         }
-        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, Some(cross_uid)) => {
+        (CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup, Some(cross_uid)) => {
             if cross_uid.protected_parent_expected_uid != 0
                 || cross_uid.protected_parent_expected_gid != 0
                 || cross_uid.preflight_expected_uid == 0
@@ -1504,7 +1509,7 @@ fn validate_preflight_identity_separation_v1(
     let check = "config.preflight-identities";
     let core_preflight_uid = match config.bitcoin.rpc_cookie.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => config.bitcoin.rpc_cookie.expected_uid,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
             config
                 .bitcoin
                 .rpc_cookie
@@ -1530,7 +1535,8 @@ fn validate_preflight_identity_separation_v1(
     if core_preflight_uid != lightning_preflight_uid {
         return Err(PreflightFailureV1::new(check, "preflight-uid-conflict"));
     }
-    if config.bitcoin.rpc_cookie.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+    if config.bitcoin.rpc_cookie.access_policy
+        == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
         && (config.bitcoin.rpc_cookie.expected_uid == config.lightning.expected_uid
             || config.bitcoin.rpc_cookie.expected_gid == config.lightning.expected_gid)
     {
@@ -1865,7 +1871,9 @@ fn validate_protected_config_runtime_group_set_for_identity_v1(
         return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
     }
     let mut expected = BTreeSet::from([config_expected_gid]);
-    if config.bitcoin.rpc_cookie.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup {
+    if config.bitcoin.rpc_cookie.access_policy
+        == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
+    {
         expected.insert(config.bitcoin.rpc_cookie.expected_gid);
     }
     if config.lightning.rpc_access_policy == LightningRpcAccessPolicyV1::CrossUidSharedGroup {
@@ -2190,7 +2198,7 @@ fn validate_core_rpc_cookie_runtime_identity_v1(
                 return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
             }
         }
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
             let cross_uid = config
                 .cross_uid_access
                 .as_ref()
@@ -2257,7 +2265,7 @@ fn validate_core_rpc_cookie_file_metadata_v1(
 ) -> Result<(), PreflightFailureV1> {
     let expected_mode = match config.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o600,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o640,
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => 0o640,
     };
     if metadata.kind != CoreRpcCookieBoundaryKindV1::RegularFile
         || metadata.uid != config.expected_uid
@@ -2280,7 +2288,7 @@ fn validate_core_rpc_cookie_boundary_metadata_v1(
     cookie: CoreRpcCookieBoundaryMetadataV1,
     check: &'static str,
 ) -> Result<(), PreflightFailureV1> {
-    if config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup {
+    if config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup {
         let cross_uid = config
             .cross_uid_access
             .as_ref()
@@ -2295,7 +2303,7 @@ fn validate_core_rpc_cookie_boundary_metadata_v1(
     }
     let expected_final_mode = match config.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o700,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o710,
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => 0o2710,
     };
     if final_parent.kind != CoreRpcCookieBoundaryKindV1::Directory
         || final_parent.uid != config.expected_uid
@@ -2327,7 +2335,7 @@ fn validate_canonical_core_rpc_cookie_layout_v1(
         || !components
             .iter()
             .all(|component| matches!(component, Component::Normal(_)))
-        || (config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+        || (config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
             && components.len() != 2)
     {
         return Err(PreflightFailureV1::new(check, "invalid-cookie-layout"));
@@ -2386,16 +2394,24 @@ fn validate_core_rpc_cookie_namespace_v1(
         core_rpc_cookie_boundary_metadata_v1(cookie),
         check,
     )?;
-    let shared_gid = match config.access_policy {
-        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => None,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => Some(config.expected_gid),
-    };
-    let checked_path = pir_private_files::prepare_private_unix_socket_parent_v1(
-        &config.path,
-        config.expected_uid,
-        shared_gid,
-        "Core RPC cookie",
-    )
+    let checked_path = match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => {
+            pir_private_files::prepare_private_unix_socket_parent_v1(
+                &config.path,
+                config.expected_uid,
+                None,
+                "Core RPC cookie",
+            )
+        }
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
+            pir_private_files::prepare_private_setgid_group_file_parent_v1(
+                &config.path,
+                config.expected_uid,
+                config.expected_gid,
+                "Core RPC cookie",
+            )
+        }
+    }
     .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-boundary"))?;
     if checked_path != config.path || config.path.parent() != Some(final_parent) {
         return Err(PreflightFailureV1::new(check, "path-changed"));
@@ -3454,11 +3470,7 @@ async fn collect_bootstrap_snapshot_v1<R: CommandRunnerV1>(
         cln_version: getinfo.version,
         cln_network: getinfo.network,
         cln_blockheight: getinfo.blockheight,
-        plugins: plugin_list
-            .plugins
-            .into_iter()
-            .map(|plugin| (plugin.name, plugin.active))
-            .collect(),
+        plugins: plugin_list.plugins,
         peer_channel_count: peer_channels.channels.len(),
         onchain_output_count: funds.outputs.len(),
         funding_channel_count: funds.channels.len(),
@@ -3571,11 +3583,7 @@ async fn collect_snapshot_v1<R: CommandRunnerV1>(
         cln_version: getinfo.version,
         cln_network: getinfo.network,
         cln_blockheight: getinfo.blockheight,
-        plugins: plugin_list
-            .plugins
-            .into_iter()
-            .map(|plugin| (plugin.name, plugin.active))
-            .collect(),
+        plugins: plugin_list.plugins,
         peer_channels: peer_channels.channels,
         gossip_channels,
         scb_digest,
@@ -3804,7 +3812,7 @@ struct RuntimeSnapshotViewV1<'a> {
     cln_version: &'a str,
     cln_network: &'a str,
     cln_blockheight: u64,
-    plugins: &'a [(String, bool)],
+    plugins: &'a [ClnPluginV1],
 }
 
 fn validate_runtime_snapshot_v1(
@@ -3975,7 +3983,7 @@ fn validate_snapshot_v1(
 
 fn validate_plugins_v1(
     config: &LightningStagingConfigV1,
-    actual: &[(String, bool)],
+    actual: &[ClnPluginV1],
 ) -> Result<(), PreflightFailureV1> {
     if actual.len() > MAX_PLUGIN_COUNT_V1 {
         return Err(PreflightFailureV1::new(
@@ -3990,8 +3998,12 @@ fn validate_plugins_v1(
         .map(|plugin| plugin.name.as_str())
         .collect();
     let mut observed = BTreeMap::new();
-    for (name, active) in actual {
-        if name.len() > 4096 || observed.insert(name.as_str(), *active).is_some() {
+    for plugin in actual {
+        if plugin.name.len() > 4096
+            || observed
+                .insert(plugin.name.as_str(), (plugin.active, plugin.dynamic))
+                .is_some()
+        {
             return Err(PreflightFailureV1::new(
                 "lightning.plugins",
                 "invalid-plugin-list",
@@ -4004,7 +4016,13 @@ fn validate_plugins_v1(
             "allowlist-mismatch",
         ));
     }
-    if observed.values().any(|active| !active) {
+    if observed.values().any(|(_, dynamic)| *dynamic) {
+        return Err(PreflightFailureV1::new(
+            "lightning.plugins",
+            "plugin-dynamic",
+        ));
+    }
+    if observed.values().any(|(active, _)| !active) {
         return Err(PreflightFailureV1::new(
             "lightning.plugins",
             "plugin-inactive",
@@ -4295,7 +4313,8 @@ mod tests {
 
     fn fully_cross_uid_config(role: StagingRoleV1) -> LightningStagingConfigV1 {
         let mut value = cross_uid_config(role);
-        value.bitcoin.rpc_cookie.access_policy = CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+        value.bitcoin.rpc_cookie.access_policy =
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup;
         value.bitcoin.rpc_cookie.cross_uid_access = Some(CoreRpcCookieCrossUidAccessV1 {
             preflight_expected_uid: 1001,
             protected_parent_expected_uid: 0,
@@ -4374,6 +4393,14 @@ mod tests {
         }
     }
 
+    fn plugin(name: &str, active: bool, dynamic: bool) -> ClnPluginV1 {
+        ClnPluginV1 {
+            name: name.to_owned(),
+            active,
+            dynamic,
+        }
+    }
+
     fn gossip(left: &str, right: &str, scid: &str) -> Vec<ClnGossipChannelV1> {
         vec![
             ClnGossipChannelV1 {
@@ -4419,7 +4446,7 @@ mod tests {
             cln_version: "v26.06.6".to_owned(),
             cln_network: "signet".to_owned(),
             cln_blockheight: 999,
-            plugins: vec![(PLUGIN.to_owned(), true)],
+            plugins: vec![plugin(PLUGIN, true, false)],
             peer_channels,
             gossip_channels,
             scb_digest: [9u8; 32],
@@ -4446,7 +4473,7 @@ mod tests {
             cln_version: "v26.06.6".to_owned(),
             cln_network: "signet".to_owned(),
             cln_blockheight: 999,
-            plugins: vec![(PLUGIN.to_owned(), true)],
+            plugins: vec![plugin(PLUGIN, true, false)],
             peer_channel_count: 0,
             onchain_output_count: 0,
             funding_channel_count: 0,
@@ -4568,13 +4595,68 @@ mod tests {
         let mut unexpected_plugin = bootstrap_snapshot(StagingRoleV1::Issuer);
         unexpected_plugin
             .plugins
-            .push(("/tmp/untrusted".to_owned(), true));
+            .push(plugin("/tmp/untrusted", true, false));
         assert_eq!(
             validate_bootstrap_snapshot_v1(&config, &ids, &unexpected_plugin)
                 .unwrap_err()
                 .check,
             "lightning.plugins"
         );
+    }
+
+    #[test]
+    fn cln_plugin_list_requires_static_plugins_and_a_closed_item_shape() {
+        let config = config(StagingRoleV1::Issuer);
+        let valid: ClnPluginListV1 = serde_json::from_value(serde_json::json!({
+            "command": "list",
+            "plugins": [{"name": PLUGIN, "active": true, "dynamic": false}]
+        }))
+        .unwrap();
+        validate_plugins_v1(&config, &valid.plugins).unwrap();
+
+        let dynamic: ClnPluginListV1 = serde_json::from_value(serde_json::json!({
+            "command": "list",
+            "plugins": [{"name": PLUGIN, "active": true, "dynamic": true}]
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_plugins_v1(&config, &dynamic.plugins)
+                .unwrap_err()
+                .reason,
+            "plugin-dynamic"
+        );
+
+        for malformed in [
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true}]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "dynamic": false}]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{
+                    "name": PLUGIN,
+                    "active": true,
+                    "dynamic": false,
+                    "autostart": true
+                }]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true, "dynamic": "false"}]
+            }),
+            serde_json::json!({"command": "list", "plugins": [PLUGIN]}),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true, "dynamic": false}],
+                "unknown_top_level": true
+            }),
+        ] {
+            assert!(serde_json::from_value::<ClnPluginListV1>(malformed).is_err());
+        }
     }
 
     #[test]
@@ -4637,6 +4719,7 @@ mod tests {
             HeightLag,
             UnexpectedPlugin,
             InactivePlugin,
+            DynamicPlugin,
             PrivateChannel,
             DisconnectedChannel,
             MissingLiquidity,
@@ -4658,6 +4741,7 @@ mod tests {
             (Mutation::HeightLag, "lightning.height"),
             (Mutation::UnexpectedPlugin, "lightning.plugins"),
             (Mutation::InactivePlugin, "lightning.plugins"),
+            (Mutation::DynamicPlugin, "lightning.plugins"),
             (Mutation::PrivateChannel, "lightning.peer-channels"),
             (Mutation::DisconnectedChannel, "lightning.peer-channels"),
             (Mutation::MissingLiquidity, "lightning.liquidity"),
@@ -4682,9 +4766,10 @@ mod tests {
                 Mutation::WrongClnNetwork => snapshot.cln_network = "testnet4".to_owned(),
                 Mutation::HeightLag => snapshot.cln_blockheight = 900,
                 Mutation::UnexpectedPlugin => {
-                    snapshot.plugins.push(("/tmp/unknown".to_owned(), true));
+                    snapshot.plugins.push(plugin("/tmp/unknown", true, false));
                 }
-                Mutation::InactivePlugin => snapshot.plugins[0].1 = false,
+                Mutation::InactivePlugin => snapshot.plugins[0].active = false,
+                Mutation::DynamicPlugin => snapshot.plugins[0].dynamic = true,
                 Mutation::PrivateChannel => snapshot.peer_channels[0].private = Some(true),
                 Mutation::DisconnectedChannel => {
                     snapshot.peer_channels[0].peer_connected = false;
@@ -4844,7 +4929,7 @@ mod tests {
 
         let mut missing_fields = legacy.clone();
         missing_fields.bitcoin.rpc_cookie.access_policy =
-            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup;
         assert_eq!(
             validate_static_config_v1(&missing_fields)
                 .unwrap_err()
@@ -5012,7 +5097,7 @@ mod tests {
             kind: CoreRpcCookieBoundaryKindV1::Directory,
             uid: cookie_config.expected_uid,
             gid: cookie_config.expected_gid,
-            mode: 0o710,
+            mode: 0o2710,
             nlink: 2,
             size: 0,
         };
@@ -5082,7 +5167,25 @@ mod tests {
             (
                 protected_parent,
                 CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o710,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
                     mode: 0o711,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o3710,
                     ..final_parent
                 },
                 cookie,
@@ -5503,7 +5606,7 @@ mod tests {
         let parsed = toml::from_str::<LightningStagingConfigV1>(template).unwrap();
         assert_eq!(
             parsed.bitcoin.rpc_cookie.access_policy,
-            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
         );
         assert_eq!(parsed.bitcoin.rpc_cookie.expected_uid, 990);
         assert_eq!(parsed.bitcoin.rpc_cookie.expected_gid, 994);
@@ -5598,6 +5701,13 @@ mod tests {
         );
         assert!(
             toml::from_str::<LightningStagingConfigV1>(&with_unknown_core_cross_uid_field).is_err()
+        );
+        let with_obsolete_core_cookie_policy = template.replace(
+            "access_policy = \"cross-uid-setgid-shared-group\"",
+            "access_policy = \"cross-uid-shared-group\"",
+        );
+        assert!(
+            toml::from_str::<LightningStagingConfigV1>(&with_obsolete_core_cookie_policy).is_err()
         );
         let with_unknown_backup_field = format!("{template}\nunexpected = true\n");
         assert!(toml::from_str::<LightningStagingConfigV1>(&with_unknown_backup_field).is_err());

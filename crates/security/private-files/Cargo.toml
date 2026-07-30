@@ -13,4 +13,5 @@ rustix = { version = "1", features = ["fs", "process"] }
 zeroize = "1"
 
 [dev-dependencies]
+rustix = { version = "1", features = ["thread"] }
 tempfile = "3"
