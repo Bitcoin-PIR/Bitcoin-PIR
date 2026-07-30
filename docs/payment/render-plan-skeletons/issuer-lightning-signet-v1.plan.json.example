@@ -16,15 +16,6 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0555",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/bitcoin-cli",
-      "target_path": "/opt/bitcoinpir/bitcoin-core/INVALID_REPLACE_WITH_BITCOIN_CORE_BUNDLE_SHA256/bin/bitcoin-cli",
-      "uid": 0
-    },
-    {
-      "class": "binary",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 0,
-      "mode": "0555",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/lightning-cli",
       "target_path": "/opt/bitcoinpir/core-lightning/INVALID_REPLACE_WITH_CLN_BUNDLE_SHA256/bin/lightning-cli",
       "uid": 0
@@ -304,15 +295,6 @@
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 0,
       "mode": "0444",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/bitcoin-core-bundle.sha256",
-      "target_path": "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256",
-      "uid": 0
-    },
-    {
-      "class": "hash-manifest",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 0,
-      "mode": "0444",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/lightning/bpir-admin.sha256",
       "target_path": "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256",
       "uid": 0
@@ -364,7 +346,6 @@
     }
   ],
   "placeholders": {
-    "BITCOIND_SYSTEMD_UNIT": "INVALID_REPLACE_WITH_BITCOIND_SERVICE_UNIT",
     "BITCOINPIR_WEB_ORIGIN": "INVALID_REPLACE_WITH_WEB_HTTPS_ORIGIN",
     "BITCOIN_CORE_BUNDLE_SHA256": "INVALID_REPLACE_WITH_BITCOIN_CORE_BUNDLE_SHA256",
     "BITCOIN_RPC_PORT": "INVALID_REPLACE_WITH_RPC_PORT",

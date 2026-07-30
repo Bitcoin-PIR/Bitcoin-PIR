@@ -1,15 +1,16 @@
 # Lightning staging strategy
 
-Status: deployment design as of 2026-07-29. This document does not authorize a
+Status: deployment design as of 2026-07-30. This document does not authorize a
 remote-host change, persistent Signet identity/wallet/channel, faucet/test-coin
 use, mainnet funds or production-key operation.
 
 ## Deployment-phase mapping
 
 - **Source merge** keeps disposable local regtest and exact-head CI green.
-- **Private no-funds** may validate any approved issuer plan and payload
+- **Private no-funds** may validate any approved Core or issuer plan and payload
   entirely offline, but remote installation/start in this phase is edge-only.
-  It must not install/start CLN or collect issuer fresh-live evidence: CLN
+  It must not install/start Core or CLN or collect issuer fresh-live evidence:
+  Core start creates persistent chain state and CLN
   startup creates persistent identity/wallet state under `/srv/lightning/signet`,
   which requires the separate Public-Signet custody approval. No public traffic
   is accepted.
@@ -25,11 +26,13 @@ No approval in one phase implies another. Use
 [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) for non-secret network,
 binary, identity and custody inputs and
 [render-plan-skeletons/](render-plan-skeletons/) for fail-closed plan shapes.
-Neither file authorizes execution or may contain wallet/key material.
+Neither file authorizes execution or may contain wallet/key material. The
+separate Core boundary, provenance contract and stopped/live sequence are
+specified in [BITCOIN_CORE_SIGNET.md](BITCOIN_CORE_SIGNET.md).
 
 ## Decision
 
-Payment V1 uses three complementary Lightning test boundaries:
+Payment V1 uses three deliberately separate Lightning test boundaries:
 
 1. **Disposable local regtest** is the deterministic CI and fault-injection
    baseline. It covers three real Core Lightning processes, two announced local
@@ -37,28 +40,31 @@ Payment V1 uses three complementary Lightning test boundaries:
    observation and browser recovery without accounts, remote infrastructure or
    valuable coins. There is no payer-to-issuer channel, so the payment path is
    forced through the router and exercises actual gossip and multi-hop routing.
-2. **Mutinynet** is an optional external interoperability smoke. Its public
-   faucet can fund, pay an invoice or open a channel. The separately documented
-   Voltage-hosted path uses LND and can provide a deliberate CLN-to-LND check;
-   this runbook does not assume an implementation for the public faucet node.
-   Mutinynet is a centrally operated custom signet using an experimental
-   Bitcoin fork, so it is not the long-lived staging trust anchor.
-3. **Bitcoin default signet with three self-controlled CLN nodes** is the
-   preferred long-lived staging topology:
+2. **Bitcoin default signet** first exercises only the independent walletless
+   Core profile: synchronize, collect fresh live evidence and verify the exact
+   default challenge/genesis with no CLN identity, channel or invoice. The
+   recommended minimal funded BOLT11 acceptance target uses two self-controlled
+   CLN nodes and one direct private channel:
 
    ```text
-   payer  --channel-->  router  --channel-->  issuer
+   payer  --private channel-->  issuer
    ```
 
-   Two direct, controlled channels remove any dependency on an undocumented
-   public signet routing graph while still exercising multi-hop BOLT11,
-   confirmations, cross-host transport, node restart and the issuer's checked
-   Unix-socket adapter. In V1 both channels must use `announce=true`: the CLN
-   invoice adapter fixes `exposeprivatechannels=false` and therefore supplies
-   no private-channel route hint. Wait for the required announcement depth and
-   confirm that payer gossip includes `router -> issuer` before testing two-hop
-   payment. Announced channels expose the three test node identities, topology
-   and capacity, so use staging-only identities that will never be reused.
+   Because the payer owns this channel, it does not need an invoice route hint;
+   the issuer adapter may retain `exposeprivatechannels=false`. This topology
+   removes public-route availability from the acceptance boundary while still
+   exercising real BOLT11, confirmations, cross-host transport, restart and the
+   issuer's checked Unix-socket adapter. Public routing may be observed later as
+   non-deterministic interoperability evidence, never as a gate. The currently
+   checked-in full preflight still encodes the older three-role, two-announced-
+   channel topology documented below and therefore cannot approve this minimal
+   topology. A separately versioned preflight/profile and negative tests are a
+   remaining gate; do not bypass the existing checks.
+3. **Mutinynet** is outside the default-Signet production profile. It uses a
+   custom Signet challenge and Bitcoin Core fork, so a Mutinynet exercise needs
+   a separately versioned custom-Signet Core/peer profile and review. Its faucet
+   or hosted LND node may support an optional disposable interoperability smoke,
+   but cannot satisfy default-Signet chain, binary or routing acceptance.
 
 Payment V1 intentionally supports only the frozen `bitcoin`, `testnet`,
 `signet` and `regtest` network discriminants. Core Lightning now has a distinct
@@ -105,6 +111,14 @@ A missing `signet_challenge` field fails closed; V1 does not infer default
 Signet from the shared `lntbs` prefix, CLN's coarse `signet` value, DNS seeds or
 peer names.
 
+The closed `bitcoin-core-signet-v1` config deliberately omits
+`signetchallenge` and `signetseednode`: explicitly setting the default
+challenge would select Bitcoin Core's custom-Signet constructor and discard
+the compiled default fixed seeds/assume-valid data. It disables DNS lookup and
+DNS seeds, permits outbound P2P only, and relies on the fixed default-Signet
+seeds compiled into the externally approved content-addressed binary. This
+bootstrap policy does not replace the live challenge/genesis comparison above.
+
 Every staging startup must fail closed unless all of the following agree:
 
 - the configured Bitcoin network;
@@ -134,12 +148,20 @@ Core documents that cookie read access is a powerful RPC trust boundary and
 supports `owner`, `group`, or `all` via
 [`rpccookieperms`](https://github.com/bitcoin/bitcoin/blob/master/src/init.cpp).
 
+The independent `bitcoin-core-signet-v1` profile now uses a distinct bitcoind
+primary GID and a setgid mode-2710 Signet directory so `.cookie` inherits the
+cookie group without placing bitcoind in that group. The current Rust preflight
+contract above still accepts only exact mode 0710 and therefore fail-closed
+rejects the Core profile. Joint activation remains blocked until a separately
+versioned preflight change requires 2710; do not weaken Core or bypass the
+preflight to bridge this mismatch.
+
 The cookie group must be different from the native CLN RPC group. CLN requires
 the cookie group for its bcli plugin; only CLN and the dedicated read-only
 preflight supervisor receive it. The long-lived payment issuer and CLN RPC guard must
 never list the cookie group in `Group=`, `SupplementaryGroups=`, container
 membership, `/etc/group` membership, ACLs, or an interactive login. Grant it
-to CLN and with unit-scoped `SupplementaryGroups=bitcoinpir-bitcoin-rpc` on the
+to CLN and use unit-scoped `SupplementaryGroups=bitcoinpir-bitcoin-rpc` on the
 preflight lease service; do not add the preflight or issuer account
 persistently to that group. Activation evidence must inspect rendered units
 and the live issuer, guard, preflight and CLN processes' `Groups:` sets.
@@ -493,6 +515,18 @@ service configuration and peer/bootstrap set remain deployment-audit inputs,
 and acceptance must still execute actual one-hop and two-hop payments required
 by the test plan.
 
+Core closure is not CLN loader closure. The reviewed CLN v26.06.6 Ubuntu 24
+amd64 archive dynamically needs `libsqlite3.so.0`, `libpq.so.5` and
+`libsodium.so.23`; the currently observed Hetzner target lacks `libpq.so.5`
+and has damaged dpkg/kernel package state. No `apt` repair/install is
+authorized. A separately reviewed immutable dependency closure must pass
+before stopped CLN installation or any CLN start claim.
+An offline Ubuntu 24 feasibility check succeeded for both CLN `--version`
+commands when the missing Noble `libpq.so.5` was supplied temporarily, but the
+complete hashes, transitive loader closure and immutable unit integration are
+reserved for a separate CLN runtime-library-bundle review; they are not part
+of `bitcoin-core-signet-v1`.
+
 As a local no-network field-shape observation on 2026-07-27, Bitcoin Core
 31.1's temporary default-Signet node returned the exact challenge and genesis
 above, `chain=signet`, and numeric RPC version `310100`. This confirms the
@@ -526,53 +560,53 @@ approved.
 
 Local regtest needs no user account or faucet.
 
-For a Mutinynet smoke, use its free GitHub device-OAuth path. Do not use its
-L402 option because that spends real mainnet sats. Treat the faucet as a
-correlation boundary: it can observe the GitHub identity, IP, node public key,
-invoice and timing. Use only disposable identities and synthetic Payment V1
-scopes.
+For a separately approved Mutinynet smoke, use its free GitHub device-OAuth
+path. Do not use its L402 option because that spends real mainnet sats. Treat
+the faucet as a correlation boundary: it can observe the GitHub identity, IP,
+node public key, invoice and timing. Use only disposable identities and
+synthetic Payment V1 scopes; none of this is evidence for
+`bitcoin-core-signet-v1`.
 
-For default-signet staging, only after the separate persistent-Signet and
-faucet/test-coin approvals, create payer, router and issuer addresses on the
-approved staging hosts. A visible public Signet Lightning graph is optional
-interoperability evidence, not a routing, liquidity or availability dependency;
-the acceptance topology remains the three explicitly connected nodes below. A
-minimal routing smoke can start with roughly
-25,000 signet sats each for payer and router and two roughly 20,000-sat
-announced channels. The 20,000-sat size is a conservative BitcoinPIR staging
-policy, not a Core Lightning protocol minimum: the pinned `fundchannel` RPC
-accepts amounts down to its current 546-sat dust floor. This budget leaves only
-a small on-chain fee and usable-liquidity margin; keep invoices at 1--100 sats
-and do not use this minimal topology for destructive recovery drills. The
-preferred fault/close/restart allocation remains about 150,000 sats
-each for payer and router, each funding a roughly 100,000-sat outbound channel.
-An additional 50,000 issuer sats is optional on-chain closing/recovery-test
-margin; receiving the two-hop payment does not require it and it does not
-create reverse Lightning liquidity. Thus about 50,000 sats can bootstrap the
-minimal smoke, while about 350,000 sats is practical and 500,000 sats is a
-comfortable upper fault-drill budget. These are budgets, not a promise that a
-faucet will provide them. Faucet requests must target fresh staging node
-addresses; never import faucet-facing keys into a production-mainnet node.
+For default-signet staging, first complete the walletless Core sync/evidence
+phase. Only after the separate persistent-Signet, faucet/test-coin and channel
+approvals **and** a reviewed direct-private-channel preflight/profile may the
+self-controlled payer and issuer create addresses and one direct private
+channel. The default-Signet public faucet was observed with zero available
+balance during this review, so neither that faucet nor any public route can be
+a schedule or acceptance dependency. If separately approved test coins are
+unavailable, the funded exercise remains blocked; do not substitute Mutinynet
+or weaken the default-Signet identity checks. Faucet requests must target fresh
+staging-node addresses, and faucet-facing keys must never enter a
+production-mainnet node.
 
 No real query address, result, payer identity or production capability may be
 used in any public-test-network experiment.
 
 ## Acceptance sequence
 
-1. Keep `scripts/payment-v1-cln-regtest-e2e.sh` green as a local release gate.
-2. On an approved disposable public host, perform one Mutinynet CLN-to-LND
-   invoice/payment/status/restart smoke using only test identities.
-3. Build the three-node default-signet topology with two staging-only announced
-   channels, verify gossip propagation, then verify one- and two-hop payments,
-   lost HTTP response recovery, issuer restart, CLN restart, channel outage,
-   expiry and exact-price rejection.
-4. Test and record the two distinct privacy lanes. For BAT/experimental-ARC and
+1. Keep `scripts/payment-v1-cln-regtest-e2e.sh` green as the deterministic local
+   release gate.
+2. Under the separate Core-start approval, synchronize only the walletless
+   default-Signet Core profile, collect fresh live evidence and verify its exact
+   chain/challenge/genesis. Do not create CLN state or obtain test coins yet.
+3. Implement and independently review a versioned preflight/profile for the
+   two-node direct-private-channel topology; the current three-role full
+   preflight must continue to reject it.
+4. Only after that implementation plus the custody, faucet/test-coin and channel
+   gates pass, create a separate self-controlled payer and the issuer, open one
+   direct private Signet channel, then verify payment, lost HTTP response
+   recovery, issuer restart, CLN restart, channel outage, expiry and exact-price
+   rejection.
+5. Treat any public-faucet/public-route observation as optional follow-up
+   evidence. A Mutinynet smoke additionally requires its own custom-Signet
+   profile and is never substituted into the default-Signet sequence.
+6. Test and record the two distinct privacy lanes. For BAT/experimental-ARC and
    other anonymous issuer lanes, the PIR provider must not receive an invoice,
    payment hash, preimage or payer identity. For direct receipt, the PIR query
    wire carries only the signed receipt, but the provider-operated payment
    service intentionally can link invoice to receipt serial; the UI and policy
    must label that method `DIRECT_PAYMENT_TO_SPEND`.
-5. Do not run a mainnet canary on the current source. After staging, first
+7. Do not run a mainnet canary on the current source. After staging, first
    implement and review the missing mainnet preflight/profile and its negative
    tests; then obtain independent approvals for remote production mutation,
    production-key installation/use and real funds. Public test networks cannot

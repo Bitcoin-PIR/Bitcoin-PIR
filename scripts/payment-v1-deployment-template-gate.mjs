@@ -25,6 +25,10 @@ export const ACTIVE_BASELINES = Object.freeze({
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
+  "deploy/payment-v1/bitcoin-core/bitcoin.conf.in":
+    "75575910b4e35109fb6511ff1062cb36c9fd9458baaf192173ab4f0c64effbac",
+  "deploy/payment-v1/bitcoin-core/verify-layout.sh.in":
+    "18630de0a2a7587fb1e2ba1432e4375a57dd32dcfca5513517ae82f5d4434393",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
     "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
@@ -44,11 +48,13 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/verify-layout.sh.in":
     "d43ff49520b4208d1550e77613cfbf3936653465841c53579617ad08d0fd1dac",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in":
-    "ba42a3edf60c55664b32edc89977b222f9011ed857ded45c38d228a4941be49b",
+    "a4f5c704472fe029e9c1f1d13e81c902debf538dd98d8bee8e6d7257532c8001",
+  "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in":
+    "ecca44b4221254ef5f7fd98124c57955d9d7d8064b385803716d141460565b7b",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in":
     "469aa8bbd011673b9166174ab26d52c9054a6b9a4f87aacae399f301fe7e39bb",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
-    "b8a8cb918b38f36b8945b80b5da00d38e15d9cc9a72f8d8c934e760b8f022b5f",
+    "8f07f9d8dd53375acd5ce8a583fe44f2f94bccf31085810c7c0b917a667e1645",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "d0bee8a8e30762ca5c8278d4c06ff14e7c26dd7eb9be199ec8a12f7929e70ec5",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
@@ -68,12 +74,15 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+  "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+  "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
   "deploy/payment-v1/lightning/README.md",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
   "deploy/payment-v1/lightning/issuer-cln.args.in",
   "deploy/payment-v1/lightning/lightningd.conf.in",
   "deploy/payment-v1/lightning/verify-layout.sh.in",
+  "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
@@ -848,6 +857,180 @@ function validateRollbackAuthority(text) {
   exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost"], label);
 }
 
+function validateBitcoinCoreConfig(text) {
+  const label = "default-Signet Bitcoin Core configuration template";
+  const actual = activeTemplateLines(text, label);
+  const expected = [
+    "chain=signet",
+    "server=1",
+    "disablewallet=1",
+    "nosettings=1",
+    "blocksonly=0",
+    "rpccookiefile=/srv/bitcoin/signet/.cookie",
+    "rpccookieperms=group",
+    "rest=0",
+    "listen=0",
+    "listenonion=0",
+    "discover=0",
+    "onion=0",
+    "dns=0",
+    "dnsseed=0",
+    "forcednsseed=0",
+    "fixedseeds=1",
+    "onlynet=ipv4",
+    "onlynet=ipv6",
+    "debug=0",
+    "nodebuglogfile=1",
+    "printtoconsole=0",
+    "logips=0",
+    "[signet]",
+    "rpcbind=127.0.0.1",
+    "rpcallowip=127.0.0.1/32",
+    "rpcport=38332",
+  ];
+  if (
+    actual.length !== expected.length ||
+    actual.some((line, index) => line !== expected[index])
+  ) {
+    fail(`${label} active lines must equal the reviewed closed-world configuration`);
+  }
+  rejectPattern(
+    text,
+    /(?:^|\n)\s*(?:includeconf|signetchallenge|signetseednode|rpcuser|rpcpassword|rpcauth|wallet|walletdir|debuglogfile|sysperms)(?:=|\s|$)/iu,
+    label,
+    "custom Signet, include, wallet, credential, or file-logging option",
+  );
+}
+
+function validateBitcoinCoreUnit(text) {
+  const label = "Hetzner default-Signet Bitcoin Core template";
+  const unit = validateInactiveSystemdTemplate(
+    text,
+    label,
+    [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SIGNET-BITCOIN-CORE-STAGING-APPROVED",
+    ],
+    { requireStateDirectoryMode: false },
+  );
+  exactDirectiveKeys(
+    unit,
+    "Unit",
+    ["Description", "After", "Wants", "ConditionPathExists"],
+    label,
+  );
+  exactDirectiveKeys(
+    unit,
+    "Service",
+    [
+      "Type", "User", "Group", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
+      "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
+      "TimeoutStartSec", "TimeoutStopSec", "LimitCORE", "LimitNOFILE", "MemorySwapMax",
+      "StandardOutput", "StandardError", "NoNewPrivileges", "PrivateDevices", "PrivateTmp",
+      "ProtectSystem", "ProtectHome", "ProtectKernelTunables", "ProtectKernelModules",
+      "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock", "ProtectHostname",
+      "ProtectProc", "ProcSubset", "LockPersonality", "MemoryDenyWriteExecute",
+      "RestrictSUIDSGID", "RestrictRealtime", "RestrictNamespaces",
+      "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
+      "RestrictAddressFamilies", "ReadOnlyPaths", "ReadWritePaths", "InaccessiblePaths",
+    ],
+    label,
+  );
+  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Hetzner default-Signet Bitcoin Core (template only)"], label);
+  exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
+  exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
+  for (const [key, value] of [
+    ["Type", "simple"],
+    ["User", "bitcoinpir-bitcoind"],
+    ["Group", "bitcoinpir-bitcoind"],
+    ["UMask", "0077"],
+    ["RuntimeDirectory", "bitcoinpir-bitcoin-core"],
+    ["RuntimeDirectoryMode", "0700"],
+    ["WorkingDirectory", "/srv/bitcoin/signet"],
+    ["Restart", "on-failure"],
+    ["RestartSec", "5"],
+    ["TimeoutStartSec", "120"],
+    ["TimeoutStopSec", "120"],
+    ["LimitCORE", "0"],
+    ["LimitNOFILE", "65535"],
+    ["MemorySwapMax", "0"],
+    ["StandardOutput", "null"],
+    ["StandardError", "null"],
+    ["NoNewPrivileges", "true"],
+    ["PrivateDevices", "true"],
+    ["PrivateTmp", "true"],
+    ["ProtectSystem", "strict"],
+    ["ProtectHome", "true"],
+    ["ProtectKernelTunables", "true"],
+    ["ProtectKernelModules", "true"],
+    ["ProtectKernelLogs", "true"],
+    ["ProtectControlGroups", "true"],
+    ["ProtectClock", "true"],
+    ["ProtectHostname", "true"],
+    ["ProtectProc", "invisible"],
+    ["ProcSubset", "pid"],
+    ["LockPersonality", "true"],
+    ["MemoryDenyWriteExecute", "true"],
+    ["RestrictSUIDSGID", "true"],
+    ["RestrictRealtime", "true"],
+    ["RestrictNamespaces", "true"],
+    ["SystemCallArchitectures", "native"],
+    ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
+    ["ReadOnlyPaths", "/etc/bitcoinpir/payment-v1/bitcoin-core /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["ReadWritePaths", "/srv/bitcoin/signet /run/bitcoinpir-bitcoin-core"],
+    ["InaccessiblePaths", "/srv/lightning /var/lib/bitcoinpir-payment-issuer /run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-source-fair-edge"],
+  ]) {
+    exactDirectiveValues(unit, "Service", key, [value], label);
+  }
+  exactDirectiveValues(unit, "Service", "CapabilityBoundingSet", [""], label);
+  exactDirectiveValues(unit, "Service", "AmbientCapabilities", [""], label);
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "ExecStartPre",
+    [
+      "/usr/bin/test -x /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoind",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256",
+      "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout",
+    ],
+    label,
+  );
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "ExecStart",
+    ["/opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoind -conf=/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf -datadir=/srv/bitcoin -pid=/run/bitcoinpir-bitcoin-core/bitcoind.pid"],
+    label,
+  );
+}
+
+function validateBitcoinCoreLayoutVerifier(text, mode) {
+  const label = "Bitcoin Core layout verifier template";
+  if ((mode & 0o111) !== 0) fail(`${label} must remain non-executable`);
+  const active = activeTemplateLines(text, label);
+  for (const required of [
+    "[ \"${bpir_bitcoind_uid}\" -eq 52928 ] || bpir_fail",
+    "[ \"${bpir_bitcoind_gid}\" -eq 52928 ] || bpir_fail",
+    "[ \"${bpir_cookie_gid}\" -eq 52929 ] || bpir_fail",
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a' -- \"${bpir_bitcoin_dir}\")\" = \"${bpir_bitcoind_uid}:${bpir_cookie_gid}:2710\" ] || bpir_fail",
+    "bpir_require_empty_find \"${bpir_bitcoin_base}\" -xdev -mindepth 1 -maxdepth 1 ! -path \"${bpir_bitcoin_dir}\" -print -quit",
+    "bpir_require_single_device \"${bpir_bitcoin_dir}\"",
+    "bpir_require_empty_find \"${bpir_bitcoin_dir}\" -xdev -type l -print -quit",
+    "bpir_require_empty_find \"${bpir_bitcoin_dir}\" -xdev -type f ! -path \"${bpir_cookie_path}\" -perm /077 -print -quit",
+    "bpir_require_empty_find \"${bpir_bitcoin_dir}\" -xdev -type f -links +1 -print -quit",
+    "bpir_require_empty_find \"${bpir_bitcoin_dir}\" -xdev -mindepth 1 -type d -perm /077 -print -quit",
+    "bpir_require_empty_find \"${bpir_bitcoin_dir}\" -xdev -mindepth 1 ! -type d ! -type f -print -quit",
+    "/usr/bin/getfacl -R -c -p -n -- \"${bpir_bitcoin_dir}\" \\",
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a:%h:%s' -- \"${bpir_cookie_path}\")\" = \"${bpir_bitcoind_uid}:${bpir_cookie_gid}:640:1:75\" ] || bpir_fail",
+    "/usr/bin/grep -Eq '^__cookie__:[0-9a-f]{64}$' -- \"${bpir_cookie_path}\" || bpir_fail",
+  ]) {
+    if (!active.includes(required)) fail(`${label} is missing required fail-closed check: ${required}`);
+  }
+}
+
 function validateCoreLightningUnit(text) {
   const label = "Hetzner Core Lightning template";
   const unit = validateInactiveSystemdTemplate(
@@ -885,9 +1068,9 @@ function validateCoreLightningUnit(text) {
   );
   validatePinnedServiceSandbox(unit, label, "simple", "");
   exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Hetzner issuer Core Lightning (template only)"], label);
-  exactDirectiveValues(unit, "Unit", "After", ["network-online.target @BITCOIND_SYSTEMD_UNIT@"], label);
+  exactDirectiveValues(unit, "Unit", "After", ["network-online.target bitcoinpir-bitcoin-core-signet.service"], label);
   exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Unit", "Requires", ["@BITCOIND_SYSTEMD_UNIT@"], label);
+  exactDirectiveValues(unit, "Unit", "Requires", ["bitcoinpir-bitcoin-core-signet.service"], label);
   exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-lightning"], label);
   exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-cln-guard"], label);
   exactDirectiveValues(unit, "Service", "SupplementaryGroups", ["bitcoinpir-bitcoin-rpc"], label);
@@ -906,7 +1089,7 @@ function validateCoreLightningUnit(text) {
     [
       "/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256",
-      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
       "/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf --test-daemons-only --offline",
@@ -925,7 +1108,7 @@ function validateCoreLightningUnit(text) {
     unit,
     "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /etc/bitcoinpir/payment-v1/bitcoin-core /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
     label,
   );
   exactDirectiveValues(
@@ -1138,7 +1321,7 @@ function validateLightningPreflightUnit(text) {
     unit,
     "Service",
     "ReadOnlyPaths",
-    ["/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
+    ["/etc/bitcoinpir/payment-v1/lightning /etc/bitcoinpir/payment-v1/bitcoin-core /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@"],
     label,
   );
   exactDirectiveValues(
@@ -2348,6 +2531,27 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
   );
   validateHetznerIssuer(issuer.text);
+
+  const bitcoinCoreConfig = readRequired(
+    root,
+    "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+  );
+  validateBitcoinCoreConfig(bitcoinCoreConfig.text);
+
+  const bitcoinCoreLayoutVerifier = readRequired(
+    root,
+    "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+  );
+  validateBitcoinCoreLayoutVerifier(
+    bitcoinCoreLayoutVerifier.text,
+    bitcoinCoreLayoutVerifier.stat.mode,
+  );
+
+  const bitcoinCoreUnit = readRequired(
+    root,
+    "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+  );
+  validateBitcoinCoreUnit(bitcoinCoreUnit.text);
 
   const coreLightning = readRequired(
     root,

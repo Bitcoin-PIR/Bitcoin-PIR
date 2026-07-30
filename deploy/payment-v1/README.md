@@ -25,6 +25,7 @@ The role gate is machine-enforced per unit:
 | Render profile or blocked role | Required role-specific activation sentinel(s) | Sentinel(s) that must be absent |
 | --- | --- | --- |
 | `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` | — |
+| `bitcoin-core-signet-v1` | `SIGNET-BITCOIN-CORE-STAGING-APPROVED` | — |
 | `issuer-lightning-signet-v1` Core Lightning bootstrap | `SIGNET-LIGHTNING-STAGING-APPROVED`, `LIGHTNING-CUSTODY-APPROVED`, `LIGHTNING-IDENTITY-RESTORE-APPROVED` | — |
 | `issuer-lightning-signet-v1` RPC guard, full preflight and issuer | the three bootstrap sentinels plus `LIGHTNING-BACKUP-RESTORE-APPROVED` and `SIGNET-ISSUER-ACTIVATION-APPROVED` | — |
 | `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
@@ -45,8 +46,9 @@ other provider sentinels are absent, then create exactly the new profile's
 positive sentinel and start only its unit. Never create the new sentinel first
 or rely on a bind failure to perform the switch.
 
-The two Signet rows intentionally break the first-start circular dependency.
-The CLN bootstrap unit can establish and expose only its reviewed native
+The three Signet rows intentionally break the first-start circular dependency.
+The independent Core profile can sync default Signet without a wallet, CLN or
+issuer sentinel. The CLN bootstrap unit can establish and expose only its reviewed native
 runtime after identity custody is approved; it cannot activate the payment
 issuer. Before funding or channel mutation, the read-only zero-channel
 `lightning-staging bootstrap-preflight` must bind the live node ID and default
@@ -92,6 +94,13 @@ only that action.
 
 The templates divide responsibilities as follows:
 
+- `bitcoin-core/bitcoin.conf.in`, `bitcoin-core/verify-layout.sh.in` and
+  `systemd/hetzner-bitcoin-core-signet.service.in` form the independent
+  `bitcoin-core-signet-v1` profile. It alone owns the content-addressed
+  `bitcoind`/`bitcoin-cli`, provenance receipt, exact bitcoind UID/primary GID
+  52928 plus distinct cookie GID 52929, `/srv/bitcoin` namespace and Core-only
+  activation sentinel. See
+  [BITCOIN_CORE_SIGNET.md](../../docs/payment/BITCOIN_CORE_SIGNET.md).
 - `systemd/hetzner-provider.service.in` is the paid/provider process on Hetzner.
   Its signed policy, not the unit, binds backend-specific scopes and prices.
   Harmony hint generation and Harmony query execution must remain separate
@@ -240,7 +249,12 @@ This source-template gate is not proof of installed bytes. Use
 profile from an externally digest-approved plan, recompute every referenced
 artifact/hash manifest, and reject placeholders, extra files, symlinks and
 cross-profile dependencies. For the issuer Lightning profile it additionally
-pins `preflight.toml` to root:`PREFLIGHT_GID` mode `0440`, binds its CLI reader
+permits only the exact reviewed Core-profile manifest, binary root and
+`bitcoin-cli` as external dependencies; the issuer plan cannot own them. For
+the Bitcoin Core profile it binds a canonical threshold-signature provenance
+receipt and both extracted binary digests.
+The issuer profile also pins `preflight.toml` to root:`PREFLIGHT_GID` mode
+`0440`, binds its CLI reader
 UID/GID to the preflight service identity, and rejects any rendered/static
 backup-receipt payload or manifest; that receipt lives only as service-owned
 mode-`0600` dynamic state below the mode-`0700` preflight `StateDirectory`.
@@ -257,8 +271,12 @@ Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,
 capabilities, boot and host identity to that manifest. The Hetzner edge request
-also binds the live runtime directory and all four socket types, owners, groups,
-and modes. Edge live evidence additionally requires hard/soft core limits of
+also binds the live runtime directory and all four socket types, owners, groups
+and modes. The Bitcoin Core request binds `/srv/bitcoin`,
+the setgid mode-`2710` `/srv/bitcoin/signet`, the group-readable regular
+`.cookie` path, and a bitcoind process whose kernel groups exclude cookie GID
+52929. Edge live
+evidence additionally requires hard/soft core limits of
 zero, zero current/max cgroup swap, and the host-wide
 `kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
 that exact root-owned, canonical, one-link, non-writable handler.

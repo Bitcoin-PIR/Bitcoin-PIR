@@ -1,0 +1,111 @@
+{
+  "deployment_id": "replace-bitcoin-core-signet-v1",
+  "deployment_profile": "bitcoin-core-signet-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_BITCOIN_CLI_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/bitcoin-cli",
+      "target_path": "/opt/bitcoinpir/bitcoin-core/INVALID_REPLACE_WITH_BITCOIN_CORE_BUNDLE_SHA256/bin/bitcoin-cli",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_BITCOIND_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/bitcoind",
+      "target_path": "/opt/bitcoinpir/bitcoin-core/INVALID_REPLACE_WITH_BITCOIN_CORE_BUNDLE_SHA256/bin/bitcoind",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/bitcoin-core-bundle.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/bitcoin-core-config.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/layout-verifier.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/provenance.json",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.json",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/bitcoin-core/provenance.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "BITCOIND_GID": "52928",
+    "BITCOIND_UID": "52928",
+    "BITCOIN_CORE_BUNDLE_SHA256": "INVALID_REPLACE_WITH_APPROVED_ARCHIVE_SHA256",
+    "BITCOIN_RPC_GID": "52929"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0755",
+      "source_path": "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-bitcoin-core-signet.service",
+      "uid": 0
+    }
+  ],
+  "schema_version": 1,
+  "service_identities": [
+    {
+      "gid": 52928,
+      "group_name": "bitcoinpir-bitcoind",
+      "uid": 52928,
+      "unit_name": "bitcoinpir-bitcoin-core-signet.service",
+      "user_name": "bitcoinpir-bitcoind"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+# BitcoinPIR default-Signet Bitcoin Core template; never install this .in file directly.
+[Unit]
+Description=BitcoinPIR Hetzner default-Signet Bitcoin Core (template only)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-BITCOIN-CORE-STAGING-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-bitcoind
+Group=bitcoinpir-bitcoind
+UMask=0077
+RuntimeDirectory=bitcoinpir-bitcoin-core
+RuntimeDirectoryMode=0700
+WorkingDirectory=/srv/bitcoin/signet
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoind
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256
+ExecStartPre=/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout
+ExecStart=/opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoind -conf=/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf -datadir=/srv/bitcoin -pid=/run/bitcoinpir-bitcoin-core/bitcoind.pid
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=120
+LimitCORE=0
+LimitNOFILE=65535
+MemorySwapMax=0
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/bitcoin-core /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+ReadWritePaths=/srv/bitcoin/signet /run/bitcoinpir-bitcoin-core
+InaccessiblePaths=/srv/lightning /var/lib/bitcoinpir-payment-issuer /run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-source-fair-edge
+
+# There is intentionally no [Install] section. Core has its own profile,
+# approval sentinel, service identity, data namespace and lifecycle. Starting
+# or stopping CLN/issuer does not create or enable this unit; issuer activation
+# remains a later, separately approved phase.

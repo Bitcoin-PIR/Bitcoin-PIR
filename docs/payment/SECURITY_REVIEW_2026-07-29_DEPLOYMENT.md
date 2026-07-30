@@ -48,6 +48,62 @@ The focused review covered:
 No P0 source flaw was found in this focused pass. That does not convert ARC
 into reviewed cryptography: ARC remains experimental and production-disabled.
 
+## 2026-07-30 independent Signet Core addendum
+
+The issuer dependency gap is closed at source level by the separate
+`bitcoin-core-signet-v1` profile. The issuer profile no longer owns
+`bitcoin-cli`, a Core hash manifest or an arbitrary bitcoind service alias.
+Core Lightning now requires exactly
+`bitcoinpir-bitcoin-core-signet.service`, while the renderer permits only that
+profile's exact manifest, content-address root and CLI as reviewed external
+dependencies.
+
+The Core profile is a seven-payload, three-template closed world with exact
+bitcoind UID/primary GID 52928 and distinct cookie GID 52929. It binds a
+canonical release receipt to one
+externally approved archive digest, both extracted binary digests, an exact
+`guix.sigs` commit and a threshold of at least three distinct valid builder
+signatures. Its config is wallet-disabled, cookie-only loopback RPC,
+outbound-only P2P, no DNS seeds/name lookup and no logging. It deliberately
+omits explicit Signet challenge/seed options so Bitcoin Core retains the
+compiled default-Signet fixed-seed/assume-valid path; later live preflight still
+checks the exact default challenge and genesis.
+
+The service has no `[Install]` section, uses a Core-only activation sentinel,
+hash-checks binaries/config/verifier/provenance, recursively rejects namespace
+links/ACLs/wrong owners/wallet/log files, isolates Lightning and issuer state,
+and emits no service output/core dump. Runtime-evidence v6 now binds both Core
+directories, the 52928:52929 setgid-2710 Signet directory and the
+52928:52929 mode-0640 regular cookie. The bitcoind process has no supplementary
+groups, so fresh runtime evidence must reject cookie GID 52929 in its kernel
+`Groups:` vector. Renderer/source tests
+cover missing artifacts, custom Signet, exposed RPC/P2P, weak systemd settings,
+unit aliases, wrong identities and malformed/under-threshold provenance.
+
+No remote host, service, wallet, Signet network or funds were touched. This
+addendum found no open P0/P1 defect inside the independent Core source closure.
+There is one fail-closed issuer integration blocker: the currently checked-in
+Rust Lightning preflight accepts only exact mode `0710` for a cross-UID cookie
+directory, while this profile correctly requires setgid mode `2710` so the
+cookie inherits the reader GID without granting that GID to bitcoind. A
+separately versioned preflight change must require `2710` and receive its own
+tests/review before the Core and issuer profiles can be activated together.
+This review does not approve stopped installation or first start. Those remain
+blocked on an independently accepted provenance/plan digest, exact host transaction and
+rollback procedure, target NSS/filesystem/systemd/firewall checks, fresh live
+Core evidence and default challenge/genesis readback. The profile uses the
+generic live schema rather than claiming a new Core-specific stopped collector;
+offline bundle verification plus the documented explicit stopped checklist is
+required before that first live record.
+
+Core closure also does not establish CLN loader closure. The reviewed CLN
+v26.06.6 archive needs `libsqlite3.so.0`, `libpq.so.5` and `libsodium.so.23`;
+the observed target lacks `libpq.so.5` and has damaged dpkg/kernel package
+state, so package-manager repair is forbidden. An offline Ubuntu 24 feasibility
+check with an extracted Noble library passed both CLN `--version` commands,
+but a separate immutable CLN runtime-library-bundle review must pin the full
+hash and transitive loader closure before any stopped CLN install or start.
+
 ## Findings closed in this preparation branch
 
 ### Production payout surface

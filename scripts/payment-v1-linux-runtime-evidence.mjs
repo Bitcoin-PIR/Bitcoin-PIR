@@ -1223,6 +1223,7 @@ function collectRuntimePath(expected) {
   const stat = lstatSync(expected.target_path);
   const typeMatches =
     (expected.file_type === "directory" && stat.isDirectory()) ||
+    (expected.file_type === "regular" && stat.isFile()) ||
     (expected.file_type === "socket" && stat.isSocket());
   if (!typeMatches || stat.isSymbolicLink() || realpathSync(expected.target_path) !== expected.target_path) {
     fail(`runtime path is not the expected canonical ${expected.file_type}: ${expected.target_path}`);
@@ -1233,7 +1234,10 @@ function collectRuntimePath(expected) {
     target_path: expected.target_path,
     ...collectExtendedMetadata(expected.target_path, expected.file_type),
   };
-  for (const key of ["file_type", "gid", "mode", "target_path", "uid"]) {
+  const boundKeys = ["file_type", "gid", "mode", "target_path", "uid"];
+  if (Number.isSafeInteger(expected.nlink)) boundKeys.push("nlink");
+  if (Number.isSafeInteger(expected.size)) boundKeys.push("size");
+  for (const key of boundKeys) {
     if (observed[key] !== expected[key]) {
       fail(`runtime path ${key} mismatch: ${expected.target_path}`);
     }
@@ -4969,7 +4973,10 @@ export function validateLiveRuntimeEvidence({
       ],
       `live runtime_paths[${index}]`,
     );
-    for (const key of ["file_type", "gid", "mode", "target_path", "uid"]) {
+    const boundKeys = ["file_type", "gid", "mode", "target_path", "uid"];
+    if (Number.isSafeInteger(expected.nlink)) boundKeys.push("nlink");
+    if (Number.isSafeInteger(expected.size)) boundKeys.push("size");
+    for (const key of boundKeys) {
       if (actual[key] !== expected[key]) {
         fail(`live runtime path ${key} drift: ${expected.target_path}`);
       }

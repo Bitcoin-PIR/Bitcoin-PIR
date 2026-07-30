@@ -51,6 +51,15 @@ const INTEGRATED_CADDY_BLOCK =
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
 const PREFLIGHT_UNIT = "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in";
+const BITCOIN_CORE_CONFIG = "deploy/payment-v1/bitcoin-core/bitcoin.conf.in";
+const BITCOIN_CORE_VERIFIER = "deploy/payment-v1/bitcoin-core/verify-layout.sh.in";
+const BITCOIN_CORE_UNIT =
+  "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in";
+const BITCOIN_CORE_TEMPLATES = [
+  BITCOIN_CORE_CONFIG,
+  BITCOIN_CORE_VERIFIER,
+  BITCOIN_CORE_UNIT,
+];
 const PROVIDER_UNIT = "deploy/payment-v1/systemd/hetzner-provider.service.in";
 const PROVIDER_NO_STANDARD_CASHU_UNIT =
   "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in";
@@ -437,7 +446,6 @@ function makeIntegratedCaddySourceFairFixture(t) {
 
 function issuerPlaceholders(binaryDigests) {
   return {
-    BITCOIND_SYSTEMD_UNIT: "bitcoind.service",
     BITCOINPIR_WEB_ORIGIN: "https://app.example.net",
     BITCOIN_CORE_BUNDLE_SHA256: hashBytes("bitcoin-core-bundle"),
     BITCOIN_RPC_PORT: "38332",
@@ -469,7 +477,6 @@ function makeIssuerFixture(t) {
   for (const source of ISSUER_TEMPLATES) copySource(fixture.sourceRoot, source);
   const binaryBytes = {
     admin: Buffer.from("reviewed-bpir-admin\n"),
-    bitcoinCli: Buffer.from("reviewed-bitcoin-cli\n"),
     bcli: Buffer.from("reviewed-bcli\n"),
     chanbackup: Buffer.from("reviewed-chanbackup\n"),
     guard: Buffer.from("reviewed-cln-guard\n"),
@@ -491,10 +498,8 @@ function makeIssuerFixture(t) {
   );
   const placeholders = issuerPlaceholders(binaryDigests);
   const clnRoot = `/opt/bitcoinpir/core-lightning/${placeholders.CLN_BUNDLE_SHA256}`;
-  const bitcoinRoot = `/opt/bitcoinpir/bitcoin-core/${placeholders.BITCOIN_CORE_BUNDLE_SHA256}`;
   const targets = {
     admin: `/opt/bitcoinpir/bpir-admin/${binaryDigests.admin}/bpir-admin`,
-    bitcoinCli: `${bitcoinRoot}/bin/bitcoin-cli`,
     bcli: `${clnRoot}/plugins/bcli`,
     chanbackup: `${clnRoot}/plugins/chanbackup`,
     guard: `/opt/bitcoinpir/cln-rpc-guard/${binaryDigests.guard}/bitcoinpir-cln-rpc-guard`,
@@ -556,7 +561,6 @@ function makeIssuerFixture(t) {
   ]);
   const manifestEntries = {
     "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256": [targets.issuer],
-    "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256": [targets.bitcoinCli],
     "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256": [targets.admin],
     "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": [
       targets.lightningCli,
@@ -639,6 +643,136 @@ function makeIssuerFixture(t) {
     ],
   };
   return { ...fixture, plan };
+}
+
+function makeBitcoinCoreFixture(t) {
+  const fixture = temporaryRoots(t);
+  for (const source of BITCOIN_CORE_TEMPLATES) copySource(fixture.sourceRoot, source);
+
+  const archiveSha256 = hashBytes(Buffer.from("reviewed-bitcoin-core-archive-31.1\n"));
+  const bitcoinCliBytes = Buffer.from("reviewed-bitcoin-cli-31.1\n");
+  const bitcoindBytes = Buffer.from("reviewed-bitcoind-31.1\n");
+  const bitcoinCliSha256 = hashBytes(bitcoinCliBytes);
+  const bitcoindSha256 = hashBytes(bitcoindBytes);
+  const root = `/opt/bitcoinpir/bitcoin-core/${archiveSha256}`;
+  const targets = {
+    bitcoinCli: `${root}/bin/bitcoin-cli`,
+    bitcoind: `${root}/bin/bitcoind`,
+    bundleManifest:
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+    config: "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf",
+    configManifest:
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256",
+    provenance: "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.json",
+    provenanceManifest:
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256",
+    verifier: "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout",
+    verifierManifest:
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256",
+  };
+  const placeholders = {
+    BITCOIND_GID: "52928",
+    BITCOIND_UID: "52928",
+    BITCOIN_CORE_BUNDLE_SHA256: archiveSha256,
+    BITCOIN_RPC_GID: "52929",
+  };
+  const renderedConfig = Buffer.from(
+    renderText(fixture.sourceRoot, BITCOIN_CORE_CONFIG, placeholders),
+  );
+  const renderedVerifier = Buffer.from(
+    renderText(fixture.sourceRoot, BITCOIN_CORE_VERIFIER, placeholders),
+  );
+  const provenance = Buffer.from(canonicalJson({
+    archive_filename: "bitcoin-31.1-x86_64-linux-gnu.tar.gz",
+    archive_sha256: archiveSha256,
+    binary_sha256: {
+      "bitcoin-cli": bitcoinCliSha256,
+      bitcoind: bitcoindSha256,
+    },
+    guix_sigs_commit: "4".repeat(40),
+    minimum_valid_signatures: 3,
+    release: "31.1",
+    schema_version: 1,
+    target: "x86_64-linux-gnu",
+    valid_signer_fingerprints: ["1".repeat(40), "2".repeat(40), "3".repeat(40)],
+    verified_valid_signature_count: 3,
+  }));
+  const payloadContents = [
+    [targets.bitcoinCli, bitcoinCliBytes],
+    [targets.bitcoind, bitcoindBytes],
+    [
+      targets.bundleManifest,
+      Buffer.from(
+        `${bitcoinCliSha256}  ${targets.bitcoinCli}\n` +
+        `${bitcoindSha256}  ${targets.bitcoind}\n`,
+      ),
+    ],
+    [
+      targets.configManifest,
+      Buffer.from(`${hashBytes(renderedConfig)}  ${targets.config}\n`),
+    ],
+    [
+      targets.verifierManifest,
+      Buffer.from(`${hashBytes(renderedVerifier)}  ${targets.verifier}\n`),
+    ],
+    [targets.provenance, provenance],
+    [
+      targets.provenanceManifest,
+      Buffer.from(`${hashBytes(provenance)}  ${targets.provenance}\n`),
+    ],
+  ].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  const plan = {
+    deployment_id: "bitcoin-core-signet-v1-test",
+    deployment_profile: "bitcoin-core-signet-v1",
+    payload_artifacts: payloadContents.map(([target, bytes], index) =>
+      addPayload(fixture, target, bytes, index, {
+        class: target.startsWith("/opt/bitcoinpir/")
+          ? "binary"
+          : target.endsWith(".sha256")
+            ? "hash-manifest"
+            : "config",
+        gid: 0,
+        mode: target.startsWith("/opt/bitcoinpir/") ? "0555" : "0444",
+        uid: 0,
+      })),
+    placeholders,
+    rendered_artifacts: [
+      {
+        gid: 0,
+        mode: "0444",
+        source_path: BITCOIN_CORE_CONFIG,
+        source_sha256: hashFile(join(fixture.sourceRoot, BITCOIN_CORE_CONFIG)),
+        target_path: targets.config,
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0755",
+        source_path: BITCOIN_CORE_VERIFIER,
+        source_sha256: hashFile(join(fixture.sourceRoot, BITCOIN_CORE_VERIFIER)),
+        target_path: targets.verifier,
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0644",
+        source_path: BITCOIN_CORE_UNIT,
+        source_sha256: hashFile(join(fixture.sourceRoot, BITCOIN_CORE_UNIT)),
+        target_path:
+          "/etc/systemd/system/bitcoinpir-bitcoin-core-signet.service",
+        uid: 0,
+      },
+    ],
+    schema_version: 1,
+    service_identities: [{
+      gid: 52928,
+      group_name: "bitcoinpir-bitcoind",
+      uid: 52928,
+      unit_name: "bitcoinpir-bitcoin-core-signet.service",
+      user_name: "bitcoinpir-bitcoind",
+    }],
+  };
+  return { ...fixture, plan, targets };
 }
 
 function makeProviderFixture(t, { direct = false, noStandardCashu = false } = {}) {
@@ -1539,6 +1673,230 @@ test("Hetzner edge binds one distinct same-family private publisher client", (t)
   assert.throws(() => renderFixture(mixedFamily), /same IP family/);
 });
 
+test("Bitcoin Core Signet profile is independently renderable and live-evidence closed", (t) => {
+  const fixture = makeBitcoinCoreFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(model.manifest.deployment_profile, "bitcoin-core-signet-v1");
+  assert.deepEqual(
+    model.manifest.runtime_units.map((unit) => unit.unit_name),
+    ["bitcoinpir-bitcoin-core-signet.service"],
+  );
+  assert.deepEqual(model.request.service_identities, [{
+    gid: 52928,
+    group_name: "bitcoinpir-bitcoind",
+    uid: 52928,
+    unit_name: "bitcoinpir-bitcoin-core-signet.service",
+    user_name: "bitcoinpir-bitcoind",
+  }]);
+  assert.deepEqual(model.request.runtime_paths, [
+    {
+      file_type: "directory",
+      gid: 0,
+      mode: "0755",
+      target_path: "/srv/bitcoin",
+      uid: 0,
+    },
+    {
+      file_type: "directory",
+      gid: 52929,
+      mode: "2710",
+      target_path: "/srv/bitcoin/signet",
+      uid: 52928,
+    },
+    {
+      file_type: "regular",
+      gid: 52929,
+      mode: "0640",
+      nlink: 1,
+      size: 75,
+      target_path: "/srv/bitcoin/signet/.cookie",
+      uid: 52928,
+    },
+  ]);
+  assert.deepEqual(model.request.units[0].conditions, [
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-BITCOIN-CORE-STAGING-APPROVED",
+  ]);
+  assert.deepEqual(model.request.units[0].hardening.Group, ["bitcoinpir-bitcoind"]);
+  assert.equal("SupplementaryGroups" in model.request.units[0].hardening, false);
+  assert.equal(
+    model.request.service_identities[0].gid ===
+      model.request.runtime_paths.find((entry) => entry.target_path.endsWith("/.cookie")).gid,
+    false,
+  );
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+});
+
+test("Bitcoin Core Signet profile rejects config, unit, identity and provenance drift", (t) => {
+  const customSignet = makeBitcoinCoreFixture(t);
+  updateTemplate(customSignet, BITCOIN_CORE_CONFIG, (text) =>
+    `${text}signetchallenge=${"1".repeat(142)}\n`);
+  assert.throws(
+    () => renderFixture(customSignet),
+    /exact default-Signet closed profile/u,
+  );
+
+  const inboundRpc = makeBitcoinCoreFixture(t);
+  updateTemplate(inboundRpc, BITCOIN_CORE_CONFIG, (text) =>
+    text.replace("rpcbind=127.0.0.1", "rpcbind=0.0.0.0"));
+  assert.throws(
+    () => renderFixture(inboundRpc),
+    /exact default-Signet closed profile/u,
+  );
+
+  const weakUnit = makeBitcoinCoreFixture(t);
+  updateTemplate(weakUnit, BITCOIN_CORE_UNIT, (text) =>
+    text.replace("MemorySwapMax=0", "MemorySwapMax=infinity"));
+  assert.throws(
+    () => renderFixture(weakUnit),
+    /MemorySwapMax=0/u,
+  );
+
+  const cookieGroupGrantedToCore = makeBitcoinCoreFixture(t);
+  updateTemplate(cookieGroupGrantedToCore, BITCOIN_CORE_UNIT, (text) =>
+    text.replace(
+      "Group=bitcoinpir-bitcoind\n",
+      "Group=bitcoinpir-bitcoind\nSupplementaryGroups=bitcoinpir-bitcoin-rpc\n",
+    ));
+  assert.throws(
+    () => renderFixture(cookieGroupGrantedToCore),
+    /must not grant bitcoind any supplementary group/u,
+  );
+
+  const wrongUid = makeBitcoinCoreFixture(t);
+  wrongUid.plan.placeholders.BITCOIND_UID = "52927";
+  assert.throws(() => renderFixture(wrongUid), /static bitcoind UID\/GID 52928/u);
+
+  const wrongPrimaryGid = makeBitcoinCoreFixture(t);
+  wrongPrimaryGid.plan.placeholders.BITCOIND_GID = "52927";
+  assert.throws(() => renderFixture(wrongPrimaryGid), /static bitcoind UID\/GID 52928/u);
+
+  const cookieAsPrimaryGroup = makeBitcoinCoreFixture(t);
+  cookieAsPrimaryGroup.plan.service_identities[0].gid = 52929;
+  cookieAsPrimaryGroup.plan.service_identities[0].group_name = "bitcoinpir-bitcoin-rpc";
+  assert.throws(
+    () => renderFixture(cookieAsPrimaryGroup),
+    /exact static service identity/u,
+  );
+
+  const wrongIdentity = makeBitcoinCoreFixture(t);
+  wrongIdentity.plan.service_identities[0].group_name = "bitcoinpir-lightning";
+  assert.throws(() => renderFixture(wrongIdentity), /exact static service identity/u);
+
+  const weakProvenance = makeBitcoinCoreFixture(t);
+  updatePayload(weakProvenance, weakProvenance.targets.provenance, (text) => {
+    const receipt = JSON.parse(text);
+    receipt.minimum_valid_signatures = 4;
+    return canonicalJson(receipt);
+  });
+  assert.throws(
+    () => renderFixture(weakProvenance),
+    /distinct-signature threshold/u,
+  );
+
+  const extraProvenanceField = makeBitcoinCoreFixture(t);
+  updatePayload(
+    extraProvenanceField,
+    extraProvenanceField.targets.provenance,
+    (text) => {
+      const receipt = JSON.parse(text);
+      receipt.unreviewed_note = "not allowed";
+      return canonicalJson(receipt);
+    },
+  );
+  assert.throws(
+    () => renderFixture(extraProvenanceField),
+    /provenance receipt keys must equal/u,
+  );
+
+  const placeholderCommit = makeBitcoinCoreFixture(t);
+  updatePayload(placeholderCommit, placeholderCommit.targets.provenance, (text) => {
+    const receipt = JSON.parse(text);
+    receipt.guix_sigs_commit = "0".repeat(40);
+    return canonicalJson(receipt);
+  });
+  assert.throws(
+    () => renderFixture(placeholderCommit),
+    /approved archive\/Guix snapshot/u,
+  );
+
+  const wrongBinaryReceipt = makeBitcoinCoreFixture(t);
+  updatePayload(wrongBinaryReceipt, wrongBinaryReceipt.targets.provenance, (text) => {
+    const receipt = JSON.parse(text);
+    receipt.binary_sha256.bitcoind = "f".repeat(64);
+    return canonicalJson(receipt);
+  });
+  assert.throws(
+    () => renderFixture(wrongBinaryReceipt),
+    /does not bind the bitcoind payload/u,
+  );
+});
+
+test("Bitcoin Core Signet profile rejects deletion of every owned input", (t) => {
+  for (const source of BITCOIN_CORE_TEMPLATES) {
+    const fixture = makeBitcoinCoreFixture(t);
+    fixture.plan.rendered_artifacts = fixture.plan.rendered_artifacts.filter(
+      (artifact) => artifact.source_path !== source,
+    );
+    assert.throws(() => renderFixture(fixture), /deployment profile templates/u, source);
+  }
+  const fixture = makeBitcoinCoreFixture(t);
+  for (const target of fixture.plan.payload_artifacts.map((artifact) => artifact.target_path)) {
+    const missing = makeBitcoinCoreFixture(t);
+    missing.plan.payload_artifacts = missing.plan.payload_artifacts.filter(
+      (artifact) => artifact.target_path !== target,
+    );
+    assert.throws(() => renderFixture(missing), /payload targets/u, target);
+  }
+});
+
+test("checked-in Bitcoin Core skeleton is explicit and deliberately unusable", (t) => {
+  const fixture = temporaryRoots(t);
+  const plan = parseStrictJson(
+    readFileSync(
+      join(
+        REPOSITORY,
+        "docs/payment/render-plan-skeletons/bitcoin-core-signet-v1.plan.json.example",
+      ),
+      "utf8",
+    ),
+    "Bitcoin Core skeleton",
+  );
+  assert.equal(plan.deployment_profile, "bitcoin-core-signet-v1");
+  assert.deepEqual(plan.service_identities.map((identity) => ({ ...identity })), [{
+    gid: 52928,
+    group_name: "bitcoinpir-bitcoind",
+    uid: 52928,
+    unit_name: "bitcoinpir-bitcoin-core-signet.service",
+    user_name: "bitcoinpir-bitcoind",
+  }]);
+  assert.equal(plan.payload_artifacts.length, 7);
+  assert.throws(
+    () => renderBundle({
+      approvedPlanSha256: computeApprovedPlanSha256(plan),
+      inputRoot: fixture.inputRoot,
+      outputRoot: fixture.bundleRoot,
+      plan,
+      sourceRoot: REPOSITORY,
+    }),
+    /repository example marker|SHA-256|replacement marker/u,
+  );
+});
+
+test("issuer Lightning rejects any Bitcoin Core service alias", (t) => {
+  const fixture = makeIssuerFixture(t);
+  updateTemplate(
+    fixture,
+    "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+    (text) => text
+      .replaceAll("bitcoinpir-bitcoin-core-signet.service", "bitcoind.service"),
+  );
+  assert.throws(
+    () => renderFixture(fixture),
+    /exact reviewed Bitcoin Core unit name/u,
+  );
+});
+
 test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, and referenced files", (t) => {
   const fixture = makeIssuerFixture(t);
   const model = renderFixture(fixture);
@@ -1609,6 +1967,36 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
     2,
   );
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+});
+
+test("cookie DAC readers are exactly Core Lightning and preflight, never bitcoind, issuer, or guard", (t) => {
+  const core = renderFixture(makeBitcoinCoreFixture(t));
+  const cookie = core.request.runtime_paths.find(
+    (entry) => entry.target_path === "/srv/bitcoin/signet/.cookie",
+  );
+  const signet = core.request.runtime_paths.find(
+    (entry) => entry.target_path === "/srv/bitcoin/signet",
+  );
+  assert.deepEqual(
+    { cookieGid: cookie.gid, cookieMode: cookie.mode, signetGid: signet.gid, signetMode: signet.mode },
+    { cookieGid: 52929, cookieMode: "0640", signetGid: 52929, signetMode: "2710" },
+  );
+  assert.equal("SupplementaryGroups" in core.request.units[0].hardening, false);
+
+  const issuer = renderFixture(makeIssuerFixture(t));
+  const cookieGroup = "bitcoinpir-bitcoin-rpc";
+  const readers = issuer.request.units
+    .filter((unit) => (unit.hardening.SupplementaryGroups ?? [])
+      .flatMap((entry) => entry.split(/\s+/u))
+      .includes(cookieGroup))
+    .map((unit) => unit.unit_name)
+    .sort();
+  assert.deepEqual(readers, [
+    "bitcoinpir-core-lightning.service",
+    "bitcoinpir-lightning-preflight.service",
+  ]);
+  assert.equal(readers.includes("bitcoinpir-payment-issuer.service"), false);
+  assert.equal(readers.includes("bitcoinpir-cln-rpc-guard.service"), false);
 });
 
 test("issuer profile keeps the CLN guard deadman non-restarting", (t) => {

@@ -22,6 +22,13 @@ Every skeleton is deliberately unusable:
 The gate must reject an untouched skeleton. Making one syntactically acceptable
 is not approval to install or activate it.
 
+The Bitcoin Core skeleton is a separate failure domain from the issuer
+skeleton. Its content-address root is the externally approved release archive
+SHA-256, while its canonical provenance receipt separately binds extracted
+`bitcoind`/`bitcoin-cli` digests, one exact `guix.sigs` commit and at least three
+distinct valid builder fingerprints. The issuer plan must not carry or replace
+any of those Core-owned payloads.
+
 The integrated existing-Caddy overlay plan carries two distinct adapted-JSON
 pins. `target.admin_uds_hardening.adapted_json_sha256` is the exact live
 hardened-preimage digest; `managed_block.candidate_adapted_json_sha256` is the
@@ -76,6 +83,7 @@ initializing a blank store and calling it a switch.
 
 | File | Gate profile | Scope |
 | --- | --- | --- |
+| `bitcoin-core-signet-v1.plan.json.example` | `bitcoin-core-signet-v1` | Wallet-disabled, outbound-only default-Signet Core with exact bitcoind UID/primary GID 52928, distinct cookie GID 52929, cookie-only loopback RPC, threshold provenance receipt, seven-payload closure and a separate non-installable unit/sentinel lifecycle. |
 | `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One resolved, still sentinel-gated relay: config fixed to UID 52951/GID 52952/mode 0400, exact content-addressed binary, two root-owned one-entry hash manifests, and effective `ProtectProc=invisible` plus `ProcSubset=pid`. V2 stopped evidence still precedes activation; no publisher private key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |

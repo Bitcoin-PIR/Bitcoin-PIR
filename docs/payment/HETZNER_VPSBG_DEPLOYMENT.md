@@ -269,6 +269,26 @@ Do not start the new Hetzner hint pool alongside another live pool without the
 existing capacity/stagger review. A public cutover follows a private canary and
 must not create concurrent cold-pool generation that starves query work.
 
+## Hetzner Signet Bitcoin Core
+
+`bitcoin-core-signet-v1` is a separate closed profile, not a binary hidden in
+the issuer bundle. It alone owns content-addressed `bitcoind`/`bitcoin-cli`,
+their root-owned hash manifests and canonical threshold-signature provenance,
+the exact `bitcoinpir-bitcoin-core-signet.service`, bitcoind UID/primary GID
+52928, distinct cookie GID 52929 and `/srv/bitcoin` namespace. The bitcoind
+process has no supplementary groups. The unit has no `[Install]`, requires its
+own `SIGNET-BITCOIN-CORE-STAGING-APPROVED` sentinel and cannot load a wallet.
+RPC is cookie-only IPv4 loopback; P2P is outbound-only and default-Signet bootstrap
+uses only the fixed seeds compiled into the approved binary, without an
+explicit challenge/seed override. See
+[`BITCOIN_CORE_SIGNET.md`](BITCOIN_CORE_SIGNET.md).
+
+Offline rendering or Core source completion does not authorize host mutation,
+first start, persistent chain state, Signet test coins, Lightning identity or
+issuer activation. The issuer plan may reference only the exact independently
+installed Core manifest/root/CLI and Core Lightning requires the literal unit
+name; it cannot own a duplicate binary or select a service alias.
+
 ## Hetzner issuer
 
 `deploy/payment-v1/systemd/hetzner-payment-issuer.service.in` runs only
@@ -342,8 +362,11 @@ an explicit start.
 
 The live preflight uses a third, dedicated UID—not the issuer UID—with temporary
 membership in the native CLN and Bitcoin-cookie groups. It validates the exact
-cross-UID `0710`/`0660` CLN shape and bitcoind-UID/cookie-GID `0710`/`0640`
-cookie shape. The supplied CLN configuration and prerequisite record remain
+cross-UID `0710`/`0660` CLN shape. Its currently checked-in Rust cookie-boundary
+validator still requires `0710`/`0640`, so it fail-closed rejects this Core
+profile's safer setgid `2710`/`0640` shape. Do not activate the profiles
+together until a separately versioned preflight update requires `2710` and is
+reviewed. The supplied CLN configuration and prerequisite record remain
 default-Signet-only with `real_funds_authorized = false`; Linux artifact/runtime
 evidence, restore drills, remote installation and any real funds remain
 separate activation gates.

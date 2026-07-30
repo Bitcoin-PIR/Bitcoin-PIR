@@ -67,15 +67,20 @@ LOCAL_PLAN_*.md
 # Deployment artifacts (local configs, secrets, notes, SSH known_hosts)
 deploy/
 
-# These two reviewed, secret-free Payment V1 unit templates are source files,
-# not rendered deployment artifacts. Re-open only their exact paths so a new
-# profile cannot pass local tests while silently disappearing from a commit.
+# These reviewed, secret-free Payment V1 Core/provider templates are source
+# files, not rendered deployment artifacts. Re-open only their exact paths so a
+# new profile cannot pass local tests while silently disappearing from a commit.
 !deploy/
 deploy/*
 !deploy/payment-v1/
 deploy/payment-v1/*
+!deploy/payment-v1/bitcoin-core/
+deploy/payment-v1/bitcoin-core/*
+!deploy/payment-v1/bitcoin-core/bitcoin.conf.in
+!deploy/payment-v1/bitcoin-core/verify-layout.sh.in
 !deploy/payment-v1/systemd/
 deploy/payment-v1/systemd/*
+!deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in
 !deploy/payment-v1/systemd/hetzner-provider-direct.service.in
 !deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in
 

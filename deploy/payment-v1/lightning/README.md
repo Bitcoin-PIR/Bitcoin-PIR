@@ -77,19 +77,40 @@ would make it too easy to bypass either boundary.
 
 ## Bitcoin RPC and network boundary
 
+Bitcoin Core is no longer an undeclared host dependency or an issuer-owned
+payload. The independent `bitcoin-core-signet-v1` plan owns both Core binaries,
+their manifests/provenance, exact service name and `/srv/bitcoin` lifecycle.
+This Lightning profile may reference only that profile's exact manifest,
+content-addressed root and `bitcoin-cli`; deleting fields from the issuer plan
+cannot create another Core profile or unit alias.
+
 The config fixes Core RPC to loopback and omits all RPC user/password options,
 so a password can never appear in the rendered config or process arguments.
 Bitcoin Core must create its cookie as bitcoind-UID/`bitcoinpir-bitcoin-rpc`
-GID mode `0640` below a bitcoind-owned/group mode-`0710` final directory. Only
+GID mode `0640` below a bitcoind-owned/cookie-group setgid mode-`2710` final
+directory. The bitcoind primary group is separate and its unit has no
+supplementary groups; setgid inheritance supplies the cookie GID. Only
 CLN and the dedicated preflight UID receive that group; neither the issuer nor
 the CLN guard does. The preflight checks the exact EUID/supplementary GID,
 canonical no-symlink path, single-link regular file, ACL policy, and metadata
 stability around the same open file descriptor. Do not insert an RPC password
 into this template or give the cookie group to the issuer.
 
-The P2P bind and announced address are exact rendered values. They are not an
-HTTP/RPC service and are not proxied by the Payment V1 edge. DNS discovery is
-disabled; peer/bootstrap endpoints must be pinned and reviewed separately.
+The current checked-in Rust preflight still requires exact mode `0710` for this
+cross-UID final directory and therefore stops on the new Core profile's `2710`.
+Joint activation is blocked until a separately versioned preflight change
+requires the setgid shape and passes its own review; do not weaken Core or
+bypass preflight.
+
+The Core P2P profile is outbound-only and is not proxied by the Payment V1
+edge. DNS lookup/seeding and explicit Signet seed/challenge options are
+disabled; bootstrap uses only the compiled default-Signet fixed seeds in the
+externally approved content-addressed Core binary. Explicitly writing even the
+default challenge would select Bitcoin Core's custom-Signet constructor and
+discard that compiled default seed/assume-valid set, so the source/render gates
+reject it. The live preflight still verifies the exact default challenge and
+genesis. See
+[`BITCOIN_CORE_SIGNET.md`](../../../docs/payment/BITCOIN_CORE_SIGNET.md).
 
 The current repository preflight deliberately accepts only Bitcoin default
 Signet and exact `network=signet`. Therefore `@LIGHTNING_NETWORK@` must render to
@@ -107,13 +128,23 @@ mainnet approval mechanism.
 ## Remaining activation gates
 
 The templates require the cross-UID CLN and Bitcoin-cookie validators plus the
-method guard; none has a source-level bypass flag. Activation still requires a
+method guard; none has a source-level bypass flag. The `0710` versus `2710`
+cookie-directory contract mismatch above must first be closed by a separately
+versioned preflight update. Activation still requires a
 Linux rendered-artifact/runtime-evidence pass, exact binary/config hashes,
 separate restore rehearsals, and live default-Signet preflight evidence. The
 repository preflight deliberately rejects mainnet, custom Signet, testnet and
 regtest. Mainnet support, any real-value wallet/channel, remote installation,
 and the corresponding custody decision remain separate reviewed and approved
 work. A generated node ID or test liquidity is not that approval.
+
+This repository slice also does not claim that CLN is startable merely because
+Core closes. The reviewed v26.06.6 Ubuntu 24 amd64 CLN archive dynamically
+needs `libsqlite3.so.0`, `libpq.so.5` and `libsodium.so.23`; the currently
+observed Hetzner target lacks `libpq.so.5` and has damaged dpkg/kernel package
+state. Do not repair it with `apt` as a side effect. A separately reviewed
+immutable CLN dependency closure is required before stopped CLN installation
+or any CLN start claim.
 
 ## Bootstrap, backup and activation prerequisites
 

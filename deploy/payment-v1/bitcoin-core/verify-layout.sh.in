@@ -1,0 +1,106 @@
+#!/bin/sh
+# Rendered helper is installed root-owned and hash-pinned; this source .in is
+# intentionally not executable.
+set -eu
+export LC_ALL=C
+
+bpir_bitcoind_uid='@BITCOIND_UID@'
+bpir_bitcoind_gid='@BITCOIND_GID@'
+bpir_cookie_gid='@BITCOIN_RPC_GID@'
+bpir_srv_dir='/srv'
+bpir_bitcoin_base='/srv/bitcoin'
+bpir_bitcoin_dir='/srv/bitcoin/signet'
+bpir_cookie_path='/srv/bitcoin/signet/.cookie'
+
+bpir_fail() {
+    echo 'bitcoin-core-layout-preflight=FAIL' >&2
+    exit 1
+}
+
+case "${bpir_bitcoind_uid}:${bpir_bitcoind_gid}:${bpir_cookie_gid}" in
+    *[!0-9:]* | :* | *: | *::* | *:*:*:*) bpir_fail ;;
+esac
+[ "${bpir_bitcoind_uid}" -eq 52928 ] || bpir_fail
+[ "${bpir_bitcoind_gid}" -eq 52928 ] || bpir_fail
+[ "${bpir_cookie_gid}" -eq 52929 ] || bpir_fail
+[ "${bpir_bitcoind_gid}" -ne "${bpir_cookie_gid}" ] || bpir_fail
+
+for bpir_directory in "${bpir_srv_dir}" "${bpir_bitcoin_base}" "${bpir_bitcoin_dir}"
+do
+    [ -d "${bpir_directory}" ] && [ ! -L "${bpir_directory}" ] || bpir_fail
+done
+[ "$(/usr/bin/stat -c '%u:%g:%a' -- "${bpir_srv_dir}")" = '0:0:755' ] || bpir_fail
+[ "$(/usr/bin/stat -c '%u:%g:%a' -- "${bpir_bitcoin_base}")" = '0:0:755' ] || bpir_fail
+[ "$(/usr/bin/stat -c '%u:%g:%a' -- "${bpir_bitcoin_dir}")" = "${bpir_bitcoind_uid}:${bpir_cookie_gid}:2710" ] || bpir_fail
+
+bpir_scan_dump=$(/usr/bin/mktemp /run/bitcoinpir-bitcoin-core/layout-scan.XXXXXX) || bpir_fail
+bpir_remove_scan_dump() {
+    /usr/bin/rm -f -- "${bpir_scan_dump}"
+}
+trap bpir_remove_scan_dump EXIT HUP INT TERM
+
+bpir_require_empty_find() {
+    : >"${bpir_scan_dump}" || bpir_fail
+    /usr/bin/find "$@" >"${bpir_scan_dump}" 2>/dev/null || bpir_fail
+    [ ! -s "${bpir_scan_dump}" ] || bpir_fail
+}
+
+bpir_require_single_device() {
+    bpir_expected_device=$(/usr/bin/stat -c '%d' -- "$1") || bpir_fail
+    : >"${bpir_scan_dump}" || bpir_fail
+    /usr/bin/find "$1" -xdev -printf '%D\n' >"${bpir_scan_dump}" 2>/dev/null || bpir_fail
+    if /usr/bin/grep -Eqv "^${bpir_expected_device}$" "${bpir_scan_dump}"; then
+        bpir_fail
+    else
+        bpir_grep_status=$?
+        [ "${bpir_grep_status}" -eq 1 ] || bpir_fail
+    fi
+}
+
+# The broad root has one exact network child. This keeps alternate chain trees,
+# an in-datadir bitcoin.conf and other mutable configuration layers out of the
+# service namespace.
+bpir_require_empty_find "${bpir_bitcoin_base}" -xdev -mindepth 1 -maxdepth 1 ! -path "${bpir_bitcoin_dir}" -print -quit
+
+# One filesystem, regular files/directories only, no symlinks or hard links.
+bpir_require_single_device "${bpir_bitcoin_dir}"
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type l -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type f ! -user "${bpir_bitcoind_uid}" -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type f ! -group "${bpir_cookie_gid}" -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type f ! -path "${bpir_cookie_path}" -perm /077 -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type f -links +1 -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -mindepth 1 -type d ! -user "${bpir_bitcoind_uid}" -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -mindepth 1 -type d ! -group "${bpir_cookie_gid}" -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -mindepth 1 -type d -perm /077 -print -quit
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -mindepth 1 ! -type d ! -type f -print -quit
+
+# This profile cannot host a wallet, dynamic-settings or log file, including
+# stale leftovers.
+bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev \( -name wallet.dat -o -name wallets -o -name settings.json -o -name debug.log \) -print -quit
+
+# Linux POSIX ACLs can grant access beyond mode bits. Named entries, masks and
+# defaults are forbidden recursively on the complete namespace.
+[ -x /usr/bin/getfacl ] || bpir_fail
+/usr/bin/getfacl -c -p -n -- "${bpir_srv_dir}" "${bpir_bitcoin_base}" \
+    >"${bpir_scan_dump}" 2>/dev/null || bpir_fail
+/usr/bin/getfacl -R -c -p -n -- "${bpir_bitcoin_dir}" \
+    >>"${bpir_scan_dump}" 2>/dev/null || bpir_fail
+if /usr/bin/grep -Eq '^(default:|mask:|user:[^:]|group:[^:])' "${bpir_scan_dump}"; then
+    bpir_fail
+else
+    bpir_grep_status=$?
+    [ "${bpir_grep_status}" -eq 1 ] || bpir_fail
+fi
+
+# A stopped Core may legitimately have no cookie. Whenever the cookie exists,
+# the verifier requires the exact group-readable shape and bounded canonical
+# format without printing its contents; running live evidence requires it.
+if [ -e "${bpir_cookie_path}" ] || [ -L "${bpir_cookie_path}" ]; then
+    [ -f "${bpir_cookie_path}" ] && [ ! -L "${bpir_cookie_path}" ] || bpir_fail
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h:%s' -- "${bpir_cookie_path}")" = "${bpir_bitcoind_uid}:${bpir_cookie_gid}:640:1:75" ] || bpir_fail
+    /usr/bin/grep -Eq '^__cookie__:[0-9a-f]{64}$' -- "${bpir_cookie_path}" || bpir_fail
+fi
+
+/usr/bin/rm -f -- "${bpir_scan_dump}" || bpir_fail
+trap - EXIT HUP INT TERM
+echo 'bitcoin-core-layout-preflight=PASS'

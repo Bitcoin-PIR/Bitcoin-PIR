@@ -128,6 +128,13 @@ const SYSTEMD_SERVICE_KEYS = Object.freeze([
 ]);
 
 const PROFILE_CATALOG = Object.freeze({
+  "bitcoin-core-signet-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+    ]),
+  }),
   "directory-relay-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/directory-relay.toml.example",
@@ -337,6 +344,24 @@ export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
 ]);
 
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/bitcoin-core/bitcoin.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/bitcoin-core/verify-layout.sh.in": {
+    artifactClass: "executable-config",
+    targetPath: "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout",
+    modes: ["0755"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-bitcoin-core-signet.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
     artifactClass: "config",
     targetPath:
@@ -539,6 +564,9 @@ const IP_ADDRESS_PLACEHOLDERS = new Set([
 ]);
 
 const UID_GID_PLACEHOLDERS = new Set([
+  "BITCOIND_GID",
+  "BITCOIND_UID",
+  "BITCOIN_RPC_GID",
   "ISSUER_GID",
   "ISSUER_UID",
   "LIGHTNING_GID",
@@ -560,7 +588,6 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   ...IP_ADDRESS_PLACEHOLDERS,
   ...UID_GID_PLACEHOLDERS,
   ...POSITIVE_SERVICE_VALUE_PLACEHOLDERS,
-  "BITCOIND_SYSTEMD_UNIT",
   "BITCOINPIR_WEB_ORIGIN",
   "BITCOIN_RPC_PORT",
   "CLN_GUARD_MAX_INVOICE_BURST",
@@ -1055,11 +1082,6 @@ function validatePlaceholderValue(name, value) {
     return;
   }
   switch (name) {
-    case "BITCOIND_SYSTEMD_UNIT":
-      if (!/^[A-Za-z0-9_.-]{1,128}\.service$/u.test(value)) {
-        fail(`${label} must be one literal systemd .service unit name`);
-      }
-      return;
     case "BITCOINPIR_WEB_ORIGIN": {
       const match = /^https:\/\/([^/]+)$/u.exec(value);
       if (!match) fail(`${label} must be one canonical HTTPS origin without path or port`);
@@ -1482,6 +1504,55 @@ function validateIssuerLightningPreflightPayloadContract(plan) {
       "issuer Lightning backup receipt is dynamic StateDirectory data, not a rendered payload or hash manifest",
     );
   }
+  if (plan.placeholders.BITCOIN_RPC_PORT !== "38332") {
+    fail("issuer Lightning profile must use the exact default-Signet RPC port 38332");
+  }
+  if (
+    plan.payload_artifacts.some((artifact) =>
+      artifact.target_path.startsWith("/opt/bitcoinpir/bitcoin-core/") ||
+      artifact.target_path.startsWith("/etc/bitcoinpir/payment-v1/bitcoin-core/") ||
+      artifact.target_path ===
+        "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256")
+  ) {
+    fail("issuer Lightning profile must not own Bitcoin Core profile artifacts");
+  }
+}
+
+function validateBitcoinCoreProfileContract(plan) {
+  if (plan.deployment_profile !== "bitcoin-core-signet-v1") return;
+  if (
+    plan.placeholders.BITCOIND_GID !== "52928" ||
+    plan.placeholders.BITCOIND_UID !== "52928" ||
+    plan.placeholders.BITCOIN_RPC_GID !== "52929"
+  ) {
+    fail("bitcoin-core-signet-v1 must bind static bitcoind UID/GID 52928 and cookie GID 52929");
+  }
+  if (
+    plan.service_identities.length !== 1 ||
+    canonicalize(plan.service_identities[0]) !== canonicalize({
+      gid: 52928,
+      group_name: "bitcoinpir-bitcoind",
+      uid: 52928,
+      unit_name: "bitcoinpir-bitcoin-core-signet.service",
+      user_name: "bitcoinpir-bitcoind",
+    })
+  ) {
+    fail("bitcoin-core-signet-v1 must use its exact static service identity");
+  }
+  const root = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}`;
+  assertSameStringSet(
+    new Set(plan.payload_artifacts.map((artifact) => artifact.target_path)),
+    new Set([
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256",
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256",
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.json",
+      "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256",
+      `${root}/bin/bitcoin-cli`,
+      `${root}/bin/bitcoind`,
+    ]),
+    "bitcoin-core-signet-v1 payload targets",
+  );
 }
 
 function validateDirectoryRelayConfigOwnerBinding(document) {
@@ -1638,6 +1709,7 @@ function validatePlan(plan) {
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
   validateProviderPayloadClosure(plan);
   validateIssuerLightningPreflightPayloadContract(plan);
+  validateBitcoinCoreProfileContract(plan);
   validateRemoteRollbackPayloadMetadata(plan);
   validateDirectoryRelayConfigOwnerBinding(plan);
   validateSecretOwnerBindings(plan);
@@ -1666,6 +1738,142 @@ function remoteRollbackConfigManagedReferences(profile, targetPath, bytes) {
     }
   }
   return [paths.signingSeed, paths.valueRoot];
+}
+
+function validateBitcoinCoreProvenance(plan, targetPath, bytes) {
+  if (
+    plan.deployment_profile !== "bitcoin-core-signet-v1" ||
+    targetPath !== "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.json"
+  ) return;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail("Bitcoin Core provenance receipt must be UTF-8");
+  }
+  const receipt = parseStrictJson(text, "Bitcoin Core provenance receipt");
+  exactKeys(
+    receipt,
+    [
+      "archive_filename",
+      "archive_sha256",
+      "binary_sha256",
+      "guix_sigs_commit",
+      "minimum_valid_signatures",
+      "release",
+      "schema_version",
+      "target",
+      "valid_signer_fingerprints",
+      "verified_valid_signature_count",
+    ],
+    "Bitcoin Core provenance receipt",
+  );
+  exactKeys(
+    receipt.binary_sha256,
+    ["bitcoin-cli", "bitcoind"],
+    "Bitcoin Core provenance receipt binary_sha256",
+  );
+  if (receipt.schema_version !== 1) {
+    fail("Bitcoin Core provenance receipt schema_version must equal 1");
+  }
+  if (
+    typeof receipt.release !== "string" ||
+    !/^[1-9][0-9]*\.[0-9]+(?:\.[0-9]+)?$/u.test(receipt.release) ||
+    receipt.target !== "x86_64-linux-gnu" ||
+    receipt.archive_filename !== `bitcoin-${receipt.release}-${receipt.target}.tar.gz`
+  ) {
+    fail("Bitcoin Core provenance receipt release/target/archive tuple is invalid");
+  }
+  for (const [label, digest] of [
+    ["archive_sha256", receipt.archive_sha256],
+    ["binary_sha256.bitcoin-cli", receipt.binary_sha256["bitcoin-cli"]],
+    ["binary_sha256.bitcoind", receipt.binary_sha256.bitcoind],
+  ]) {
+    validateSha256(digest, `Bitcoin Core provenance receipt ${label}`);
+  }
+  if (
+    receipt.archive_sha256 !== plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256 ||
+    !/^[0-9a-f]{40}$/u.test(receipt.guix_sigs_commit) ||
+    /^0{40}$/u.test(receipt.guix_sigs_commit)
+  ) {
+    fail("Bitcoin Core provenance receipt is not bound to the approved archive/Guix snapshot");
+  }
+  if (
+    !Number.isSafeInteger(receipt.minimum_valid_signatures) ||
+    receipt.minimum_valid_signatures < 3 ||
+    receipt.minimum_valid_signatures > 32 ||
+    !Number.isSafeInteger(receipt.verified_valid_signature_count) ||
+    receipt.verified_valid_signature_count < receipt.minimum_valid_signatures ||
+    receipt.verified_valid_signature_count > 32 ||
+    !Array.isArray(receipt.valid_signer_fingerprints) ||
+    receipt.valid_signer_fingerprints.length !== receipt.verified_valid_signature_count ||
+    receipt.valid_signer_fingerprints.some((fingerprint) =>
+      typeof fingerprint !== "string" ||
+      !/^[0-9a-f]{40}$/u.test(fingerprint) ||
+      /^0{40}$/u.test(fingerprint)) ||
+    new Set(receipt.valid_signer_fingerprints).size !==
+      receipt.valid_signer_fingerprints.length ||
+    canonicalize([...receipt.valid_signer_fingerprints].sort(asciiCompare)) !==
+      canonicalize(receipt.valid_signer_fingerprints)
+  ) {
+    fail("Bitcoin Core provenance receipt does not satisfy its distinct-signature threshold");
+  }
+  const root = `/opt/bitcoinpir/bitcoin-core/${receipt.archive_sha256}/bin`;
+  for (const [name, digest] of Object.entries(receipt.binary_sha256)) {
+    const artifact = plan.payload_artifacts.find(
+      (entry) => entry.target_path === `${root}/${name}`,
+    );
+    if (!artifact || artifact.class !== "binary" || artifact.expected_sha256 !== digest) {
+      fail(`Bitcoin Core provenance receipt does not bind the ${name} payload`);
+    }
+  }
+  if (!Buffer.from(canonicalJson(receipt)).equals(bytes)) {
+    fail("Bitcoin Core provenance receipt must use canonical JSON encoding");
+  }
+}
+
+function validateRenderedBitcoinCoreTemplate(plan, targetPath, text) {
+  if (plan.deployment_profile !== "bitcoin-core-signet-v1") return;
+  if (targetPath === "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf") {
+    const active = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    const expected = [
+      "chain=signet", "server=1", "disablewallet=1", "nosettings=1",
+      "blocksonly=0",
+      "rpccookiefile=/srv/bitcoin/signet/.cookie", "rpccookieperms=group", "rest=0",
+      "listen=0", "listenonion=0", "discover=0", "onion=0", "dns=0",
+      "dnsseed=0", "forcednsseed=0", "fixedseeds=1", "onlynet=ipv4",
+      "onlynet=ipv6", "debug=0", "nodebuglogfile=1", "printtoconsole=0",
+      "logips=0", "[signet]", "rpcbind=127.0.0.1",
+      "rpcallowip=127.0.0.1/32", "rpcport=38332",
+    ];
+    if (canonicalize(active) !== canonicalize(expected)) {
+      fail("rendered Bitcoin Core config must equal the exact default-Signet closed profile");
+    }
+  }
+  if (targetPath === "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout") {
+    for (const required of [
+      "[ \"${bpir_bitcoind_uid}\" -eq 52928 ] || bpir_fail",
+      "[ \"${bpir_bitcoind_gid}\" -eq 52928 ] || bpir_fail",
+      "[ \"${bpir_cookie_gid}\" -eq 52929 ] || bpir_fail",
+      "[ \"$(/usr/bin/stat -c '%u:%g:%a' -- \"${bpir_bitcoin_dir}\")\" = \"${bpir_bitcoind_uid}:${bpir_cookie_gid}:2710\" ] || bpir_fail",
+      "bpir_require_empty_find \"${bpir_bitcoin_base}\" -xdev -mindepth 1 -maxdepth 1 ! -path \"${bpir_bitcoin_dir}\" -print -quit",
+      "bpir_require_single_device \"${bpir_bitcoin_dir}\"",
+      "-xdev -type l -print -quit",
+      "-xdev -type f ! -path \"${bpir_cookie_path}\" -perm /077 -print -quit",
+      "-xdev -type f -links +1 -print -quit",
+      "-xdev -mindepth 1 -type d -perm /077 -print -quit",
+      "/usr/bin/getfacl -R -c -p -n -- \"${bpir_bitcoin_dir}\"",
+      "${bpir_bitcoind_uid}:${bpir_cookie_gid}:640:1:75",
+      "^__cookie__:[0-9a-f]{64}$",
+    ]) {
+      if (!text.includes(required)) {
+        fail(`rendered Bitcoin Core layout verifier is missing ${required}`);
+      }
+    }
+  }
 }
 
 function extractPlaceholders(text) {
@@ -1870,6 +2078,12 @@ function parseSystemdUnit(text, label) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "bitcoin-core-signet-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-bitcoin-core-signet.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-BITCOIN-CORE-STAGING-APPROVED",
+    ]),
+  }),
   "directory-relay-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2034,6 +2248,61 @@ function validateProfileUnitPolicy(
     ]).has(fragmentPath);
   if (!approvalConsumer && execStartPreEx.some((command) => command.flags.length !== 0)) {
     fail(`${label} contains closed-world forbidden directive: privileged ExecStartPre flags`);
+  }
+  if (deploymentProfile === "bitcoin-core-signet-v1") {
+    const commandMatch =
+      /^\/opt\/bitcoinpir\/bitcoin-core\/([0-9a-f]{64})\/bin\/bitcoind -conf=\/etc\/bitcoinpir\/payment-v1\/bitcoin-core\/bitcoin\.conf -datadir=\/srv\/bitcoin -pid=\/run\/bitcoinpir-bitcoin-core\/bitcoind\.pid$/u.exec(
+        execStart[0] ?? "",
+      );
+    if (execStart.length !== 1 || commandMatch === null) {
+      fail(`${label} must execute only the content-addressed default-Signet bitcoind`);
+    }
+    if ("SupplementaryGroups" in hardening) {
+      fail(`${label} must not grant bitcoind any supplementary group`);
+    }
+    const binaryRoot = `/opt/bitcoinpir/bitcoin-core/${commandMatch[1]}`;
+    if (
+      canonicalize(execStartPre) !== canonicalize([
+        `/usr/bin/test -x ${binaryRoot}/bin/bitcoind`,
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256",
+        "/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout",
+      ])
+    ) {
+      fail(`${label} must retain the exact fail-closed Core pre-start chain`);
+    }
+    for (const [key, expected] of [
+      ["Type", "simple"],
+      ["User", "bitcoinpir-bitcoind"],
+      ["Group", "bitcoinpir-bitcoind"],
+      ["UMask", "0077"],
+      ["RuntimeDirectory", "bitcoinpir-bitcoin-core"],
+      ["RuntimeDirectoryMode", "0700"],
+      ["WorkingDirectory", "/srv/bitcoin/signet"],
+      ["Restart", "on-failure"],
+      ["RestartSec", "5"],
+      ["TimeoutStartSec", "120"],
+      ["TimeoutStopSec", "120"],
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "65535"],
+      ["MemorySwapMax", "0"],
+      ["StandardOutput", "null"],
+      ["StandardError", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
+      ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
+      ["ReadOnlyPaths", `/etc/bitcoinpir/payment-v1/bitcoin-core ${binaryRoot}`],
+      ["ReadWritePaths", "/srv/bitcoin/signet /run/bitcoinpir-bitcoin-core"],
+      ["InaccessiblePaths", "/srv/lightning /var/lib/bitcoinpir-payment-issuer /run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-source-fair-edge"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep bitcoin-core-signet-v1 ${key}=${expected}`);
+      }
+    }
   }
   if (deploymentProfile === "directory-relay-v1") {
     const blocked =
@@ -2313,6 +2582,37 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
       }
     }
     validatePreflightConfigReaderIdentity(unit, identity, "rendered runtime unit");
+  }
+  if (plan.deployment_profile === "bitcoin-core-signet-v1") {
+    const unit = runtimeUnits[0];
+    if (
+      !unit ||
+      canonicalize(unit.unit_dependencies) !== canonicalize({
+        After: ["network-online.target"],
+        Before: [],
+        BindsTo: [],
+        Requires: [],
+      })
+    ) {
+      fail("bitcoin-core-signet-v1 must retain its exact independent systemd dependency graph");
+    }
+  }
+  if (plan.deployment_profile === "issuer-lightning-signet-v1") {
+    const coreLightning = runtimeUnits.find(
+      (unit) => unit.unit_name === "bitcoinpir-core-lightning.service",
+    );
+    if (
+      !coreLightning ||
+      canonicalize(coreLightning.unit_dependencies.After) !== canonicalize([
+        "bitcoinpir-bitcoin-core-signet.service",
+        "network-online.target",
+      ]) ||
+      canonicalize(coreLightning.unit_dependencies.Requires) !== canonicalize([
+        "bitcoinpir-bitcoin-core-signet.service",
+      ])
+    ) {
+      fail("issuer Lightning profile must depend on the exact reviewed Bitcoin Core unit name");
+    }
   }
 }
 
@@ -2752,6 +3052,24 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
   };
   switch (manifestPath) {
+    case "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256": {
+      const root = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}`;
+      assertSameStringSet(
+        new Set(entries.map((entry) => entry.target_path)),
+        new Set([`${root}/bin/bitcoin-cli`, `${root}/bin/bitcoind`]),
+        `hash manifest ${manifestPath}`,
+      );
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin.conf");
+      return;
+    case "/etc/bitcoinpir/payment-v1/bitcoin-core/layout-verifier.sha256":
+      oneExact("/usr/local/libexec/bitcoinpir/verify-bitcoin-core-signet-layout");
+      return;
+    case "/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/bitcoin-core/provenance.json");
+      return;
     case "/etc/bitcoinpir/payment-v1/edge/caddy.sha256":
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
@@ -2803,16 +3121,6 @@ function validateHashManifestScope(manifestPath, entries, plan) {
       }
       return;
     }
-    case "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256": {
-      const prefix = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}/`;
-      if (entries.length < 1 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
-        fail(`hash manifest ${manifestPath} must remain inside the selected Bitcoin Core bundle`);
-      }
-      if (!entries.some((entry) => entry.target_path === `${prefix}bin/bitcoin-cli`)) {
-        fail(`hash manifest ${manifestPath} is missing bin/bitcoin-cli`);
-      }
-      return;
-    }
     case "/etc/bitcoinpir/payment-v1/provider/unified-server.sha256":
       oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
       return;
@@ -2845,6 +3153,17 @@ function validateHashManifestScope(manifestPath, entries, plan) {
   }
 }
 
+function isReviewedExternalProfileDependency(plan, targetPath) {
+  if (plan.deployment_profile !== "issuer-lightning-signet-v1") return false;
+  const coreRoot = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}`;
+  return new Set([
+    "/etc/bitcoinpir/payment-v1/bitcoin-core",
+    "/etc/bitcoinpir/payment-v1/bitcoin-core/bitcoin-core-bundle.sha256",
+    coreRoot,
+    `${coreRoot}/bin/bitcoin-cli`,
+  ]).has(targetPath);
+}
+
 function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, plan }) {
   const byTarget = new Map(artifacts.map((artifact) => [artifact.target_path, artifact]));
   const reachable = new Set(initialReferences);
@@ -2853,6 +3172,7 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
     const targetPath = queue.shift();
     const artifact = byTarget.get(targetPath);
     if (!artifact) {
+      if (isReviewedExternalProfileDependency(plan, targetPath)) continue;
       if ([...byTarget.keys()].some((candidate) => candidate.startsWith(`${targetPath}/`))) {
         continue;
       }
@@ -3023,6 +3343,11 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       plan.placeholders,
       `rendered ${specification.source_path}`,
     );
+    validateRenderedBitcoinCoreTemplate(
+      plan,
+      specification.target_path,
+      renderedText,
+    );
     const renderedBytes = Buffer.from(renderedText, "utf8");
     const renderedSha256 = sha256(renderedBytes);
     const bundlePath = artifactBundlePath(specification.target_path);
@@ -3084,6 +3409,11 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       specification.target_path,
       sourceBytes,
       plan,
+    );
+    validateBitcoinCoreProvenance(
+      plan,
+      specification.target_path,
+      sourceBytes,
     );
     for (const reference of remoteRollbackConfigManagedReferences(
       plan.deployment_profile,
@@ -3498,6 +3828,39 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       target_path: "/run/bitcoinpir-rollback-authority-edge",
       uid: edgeIdentity.uid,
     });
+  }
+  if (manifest.deployment_profile === "bitcoin-core-signet-v1") {
+    const coreIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === "bitcoinpir-bitcoin-core-signet.service",
+    );
+    if (!coreIdentity || coreIdentity.uid !== 52928 || coreIdentity.gid !== 52928) {
+      fail("bitcoin-core-signet-v1 runtime request is missing its exact static service identity");
+    }
+    runtimePaths.push(
+      {
+        file_type: "directory",
+        gid: 0,
+        mode: "0755",
+        target_path: "/srv/bitcoin",
+        uid: 0,
+      },
+      {
+        file_type: "directory",
+        gid: 52929,
+        mode: "2710",
+        target_path: "/srv/bitcoin/signet",
+        uid: coreIdentity.uid,
+      },
+      {
+        file_type: "regular",
+        gid: 52929,
+        mode: "0640",
+        nlink: 1,
+        size: 75,
+        target_path: "/srv/bitcoin/signet/.cookie",
+        uid: coreIdentity.uid,
+      },
+    );
   }
   return {
     approved_plan_sha256: manifest.approved_plan_sha256,

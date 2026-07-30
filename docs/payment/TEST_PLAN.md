@@ -910,6 +910,23 @@ remain separate acceptance gates.
   inventory reject IDs outside static `1..60000`, including systemd
   `DynamicUser` `61184..65519` and `nobody` `65534`; checked-in Payment V1
   examples contain no former `629xx` service identity;
+- `bitcoin-core-signet-v1` renders only its exact config/verifier/unit and
+  seven payloads; deleting any input, changing bitcoind UID/primary GID 52928
+  or cookie GID 52929,
+  weakening the service sandbox, adding `[Install]`, exposing RPC/inbound P2P,
+  enabling wallet/logging, adding a custom Signet challenge/seed or changing
+  the exact service name fails closed;
+- Core provenance tests require canonical exact-field JSON, the plan-approved
+  archive digest, both actual extracted-binary digests, one 40-hex Guix
+  snapshot, sorted unique fingerprints and at least three observed valid
+  signatures. Missing/extra fields, under-threshold counts, digest drift and
+  issuer ownership of any Core artifact fail;
+- Core runtime requests bind exact directory metadata for `/srv/bitcoin`, the
+  52928:52929 setgid mode-`2710` `/srv/bitcoin/signet`, and a regular
+  52928:52929 mode-`0640` cookie. Live evidence requires primary GID 52928 and
+  rejects cookie GID 52929 in the bitcoind kernel `Groups:` vector. It also
+  must reject a socket/directory substitution or owner/mode/type/ACL/
+  xattr/capability drift;
 - a final complete policy/getent/id snapshot detects `/etc/nsswitch.conf`,
   `/etc/passwd`, `/etc/group`, enumeration or supplementary-group drift during
   later live and stopped checks;
@@ -991,6 +1008,10 @@ deterministic fake Lightning backend is used by default.
 
 The default-Signet staging preflight focused suite additionally requires:
 
+- Core and issuer plans remain separately dependency-closed: Core Lightning
+  accepts only `bitcoinpir-bitcoin-core-signet.service`, the approved external
+  Core manifest/root/CLI, and cannot materialize an arbitrary service alias or
+  issuer-owned Core payload;
 - the production `preflight-supervisor` accepts only the exact protected
   systemd mapping
   `/run/systemd/units/invocation:bitcoinpir-core-lightning.service`; the link

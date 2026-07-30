@@ -61,7 +61,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
 # The config must pin /usr/bin/busctl to @BUSCTL_SHA256@.
-ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /etc/bitcoinpir/payment-v1/bitcoin-core /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
 # The approval parent is root:root 0700: only the privileged one-shot unlink
 # can write there; the long-running preflight process remains excluded by DAC.
 ReadWritePaths=/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals

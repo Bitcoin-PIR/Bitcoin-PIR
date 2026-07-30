@@ -916,6 +916,29 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       evidence, source-fair ingress and publication approvals remain gates. An
       independent second operator is stronger than the approved centralized
       profile but is not falsely inferred from same-host origin diversity.
+- [x] The independent `bitcoin-core-signet-v1` source profile is implemented.
+      It exclusively owns content-addressed `bitcoind`/`bitcoin-cli`, canonical
+      threshold provenance, exact bitcoind UID/primary GID 52928 plus distinct
+      cookie GID 52929, wallet-disabled
+      outbound-only default-Signet config and the non-installable
+      `bitcoinpir-bitcoin-core-signet.service`. The issuer plan no longer owns
+      Core payloads or accepts a unit alias. Source/render tests reject custom
+      Signet, remote RPC, wallet/logging, identity/sandbox/provenance drift and
+      every missing input; runtime-evidence v6 now binds the regular cookie and
+      both data directories, including bitcoind primary GID 52928 and exclusion
+      of cookie GID 52929 from its kernel `Groups:` vector. This is source
+      completion only: no host install, start, sync, wallet, test coin or funds
+      action occurred.
+- [ ] Before any stopped install or first start, independently approve the Core
+      release/provenance and exact plan digest, authorize the target-host
+      transaction, verify locked NSS/filesystem/systemd/firewall state, then
+      collect fresh Core live evidence and exact challenge/genesis readback.
+      Joint issuer activation is additionally blocked because the current Rust
+      Lightning preflight requires cookie-directory mode `0710`; a separately
+      versioned update must instead require this profile's setgid `2710` shape.
+      CLN remains separately blocked on an immutable runtime-library closure;
+      the current Hetzner lacks `libpq.so.5` and must not be repaired with
+      `apt` as a side effect.
 - [x] Source-template, rendered-profile and live-Linux evidence tools are
       checked in. The source gate freezes inactive templates and the unchanged
       VPSBG baseline. The rendered gate binds one externally approved plan to

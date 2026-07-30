@@ -1,0 +1,48 @@
+# BitcoinPIR default-Signet Bitcoin Core config; render and hash-pin exactly.
+# No include, dynamic settings, wallet, RPC credential, remote RPC, inbound P2P
+# or logging surface.
+#
+# Deliberately omit signetchallenge/signetseednode. In Bitcoin Core, explicitly
+# setting even the default challenge selects the custom-Signet constructor and
+# clears the compiled default-Signet seeds/assume-valid data. The exact default
+# challenge and genesis are instead verified from live RPC by the existing
+# Lightning staging preflight before any issuer activation:
+# challenge=512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae
+# genesis=00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
+chain=signet
+server=1
+disablewallet=1
+nosettings=1
+blocksonly=0
+
+# Cookie-only RPC on one IPv4 loopback listener. The cookie group is granted
+# only to Core Lightning and the dedicated read-only preflight supervisor.
+rpccookiefile=/srv/bitcoin/signet/.cookie
+rpccookieperms=group
+rest=0
+
+# Outbound-only P2P. DNS bootstrap/name lookup is disabled. The reviewed V1
+# bootstrap policy relies only on the default-Signet fixed seeds compiled into
+# the externally approved, content-addressed Bitcoin Core binary.
+listen=0
+listenonion=0
+discover=0
+onion=0
+dns=0
+dnsseed=0
+forcednsseed=0
+fixedseeds=1
+onlynet=ipv4
+onlynet=ipv6
+
+# No debug, file or console log retention. systemd also routes stdout/stderr
+# to null and forbids core dumps.
+debug=0
+nodebuglogfile=1
+printtoconsole=0
+logips=0
+
+[signet]
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1/32
+rpcport=38332

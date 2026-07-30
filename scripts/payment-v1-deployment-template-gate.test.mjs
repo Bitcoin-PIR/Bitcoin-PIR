@@ -134,6 +134,10 @@ test("global activation never substitutes for a role-specific approval", () => {
       "RELAY-ACTIVATION-APPROVED",
     ],
     [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      "SIGNET-BITCOIN-CORE-STAGING-APPROVED",
+    ],
+    [
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
       "SIGNET-LIGHTNING-STAGING-APPROVED",
     ],
@@ -213,6 +217,134 @@ test("provider profile sentinels are mutually exclusive at unit start", () => {
         );
       });
     }
+  }
+});
+
+test("default-Signet Bitcoin Core inputs reject network, RPC, custody and isolation drift", () => {
+  const mutations = [
+    [
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      (text) => text.replace("chain=signet", "chain=main"),
+      /closed-world configuration/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      (text) => `${text}signetchallenge=${"1".repeat(142)}\n`,
+      /closed-world configuration|custom Signet/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      (text) => text.replace("listen=0", "listen=1"),
+      /closed-world configuration/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      (text) => text.replace("nosettings=1", "nosettings=0"),
+      /closed-world configuration/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+      (text) => text.replace("rpcbind=127.0.0.1", "rpcbind=0.0.0.0"),
+      /closed-world configuration/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      (text) => `${text}\n[Install]\nWantedBy=multi-user.target\n`,
+      /\[Install\]/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      (text) => text.replace("User=bitcoinpir-bitcoind", "User=root"),
+      /Service\.User must equal/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      (text) => text.replace("Group=bitcoinpir-bitcoind", "Group=bitcoinpir-bitcoin-rpc"),
+      /Service\.Group must equal/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      (text) => text.replace(
+        "Group=bitcoinpir-bitcoind\n",
+        "Group=bitcoinpir-bitcoind\nSupplementaryGroups=bitcoinpir-bitcoin-rpc\n",
+      ),
+      /Service directive keys/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
+      (text) => text.replace("MemorySwapMax=0", "MemorySwapMax=infinity"),
+      /MemorySwapMax/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replaceAll(
+        "bitcoinpir-bitcoin-core-signet.service",
+        "bitcoind.service",
+      ),
+      /Unit\.After must equal|Unit\.Requires must equal/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        '[ "${bpir_bitcoind_gid}" -eq 52928 ] || bpir_fail',
+        ': # independent primary group check removed',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        ':2710" ] || bpir_fail',
+        ':710" ] || bpir_fail',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        'bpir_require_empty_find "${bpir_bitcoin_base}" -xdev -mindepth 1 -maxdepth 1 ! -path "${bpir_bitcoin_dir}" -print -quit',
+        ': # broad data-root closure removed',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        'bpir_require_single_device "${bpir_bitcoin_dir}"',
+        ': # nested mount check removed',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        'bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type f ! -path "${bpir_cookie_path}" -perm /077 -print -quit',
+        ': # non-cookie group-read check removed',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        'bpir_require_empty_find "${bpir_bitcoin_dir}" -xdev -type l -print -quit',
+        ': # symlink check removed',
+      ),
+      /layout verifier.*missing required/u,
+    ],
+    [
+      "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+      (text) => text.replace(
+        "/usr/bin/getfacl -R -c -p -n -- \"${bpir_bitcoin_dir}\" \\",
+        ": # recursive ACL check removed \\",
+      ),
+      /layout verifier.*missing required/u,
+    ],
+  ];
+  for (const [relativePath, transform, expected] of mutations) {
+    withFixture((root) => {
+      mutate(root, relativePath, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
   }
 });
 
@@ -1122,9 +1254,12 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
   }
 });
 
-test("reviewed edge and Lightning source bytes are frozen", () => {
+test("reviewed edge, Bitcoin Core and Lightning source bytes are frozen", () => {
   for (const relativePath of [
     "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+    "deploy/payment-v1/bitcoin-core/bitcoin.conf.in",
+    "deploy/payment-v1/bitcoin-core/verify-layout.sh.in",
+    "deploy/payment-v1/systemd/hetzner-bitcoin-core-signet.service.in",
     "deploy/payment-v1/lightning/verify-layout.sh.in",
     "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
   ]) {

@@ -858,6 +858,74 @@ function fixture() {
   return { boot, evidence, machine, request };
 }
 
+function independentPrimaryCookieGroupFixture() {
+  const value = fixture();
+  const serviceUid = 52928;
+  const serviceGid = 52928;
+  const originalSharedGid = 732;
+  const cookieGid = 52929;
+  const unit = value.request.units[0];
+  unit.hardening.User = ["bitcoinpir-bitcoind"];
+  unit.hardening.Group = ["bitcoinpir-bitcoind"];
+  delete unit.hardening.SupplementaryGroups;
+  value.request.service_identities[0] = {
+    gid: serviceGid,
+    group_name: "bitcoinpir-bitcoind",
+    uid: serviceUid,
+    unit_name: unit.unit_name,
+    user_name: "bitcoinpir-bitcoind",
+  };
+  value.request.runtime_paths[0].gid = serviceGid;
+  value.request.runtime_paths[0].uid = serviceUid;
+  value.request.tmpfiles_directories[0].group_name = "bitcoinpir-bitcoin-rpc";
+  value.request.tmpfiles_directories[0].user_name = "bitcoinpir-bitcoind";
+
+  const evidenceUnit = value.evidence.units[0];
+  evidenceUnit.properties.User = "bitcoinpir-bitcoind";
+  evidenceUnit.properties.Group = "bitcoinpir-bitcoind";
+  evidenceUnit.properties.SupplementaryGroups = "";
+
+  const serviceUser = value.evidence.nss.users.find(
+    (entry) => entry.name === "bitcoinpir-test",
+  );
+  serviceUser.name = "bitcoinpir-bitcoind";
+  serviceUser.uid = serviceUid;
+  serviceUser.primary_gid = serviceGid;
+  serviceUser.supplementary_gids = [serviceGid];
+  const serviceGroup = value.evidence.nss.groups.find((entry) => entry.gid === 731);
+  serviceGroup.gid = serviceGid;
+  serviceGroup.name = "bitcoinpir-bitcoind";
+  const cookieGroup = value.evidence.nss.groups.find(
+    (entry) => entry.gid === originalSharedGid,
+  );
+  cookieGroup.gid = cookieGid;
+  cookieGroup.name = "bitcoinpir-bitcoin-rpc";
+  cookieGroup.members = [];
+  value.evidence.runtime_directories[0].uid = serviceUid;
+  value.evidence.runtime_directories[0].gid = cookieGid;
+  value.evidence.runtime_directories[0].user_name = "bitcoinpir-bitcoind";
+  value.evidence.runtime_directories[0].group_name = "bitcoinpir-bitcoin-rpc";
+  value.evidence.runtime_paths[0].uid = serviceUid;
+  value.evidence.runtime_paths[0].gid = serviceGid;
+
+  const process = evidenceUnit.process_identity;
+  process.uid_before = [serviceUid, serviceUid, serviceUid, serviceUid];
+  process.uid_after = [serviceUid, serviceUid, serviceUid, serviceUid];
+  process.gid_before = [serviceGid, serviceGid, serviceGid, serviceGid];
+  process.gid_after = [serviceGid, serviceGid, serviceGid, serviceGid];
+  process.groups_before = [serviceGid];
+  process.groups_after = [serviceGid];
+  value.evidence.protected_process_closure.protected_uids = [serviceUid];
+  value.evidence.protected_process_closure.protected_gids = [serviceGid, cookieGid];
+  for (const pass of value.evidence.protected_process_closure.passes) {
+    const holder = pass.holders[0];
+    holder.uid = [serviceUid, serviceUid, serviceUid, serviceUid];
+    holder.gid = [serviceGid, serviceGid, serviceGid, serviceGid];
+    holder.groups = [serviceGid];
+  }
+  return value;
+}
+
 function stoppedEdgeFixture() {
   const live = fixture();
   live.request.deployment_profile = "edge-hetzner-v1";
@@ -1400,6 +1468,23 @@ function validateStoppedRelay(value) {
     request: value.request,
   });
 }
+
+test("live evidence accepts an independent service primary group without the protected cookie GID", () => {
+  const value = independentPrimaryCookieGroupFixture();
+  assert.equal(validate(value), true);
+  assert.deepEqual(value.evidence.units[0].process_identity.groups_before, [52928]);
+  assert.equal(
+    value.evidence.protected_process_closure.protected_gids.includes(52929),
+    true,
+  );
+});
+
+test("live evidence rejects cookie GID 52929 in a service kernel Groups vector", () => {
+  const value = independentPrimaryCookieGroupFixture();
+  value.evidence.units[0].process_identity.groups_before.push(52929);
+  value.evidence.units[0].process_identity.groups_after.push(52929);
+  assert.throws(() => validate(value), /process Groups drift/u);
+});
 
 function localFilesPolicySnapshot(nss) {
   return {
@@ -2648,6 +2733,56 @@ test("resolved directory-relay has stopped preparation evidence before sentinels
   wrongPreflight.request.units[0].exec_start_pre[0] =
     "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
   assert.throws(() => validateStoppedRelay(wrongPreflight), /unit binding/);
+});
+
+test("live evidence schema binds a regular runtime cookie with exact metadata", () => {
+  const value = fixture();
+  Object.assign(value.request.runtime_paths[0], {
+    file_type: "regular",
+    mode: "0640",
+    nlink: 1,
+    size: 75,
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  Object.assign(value.evidence.runtime_paths[0], {
+    expected_type: "regular",
+    file_type: "regular",
+    mode: "0640",
+    size: 75,
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  assert.equal(validate(value), true);
+
+  const hardlinked = fixture();
+  Object.assign(hardlinked.request.runtime_paths[0], {
+    file_type: "regular",
+    mode: "0640",
+    nlink: 1,
+    size: 75,
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  Object.assign(hardlinked.evidence.runtime_paths[0], {
+    expected_type: "regular",
+    file_type: "regular",
+    mode: "0640",
+    nlink: 2,
+    size: 75,
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  assert.throws(() => validate(hardlinked), /runtime path nlink drift/u);
+
+  const wrongType = fixture();
+  Object.assign(wrongType.request.runtime_paths[0], {
+    file_type: "regular",
+    mode: "0640",
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  Object.assign(wrongType.evidence.runtime_paths[0], {
+    file_type: "regular",
+    mode: "0640",
+    target_path: "/srv/bitcoin/signet/.cookie",
+  });
+  assert.throws(() => validate(wrongType), /runtime path type drift/u);
 });
 
 test("runtime evidence regular-file reads use no-follow one-link fd semantics", (t) => {
