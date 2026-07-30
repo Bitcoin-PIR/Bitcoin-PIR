@@ -39,6 +39,16 @@ const SOURCE_FAIR_UNIT = "deploy/payment-v1/systemd/payment-v1-source-fair-edge.
 const LEGACY_EDGE_UNIT = "deploy/payment-v1/systemd/payment-v1-edge.service.in";
 const EDGE_CONFIG = "deploy/payment-v1/edge/hetzner-public.Caddyfile.in";
 const SOURCE_FAIR_CONFIG = "deploy/payment-v1/edge/source-fair-haproxy.cfg.in";
+const INTEGRATED_CADDY_GATE =
+  "scripts/payment-v1-integrated-caddy-overlay-gate.mjs";
+const CADDY_ADMIN_UDS_GATE =
+  "scripts/payment-v1-caddy-admin-uds-gate.mjs";
+const CADDY_ADMIN_UDS_PROBE =
+  "scripts/payment-v1-caddy-admin-uds-probe.mjs";
+const INTEGRATED_CADDY_TRANSACTION =
+  "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
+const INTEGRATED_CADDY_BLOCK =
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
 const PROVIDER_UNIT = "deploy/payment-v1/systemd/hetzner-provider.service.in";
 const PROVIDER_NO_STANDARD_CASHU_UNIT =
@@ -257,6 +267,150 @@ function makeEdgeFixture(t) {
         unit_name: "bitcoinpir-payment-v1-public-edge.service",
         user_name: "bitcoinpir-payment-edge",
       },
+      {
+        gid: 732,
+        group_name: "bitcoinpir-source-fair-edge",
+        uid: 731,
+        unit_name: "bitcoinpir-payment-v1-source-fair-edge.service",
+        user_name: "bitcoinpir-source-fair-edge",
+      },
+    ],
+  };
+  return { ...fixture, plan, targets };
+}
+
+function makeIntegratedCaddySourceFairFixture(t) {
+  const fixture = temporaryRoots(t);
+  copySource(fixture.sourceRoot, SOURCE_FAIR_UNIT);
+  copySource(fixture.sourceRoot, SOURCE_FAIR_CONFIG);
+  copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
+  copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
+  copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
+  const haproxyBytes = Buffer.from("reviewed-integrated-haproxy-v1\n");
+  const haproxySha = hashBytes(haproxyBytes);
+  const exchangeBytes = Buffer.from("reviewed-rename-exchange-v1\n");
+  const exchangeSha = hashBytes(exchangeBytes);
+  const placeholders = {
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.23.0.6",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.23.0.5",
+    DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
+    HAPROXY_SHA256: haproxySha,
+    OVERLAY_EXCHANGE_SHA256: exchangeSha,
+    PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
+    PROVIDER_WSS_HOST: "pir.example.net",
+    PUBLIC_HTTPS_BIND: "198.51.100.23",
+  };
+  const renderedSourceFairConfig = Buffer.from(
+    renderText(fixture.sourceRoot, SOURCE_FAIR_CONFIG, placeholders),
+  );
+  const targets = {
+    haproxyBinary: `/opt/bitcoinpir/haproxy/${haproxySha}/haproxy`,
+    haproxyBinaryManifest: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256",
+    exchangeBinary:
+      `/opt/bitcoinpir/payment-v1-rename-exchange/${exchangeSha}/payment-v1-rename-exchange`,
+    exchangeBinaryManifest:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256",
+    managedBlock:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+    sourceFairConfig: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+    sourceFairConfigManifest:
+      "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256",
+  };
+  const payloads = [
+    [targets.exchangeBinary, exchangeBytes],
+    [
+      targets.exchangeBinaryManifest,
+      Buffer.from(`${exchangeSha}  ${targets.exchangeBinary}\n`),
+    ],
+    [targets.haproxyBinary, haproxyBytes],
+    [
+      targets.haproxyBinaryManifest,
+      Buffer.from(`${haproxySha}  ${targets.haproxyBinary}\n`),
+    ],
+    [
+      targets.sourceFairConfigManifest,
+      Buffer.from(
+        `${hashBytes(renderedSourceFairConfig)}  ${targets.sourceFairConfig}\n`,
+      ),
+    ],
+  ];
+  const plan = {
+    deployment_id: "integrated-existing-bhtm-caddy-v1-test",
+    deployment_profile: "integrated-existing-bhtm-caddy-v1",
+    payload_artifacts: payloads.map(([target, bytes], index) =>
+      addPayload(fixture, target, bytes, index),
+    ),
+    placeholders,
+    rendered_artifacts: [
+      {
+        gid: 0,
+        mode: "0444",
+        source_path: INTEGRATED_CADDY_BLOCK,
+        source_sha256: hashFile(join(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK)),
+        target_path: targets.managedBlock,
+        uid: 0,
+      },
+      {
+        gid: 732,
+        mode: "0440",
+        source_path: SOURCE_FAIR_CONFIG,
+        source_sha256: hashFile(join(fixture.sourceRoot, SOURCE_FAIR_CONFIG)),
+        target_path: targets.sourceFairConfig,
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0644",
+        source_path: SOURCE_FAIR_UNIT,
+        source_sha256: hashFile(join(fixture.sourceRoot, SOURCE_FAIR_UNIT)),
+        target_path:
+          "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: CADDY_ADMIN_UDS_GATE,
+        source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: CADDY_ADMIN_UDS_PROBE,
+        source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: INTEGRATED_CADDY_GATE,
+        source_sha256: hashFile(join(fixture.sourceRoot, INTEGRATED_CADDY_GATE)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: INTEGRATED_CADDY_TRANSACTION,
+        source_sha256: hashFile(
+          join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION),
+        ),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+        uid: 0,
+      },
+    ],
+    schema_version: 1,
+    service_identities: [
       {
         gid: 732,
         group_name: "bitcoinpir-source-fair-edge",
@@ -831,6 +985,263 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     readdirSync(secondRoot, { recursive: true }).sort(),
   );
 });
+
+test("integrated existing-Caddy profile closes and proves its HAProxy socket boundary", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(
+    model.manifest.deployment_profile,
+    "integrated-existing-bhtm-caddy-v1",
+  );
+  assert.deepEqual(
+    model.manifest.runtime_units.map((unit) => unit.unit_name),
+    ["bitcoinpir-payment-v1-source-fair-edge.service"],
+  );
+  assert.equal(
+    model.manifest.artifacts.some(
+      (artifact) =>
+        artifact.source_path === CADDY_ADMIN_UDS_GATE &&
+        artifact.target_path ===
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    ),
+    true,
+  );
+  assert.equal(
+    model.manifest.artifacts.some(
+      (artifact) =>
+        artifact.source_path === CADDY_ADMIN_UDS_PROBE &&
+        artifact.target_path ===
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    ),
+    true,
+  );
+  assert.deepEqual(
+    model.request.runtime_paths.map(({ file_type, mode, target_path }) => ({
+      file_type,
+      mode,
+      target_path,
+    })),
+    [
+      {
+        file_type: "directory",
+        mode: "0750",
+        target_path: "/run/bitcoinpir-source-fair-edge",
+      },
+      {
+        file_type: "socket",
+        mode: "0660",
+        target_path: "/run/bitcoinpir-source-fair-edge/directory-public.sock",
+      },
+      {
+        file_type: "socket",
+        mode: "0660",
+        target_path: "/run/bitcoinpir-source-fair-edge/directory-publisher.sock",
+      },
+      {
+        file_type: "socket",
+        mode: "0660",
+        target_path: "/run/bitcoinpir-source-fair-edge/issuer.sock",
+      },
+      {
+        file_type: "socket",
+        mode: "0660",
+        target_path: "/run/bitcoinpir-source-fair-edge/provider.sock",
+      },
+    ],
+  );
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+
+  for (const artifact of fixture.plan.payload_artifacts) {
+    const changed = clone(fixture.plan);
+    changed.payload_artifacts = changed.payload_artifacts.filter(
+      (entry) => entry.target_path !== artifact.target_path,
+    );
+    assert.throws(
+      () => renderBundle({
+        approvedPlanSha256: approved(changed),
+        inputRoot: fixture.inputRoot,
+        outputRoot: join(
+          fixture.root,
+          `integrated-missing-${hashBytes(artifact.target_path).slice(0, 10)}`,
+        ),
+        plan: changed,
+        sourceRoot: fixture.sourceRoot,
+      }),
+      /dependency is missing|references missing artifact/,
+      artifact.target_path,
+    );
+  }
+});
+
+test("integrated admin gate rejects additional module dependencies", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const gatePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
+  writeFileSync(
+    gatePath,
+    readFileSync(gatePath, "utf8").replace(
+      "export const PLAN_SCHEMA_VERSION = 1;",
+      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 1;',
+    ),
+  );
+  const gate = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_GATE,
+  );
+  gate.source_sha256 = hashFile(gatePath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /gate does not equal its exact reviewed source/u,
+  );
+});
+
+test("integrated overlay gate rejects added dependencies and semantic drift", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const gatePath = join(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
+  const original = readFileSync(gatePath, "utf8");
+  const gate = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_GATE,
+  );
+  for (const changed of [
+    original.replace(
+      "export const OVERLAY_PLAN_SCHEMA_VERSION = 1;",
+      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 1;',
+    ),
+    original.replace(
+      'export const OVERLAY_PROFILE = "integrated-existing-bhtm-caddy-v1";',
+      'export const OVERLAY_PROFILE = "unreviewed-overlay-profile";',
+    ),
+  ]) {
+    writeFileSync(gatePath, changed);
+    gate.source_sha256 = hashFile(gatePath);
+    assert.throws(
+      () => renderFixture(fixture),
+      /overlay gate does not equal its exact reviewed source/u,
+    );
+  }
+});
+
+test("integrated admin probe closes its exact descriptor-input bootstrap", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const probePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  writeFileSync(
+    probePath,
+    readFileSync(probePath, "utf8").replace(
+      'import { createHash } from "node:crypto";',
+      'import { createHash } from "node:unreviewed-crypto";',
+    ),
+  );
+  const probe = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_PROBE,
+  );
+  probe.source_sha256 = hashFile(probePath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /probe does not have its exact reviewed import header/u,
+  );
+});
+
+test("integrated admin probe rejects comment-separated dynamic, same-line static, and export-from imports", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const probePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  const expected = 'import { createHash } from "node:crypto";';
+  const original = readFileSync(probePath, "utf8");
+  const probe = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_PROBE,
+  );
+  for (const injection of [
+    'await import/* comment */("./dynamic-unreviewed.mjs");',
+    '0; import staticUnreviewed from "./static-unreviewed.mjs";',
+    'export { default as unreviewed } from "./export-unreviewed.mjs";',
+  ]) {
+    writeFileSync(
+      probePath,
+      original.replace(
+        "const socketPath =",
+        `// ${expected}\n${injection}\n\nconst socketPath =`,
+      ),
+    );
+    probe.source_sha256 = hashFile(probePath);
+    assert.throws(
+      () => renderFixture(fixture),
+      /probe does not equal its exact reviewed source/u,
+      injection,
+    );
+  }
+});
+
+test("integrated transaction closes both local gate imports", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  const expected = 'from "./payment-v1-caddy-admin-uds-gate.mjs";';
+  writeFileSync(
+    executorPath,
+    readFileSync(executorPath, "utf8")
+      .replace(expected, 'from "./unreviewed-admin-gate.mjs";')
+      .replace(
+        "const MAX_FILE_BYTES =",
+        `// ${expected}\nconst MAX_FILE_BYTES =`,
+      ),
+  );
+  const executor = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_TRANSACTION,
+  );
+  executor.source_sha256 = hashFile(executorPath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /transaction executor does not have its exact reviewed import header/u,
+  );
+});
+
+test("integrated transaction helper digest must equal the render plan", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  const managedBlockPath = join(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
+  const approvedDigest = fixture.plan.placeholders.OVERLAY_EXCHANGE_SHA256;
+  const unreviewedDigest = `${approvedDigest[0] === "0" ? "1" : "0"}${approvedDigest.slice(1)}`;
+  writeFileSync(
+    executorPath,
+    readFileSync(executorPath, "utf8").replace(
+      "@OVERLAY_EXCHANGE_SHA256@",
+      unreviewedDigest,
+    ),
+  );
+  writeFileSync(
+    managedBlockPath,
+    `${readFileSync(managedBlockPath, "utf8")}# retain reviewed placeholder @OVERLAY_EXCHANGE_SHA256@\n`,
+  );
+  const executor = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_TRANSACTION,
+  );
+  executor.source_sha256 = hashFile(executorPath);
+  const managedBlock = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_BLOCK,
+  );
+  managedBlock.source_sha256 = hashFile(managedBlockPath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /transaction executor helper digest differs from the render plan/u,
+  );
+});
+
+for (const directive of [
+  "StandardOutput",
+  "StandardError",
+  "LimitCORE",
+  "MemorySwapMax",
+]) {
+  test(`integrated existing-Caddy HAProxy keeps ${directive} fail-closed`, (t) => {
+    const fixture = makeIntegratedCaddySourceFairFixture(t);
+    updateTemplate(fixture, SOURCE_FAIR_UNIT, (text) =>
+      text.replace(
+        `${directive}=${directive.startsWith("Standard") ? "null" : "0"}`,
+        `${directive}=${directive.startsWith("Standard") ? "journal" : "infinity"}`,
+      ),
+    );
+    assert.throws(
+      () => renderFixture(fixture),
+      new RegExp(`${directive}=|request-source state cannot persist`),
+    );
+  });
+}
 
 for (const [sourcePath, label] of [
   [EDGE_UNIT, "public Caddy edge"],

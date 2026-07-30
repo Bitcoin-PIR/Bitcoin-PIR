@@ -25,6 +25,10 @@ const CADDY_TEMPLATE = join(
   REPOSITORY,
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
 );
+const INTEGRATED_CADDY_BLOCK = join(
+  REPOSITORY,
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+);
 const ROLLBACK_CADDY_TEMPLATE = join(
   REPOSITORY,
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
@@ -301,6 +305,69 @@ test("the selected Caddy binary validates complete IPv4 and IPv6-ULA public temp
       `${profile.label} complete Caddy template validation failed:\n${validation.stdout}\n${validation.stderr}`,
     );
   }
+});
+
+test("the selected Caddy binary validates an exact existing-config plus integrated managed block", {
+  skip: CADDY === undefined || OPENSSL === undefined,
+}, (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "bpir-integrated-caddy-template-"));
+  chmodSync(directory, 0o700);
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const certificate = join(directory, "publisher.crt");
+  const key = join(directory, "publisher.key");
+  const generated = spawnSync(OPENSSL, [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", key,
+    "-out", certificate,
+    "-days", "1",
+    "-subj", "/CN=publisher.example.net",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(generated.status, 0, generated.stderr);
+  let block = readFileSync(INTEGRATED_CADDY_BLOCK, "utf8");
+  for (const [placeholder, value] of Object.entries({
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.77.0.1",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.77.0.2",
+    DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
+    PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
+    PROVIDER_WSS_HOST: "pir.example.net",
+    PUBLIC_HTTPS_BIND: "198.51.100.23",
+  })) {
+    block = block.replaceAll(`@${placeholder}@`, value);
+  }
+  block = block
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+      certificate,
+    )
+    .replaceAll(
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+      key,
+    );
+  assert.doesNotMatch(block, /@[A-Z][A-Z0-9_]+@/u);
+  const config = join(directory, "integrated.Caddyfile");
+  writeFileSync(
+    config,
+    `existing.example.net {\n\trespond "existing" 200\n}\n\n${block}`,
+    { mode: 0o600 },
+  );
+  const adapted = spawnSync(CADDY, [
+    "adapt", "--config", config, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    adapted.status,
+    0,
+    `integrated Caddy adapt failed:\n${adapted.stdout}\n${adapted.stderr}`,
+  );
+  assert.doesNotThrow(() => JSON.parse(adapted.stdout));
+  const validation = spawnSync(CADDY, [
+    "validate", "--config", config, "--adapter", "caddyfile",
+  ], { encoding: "utf8", shell: false });
+  assert.equal(
+    validation.status,
+    0,
+    `integrated Caddy validate failed:\n${validation.stdout}\n${validation.stderr}`,
+  );
 });
 
 test("the selected Caddy binary validates the private rollback template", {
