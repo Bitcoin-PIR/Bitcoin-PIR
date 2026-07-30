@@ -28,11 +28,13 @@ import { pathToFileURL } from "node:url";
 
 import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
 
-const PLAN_SCHEMA_VERSION = 1;
-const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 7;
+const PLAN_SCHEMA_VERSION = 2;
+const MANIFEST_SCHEMA_VERSION = 2;
+const EVIDENCE_SCHEMA_VERSION = 8;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v7";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v8";
+export const REVIEWED_SYSTEMD_VERSION =
+  "systemd 255 (255.4-1ubuntu8.15)";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -359,6 +361,7 @@ export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze([
   "Requires",
 ]);
 export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
+  "ExecStartEx",
   "ExecStartPreEx",
   "ImportCredential",
   "LoadCredential",
@@ -1567,12 +1570,16 @@ function validatePlan(plan) {
       "rendered_artifacts",
       "schema_version",
       "service_identities",
+      "systemd_version",
       ...(directoryRelay ? ["relay_selection_sha256"] : []),
     ],
     "render plan",
   );
   if (plan.schema_version !== PLAN_SCHEMA_VERSION) {
     fail(`render plan schema_version must equal ${PLAN_SCHEMA_VERSION}`);
+  }
+  if (plan.systemd_version !== REVIEWED_SYSTEMD_VERSION) {
+    fail(`render plan systemd_version must equal ${REVIEWED_SYSTEMD_VERSION}`);
   }
   if (
     typeof plan.deployment_id !== "string" ||
@@ -1818,8 +1825,8 @@ function parseSystemdUnit(text, label) {
   const unit = sections.get("Unit");
   const execStart = service.get("ExecStart") ?? [];
   const rawExecStartPre = service.get("ExecStartPre") ?? [];
-  const execStartPreEx = rawExecStartPre.map((command, index) => {
-    const privileged = command.startsWith("+");
+  const parseExecCommand = (command, index, key, { allowPrivileged }) => {
+    const privileged = allowPrivileged && command.startsWith("+");
     const normalized = privileged ? command.slice(1) : command;
     if (
       normalized === "" ||
@@ -1827,18 +1834,22 @@ function parseSystemdUnit(text, label) {
       /^[!:@-]/u.test(normalized) ||
       /["'`$;&|<>\r\n\0]/u.test(normalized)
     ) {
-      fail(`${label} ExecStartPre[${index}] uses an unreviewed command prefix or syntax`);
+      fail(`${label} ${key}[${index}] uses an unreviewed command prefix or syntax`);
     }
     const argv = normalized.split(/\s+/u);
     if (argv.some((argument) => argument === "" || argument.length > 4096)) {
-      fail(`${label} ExecStartPre[${index}] has malformed argv`);
+      fail(`${label} ${key}[${index}] has malformed argv`);
     }
     return {
       argv,
       flags: privileged ? ["privileged"] : [],
       path: argv[0],
     };
-  });
+  };
+  const execStartEx = execStart.map((command, index) =>
+    parseExecCommand(command, index, "ExecStart", { allowPrivileged: false }));
+  const execStartPreEx = rawExecStartPre.map((command, index) =>
+    parseExecCommand(command, index, "ExecStartPre", { allowPrivileged: true }));
   if (execStart.length !== 1) fail(`${label} must have exactly one effective ExecStart`);
   const conditions = [...unit.entries()]
     .filter(([key]) => key.startsWith("Condition"))
@@ -1911,6 +1922,7 @@ function parseSystemdUnit(text, label) {
     environment,
     environment_files: [],
     exec_start: [...execStart],
+    exec_start_ex: execStartEx,
     exec_start_pre: execStartPreEx.map(({ argv }) => argv.join(" ")),
     exec_start_pre_ex: execStartPreEx,
     hardening,
@@ -3244,6 +3256,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     runtime_units: runtimeUnits,
     schema_version: MANIFEST_SCHEMA_VERSION,
     service_identities: plan.service_identities,
+    systemd_version: plan.systemd_version,
     tmpfiles_directories: tmpfilesDirectories,
   };
   const manifestBytes = Buffer.from(canonicalJson(manifest));
@@ -3278,12 +3291,16 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "runtime_units",
       "schema_version",
       "service_identities",
+      "systemd_version",
       "tmpfiles_directories",
     ],
     "rendered manifest",
   );
   if (manifest.schema_version !== MANIFEST_SCHEMA_VERSION) {
     fail(`rendered manifest schema_version must equal ${MANIFEST_SCHEMA_VERSION}`);
+  }
+  if (manifest.systemd_version !== REVIEWED_SYSTEMD_VERSION) {
+    fail(`rendered manifest systemd_version must equal ${REVIEWED_SYSTEMD_VERSION}`);
   }
   validateSha256(manifest.approved_plan_sha256, "rendered manifest approved plan SHA-256");
   if (manifest.plan_sha256 !== manifest.approved_plan_sha256) {
@@ -3404,6 +3421,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         "environment",
         "environment_files",
         "exec_start",
+        "exec_start_ex",
         "exec_start_pre",
         "exec_start_pre_ex",
         "fragment_path",
@@ -3432,21 +3450,28 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["environment", "environment_files", "exec_start_pre"]) {
       validateStringArray(unit[key], `${label}.${key}`, { maxItems: 64, maxLength: 8192 });
     }
-    if (!Array.isArray(unit.exec_start_pre_ex) || unit.exec_start_pre_ex.length !== unit.exec_start_pre.length) {
-      fail(`${label}.exec_start_pre_ex must exactly cover ExecStartPre`);
-    }
-    for (const [commandIndex, command] of unit.exec_start_pre_ex.entries()) {
-      exactKeys(command, ["argv", "flags", "path"], `${label}.exec_start_pre_ex[${commandIndex}]`);
-      validateStringArray(command.argv, `${label}.exec_start_pre_ex[${commandIndex}].argv`, { maxItems: 64, maxLength: 4096 });
-      validateStringArray(command.flags, `${label}.exec_start_pre_ex[${commandIndex}].flags`, { maxItems: 1, maxLength: 32 });
-      safeTargetPath(command.path, `${label}.exec_start_pre_ex[${commandIndex}].path`);
-      if (
-        command.argv.length < 1 ||
-        command.argv[0] !== command.path ||
-        !command.flags.every((flag) => flag === "privileged") ||
-        canonicalize(command.argv.join(" ")) !== canonicalize(unit.exec_start_pre[commandIndex])
-      ) {
-        fail(`${label}.exec_start_pre_ex[${commandIndex}] is not canonical`);
+    for (const [typedKey, textKey] of [
+      ["exec_start_ex", "exec_start"],
+      ["exec_start_pre_ex", "exec_start_pre"],
+    ]) {
+      if (!Array.isArray(unit[typedKey]) || unit[typedKey].length !== unit[textKey].length) {
+        fail(`${label}.${typedKey} must exactly cover ${textKey}`);
+      }
+      for (const [commandIndex, command] of unit[typedKey].entries()) {
+        const commandLabel = `${label}.${typedKey}[${commandIndex}]`;
+        exactKeys(command, ["argv", "flags", "path"], commandLabel);
+        validateStringArray(command.argv, `${commandLabel}.argv`, { maxItems: 256, maxLength: 4096 });
+        validateStringArray(command.flags, `${commandLabel}.flags`, { maxItems: 1, maxLength: 32 });
+        safeTargetPath(command.path, `${commandLabel}.path`);
+        if (
+          command.argv.length < 1 ||
+          command.argv[0] !== command.path ||
+          !command.flags.every((flag) => flag === "privileged") ||
+          (typedKey === "exec_start_ex" && command.flags.length !== 0) ||
+          canonicalize(command.argv.join(" ")) !== canonicalize(unit[textKey][commandIndex])
+        ) {
+          fail(`${commandLabel} is not canonical`);
+        }
       }
     }
     if (unit.environment_files.length !== 0) fail(`${label}.environment_files must be empty`);
@@ -3658,6 +3683,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
     busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+    systemd_version: manifest.systemd_version,
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
     units: manifest.runtime_units,

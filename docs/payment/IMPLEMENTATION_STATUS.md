@@ -808,7 +808,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       directory before dropping privileges, so restarting CLN cannot silently
       create a fresh downstream generation.
       Live runtime evidence reads typed systemd D-Bus dependency arrays and
-      `TimeoutStopUSec`, `ExecStartPreEx`, `WatchdogUSec`, and
+      `TimeoutStopUSec`, `ExecStartEx`, `ExecStartPreEx`, `WatchdogUSec`, and
       `WatchdogTimestampMonotonic`, plus two typed manager
       `ServiceWatchdogs` passes. Each watchdog pass binds the immediately
       following boot uptime, requires a fresh timestamp, and rejects rollback;
@@ -950,7 +950,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v7 accepts
+      credentials to one machine/boot/invocation. Runtime-evidence v8 binds
+      render-plan/manifest schema v2, request and host to exact
+      `systemd 255 (255.4-1ubuntu8.15)` and accepts
       only the closed files-authoritative NSS sequences `files` and
       `files systemd` (the latter only as the same second-position fallback for
       both passwd and group), binds `/etc/nsswitch.conf`, `/etc/passwd` and
@@ -976,7 +978,12 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       and requires the exact empty `as`, `a(ss)`, `a(ss)`, `a(say)` and
       `a(say)` arrays. All five are request-bound and repeated in live,
       stopped-edge and stopped-relay final sealing; systemd 255's
-      `[unprintable]` text is never treated as empty.
+      `[unprintable]` text is never treated as empty. The same typed Service
+      passes now bind `ExecStartEx` and `ExecStartPreEx` with exact
+      `a(sasasttttuii)` path/argv/flags; only the guard/preflight token-unlink
+      precommands are privileged. Scalar command records are strict
+      systemd-255 redundancy with one-newline delimiters and coherent
+      running/completed/stopped metadata.
       The release closure is the collector, rendered gate and
       deployment-template gate from one frozen commit; tests exact-match all
       local and `node:` specifiers and reject alternate dynamic, CommonJS and

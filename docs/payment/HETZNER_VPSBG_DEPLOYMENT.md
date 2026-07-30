@@ -506,7 +506,7 @@ including a publisher private key, fail closed.
 requires the unit to remain inactive/dead and the
 `RELAY-SELECTION-RESOLVED` activation sentinel to be absent; for a resolved
 unit it additionally seals the binary, both manifests, config and fragment.
-The v3 stopped-relay schema reads systemd Conditions only through busctl's
+The v4 stopped-relay schema reads systemd Conditions only through busctl's
 typed `a(sbbsi)` value. It also reads `ImportCredential` as an exact empty `as`
 array, `LoadCredential` and `LoadCredentialEncrypted` as exact empty `a(ss)`
 arrays, and `SetCredential` and `SetCredentialEncrypted` as exact empty
@@ -518,7 +518,11 @@ properties as `[unprintable]` even when their typed D-Bus arrays are empty;
 systemd 255's Service interface additionally exposes `ImportCredential` as
 typed `as`, so the reviewed closed set includes it too. The request binds the
 exact Unit, Service and Manager property lists, and initial/final snapshots
-must agree.
+must agree. Service snapshots additionally require typed `ExecStartEx` and
+`ExecStartPreEx` with the exact `a(sasasttttuii)` signature, approved
+path/argv/flags and stopped-state scalar redundancy. The exact render plan,
+manifest, request and host first line must be
+`systemd 255 (255.4-1ubuntu8.15)`.
 This schema also binds the private
 config to its real consumer and 0700 final parent, and seals both file and
 descriptor-walk fingerprints before the final typed-credential,
@@ -1062,20 +1066,20 @@ every static `node:` builtin and rejects dynamic, CommonJS and worker loader
 entry points. Transfer and independently hash all three into the same
 root-owned, non-group/world-writable directory; copying a new collector beside
 an older gate, or copying only the collector, is forbidden. Runtime-evidence
-v7 invalidates v6 runtime requests; live v7,
-stopped-edge v4 and stopped-relay v3 invalidate v6 live, v3 stopped-edge and
-v2 stopped-relay receipts respectively. Rerender the bundle and recollect
+v8 invalidates v7 runtime requests; live v8,
+stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
+stopped-relay v3 receipts respectively. Rerender the bundle and recollect
 evidence rather than editing JSON.
 
 For collection, create a canonical owner-only evidence directory outside the
 closed rendered bundle and outside the three-script source directory, then use
 a new path such as
-`/root/bitcoinpir-evidence/<deployment-id>/stopped-directory-relay-v3.json` for
+`/root/bitcoinpir-evidence/<deployment-id>/stopped-directory-relay-v4.json` for
 `--output`. The collector requests mode `0600`, uses no-overwrite creation and
 refuses an existing path; the operator must then confirm a root-owned,
 single-link regular file at exact mode `0600`. Hash the complete file
 immediately, transfer that digest out of band, and run the matching offline
-verifier against the same v7 request. Do
+verifier against the same v8 request. Do
 not place the receipt inside the rendered bundle, where it would violate the
 closed bundle tree, and do not reuse a failed or partial output pathname.
 

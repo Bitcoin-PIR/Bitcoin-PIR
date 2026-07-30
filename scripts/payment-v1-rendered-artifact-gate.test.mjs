@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  REVIEWED_SYSTEMD_VERSION,
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   canonicalJson,
   computeApprovedPlanSha256,
@@ -288,7 +289,8 @@ function makeEdgeFixture(t) {
         uid: 0,
       },
     ],
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [
       {
         gid: 730,
@@ -449,7 +451,8 @@ function makeIntegratedCaddySourceFairFixture(t) {
         uid: 0,
       },
     ],
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [
       {
         gid: 732,
@@ -683,7 +686,8 @@ function makeIssuerFixture(t) {
         uid: 0,
       };
     }),
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [
       { gid: 734, group_name: "bitcoinpir-cln-guard", uid: 735, unit_name: "bitcoinpir-cln-rpc-guard.service", user_name: "bitcoinpir-cln-rpc-guard" },
       { gid: 734, group_name: "bitcoinpir-cln-guard", uid: 733, unit_name: "bitcoinpir-core-lightning.service", user_name: "bitcoinpir-lightning" },
@@ -788,7 +792,8 @@ function makeProviderFixture(t, { direct = false, noStandardCashu = false } = {}
           : "/etc/systemd/system/bitcoinpir-provider.service",
       uid: 0,
     }],
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{
       gid: 741,
       group_name: direct
@@ -855,7 +860,8 @@ function makeRollbackFixture(t) {
       target_path: "/etc/systemd/system/bitcoinpir-rollback-authority.service",
       uid: 0,
     }],
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{ gid: 743, group_name: "bitcoinpir-rollback-authority", uid: 742, unit_name: "bitcoinpir-rollback-authority.service", user_name: "bitcoinpir-rollback-authority" }],
   };
   return { ...fixture, plan };
@@ -919,7 +925,8 @@ function makeRollbackEdgeFixture(t) {
         uid: 0,
       },
     ],
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{
       gid: 730,
       group_name: "bitcoinpir-payment-edge",
@@ -1027,7 +1034,8 @@ function makeDirectoryRelayFixture(t) {
       },
     ],
     relay_selection_sha256: hashFile(join(fixture.sourceRoot, RELAY_SELECTION)),
-    schema_version: 1,
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{
       gid: 52952,
       group_name: "bitcoinpir-directory-relay",
@@ -1171,7 +1179,8 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 7);
+  assert.equal(first.request.schema_version, 8);
+  assert.equal(first.request.systemd_version, REVIEWED_SYSTEMD_VERSION);
   assert.deepEqual(first.request.busctl_unit_properties, [
     "After",
     "Before",
@@ -1181,6 +1190,7 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   ]);
   assert.deepEqual(first.request.busctl_manager_properties, ["ServiceWatchdogs"]);
   assert.deepEqual(first.request.busctl_service_properties, [
+    "ExecStartEx",
     "ExecStartPreEx",
     "ImportCredential",
     "LoadCredential",
@@ -1222,6 +1232,43 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
   assert.deepEqual(
     readdirSync(fixture.bundleRoot, { recursive: true }).sort(),
     readdirSync(secondRoot, { recursive: true }).sort(),
+  );
+});
+
+test("render plans and manifests fail closed on old schemas or another systemd build", (t) => {
+  const oldPlan = makeEdgeFixture(t);
+  oldPlan.plan.schema_version = 1;
+  assert.throws(
+    () => renderFixture(oldPlan),
+    /render plan schema_version must equal 2/u,
+  );
+
+  const foreignPlan = makeEdgeFixture(t);
+  foreignPlan.plan.systemd_version = "systemd 255 (255.4-1ubuntu8.16)";
+  assert.throws(
+    () => renderFixture(foreignPlan),
+    /render plan systemd_version must equal systemd 255 \(255\.4-1ubuntu8\.15\)/u,
+  );
+
+  const model = renderFixture(makeEdgeFixture(t));
+  const oldManifest = clone(model.manifest);
+  oldManifest.schema_version = 1;
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      oldManifest,
+      hashBytes(Buffer.from(canonicalJson(oldManifest))),
+    ),
+    /rendered manifest schema_version must equal 2/u,
+  );
+
+  const foreignManifest = clone(model.manifest);
+  foreignManifest.systemd_version = "systemd 255 (255.4-1ubuntu8.16)";
+  assert.throws(
+    () => runtimeRequestFromManifest(
+      foreignManifest,
+      hashBytes(Buffer.from(canonicalJson(foreignManifest))),
+    ),
+    /rendered manifest systemd_version must equal systemd 255 \(255\.4-1ubuntu8\.15\)/u,
   );
 });
 
@@ -2588,6 +2635,9 @@ test("issuer Lightning preflight config and dynamic receipt ownership are closed
     "--config-reader-expected-uid 737",
     "--config-reader-expected-uid 738",
   );
+  const readerUidIndex = unit.exec_start_ex[0].argv.indexOf("737");
+  assert.notEqual(readerUidIndex, -1);
+  unit.exec_start_ex[0].argv[readerUidIndex] = "738";
   assert.throws(
     () => runtimeRequestFromManifest(manifest, hashBytes(Buffer.from(canonicalJson(manifest)))),
     /bind --config-reader-expected-uid to 737/,
