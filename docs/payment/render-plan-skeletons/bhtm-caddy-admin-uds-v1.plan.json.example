@@ -1,5 +1,7 @@
 {
   "candidate": {
+    "adapted_json_sha256": "INVALID_REPLACE_WITH_CANONICAL_ADAPTED_JSON_SHA256",
+    "adapted_json_size": "INVALID_REPLACE_WITH_CANONICAL_ADAPTED_JSON_SIZE",
     "binary": {
       "gid": 0,
       "mode": "0755",

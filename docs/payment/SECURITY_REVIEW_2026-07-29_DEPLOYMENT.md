@@ -286,10 +286,16 @@ two parts of the existing-root-Caddy TCB: its admin endpoint and implicit
 stdout/stderr-to-journald path. It derives only an
 exact config/unit candidate from exact old bytes, rejects Caddy imports and
 environment indirection, strips `--environ`, pins the independently inventoried
-production Caddy v2.11.4 binary plus Node v22.22.2, probe and `setpriv`, and
+production Caddy v2.11.4 binary plus the admin-UDS gate, Node v22.22.2, probe
+and `setpriv`, and
 forces effective `LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null` and
 `StandardError=null`. The adapted
 JSON privacy gate rejects explicit global, access and request-scoped log sinks.
+The cold candidate now binds the strict-parsed canonical adapted JSON digest
+and size, and a committed root `/config/` readback must reproduce that digest.
+The validation-only gate does not invoke Caddy; a future cold executor must run
+the plan-pinned binary against the exact candidate rather than accept an
+unproven caller-supplied adapter artifact.
 It requires a cold new systemd generation before a root-owned `0700` runtime
 directory can exist. The isolation claim covers only capability-free
 unprivileged non-root processes; UID 0 and `CAP_DAC_OVERRIDE` remain trusted.
@@ -321,7 +327,12 @@ canonical committed admin-UDS receipt whose hardened binary/config/unit and
 InvocationID equal its target preimage; it cannot perform that cold migration
 itself. Its executor now revalidates the full canonical hardening plan/receipt,
 pins canonical adapted JSON, and repeats fresh descriptor-sealed UDS/root/UID/
-TCP/boot/generation probes before exchange and after reload/health. It also
+TCP/boot/generation probes before exchange and after reload/health. Live root
+readback must equal the hardening prerequisite's adapted digest before exchange
+and the overlay candidate's adapted digest after reload/health. Recovery may
+initially accept either reviewed digest across an ambiguous exchange/reload
+boundary, but must re-probe the exact outcome-specific generation before
+terminal state, cleanup or return. It also
 binds current effective unit properties (including no drop-ins, the approved
 `ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
 runtime-directory/identity/umask/core/swap/output settings) plus exact MainPID
@@ -351,8 +362,10 @@ predecessor is durable, and any failed abort-state publication preserves its
 candidate for explicit recovery. A durable committed receipt remains attached
 to later journal-finalization errors, while non-terminal cleanup errors remain
 secondary evidence rather than masking the initiating failure. The
-rename helper installs a parent-death signal before mutation; the tested delayed
-child cannot rename after its supervisor dies, while an already in-flight atomic
+rename helper protocol v4 verifies the expected supervisor PID and
+`/proc/<pid>/stat` start ticks before and after installing its parent-death
+signal; subreaper adoption therefore cannot authorize a delayed mutation. The
+tested delayed child cannot rename after its supervisor dies, while an already in-flight atomic
 rename remains subject to the exact-pair classification above. Real Linux fault
 tests cover open, partial/complete write,
 file fsync, rename, parent fsync, applied-then-error, parent death and repeated

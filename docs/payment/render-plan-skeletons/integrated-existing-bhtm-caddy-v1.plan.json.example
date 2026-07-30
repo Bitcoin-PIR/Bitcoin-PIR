@@ -95,6 +95,14 @@
     {
       "gid": 0,
       "mode": "0555",
+      "source_path": "scripts/payment-v1-caddy-admin-uds-probe.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
       "source_path": "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",

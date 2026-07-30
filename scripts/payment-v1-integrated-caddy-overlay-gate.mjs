@@ -626,6 +626,7 @@ function validateAdminUdsHardening(value, target) {
     value,
     [
       "admin_listen",
+      "adapted_json_sha256",
       "all_service_uids_denied",
       "approved_plan_sha256",
       "binary_sha256",
@@ -651,6 +652,10 @@ function validateAdminUdsHardening(value, target) {
     fail(`target.admin_uds_hardening.deployment_profile must equal ${ADMIN_UDS_PROFILE}`);
   }
   validateSlug(value.transaction_id, "target.admin_uds_hardening.transaction_id");
+  validateSha256(
+    value.adapted_json_sha256,
+    "target.admin_uds_hardening.adapted_json_sha256",
+  );
   validateSha256(value.approved_plan_sha256, "target.admin_uds_hardening.approved_plan_sha256");
   validateSha256(
     value.service_uid_inventory_sha256,
@@ -1387,7 +1392,13 @@ function validateCaddyRuntimeBoundary(value, label, plan, expectedBootId) {
   }
 }
 
-function validateAdminRuntimeEvidence(value, label, plan, expectedBootId) {
+function validateAdminRuntimeEvidence(
+  value,
+  label,
+  plan,
+  expectedBootId,
+  expectedAdaptedJsonSha256,
+) {
   exactKeys(
     value,
     [
@@ -1451,6 +1462,9 @@ function validateAdminRuntimeEvidence(value, label, plan, expectedBootId) {
     fail(`${label}.root_readback did not prove the active UDS config`);
   }
   validateSha256(value.root_readback.body_sha256, `${label}.root_readback.body_sha256`);
+  if (value.root_readback.body_sha256 !== expectedAdaptedJsonSha256) {
+    fail(`${label}.root_readback does not equal the reviewed active adapted JSON`);
+  }
   if (!Array.isArray(value.denied_service_uids) || value.denied_service_uids.length < 2) {
     fail(`${label}.denied_service_uids is incomplete`);
   }
@@ -1496,13 +1510,26 @@ function validateAdminRuntimeEvidence(value, label, plan, expectedBootId) {
   }
 }
 
-function validateReceiptSnapshot(snapshot, label, plan, expectedConfigSha256, expectedBootId) {
+function validateReceiptSnapshot(
+  snapshot,
+  label,
+  plan,
+  expectedConfigSha256,
+  expectedBootId,
+  expectedAdaptedJsonSha256,
+) {
   exactKeys(
     snapshot,
     ["admin_runtime", "binary", "config", "source_fair_generation", "target_generation", "unit_fragment"],
     label,
   );
-  validateAdminRuntimeEvidence(snapshot.admin_runtime, `${label}.admin_runtime`, plan, expectedBootId);
+  validateAdminRuntimeEvidence(
+    snapshot.admin_runtime,
+    `${label}.admin_runtime`,
+    plan,
+    expectedBootId,
+    expectedAdaptedJsonSha256,
+  );
   for (const [key, expected] of [
     ["binary", plan.target.binary],
     ["unit_fragment", plan.target.unit_fragment],
@@ -1549,6 +1576,7 @@ export function validateOverlayPreparedContext({ approvedPlanSha256, context, pl
     plan,
     plan.target.config_preimage.sha256,
     context.host.boot_id,
+    plan.target.admin_uds_hardening.adapted_json_sha256,
   );
   exactKeys(
     context.preparation,
@@ -1763,12 +1791,16 @@ export function validateOverlayReceipt({
   const expectedFinalSha = receipt.outcome === "committed"
     ? plan.managed_block.candidate_sha256
     : plan.target.config_preimage.sha256;
+  const expectedFinalAdaptedJsonSha256 = receipt.outcome === "committed"
+    ? plan.managed_block.candidate_adapted_json_sha256
+    : plan.target.admin_uds_hardening.adapted_json_sha256;
   validateReceiptSnapshot(
     receipt.after,
     "overlay receipt after",
     plan,
     expectedFinalSha,
     receipt.host.boot_id,
+    expectedFinalAdaptedJsonSha256,
   );
   if (
     BigInt(receipt.after.admin_runtime.monotonic_start_ns) <

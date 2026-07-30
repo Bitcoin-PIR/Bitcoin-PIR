@@ -242,6 +242,7 @@ function makePlan() {
     target: {
       admin_uds_hardening: {
         admin_listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+        adapted_json_sha256: "7".repeat(64),
         all_service_uids_denied: true,
         approved_plan_sha256: "9".repeat(64),
         binary_sha256: "5".repeat(64),
@@ -398,7 +399,7 @@ function afterConfig(plan, digest) {
   };
 }
 
-function adminRuntime(plan, start) {
+function adminRuntime(plan, start, adaptedJsonSha256) {
   const binary = plan.target.binary.path;
   return {
     boot_id: "22345678-1234-4234-9234-123456789abc",
@@ -446,7 +447,7 @@ function adminRuntime(plan, start) {
       start_time_ticks: "987654",
     },
     root_readback: {
-      body_sha256: "b".repeat(64),
+      body_sha256: adaptedJsonSha256,
       cap_eff: "0000000000000000",
       error: null,
       gid: 0,
@@ -488,8 +489,18 @@ function adminRuntime(plan, start) {
 
 function makeReceipt(plan, outcome = "committed") {
   const committed = outcome === "committed";
-  const beforeAdminRuntime = adminRuntime(plan, 3_000_000);
-  const afterAdminRuntime = adminRuntime(plan, 4_000_000);
+  const beforeAdminRuntime = adminRuntime(
+    plan,
+    3_000_000,
+    plan.target.admin_uds_hardening.adapted_json_sha256,
+  );
+  const afterAdminRuntime = adminRuntime(
+    plan,
+    4_000_000,
+    committed
+      ? plan.managed_block.candidate_adapted_json_sha256
+      : plan.target.admin_uds_hardening.adapted_json_sha256,
+  );
   const runtimeBefore = {
     boot_id: beforeAdminRuntime.boot_id,
     effective_unit: clone(beforeAdminRuntime.effective_unit),
@@ -812,6 +823,16 @@ for (const [label, mutate, expected] of [
     "capability-bearing admin denial",
     (receipt) => { receipt.after.admin_runtime.denied_service_uids[0].cap_eff = "0000000000000002"; },
     /not an unprivileged EACCES proof/,
+  ],
+  [
+    "unreviewed active adapted JSON",
+    (receipt) => { receipt.after.admin_runtime.root_readback.body_sha256 = "b".repeat(64); },
+    /does not equal the reviewed active adapted JSON/u,
+  ],
+  [
+    "unreviewed initial adapted JSON",
+    (receipt) => { receipt.before.admin_runtime.root_readback.body_sha256 = "b".repeat(64); },
+    /does not equal the reviewed active adapted JSON/u,
   ],
   [
     "effective unit drop-in",

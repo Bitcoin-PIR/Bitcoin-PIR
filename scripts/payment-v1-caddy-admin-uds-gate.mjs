@@ -19,6 +19,7 @@ export const ADMIN_PROBE_PATH =
   "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs";
 export const SETPRIV_PATH = "/usr/bin/setpriv";
 export const DAC_BOUNDARY = "capability-free-unprivileged-non-root-dac-only";
+export const MAX_ADAPTED_JSON_BYTES = 2 * 1024 * 1024;
 export const CADDY_IMAGE_INDEX =
   "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9";
 export const CADDY_AMD64_MANIFEST =
@@ -31,7 +32,7 @@ export const NODE_AMD64_MANIFEST =
   "sha256:868499d55378719bffa87b0ed1f099591823c029b543043c09c2483468e93201";
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
-const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_BYTES = MAX_ADAPTED_JSON_BYTES;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
@@ -597,8 +598,29 @@ function rejectRuntimeLogHandlers(value, path = "adapted") {
   }
 }
 
+function rejectUnsafeAdaptedJsonNumbers(value, path = "adapted") {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      fail(`${path} contains a non-finite JSON number`);
+    }
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      fail(`${path} contains an integer outside the interoperable safe range`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => rejectUnsafeAdaptedJsonNumbers(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!isPlainObject(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    rejectUnsafeAdaptedJsonNumbers(entry, `${path}.${key}`);
+  }
+}
+
 export function validateAdaptedCaddyPrivacy(adapted, expectedAdminListen = ADMIN_LISTEN) {
   if (!isPlainObject(adapted)) fail("adapted Caddy JSON must be an object");
+  rejectUnsafeAdaptedJsonNumbers(adapted);
   if (!isPlainObject(adapted.admin) || adapted.admin.listen !== expectedAdminListen) {
     fail(`adapted Caddy JSON admin.listen must equal ${expectedAdminListen}`);
   }
@@ -957,7 +979,28 @@ function validatePreimage(value) {
 }
 
 function validateCandidate(value) {
-  exactKeys(value, ["binary", "config", "unit", "unit_policy"], "candidate");
+  exactKeys(
+    value,
+    [
+      "adapted_json_sha256",
+      "adapted_json_size",
+      "binary",
+      "config",
+      "unit",
+      "unit_policy",
+    ],
+    "candidate",
+  );
+  validateHex64(value.adapted_json_sha256, "candidate.adapted_json_sha256");
+  validateDecimal(value.adapted_json_size, "candidate.adapted_json_size");
+  const adaptedJsonSize = Number(value.adapted_json_size);
+  if (
+    !Number.isSafeInteger(adaptedJsonSize) ||
+    adaptedJsonSize < 1 ||
+    adaptedJsonSize > MAX_TEXT_BYTES
+  ) {
+    fail(`candidate.adapted_json_size must be inside [1, ${MAX_TEXT_BYTES}]`);
+  }
   validateContentPin(value.binary, "candidate.binary", {
     modes: ["0555", "0755"],
     path: "/usr/bin/caddy",
@@ -1221,6 +1264,37 @@ export function buildCandidates({ configPreimageBytes, plan, unitPreimageBytes }
   return { config, unit };
 }
 
+export function canonicalizeAdaptedCaddyJson(
+  adaptedJsonBytes,
+  label = "candidate adapted JSON",
+) {
+  const buffer = Buffer.from(adaptedJsonBytes);
+  if (buffer.length < 1 || buffer.length > MAX_TEXT_BYTES) {
+    fail(`${label} size is outside [1, ${MAX_TEXT_BYTES}]`);
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    fail(`${label} must be valid UTF-8`);
+  }
+  const adapted = parseStrictJson(text, label);
+  validateAdaptedCaddyPrivacy(adapted);
+  return Buffer.from(canonicalJson(adapted), "utf8");
+}
+
+export function validateCandidateAdaptedJson({ adaptedJsonBytes, plan }) {
+  validatePlan(plan);
+  const canonical = canonicalizeAdaptedCaddyJson(adaptedJsonBytes);
+  if (String(canonical.length) !== plan.candidate.adapted_json_size) {
+    fail("candidate canonical adapted JSON does not match the approved size");
+  }
+  if (sha256(canonical) !== plan.candidate.adapted_json_sha256) {
+    fail("candidate canonical adapted JSON does not match the approved SHA-256");
+  }
+  return canonical;
+}
+
 function exactContentSnapshot(snapshot, pin, label) {
   validateSnapshot(snapshot, label, { modes: [pin.mode], path: pin.path });
   for (const key of ["gid", "mode", "path", "sha256", "size", "uid"]) {
@@ -1400,6 +1474,9 @@ export function validateCommittedReceipt({ approvedPlanSha256, plan, receipt, tr
   }
   exactKeys(receipt.admin.root_readback, ["body_sha256", "cap_eff", "gid", "groups", "listen", "path", "status", "transport", "uid"], "receipt.admin.root_readback");
   validateHex64(receipt.admin.root_readback.body_sha256, "receipt.admin.root_readback.body_sha256");
+  if (receipt.admin.root_readback.body_sha256 !== plan.candidate.adapted_json_sha256) {
+    fail("root readback canonical body SHA-256 does not match the approved adapted JSON");
+  }
   if (canonicalJson({ ...receipt.admin.root_readback, body_sha256: "x" }) !== canonicalJson({ body_sha256: "x", cap_eff: "0000000000000000", gid: 0, groups: [0], listen: ADMIN_LISTEN, path: "/config/", status: 200, transport: "unix", uid: 0 })) {
     fail("root readback must succeed over the exact Unix admin endpoint");
   }
@@ -1452,7 +1529,7 @@ function usage() {
   return [
     "usage:",
     "  payment-v1-caddy-admin-uds-gate.mjs digest-plan PLAN",
-    "  payment-v1-caddy-admin-uds-gate.mjs validate-plan PLAN CONFIG_PREIMAGE UNIT_PREIMAGE APPROVED_PLAN_SHA256",
+    "  payment-v1-caddy-admin-uds-gate.mjs validate-plan PLAN CONFIG_PREIMAGE UNIT_PREIMAGE ADAPTED_JSON APPROVED_PLAN_SHA256",
     "  payment-v1-caddy-admin-uds-gate.mjs validate-receipt PLAN RECEIPT APPROVED_PLAN_SHA256 TRUSTED_RECEIPT_SHA256",
   ].join("\n");
 }
@@ -1471,18 +1548,19 @@ function main(argv) {
     process.stdout.write(`${computeApprovedPlanSha256(plan)}\n`);
     return;
   }
-  if (argv[0] === "validate-plan" && argv.length === 5) {
+  if (argv[0] === "validate-plan" && argv.length === 6) {
     const plan = readJson(argv[1], "hardening plan");
     buildCandidates({
       configPreimageBytes: readFileSync(argv[2]),
       plan,
       unitPreimageBytes: readFileSync(argv[3]),
     });
-    validateHex64(argv[4], "externally approved plan SHA-256");
-    if (computeApprovedPlanSha256(plan) !== argv[4]) {
+    validateCandidateAdaptedJson({ adaptedJsonBytes: readFileSync(argv[4]), plan });
+    validateHex64(argv[5], "externally approved plan SHA-256");
+    if (computeApprovedPlanSha256(plan) !== argv[5]) {
       fail("hardening plan does not match the externally approved SHA-256");
     }
-    process.stdout.write(`caddy-admin-uds-plan=PASS sha256=${argv[4]}\n`);
+    process.stdout.write(`caddy-admin-uds-plan=PASS sha256=${argv[5]}\n`);
     return;
   }
   if (argv[0] === "validate-receipt" && argv.length === 5) {

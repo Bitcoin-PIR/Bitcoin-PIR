@@ -107,6 +107,16 @@ close only the implicit process-stream-to-journald path; they cannot neutralize
 an explicit file, network or syslog sink in Caddy JSON, so such a sink is an
 activation blocker.
 
+The approved candidate records both the SHA-256 and byte length of the
+admin-UDS gate's no-trailing-newline
+`canonicalizeAdaptedCaddyJson(caddyAdaptOutput)` bytes. Offline `validate-plan`
+canonicalizes the supplied adapter artifact, applies the privacy gate and
+requires that exact tuple. The committed receipt's root `/config/` readback is
+strictly parsed and canonicalized the same way, and its `body_sha256` must equal
+the approved candidate digest. Both the plan and live probe use the same
+2 MiB bound and reject non-interoperable unsafe integers. Hashing the raw
+adapter or HTTP response layout is not accepted evidence.
+
 Nulling both service streams intentionally removes Caddy startup, ACME and
 reverse-proxy diagnostics as well as request-correlating errors. Production
 operation therefore relies on systemd state, certificate-expiry alarms,
@@ -141,7 +151,9 @@ and demonstrates fail-closed behavior after intentionally widening the
 directory/socket modes. The same exact Caddy v2.11.4 adapter test proves that
 all 21 rejected non-canonical Unicode whitespace code points and both quoted
 directive syntaxes can introduce a real second admin directive before the
-closed-profile gate rejects them. CI additionally runs `systemd-analyze
+closed-profile gate rejects them. It also proves that the exact candidate's
+real adapter output and live UDS `/config/` readback have the same canonical
+JSON digest. CI additionally runs `systemd-analyze
 verify` against the byte-exact generated unit fixture.
 
 ## Cold maintenance transaction
@@ -153,8 +165,9 @@ The approved transaction is:
 1. Hold the exact single-use lock and re-read the approved old binary,
    Caddyfile, unit, active PID, `InvocationID`, and site health.
 2. Validate the deterministic candidates with the exact production Caddy
-   binary, require the canonical adapted JSON's exact UDS `admin.listen` and
-   digest, and run `systemd-analyze verify` on the candidate unit. Exclusively
+   binary, require the canonical adapted JSON's exact UDS `admin.listen`,
+   privacy policy, digest and size, and run `systemd-analyze verify` on the
+   candidate unit. Exclusively
    create and fsync exact old backups and both candidates.
 3. Stop `bhtm-caddy.service`. Prove `inactive/dead`, no MainPID, no admin socket,
    and connection refusal on both `127.0.0.1:2019` and `[::1]:2019`.
@@ -171,7 +184,7 @@ The approved transaction is:
 6. Require `NeedDaemonReload=no`, the exact main fragment, no drop-ins, no
    effective `CADDY_ADMIN`, exact effective `LimitCORE=0`, `MemorySwapMax=0`,
    `StandardOutput=null` and `StandardError=null`, root API `GET /config/`
-   success over the UDS,
+   success over the UDS with the same canonical adapted-JSON digest,
    root:root `0700` runtime directory, root:root `0200` socket, both TCP-2019
    probes refused, and `EACCES` from every non-root UID in the approved complete
    service inventory (including `pir` and `cloudflared`) after `setpriv` proves
@@ -255,6 +268,7 @@ node scripts/payment-v1-caddy-admin-uds-gate.mjs validate-plan \
   /absolute/private/plan.json \
   /absolute/private/old.Caddyfile \
   /absolute/private/old-bhtm-caddy.service \
+  /absolute/private/candidate-adapted.json \
   APPROVED_64_LOWER_HEX_PLAN_SHA256
 
 node scripts/payment-v1-caddy-admin-uds-gate.mjs validate-receipt \
@@ -264,5 +278,9 @@ node scripts/payment-v1-caddy-admin-uds-gate.mjs validate-receipt \
   TRUSTED_64_LOWER_HEX_RECEIPT_SHA256
 ```
 
-Neither command writes candidates or contacts systemd. A passing result is not
+Neither command writes candidates, invokes Caddy or contacts systemd. The
+adapted artifact must be produced by the plan-pinned Caddy binary from the
+exact candidate. The future cold executor must perform that operation itself
+and bind the same tuple; merely supplying an arbitrary JSON file to this
+read-only gate does not prove its provenance. A passing result is not
 deployment approval.

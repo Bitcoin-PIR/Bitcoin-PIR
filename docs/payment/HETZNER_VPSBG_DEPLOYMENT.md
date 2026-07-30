@@ -706,7 +706,7 @@ This cannot be performed by appending a Caddy site block or by reloading the
 old process: systemd creates the new runtime directory only for a new cold
 generation. The profile therefore requires exact old/new Caddyfile and unit
 pins, the exact independently inventoried production Caddy `v2.11.4` binary,
-exact Node `v22.22.2`, probe and `setpriv` pins, a same-boot privileged
+exact admin-UDS gate, Node `v22.22.2`, probe and `setpriv` pins, a same-boot privileged
 process/capability inventory, and complete service-UID/site inventories,
 stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
 and a new `InvocationID`. Committed evidence must include root API readback over
@@ -730,11 +730,13 @@ read-only and no transaction executor is yet approved. See
 `edge-hetzner-v1` for a host whose production edge is the existing root
 `bhtm-caddy.service` and `/etc/caddy/Caddyfile`. It is not a second edge to run
 beside `edge-hetzner-v1`. Its rendered bundle closes over the managed Caddy
-block, source-fair HAProxy config/unit, overlay gate/executor, a
+block, source-fair HAProxy config/unit, the admin-UDS gate/probe, overlay
+gate/executor, a
 content-addressed Linux `renameat2(RENAME_EXCHANGE)` helper and the helper's
 one-entry hash manifest. A separate overlay plan pins the exact Caddyfile
 preimage, Caddy binary and unit fragment, active PID/InvocationID/control-group
-generation, rendered block, helper, Node/gate/executor, TLS inputs, HAProxy
+generation, rendered block, helper, Node/`setpriv`, admin-UDS gate/probe,
+overlay gate/executor, TLS inputs, HAProxy
 bundle/runtime evidence and all four health probes.
 
 This profile deliberately does **not** claim that appending a block performs
@@ -754,9 +756,16 @@ MainPID argv/start ticks with no process `CADDY_ADMIN`. Environment values are
 not retained. Stable snapshots are repeated immediately before each exchange
 or reload, and recovery validates saved monotonic windows without rewriting
 them; corrupt historical evidence fails before any mutation. The executor also
-accepts only the approved canonical adapted-JSON digest with the exact UDS
-admin listener; any drift before exchange aborts, while post-exchange drift
-enters the exact rollback transaction.
+accepts only the approved canonical adapted-JSON digest and bounded size with the exact
+UDS admin listener, and must produce that artifact itself by running the
+plan-pinned Caddy binary against the exact candidate. Fresh live root readback
+must equal the hardened-preimage adapted digest before exchange and the overlay
+candidate adapted digest after reload and after health checks; pre-exchange
+drift aborts, while post-exchange drift enters the exact rollback transaction.
+Crash recovery initially admits either reviewed live digest only while the
+exchange/reload boundary is ambiguous; before returning a committed,
+rolled-back or aborted outcome it performs a new probe narrowed to that
+outcome's exact candidate or hardened-preimage digest.
 The exact adapted preimage and candidate JSON must contain no configured
 global/access/runtime log sink; null service streams close the implicit
 journald error path. Existing global options, ACME account/certificate state,
@@ -811,8 +820,11 @@ identical throughout execution and crash recovery. Final receipts are trusted
 only as root-owned, mode-0400, single-link files whose parent fsync has succeeded.
 
 The helper binds itself to the executor lifetime with Linux
-`PR_SET_PDEATHSIG(SIGKILL)` and verifies that its parent did not change before
-it can rename. A live executor waits for the direct helper to exit. If the
+`PR_SET_PDEATHSIG(SIGKILL)`. Helper protocol v4 receives the expected supervisor
+PID plus `/proc/<pid>/stat` start ticks and validates that exact process
+generation both before and after installing the death signal, so subreaper
+adoption cannot authorize a delayed mutation. A live executor waits for the
+direct helper to exit. If the
 helper applies `renameat2` but reports an error, or the executor dies around the
 helper call, the next step fsyncs the exact parent and performs two stable
 target/candidate classifications. An exact installed pair may continue and an

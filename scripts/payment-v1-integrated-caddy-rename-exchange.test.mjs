@@ -25,15 +25,28 @@ const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = join(REPOSITORY, "scripts/payment-v1-integrated-caddy-rename-exchange.c");
 const ROOT_LINUX = process.platform === "linux" && process.geteuid?.() === 0;
 
+function processStartTicks(pid) {
+  const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = text.lastIndexOf(")");
+  assert.ok(close > 0, `malformed /proc/${pid}/stat`);
+  const startTicks = text.slice(close + 2).trim().split(/\s+/u)[19];
+  assert.match(startTicks ?? "", /^[1-9][0-9]*$/u);
+  return startTicks;
+}
+
+function supervisingGenerationArguments() {
+  return [String(process.pid), processStartTicks(process.pid)];
+}
+
 function run(binary, left, right) {
-  return spawnSync(binary, ["--exchange", left, right], {
+  return spawnSync(binary, ["--exchange", ...supervisingGenerationArguments(), left, right], {
     encoding: "utf8",
     timeout: 10_000,
   });
 }
 
 function publish(binary, pending, final) {
-  return spawnSync(binary, ["--publish", pending, final], {
+  return spawnSync(binary, ["--publish", ...supervisingGenerationArguments(), pending, final], {
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -41,9 +54,13 @@ function publish(binary, pending, final) {
 
 function runAsync(binary, left, right) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(binary, ["--exchange", left, right], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    const child = spawn(
+      binary,
+      ["--exchange", ...supervisingGenerationArguments(), left, right],
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
     let stderr = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -67,7 +84,7 @@ test("Linux renameat2 helper exchanges regular entries and rejects aliasing boun
   chmodSync(binary, 0o555);
   const version = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: 10_000 });
   assert.equal(version.status, 0, version.stderr);
-  assert.equal(version.stdout, "bitcoinpir-payment-v1-rename-exchange 3\n");
+  assert.equal(version.stdout, "bitcoinpir-payment-v1-rename-exchange 4\n");
 
   const left = join(root, "left");
   const right = join(root, "right");
@@ -75,6 +92,26 @@ test("Linux renameat2 helper exchanges regular entries and rejects aliasing boun
   writeFileSync(right, "right-generation\n", { mode: 0o600 });
   let result = run(binary, left, right);
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(left, "utf8"), "right-generation\n");
+  assert.equal(readFileSync(right, "utf8"), "left-generation\n");
+
+  result = spawnSync(binary, ["--exchange", left, right], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /expected-parent-pid expected-parent-start-ticks/);
+  assert.equal(readFileSync(left, "utf8"), "right-generation\n");
+  assert.equal(readFileSync(right, "utf8"), "left-generation\n");
+
+  const wrongStartTicks = (BigInt(processStartTicks(process.pid)) + 1n).toString();
+  result = spawnSync(
+    binary,
+    ["--exchange", String(process.pid), wrongStartTicks, left, right],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /start ticks do not match/);
   assert.equal(readFileSync(left, "utf8"), "right-generation\n");
   assert.equal(readFileSync(right, "utf8"), "left-generation\n");
 
@@ -188,8 +225,11 @@ test("Linux helper exposes applied-then-error classification and cannot mutate a
       "-e",
       [
         'const { spawn } = require("node:child_process");',
-        'const { writeFileSync } = require("node:fs");',
-        "const child = spawn(process.argv[1], [\"--exchange\", process.argv[2], process.argv[3]], { stdio: \"ignore\" });",
+        'const { readFileSync, writeFileSync } = require("node:fs");',
+        'const stat = readFileSync("/proc/self/stat", "utf8");',
+        'const close = stat.lastIndexOf(")");',
+        'const ticks = stat.slice(close + 2).trim().split(/\\s+/)[19];',
+        "const child = spawn(process.argv[1], [\"--exchange\", String(process.pid), ticks, process.argv[2], process.argv[3]], { stdio: \"ignore\" });",
         "writeFileSync(process.argv[4], String(child.pid));",
         "child.unref();",
         "setInterval(() => {}, 1000);",
@@ -214,6 +254,124 @@ test("Linux helper exposes applied-then-error classification and cannot mutate a
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
   assert.equal(readFileSync(guardedLeft, "utf8"), "guarded-left-before\n");
   assert.equal(readFileSync(guardedRight, "utf8"), "guarded-right-before\n");
+
+  const subreaperLeft = join(root, "subreaper-left");
+  const subreaperRight = join(root, "subreaper-right");
+  writeFileSync(subreaperLeft, "subreaper-left-before\n", { mode: 0o600 });
+  writeFileSync(subreaperRight, "subreaper-right-before\n", { mode: 0o600 });
+  const subreaper = spawnSync(
+    "python3",
+    [
+      "-c",
+      String.raw`
+import ctypes
+import json
+import os
+import sys
+import time
+
+PR_SET_CHILD_SUBREAPER = 36
+helper, left, right = sys.argv[1:]
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER)")
+
+def start_ticks(pid):
+    with open(f"/proc/{pid}/stat", "r", encoding="ascii") as handle:
+        value = handle.read()
+    close = value.rfind(")")
+    if close < 1:
+        raise RuntimeError("malformed proc stat")
+    ticks = value[close + 2:].split()[19]
+    if not ticks.isdigit() or ticks.startswith("0"):
+        raise RuntimeError("malformed proc start ticks")
+    return ticks
+
+ready_r, ready_w = os.pipe()
+go_r, go_w = os.pipe()
+original_parent = os.fork()
+if original_parent == 0:
+    os.close(ready_r)
+    os.close(go_w)
+    expected_pid = os.getpid()
+    expected_ticks = start_ticks(expected_pid)
+    helper_pid = os.fork()
+    if helper_pid == 0:
+        os.close(ready_w)
+        gate = os.read(go_r, 1)
+        os.close(go_r)
+        if gate != b"G":
+            os._exit(125)
+        os.execv(
+            helper,
+            [helper, "--exchange", str(expected_pid), expected_ticks, left, right],
+        )
+    os.close(go_r)
+    os.write(
+        ready_w,
+        f"{helper_pid} {expected_pid} {expected_ticks}".encode("ascii"),
+    )
+    os.close(ready_w)
+    os._exit(0)
+
+os.close(ready_w)
+os.close(go_r)
+ready = os.read(ready_r, 4096).decode("ascii")
+os.close(ready_r)
+helper_pid, expected_pid, expected_ticks = ready.split()
+helper_pid = int(helper_pid)
+expected_pid = int(expected_pid)
+waited, parent_status = os.waitpid(original_parent, 0)
+if waited != original_parent or not os.WIFEXITED(parent_status) or os.WEXITSTATUS(parent_status) != 0:
+    raise RuntimeError("original helper parent did not exit cleanly")
+
+observed_ppid = None
+for _ in range(100):
+    with open(f"/proc/{helper_pid}/status", "r", encoding="ascii") as handle:
+        for line in handle:
+            if line.startswith("PPid:"):
+                observed_ppid = int(line.split()[1])
+                break
+    if observed_ppid == os.getpid():
+        break
+    time.sleep(0.01)
+if observed_ppid != os.getpid() or observed_ppid <= 1 or observed_ppid == expected_pid:
+    raise RuntimeError(
+        f"helper was not adopted by the live child subreaper: {observed_ppid}"
+    )
+
+os.write(go_w, b"G")
+os.close(go_w)
+waited, helper_status = os.waitpid(helper_pid, 0)
+if waited != helper_pid or not os.WIFEXITED(helper_status):
+    raise RuntimeError(f"helper did not reject normally: {helper_status}")
+helper_exit = os.WEXITSTATUS(helper_status)
+if helper_exit == 0:
+    raise RuntimeError("helper accepted its child-subreaper as the original parent")
+print(json.dumps({
+    "expected_parent_pid": expected_pid,
+    "expected_parent_start_ticks": expected_ticks,
+    "helper_exit": helper_exit,
+    "subreaper_pid": observed_ppid,
+}))
+`,
+      delayedBinary,
+      subreaperLeft,
+      subreaperRight,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(subreaper.status, 0, `${subreaper.stderr}\n${subreaper.stdout}`);
+  assert.match(
+    subreaper.stderr,
+    /current parent PID does not match the expected supervising generation/,
+  );
+  const subreaperEvidence = JSON.parse(subreaper.stdout);
+  assert.ok(subreaperEvidence.subreaper_pid > 1);
+  assert.notEqual(subreaperEvidence.subreaper_pid, subreaperEvidence.expected_parent_pid);
+  assert.notEqual(subreaperEvidence.helper_exit, 0);
+  assert.equal(readFileSync(subreaperLeft, "utf8"), "subreaper-left-before\n");
+  assert.equal(readFileSync(subreaperRight, "utf8"), "subreaper-right-before\n");
 });
 
 test("real Linux atomic publication recovers every open/write/fsync/rename boundary", {

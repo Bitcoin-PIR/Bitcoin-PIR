@@ -43,6 +43,8 @@ const INTEGRATED_CADDY_GATE =
   "scripts/payment-v1-integrated-caddy-overlay-gate.mjs";
 const CADDY_ADMIN_UDS_GATE =
   "scripts/payment-v1-caddy-admin-uds-gate.mjs";
+const CADDY_ADMIN_UDS_PROBE =
+  "scripts/payment-v1-caddy-admin-uds-probe.mjs";
 const INTEGRATED_CADDY_TRANSACTION =
   "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
 const INTEGRATED_CADDY_BLOCK =
@@ -282,6 +284,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
   copySource(fixture.sourceRoot, SOURCE_FAIR_UNIT);
   copySource(fixture.sourceRoot, SOURCE_FAIR_CONFIG);
   copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
+  copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
@@ -374,6 +377,15 @@ function makeIntegratedCaddySourceFairFixture(t) {
         source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE)),
         target_path:
           "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+        uid: 0,
+      },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: CADDY_ADMIN_UDS_PROBE,
+        source_sha256: hashFile(join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
         uid: 0,
       },
       {
@@ -994,6 +1006,15 @@ test("integrated existing-Caddy profile closes and proves its HAProxy socket bou
     ),
     true,
   );
+  assert.equal(
+    model.manifest.artifacts.some(
+      (artifact) =>
+        artifact.source_path === CADDY_ADMIN_UDS_PROBE &&
+        artifact.target_path ===
+          "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    ),
+    true,
+  );
   assert.deepEqual(
     model.request.runtime_paths.map(({ file_type, mode, target_path }) => ({
       file_type,
@@ -1050,6 +1071,155 @@ test("integrated existing-Caddy profile closes and proves its HAProxy socket bou
       artifact.target_path,
     );
   }
+});
+
+test("integrated admin gate rejects additional module dependencies", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const gatePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_GATE);
+  writeFileSync(
+    gatePath,
+    readFileSync(gatePath, "utf8").replace(
+      "export const PLAN_SCHEMA_VERSION = 1;",
+      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 1;',
+    ),
+  );
+  const gate = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_GATE,
+  );
+  gate.source_sha256 = hashFile(gatePath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /gate does not equal its exact reviewed source/u,
+  );
+});
+
+test("integrated overlay gate rejects added dependencies and semantic drift", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const gatePath = join(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
+  const original = readFileSync(gatePath, "utf8");
+  const gate = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_GATE,
+  );
+  for (const changed of [
+    original.replace(
+      "export const OVERLAY_PLAN_SCHEMA_VERSION = 1;",
+      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 1;',
+    ),
+    original.replace(
+      'export const OVERLAY_PROFILE = "integrated-existing-bhtm-caddy-v1";',
+      'export const OVERLAY_PROFILE = "unreviewed-overlay-profile";',
+    ),
+  ]) {
+    writeFileSync(gatePath, changed);
+    gate.source_sha256 = hashFile(gatePath);
+    assert.throws(
+      () => renderFixture(fixture),
+      /overlay gate does not equal its exact reviewed source/u,
+    );
+  }
+});
+
+test("integrated admin probe closes its exact descriptor-input bootstrap", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const probePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  writeFileSync(
+    probePath,
+    readFileSync(probePath, "utf8").replace(
+      'import { createHash } from "node:crypto";',
+      'import { createHash } from "node:unreviewed-crypto";',
+    ),
+  );
+  const probe = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_PROBE,
+  );
+  probe.source_sha256 = hashFile(probePath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /probe does not have its exact reviewed import header/u,
+  );
+});
+
+test("integrated admin probe rejects comment-separated dynamic, same-line static, and export-from imports", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const probePath = join(fixture.sourceRoot, CADDY_ADMIN_UDS_PROBE);
+  const expected = 'import { createHash } from "node:crypto";';
+  const original = readFileSync(probePath, "utf8");
+  const probe = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === CADDY_ADMIN_UDS_PROBE,
+  );
+  for (const injection of [
+    'await import/* comment */("./dynamic-unreviewed.mjs");',
+    '0; import staticUnreviewed from "./static-unreviewed.mjs";',
+    'export { default as unreviewed } from "./export-unreviewed.mjs";',
+  ]) {
+    writeFileSync(
+      probePath,
+      original.replace(
+        "const socketPath =",
+        `// ${expected}\n${injection}\n\nconst socketPath =`,
+      ),
+    );
+    probe.source_sha256 = hashFile(probePath);
+    assert.throws(
+      () => renderFixture(fixture),
+      /probe does not equal its exact reviewed source/u,
+      injection,
+    );
+  }
+});
+
+test("integrated transaction closes both local gate imports", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  const expected = 'from "./payment-v1-caddy-admin-uds-gate.mjs";';
+  writeFileSync(
+    executorPath,
+    readFileSync(executorPath, "utf8")
+      .replace(expected, 'from "./unreviewed-admin-gate.mjs";')
+      .replace(
+        "const MAX_FILE_BYTES =",
+        `// ${expected}\nconst MAX_FILE_BYTES =`,
+      ),
+  );
+  const executor = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_TRANSACTION,
+  );
+  executor.source_sha256 = hashFile(executorPath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /transaction executor does not have its exact reviewed import header/u,
+  );
+});
+
+test("integrated transaction helper digest must equal the render plan", (t) => {
+  const fixture = makeIntegratedCaddySourceFairFixture(t);
+  const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  const managedBlockPath = join(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
+  const approvedDigest = fixture.plan.placeholders.OVERLAY_EXCHANGE_SHA256;
+  const unreviewedDigest = `${approvedDigest[0] === "0" ? "1" : "0"}${approvedDigest.slice(1)}`;
+  writeFileSync(
+    executorPath,
+    readFileSync(executorPath, "utf8").replace(
+      "@OVERLAY_EXCHANGE_SHA256@",
+      unreviewedDigest,
+    ),
+  );
+  writeFileSync(
+    managedBlockPath,
+    `${readFileSync(managedBlockPath, "utf8")}# retain reviewed placeholder @OVERLAY_EXCHANGE_SHA256@\n`,
+  );
+  const executor = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_TRANSACTION,
+  );
+  executor.source_sha256 = hashFile(executorPath);
+  const managedBlock = fixture.plan.rendered_artifacts.find(
+    (artifact) => artifact.source_path === INTEGRATED_CADDY_BLOCK,
+  );
+  managedBlock.source_sha256 = hashFile(managedBlockPath);
+  assert.throws(
+    () => renderFixture(fixture),
+    /transaction executor helper digest differs from the render plan/u,
+  );
 });
 
 for (const directive of [

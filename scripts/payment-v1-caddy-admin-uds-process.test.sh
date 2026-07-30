@@ -6,6 +6,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repository=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 fixture="$script_directory/fixtures/payment-v1-caddy-admin-uds-process.Caddyfile"
 probe="$script_directory/payment-v1-caddy-admin-uds-probe.mjs"
+gate="$script_directory/payment-v1-caddy-admin-uds-gate.mjs"
 import_fixture="$script_directory/fixtures/payment-v1-caddy-admin-uds-import-main.Caddyfile"
 import_override="$script_directory/fixtures/payment-v1-caddy-admin-uds-import-override.Caddyfile"
 caddy_image="caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9"
@@ -24,9 +25,36 @@ trap cleanup EXIT HUP INT TERM
 
 test -f "$fixture"
 test -f "$probe"
+test -f "$gate"
 test -f "$import_fixture"
 test -f "$import_override"
 test -d "$repository/.git" || test -f "$repository/.git"
+gate_sha=$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));' "$gate")
+case "$gate_sha" in
+  *[!0-9a-f]*|"")
+    echo "caddy-admin-uds-process=FAIL: invalid gate SHA-256" >&2
+    exit 1
+    ;;
+esac
+if test "${#gate_sha}" -ne 64; then
+  echo "caddy-admin-uds-process=FAIL: invalid gate SHA-256 length" >&2
+  exit 1
+fi
+
+if BPIR_ADMIN_GATE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+  node "$probe" <"$gate" >/dev/null 2>&1; then
+  echo "caddy-admin-uds-process=FAIL: probe accepted a wrong gate digest" >&2
+  exit 1
+fi
+if BPIR_ADMIN_GATE_SHA256="$gate_sha" node "$probe" </dev/null >/dev/null 2>&1; then
+  echo "caddy-admin-uds-process=FAIL: probe accepted empty gate stdin" >&2
+  exit 1
+fi
+if dd if="$gate" bs=1 count=64 2>/dev/null \
+  | BPIR_ADMIN_GATE_SHA256="$gate_sha" node "$probe" >/dev/null 2>&1; then
+  echo "caddy-admin-uds-process=FAIL: probe accepted truncated gate stdin" >&2
+  exit 1
+fi
 
 BPIR_IMPORT_FIXTURE="$import_fixture" BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
   node --input-type=module -e '
@@ -112,6 +140,33 @@ BPIR_CADDY_IMAGE="$caddy_image" BPIR_GATE="$script_directory/payment-v1-caddy-ad
     }
   '
 
+# Canonicalize the exact v2.11.4 adapter output now, then require the live UDS
+# readback from the same candidate to reproduce its digest and byte length.
+# shellcheck disable=SC2016 # JavaScript template literals are intentionally single-quoted.
+expected_adapted_tuple=$(
+  docker run --rm \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --cap-add NET_BIND_SERVICE \
+    --security-opt no-new-privileges \
+    --volume "$fixture:/etc/caddy/Caddyfile:ro" \
+    --entrypoint /usr/bin/caddy \
+    "$caddy_image" \
+    adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
+    | BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+      node --input-type=module -e '
+        import { pathToFileURL } from "node:url";
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        const { canonicalizeAdaptedCaddyJson, sha256 } =
+          await import(pathToFileURL(process.env.BPIR_GATE));
+        const canonical = canonicalizeAdaptedCaddyJson(Buffer.concat(chunks), "real Caddy adapted JSON");
+        process.stdout.write(`${sha256(canonical)}:${canonical.length}`);
+      '
+)
+test -n "$expected_adapted_tuple"
+
 docker volume create "$volume" >/dev/null
 test "$(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges "$node_image" node --version)" = "v22.22.2"
 docker run --detach \
@@ -155,15 +210,22 @@ if docker logs "$container" 2>&1 | grep -F -e BPIR_LOG_SECRET_SENTINEL -e "$log_
 fi
 test "$(docker exec "$container" sh -c 'awk '\''$2 ~ /:07E3$/ && $4 == "0A" {count++} END {print count+0}'\'' /proc/net/tcp /proc/net/tcp6')" = "0"
 test "$(docker exec "$container" curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18080/)" = "bitcoinpir-caddy-admin-uds-ok"
+# shellcheck disable=SC2016 # JavaScript template literals are intentionally single-quoted.
 docker exec "$container" curl --fail --silent --show-error --max-time 3 \
     --unix-socket "$socket" http://localhost/config/ \
-  | BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
+  | BPIR_EXPECTED_ADAPTED_TUPLE="$expected_adapted_tuple" \
+    BPIR_GATE="$script_directory/payment-v1-caddy-admin-uds-gate.mjs" \
     node --input-type=module -e '
       import { pathToFileURL } from "node:url";
       const chunks = [];
       for await (const chunk of process.stdin) chunks.push(chunk);
-      const { validateAdaptedCaddyPrivacy } = await import(pathToFileURL(process.env.BPIR_GATE));
-      validateAdaptedCaddyPrivacy(JSON.parse(Buffer.concat(chunks)));
+      const { canonicalizeAdaptedCaddyJson, sha256 } =
+        await import(pathToFileURL(process.env.BPIR_GATE));
+      const canonical = canonicalizeAdaptedCaddyJson(Buffer.concat(chunks), "live Caddy admin readback");
+      const observed = `${sha256(canonical)}:${canonical.length}`;
+      if (observed !== process.env.BPIR_EXPECTED_ADAPTED_TUPLE) {
+        throw new Error("live Caddy admin readback drifted from the exact candidate adapter output");
+      }
     '
 
 docker run --rm \
@@ -206,10 +268,13 @@ docker run --rm \
   --security-opt no-new-privileges \
   --volume "$volume:/run/bitcoinpir-caddy-admin" \
   --volume "$probe:/probe.mjs:ro" \
+  --volume "$gate:/gate.mjs:ro" \
+  --env "BPIR_ADMIN_GATE_SHA256=$gate_sha" \
   --env BPIR_EXPECT_ADMIN_PROBE=root-readback \
   --env BPIR_ADMIN_PROBE_LABEL=root \
+  --entrypoint /bin/sh \
   "$node_image" \
-  node /probe.mjs
+  -ec 'exec node /probe.mjs < /gate.mjs'
 
 for identity in \
   cloudflared:62901 \
@@ -229,10 +294,13 @@ do
     --user "$uid:$uid" \
     --volume "$volume:/run/bitcoinpir-caddy-admin" \
     --volume "$probe:/probe.mjs:ro" \
+    --volume "$gate:/gate.mjs:ro" \
+    --env "BPIR_ADMIN_GATE_SHA256=$gate_sha" \
     --env BPIR_EXPECT_ADMIN_PROBE=EACCES \
     --env "BPIR_ADMIN_PROBE_LABEL=$name" \
+    --entrypoint /bin/sh \
     "$node_image" \
-    node /probe.mjs
+    -ec 'exec node /probe.mjs < /gate.mjs'
 done
 
 if docker exec "$container" curl --fail --silent --max-time 1 http://127.0.0.1:2019/config/ >/dev/null 2>&1; then
@@ -261,14 +329,17 @@ docker run --rm \
   --security-opt no-new-privileges \
   --volume "$volume:/run/bitcoinpir-caddy-admin" \
   --volume "$probe:/probe.mjs:ro" \
+  --volume "$gate:/gate.mjs:ro" \
+  --env "BPIR_ADMIN_GATE_SHA256=$gate_sha" \
   --env BPIR_EXPECT_ADMIN_PROBE=root-readback \
   --env BPIR_ADMIN_PROBE_LABEL=root-after-reload \
+  --entrypoint /bin/sh \
   "$node_image" \
-  node /probe.mjs
+  -ec 'exec node /probe.mjs < /gate.mjs'
 
 if docker logs "$container" 2>&1 | grep -F -e BPIR_LOG_SECRET_SENTINEL -e "$log_sentinel" >/dev/null; then
   echo "caddy-admin-uds-process=FAIL: reload leaked service environment to logs" >&2
   exit 1
 fi
 
-echo "caddy-admin-uds-process=PASS caddy=v2.11.4 node=v22.22.2 root=readback nonroot=EACCES tcp2019=absent reload=uds environ-log=absent import-override=proven-and-rejected unicode-and-quoted-admin=proven-and-rejected"
+echo "caddy-admin-uds-process=PASS caddy=v2.11.4 node=v22.22.2 root=readback adapted-canonical=exact nonroot=EACCES tcp2019=absent reload=uds environ-log=absent import-override=proven-and-rejected unicode-and-quoted-admin=proven-and-rejected"

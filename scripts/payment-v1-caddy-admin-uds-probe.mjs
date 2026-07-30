@@ -4,6 +4,41 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
 
+const MAX_GATE_SOURCE_BYTES = 8 * 1024 * 1024;
+const expectedGateSha256 = process.env.BPIR_ADMIN_GATE_SHA256;
+if (!/^[0-9a-f]{64}$/u.test(expectedGateSha256 ?? "")) {
+  throw new Error("BPIR_ADMIN_GATE_SHA256 must be one lowercase SHA-256 digest");
+}
+const gateChunks = [];
+let gateSize = 0;
+for await (const chunk of process.stdin) {
+  gateSize += chunk.length;
+  if (gateSize > MAX_GATE_SOURCE_BYTES) {
+    throw new Error(`admin gate source exceeded ${MAX_GATE_SOURCE_BYTES} bytes`);
+  }
+  gateChunks.push(chunk);
+}
+if (gateSize === 0) throw new Error("admin gate source stdin was empty");
+const gateSource = Buffer.concat(gateChunks);
+const observedGateSha256 = createHash("sha256").update(gateSource).digest("hex");
+if (observedGateSha256 !== expectedGateSha256) {
+  throw new Error("admin gate source stdin did not match BPIR_ADMIN_GATE_SHA256");
+}
+new TextDecoder("utf-8", { fatal: true }).decode(gateSource);
+const {
+  MAX_ADAPTED_JSON_BYTES,
+  canonicalizeAdaptedCaddyJson,
+  sha256,
+} = await import(`data:text/javascript;base64,${gateSource.toString("base64")}`);
+if (
+  !Number.isSafeInteger(MAX_ADAPTED_JSON_BYTES) ||
+  MAX_ADAPTED_JSON_BYTES < 1 ||
+  typeof canonicalizeAdaptedCaddyJson !== "function" ||
+  typeof sha256 !== "function"
+) {
+  throw new Error("admin gate source did not export the exact probe interface");
+}
+
 const socketPath = "/run/bitcoinpir-caddy-admin/admin.sock";
 const expected = process.env.BPIR_EXPECT_ADMIN_PROBE;
 const label = process.env.BPIR_ADMIN_PROBE_LABEL ?? "unspecified";
@@ -56,8 +91,10 @@ await new Promise((resolve, reject) => {
       let size = 0;
       response.on("data", (chunk) => {
         size += chunk.length;
-        if (size > 1_048_576) {
-          response.destroy(new Error("admin readback exceeded 1 MiB"));
+        if (size > MAX_ADAPTED_JSON_BYTES) {
+          response.destroy(
+            new Error(`admin readback exceeded ${MAX_ADAPTED_JSON_BYTES} bytes`),
+          );
           return;
         }
         chunks.push(chunk);
@@ -72,21 +109,17 @@ await new Promise((resolve, reject) => {
           return;
         }
         const body = Buffer.concat(chunks);
-        let config;
+        let canonical;
         try {
-          config = JSON.parse(body.toString("utf8"));
+          canonical = canonicalizeAdaptedCaddyJson(body, "root admin readback");
         } catch (error) {
-          reject(new Error(`root admin readback was not JSON: ${error.message}`));
-          return;
-        }
-        if (config?.admin?.listen !== "unix//run/bitcoinpir-caddy-admin/admin.sock|0200") {
-          reject(new Error("root admin readback did not bind the exact Unix endpoint"));
+          reject(new Error(`root admin readback was not approved canonical JSON: ${error.message}`));
           return;
         }
         writeResult({
-          bodySha256: createHash("sha256").update(body).digest("hex"),
+          bodySha256: sha256(canonical),
           error: null,
-          listen: config.admin.listen,
+          listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
           status: 200,
           transport: "unix",
         });

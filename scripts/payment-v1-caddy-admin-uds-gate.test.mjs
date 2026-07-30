@@ -29,6 +29,7 @@ import {
   sha256,
   validateCommittedReceipt,
   validateAdaptedCaddyPrivacy,
+  validateCandidateAdaptedJson,
   validateHardenedCaddyfile,
   validateHardenedUnit,
   validatePlan,
@@ -83,6 +84,11 @@ TimeoutStopSec=5s
 [Install]
 WantedBy=multi-user.target
 `, "utf8");
+const CANDIDATE_ADAPTED = {
+  admin: { listen: ADMIN_LISTEN },
+  apps: { http: { servers: { srv0: { listen: [":443"], routes: [] } } } },
+};
+const CANDIDATE_ADAPTED_BYTES = Buffer.from(canonicalJson(CANDIDATE_ADAPTED), "utf8");
 
 function snapshot(path, bytes, mode, seed) {
   return {
@@ -157,6 +163,8 @@ function fixture() {
   };
   const plan = {
     candidate: {
+      adapted_json_sha256: sha256(CANDIDATE_ADAPTED_BYTES),
+      adapted_json_size: String(CANDIDATE_ADAPTED_BYTES.length),
       binary: {
         gid: 0,
         mode: "0755",
@@ -370,7 +378,7 @@ function receiptFixture(plan) {
         uid: entry.uid,
       })),
       root_readback: {
-        body_sha256: "b".repeat(64),
+        body_sha256: plan.candidate.adapted_json_sha256,
         cap_eff: "0000000000000000",
         gid: 0,
         groups: [0],
@@ -442,6 +450,10 @@ test("exact preimages construct only the reviewed config and unit hardening", ()
   const built = buildCandidates({ configPreimageBytes: CONFIG, plan, unitPreimageBytes: UNIT });
   assert.deepEqual(built.config, candidateConfig);
   assert.deepEqual(built.unit, candidateUnit);
+  assert.deepEqual(
+    validateCandidateAdaptedJson({ adaptedJsonBytes: CANDIDATE_ADAPTED_BYTES, plan }),
+    CANDIDATE_ADAPTED_BYTES,
+  );
   const oldSites = CONFIG.toString("utf8").slice(CONFIG.toString("utf8").indexOf("one.example.invalid"));
   const newSites = candidateConfig
     .toString("utf8")
@@ -506,6 +518,47 @@ test("adapted Caddy privacy gate rejects configured and request-scoped log sinks
       apps: { http: { servers: { srv0: { routes: [{ handle: [{ handler: "log_append" }] }] } } } },
     }),
     /runtime log handler/u,
+  );
+  assert.throws(
+    () => validateAdaptedCaddyPrivacy({ ...base, unsafe_integer: 9_007_199_254_740_992 }),
+    /integer outside the interoperable safe range/u,
+  );
+
+  const { plan } = fixture();
+  const formatted = Buffer.from(`${JSON.stringify(CANDIDATE_ADAPTED, null, 2)}\n`, "utf8");
+  assert.deepEqual(
+    validateCandidateAdaptedJson({ adaptedJsonBytes: formatted, plan }),
+    CANDIDATE_ADAPTED_BYTES,
+  );
+  const digestDriftBytes = Buffer.from(
+    canonicalJson({ ...CANDIDATE_ADAPTED, apps: {} }),
+    "utf8",
+  );
+  const digestDriftPlan = structuredClone(plan);
+  digestDriftPlan.candidate.adapted_json_size = String(digestDriftBytes.length);
+  assert.throws(
+    () => validateCandidateAdaptedJson({
+      adaptedJsonBytes: digestDriftBytes,
+      plan: digestDriftPlan,
+    }),
+    /approved SHA-256/u,
+  );
+  const logging = { ...CANDIDATE_ADAPTED, logging: { logs: { default: {} } } };
+  const loggingBytes = Buffer.from(canonicalJson(logging), "utf8");
+  const loggingPlan = structuredClone(plan);
+  loggingPlan.candidate.adapted_json_sha256 = sha256(loggingBytes);
+  loggingPlan.candidate.adapted_json_size = String(loggingBytes.length);
+  assert.throws(
+    () => validateCandidateAdaptedJson({ adaptedJsonBytes: loggingBytes, plan: loggingPlan }),
+    /global logging sink/u,
+  );
+  const unsafeIntegerBytes = Buffer.from(
+    `{"admin":{"listen":"${ADMIN_LISTEN}"},"unsafe_integer":9007199254740993}`,
+    "utf8",
+  );
+  assert.throws(
+    () => validateCandidateAdaptedJson({ adaptedJsonBytes: unsafeIntegerBytes, plan }),
+    /integer outside the interoperable safe range/u,
   );
 });
 
@@ -646,6 +699,7 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
     [(plan) => { plan.transaction.automatic_rollback_after_ambiguous_start = true; }, /must equal false/u],
+    [(plan) => { plan.candidate.adapted_json_size = "0"; }, /must be inside/u],
   ]) {
     const { plan } = fixture();
     mutate(plan);
@@ -719,6 +773,10 @@ test("receipt rejects warm generation, non-root access, TCP admin, socket drift 
     [
       (receipt) => { receipt.activation.properties.LimitCORE = "infinity"; },
       /systemd properties do not match/u,
+    ],
+    [
+      (receipt) => { receipt.admin.root_readback.body_sha256 = "f".repeat(64); },
+      /approved adapted JSON/u,
     ],
     [
       (receipt) => { receipt.outcome = "outcome-unknown"; },

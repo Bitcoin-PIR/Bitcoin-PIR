@@ -280,6 +280,7 @@
   "target": {
     "admin_uds_hardening": {
       "admin_listen": "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+      "adapted_json_sha256": "INVALID_REPLACE_WITH_HARDENED_CANONICAL_ADAPTED_JSON_SHA256",
       "all_service_uids_denied": true,
       "approved_plan_sha256": "INVALID_REPLACE_WITH_APPROVED_ADMIN_UDS_PLAN_SHA256",
       "binary_sha256": "INVALID_REPLACE_WITH_HARDENED_CADDY_BINARY_SHA256",

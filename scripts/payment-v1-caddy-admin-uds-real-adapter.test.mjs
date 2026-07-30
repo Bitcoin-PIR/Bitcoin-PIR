@@ -25,6 +25,7 @@ function inodePin(path) {
 }
 
 const nodePin = inodePin(process.execPath);
+const gatePin = inodePin("/work/scripts/payment-v1-caddy-admin-uds-gate.mjs");
 const probePin = inodePin("/work/scripts/payment-v1-caddy-admin-uds-probe.mjs");
 const setprivPin = inodePin("/usr/bin/setpriv");
 const mode = process.env.BPIR_REAL_ADAPTER_MODE ?? "good";
@@ -32,6 +33,7 @@ const mode = process.env.BPIR_REAL_ADAPTER_MODE ?? "good";
 if (mode === "good") {
   const root = runPinnedAdminProbe({
     expected: "root-readback",
+    gatePin,
     gid: 0,
     label: "root-real-adapter",
     nodePin,
@@ -44,6 +46,7 @@ if (mode === "good") {
   assert.equal(root.listen, "unix//run/bitcoinpir-caddy-admin/admin.sock|0200");
   const denied = runPinnedAdminProbe({
     expected: "EACCES",
+    gatePin,
     gid: 62902,
     label: "pir-real-adapter",
     nodePin,
@@ -59,6 +62,7 @@ if (mode === "good") {
   assert.throws(
     () => runPinnedAdminProbe({
       expected: "EACCES",
+      gatePin,
       gid: 62902,
       label: "pir-real-adapter-drift",
       nodePin,

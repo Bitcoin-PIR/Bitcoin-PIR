@@ -41,8 +41,8 @@ import {
   ADMIN_SOCKET,
   DAC_BOUNDARY,
   canonicalJson as canonicalAdminUdsJson,
+  canonicalizeAdaptedCaddyJson,
   computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,
-  validateAdaptedCaddyPrivacy,
   validateCommittedReceipt as validateAdminUdsCommittedReceipt,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
@@ -283,10 +283,6 @@ function assertManifest(manifestBytes, helperPin) {
   }
 }
 
-function assertAdaptedAdminConfig(adapted) {
-  validateAdaptedCaddyPrivacy(adapted, ADMIN_LISTEN);
-}
-
 function parseCanonicalAdminUdsEvidence(bytes, label) {
   const buffer = Buffer.from(bytes);
   const value = parseStrictJson(buffer.toString("utf8"), label);
@@ -302,6 +298,7 @@ function assertAdminUdsHardeningEvidence(
   summary,
   adminProbePin,
   adminGatePin,
+  nodePin,
 ) {
   const hardeningPlan = parseCanonicalAdminUdsEvidence(planBytes, "Caddy admin UDS plan");
   const receipt = parseCanonicalAdminUdsEvidence(receiptBytes, "Caddy admin UDS receipt");
@@ -314,15 +311,17 @@ function assertAdminUdsHardeningEvidence(
     receipt,
     trustedReceiptSha256: summary.receipt.sha256,
   });
-  if (
-    hardeningPlan.runtime.probe.sha256 !== adminProbePin.sha256 ||
-    hardeningPlan.runtime.probe.size !== adminProbePin.size ||
-    hardeningPlan.runtime.probe.path !== adminProbePin.path
-  ) {
-    fail("overlay admin probe does not equal the approved hardening probe");
+  if (hardeningPlan.transaction_id !== summary.transaction_id) {
+    fail("Caddy admin UDS evidence transaction ID does not equal the overlay summary");
+  }
+  if (!same(hardeningPlan.runtime.probe, adminProbePin)) {
+    fail("overlay admin probe does not equal the exact approved hardening probe generation");
   }
   if (!same(hardeningPlan.runtime.gate, adminGatePin)) {
     fail("overlay admin UDS gate does not equal the exact approved hardening gate generation");
+  }
+  if (hardeningPlan.runtime.node_binary.sha256 !== nodePin.sha256) {
+    fail("overlay Node binary does not equal the approved hardening Node digest");
   }
   if (
     hardeningPlan.runtime.setpriv_binary.sha256 !== summary.setpriv_binary_sha256
@@ -336,6 +335,7 @@ function assertAdminUdsHardeningEvidence(
     fail("overlay service UID inventory digest does not equal the complete hardening inventory");
   }
   for (const [key, expected] of [
+    [hardeningPlan.candidate.adapted_json_sha256, summary.adapted_json_sha256],
     [hardeningPlan.candidate.binary.sha256, summary.binary_sha256],
     [hardeningPlan.candidate.config.sha256, summary.config_sha256],
     [hardeningPlan.candidate.unit.sha256, summary.unit_sha256],
@@ -373,7 +373,20 @@ function assertAdminRuntimePath(value, expected, label) {
   }
 }
 
-async function collectFreshAdminRuntime(plan, hardening, ops, label) {
+async function collectFreshAdminRuntime(
+  plan,
+  hardening,
+  ops,
+  label,
+  expectedAdaptedJsonSha256s,
+) {
+  if (
+    !Array.isArray(expectedAdaptedJsonSha256s) ||
+    expectedAdaptedJsonSha256s.length < 1 ||
+    expectedAdaptedJsonSha256s.some((digest) => !/^[0-9a-f]{64}$/u.test(digest))
+  ) {
+    fail(`${label} lacks an exact reviewed adapted JSON digest set`);
+  }
   const boundaryBefore = await readCaddyRuntimeBoundary(
     plan,
     hardening,
@@ -395,6 +408,7 @@ async function collectFreshAdminRuntime(plan, hardening, ops, label) {
   );
   const rootReadback = await ops.probeAdminApi({
     expected: "root-readback",
+    gatePin: plan.runtime.admin_uds_gate,
     gid: 0,
     label: "root",
     nodePin: plan.runtime.node_binary,
@@ -407,8 +421,10 @@ async function collectFreshAdminRuntime(plan, hardening, ops, label) {
     ["body_sha256", "cap_eff", "error", "gid", "groups", "label", "listen", "path", "status", "transport", "uid"],
     `${label} root admin readback`,
   );
+  if (!expectedAdaptedJsonSha256s.includes(rootReadback.body_sha256)) {
+    fail(`${label} root readback does not equal the reviewed active adapted JSON`);
+  }
   if (
-    !/^[0-9a-f]{64}$/u.test(rootReadback.body_sha256 ?? "") ||
     rootReadback.cap_eff !== "0000000000000000" ||
     rootReadback.error !== null ||
     rootReadback.gid !== 0 ||
@@ -426,6 +442,7 @@ async function collectFreshAdminRuntime(plan, hardening, ops, label) {
   for (const service of hardening.hardeningPlan.service_uid_inventory) {
     const denial = await ops.probeAdminApi({
       expected: "EACCES",
+      gatePin: plan.runtime.admin_uds_gate,
       gid: service.uid,
       label: service.name,
       nodePin: plan.runtime.node_binary,
@@ -507,7 +524,12 @@ async function collectFreshAdminRuntime(plan, hardening, ops, label) {
   };
 }
 
-async function collectPinnedState(plan, ops, label, { requirePreimage = true } = {}) {
+async function collectPinnedState(
+  plan,
+  ops,
+  label,
+  { expectedAdminRuntime, requirePreimage = true } = {},
+) {
   const pins = [
     [plan.runtime.node_binary, `${label} Node runtime`],
     [plan.runtime.setpriv_binary, `${label} setpriv runtime`],
@@ -551,12 +573,38 @@ async function collectPinnedState(plan, ops, label, { requirePreimage = true } =
     plan.target.admin_uds_hardening,
     plan.runtime.admin_probe,
     plan.runtime.admin_uds_gate,
+    plan.runtime.node_binary,
   );
   const config = await ops.readRegular(plan.target.config_preimage.path);
   if (requirePreimage) {
     exactRegularSnapshot(config.snapshot, plan.target.config_preimage, `${label} Caddyfile preimage`);
   }
-  const adminRuntime = await collectFreshAdminRuntime(plan, hardening, ops, label);
+  const expectedRuntime = expectedAdminRuntime ??
+    (requirePreimage ? "hardened-preimage" : undefined);
+  let expectedAdaptedJsonSha256s;
+  if (expectedRuntime === "hardened-preimage") {
+    expectedAdaptedJsonSha256s = [
+      hardening.hardeningPlan.candidate.adapted_json_sha256,
+    ];
+  } else if (expectedRuntime === "managed-candidate") {
+    expectedAdaptedJsonSha256s = [
+      plan.managed_block.candidate_adapted_json_sha256,
+    ];
+  } else if (expectedRuntime === "either-reviewed") {
+    expectedAdaptedJsonSha256s = [
+      hardening.hardeningPlan.candidate.adapted_json_sha256,
+      plan.managed_block.candidate_adapted_json_sha256,
+    ];
+  } else {
+    fail(`${label} must select the exact expected active adapted JSON generation`);
+  }
+  const adminRuntime = await collectFreshAdminRuntime(
+    plan,
+    hardening,
+    ops,
+    label,
+    expectedAdaptedJsonSha256s,
+  );
   const caddyGeneration = adminRuntime.unit_generation;
   const sourceFairGeneration = await ops.readUnitGeneration(SOURCE_FAIR_UNIT);
   exactGeneration(sourceFairGeneration, plan.source_fair.unit_generation, `${label} source-fair HAProxy`);
@@ -1078,6 +1126,7 @@ async function rollbackInstalled({
   });
   if (rollbackReload.status !== 0) fail("rollback reload failed");
   const restoredState = await collectPinnedState(plan, ops, "post-rollback", {
+    expectedAdminRuntime: "hardened-preimage",
     requirePreimage: false,
   });
   const finalConfig = await ops.readRegular(TARGET_CONFIG);
@@ -1192,9 +1241,10 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     if (adapt.status !== 0) {
       throw new OverlayTransactionError("Caddy adapt failed before installation", { phase: "adapt" });
     }
-    const adapted = parseStrictJson(Buffer.from(adapt.stdout).toString("utf8"), "Caddy adapted JSON");
-    assertAdaptedAdminConfig(adapted);
-    const adaptedBytes = Buffer.from(canonicalJson(adapted), "utf8");
+    const adaptedBytes = canonicalizeAdaptedCaddyJson(
+      Buffer.from(adapt.stdout),
+      "Caddy adapted JSON",
+    );
     if (sha256(adaptedBytes) !== plan.managed_block.candidate_adapted_json_sha256) {
       throw new OverlayTransactionError("Caddy adapted JSON drifted from the approved candidate", {
         phase: "adapt",
@@ -1325,6 +1375,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     previousPhase = "reloaded";
 
     await collectPinnedState(plan, ops, "post-reload", {
+      expectedAdminRuntime: "managed-candidate",
       requirePreimage: false,
     });
     const committedConfig = await ops.readRegular(TARGET_CONFIG);
@@ -1354,6 +1405,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     // generations after the last network probe and immediately before making
     // a committed receipt durable.
     const finalCommittedState = await collectPinnedState(plan, ops, "post-health", {
+      expectedAdminRuntime: "managed-candidate",
       requirePreimage: false,
     });
     const finalInstalled = await verifyInstalledPair(plan, ops, candidateSnapshot);
@@ -2034,6 +2086,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
   // Re-bind the currently loaded unit and the live Caddy process before any
   // recovery classification can authorize target mutation, reload or cleanup.
   const recoveryState = await collectPinnedState(plan, ops, "recovery initial", {
+    expectedAdminRuntime: "either-reviewed",
     requirePreimage: false,
   });
   const candidateSnapshot = model.prepared?.candidate_snapshot;
@@ -2069,6 +2122,16 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
     ) {
       fail("terminal state receipt digest contradicts the durable receipt");
     }
+    // The receipt proves the live config at publication time, not forever.
+    // Re-probe the current admin body with the terminal outcome's exact
+    // generation before recovery can publish terminal state or remove the
+    // remaining file-pair witness.
+    await collectPinnedState(plan, ops, `recovery durable ${terminalPhase}`, {
+      expectedAdminRuntime: terminalPhase === "committed"
+        ? "managed-candidate"
+        : "hardened-preimage",
+      requirePreimage: false,
+    });
     if (!model.byPhase.has(terminalPhase)) {
       await writeState(
         ops,
@@ -2099,11 +2162,19 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
   }
   if (pair.kind === "preimage-only") {
     if (model.byPhase.size === 0 || model.byPhase.has("aborted-before-install")) {
+      await collectPinnedState(plan, ops, "recovery aborted preimage-only", {
+        expectedAdminRuntime: "hardened-preimage",
+        requirePreimage: false,
+      });
       return { outcome: "aborted-before-install", transaction_id: plan.transaction_id };
     }
     fail("recovery is missing the candidate required to prove an unfinished transaction");
   }
   if (pair.kind === "rolled-back" && !model.byPhase.has("exchanged")) {
+    await collectPinnedState(plan, ops, "recovery aborted rolled-back pair", {
+      expectedAdminRuntime: "hardened-preimage",
+      requirePreimage: false,
+    });
     if (model.byPhase.size === 0) {
       await ops.removeIfExact(
         plan.transaction.candidate_path,
@@ -2200,6 +2271,7 @@ async function recoverLocked({ approvedPlanSha256, ops, plan }) {
   });
   if (rollbackReload.status !== 0) fail("recovery rollback reload failed");
   const restoredState = await collectPinnedState(plan, ops, "recovery post-rollback", {
+    expectedAdminRuntime: "hardened-preimage",
     requirePreimage: false,
   });
   const finalConfig = await ops.readRegular(TARGET_CONFIG);
@@ -2717,29 +2789,36 @@ function commandResult(argv, { captureStdout, maxBytes, timeoutMs, extraFd } = {
   };
 }
 
-function pinnedDescriptorSnapshot(fd, pin, label, maxBytes) {
+function pinnedDescriptorSnapshot(fd, pin, label, maxBytes, retainBytes = false) {
   const stat = fstatSync(fd, { bigint: true });
   if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes)) {
     fail(`${label} is not one bounded single-link regular file`);
   }
-  const snapshot = snapshotFromStat(pin.path, stat, readFileSync(fd));
+  const bytes = readFileSync(fd);
+  const snapshot = snapshotFromStat(pin.path, stat, bytes);
   exactRegularSnapshot(snapshot, pin, label);
-  return stat;
+  return retainBytes ? { bytes, stat } : { stat };
 }
 
-export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, setprivPin, uid }) {
+export function runPinnedAdminProbe({ expected, gatePin, gid, label, nodePin, probePin, setprivPin, uid }) {
   if (!new Set(["EACCES", "root-readback"]).has(expected)) fail("unreviewed admin probe expectation");
   if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(gid) || uid < 0 || gid < 0) {
     fail("admin probe UID/GID is invalid");
   }
+  const gateParent = openSealedParent(gatePin.path);
   const nodeParent = openSealedParent(nodePin.path);
   const probeParent = openSealedParent(probePin.path);
   const setprivParent = openSealedParent(setprivPin.path);
+  let gateFd;
   let nodeFd;
   let probeFd;
   let setprivFd;
   return runWithSyncCleanups(
     () => {
+      gateFd = openSync(
+        gateParent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
       nodeFd = openSync(
         nodeParent.procPath,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
@@ -2752,24 +2831,32 @@ export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, s
         setprivParent.procPath,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
       );
+      const gateSnapshot = pinnedDescriptorSnapshot(
+        gateFd,
+        gatePin,
+        "admin probe gate source",
+        MAX_FILE_BYTES,
+        true,
+      );
       const nodeStat = pinnedDescriptorSnapshot(
         nodeFd,
         nodePin,
         "admin probe Node binary",
         MAX_EXECUTABLE_BYTES,
-      );
+      ).stat;
       const probeStat = pinnedDescriptorSnapshot(
         probeFd,
         probePin,
         "admin probe script",
         MAX_FILE_BYTES,
-      );
+      ).stat;
       const setprivStat = pinnedDescriptorSnapshot(
         setprivFd,
         setprivPin,
         "admin probe setpriv binary",
         MAX_EXECUTABLE_BYTES,
-      );
+      ).stat;
+      gateParent.confirm();
       nodeParent.confirm();
       probeParent.confirm();
       setprivParent.confirm();
@@ -2787,6 +2874,7 @@ export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, s
         encoding: null,
         env: {
           BPIR_ADMIN_PROBE_FORMAT: "json",
+          BPIR_ADMIN_GATE_SHA256: gatePin.sha256,
           BPIR_ADMIN_PROBE_LABEL: label,
           BPIR_EXPECT_ADMIN_PROBE: expected,
           LANG: "C",
@@ -2794,12 +2882,14 @@ export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, s
           PATH: "/usr/sbin:/usr/bin:/sbin:/bin",
         },
         killSignal: "SIGKILL",
+        input: gateSnapshot.bytes,
         maxBuffer: 2 * 1024 * 1024,
         shell: false,
-        stdio: ["ignore", "pipe", "pipe", probeFd, nodeFd, setprivFd],
+        stdio: ["pipe", "pipe", "pipe", probeFd, nodeFd, setprivFd],
         timeout: 5_000,
       });
       for (const [fd, before, descriptorLabel] of [
+        [gateFd, gateSnapshot.stat, "gate source"],
         [nodeFd, nodeStat, "Node binary"],
         [probeFd, probeStat, "probe script"],
         [setprivFd, setprivStat, "setpriv binary"],
@@ -2823,6 +2913,7 @@ export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, s
       if (!stdout.subarray(0, -1).equals(Buffer.from(canonicalJson(value).slice(0, -1), "utf8"))) {
         fail(`admin probe ${label} JSON was not canonical`);
       }
+      gateParent.confirm();
       nodeParent.confirm();
       probeParent.confirm();
       setprivParent.confirm();
@@ -2832,9 +2923,11 @@ export function runPinnedAdminProbe({ expected, gid, label, nodePin, probePin, s
       () => { if (setprivFd !== undefined) closeSync(setprivFd); },
       () => { if (probeFd !== undefined) closeSync(probeFd); },
       () => { if (nodeFd !== undefined) closeSync(nodeFd); },
+      () => { if (gateFd !== undefined) closeSync(gateFd); },
       () => setprivParent.close(),
       () => probeParent.close(),
       () => nodeParent.close(),
+      () => gateParent.close(),
     ],
   );
 }
@@ -3526,6 +3619,8 @@ function invokePinnedHelper(
   faultInjector,
 ) {
   if (!["--exchange", "--publish"].includes(action)) fail("unreviewed rename helper action");
+  const supervisorPid = process.pid;
+  const supervisorStartTicks = processStartTicks(supervisorPid);
   const helper = realReadRegular(helperPin.path);
   exactRegularSnapshot(helper.snapshot, helperPin, "rename-exchange helper before invocation");
   const fd = openSync(
@@ -3540,7 +3635,14 @@ function invokePinnedHelper(
       }
       injectFault(faultInjector, "before-rename");
       const result = commandResult(
-        ["/proc/self/fd/3", action, left, right],
+        [
+          "/proc/self/fd/3",
+          action,
+          String(supervisorPid),
+          supervisorStartTicks,
+          left,
+          right,
+        ],
         {
           captureStdout: false,
           extraFd: fd,

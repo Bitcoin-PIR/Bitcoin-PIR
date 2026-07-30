@@ -17,7 +17,7 @@ import {
 } from "./payment-v1-integrated-caddy-overlay-gate.mjs";
 import { canonicalJson as canonicalAdminUdsJson } from "./payment-v1-caddy-admin-uds-gate.mjs";
 import {
-  TEST_ADAPTED_JSON,
+  TEST_OVERLAY_ADAPTED_JSON,
   TEST_PREIMAGE,
   TEST_REPOSITORY,
   makeIntegratedOverlayTestPlan,
@@ -143,8 +143,12 @@ class MockOverlayOps {
     this.adminUnexpectedReachableUid = null;
     this.adminCapEff = "0000000000000000";
     this.adminRootListen = "unix//run/bitcoinpir-caddy-admin/admin.sock|0200";
+    this.adminBodySha256Override = null;
+    this.adminBodySha256AfterFirstReload = null;
+    this.adminBodySha256AfterHealth = null;
     this.adminProbeApiCalls = 0;
-    this.adaptedJson = clone(TEST_ADAPTED_JSON);
+    this.healthCalls = 0;
+    this.adaptedJson = clone(TEST_OVERLAY_ADAPTED_JSON);
     this.effectiveUnit = testCaddyEffectiveUnit(plan);
     this.processRuntime = testCaddyProcessRuntime(plan);
     this.driftAdminAfterFirstReload = false;
@@ -297,6 +301,7 @@ class MockOverlayOps {
   }
 
   async health(check) {
+    this.healthCalls += 1;
     if (check.lane === this.failHealthLane) throw new Error(`mock health failed: ${check.lane}`);
     return {
       body_sha256: check.expected_body_sha256,
@@ -321,11 +326,33 @@ class MockOverlayOps {
     return mockMonotonicNs.toString();
   }
 
+  currentAdminBodySha256() {
+    if (this.adminBodySha256Override !== null) return this.adminBodySha256Override;
+    if (
+      this.reloadCalls === 1 &&
+      this.healthCalls > 0 &&
+      this.adminBodySha256AfterHealth !== null
+    ) {
+      return this.adminBodySha256AfterHealth;
+    }
+    if (this.reloadCalls === 1 && this.adminBodySha256AfterFirstReload !== null) {
+      return this.adminBodySha256AfterFirstReload;
+    }
+    const loaded = this.files.get(this.plan.target.config_preimage.path)?.snapshot.sha256;
+    if (loaded === this.plan.managed_block.candidate_sha256) {
+      return this.plan.managed_block.candidate_adapted_json_sha256;
+    }
+    if (loaded === this.plan.target.config_preimage.sha256) {
+      return this.plan.target.admin_uds_hardening.adapted_json_sha256;
+    }
+    return "b".repeat(64);
+  }
+
   async probeAdminApi({ expected, gid, label, uid }) {
     this.adminProbeApiCalls += 1;
     if (expected === "root-readback") {
       return {
-        body_sha256: "b".repeat(64),
+        body_sha256: this.currentAdminBodySha256(),
         cap_eff: this.adminCapEff,
         error: null,
         gid,
@@ -340,7 +367,7 @@ class MockOverlayOps {
     }
     if (uid === this.adminUnexpectedReachableUid) {
       return {
-        body_sha256: "b".repeat(64),
+        body_sha256: this.currentAdminBodySha256(),
         cap_eff: this.adminCapEff,
         error: null,
         gid,
@@ -749,6 +776,44 @@ test("transaction rejects a hardening plan and receipt from different approvals"
   assert.equal(ops.reloadCalls, 0);
 });
 
+test("transaction rejects a hardening adapted JSON digest drifted in its summary", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  plan.target.admin_uds_hardening.adapted_json_sha256 = "f".repeat(64);
+  const ops = new MockOverlayOps(plan);
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /full evidence does not equal the overlay preimage summary/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("transaction rejects a hardening evidence transaction ID drifted from its summary", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  const originalId = plan.target.admin_uds_hardening.transaction_id;
+  const changedId = "caddy-admin-uds-different-1";
+  plan.target.admin_uds_hardening.transaction_id = changedId;
+  plan.target.admin_uds_hardening.plan.path =
+    plan.target.admin_uds_hardening.plan.path.replace(originalId, changedId);
+  plan.target.admin_uds_hardening.receipt.path =
+    plan.target.admin_uds_hardening.receipt.path.replace(originalId, changedId);
+  const ops = new MockOverlayOps(plan);
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /evidence transaction ID does not equal the overlay summary/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
 test("transaction rejects an admin UDS gate generation not pinned by hardening", async () => {
   const plan = makeIntegratedOverlayTestPlan();
   plan.runtime.admin_uds_gate.inode = "999999";
@@ -760,6 +825,38 @@ test("transaction rejects an admin UDS gate generation not pinned by hardening",
       plan,
     }),
     /admin UDS gate does not equal the exact approved hardening gate generation/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("transaction rejects an admin probe generation not pinned by hardening", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  plan.runtime.admin_probe.inode = "999999";
+  const ops = new MockOverlayOps(plan);
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /admin probe does not equal the exact approved hardening probe generation/u,
+  );
+  assert.equal(ops.exchangeHistory.length, 0);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("transaction rejects a Node digest not pinned by hardening", async () => {
+  const plan = makeIntegratedOverlayTestPlan();
+  plan.runtime.node_binary.sha256 = "e".repeat(64);
+  const ops = new MockOverlayOps(plan);
+  await assert.rejects(
+    executeOverlayTransaction({
+      approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+      ops,
+      plan,
+    }),
+    /Node binary does not equal the approved hardening Node digest/u,
   );
   assert.equal(ops.exchangeHistory.length, 0);
   assert.equal(ops.reloadCalls, 0);
@@ -788,6 +885,7 @@ for (const [name, mutate, expected] of [
   ["TCP admin is reachable", (ops) => { ops.adminTcpResult = "connected"; }, /did not refuse the TCP admin probe/u],
   ["probe retains capabilities", (ops) => { ops.adminCapEff = "0000000000000002"; }, /root did not read back/u],
   ["root reads a different admin endpoint", (ops) => { ops.adminRootListen = "127.0.0.1:2019"; }, /root did not read back/u],
+  ["root reads an unreviewed adapted JSON", (ops) => { ops.adminBodySha256Override = "b".repeat(64); }, /reviewed active adapted JSON/u],
   ["boot changes during probes", (ops) => { ops.driftBootDuringProbe = true; }, /boot drifted/u],
   ["Caddy generation changes during probes", (ops) => { ops.driftGenerationDuringProbe = true; }, /process generation drifted/u],
   ["effective FragmentPath drift", (ops) => { ops.effectiveUnit.fragment_path = "/run/systemd/transient/bhtm-caddy.service"; }, /effective systemd unit drifted/u],
@@ -951,6 +1049,31 @@ test("post-reload admin permission drift triggers exact rollback", async () => {
   assert.equal(ops.exchangeHistory.length, 2);
   assert.equal(ops.reloadCalls, 2);
 });
+
+for (const [label, mutate] of [
+  ["post-reload", (ops) => { ops.adminBodySha256AfterFirstReload = "b".repeat(64); }],
+  ["post-health", (ops) => { ops.adminBodySha256AfterHealth = "b".repeat(64); }],
+]) {
+  test(`${label} adapted JSON digest drift triggers exact rollback`, async () => {
+    const plan = makeIntegratedOverlayTestPlan();
+    const ops = new MockOverlayOps(plan);
+    mutate(ops);
+    await assert.rejects(
+      executeOverlayTransaction({
+        approvedPlanSha256: computeApprovedOverlayPlanSha256(plan),
+        ops,
+        plan,
+      }),
+      (error) => {
+        assert.match(error.message, /exact preimage was restored/u);
+        assert.equal(error.receipt?.outcome, "rolled-back");
+        return true;
+      },
+    );
+    assert.equal(ops.exchangeHistory.length, 2);
+    assert.equal(ops.reloadCalls, 2);
+  });
+}
 
 test("adapted JSON with the wrong admin endpoint is rejected before exchange", async () => {
   const plan = makeIntegratedOverlayTestPlan();
@@ -1392,6 +1515,45 @@ test("recovery cleans an install-before crash without reloading", async () => {
   assert.equal(ops.reloadCalls, 0);
 });
 
+test("aborted rolled-back-pair recovery rejects a currently loaded candidate", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [OVERLAY_STATE_FILES.prepared],
+  });
+  ops.adminBodySha256Override = baseline.plan.managed_block.candidate_adapted_json_sha256;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /does not equal the reviewed active adapted JSON/u,
+  );
+  assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), true);
+  assert.equal(ops.reloadCalls, 0);
+});
+
+test("aborted preimage-only recovery rejects a currently loaded candidate", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [],
+  });
+  ops.files.delete(baseline.plan.transaction.candidate_path);
+  ops.adminBodySha256Override = baseline.plan.managed_block.candidate_adapted_json_sha256;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /does not equal the reviewed active adapted JSON/u,
+  );
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.aborted), false);
+  assert.equal(ops.reloadCalls, 0);
+});
+
 test("recovery rolls back a crash after exchange but before its phase record", async () => {
   const baseline = await successfulBaseline();
   const ops = recoveryOpsFromBaseline(baseline, {
@@ -1497,6 +1659,59 @@ test("a durable committed receipt is finalized, never rolled back", async () => 
   assert.equal(ops.reloadCalls, 0);
   assert.equal(ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256, baseline.plan.managed_block.candidate_sha256);
   assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), false);
+});
+
+test("durable committed recovery rejects a currently loaded reviewed preimage", async () => {
+  const baseline = await successfulBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "installed",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+    ],
+    receipt: baseline.receipt,
+  });
+  ops.adminBodySha256Override =
+    baseline.plan.target.admin_uds_hardening.adapted_json_sha256;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /does not equal the reviewed active adapted JSON/u,
+  );
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.committed), false);
+});
+
+test("durable rolled-back recovery rejects a currently loaded reviewed candidate", async () => {
+  const baseline = await rolledBackBaseline();
+  const ops = recoveryOpsFromBaseline(baseline, {
+    pair: "rolled-back",
+    phases: [
+      OVERLAY_STATE_FILES.prepared,
+      OVERLAY_STATE_FILES.exchanged,
+      OVERLAY_STATE_FILES.reloaded,
+      OVERLAY_STATE_FILES.rollbackExchanged,
+      OVERLAY_STATE_FILES.rollbackReloaded,
+    ],
+    receipt: baseline.receipt,
+  });
+  ops.adminBodySha256Override = baseline.plan.managed_block.candidate_adapted_json_sha256;
+  await assert.rejects(
+    recoverOverlayTransaction({
+      approvedPlanSha256: baseline.approvedPlanSha256,
+      ops,
+      plan: baseline.plan,
+    }),
+    /does not equal the reviewed active adapted JSON/u,
+  );
+  assert.equal(ops.reloadCalls, 0);
+  assert.equal(ops.files.has(baseline.plan.transaction.candidate_path), true);
+  assert.equal(ops.state.has(OVERLAY_STATE_FILES.rolledBack), false);
 });
 
 test("recovery atomically publishes a valid pending committed receipt", async () => {
@@ -1783,6 +1998,9 @@ test("recovery refuses an unknown digest pair without mutation", async () => {
   const unknown = Buffer.from("unknown external file\n");
   ops.files.get("/etc/caddy/Caddyfile").bytes = unknown;
   ops.files.get("/etc/caddy/Caddyfile").snapshot.sha256 = testSha256(unknown);
+  // Model a still-loaded reviewed candidate while the on-disk pair has been
+  // replaced externally; recovery must still reject the unknown file pair.
+  ops.adminBodySha256Override = baseline.plan.managed_block.candidate_adapted_json_sha256;
   await assert.rejects(
     recoverOverlayTransaction({
       approvedPlanSha256: baseline.approvedPlanSha256,

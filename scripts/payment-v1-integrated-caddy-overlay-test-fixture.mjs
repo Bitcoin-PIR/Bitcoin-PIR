@@ -49,9 +49,19 @@ ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfi
 [Install]
 WantedBy=multi-user.target
 `);
-export const TEST_ADAPTED_JSON = {
+export const TEST_HARDENED_ADAPTED_JSON = {
   admin: { listen: ADMIN_LISTEN },
   apps: {},
+};
+export const TEST_OVERLAY_ADAPTED_JSON = {
+  admin: { listen: ADMIN_LISTEN },
+  apps: {
+    http: {
+      servers: {
+        overlay: { listen: [":443"], routes: [] },
+      },
+    },
+  },
 };
 const TEST_HARDENING_EVIDENCE = new WeakMap();
 
@@ -181,6 +191,10 @@ function makeHardeningEvidence(targetGeneration) {
   );
   if (!candidateConfig.equals(TEST_PREIMAGE)) throw new Error("hardening fixture candidate drifted");
   const candidateUnit = buildHardenedUnit(HARDENING_UNIT_PREIMAGE);
+  const candidateAdaptedJson = Buffer.from(
+    canonicalAdminUdsJson(TEST_HARDENED_ADAPTED_JSON),
+    "utf8",
+  );
   const binaryPreimage = testPin("/usr/bin/caddy", "5".repeat(64), "0755", {
     size: "48521378",
     inode: "52001",
@@ -204,6 +218,8 @@ function makeHardeningEvidence(targetGeneration) {
   const probeBytes = Buffer.from("reviewed Caddy admin probe fixture\n");
   const plan = {
     candidate: {
+      adapted_json_sha256: testSha256(candidateAdaptedJson),
+      adapted_json_size: String(candidateAdaptedJson.length),
       binary: {
         gid: 0,
         mode: "0755",
@@ -384,7 +400,7 @@ function makeHardeningEvidence(targetGeneration) {
         ...entry,
       })),
       root_readback: {
-        body_sha256: "b".repeat(64),
+        body_sha256: plan.candidate.adapted_json_sha256,
         cap_eff: "0000000000000000",
         gid: 0,
         groups: [0],
@@ -482,6 +498,7 @@ export function makeIntegratedOverlayTestPlan() {
   const hardeningEvidence = makeHardeningEvidence(targetGeneration);
   const hardeningSummary = {
     admin_listen: "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
+    adapted_json_sha256: hardeningEvidence.plan.candidate.adapted_json_sha256,
     all_service_uids_denied: true,
     approved_plan_sha256: testSha256(hardeningEvidence.planBytes),
     binary_sha256: "5".repeat(64),
@@ -558,7 +575,7 @@ export function makeIntegratedOverlayTestPlan() {
     ],
     managed_block: {
       candidate_adapted_json_sha256: testSha256(
-        Buffer.from(canonicalJson(TEST_ADAPTED_JSON), "utf8"),
+        Buffer.from(canonicalAdminUdsJson(TEST_OVERLAY_ADAPTED_JSON), "utf8"),
       ),
       candidate_sha256: testSha256(candidate),
       placeholders,
@@ -568,10 +585,7 @@ export function makeIntegratedOverlayTestPlan() {
     },
     runtime: {
       admin_uds_gate: { ...hardeningEvidence.plan.runtime.gate },
-      admin_probe: {
-        ...hardeningEvidence.plan.runtime.probe,
-        inode: "42011",
-      },
+      admin_probe: { ...hardeningEvidence.plan.runtime.probe },
       exchange_helper: testPin(exchangePath, exchangeSha, "0555"),
       exchange_manifest: testPin(
         "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256",

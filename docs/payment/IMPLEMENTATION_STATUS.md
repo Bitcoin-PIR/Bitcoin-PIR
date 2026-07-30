@@ -940,7 +940,11 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       that all 21 non-canonical Unicode whitespace code points and quoted
       `admin` directives can alter the adapted admin listener and are rejected
       by the closed-profile lexer. Canonical adapted JSON additionally rejects
-      global, access and request-scoped log sinks. The plan requires a cold
+      global, access and request-scoped log sinks; the candidate binds its
+      canonical digest and size, and the committed root readback must reproduce
+      that digest. The read-only gate consumes an externally generated adapter
+      artifact, so a future executor must still prove it ran the plan-pinned
+      Caddy binary on the exact candidate. The plan requires a cold
       stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
       systemd InvocationID, complete actual
       service-UID and existing-site inventories, exact old-config+old-unit
@@ -974,13 +978,20 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       snapshots are repeated immediately before exchange and reload. Recovery
       validates the original persisted monotonic windows unchanged, so corrupt
       cross-window evidence fails before mutation instead of being normalized
-      into an acceptable receipt. Adapted JSON is exact-digest pinned. Phase
+      into an acceptable receipt. Adapted JSON is exact-digest pinned to the
+      hardened preimage before exchange and to the overlay candidate after
+      reload and after health checks. Recovery permits either reviewed digest
+      only during ambiguous classification, then re-probes the exact terminal
+      or aborted generation before publishing state, cleanup or return. Phase
       state and lock ownership use atomic pending-file
       publication; helper return ambiguity is resolved only by supplemental
       fsync and stable exact-pair classification; unknown outcomes prohibit
       rollback, receipt terminalization and cleanup. Mutable transaction
       directory identities and final receipt ownership metadata are sealed
-      across recovery, and the helper is parent-death bound. An installed pair
+      across recovery, and the helper is parent-death bound. Helper protocol v4
+      checks the expected supervisor PID and `/proc/<pid>/stat` start ticks both
+      before and after `PR_SET_PDEATHSIG`, so subreaper adoption cannot authorize
+      a delayed mutation. An installed pair
       cannot enter automatic rollback until its `exchanged` phase is durable;
       failed abort publication preserves the candidate recovery witness;
       cleanup failures remain attached to the primary error; and a durable
