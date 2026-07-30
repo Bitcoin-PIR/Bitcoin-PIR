@@ -747,10 +747,15 @@ location remain unchanged.
 This cannot be performed by appending a Caddy site block or by reloading the
 old process: systemd creates the new runtime directory only for a new cold
 generation. The profile therefore requires exact old/new Caddyfile and unit
-pins, the exact independently inventoried production Caddy `v2.11.4` binary,
-exact admin-UDS gate, Node `v22.22.2`, probe and `setpriv` pins, a same-boot privileged
+pins, the exact independently inventoried production Caddy `v2.11.4` binary at
+the host's `/usr/local/bin/caddy` (`/usr/bin/caddy` is absent), exact cold
+executor/admin-UDS gate, Node `v22.22.2`, probe and `setpriv` pins, exact
+systemd `255`, a same-boot privileged
 process/capability inventory, and complete service-UID/site inventories,
-stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
+an approved canonical digest/size for the old disk Caddyfile's adapted JSON,
+pre-stop proof that the live TCP-admin readback has that same digest, exact
+effective old `ExecStart`/`ExecReload`, `NeedDaemonReload=no`, no drop-ins or
+environment files, stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
 and a new `InvocationID`. Committed evidence must include root API readback over
 the UDS, root:root `0700`/`0200` directory/socket metadata, `EACCES` for every
 approved non-root service UID (including `pir` and `cloudflared`), disappearance
@@ -762,8 +767,13 @@ an ambiguous systemctl result, generation, UDS readback or receipt publication
 is `outcome-unknown`; automatic rollback is forbidden until explicit recovery
 classifies the active generation. Safe rollback restores the exact old
 Caddyfile **and** exact old unit, fsyncs both parents, daemon-reloads, starts a
-new old-config generation and re-runs old health checks. The checked-in gate is
-read-only and no transaction executor is yet approved. See
+new old-config generation and re-runs the old effective-unit, canonical admin
+readback and site-health checks. The checked-in gate
+remains read-only. The checked-in local-host cold executor now supplies the
+fail-closed transaction implementation, but it has not been installed,
+approved for an outage, or run on the target. It additionally requires a
+canonical plan-hash-bound site inventory containing public HTTPS,
+direct-upstream HTTP and independent TLS/leaf probes. See
 [CADDY_ADMIN_UDS_HARDENING.md](CADDY_ADMIN_UDS_HARDENING.md).
 
 ### Alternative existing-Caddy overlay (not deployed)
@@ -772,7 +782,7 @@ read-only and no transaction executor is yet approved. See
 `edge-hetzner-v1` for a host whose production edge is the existing root
 `bhtm-caddy.service` and `/etc/caddy/Caddyfile`. It is not a second edge to run
 beside `edge-hetzner-v1`. Its rendered bundle closes over the managed Caddy
-block, source-fair HAProxy config/unit, the admin-UDS gate/probe, overlay
+block, source-fair HAProxy config/unit, the admin-UDS cold executor/gate/probe, overlay
 gate/executor, a
 content-addressed Linux `renameat2(RENAME_EXCHANGE)` helper and the helper's
 one-entry hash manifest. A separate overlay plan pins the exact Caddyfile

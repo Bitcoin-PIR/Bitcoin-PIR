@@ -332,7 +332,7 @@
       "mode": "0755",
       "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
       "nlink": 1,
-      "path": "/usr/bin/caddy",
+      "path": "/usr/local/bin/caddy",
       "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
@@ -434,7 +434,7 @@
   ],
   "transaction": {
     "adapt_argv": [
-      "/usr/bin/caddy",
+      "/usr/local/bin/caddy",
       "adapt",
       "--config",
       "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",
@@ -462,7 +462,7 @@
     "rollback_on_any_post_install_failure": true,
     "state_directory": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/transactions/replace-integrated-existing-bhtm-caddy-v1",
     "validate_argv": [
-      "/usr/bin/caddy",
+      "/usr/local/bin/caddy",
       "validate",
       "--config",
       "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",

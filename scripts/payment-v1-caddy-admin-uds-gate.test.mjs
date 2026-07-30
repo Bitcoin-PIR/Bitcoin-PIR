@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -10,10 +12,12 @@ import {
   ADMIN_LISTEN,
   ADMIN_PROBE_PATH,
   ADMIN_SOCKET,
+  CADDY_BINARY_PATH,
   CADDY_AMD64_BINARY,
   CADDY_AMD64_MANIFEST,
   CADDY_IMAGE_INDEX,
   COLLECTOR,
+  EXECUTOR_PATH,
   NODE_AMD64_MANIFEST,
   NODE_IMAGE_INDEX,
   PROFILE,
@@ -29,10 +33,12 @@ import {
   sha256,
   validateCommittedReceipt,
   validateAdaptedCaddyPrivacy,
+  validateAdaptedCaddyPrivacyPolicy,
   validateCandidateAdaptedJson,
   validateHardenedCaddyfile,
   validateHardenedUnit,
   validatePlan,
+  validatePreimageAdaptedJson,
   validateSystemdInvocationId,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
@@ -77,8 +83,8 @@ StandardOutput=journal
 StandardError=inherit
 LimitCORE=infinity
 MemorySwapMax=infinity
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 TimeoutStopSec=5s
 
 [Install]
@@ -89,6 +95,10 @@ const CANDIDATE_ADAPTED = {
   apps: { http: { servers: { srv0: { listen: [":443"], routes: [] } } } },
 };
 const CANDIDATE_ADAPTED_BYTES = Buffer.from(canonicalJson(CANDIDATE_ADAPTED), "utf8");
+const PREIMAGE_ADAPTED_BYTES = Buffer.from(canonicalJson({
+  admin: { listen: "127.0.0.1:2019" },
+  apps: { http: { servers: { srv0: { listen: [":443"], routes: [] } } } },
+}), "utf8");
 
 function snapshot(path, bytes, mode, seed) {
   return {
@@ -156,7 +166,7 @@ function fixture() {
     mode: "0755",
     mtime_ns: "2001",
     nlink: 1,
-    path: "/usr/bin/caddy",
+    path: CADDY_BINARY_PATH,
     sha256: PRODUCTION_CADDY_BINARY,
     size: "48521378",
     uid: 0,
@@ -168,7 +178,7 @@ function fixture() {
       binary: {
         gid: 0,
         mode: "0755",
-        path: "/usr/bin/caddy",
+        path: CADDY_BINARY_PATH,
         sha256: PRODUCTION_CADDY_BINARY,
         size: "48521378",
         uid: 0,
@@ -195,6 +205,8 @@ function fixture() {
     config_edit_mode: "replace-explicit-tcp-admin",
     deployment_profile: PROFILE,
     preimage: {
+      adapted_json_sha256: sha256(PREIMAGE_ADAPTED_BYTES),
+      adapted_json_size: String(PREIMAGE_ADAPTED_BYTES.length),
       admin: { kind: "tcp", listen: "127.0.0.1:2019" },
       binary: binarySnapshot,
       config: snapshot("/etc/caddy/Caddyfile", CONFIG, "0644", 2),
@@ -202,6 +214,12 @@ function fixture() {
       unit_generation: generation(),
     },
     runtime: {
+      executor: snapshot(
+        EXECUTOR_PATH,
+        Buffer.from("reviewed executor fixture\n"),
+        "0555",
+        8,
+      ),
       gate: snapshot(
         "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
         Buffer.from("reviewed gate fixture\n"),
@@ -227,6 +245,7 @@ function fixture() {
         "0755",
         7,
       ),
+      systemd_version: "255",
     },
     privileged_access_inventory: {
       boot_id: "323e4567-e89b-42d3-a456-426614174002",
@@ -244,7 +263,7 @@ function fixture() {
     site_preservation: {
       acme_storage_migration: "none",
       existing_site_inventory_sha256: "a".repeat(64),
-      probe_ids: ["one", "two"],
+      probe_ids: ["direct-upstream", "public-site", "tls-site"],
     },
     supply_chain: {
       caddy: {
@@ -283,6 +302,7 @@ function fixture() {
       lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
       new_invocation_required: true,
       outcome_unknown_conditions: [
+        "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
         "systemctl-command-error-after-start-request",
         "unclassified-config-unit-digest-pair",
         "active-generation-with-unproven-admin-readback",
@@ -438,6 +458,7 @@ function receiptFixture(plan) {
         { endpoint: "[::1]:2019", result: "connection-refused" },
       ],
       unit_generation: stoppedGeneration(),
+      unit_job_absent: true,
     },
     transaction_id: plan.transaction_id,
   };
@@ -462,7 +483,7 @@ test("exact preimages construct only the reviewed config and unit hardening", ()
   assert.doesNotMatch(candidateUnit.toString("utf8"), /^Environment=.*CADDY_ADMIN/gmu);
   assert.doesNotMatch(candidateUnit.toString("utf8"), /--environ/u);
   assert.equal(
-    candidateUnit.toString("utf8").match(/^ExecStart=\/usr\/bin\/caddy run --config \/etc\/caddy\/Caddyfile --adapter caddyfile$/gmu)?.length,
+    candidateUnit.toString("utf8").match(/^ExecStart=\/usr\/local\/bin\/caddy run --config \/etc\/caddy\/Caddyfile --adapter caddyfile$/gmu)?.length,
     1,
   );
   assert.match(candidateUnit.toString("utf8"), /RuntimeDirectory=bitcoinpir-caddy-admin/u);
@@ -501,6 +522,12 @@ test("adapted Caddy privacy gate rejects configured and request-scoped log sinks
     apps: { http: { servers: { srv0: { listen: [":443"], routes: [] } } } },
   };
   assert.equal(validateAdaptedCaddyPrivacy(base), true);
+  const implicitAdmin = { apps: base.apps };
+  assert.equal(validateAdaptedCaddyPrivacyPolicy(implicitAdmin), true);
+  assert.throws(
+    () => validateAdaptedCaddyPrivacy(implicitAdmin, "127.0.0.1:2019"),
+    /admin\.listen/u,
+  );
   assert.throws(
     () => validateAdaptedCaddyPrivacy({ ...base, logging: { logs: { default: {} } } }),
     /global logging sink/u,
@@ -525,6 +552,17 @@ test("adapted Caddy privacy gate rejects configured and request-scoped log sinks
   );
 
   const { plan } = fixture();
+  assert.deepEqual(
+    validatePreimageAdaptedJson({ adaptedJsonBytes: PREIMAGE_ADAPTED_BYTES, plan }),
+    PREIMAGE_ADAPTED_BYTES,
+  );
+  assert.throws(
+    () => validatePreimageAdaptedJson({
+      adaptedJsonBytes: Buffer.from(canonicalJson({ apps: {} })),
+      plan,
+    }),
+    /approved (?:size|SHA-256)/u,
+  );
   const formatted = Buffer.from(`${JSON.stringify(CANDIDATE_ADAPTED, null, 2)}\n`, "utf8");
   assert.deepEqual(
     validateCandidateAdaptedJson({ adaptedJsonBytes: formatted, plan }),
@@ -674,8 +712,23 @@ test("unit construction rejects non-root service and all unbounded environment s
     /unreviewed CADDY_ADMIN/u,
   );
   assert.throws(
-    () => buildHardenedUnit(Buffer.from(UNIT.toString("utf8").replace("/usr/bin/caddy run", "/tmp/caddy run"))),
+    () => buildHardenedUnit(Buffer.from(UNIT.toString("utf8").replace("/usr/local/bin/caddy run", "/tmp/caddy run"))),
     /exact plan-pinned Caddy binary/u,
+  );
+  assert.throws(
+    () => buildHardenedUnit(Buffer.from(UNIT.toString("utf8").replace(" run --environ ", " run "))),
+    /must retain the exact reviewed --environ/u,
+  );
+  assert.throws(
+    () => buildHardenedUnit(Buffer.from(UNIT.toString("utf8").replace(" --force\n", "\n"))),
+    /exact reviewed TCP-admin reload command/u,
+  );
+  assert.throws(
+    () => buildHardenedUnit(
+      Buffer.from(UNIT.toString("utf8").replaceAll("/usr/local/bin/caddy", "/usr/bin/caddy")),
+      "/usr/bin/caddy",
+    ),
+    /must equal the reviewed Hetzner path \/usr\/local\/bin\/caddy/u,
   );
   const hardened = buildHardenedUnit(UNIT).toString("utf8");
   assert.throws(
@@ -691,6 +744,10 @@ test("unit construction rejects non-root service and all unbounded environment s
 
 test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and warm activation", () => {
   for (const [mutate, pattern] of [
+    [(plan) => {
+      plan.preimage.binary.path = "/usr/bin/caddy";
+      plan.candidate.binary.path = "/usr/bin/caddy";
+    }, /must equal \/usr\/local\/bin\/caddy/u],
     [(plan) => { plan.supply_chain.caddy.version = "v2.11.3"; }, /must equal v2\.11\.4/u],
     [(plan) => { plan.supply_chain.node.version = "v24.18.0"; }, /must equal v22\.22\.2/u],
     [(plan) => { plan.runtime.setpriv_binary.path = "/usr/local/bin/setpriv"; }, /must equal \/usr\/bin\/setpriv/u],
@@ -698,16 +755,55 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.service_uid_inventory[0].uid = 60_001; }, /static service uid\/gid.*DynamicUser/u],
     [(plan) => { plan.service_uid_inventory[0].uid = 61_184; }, /static service uid\/gid.*DynamicUser/u],
     [(plan) => { plan.service_uid_inventory[0].uid = 65_534; }, /static service uid\/gid.*DynamicUser/u],
+    [(plan) => { plan.site_preservation.probe_ids = ["direct-upstream", "public-site"]; }, /3\.\.128/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "123e4567-e89b-42d3-a456-426614174000"; }, /32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
     [(plan) => { plan.transaction.automatic_rollback_after_ambiguous_start = true; }, /must equal false/u],
     [(plan) => { plan.candidate.adapted_json_size = "0"; }, /must be inside/u],
+    [(plan) => { plan.preimage.adapted_json_size = "0"; }, /must be inside/u],
   ]) {
     const { plan } = fixture();
     mutate(plan);
     assert.throws(() => validatePlan(plan), pattern);
   }
+});
+
+test("validate-plan CLI requires and verifies both preimage and candidate adapted JSON", (t) => {
+  const { plan } = fixture();
+  const directory = mkdtempSync(join(tmpdir(), "bitcoinpir-admin-uds-gate-"));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  const paths = {
+    candidate: join(directory, "candidate-adapted.json"),
+    config: join(directory, "old.Caddyfile"),
+    plan: join(directory, "plan.json"),
+    preimage: join(directory, "preimage-adapted.json"),
+    unit: join(directory, "old.service"),
+  };
+  writeFileSync(paths.plan, `${canonicalJson(plan)}\n`);
+  writeFileSync(paths.config, CONFIG);
+  writeFileSync(paths.unit, UNIT);
+  writeFileSync(paths.preimage, PREIMAGE_ADAPTED_BYTES);
+  writeFileSync(paths.candidate, CANDIDATE_ADAPTED_BYTES);
+  const approved = computeApprovedPlanSha256(plan);
+  const run = (preimagePath = paths.preimage) => spawnSync(process.execPath, [
+    GATE_SOURCE,
+    "validate-plan",
+    paths.plan,
+    paths.config,
+    paths.unit,
+    preimagePath,
+    paths.candidate,
+    approved,
+  ], { encoding: "utf8" });
+  const valid = run();
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.match(valid.stdout, new RegExp(`sha256=${approved}`, "u"));
+  const driftedPreimage = join(directory, "drifted-preimage-adapted.json");
+  writeFileSync(driftedPreimage, canonicalJson({ apps: {} }));
+  const invalid = run(driftedPreimage);
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /preimage canonical adapted JSON does not match/u);
 });
 
 test("candidate pins are recomputed from both exact preimages", () => {
@@ -756,6 +852,10 @@ test("receipt rejects warm generation, non-root access, TCP admin, socket drift 
     [
       (receipt) => { receipt.admin.socket.mode = "0660"; },
       /root:root 0200/u,
+    ],
+    [
+      (receipt) => { receipt.stopped.unit_job_absent = false; },
+      /pending systemd job/u,
     ],
     [
       (receipt) => { receipt.activation.effective_environment_names.push("CADDY_ADMIN"); },

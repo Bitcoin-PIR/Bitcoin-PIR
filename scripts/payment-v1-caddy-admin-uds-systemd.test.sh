@@ -45,7 +45,7 @@ for command in awk cmp curl grep install journalctl node sha256sum stat systemct
 done
 test -f "$unit_fixture"
 test -f "$config_fixture"
-test -x /usr/bin/caddy
+test -x /usr/local/bin/caddy
 run_root true
 test "$(cat /proc/1/comm)" = "systemd"
 test "$(systemctl is-system-running)" = "running"
@@ -62,9 +62,9 @@ case "$(uname -m)" in
     exit 1
     ;;
 esac
-test "$(sha256sum /usr/bin/caddy | awk '{print $1}')" = "$expected_caddy_sha256"
-test "$(/usr/bin/caddy version | awk '{print $1}')" = "v2.11.4"
-test "$(run_root stat -c '%u:%g:%a:%F' /usr/bin/caddy)" = "0:0:555:regular file"
+test "$(sha256sum /usr/local/bin/caddy | awk '{print $1}')" = "$expected_caddy_sha256"
+test "$(/usr/local/bin/caddy version | awk '{print $1}')" = "v2.11.4"
+test "$(run_root stat -c '%u:%g:%a:%F' /usr/local/bin/caddy)" = "0:0:555:regular file"
 
 if test "$(systemctl show "$unit_name" --property=LoadState --value 2>/dev/null || true)" != "not-found"; then
   echo "caddy-admin-uds-systemd=FAIL: refusing to replace an existing $unit_name" >&2
@@ -118,7 +118,7 @@ verify_live() {
     ''|*[!0-9]*|0) exit 1 ;;
   esac
   test "$(run_root sh -c "tr '\000' ' ' </proc/$main_pid/cmdline")" = \
-    "/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile "
+    "/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile "
   if run_root sh -c "tr '\000' '\n' </proc/$main_pid/environ | grep -q '^CADDY_ADMIN='"; then
     echo "caddy-admin-uds-systemd=FAIL: CADDY_ADMIN reached the service environment" >&2
     exit 1

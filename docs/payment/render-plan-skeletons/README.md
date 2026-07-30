@@ -100,31 +100,43 @@ degraded; it cannot silently downgrade or masquerade as strict multi-relay.
 
 The separate `bhtm-caddy-admin-uds-v1.plan.json.example` is not a rendered
 service profile and is not part of `payment-v1-rendered-artifact-gate.mjs`.
+Its required companion
+`bhtm-caddy-admin-uds-v1.site-inventory.json.example` demonstrates the exact
+canonical inventory shape: at least one direct HTTP, public HTTPS and TLS-leaf
+probe, sorted by ID and bound to the plan by its full SHA-256 and identical
+`probe_ids`. Both files remain deliberately non-runnable skeletons.
 It describes one stopped-service maintenance transaction for the exact existing
 root `bhtm-caddy.service`. Its dedicated read-only gate deterministically
 derives a hardened Caddyfile and unit from their exact preimages, canonicalizes
-an externally generated adapted-JSON artifact, rejects configured log sinks,
-and binds its exact digest and size into the candidate. It neither
-renders an install bundle nor executes the cold stop/start. See
+externally generated old and candidate adapted-JSON artifacts, rejects
+configured log sinks, and binds both exact digest/size tuples. Before stop the
+cold executor independently adapts the descriptor-read old bytes and requires
+that digest to equal the live TCP-admin readback; it also requires the exact
+loaded old Exec commands, fragment, `NeedDaemonReload=no`, and no drop-ins or
+environment files. It is not itself a
+rendered service profile; the separately source-hash-closed cold executor
+performs the stop/start only with a privately materialized, externally
+approved plan and site inventory. See
 [`../CADDY_ADMIN_UDS_HARDENING.md`](../CADDY_ADMIN_UDS_HARDENING.md).
 The read-only gate does not itself prove that Caddy generated the supplied
-artifact; a future executor must run the plan-pinned Caddy binary against the
-exact candidate and compare the same tuple before mutation.
-Its runtime closure includes the exact admin-UDS gate, Node, probe and `setpriv`
-binaries plus a
+artifact; the cold executor runs the plan-pinned Caddy binary against the exact
+candidate and compares the same tuple before mutation.
+Its runtime closure includes the exact cold executor, admin-UDS gate, Node,
+probe and `setpriv` binaries, exact systemd `255`, plus a
 same-boot privileged process/capability inventory. The integrated-existing-Caddy
 overlay skeleton separately pins both this canonical plan and its complete
 committed receipt, the canonical adapted-JSON digest, and the fresh runtime
 probe executables; a receipt summary alone is not sufficient. Its rendered
-bundle also carries the exact admin-UDS gate and probe sources. The executor
+bundle also carries the exact admin-UDS executor, gate and probe sources. The executor
 descriptor-pins the gate generation, reads its exact bytes once and supplies
 those bytes with their reviewed SHA-256 on the probe's stdin; the probe verifies
 that digest before a data-URL import, so it never resolves the gate by pathname.
 The root-owned overlay executor statically imports both the admin-UDS gate and
 overlay gate as part of its own exact full-source bootstrap TCB; those imports
-are not claimed to be descriptor-loaded. Install the admin-UDS gate and probe
-before the cold admin-UDS transaction and pin their resulting
-regular-file generations as `runtime.gate` and `runtime.probe` in the hardening
+are not claimed to be descriptor-loaded. Install the admin-UDS executor, gate
+and probe before the cold admin-UDS transaction and pin their resulting
+regular-file generations as `runtime.executor`, `runtime.gate` and
+`runtime.probe` in the hardening
 plan. The later overlay plan must repeat those exact full pins as
 `runtime.admin_uds_gate` and `runtime.admin_probe`; replacing either installed
 artifact after the hardening receipt requires a new cold hardening transaction

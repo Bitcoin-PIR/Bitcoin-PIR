@@ -294,26 +294,33 @@ two parts of the existing-root-Caddy TCB: its admin endpoint and implicit
 stdout/stderr-to-journald path. It derives only an
 exact config/unit candidate from exact old bytes, rejects Caddy imports and
 environment indirection, strips `--environ`, pins the independently inventoried
-production Caddy v2.11.4 binary plus the admin-UDS gate, Node v22.22.2, probe
-and `setpriv`, and
+production Caddy v2.11.4 binary at exact `/usr/local/bin/caddy` plus the cold
+executor, admin-UDS gate, Node v22.22.2, probe, `setpriv`, and systemd `255`, and
 forces effective `LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null` and
 `StandardError=null`. The adapted
 JSON privacy gate rejects explicit global, access and request-scoped log sinks.
-The cold candidate now binds the strict-parsed canonical adapted JSON digest
-and size, and a committed root `/config/` readback must reproduce that digest.
-The validation-only gate does not invoke Caddy; a future cold executor must run
-the plan-pinned binary against the exact candidate rather than accept an
-unproven caller-supplied adapter artifact.
+The cold plan now binds strict-parsed canonical adapted JSON digests and sizes
+for both the old disk preimage and candidate. Before stop, descriptor-pinned
+Caddy adapts the exact old bytes and that digest must equal the live TCP-admin
+`/config/` readback; the loaded unit must also have the exact fragment and old
+Exec commands, `NeedDaemonReload=no`, no drop-ins, `EnvironmentFile`, or
+`PassEnvironment`. A committed root `/config/` readback must reproduce the
+candidate digest.
+The read-only gate does not invoke Caddy. The separate source-hash-closed cold
+executor runs the plan-pinned binary against the exact candidate rather than
+accepting an unproven caller-supplied adapter artifact.
 It requires a cold new systemd generation before a root-owned `0700` runtime
 directory can exist. The isolation claim covers only capability-free
 unprivileged non-root processes; UID 0 and `CAP_DAC_OVERRIDE` remain trusted.
 Committed evidence requires root readback through a mode-`0200` UDS,
 `CapEff=0`, cleared groups and `EACCES` for the complete approved non-root
 service-UID inventory, absent IPv4 and IPv6 TCP 2019, and unchanged site health.
-A mixed or unknown config/unit
-pair stays stopped; an ambiguous start is outcome-unknown and prohibits
-automatic rollback. This gate does not yet include an executor and is not host
-or deployment evidence.
+A mixed or unknown config/unit pair stays stopped; an ambiguous start is
+outcome-unknown and prohibits automatic rollback. The executor requires Linux
+root, exact systemd `255`, an exclusive lock, same-boot/PID/Invocation/preimage
+pins and a pre-existing exact `kernel.core_pattern=|/usr/bin/false`; it never
+changes that sysctl. It has not been installed or run and is not host or
+deployment evidence.
 
 Boot identity remains a hyphenated UUID, while a live systemd `InvocationID`
 is independently bound as a nonzero 32-character lowercase hexadecimal value.
