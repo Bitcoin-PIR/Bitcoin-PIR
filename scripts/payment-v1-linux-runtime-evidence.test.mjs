@@ -84,6 +84,11 @@ const TEMPLATE_GATE = join(
   "payment-v1-deployment-template-gate.mjs",
 );
 const UINT64_MAX_DECIMAL = "18446744073709551615";
+assert.equal(
+  REVIEWED_SYSTEMD_VERSION,
+  `systemd 255 (${REVIEWED_SYSTEMD_MANAGER_VERSION})`,
+  "systemctl client and PID 1 manager build pins must remain coherent",
+);
 const COMMANDS = [
   "/usr/bin/busctl",
   "/usr/bin/false",
@@ -1530,6 +1535,7 @@ function stoppedEdgeFixture() {
       [clone(unitState)],
       [clone(unitState)],
     ],
+    systemd_manager_passes: clone(live.evidence.systemd_manager_passes),
     trusted_commands: clone(live.evidence.trusted_commands),
     unit_configuration_passes: [
       [clone(stoppedConfiguration)],
@@ -3225,6 +3231,14 @@ test("stopped-edge activation evidence closes units, sockets, identities, and lo
     .service_properties.ExecStartEx[0].argv[0] = "/usr/bin/true";
   assert.throws(() => validateStopped(stoppedTypedStartDrift), /ExecStartEx drift/u);
 
+  const stoppedForeignManager = stoppedEdgeFixture();
+  stoppedForeignManager.evidence.systemd_manager_passes[1].Version.value =
+    "255.4-1ubuntu8.14";
+  assert.throws(
+    () => validateStopped(stoppedForeignManager),
+    /Version must be typed s 255\.4-1ubuntu8\.15/u,
+  );
+
   const namespace = stoppedEdgeFixture();
   namespace.evidence.host.collector_pid_namespace = "pid:[4026539999]";
   assert.throws(() => validateStopped(namespace), /PID namespace/);
@@ -3427,6 +3441,14 @@ test("stopped directory-relay preparation is closed and can never become live ev
   assert.throws(
     () => validateStoppedRelay(unreviewedSwapCurrent),
     /unreviewed MemorySwapCurrent/,
+  );
+
+  const foreignManager = stoppedRelayFixture();
+  foreignManager.evidence.systemd_manager_passes[0].Version.value =
+    "255.4-1ubuntu8.14";
+  assert.throws(
+    () => validateStoppedRelay(foreignManager),
+    /Version must be typed s 255\.4-1ubuntu8\.15/u,
   );
 
   const legacyRelaySchema = stoppedRelayFixture();

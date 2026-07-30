@@ -3117,6 +3117,15 @@ function validateSystemdManagerPropertiesV1(properties, label) {
   }
 }
 
+function validateSystemdManagerPassesV1(passes, label) {
+  if (!Array.isArray(passes) || passes.length !== 2) {
+    fail(`${label} property passes are incomplete`);
+  }
+  for (const [index, properties] of passes.entries()) {
+    validateSystemdManagerPropertiesV1(properties, `${label} pass[${index}]`);
+  }
+}
+
 export function assertEffectiveSystemdPolicySnapshotUnchangedV1(
   expectedDependencies,
   actualDependencies,
@@ -4922,6 +4931,7 @@ export function validateStoppedEdgeActivationEvidence({
       "runtime_socket_absence_passes",
       "schema_version",
       "stopped_unit_passes",
+      "systemd_manager_passes",
       "trusted_commands",
       "unit_configuration_passes",
     ],
@@ -4969,6 +4979,10 @@ export function validateStoppedEdgeActivationEvidence({
   validateTrustedCommandClosure(evidence.trusted_commands, "stopped-edge evidence");
   const expectedProtected = validateStoppedNssEvidence(evidence.nss, request);
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "stopped-edge systemd manager",
+  );
   validateStoppedUnitPasses(evidence.stopped_unit_passes, request);
   validateStoppedUnitConfigurationPasses(evidence.unit_configuration_passes, request);
   validateRuntimeSocketAbsencePasses(evidence.runtime_socket_absence_passes, request);
@@ -5063,6 +5077,7 @@ export function validateStoppedRelayPreparationEvidence({
       "secret_parent_directories",
       "stopped_unit_passes",
       "systemd_analyze_verify",
+      "systemd_manager_passes",
       "trusted_commands",
       "unit_configuration_passes",
     ],
@@ -5175,6 +5190,10 @@ export function validateStoppedRelayPreparationEvidence({
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
   validateStoppedInstalledFilePasses(evidence.installed_file_passes, request);
   validateStoppedPrivateLoaderEvidenceV2(evidence, request);
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "stopped directory-relay systemd manager",
+  );
   validateStoppedUnitPasses(evidence.stopped_unit_passes, request);
   validateStoppedUnitConfigurationPasses(evidence.unit_configuration_passes, request);
   validateSystemdAnalyzeEvidence(
@@ -5374,18 +5393,10 @@ export function validateLiveRuntimeEvidence({
     !Number.isSafeInteger(evidence.host.uptime_finished_milliseconds) ||
     evidence.host.uptime_finished_milliseconds < evidence.host.uptime_started_milliseconds
   ) fail("live evidence uptime binding is invalid");
-  if (
-    !Array.isArray(evidence.systemd_manager_passes) ||
-    evidence.systemd_manager_passes.length !== 2
-  ) {
-    fail("live systemd manager property passes are incomplete");
-  }
-  for (const [index, properties] of evidence.systemd_manager_passes.entries()) {
-    validateSystemdManagerPropertiesV1(
-      properties,
-      `live systemd manager pass[${index}]`,
-    );
-  }
+  validateSystemdManagerPassesV1(
+    evidence.systemd_manager_passes,
+    "live systemd manager",
+  );
 
   if (!Array.isArray(evidence.trusted_commands) || evidence.trusted_commands.length !== REQUIRED_COMMANDS.length + 1) {
     fail("live evidence does not bind the complete command TCB");
@@ -6001,6 +6012,11 @@ function collectStoppedPreparationEvidence({
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) {
     fail("collector is running on an unapproved host");
   }
+  const systemdManagerStarted = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerStarted,
+    "initial stopped systemd manager properties",
+  );
   const challengeHex = randomBytes(32).toString("hex");
   const nss = collectNss();
   const accountPolicyStarted = collectLockedServiceAccountPolicy(request, nss);
@@ -6076,6 +6092,11 @@ function collectStoppedPreparationEvidence({
   // timestamp/evidence object.
   const unitConfigurationFinished = collectStoppedUnitConfigurations(request);
   const stoppedUnitFinished = collectStoppedUnitStates(request);
+  const systemdManagerFinished = collectSystemdManagerPropertiesV1();
+  validateSystemdManagerPropertiesV1(
+    systemdManagerFinished,
+    "final stopped systemd manager properties",
+  );
   const finished = Math.floor(Date.now() / 1000);
   const evidence = {
     account_policy: accountPolicyFinished,
@@ -6118,6 +6139,7 @@ function collectStoppedPreparationEvidence({
     ...(includeInstalledShape ? {
       systemd_analyze_verify: analyze,
     } : {}),
+    systemd_manager_passes: [systemdManagerStarted, systemdManagerFinished],
     trusted_commands: trustedCommands,
     unit_configuration_passes: [unitConfigurationStarted, unitConfigurationFinished],
   };
