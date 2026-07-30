@@ -32,7 +32,7 @@ the same private operating domain and are never committed.
 - Commercial price and quota decisions live in signed offers/policies. This
   matrix records the selected policy digest and scope bindings; it does not
   invent prices.
-- The render gate accepts only the eight closed profiles listed below. The
+- The render gate accepts only the nine closed profiles listed below. The
   resolved `directory-relay-v1` profile contains exactly one content-addressed
   binary, two one-entry hash manifests, the bounded owner-only config and the
   sentinel-gated unit. It must pass stopped evidence before the exact resolved
