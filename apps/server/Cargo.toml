@@ -87,6 +87,7 @@ pir-runtime-core = { path = "../../crates/protocol/runtime" }
 pir-service-protocol = { path = "../../crates/protocol/service" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
 pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
+pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
 pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
@@ -115,7 +116,6 @@ bitcoinpir-oram = { path = "../../vendor/bitcoinpir-oram", optional = true }
 tempfile = "3"
 pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
-pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-issuer-store = { path = "../../crates/payment/issuer-store" }
 pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
