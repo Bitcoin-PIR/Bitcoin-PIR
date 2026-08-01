@@ -105,6 +105,76 @@ literal relative target, resolved official fragment, and unique presence are
 checked on every managed load-path scan. `procps.service.d` is included in the
 same inherited drop-in closure; any file there, or any other alias or
 activation path resolving to the sysctl fragment, fails closed.
+
+The foreign-activation scan also models the executable lookup boundary in the
+reviewed systemd 255.4 generation. `Environment=PATH=` does not select the
+first `Exec*=` executable: only a non-empty `ExecSearchPath=` or systemd's
+compiled default does. For scanning, the four-directory merged-usr Noble
+default is conservatively overapproximated with `/sbin` and `/bin` as well; the
+documentation does not treat that six-directory set as systemd's exact
+compiled value. After that first process starts, `nice`, `env`, and the
+reviewed shell subset resolve their nested command from the effective child
+`PATH`: manager/default environment, `ExecSearchPath=`, `PassEnvironment=`,
+`Environment=`, then execution-time `EnvironmentFile=`, with
+`UnsetEnvironment=` applied last. PATH absence is not treated as “no lookup”;
+the scanner uses the Noble libc `/bin:/usr/bin` fallback for `nice`/`env` and
+the Noble shell fallback for `sh`. Empty, relative, specifier-dependent, or
+Linux non-root-owned/writable search generations fail closed. A present,
+optional, globbed, or later-created `EnvironmentFile=` and an unpinned
+`PassEnvironment=PATH` are unknown execution-time inputs: they are admissible
+for a fully absolute inert command, but not for a wrapper whose nested command
+depends on PATH.
+
+Fragment and drop-in inputs are therefore combined per effective unit rather
+than assessed only as isolated files. Exact fragments retain manager UnitPath
+priority; equal-named drop-ins retain UnitPath shadowing; instance/template,
+recursive dash-prefix, and type-wide directories are merged before wrapper
+analysis. Every semicolon-separated command and executable-position systemd
+specifier is tested for intersection with both protected handler paths and
+manager identities. The `:` Exec prefix disables only systemd's argv
+environment substitution; it does not disable specifier expansion or a
+subsequent shell's `$` expansion.
+
+Executable identity is evaluated in the service namespace. Literal
+`RootDirectory=` and `BindPaths=`/`BindReadOnlyPaths=` mappings are followed,
+including directory-prefix binds and `+` sources relative to the service root.
+Their Linux sources/search ancestors must be root:root and non-writable. An
+optional `-` bind is rejected because its source may appear after the scan
+without a manager reload. `RootImage=`, `MountImages=`, `ExtensionImages=`,
+`ExtensionDirectories=`, dynamic roots, and other unresolved image-backed
+views fail closed. Thus binding `/usr/bin/systemctl` onto `/opt/manager` cannot
+hide a manager invocation from the host-side scan.
+
+Shell handling is intentionally a small conservative parser, not a proof of
+arbitrary shell semantics. Static words, quotes, backslash removal and `;`
+command boundaries are recursively checked; expansion, command substitution,
+globs, redirection, pipelines, grouping, `eval`, `source`, `cd`, or malformed
+syntax fail closed. Leading shell assignment words are normalized before the
+command; wrapper options, cwd-changing `env`, relative nested pathnames,
+control flow, and shell entrypoints without a literal `-c` command are outside
+the subset and fail closed. This closes constructions
+such as escaped pieces of `systemctl` and `systemd-coredump.socket`. An opaque
+root-owned executable that
+internally chooses to call systemd remains in the explicitly trusted UID 0
+administrator boundary; the scanner does not claim to decompile arbitrary
+binaries.
+
+The complete untouched Noble `/usr/lib/systemd/system` tree is a required
+benign test fixture. Its conservative scan produces exactly four reviewed
+false positives. Three are dependency-only `%i` intersections:
+`systemd-fsck@.service`, `systemd-growfs@.service`, and
+`systemd-pcrfs@.service`. The fourth is `debug-shell.service`, whose exact
+`ExecStart=/usr/bin/bash` intentionally enters an interactive root shell
+without the statically reviewed `-c` subset; arbitrary commands entered by a
+root operator are already inside the explicit trusted-UID-0 boundary. These
+are not family, specifier, or shell relaxations. Each exception requires its
+exact absolute path, dpkg owner `systemd`, installed package/status
+`255.4-1ubuntu8.15`, complete fragment bytes and SHA-256, root:root `0644`
+one-link metadata and exact byte size, plus either the exact `%i.device` or
+`%i.mount` `BindsTo=`/`After=` values or the exact debug-shell `ExecStart=`.
+A copied unit, package revision, metadata change, extra byte, or
+directive/value near miss still fails closed.
+
 The inspected Hetzner boot also contains one root-owned generator link whose
 literal relative target is currently absent:
 `/run/systemd/generator/multi-user.target.wants/systemd-networkd.service ->

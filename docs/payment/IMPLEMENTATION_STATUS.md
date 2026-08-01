@@ -847,9 +847,18 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       truncation retains both `@instance` and template `@` forms; protected
       slice descendants, continuation-through-comment parsing,
       `Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic
-      manager/interpreter expansion are closed
-      too. A benign `Environment=` mention with no activation semantics remains
-      admissible. Every UnitPath ancestor (including `/`), present root, and
+      manager/interpreter expansion are closed too. Effective fragment/drop-in
+      aggregation now carries `ExecSearchPath=`, `Environment=`, execution-time
+      `EnvironmentFile=`, `PassEnvironment=` and final `UnsetEnvironment=` into
+      nested `nice`, `env`, and conservative-shell lookup. It distinguishes the
+      systemd-selected first executable from child PATH and models absent-PATH
+      libc/shell fallbacks. Executable specifiers, symlink/hard-link identities,
+      semicolon command lists, and literal RootDirectory/bind namespace views
+      are checked; optional bind sources, image/extension views, unsupported
+      shell syntax and untrusted Linux execution-path generations fail closed.
+      A benign `Environment=` mention with no activation semantics and a fully
+      absolute inert command remain admissible. Every UnitPath ancestor
+      (including `/`), present root, and
       nested directory must be root:root and not group- or world-writable, with
       its complete generation (or absence) plan-bound. The normalized closure
       and directory generations are fenced
@@ -858,7 +867,16 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       generation-only churn in the three runtime
       generator roots is normalized, while filesystem device remains exact.
       The exact pinned Noble coredump hook drop-in remains the sole admitted
-      exception.
+      protected-coredump artifact exception. The untouched Noble vendor unit
+      root is also scanned end to end; its only four conservative false
+      positives are the dependency-specifier units `systemd-fsck@.service`,
+      `systemd-growfs@.service`, `systemd-pcrfs@.service`, and the exact
+      interactive-root-shell entrypoint in `debug-shell.service`. They require
+      exact systemd `255.4-1ubuntu8.15` package ownership/status, path, full
+      bytes/SHA-256, root metadata/link count/size and exact relevant
+      `BindsTo=`/`After=` or `ExecStart=` values. The debug shell remains only
+      within the explicit trusted-root-operator boundary; foreign copies and
+      every pinned-field near miss remain rejected.
       It separates stable configuration from accepted
       settled active/exited or inactive/dead observation; rejects matching
       sysctl globs/negative exclusions, quoted/escaped foreign action
@@ -1095,8 +1113,17 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       UID/GID holder in either full procfs pass. A disposable exact-systemd
       harness exercises those real manager semantics together with the
       publisher namespace's pre-READY timeout, post-READY failure and exact
-      `reset-failed` convergence. This version reads
-      systemd's structured `Conditions` property through a pinned
+      `reset-failed` convergence. Its systemd-255 unit-lookup cell now executes
+      protected specifier-selected binaries, all three child-PATH wrappers,
+      execution-time optional EnvironmentFile injection, symlink/hard-link
+      handlers, escaped shell reconstruction, post-reload optional bind
+      appearance, bind-remapped systemctl, and a fragment/drop-in PATH split;
+      default-PATH and first-executable controls remain non-activating. This
+      cell first scans the full untouched `/usr/lib/systemd/system` generation
+      and proves the four exact source-pinned stock-unit exceptions above are
+      the complete reject set rather than using a broad specifier relaxation.
+      The same release reads systemd's structured `Conditions` property
+      through a pinned
       `/usr/bin/busctl` rather than accepting systemd 255's
       `Conditions=[unprintable]`, and proves the exact evaluated condition set
       plus current path truth before and after collection. It separately reads

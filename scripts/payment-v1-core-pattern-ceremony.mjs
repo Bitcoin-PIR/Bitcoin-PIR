@@ -43,7 +43,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const CEREMONY_KIND = "bitcoinpir-payment-v1-core-pattern-ceremony-v2";
@@ -185,6 +185,135 @@ export const NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256 =
   "67802699b135aa011f76ff08ecaf37b3a5d821de3a1e6f8ee55c3404e6df208a";
 export const NOBLE_SYSTEMD_SYSCTL_BINARY_SHA256 =
   "de624ddf866f7af840f667a358f78b7f683e1e73aff5c13001f7095292c15210";
+export const NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH =
+  "/usr/lib/systemd/system/systemd-fsck@.service";
+export const NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_SHA256 =
+  "43be4420263da4e79a7fe33f6b628449cc56cf99ca30cdc4dedc7f53aff7ea7e";
+export const NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_BYTES =
+  "#  SPDX-License-Identifier: LGPL-2.1-or-later\n" +
+  "#\n" +
+  "#  This file is part of systemd.\n" +
+  "#\n" +
+  "#  systemd is free software; you can redistribute it and/or modify it\n" +
+  "#  under the terms of the GNU Lesser General Public License as published by\n" +
+  "#  the Free Software Foundation; either version 2.1 of the License, or\n" +
+  "#  (at your option) any later version.\n" +
+  "\n" +
+  "[Unit]\n" +
+  "Description=File System Check on %f\n" +
+  "Documentation=man:systemd-fsck@.service(8)\n" +
+  "DefaultDependencies=no\n" +
+  "BindsTo=%i.device\n" +
+  "Conflicts=shutdown.target\n" +
+  "Wants=systemd-fsckd.socket\n" +
+  "After=%i.device systemd-fsck-root.service local-fs-pre.target systemd-fsckd.socket\n" +
+  "Before=systemd-quotacheck.service shutdown.target\n" +
+  "\n" +
+  "[Service]\n" +
+  "Type=oneshot\n" +
+  "RemainAfterExit=yes\n" +
+  "ExecStart=/usr/lib/systemd/systemd-fsck %f\n" +
+  "TimeoutSec=infinity\n";
+export const NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_PATH =
+  "/usr/lib/systemd/system/systemd-growfs@.service";
+export const NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_SHA256 =
+  "943760ac367b04691c056442e2ae87fb77bc392212f09d8839aa956fb11efc19";
+export const NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_BYTES =
+  "#  SPDX-License-Identifier: LGPL-2.1-or-later\n" +
+  "#\n" +
+  "#  This file is part of systemd.\n" +
+  "#\n" +
+  "#  systemd is free software; you can redistribute it and/or modify it\n" +
+  "#  under the terms of the GNU Lesser General Public License as published by\n" +
+  "#  the Free Software Foundation; either version 2.1 of the License, or\n" +
+  "#  (at your option) any later version.\n" +
+  "\n" +
+  "[Unit]\n" +
+  "Description=Grow File System on %f\n" +
+  "Documentation=man:systemd-growfs@.service(8)\n" +
+  "\n" +
+  "DefaultDependencies=no\n" +
+  "BindsTo=%i.mount\n" +
+  "After=systemd-repart.service %i.mount\n" +
+  "Conflicts=shutdown.target\n" +
+  "Before=shutdown.target\n" +
+  "\n" +
+  "[Service]\n" +
+  "Type=oneshot\n" +
+  "RemainAfterExit=yes\n" +
+  "ExecStart=/usr/lib/systemd/systemd-growfs %f\n" +
+  "TimeoutSec=infinity\n";
+export const NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_PATH =
+  "/usr/lib/systemd/system/systemd-pcrfs@.service";
+export const NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_SHA256 =
+  "1ee11af97de1f38357fba161be05b54cb2116da2f25c5325e8325e5d4d119d51";
+export const NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES =
+  "#  SPDX-License-Identifier: LGPL-2.1-or-later\n" +
+  "#\n" +
+  "#  This file is part of systemd.\n" +
+  "#\n" +
+  "#  systemd is free software; you can redistribute it and/or modify it\n" +
+  "#  under the terms of the GNU Lesser General Public License as published by\n" +
+  "#  the Free Software Foundation; either version 2.1 of the License, or\n" +
+  "#  (at your option) any later version.\n" +
+  "\n" +
+  "[Unit]\n" +
+  "Description=TPM2 PCR File System Measurement of %f\n" +
+  "Documentation=man:systemd-pcrfs@.service(8)\n" +
+  "DefaultDependencies=no\n" +
+  "BindsTo=%i.mount\n" +
+  "Conflicts=shutdown.target\n" +
+  "After=%i.mount systemd-pcrfs-root.service\n" +
+  "Before=shutdown.target\n" +
+  "ConditionPathExists=!/etc/initrd-release\n" +
+  "ConditionSecurity=measured-uki\n" +
+  "\n" +
+  "[Service]\n" +
+  "Type=oneshot\n" +
+  "RemainAfterExit=yes\n" +
+  "ExecStart=/usr/lib/systemd/systemd-pcrextend --graceful --file-system=%f\n";
+export const NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH =
+  "/usr/lib/systemd/system/debug-shell.service";
+export const NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256 =
+  "42d812ebf92500ad48a4743efad4bb89bbc5a8883eaa7e323c3eaba16b086361";
+export const NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES =
+  "#  SPDX-License-Identifier: LGPL-2.1-or-later\n" +
+  "#\n" +
+  "#  This file is part of systemd.\n" +
+  "#\n" +
+  "#  systemd is free software; you can redistribute it and/or modify it\n" +
+  "#  under the terms of the GNU Lesser General Public License as published by\n" +
+  "#  the Free Software Foundation; either version 2.1 of the License, or\n" +
+  "#  (at your option) any later version.\n" +
+  "\n" +
+  "[Unit]\n" +
+  "Description=Early root shell on /dev/tty9 FOR DEBUGGING ONLY\n" +
+  "Documentation=man:systemd-debug-generator(8)\n" +
+  "DefaultDependencies=no\n" +
+  "IgnoreOnIsolate=yes\n" +
+  "ConditionPathExists=/dev/tty9\n" +
+  "After=systemd-vconsole-setup.service\n" +
+  "\n" +
+  "[Service]\n" +
+  "Environment=TERM=linux\n" +
+  "ExecStart=/usr/bin/bash\n" +
+  "Restart=always\n" +
+  "RestartSec=0\n" +
+  "StandardInput=tty\n" +
+  "TTYPath=/dev/tty9\n" +
+  "TTYReset=yes\n" +
+  "TTYVHangup=yes\n" +
+  "KillMode=process\n" +
+  "IgnoreSIGPIPE=no\n" +
+  "# bash ignores SIGTERM\n" +
+  "KillSignal=SIGHUP\n" +
+  "\n" +
+  "# Unset locale for the console getty since the console has problems\n" +
+  "# displaying some internationalized messages.\n" +
+  "UnsetEnvironment=LANG LANGUAGE LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION\n" +
+  "\n" +
+  "[Install]\n" +
+  "WantedBy=sysinit.target\n";
 export const NOBLE_SYSTEMD_SYSCTL_UNIT_BYTES =
   "#  SPDX-License-Identifier: LGPL-2.1-or-later\n" +
   "#\n" +
@@ -3223,8 +3352,22 @@ const APPORT_ACTION_DIRECTIVES = new Set([
   "WantedBy",
   "Wants",
 ]);
-const SYSTEMD_V255_EXEC_SEARCH_PATHS = Object.freeze([
+const SYSTEMD_V255_EXEC_PATH_OVERAPPROXIMATION = Object.freeze([
   "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+]);
+const SYSTEMD_V255_EXECVP_NO_PATH_FALLBACK = Object.freeze(["/bin", "/usr/bin"]);
+const SYSTEMD_V255_SHELL_NO_PATH_FALLBACK = Object.freeze([
+  "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+]);
+const SYSTEMD_EXEC_INTERPRETER_NAMES = Object.freeze([
+  "bash", "busybox", "dash", "sh", "zsh",
+]);
+const SYSTEMD_EXEC_MANAGER_NAMES = Object.freeze(["systemctl"]);
+const SYSTEMD_EXEC_NICE_NAMES = Object.freeze(["nice"]);
+const SYSTEMD_EXEC_ENV_NAMES = Object.freeze(["env"]);
+const PROTECTED_COREDUMP_EXECUTABLE_PATHS = Object.freeze([
+  APPORT_HANDLER_PATH,
+  SYSTEMD_COREDUMP_BINARY_PATH,
 ]);
 
 function decodeSystemdEscape(text, offset) {
@@ -3385,6 +3528,13 @@ function templateTokensIntersect(left, right) {
   return false;
 }
 
+function systemdTemplatesCouldEqual(left, right) {
+  const leftTokens = systemdTemplateTokens(left);
+  const rightTokens = systemdTemplateTokens(right);
+  if (leftTokens === null || rightTokens === null) return true;
+  return templateTokensIntersect(leftTokens, rightTokens);
+}
+
 function systemdTemplateCouldNameProtectedCoreDumpUnit(value) {
   if (isProtectedCoreDumpUnitName(value)) return true;
   const template = systemdTemplateTokens(value);
@@ -3466,6 +3616,21 @@ function systemdLogicalLines(bytes) {
   return logical;
 }
 
+function parseSystemdUnitAssignments(bytes) {
+  const assignments = [];
+  for (const raw of systemdLogicalLines(bytes)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
+    const equals = line.indexOf("=");
+    if (equals < 1) continue;
+    assignments.push({
+      directive: line.slice(0, equals).trim(),
+      value: line.slice(equals + 1).trim(),
+    });
+  }
+  return assignments;
+}
+
 function containsSystemdEnvironmentExpansion(value) {
   for (let index = 0; index < value.length; index += 1) {
     if (value[index] !== "$") continue;
@@ -3482,25 +3647,6 @@ function containsSystemdEnvironmentExpansion(value) {
   return false;
 }
 
-function resolvedExecIdentities(executable, searchPaths) {
-  const candidates = executable.startsWith("/")
-    ? [resolve("/", executable)]
-    : searchPaths.filter(function (directory) { return directory.startsWith("/"); })
-      .map(function (directory) { return resolve("/", directory, executable); });
-  const identities = new Set([executable, resolve("/", executable)]);
-  for (const candidate of candidates) {
-    identities.add(candidate);
-    try {
-      identities.add(realpathSync(candidate));
-      const stat = statSync(candidate, { bigint: true });
-      identities.add("device-inode:" + stat.dev.toString() + ":" + stat.ino.toString());
-    } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
-    }
-  }
-  return identities;
-}
-
 function parseSystemdExecCommands(value) {
   const commands = [];
   let command = [];
@@ -3514,6 +3660,713 @@ function parseSystemdExecCommands(value) {
   }
   if (command.length !== 0) commands.push(command);
   return commands;
+}
+
+function unknownExecPathState(reason) {
+  return { kind: "unknown", paths: [], raw: null, reason };
+}
+
+function absentExecPathState(reason) {
+  return { kind: "absent", paths: [], raw: null, reason };
+}
+
+function trustedRootPathGeneration(path, options) {
+  if (process.platform !== "linux") return true;
+  if (!path.startsWith("/") || path.includes("%") || path.includes("$")) return false;
+  const normalized = resolve("/", path);
+  const components = normalized.split("/").filter(function (component) {
+    return component !== "";
+  });
+  let current = "/";
+  for (let index = -1; index < components.length; index += 1) {
+    if (index >= 0) current = join(current, components[index]);
+    let stat;
+    try {
+      stat = statSync(current);
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+        return !options.leaf_must_exist;
+      }
+      throw error;
+    }
+    if (stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o022) !== 0) return false;
+    if (index === components.length - 1 && options.leaf_directory &&
+        !stat.isDirectory()) return false;
+  }
+  return true;
+}
+
+function knownExecPathState(paths, reason) {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.some(function (path) {
+    return path === "" || !path.startsWith("/") || path.includes("$") ||
+      path.includes("%") || !trustedRootPathGeneration(path, {
+        leaf_directory: true,
+        leaf_must_exist: false,
+      });
+  })) {
+    return unknownExecPathState(
+      reason + " contains an empty, relative, dynamic, or untrusted component",
+    );
+  }
+  const normalized = paths.map(function (path) { return resolve("/", path); });
+  return {
+    kind: "known",
+    paths: Array.from(new Set(normalized)),
+    raw: paths.join(":"),
+    reason,
+  };
+}
+
+function parseSystemdColonPathList(value) {
+  return parseSystemdWords(value).flatMap(function (word) { return word.split(":"); });
+}
+
+function parseSystemdExecPrefix(word) {
+  let offset = 0;
+  let noEnvironmentExpansion = false;
+  while (offset < word.length) {
+    const prefix = word[offset];
+    if (!["-", ":", "@", "+", "!"].includes(prefix)) break;
+    if (prefix === ":") noEnvironmentExpansion = true;
+    offset += 1;
+  }
+  return {
+    executable: word.slice(offset),
+    no_environment_expansion: noEnvironmentExpansion,
+  };
+}
+
+function parseSystemdExecutionContext(assignments) {
+  let execSearchPaths = [];
+  const environment = new Map();
+  let environmentFiles = [];
+  let passEnvironment = [];
+  let unsetEnvironment = [];
+  for (const { directive, value } of assignments) {
+    if (directive === "ExecSearchPath") {
+      if (value === "") execSearchPaths = [];
+      else execSearchPaths.push(...parseSystemdColonPathList(value));
+      continue;
+    }
+    if (directive === "Environment") {
+      if (value === "") {
+        environment.clear();
+        continue;
+      }
+      for (const assignment of parseSystemdWords(value)) {
+        const equals = assignment.indexOf("=");
+        if (equals < 1) continue;
+        environment.set(assignment.slice(0, equals), assignment.slice(equals + 1));
+      }
+      continue;
+    }
+    if (directive === "EnvironmentFile") {
+      if (value === "") environmentFiles = [];
+      else environmentFiles.push(value);
+      continue;
+    }
+    if (directive === "PassEnvironment") {
+      if (value === "") passEnvironment = [];
+      else passEnvironment.push(...parseSystemdWords(value));
+      continue;
+    }
+    if (directive === "UnsetEnvironment") {
+      if (value === "") unsetEnvironment = [];
+      else unsetEnvironment.push(...parseSystemdWords(value));
+    }
+  }
+
+  const initialSearchPath = execSearchPaths.length === 0
+    ? knownExecPathState(
+      Array.from(SYSTEMD_V255_EXEC_PATH_OVERAPPROXIMATION),
+      "systemd default executable path overapproximation",
+    )
+    : knownExecPathState(execSearchPaths, "ExecSearchPath");
+
+  let processPath;
+  if (environmentFiles.length !== 0) {
+    processPath = unknownExecPathState("EnvironmentFile may override PATH at each execution");
+  } else if (environment.has("PATH")) {
+    processPath = knownExecPathState(
+      environment.get("PATH").split(":"),
+      "Environment=PATH",
+    );
+  } else if (passEnvironment.includes("PATH")) {
+    processPath = unknownExecPathState("PassEnvironment=PATH is not manager-environment pinned");
+  } else if (execSearchPaths.length !== 0) {
+    processPath = knownExecPathState(execSearchPaths, "ExecSearchPath-derived process PATH");
+  } else {
+    processPath = knownExecPathState(
+      Array.from(SYSTEMD_V255_EXEC_PATH_OVERAPPROXIMATION),
+      "system-manager default process PATH overapproximation",
+    );
+  }
+
+  if (unsetEnvironment.includes("PATH")) {
+    processPath = absentExecPathState("UnsetEnvironment removed PATH");
+  } else if (processPath.kind === "known" && processPath.raw !== null &&
+      unsetEnvironment.includes("PATH=" + processPath.raw)) {
+    processPath = absentExecPathState("exact UnsetEnvironment PATH deletion");
+  }
+
+  return {
+    environment,
+    environment_files: environmentFiles,
+    exec_search_path: initialSearchPath,
+    pass_environment: passEnvironment,
+    process_path: processPath,
+    unset_environment: unsetEnvironment,
+  };
+}
+
+function execvpPathState(pathState) {
+  if (pathState.kind !== "absent") return pathState;
+  return knownExecPathState(
+    Array.from(SYSTEMD_V255_EXECVP_NO_PATH_FALLBACK),
+    "PATH absent libc execvp fallback",
+  );
+}
+
+function shellPathState(pathState) {
+  if (pathState.kind !== "absent") return pathState;
+  return knownExecPathState(
+    Array.from(SYSTEMD_V255_SHELL_NO_PATH_FALLBACK),
+    "PATH absent Noble shell fallback",
+  );
+}
+
+function parseSystemdExecutionNamespace(assignments) {
+  const bindPathState = new Map([
+    ["BindPaths", []],
+    ["BindReadOnlyPaths", []],
+  ]);
+  let opaque = false;
+  let rootDirectory = null;
+  const imageOrExtensionState = new Map([
+    ["ExtensionDirectories", []],
+    ["ExtensionImages", []],
+    ["MountImages", []],
+    ["RootImage", []],
+  ]);
+  for (const { directive, value } of assignments) {
+    if (directive === "RootDirectory") {
+      const words = parseSystemdWords(value);
+      rootDirectory = value === "" ? null : words[0] || null;
+      if (words.length > 1) opaque = true;
+      if (rootDirectory !== null &&
+          (!rootDirectory.startsWith("/") || rootDirectory.includes("%") ||
+           rootDirectory.includes("$"))) opaque = true;
+      continue;
+    }
+    if (imageOrExtensionState.has(directive)) {
+      if (value === "") imageOrExtensionState.set(directive, []);
+      else imageOrExtensionState.get(directive).push(...parseSystemdWords(value));
+      continue;
+    }
+  }
+  if (Array.from(imageOrExtensionState.values()).some(function (values) {
+    return values.length !== 0;
+  })) opaque = true;
+  if (rootDirectory !== null && !trustedRootPathGeneration(rootDirectory, {
+    leaf_directory: true,
+    leaf_must_exist: true,
+  })) opaque = true;
+
+  for (const { directive, value } of assignments) {
+    if (directive !== "BindPaths" && directive !== "BindReadOnlyPaths") continue;
+    if (value === "") {
+      bindPathState.set(directive, []);
+      continue;
+    }
+    for (const word of parseSystemdWords(value)) {
+      const fields = word.split(":");
+      let source = fields[0] || "";
+      let optional = false;
+      let rootRelative = false;
+      while (source.startsWith("-") || source.startsWith("+")) {
+        if (source[0] === "-") optional = true;
+        if (source[0] === "+") rootRelative = true;
+        source = source.slice(1);
+      }
+      const destination = fields[1] || source;
+      if (optional) {
+        // An optional bind source may be absent during the scan and appear
+        // before execution without a manager reload.  This scanner has no
+        // durable generation pin for that source, so it cannot prove the
+        // execution namespace.
+        opaque = true;
+      }
+      if (!source.startsWith("/") || !destination.startsWith("/") ||
+          source.includes("%") || source.includes("$") ||
+          destination.includes("$") ||
+          fields.length > 3 ||
+          (fields[2] !== undefined && !["norbind", "rbind"].includes(fields[2]))) {
+        opaque = true;
+        continue;
+      }
+      if (rootRelative) {
+        source = resolve("/", rootDirectory || "/", source.slice(1));
+      }
+      if (!trustedRootPathGeneration(source, {
+        leaf_directory: false,
+        leaf_must_exist: true,
+      }) || !trustedRootPathGeneration(dirname(destination), {
+        leaf_directory: true,
+        leaf_must_exist: false,
+      })) {
+        opaque = true;
+      }
+      bindPathState.get(directive).push({ destination, source });
+    }
+  }
+  return {
+    bind_paths: Array.from(bindPathState.values()).flat(),
+    opaque,
+    root_directory: rootDirectory,
+  };
+}
+
+function executableCandidateTemplates(word, pathState, namespace) {
+  let candidates;
+  if (word.startsWith("/")) {
+    candidates = [resolve("/", word)];
+  } else if (word.includes("/")) {
+    candidates = [word];
+  } else if (pathState.kind === "known") {
+    candidates = pathState.paths.map(function (directory) {
+      return resolve("/", directory, word);
+    });
+  } else {
+    candidates = [];
+  }
+  const expanded = new Set(candidates);
+  for (const candidate of candidates) {
+    if (namespace.root_directory !== null && candidate.startsWith("/")) {
+      expanded.add(resolve("/", namespace.root_directory, candidate.slice(1)));
+    }
+    for (const mapping of namespace.bind_paths) {
+      if (systemdTemplatesCouldEqual(candidate, mapping.destination)) {
+        expanded.add(resolve("/", mapping.source));
+      }
+      if (!mapping.destination.includes("%") && !candidate.includes("%") &&
+          candidate.startsWith(mapping.destination + "/")) {
+        expanded.add(resolve(
+          "/",
+          mapping.source,
+          candidate.slice(mapping.destination.length + 1),
+        ));
+      }
+    }
+  }
+  return Array.from(expanded);
+}
+
+function literalPathsShareIdentity(left, right) {
+  if (left.includes("%") || right.includes("%")) return false;
+  try {
+    const leftStat = statSync(left, { bigint: true });
+    const rightStat = statSync(right, { bigint: true });
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(error.code)) return false;
+    throw error;
+  }
+}
+
+function candidateCouldResolveToTarget(candidate, target) {
+  if (systemdTemplateCouldEqual(candidate, target)) return true;
+  if (candidate.includes("%")) return false;
+  try {
+    if (realpathSync(candidate) === target) return true;
+  } catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error;
+  }
+  return literalPathsShareIdentity(candidate, target);
+}
+
+function executableWordCouldResolveProtected(word, pathState, namespace) {
+  if (!word.startsWith("/") && !word.includes("/") && pathState.kind === "unknown") {
+    return true;
+  }
+  return executableCandidateTemplates(word, pathState, namespace).some(function (candidate) {
+    return PROTECTED_COREDUMP_EXECUTABLE_PATHS.some(function (target) {
+      return candidateCouldResolveToTarget(candidate, target);
+    });
+  });
+}
+
+function executableWordCouldBeNamed(word, pathState, namespace, names) {
+  if (names.some(function (name) {
+    return systemdTemplateCouldEqual(basename(word), name);
+  })) return true;
+  const candidates = executableCandidateTemplates(word, pathState, namespace);
+  return candidates.some(function (candidate) {
+    if (names.some(function (name) {
+      return systemdTemplateCouldEqual(basename(candidate), name);
+    })) return true;
+    if (!candidate.includes("%")) {
+      try {
+        const resolvedCandidate = realpathSync(candidate);
+        if (names.some(function (name) {
+          return basename(resolvedCandidate) === name;
+        })) return true;
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error;
+      }
+    }
+    if (candidate.includes("%")) return false;
+    const identityDirectories = new Set(SYSTEMD_V255_EXEC_PATH_OVERAPPROXIMATION);
+    if (pathState.kind === "known") {
+      for (const directory of pathState.paths) identityDirectories.add(directory);
+    }
+    return names.some(function (name) {
+      return Array.from(identityDirectories).some(function (directory) {
+        return literalPathsShareIdentity(candidate, resolve("/", directory, name));
+      });
+    });
+  });
+}
+
+function parseConservativeShellCommands(script) {
+  const commands = [];
+  let command = [];
+  let word = "";
+  let started = false;
+  let quote = null;
+  function flushWord() {
+    if (!started) return;
+    command.push(word);
+    word = "";
+    started = false;
+  }
+  function flushCommand() {
+    flushWord();
+    if (command.length !== 0) commands.push(command);
+    command = [];
+  }
+  for (let index = 0; index < script.length; index += 1) {
+    const character = script[index];
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      else word += character;
+      started = true;
+      continue;
+    }
+    if (quote === "\"") {
+      if (character === "\"") {
+        quote = null;
+      } else if (character === "\\" && index + 1 < script.length) {
+        index += 1;
+        word += script[index];
+      } else {
+        word += character;
+      }
+      started = true;
+      continue;
+    }
+    if (character === "'" || character === "\"") {
+      quote = character;
+      started = true;
+      continue;
+    }
+    if (character === "\\") {
+      if (index + 1 >= script.length) return null;
+      index += 1;
+      word += script[index];
+      started = true;
+      continue;
+    }
+    if (character === "#" && !started) {
+      while (index + 1 < script.length && script[index + 1] !== "\n") index += 1;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      if (character === "\n") flushCommand();
+      else flushWord();
+      continue;
+    }
+    if (character === ";") {
+      flushCommand();
+      continue;
+    }
+    // Pipelines, background jobs, grouping, functions, redirections and
+    // process substitutions have execution semantics this deliberately small
+    // parser does not claim to reproduce.  Callers fail closed on null.
+    if ("|&(){}<>".includes(character)) return null;
+    word += character;
+    started = true;
+  }
+  if (quote !== null) return null;
+  flushCommand();
+  return commands;
+}
+
+function parseInlinePathAssignment(word) {
+  if (!word.startsWith("PATH=")) return null;
+  return knownExecPathState(word.slice(5).split(":"), "inline PATH assignment");
+}
+
+function isShellAssignmentWord(word) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word);
+}
+
+function niceNestedCommandIndex(words) {
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") return index + 1 < words.length ? index + 1 : null;
+    if (word === "-n" || word === "--adjustment") {
+      index += 1;
+      continue;
+    }
+    if (/^--adjustment=/u.test(word) || /^-[0-9]+$/u.test(word)) continue;
+    if (word.startsWith("-")) return undefined;
+    return index;
+  }
+  return null;
+}
+
+function envNestedCommand(words, processPath) {
+  let pathState = processPath;
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (word === "-i" || word === "--ignore-environment") {
+      pathState = absentExecPathState("env cleared PATH");
+      continue;
+    }
+    if (word === "-u" || word === "--unset") {
+      index += 1;
+      if (index >= words.length) return { dangerous: true };
+      if (words[index] === "PATH") pathState = absentExecPathState("env unset PATH");
+      continue;
+    }
+    if (word.startsWith("--unset=")) {
+      if (word.slice("--unset=".length) === "PATH") {
+        pathState = absentExecPathState("env unset PATH");
+      }
+      continue;
+    }
+    if (word === "-S" || word === "--split-string" || word.startsWith("--split-string=")) {
+      return { dangerous: true };
+    }
+    if (word === "-C" || word === "--chdir" || word.startsWith("--chdir=")) {
+      // env changes cwd before resolving a nested relative pathname.  The
+      // scanner does not carry cwd state, so this execution form is outside
+      // the reviewed wrapper subset even when the next word is currently
+      // absolute.
+      return { dangerous: true };
+    }
+    if (word === "-a" || word === "--argv0") {
+      index += 1;
+      if (index >= words.length) return { dangerous: true };
+      continue;
+    }
+    if (word.startsWith("--argv0=")) continue;
+    if (word.startsWith("-") && word !== "-") return { dangerous: true };
+    const equals = word.indexOf("=");
+    if (equals > 0) {
+      if (word.slice(0, equals) === "PATH") {
+        pathState = knownExecPathState(
+          word.slice(equals + 1).split(":"),
+          "env inline PATH",
+        );
+      }
+      continue;
+    }
+    break;
+  }
+  return {
+    dangerous: false,
+    path_state: pathState,
+    words: words.slice(index),
+  };
+}
+
+function shellCommandsCouldReferenceProtected(
+  words,
+  processPath,
+  namespace,
+  depth,
+) {
+  if (words.some(function (word) {
+    return word.includes("$") || word.includes("`") || word.includes("%");
+  })) {
+    return true;
+  }
+  let commandString = null;
+  for (let index = 1; index < words.length; index += 1) {
+    if (words[index] === "-c" && index + 1 < words.length) {
+      commandString = words[index + 1];
+      break;
+    }
+  }
+  if (commandString === null) {
+    // Script files, stdin and interactive/profile execution are outside the
+    // reviewed static `sh -c` subset.  Their content is not inferred from a
+    // known PATH, so an interpreter invocation without a literal -c command
+    // must fail closed.
+    return true;
+  }
+  const commands = parseConservativeShellCommands(commandString);
+  if (commands === null) return true;
+  let currentPath = shellPathState(processPath);
+  const controlFlowKeywords = new Set([
+    "case", "do", "done", "elif", "else", "esac", "fi", "for", "function",
+    "if", "in", "select", "then", "until", "while",
+  ]);
+  const wrapperKeywords = new Set([
+    "!", "builtin", "command", "exec", "nohup", "time",
+  ]);
+  for (const rawCommand of commands) {
+    let command = Array.from(rawCommand);
+    if (command[0] === "unset" && command.includes("PATH")) {
+      currentPath = shellPathState(absentExecPathState("shell unset PATH"));
+      continue;
+    }
+    if (command[0] === "export" && command.length > 1) {
+      for (const word of command.slice(1)) {
+        const inlinePath = parseInlinePathAssignment(word);
+        if (inlinePath !== null) currentPath = inlinePath;
+      }
+      continue;
+    }
+    for (;;) {
+      while (command.length !== 0 && isShellAssignmentWord(command[0])) {
+        const inlinePath = parseInlinePathAssignment(command[0]);
+        if (inlinePath !== null) currentPath = inlinePath;
+        command.shift();
+      }
+      if (command.length === 0) break;
+      if (controlFlowKeywords.has(command[0])) return true;
+      if (!wrapperKeywords.has(command[0])) break;
+      command.shift();
+      if (command[0]?.startsWith("-")) return true;
+    }
+    if (command.length === 0) continue;
+    if (command.some(function (word) {
+      return /[*?\[]/u.test(word) || word.startsWith("~");
+    }) || [".", "cd", "eval", "source"].includes(command[0])) return true;
+    if (executionChainCouldReferenceProtected(
+      command,
+      currentPath,
+      currentPath,
+      namespace,
+      { argv_environment_expands: false, depth: depth + 1 },
+    )) return true;
+  }
+  return false;
+}
+
+function executionChainCouldReferenceProtected(
+  words,
+  executablePath,
+  processPath,
+  namespace,
+  options,
+) {
+  if (words.length === 0) return false;
+  if (options.depth > 8 || namespace.opaque) return true;
+  const executable = words[0];
+  if (!executable.startsWith("/") && executable.includes("/")) {
+    // Relative pathnames are cwd-dependent for nested execvp/shell wrappers;
+    // systemd itself accepts only absolute paths or slash-free simple names
+    // in the first Exec word.  WorkingDirectory= composition is therefore
+    // intentionally outside this closed scanner subset.
+    return true;
+  }
+  if (options.argv_environment_expands && containsSystemdEnvironmentExpansion(executable)) {
+    return true;
+  }
+  const resolvedExecutablePath = options.depth === 0
+    ? executablePath
+    : execvpPathState(executablePath);
+  if (executableWordCouldResolveProtected(executable, resolvedExecutablePath, namespace)) {
+    return true;
+  }
+  const manager = executableWordCouldBeNamed(
+    executable,
+    resolvedExecutablePath,
+    namespace,
+    SYSTEMD_EXEC_MANAGER_NAMES,
+  );
+  if (manager && (
+    (options.argv_environment_expands && words.some(containsSystemdEnvironmentExpansion)) ||
+    words.some(systemdTemplateCouldNameProtectedCoreDumpUnit)
+  )) return true;
+
+  const nice = executableWordCouldBeNamed(
+    executable,
+    resolvedExecutablePath,
+    namespace,
+    SYSTEMD_EXEC_NICE_NAMES,
+  );
+  if (nice) {
+    const nestedIndex = niceNestedCommandIndex(words);
+    if (nestedIndex === undefined) return true;
+    if (nestedIndex !== null && executionChainCouldReferenceProtected(
+      words.slice(nestedIndex),
+      processPath,
+      processPath,
+      namespace,
+      {
+        argv_environment_expands: options.argv_environment_expands,
+        depth: options.depth + 1,
+      },
+    )) return true;
+  }
+
+  const env = executableWordCouldBeNamed(
+    executable,
+    resolvedExecutablePath,
+    namespace,
+    SYSTEMD_EXEC_ENV_NAMES,
+  );
+  if (env) {
+    const nested = envNestedCommand(words, processPath);
+    if (nested.dangerous) return true;
+    if (nested.words.length !== 0 && executionChainCouldReferenceProtected(
+      nested.words,
+      nested.path_state,
+      nested.path_state,
+      namespace,
+      {
+        argv_environment_expands: options.argv_environment_expands,
+        depth: options.depth + 1,
+      },
+    )) return true;
+  }
+
+  const interpreter = executableWordCouldBeNamed(
+    executable,
+    resolvedExecutablePath,
+    namespace,
+    SYSTEMD_EXEC_INTERPRETER_NAMES,
+  );
+  if (interpreter) {
+    if (basename(executable).includes("busybox") && words.length > 1) {
+      return executionChainCouldReferenceProtected(
+        words.slice(1),
+        processPath,
+        processPath,
+        namespace,
+        {
+          argv_environment_expands: options.argv_environment_expands,
+          depth: options.depth + 1,
+        },
+      );
+    }
+    if (shellCommandsCouldReferenceProtected(
+      words,
+      shellPathState(processPath),
+      namespace,
+      options.depth,
+    )) return true;
+  }
+  return false;
 }
 
 function requiresMountsForCouldReferenceProtectedUnit(value) {
@@ -3533,70 +4386,42 @@ function requiresMountsForCouldReferenceProtectedUnit(value) {
   });
 }
 
+function systemdExecCommandReferencesProtected(
+  command,
+  executionContext,
+  namespace,
+) {
+  const prefix = parseSystemdExecPrefix(command[0]);
+  const normalizedCommand = [prefix.executable, ...command.slice(1)];
+  return executionChainCouldReferenceProtected(
+    normalizedCommand,
+    executionContext.exec_search_path,
+    executionContext.process_path,
+    namespace,
+    {
+      argv_environment_expands: !prefix.no_environment_expansion,
+      depth: 0,
+    },
+  ) || command.some(literalExecWordReferencesApport) ||
+    command.some(function (word) {
+      return word.includes("apport-coredump-hook") ||
+        word.includes("systemd-coredump") ||
+        word.includes("--from-systemd-coredump");
+    });
+}
+
 function unitFileReferencesProtectedCrashHandler(bytes) {
-  const assignments = [];
-  for (const raw of systemdLogicalLines(bytes)) {
-    const line = raw.trim();
-    if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
-    const equals = line.indexOf("=");
-    if (equals < 1) continue;
-    const directive = line.slice(0, equals).trim();
-    const value = line.slice(equals + 1).trim();
-    assignments.push({ directive, value });
-  }
-  const searchPaths = assignments
-    .filter(function (entry) { return entry.directive === "ExecSearchPath"; })
-    .flatMap(function (entry) { return parseSystemdWords(entry.value); })
-    .flatMap(function (value) { return value.split(":"); })
-    .filter(function (value) { return value !== ""; });
-  const effectiveSearchPaths = Array.from(new Set([
-    ...searchPaths,
-    ...SYSTEMD_V255_EXEC_SEARCH_PATHS,
-  ]));
-  const interpreterNames = ["bash", "busybox", "dash", "env", "sh", "zsh"];
-  const systemctlIdentities = resolvedExecIdentities("systemctl", effectiveSearchPaths);
-  const interpreterIdentities = new Set(interpreterNames.flatMap(function (name) {
-    return Array.from(resolvedExecIdentities(name, effectiveSearchPaths));
-  }));
+  const assignments = parseSystemdUnitAssignments(bytes);
+  const executionContext = parseSystemdExecutionContext(assignments);
+  const namespace = parseSystemdExecutionNamespace(assignments);
   for (const { directive, value } of assignments) {
     if (/^Exec[A-Za-z]*$/u.test(directive)) {
       for (const command of parseSystemdExecCommands(value)) {
-        const executable = command[0].replace(/^[-:@+!]+/u, "");
-        const identityWords = [executable, ...command.slice(1)];
-        const referencedIdentities = new Set(identityWords.flatMap(function (word) {
-          return Array.from(resolvedExecIdentities(word, effectiveSearchPaths));
-        }));
-        const referencedIdentityBasenames = new Set(Array.from(
-          referencedIdentities,
-          function (identity) { return basename(identity); },
-        ));
-        const interpreter = interpreterNames.some(function (name) {
-          return referencedIdentityBasenames.has(name);
-        }) || Array.from(referencedIdentities).some(function (identity) {
-          return interpreterIdentities.has(identity);
-        });
-        const systemctlReferenced = referencedIdentityBasenames.has("systemctl") ||
-          Array.from(referencedIdentities).some(function (identity) {
-            return systemctlIdentities.has(identity);
-          });
-        const searchResolved = effectiveSearchPaths.some(function (directory) {
-          if (!directory.startsWith("/") || executable.startsWith("/")) return false;
-          return systemdTemplateCouldEqual(resolve("/", directory, executable), APPORT_HANDLER_PATH);
-        });
-        if (systemdTemplateCouldEqual(executable, APPORT_HANDLER_PATH) ||
-            normalizedExecPathReferencesApport(executable) || searchResolved ||
-            command.some(literalExecWordReferencesApport) ||
-            command.some(function (word) {
-              return word.includes("apport-coredump-hook") ||
-                word.includes("systemd-coredump") ||
-                word.includes("--from-systemd-coredump");
-            }) ||
-            (systemctlReferenced && command.some(function (word) {
-              return systemdTemplateCouldNameProtectedCoreDumpUnit(word);
-            })) ||
-            (systemctlReferenced && command.some(containsSystemdEnvironmentExpansion)) ||
-            (interpreter && command.some(function (word) { return word.includes("$"); })) ||
-            (interpreter && command.slice(1).some(function (word) { return word.includes("%"); }))) {
+        if (systemdExecCommandReferencesProtected(
+          command,
+          executionContext,
+          namespace,
+        )) {
           return true;
         }
       }
@@ -3785,6 +4610,191 @@ function symlinkChainReferencesProtectedCoreDumpUnit(path) {
 }
 
 const systemdDropinDirectoryNames = systemdDropinDirectoryNamesForTest;
+
+function isSystemdV255UnitNameForAggregation(name) {
+  const separator = name.lastIndexOf(".");
+  if (separator < 1 || !SYSTEMD_V255_UNIT_TYPE_SET.has(name.slice(separator + 1))) {
+    return false;
+  }
+  const stem = name.slice(0, separator);
+  const firstTemplate = stem.indexOf("@");
+  return stem !== "" && (firstTemplate < 0 ||
+    (firstTemplate > 0 && stem.indexOf("@", firstTemplate + 1) < 0));
+}
+
+function systemdAggregationRecord(root, path, bytes, rootPriority) {
+  const relativePath = relative(root, path);
+  if (relativePath === "" || relativePath.startsWith("..")) return null;
+  const components = relativePath.split(/[\\/]/u);
+  if (components.length === 1 &&
+      isSystemdV255UnitNameForAggregation(components[0])) {
+    return {
+      assignments: parseSystemdUnitAssignments(bytes),
+      kind: "fragment",
+      path,
+      root_priority: rootPriority,
+      unit: components[0],
+    };
+  }
+  if (components.length !== 2 || !components[1].endsWith(".conf") ||
+      !components[0].endsWith(".d")) return null;
+  const dropinBase = components[0].slice(0, -2);
+  if (!SYSTEMD_V255_UNIT_TYPE_SET.has(dropinBase) &&
+      !isSystemdV255UnitNameForAggregation(dropinBase)) return null;
+  return {
+    assignments: parseSystemdUnitAssignments(bytes),
+    dropin_directory: components[0],
+    dropin_name: components[1],
+    kind: "dropin",
+    path,
+    root_priority: rootPriority,
+  };
+}
+
+function templateUnitForConcreteInstance(unit) {
+  const parsed = parseSystemdV255UnitName(unit);
+  if (parsed.instance === null || parsed.instance === "") return null;
+  return parsed.prefix + "@." + parsed.type;
+}
+
+function executionContextKey(context) {
+  return JSON.stringify({
+    exec_search_path: context.exec_search_path,
+    process_path: context.process_path,
+  });
+}
+
+function namespaceKey(namespace) {
+  return JSON.stringify(namespace);
+}
+
+function uniqueBy(values, key) {
+  const observed = new Set();
+  return values.filter(function (value) {
+    const identity = key(value);
+    if (observed.has(identity)) return false;
+    observed.add(identity);
+    return true;
+  });
+}
+
+function effectiveFragmentRecordsForUnit(records, unit) {
+  const exact = records.filter(function (record) {
+    return record.kind === "fragment" && record.unit === unit;
+  });
+  let candidates = exact;
+  if (candidates.length === 0) {
+    const template = templateUnitForConcreteInstance(unit);
+    if (template !== null) {
+      candidates = records.filter(function (record) {
+        return record.kind === "fragment" && record.unit === template;
+      });
+    }
+  }
+  if (candidates.length === 0) return [];
+  const priority = Math.min(...candidates.map(function (record) {
+    return record.root_priority;
+  }));
+  return candidates.filter(function (record) {
+    return record.root_priority === priority;
+  });
+}
+
+function effectiveDropinRecordsForUnit(records, unit) {
+  const directories = systemdDropinDirectoryNames(unit);
+  const directoryRank = new Map(Array.from(directories, function (directory, index) {
+    return [directory, index];
+  }));
+  const typeDirectory = parseSystemdV255UnitName(unit).type + ".d";
+  const candidates = records.filter(function (record) {
+    return record.kind === "dropin" && directories.has(record.dropin_directory);
+  });
+  // systemd resolves equal-named drop-ins through UnitPath priority.  Preserve
+  // that shadowing boundary while retaining distinct hierarchy/type drop-ins;
+  // the latter are all relevant to the final effective unit.
+  const byName = new Map();
+  for (const record of candidates) {
+    const current = byName.get(record.dropin_name);
+    const recordPriority = [
+      record.dropin_directory === typeDirectory ? 1 : 0,
+      record.root_priority,
+      directoryRank.get(record.dropin_directory),
+    ];
+    const currentPriority = current === undefined ? null : [
+      current.dropin_directory === typeDirectory ? 1 : 0,
+      current.root_priority,
+      directoryRank.get(current.dropin_directory),
+    ];
+    if (current === undefined || recordPriority.some(function (value, index) {
+      return value < currentPriority[index] &&
+        recordPriority.slice(0, index).every(function (prefix, prefixIndex) {
+          return prefix === currentPriority[prefixIndex];
+        });
+    })) {
+      byName.set(record.dropin_name, record);
+    }
+  }
+  return Array.from(byName.values());
+}
+
+function aggregatedUnitExecReferencesProtected(records) {
+  const units = new Set();
+  for (const record of records) {
+    if (record.kind === "fragment") units.add(record.unit);
+    if (record.kind === "dropin") {
+      const base = record.dropin_directory.slice(0, -2);
+      if (isSystemdV255UnitNameForAggregation(base)) units.add(base);
+    }
+  }
+  for (const unit of units) {
+    const related = [
+      ...effectiveFragmentRecordsForUnit(records, unit),
+      ...effectiveDropinRecordsForUnit(records, unit),
+    ];
+    if (related.length < 2) continue;
+    const ordered = Array.from(related).sort(function (left, right) {
+      if (left.kind !== right.kind) return left.kind === "fragment" ? -1 : 1;
+      if (left.root_priority !== right.root_priority) {
+        return right.root_priority - left.root_priority;
+      }
+      return left.path.localeCompare(right.path);
+    });
+    const allAssignments = ordered.flatMap(function (record) {
+      return record.assignments;
+    });
+    const contexts = uniqueBy([
+      parseSystemdExecutionContext([]),
+      ...related.map(function (record) {
+        return parseSystemdExecutionContext(record.assignments);
+      }),
+      parseSystemdExecutionContext(allAssignments),
+    ], executionContextKey);
+    const namespaces = uniqueBy([
+      parseSystemdExecutionNamespace([]),
+      ...related.map(function (record) {
+        return parseSystemdExecutionNamespace(record.assignments);
+      }),
+      parseSystemdExecutionNamespace(allAssignments),
+    ], namespaceKey);
+    for (const record of related) {
+      for (const { directive, value } of record.assignments) {
+        if (!/^Exec[A-Za-z]*$/u.test(directive)) continue;
+        for (const command of parseSystemdExecCommands(value)) {
+          for (const context of contexts) {
+            for (const namespace of namespaces) {
+              if (systemdExecCommandReferencesProtected(
+                command,
+                context,
+                namespace,
+              )) return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
 
 function sameDirectoryGenerationStat(left, right) {
   return left.dev === right.dev && left.ino === right.ino &&
@@ -4172,6 +5182,190 @@ export function validateCoreDumpManagedLoadPathsForTest(managed, masked) {
   return true;
 }
 
+const NOBLE_SYSTEMD_STOCK_UNIT_EXCEPTIONS = new Map([
+  [NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_BYTES,
+    exception_kind: "specifier-dependency",
+    label: "reviewed Noble systemd-fsck template unit",
+    reviewed_assignments: [
+      { directive: "BindsTo", value: "%i.device" },
+      {
+        directive: "After",
+        value: "%i.device systemd-fsck-root.service local-fs-pre.target systemd-fsckd.socket",
+      },
+    ],
+    sha256: NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_BYTES,
+    exception_kind: "specifier-dependency",
+    label: "reviewed Noble systemd-growfs template unit",
+    reviewed_assignments: [
+      { directive: "BindsTo", value: "%i.mount" },
+      { directive: "After", value: "systemd-repart.service %i.mount" },
+    ],
+    sha256: NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES,
+    exception_kind: "specifier-dependency",
+    label: "reviewed Noble systemd-pcrfs template unit",
+    reviewed_assignments: [
+      { directive: "BindsTo", value: "%i.mount" },
+      { directive: "After", value: "%i.mount systemd-pcrfs-root.service" },
+    ],
+    sha256: NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES,
+    exception_kind: "opaque-shell-entrypoint",
+    label: "reviewed Noble debug-shell unit",
+    reviewed_assignments: [
+      { directive: "ExecStart", value: "/usr/bin/bash" },
+    ],
+    sha256: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256,
+  }],
+]);
+
+export function validateNobleSystemdStockUnitExceptionForTest(
+  value,
+  packageOwner,
+  packageInventory,
+) {
+  const reviewed = isPlainObject(value)
+    ? NOBLE_SYSTEMD_STOCK_UNIT_EXCEPTIONS.get(value.path)
+    : undefined;
+  const label = reviewed?.label || "reviewed Noble systemd stock unit";
+  exactKeys(
+    value,
+    ["bytes", "gid", "mode", "nlink", "path", "sha256", "size", "uid"],
+    label,
+  );
+  if (typeof value.bytes !== "string") {
+    fail(label + " bytes must be UTF-8 text");
+  }
+  if (reviewed === undefined) {
+    fail(label + " path is outside the exact reviewed exception set");
+  }
+  const assignments = parseSystemdUnitAssignments(value.bytes);
+  let relevantAssignments;
+  if (reviewed.exception_kind === "specifier-dependency") {
+    relevantAssignments = assignments.filter(function ({ directive, value: assignmentValue }) {
+      return APPORT_ACTION_DIRECTIVES.has(directive) &&
+        parseSystemdWords(assignmentValue).some(function (word) {
+          return word.includes("%");
+        });
+    });
+  } else if (reviewed.exception_kind === "opaque-shell-entrypoint") {
+    relevantAssignments = assignments.filter(function ({ directive }) {
+      return /^Exec[A-Za-z]*$/u.test(directive);
+    });
+  } else {
+    fail(label + " has an unreviewed exception kind");
+  }
+  const normalizedAssignments = relevantAssignments.map(function ({ directive, value }) {
+    return { directive, value };
+  });
+  if (!same(normalizedAssignments, reviewed.reviewed_assignments)) {
+    fail(label + " relevant directive/value set differs from the reviewed exception");
+  }
+  const expected = {
+    bytes: reviewed.bytes,
+    gid: 0,
+    mode: "0644",
+    nlink: 1,
+    path: value.path,
+    sha256: reviewed.sha256,
+    size: Buffer.byteLength(reviewed.bytes, "utf8"),
+    uid: 0,
+  };
+  if (!same(value, expected) ||
+      sha256(Buffer.from(value.bytes, "utf8")) !== value.sha256) {
+    fail(label + " differs from the exact source-pinned generation");
+  }
+  if (packageOwner !== "systemd: " + value.path + "\n" ||
+      packageInventory !==
+      "systemd\t255.4-1ubuntu8.15\tinstall ok installed\n") {
+    fail(label + " does not have the exact reviewed package owner/version");
+  }
+  return true;
+}
+
+export function validateNobleSystemdSpecifierTemplateUnitForTest(
+  value,
+  packageOwner,
+  packageInventory,
+) {
+  const reviewed = isPlainObject(value)
+    ? NOBLE_SYSTEMD_STOCK_UNIT_EXCEPTIONS.get(value.path)
+    : undefined;
+  if (reviewed?.exception_kind !== "specifier-dependency") {
+    fail("reviewed Noble systemd specifier template unit path is not exact");
+  }
+  return validateNobleSystemdStockUnitExceptionForTest(
+    value,
+    packageOwner,
+    packageInventory,
+  );
+}
+
+export function validateNobleSystemdDebugShellUnitForTest(
+  value,
+  packageOwner,
+  packageInventory,
+) {
+  if (!isPlainObject(value) || value.path !== NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH) {
+    fail("reviewed Noble debug-shell unit path is not exact");
+  }
+  return validateNobleSystemdStockUnitExceptionForTest(
+    value,
+    packageOwner,
+    packageInventory,
+  );
+}
+
+/*
+ * Backward-compatible narrow helper retained for the original fsck fixture.
+ * It cannot be substituted with either of the other stock exceptions.
+ */
+export function validateNobleSystemdFsckTemplateUnitForTest(
+  value,
+  packageOwner,
+  packageInventory,
+) {
+  if (!isPlainObject(value) ||
+      value.path !== NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH) {
+    fail("reviewed Noble systemd-fsck template unit path is not exact");
+  }
+  return validateNobleSystemdSpecifierTemplateUnitForTest(
+    value,
+    packageOwner,
+    packageInventory,
+  );
+}
+
+function assertExactReviewedNobleSystemdStockUnit(opened) {
+  const packageOwner = runCommand(
+    "/usr/bin/dpkg-query",
+    ["-S", opened.pin.path],
+    "Noble systemd stock unit package owner",
+  );
+  const packageInventory = runCommand(
+    "/usr/bin/dpkg-query",
+    [
+      "-W",
+      "-f=${binary:Package}\\t${Version}\\t${Status}\\n",
+      "systemd",
+    ],
+    "Noble systemd stock unit package inventory",
+  );
+  return validateNobleSystemdStockUnitExceptionForTest(
+    { ...opened.pin, bytes: opened.bytes.toString("utf8") },
+    packageOwner,
+    packageInventory,
+  );
+}
+
 function exactSystemdSysctlInputs(plan, managedLoadPaths) {
   const unit = openBoundRegular(SYSTEMD_SYSCTL_UNIT_PATH, "systemd-sysctl unit");
   exactPin(unit, plan.systemd_sysctl.unit, "systemd-sysctl unit");
@@ -4217,6 +5411,7 @@ export function scanApportActivation(
         HETZNER_BROKEN_NETWORKD_ENABLEMENT_TARGET,
     } : {});
   const observedBrokenActivationSymlinks = [];
+  const aggregationRecords = [];
   const found = [];
   const implicitTriggers = new Set([
     "apport.automount",
@@ -4233,11 +5428,15 @@ export function scanApportActivation(
       fail("systemd activation input is not root-owned and non-writable: " + path);
     }
   }
-  function visit(path, depth) {
+  function rememberAggregationInput(root, path, bytes, rootPriority) {
+    const record = systemdAggregationRecord(root, path, bytes, rootPriority);
+    if (record !== null) aggregationRecords.push(record);
+  }
+  function visit(root, path, depth, rootPriority) {
     if (depth > 4) fail("systemd enablement scan exceeded reviewed depth");
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       const child = join(path, entry.name);
-      if (entry.isDirectory()) visit(child, depth + 1);
+      if (entry.isDirectory()) visit(root, child, depth + 1, rootPriority);
       if (implicitTriggers.has(entry.name)) {
         fail("implicit Apport activation fragment/dependency exists: " + child);
       }
@@ -4306,6 +5505,7 @@ export function scanApportActivation(
             MAX_JSON_BYTES,
           );
           assertTrustedInput(opened, resolvedTarget);
+          rememberAggregationInput(root, child, opened.bytes, rootPriority);
           if (unitFileReferencesProtectedCrashHandler(opened.bytes)) {
             fail("foreign symlinked systemd unit references apport.service or a protected coredump handler: " + child);
           }
@@ -4349,6 +5549,11 @@ export function scanApportActivation(
           exactPin(opened, reviewedGuardPin, "reviewed reboot guard");
           continue;
         }
+        rememberAggregationInput(root, child, opened.bytes, rootPriority);
+        if (NOBLE_SYSTEMD_STOCK_UNIT_EXCEPTIONS.has(child)) {
+          assertExactReviewedNobleSystemdStockUnit(opened);
+          continue;
+        }
         if (unitFileReferencesProtectedCrashHandler(opened.bytes)) {
           fail("foreign systemd unit references apport.service or a protected coredump handler: " + child);
         }
@@ -4356,7 +5561,8 @@ export function scanApportActivation(
     }
   }
   const visited = new Set();
-  for (const configured of roots) {
+  for (let rootPriority = 0; rootPriority < roots.length; rootPriority += 1) {
+    const configured = roots[rootPriority];
     let root;
     try {
       root = realpathSync(configured);
@@ -4366,7 +5572,10 @@ export function scanApportActivation(
     }
     if (visited.has(root)) continue;
     visited.add(root);
-    visit(root, 0);
+    visit(root, root, 0, rootPriority);
+  }
+  if (aggregatedUnitExecReferencesProtected(aggregationRecords)) {
+    fail("effective systemd fragment/drop-in execution chain references a protected coredump handler");
   }
   observedBrokenActivationSymlinks.sort(function (a, b) {
     return a.path.localeCompare(b.path);

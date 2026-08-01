@@ -476,8 +476,19 @@ hard-link aliases, is rejected mechanically throughout the complete manager
 truncation while retaining both `@instance` and template `@` forms; protected
 slice descendants, continuation-through-comment parsing,
 `Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic manager/interpreter
-expansion are closed too. A benign
-`Environment=` mention with no activation semantics remains admissible. Every
+expansion are closed too. The executable review now follows systemd 255.4's
+separate first-executable and child-PATH rules, including effective
+ExecSearchPath/Environment/EnvironmentFile/PassEnvironment/UnsetEnvironment
+precedence, libc/shell PATH-absent fallbacks, wrapper recursion, specifier
+intersection and fragment/drop-in composition. It evaluates literal
+RootDirectory/bind namespace mappings and rejects optional or untrusted bind
+generations, image/extension-backed views, and unsupported shell semantics.
+This closes the concrete host-view bypass in which `/usr/bin/systemctl` is
+bound onto an innocuous `ExecStart` path after the old host-side identity
+check. A benign `Environment=` mention with no activation semantics and a
+fully absolute inert command remain admissible. Arbitrary behavior hidden
+inside an otherwise opaque root-owned binary remains part of the stated
+trusted-UID-0 boundary, not a claim of binary decompilation. Every
 UnitPath ancestor (including `/`), present root, and nested directory must be
 root:root and not group- or world-writable, with its complete generation (or
 absence) plan-bound. The same normalized load-path closure and directory
@@ -486,6 +497,16 @@ on both sides of manager reload, before rollback restores any Apport sysctl,
 and again before rollback's first mask removal;
 only generation-only churn in the three runtime generator roots is normalized,
 while filesystem device remains exact.
+The untouched Noble vendor unit root is scanned as a required benign baseline.
+Its only four conservative rejects are the exact dependency-specifier units
+`systemd-fsck@.service`, `systemd-growfs@.service`, and
+`systemd-pcrfs@.service`, plus `debug-shell.service`, whose exact interactive
+`/usr/bin/bash` entrypoint is inside the explicit trusted-root-operator
+boundary. Those four narrow exceptions bind
+absolute path, dpkg owner, systemd `255.4-1ubuntu8.15` version/status, full
+fragment bytes/SHA-256, uid/gid/mode/link count/size and exact
+relevant `BindsTo=`/`After=` or `ExecStart=` values. No foreign path,
+family-wide specifier/shell relaxation, or near-miss generation is admitted.
 Matching
 sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
 quoted/escaped external start/stop/reload dependencies, load-path overrides for

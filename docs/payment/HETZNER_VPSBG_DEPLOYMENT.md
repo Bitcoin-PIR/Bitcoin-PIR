@@ -727,10 +727,30 @@ and every inherited drop-in directory systemd would merge are covered,
 including recursive dash truncation that preserves both `@instance` and
 template `@` forms. Protected slice descendants, continuation-through-comment
 parsing, `Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic
-manager/interpreter expansion are closed too. A benign `Environment=` mention
-without activation semantics remains admissible; only the exact pinned Noble
-hook drop-in is otherwise
-admitted. Each manager `UnitPath` ancestor (including `/`), ordered root, and
+manager/interpreter expansion are closed too. The scanner distinguishes
+systemd's first-executable lookup (`ExecSearchPath=` or compiled default) from
+the child PATH used by `nice`, `env`, and the reviewed shell subset. It merges
+fragment, instance/template, dash-prefix and type-wide drop-ins before that
+analysis; execution-time `EnvironmentFile=`, unpinned
+`PassEnvironment=PATH`, absent-PATH fallbacks and every executable-position
+specifier are covered. RootDirectory and literal bind mappings are evaluated
+as the service sees them; optional binds, image/extension-backed namespaces,
+untrusted Linux search/source generations and unsupported shell syntax fail
+closed. This includes binding `/usr/bin/systemctl` onto a differently named
+`ExecStart` path. A benign `Environment=` mention without activation semantics
+and a fully absolute inert command remain admissible; only the exact pinned
+Noble hook drop-in is otherwise admitted as a protected-coredump artifact.
+The full untouched Noble vendor unit root must pass. Its exact
+`systemd-fsck@.service`, `systemd-growfs@.service`, and
+`systemd-pcrfs@.service` dependency-specifier exceptions, plus the exact
+`debug-shell.service` interactive-root-shell entrypoint, are admitted only at
+their original paths with systemd `255.4-1ubuntu8.15` dpkg ownership/status,
+full bytes/SHA-256, root metadata/link count/size and exact relevant
+`BindsTo=`/`After=` or `ExecStart=` values. The interactive shell belongs to
+the explicit trusted-root-operator boundary; any copied or near-miss
+generation fails closed.
+
+Each manager `UnitPath` ancestor (including `/`), ordered root, and
 nested directory must be root:root and not group- or world-writable, and its
 full generation (or absence) is plan-bound and rechecked by runtime and
 rollback fences. Rollback proves the closure before restoring any Apport

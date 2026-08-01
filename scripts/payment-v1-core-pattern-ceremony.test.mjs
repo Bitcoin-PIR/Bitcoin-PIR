@@ -44,6 +44,18 @@ import {
   NOBLE_APPORT_SOURCE_URL,
   NOBLE_APPORT_UNIT_BYTES,
   NOBLE_APPORT_UNIT_SHA256,
+  NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_BYTES,
+  NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH,
+  NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_SHA256,
+  NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES,
+  NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH,
+  NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256,
+  NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_BYTES,
+  NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_PATH,
+  NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_SHA256,
+  NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES,
+  NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_PATH,
+  NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_SHA256,
   NOBLE_SYSTEMD_SYSCTL_UNIT_BYTES,
   NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256,
   RECOVERY_ACKNOWLEDGEMENTS,
@@ -103,6 +115,10 @@ import {
   validateDpkgSystemdCoreDumpAbsenceForTest,
   validateManagerUnitPathForTest,
   validateManagerUnitPathGenerationForTest,
+  validateNobleSystemdFsckTemplateUnitForTest,
+  validateNobleSystemdDebugShellUnitForTest,
+  validateNobleSystemdSpecifierTemplateUnitForTest,
+  validateNobleSystemdStockUnitExceptionForTest,
   validatePlan,
   validateRecoveryApproval,
   validateRollbackApproval,
@@ -1527,6 +1543,244 @@ test("benign Environment drop-ins do not become crash-handler activation edges",
   }
 });
 
+test("Noble stock scanner exceptions are exact and source-pinned", () => {
+  const inventory = "systemd\t255.4-1ubuntu8.15\tinstall ok installed\n";
+  const units = [
+    {
+      bytes: NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_BYTES,
+      directive: ["BindsTo=%i.device", "BindsTo=%i.service"],
+      path: NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH,
+      sha256: NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_SHA256,
+    },
+    {
+      bytes: NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_BYTES,
+      directive: ["BindsTo=%i.mount", "BindsTo=%i.service"],
+      path: NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_PATH,
+      sha256: NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_SHA256,
+    },
+    {
+      bytes: NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES,
+      directive: ["After=%i.mount", "After=%i.service"],
+      path: NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_PATH,
+      sha256: NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_SHA256,
+    },
+  ];
+  const reviewedUnits = units.map(function (unit) {
+    return {
+      bytes: unit.bytes,
+      gid: 0,
+      mode: "0644",
+      nlink: 1,
+      path: unit.path,
+      sha256: unit.sha256,
+      size: Buffer.byteLength(unit.bytes, "utf8"),
+      uid: 0,
+    };
+  });
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const reviewed = reviewedUnits[index];
+    const owner = "systemd: " + unit.path + "\n";
+    assert.equal(
+      validateNobleSystemdSpecifierTemplateUnitForTest(
+        reviewed,
+        owner,
+        inventory,
+      ),
+      true,
+      unit.path,
+    );
+    assert.throws(
+      function () {
+        validateNobleSystemdSpecifierTemplateUnitForTest(
+          {
+            ...reviewed,
+            bytes: reviewed.bytes.replace(...unit.directive),
+          },
+          owner,
+          inventory,
+        );
+      },
+      /relevant directive\/value set/u,
+      unit.path + " directive near miss",
+    );
+    assert.throws(function () {
+      validateNobleSystemdSpecifierTemplateUnitForTest(
+        { ...reviewed, bytes: "!" + reviewed.bytes.slice(1) },
+        owner,
+        inventory,
+      );
+    }, undefined, unit.path + " byte near miss");
+    assert.throws(function () {
+      validateNobleSystemdSpecifierTemplateUnitForTest(
+        reviewed,
+        "systemd:arm64: " + unit.path + "\n",
+        inventory,
+      );
+    }, undefined, unit.path + " owner near miss");
+  }
+
+  const debugShell = {
+    bytes: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES,
+    gid: 0,
+    mode: "0644",
+    nlink: 1,
+    path: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH,
+    sha256: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256,
+    size: Buffer.byteLength(NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES, "utf8"),
+    uid: 0,
+  };
+  const debugShellOwner = "systemd: " + debugShell.path + "\n";
+  assert.equal(
+    validateNobleSystemdStockUnitExceptionForTest(
+      debugShell,
+      debugShellOwner,
+      inventory,
+    ),
+    true,
+  );
+  assert.equal(
+    validateNobleSystemdDebugShellUnitForTest(
+      debugShell,
+      debugShellOwner,
+      inventory,
+    ),
+    true,
+  );
+  const debugNearMisses = [
+    {
+      label: "ExecStart",
+      value: {
+        ...debugShell,
+        bytes: debugShell.bytes.replace(
+          "ExecStart=/usr/bin/bash",
+          "ExecStart=/usr/bin/bash -c true",
+        ),
+      },
+    },
+    {
+      label: "extra ExecStop",
+      value: {
+        ...debugShell,
+        bytes: debugShell.bytes.replace(
+          "ExecStart=/usr/bin/bash\n",
+          "ExecStart=/usr/bin/bash\nExecStop=/bin/true\n",
+        ),
+      },
+    },
+    { label: "unrelated byte", value: { ...debugShell, bytes: "!" + debugShell.bytes.slice(1) } },
+    { label: "digest", value: { ...debugShell, sha256: "0".repeat(64) } },
+    { label: "foreign path", value: { ...debugShell, path: "/usr/lib/systemd/system/foreign.service" } },
+    { label: "uid", value: { ...debugShell, uid: 1 } },
+    { label: "gid", value: { ...debugShell, gid: 1 } },
+    { label: "mode", value: { ...debugShell, mode: "0664" } },
+    { label: "nlink", value: { ...debugShell, nlink: 2 } },
+    { label: "size", value: { ...debugShell, size: debugShell.size + 1 } },
+  ];
+  for (const nearMiss of debugNearMisses) {
+    assert.throws(function () {
+      validateNobleSystemdDebugShellUnitForTest(
+        nearMiss.value,
+        debugShellOwner,
+        inventory,
+      );
+    }, undefined, "debug-shell " + nearMiss.label + " near miss");
+  }
+  assert.throws(function () {
+    validateNobleSystemdDebugShellUnitForTest(
+      debugShell,
+      "systemd:arm64: " + debugShell.path + "\n",
+      inventory,
+    );
+  }, undefined, "debug-shell package owner near miss");
+  assert.throws(function () {
+    validateNobleSystemdDebugShellUnitForTest(
+      debugShell,
+      debugShellOwner,
+      "systemd\t255.4-1ubuntu8.14\tinstall ok installed\n",
+    );
+  }, undefined, "debug-shell package version near miss");
+
+  const reviewed = reviewedUnits[0];
+  const owner = "systemd: " + reviewed.path + "\n";
+  assert.equal(
+    validateNobleSystemdFsckTemplateUnitForTest(reviewed, owner, inventory),
+    true,
+  );
+
+  const nearMisses = [
+    {
+      label: "directive",
+      value: {
+        ...reviewed,
+        bytes: reviewed.bytes.replace("BindsTo=%i.device", "BindsTo=%i.service"),
+      },
+    },
+    {
+      label: "unrelated byte",
+      value: { ...reviewed, bytes: reviewed.bytes.replace("File System Check", "Filesystem Check") },
+    },
+    { label: "digest", value: { ...reviewed, sha256: "0".repeat(64) } },
+    { label: "path", value: { ...reviewed, path: "/usr/lib/systemd/system/foreign@.service" } },
+    { label: "uid", value: { ...reviewed, uid: 1 } },
+    { label: "gid", value: { ...reviewed, gid: 1 } },
+    { label: "mode", value: { ...reviewed, mode: "0664" } },
+    { label: "nlink", value: { ...reviewed, nlink: 2 } },
+    { label: "size", value: { ...reviewed, size: reviewed.size + 1 } },
+    { label: "extra metadata", value: { ...reviewed, device: "1" } },
+  ];
+  for (const nearMiss of nearMisses) {
+    assert.throws(
+      function () {
+        validateNobleSystemdFsckTemplateUnitForTest(
+          nearMiss.value,
+          owner,
+          inventory,
+        );
+      },
+      undefined,
+      nearMiss.label,
+    );
+  }
+  for (const nearOwner of [
+    "systemd: /usr/lib/systemd/system/foreign@.service\n",
+  ]) {
+    assert.throws(function () {
+      validateNobleSystemdFsckTemplateUnitForTest(reviewed, nearOwner, inventory);
+    });
+  }
+  for (const nearInventory of [
+    "systemd\t255.4-1ubuntu8.14\tinstall ok installed\n",
+    "systemd\t255.4-1ubuntu8.15\tdeinstall ok config-files\n",
+    "systemd:arm64\t255.4-1ubuntu8.15\tinstall ok installed\n",
+  ]) {
+    assert.throws(function () {
+      validateNobleSystemdFsckTemplateUnitForTest(reviewed, owner, nearInventory);
+    });
+  }
+
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-foreign-stock-template-"));
+  try {
+    for (let index = 0; index < reviewedUnits.length; index += 1) {
+      const path = join(root, "foreign" + index + "@.service");
+      writeFileSync(path, reviewedUnits[index].bytes);
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+      );
+      rmSync(path);
+    }
+    const debugPath = join(root, "foreign-debug-shell.service");
+    writeFileSync(debugPath, debugShell.bytes);
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("Apport activation closure binds the sole reviewed broken generator symlink", () => {
   const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-broken-activation-"));
   try {
@@ -2262,6 +2516,343 @@ test("dynamic manager and interpreter Exec expansion cannot hide protected activ
       "[Service]\nEnvironment=LABEL=systemd-coredump\nExecStart=/bin/true\n",
     );
     assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("executable specifiers intersect protected handlers through direct and reviewed wrappers", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-exec-specifier-"));
+  try {
+    const malicious = [
+      "[Service]\nExecStart=/usr/lib/systemd/systemd-core%i\n",
+      "[Service]\nExecSearchPath=/usr/lib/systemd\nExecStart=systemd-core%i\n",
+      "[Service]\nExecStart=/usr/bin/nice /usr/lib/systemd/systemd-core%i\n",
+      "[Service]\nExecStart=/usr/bin/env /usr/lib/systemd/systemd-core%i\n",
+      "[Service]\nExecStart=/bin/sh -c 'exec /usr/lib/systemd/systemd-core%i'\n",
+      "[Service]\nExecStart=%i start systemd-coredump.socket\n",
+      "[Service]\nEnvironment=MANAGER=systemctl TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/nice $MANAGER start $TARGET\n",
+    ];
+    for (const name of ["foreign.service", "foreign@.service", "foreign@probe.service"]) {
+      const path = join(root, name);
+      for (const bytes of malicious) {
+        writeFileSync(path, bytes);
+        assert.throws(
+          function () { scanApportEnablement([root]); },
+          /protected coredump handler/u,
+          name + ": " + bytes,
+        );
+      }
+      unlinkSync(path);
+    }
+    writeFileSync(
+      join(root, "benign@.service"),
+      "[Service]\nExecSearchPath=/usr/bin\nExecStart=systemd-core%i\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("child PATH follows systemd v255 merge order while first executable ignores Environment PATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-child-path-"));
+  const path = join(root, "foreign.service");
+  function rejects(bytes) {
+    writeFileSync(path, bytes);
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+      bytes,
+    );
+  }
+  function accepts(bytes) {
+    writeFileSync(path, bytes);
+    assert.deepEqual(scanApportEnablement([root]), [], bytes);
+  }
+  try {
+    for (const command of [
+      "/usr/bin/nice apport --start",
+      "/usr/bin/env apport --start",
+      "/bin/sh -c 'exec apport --start'",
+    ]) {
+      rejects(
+        "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+          "ExecStart=" + command + "\n",
+      );
+      accepts("[Service]\nExecStart=" + command + "\n");
+      accepts(
+        "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+          "UnsetEnvironment=PATH\nExecStart=" + command + "\n",
+      );
+    }
+    accepts(
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+        "ExecStart=apport --start\n",
+    );
+    rejects(
+      "[Service]\nExecSearchPath=/usr/share/apport:/usr/bin\n" +
+        "ExecStart=apport --start\n",
+    );
+    rejects(
+      "[Service]\nEnvironmentFile=-/run/late-environment\n" +
+        "ExecStart=/usr/bin/nice true\n",
+    );
+    rejects(
+      "[Service]\nPassEnvironment=PATH\nExecStart=/usr/bin/env true\n",
+    );
+    rejects(
+      "[Service]\nEnvironment=PATH=/usr/bin\n" +
+        "EnvironmentFile=/run/late-environment\n" +
+        "ExecStart=/bin/sh -c 'exec true'\n",
+    );
+    accepts(
+      "[Service]\nEnvironmentFile=-/run/late-environment\nEnvironmentFile=\n" +
+        "ExecStart=/usr/bin/nice true\n",
+    );
+    accepts(
+      "[Service]\nPassEnvironment=PATH\nEnvironment=PATH=/usr/bin\n" +
+        "ExecStart=/usr/bin/env true\n",
+    );
+    rejects(
+      "[Service]\nExecStart=/usr/bin/env PATH=/usr/share/apport:/usr/bin apport --start\n",
+    );
+    accepts(
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+        "ExecStart=/usr/bin/env -i PATH=/usr/bin apport --start\n",
+    );
+    accepts(
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+        "ExecStart=/usr/bin/env -u PATH apport --start\n",
+    );
+    if (process.platform === "linux") {
+      const unsafe = join(root, "unsafe-path");
+      mkdirSync(unsafe);
+      chmodSync(unsafe, 0o777);
+      rejects(
+        "[Service]\nEnvironment=PATH=" + unsafe + ":/usr/bin\n" +
+          "ExecStart=/usr/bin/nice true\n",
+      );
+      rejects(
+        "[Service]\nExecSearchPath=" + unsafe + ":/usr/bin\nExecStart=true\n",
+      );
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("shell subset closes escaping while unsupported shell execution semantics fail closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-shell-subset-"));
+  const path = join(root, "foreign.service");
+  try {
+    for (const bytes of [
+      "[Service]\nExecStart=/bin/sh -c 'exec syst\\\\emctl start systemd-\\\\coredump.socket'\n",
+      "[Service]\nExecStart=/bin/sh -c 'true | true'\n",
+      "[Service]\nExecStart=/bin/sh -c 'true > /run/output'\n",
+      "[Service]\nExecStart=/bin/sh -c 'exec /usr/bin/tru*'\n",
+      "[Service]\nExecStart=/bin/sh -c 'cd /usr/share/apport; exec ./apport'\n",
+      "[Service]\nExecStart=/bin/sh -c 'exec %i'\n",
+      "[Service]\nExecStart=/bin/sh /usr/local/libexec/opaque-script\n",
+      "[Service]\nExecStart=/bin/sh -c 'FOO=bar systemctl start systemd-coredump.socket'\n",
+      "[Service]\nExecStart=/bin/sh -c 'command -- systemctl start systemd-coredump.socket'\n",
+      "[Service]\nExecStart=/bin/sh -c 'time -p systemctl start systemd-coredump.socket'\n",
+      "[Service]\nExecStart=/bin/sh -c 'until systemctl start systemd-coredump.socket; do true; done'\n",
+      "[Service]\nWorkingDirectory=/usr/share/apport\nExecStart=/bin/sh -c 'exec ./apport --start'\n",
+      "[Service]\nExecStart=/usr/bin/env --chdir=/usr/share/apport ./apport --start\n",
+    ]) {
+      writeFileSync(path, bytes);
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        bytes,
+      );
+    }
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=:/usr/bin/systemctl start $TARGET\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=:/bin/sh -c 'systemctl start $TARGET'\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("execution namespace remaps managers and fails closed on late or image-backed injection", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-exec-namespace-"));
+  const path = join(root, "foreign.service");
+  const rootDirectory = join(root, "root-directory");
+  mkdirSync(join(rootDirectory, "usr", "bin"), { recursive: true });
+  writeFileSync(join(rootDirectory, "usr", "bin", "systemctl"), "not executed\n");
+  try {
+    for (const bytes of [
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "BindReadOnlyPaths=/usr/bin/systemctl:/opt/manager\n" +
+        "ExecStart=/opt/manager start $TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "BindPaths=/usr/bin/systemctl:/opt/manager\n" +
+        "ExecStart=/opt/manager start $TARGET\n",
+      "[Service]\nRootDirectory=" + rootDirectory + "\n" +
+        "Environment=TARGET=systemd-coredump.socket\n" +
+        "BindReadOnlyPaths=+/usr/bin/systemctl:/opt/manager\n" +
+        "ExecStart=/opt/manager start $TARGET\n",
+      "[Service]\nBindReadOnlyPaths=-/run/late-manager:/opt/manager\nExecStart=/bin/true\n",
+      "[Service]\nRootImage=/run/late.raw\nExecStart=/bin/true\n",
+      "[Service]\nMountImages=/run/late.raw:/opt\nExecStart=/bin/true\n",
+      "[Service]\nExtensionImages=/run/late.raw\nExecStart=/bin/true\n",
+      "[Service]\nExtensionDirectories=/run/late-extension\nExecStart=/bin/true\n",
+      "[Service]\nRootDirectory=/%i\nExecStart=/bin/true\n",
+    ]) {
+      writeFileSync(path, bytes);
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        bytes,
+      );
+    }
+    for (const bytes of [
+      "[Service]\nBindReadOnlyPaths=/usr/bin/true:/opt/true\nExecStart=/opt/true\n",
+      "[Service]\nRootDirectory=/\nExecStart=/bin/true\n",
+      "[Service]\nRootImage=/run/late.raw\nRootImage=\nExecStart=/bin/true\n",
+      "[Service]\nBindReadOnlyPaths=/usr/bin/systemctl:/opt/manager\n" +
+        "BindReadOnlyPaths=\nExecStart=/bin/true\n",
+    ]) {
+      writeFileSync(path, bytes);
+      assert.deepEqual(scanApportEnablement([root]), [], bytes);
+    }
+    if (process.platform === "linux") {
+      const unsafe = join(root, "unsafe-namespace");
+      mkdirSync(unsafe);
+      chmodSync(unsafe, 0o777);
+      writeFileSync(join(unsafe, "manager"), "not executed\n");
+      for (const bytes of [
+        "[Service]\nRootDirectory=" + unsafe + "\nExecStart=/bin/true\n",
+        "[Service]\nBindReadOnlyPaths=" + unsafe +
+          "/manager:/opt/manager\nExecStart=/bin/true\n",
+      ]) {
+        writeFileSync(path, bytes);
+        assert.throws(
+          function () { scanApportEnablement([root]); },
+          /protected coredump handler/u,
+          bytes,
+        );
+      }
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("effective fragment and drop-ins combine PATH and namespace across systemd hierarchy", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-effective-unit-"));
+  function writeFragment(name, command) {
+    writeFileSync(join(root, name), "[Service]\nExecStart=" + command + "\n");
+  }
+  function writeDropin(directory, name, bytes) {
+    mkdirSync(join(root, directory), { recursive: true });
+    writeFileSync(join(root, directory, name), "[Service]\n" + bytes);
+  }
+  try {
+    writeFragment("split.service", "/usr/bin/nice apport --start");
+    writeDropin("split.service.d", "10-path.conf", "Environment=PATH=/usr/share/apport:/usr/bin\n");
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /effective systemd fragment\/drop-in/u,
+    );
+    rmSync(join(root, "split.service"));
+    rmSync(join(root, "split.service.d"), { recursive: true });
+
+    writeFragment("alpha-beta.service", "/usr/bin/env apport --start");
+    writeDropin("alpha-.service.d", "10-path.conf", "Environment=PATH=/usr/share/apport:/usr/bin\n");
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /effective systemd fragment\/drop-in/u,
+    );
+    rmSync(join(root, "alpha-beta.service"));
+    rmSync(join(root, "alpha-.service.d"), { recursive: true });
+
+    writeFragment("templated@.service", "/bin/sh -c 'exec apport --start'");
+    writeDropin(
+      "templated@probe.service.d",
+      "10-path.conf",
+      "Environment=PATH=/usr/share/apport:/usr/bin\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /effective systemd fragment\/drop-in/u,
+    );
+    rmSync(join(root, "templated@.service"));
+    rmSync(join(root, "templated@probe.service.d"), { recursive: true });
+
+    writeFragment("late-env.service", "/usr/bin/nice true");
+    writeDropin("service.d", "10-environment.conf", "EnvironmentFile=-/run/late-environment\n");
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /effective systemd fragment\/drop-in/u,
+    );
+    rmSync(join(root, "late-env.service"));
+    rmSync(join(root, "service.d"), { recursive: true });
+
+    writeFragment("bound.service", "/opt/manager start systemd-safe.socket");
+    writeDropin(
+      "bound.service.d",
+      "10-bind.conf",
+      "BindReadOnlyPaths=/usr/bin/systemctl:/opt/manager\n" +
+        "Environment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=\nExecStart=/opt/manager start $TARGET\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("effective unit aggregation preserves UnitPath fragment and equal-name drop-in shadowing", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-unitpath-shadow-"));
+  const high = join(root, "high");
+  const low = join(root, "low");
+  try {
+    mkdirSync(join(high, "shadow.service.d"), { recursive: true });
+    mkdirSync(join(low, "shadow.service.d"), { recursive: true });
+    writeFileSync(
+      join(high, "shadow.service"),
+      "[Service]\nExecStart=/usr/bin/nice apport --start\n",
+    );
+    writeFileSync(
+      join(low, "shadow.service"),
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n",
+    );
+    writeFileSync(
+      join(high, "shadow.service.d", "10-path.conf"),
+      "[Service]\nEnvironment=PATH=/usr/bin\n",
+    );
+    writeFileSync(
+      join(low, "shadow.service.d", "10-path.conf"),
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n",
+    );
+    assert.deepEqual(scanApportEnablement([high, low]), []);
+    writeFileSync(
+      join(low, "shadow.service.d", "20-late-path.conf"),
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([high, low]); },
+      /effective systemd fragment\/drop-in/u,
+    );
   } finally {
     rmSync(root, { force: true, recursive: true });
   }

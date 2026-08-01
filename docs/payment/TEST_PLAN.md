@@ -42,7 +42,11 @@ They cover the official Noble three-sysctl side effects; exact systemd load-path
 and complete Unit/Service `GetAll` closure; stable/transient unit separation;
 matching sysctl glob and negative-exclusion rejection; quoted and escaped
 foreign start/stop/reload dependencies; systemd specifier, lexical path,
-interpreter and `ExecSearchPath` handler aliases; reverse Wants plus socket/path
+interpreter and `ExecSearchPath` handler aliases; systemd-v255 first-executable
+versus child-PATH precedence, `nice`/`env`/shell fallback behavior,
+EnvironmentFile/PassEnvironment uncertainty, cross-fragment/drop-in context,
+namespace bind remapping, optional-source generation, image-view rejection and
+the conservative shell subset; reverse Wants plus socket/path
 activation closure; fixed-temp, live-plus-quarantine, empty-lock-directory,
 guard, both gates, mask, lease, preflight, pending, receipt and rollback
 boundaries; SIGTERM, SIGKILL and SIGABRT restart at every mutation boundary;
@@ -1075,11 +1079,25 @@ remain separate acceptance gates.
   exact Ubuntu `systemd 255 (255.4-1ubuntu8.15)` manager. Its unit-lookup cell
   proves continuation across comments, `$TARGET`, wrapped-interpreter,
   semicolon-separated and hard-link-aliased manager execution with a real
-  protected-template marker, trusted UnitPath ancestor capture plus writable
-  ancestor rejection, implicit slice parent activation,
+  protected-template marker. It additionally executes direct and
+  `ExecSearchPath=` specifier binaries, `nice`/`env`/shell child-PATH handler
+  lookup, late optional EnvironmentFile injection, escaped shell reconstruction,
+  symlink/hard-link handlers, bind-remapped systemctl, a bind source created
+  after daemon-reload, and a fragment/drop-in PATH split. Default child PATH
+  and `Environment=PATH` applied only to systemd's first executable are negative
+  controls. The cell also proves trusted UnitPath/search/bind generations plus
+  writable-generation rejection, implicit slice parent activation,
   `Slice=`/`Sockets=` Requires/Wants, and a
-  `RequiresMountsFor=` mount edge, alongside benign controls. It then runs the
-  directory publisher oneshot harness to confirm
+  `RequiresMountsFor=` mount edge, alongside benign controls. The cell also
+  runs the complete untouched Noble `/usr/lib/systemd/system` scan. Audit
+  enumeration fixes its only four conservative rejects to the exact
+  `systemd-fsck@.service`, `systemd-growfs@.service`, and
+  `systemd-pcrfs@.service` dependency-specifier units plus the exact
+  `debug-shell.service` trusted-root-operator entrypoint. Their exact
+  package/path/bytes/SHA/metadata/relevant-directive generations are pinned;
+  version, status, path, owner, byte, digest, mode, link, size and
+  `BindsTo=`/`After=`/`ExecStart=` near misses are negative tests. It then runs
+  the directory publisher oneshot harness to confirm
   real active/exited metadata, completed ExecStart, environment removal and
   zero UID/GID holders, then exercises both
   the pre-READY notify-timeout and post-READY exit failure generations plus
