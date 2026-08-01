@@ -58,6 +58,13 @@ test("functional beta policy has five independent workload scopes and methods", 
       candidate.includes(`workload = "${workload}"`)
     );
     assert.ok(scope, `missing ${workload}`);
+    assert.ok(
+      scope.includes(
+        '[scopes.dataset]\nkind = "manifest-root"\nroot_hex = "@DATABASE_MANIFEST_ROOT_HEX@"',
+      ),
+      `${workload} must bind the loaded database manifest root`,
+    );
+    assert.ok(!scope.includes("class_id ="), `${workload} must not use a class dataset`);
     assert.equal((scope.match(/\[\[scopes\.offers\]\]/g) ?? []).length, 5);
     for (const authorization of [
       "free",

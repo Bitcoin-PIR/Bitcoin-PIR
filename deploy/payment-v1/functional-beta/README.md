@@ -37,6 +37,11 @@ the explicit opt-in flags.
 - one HTTPS standard Cashu mint whose canonical manifest is embedded in the
   signed policy.
 
+Set `@DATABASE_MANIFEST_ROOT_HEX@` in every scope to the SHA-256 of the exact
+`MANIFEST.toml` for the database checkpoint actually loaded by the provider's
+`databases.toml`. It is the dataset binding, not a database class ID, Merkle
+root, or an attestation digest.
+
 ## Minimal isolated Hetzner service shape
 
 The functional-beta units are intentionally separate from the existing
@@ -103,10 +108,11 @@ payment-issuer init-store \
    provider-request, derivation, Cashu recovery/custody and idempotency keys,
    plus distinct direct-receipt, BAT and ARC keys for each of the five scopes,
    with `bpir-admin service-keygen`.
-2. Fill the operator public key and stable server ID in the unsigned policy
-   TOML, then run `bpir-admin service-policy scope-ids --config ...`. This
-   prints the provider ID and all five scope IDs without reading not-yet-built
-   credential bindings.
+2. Fill the operator public key, stable server ID and the actual loaded
+   checkpoint's `MANIFEST.toml` SHA-256 in `@DATABASE_MANIFEST_ROOT_HEX@` in the
+   unsigned policy TOML, then run `bpir-admin service-policy scope-ids --config
+   ...`. This prints the provider ID and all five scope IDs without reading
+   not-yet-built credential bindings.
 3. Build one direct-receipt, BAT and ARC credential binding per scope. Each
    scope uses its own direct-receipt, BAT and ARC key lineage; every binding is
    independently bound to its exact scope and offer ID.
