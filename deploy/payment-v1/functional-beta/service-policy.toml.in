@@ -16,8 +16,8 @@ operation_profile = 11
 entitlement_profile = 101
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -149,8 +149,8 @@ operation_profile = 12
 entitlement_profile = 102
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -282,8 +282,8 @@ operation_profile = 13
 entitlement_profile = 103
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -415,8 +415,8 @@ operation_profile = 14
 entitlement_profile = 104
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -548,8 +548,8 @@ operation_profile = 15
 entitlement_profile = 105
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 25
