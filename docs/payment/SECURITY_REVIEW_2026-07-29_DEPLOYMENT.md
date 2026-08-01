@@ -438,8 +438,7 @@ V1 does not claim storage-level availability isolation.
 This remains a P1 **activation** blocker until the exact pinned Linux binaries
 pass the no-skip behavior suite and target-host evidence proves the effective
 units, source-fair sockets, negative starvation cases, zero current/max swap,
-zero hard/soft core limits, and `kernel.core_pattern=|/usr/bin/false`, including
-the handler's canonical root-owned bytes and metadata. The same ceremony must
+and zero hard/soft core limits. The same deployment process must
 perform the stopped-edge proof and cold Caddy/HAProxy connection reset from the
 initial host PID namespace, followed by a fresh live proof; a warm-reload
 snapshot is rejected. Linux pipe core handlers
@@ -448,48 +447,12 @@ may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 A read-only 2026-07-30 target snapshot confirms why this remains a live gate:
 the existing Caddy unit has `MemorySwapMax=infinity`, hard
 `LimitCORE=infinity`, `StandardOutput=journal` and `StandardError=inherit`;
-the host has an 8 GiB active swap device and an apport pipe core handler. The
+the host has an 8 GiB active swap device. The
 current Caddy process had zero `VmSwap` at that instant, and its adapted JSON
 had no configured global or access log sink, but journald already contained
 structured request-error records with remote-address metadata. These are
 pre-migration observations, not reusable activation evidence. Clearing the old
 mixed-service journal is a separate destructive retention decision.
-
-The repository now contains a non-deployed core-pattern ceremony v2. It binds
-the full Noble Apport side effect (`core_pattern`, `suid_dumpable`, and
-`core_pipe_limit`), exact installed handler and unit generations, never calls
-stock Apport ExecStart/ExecStop, and directly manages only the exact enablement,
-mask, approval-bound lease/preflight, both preflight gates, and reboot-guard
-generations. Stable unit configuration is
-separate from settled active/exited or inactive/dead observation. Matching
-sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
-quoted/escaped external start/stop/reload dependencies, load-path overrides for
-Apport/systemd-sysctl/guard, systemd specifier/path-normalization handler
-aliases, and implicit socket/path triggers are rejected.
-Runtime evidence uses complete Unit/Service `Properties.GetAll` values fenced
-by identical `ListUnits` and `ListJobs` generations plus an unchanged static
-configuration generation. The Apport gate and guard explicitly clear
-`ExecStop`; exact `ExecStartEx`, `ExecStopEx`, and `ExecConditionEx` sets are
-checked. The official Noble systemd-sysctl unit/binary and vendor boot
-enablement are fixed; candidate retains an exact drop-in that clears all five
-credential properties, closing `sysctl.extra` overrides. The preflight,
-systemd-sysctl gate and three-sysctl guard are durable before
-pending; fresh recovery binds the newest exact lease/preflight/pending digest
-and actual `/proc` boot, and terminal receipts bind the preflight and ordered
-recovery-approval chain. A full terminal-state inspection follows receipt-
-candidate persistence and precedes publication; cleanup is revalidated before
-lease release. Exact empty lock generations and live-plus-quarantine regular
-files replay from the durable lease/pins, while unknown generations fail
-closed. The maintenance-lock launcher now accepts only the canonical Node and
-source plus exact mutation command arguments under a closed environment.
-Deterministic receipts remain terminal after link/fsync/verify uncertainty.
-Hard process-death tests cover apply, recovery, rollback and all three sysctls.
-The former privileged-container PID1 matrix was
-retired because it shared the host kernel; an independent-kernel VM gate is
-checked statically but no VM matrix was run. This closes the source/test
-mechanism, not the activation
-gate: the exact host still requires fresh materialization, separate host-wide
-risk approval, execution, and stopped/live evidence.
 
 The directory selection is now resolved to exact source, binary, manifest,
 config and publisher-public-key pins in an explicitly degraded centralized
@@ -528,9 +491,7 @@ service-UID inventory, absent IPv4 and IPv6 TCP 2019, and unchanged site health.
 A mixed or unknown config/unit pair stays stopped; an ambiguous start is
 outcome-unknown and prohibits automatic rollback. The executor requires Linux
 root, exact systemd `255`, an exclusive lock, same-boot/PID/Invocation/preimage
-pins and a pre-existing exact `kernel.core_pattern=|/usr/bin/false`; it never
-changes that sysctl. It has not been installed or run and is not host or
-deployment evidence.
+pins. It has not been installed or run and is not host or deployment evidence.
 
 Boot identity remains a hyphenated UUID, while a live systemd `InvocationID`
 is independently bound as a nonzero 32-character lowercase hexadecimal value.
@@ -749,7 +710,7 @@ on one Hetzner host; arbitrary unmeasured limits are not safe defaults.
   closure before listener creation, HAProxy-before-Caddy re-creation and
   host-initial-PID-namespace evidence, with no warm reload or surviving
   connection graph;
-- target-host no-core/no-swap evidence, including the host core pattern;
+- target-host no-swap evidence;
 - separately approved private provider/issuer canaries with strict client
   verification, and a directory canary only after relay selection is resolved;
   and

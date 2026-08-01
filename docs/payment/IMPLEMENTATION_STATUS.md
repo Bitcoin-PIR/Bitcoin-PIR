@@ -829,37 +829,6 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Implemented but not production-activated
 
-- [x] The core-pattern ceremony v2 binds all three Noble Apport sysctls,
-      official handler and unit bytes/metadata/semantics and the exact
-      enablement symlink. It separates stable configuration from accepted
-      settled active/exited or inactive/dead observation; rejects matching
-      sysctl globs/negative exclusions, quoted/escaped foreign action
-      dependencies, load-path overrides, reverse Wants and implicit socket/path
-      triggers, multi-level aliases and direct handler `Exec*`; and never
-      executes stock Apport start/stop. Runtime checks use complete
-      Unit/Service `GetAll` values fenced by stable unit/job lists and static
-      configuration. The exact Noble systemd-sysctl unit/binary and vendor boot
-      symlink are pinned; candidate retains a drop-in that clears every
-      systemd credential source so `sysctl.extra` cannot override the safe
-      policy on reboot. Before publishing pending it durably
-      publishes an approval-bound lease, then arms an early three-sysctl guard
-      plus Apport and systemd-sysctl preflight gates. Apply converges to an
-      exact manager-loaded mask; recovery binds the actual `/proc` boot, newest
-      exact lease/preflight/pending subject, and ordered approval-digest chain;
-      terminal cleanup removes only the exact preflight/guards/pending/lease/lock
-      generation. Receipt candidates receive a final full terminal-state check,
-      and cleanup is revalidated before lease release. Fixed symlink and
-      regular-file quarantines, including coexistence, plus empty exact lock
-      directories replay every namespace/fsync boundary; symlink replay uses
-      no-clobber hard links. The lock launcher is
-      closed to exact mutation argv and a five-variable exec environment. Pure
-      SIGTERM/SIGKILL/SIGABRT restart tests pass, including preflight-safe reboot
-      and terminal rollback restoration. The
-      invalid shared-kernel privileged-container matrix is retired; the
-      independent-kernel VM gate is static-only and the VM matrix is unrun.
-      This is source/test evidence only; no production approval or host action
-      has occurred. See `CORE_PATTERN_CEREMONY.md`.
-
 - [x] `bpir-admin lightning-staging bootstrap-preflight`, `preflight`, and
       `preflight-supervisor` implement read-only, fail-closed default-Signet
       gates for one local
@@ -1166,9 +1135,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       exact fragment and old Exec commands, `NeedDaemonReload=no`, exactly the
       approved publisher-namespace drop-in,
       `EnvironmentFile`, or `PassEnvironment`. It requires root, Linux, systemd
-      `255`, same-boot/PID/Invocation/preimage pins and a pre-existing exact
-      `kernel.core_pattern=|/usr/bin/false`; it never changes the sysctl. The
-      plan requires a cold
+      `255` and same-boot/PID/Invocation/preimage pins. The plan requires a cold
       stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
       systemd InvocationID, complete actual
       service-UID and existing-site inventories, exact old-config+old-unit

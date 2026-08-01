@@ -76,7 +76,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/provider-no-standard-cashu
 ReadWritePaths=/var/lib/bitcoinpir-provider-nocashu-payment-v1
-InaccessiblePaths=/run/bitcoinpir-source-fair-edge
+InaccessiblePaths=-/run/bitcoinpir-source-fair-edge
 
 # The one signed current policy must omit Standard Cashu eCash. This checked-in
 # zero-retained profile rejects retained-policy flags and payloads; current

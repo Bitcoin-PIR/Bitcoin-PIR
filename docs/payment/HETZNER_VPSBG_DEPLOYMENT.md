@@ -704,19 +704,16 @@ Both edge units require effective `StandardOutput=null` and
 `StandardError=null`, closing the remaining journald path for request errors
 that might contain a live peer address. They also set `LimitCORE=0` and
 `MemorySwapMax=0`; rendered/live checks bind hard and soft core limits, current
-and maximum cgroup swap, and reject drift. Linux can ignore `RLIMIT_CORE` when
-`kernel.core_pattern` names a pipe handler, so edge live evidence additionally
-requires the exact host policy `kernel.core_pattern=|/usr/bin/false` and binds
-that handler's canonical root-owned bytes and metadata into the trusted-command
-evidence. A default systemd-coredump or apport pipe is not accepted as
-non-persistent evidence.
+and maximum cgroup swap, and reject drift. `LimitCORE=0` is a service-local
+best-effort setting; the deployment does not prescribe or collect host-wide
+core-dump policy.
 
 The code does not by itself clear this P1 blocker. Before public activation,
 the exact rendered Linux host must prove both units active, the volatile
 directory `0750`, all four sockets `0660` with the source-fair UID/GID, exact
 files-authoritative NSS/supplementary-group membership, effective memory/task/file limits, and no
 drop-ins. It must also prove zero current/max swap, zero hard/soft core limits,
-and the safe host core pattern. The exact pinned Caddy and HAProxy binaries must pass the real
+and the exact pinned Caddy and HAProxy binaries must pass the real
 fairness/leak suite without skipped tests. HAProxy sees traffic only after
 Caddy accepts TCP/TLS and parses HTTP, so separate Caddy-front slowloris,
 header, handshake, firewall, and volumetric evidence is also mandatory. These
@@ -1019,7 +1016,7 @@ Connection and computed `Sec-WebSocket-Accept` proof.
    PID-namespace/systemd-PID1 binding, identical all-thread holder passes, and the
    exact runtime directory/socket type, owner, group and mode records plus
    effective `MemoryMax`/`TasksMax`, zero current/max swap, zero hard/soft core
-   limits, and `kernel.core_pattern=|/usr/bin/false`. In private no-funds,
+   limits. In private no-funds,
    preserve the evidence digest, stop Caddy and then HAProxy, confirm both units
    are inactive/dead with every listener absent, and revoke
    `EDGE-ACTIVATION-APPROVED` (and the global sentinel unless another separately
@@ -1104,12 +1101,6 @@ immediately, transfer that digest out of band, and run the matching offline
 verifier against the same v8 request. Do
 not place the receipt inside the rendered bundle, where it would violate the
 closed bundle tree, and do not reuse a failed or partial output pathname.
-
-Both stopped-edge and stopped-relay evidence require the host-wide exact
-`kernel.core_pattern=|/usr/bin/false`; this is not merely a live-edge check.
-The collector only observes and rejects drift—it never changes that sysctl.
-Changing the host-wide core policy therefore remains its own reviewed host
-mutation and rollback decision before collecting a production receipt.
 
 For each manifest secret, the final installed parent must be owned by its
 consumer EUID at exact mode `0700`, and every ancestor must satisfy the same

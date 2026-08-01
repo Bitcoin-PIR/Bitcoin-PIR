@@ -78,7 +78,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/issuer /run/bitcoinpir-cln-rpc-guard/issuer /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@
 ReadWritePaths=/var/lib/bitcoinpir-payment-issuer
-InaccessiblePaths=/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge
+InaccessiblePaths=-/srv/lightning -/srv/bitcoin -/run/bitcoinpir-source-fair-edge
 
 # Clearing is part of payment-issuer serve-cln; no separate clearing daemon is
 # installed. There is intentionally no [Install] section. The final unit name
