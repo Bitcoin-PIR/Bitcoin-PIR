@@ -100,6 +100,14 @@ const DIRECTORY_PUBLIC_HAPROXY_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-directory-public-haproxy-artifact-gate.mjs",
 );
+const TEMPLATE_GATE_MODULE_SPECIFIERS = Object.freeze([
+  "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
+  "./payment-v1-publisher-netns-gate.mjs",
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+]);
 const UINT64_MAX_DECIMAL = "18446744073709551615";
 assert.equal(
   REVIEWED_SYSTEMD_VERSION,
@@ -169,50 +177,120 @@ function emptyCredentialProperties() {
   };
 }
 
-function moduleLoaderCodeView(source, label) {
-  const output = source.split("");
+function moduleLoaderTokens(source, label) {
+  const tokens = [];
+  const parenthesisContexts = [];
   let cursor = 0;
-  const blank = (start, end) => {
-    for (let index = start; index < end; index += 1) {
-      if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+  const push = (type, value, index = cursor) => {
+    tokens.push({ index, type, value });
+  };
+  const identifierStart = (character) => /[$_\p{ID_Start}]/u.test(character);
+  const identifierContinue = (character) =>
+    /[$_\u200c\u200d\p{ID_Continue}]/u.test(character);
+  const decodeUnicodeEscape = () => {
+    const start = cursor;
+    assert.equal(source[cursor], "\\", `${label} invalid Unicode escape start`);
+    assert.equal(source[cursor + 1], "u", `${label} invalid identifier escape`);
+    cursor += 2;
+    let hexadecimal;
+    if (source[cursor] === "{") {
+      const end = source.indexOf("}", cursor + 1);
+      assert.ok(end >= 0, `${label} contains an unterminated Unicode escape`);
+      hexadecimal = source.slice(cursor + 1, end);
+      assert.match(hexadecimal, /^[0-9a-f]{1,6}$/iu, `${label} invalid Unicode escape`);
+      cursor = end + 1;
+    } else {
+      hexadecimal = source.slice(cursor, cursor + 4);
+      assert.match(hexadecimal, /^[0-9a-f]{4}$/iu, `${label} invalid Unicode escape`);
+      cursor += 4;
     }
+    const codePoint = Number.parseInt(hexadecimal, 16);
+    assert.ok(codePoint <= 0x10ffff, `${label} Unicode escape is out of range at ${start}`);
+    return String.fromCodePoint(codePoint);
+  };
+  const consumeEscape = () => {
+    assert.equal(source[cursor], "\\", `${label} invalid escape start`);
+    cursor += 1;
+    assert.ok(cursor < source.length, `${label} contains an unterminated escape`);
+    const character = source[cursor];
+    if (character === "\n") {
+      cursor += 1;
+      return "";
+    }
+    if (character === "\r") {
+      cursor += source[cursor + 1] === "\n" ? 2 : 1;
+      return "";
+    }
+    if (character === "x") {
+      const hexadecimal = source.slice(cursor + 1, cursor + 3);
+      assert.match(hexadecimal, /^[0-9a-f]{2}$/iu, `${label} invalid hexadecimal escape`);
+      cursor += 3;
+      return String.fromCharCode(Number.parseInt(hexadecimal, 16));
+    }
+    if (character === "u") {
+      cursor -= 1;
+      return decodeUnicodeEscape();
+    }
+    cursor += 1;
+    return new Map([
+      ["b", "\b"],
+      ["f", "\f"],
+      ["n", "\n"],
+      ["r", "\r"],
+      ["t", "\t"],
+      ["v", "\v"],
+      ["0", "\0"],
+    ]).get(character) ?? character;
   };
   const consumeQuoted = (quote) => {
     const start = cursor;
     cursor += 1;
+    let value = "";
     while (cursor < source.length) {
       if (source[cursor] === "\\") {
-        cursor += 2;
+        value += consumeEscape();
         continue;
       }
       if (source[cursor] === quote) {
         cursor += 1;
-        blank(start, cursor);
+        push("string", value, start);
         return;
       }
-      cursor += 1;
+      assert.ok(
+        source[cursor] !== "\n" && source[cursor] !== "\r",
+        `${label} contains an unterminated string literal`,
+      );
+      const character = String.fromCodePoint(source.codePointAt(cursor));
+      value += character;
+      cursor += character.length;
     }
     assert.fail(`${label} contains an unterminated string literal`);
   };
   const consumeLineComment = () => {
-    const start = cursor;
     cursor += 2;
-    while (cursor < source.length && !new Set(["\n", "\r"]).has(source[cursor])) {
-      cursor += 1;
-    }
-    blank(start, cursor);
+    while (cursor < source.length && !["\n", "\r"].includes(source[cursor])) cursor += 1;
   };
   const consumeBlockComment = () => {
-    const start = cursor;
     const end = source.indexOf("*/", cursor + 2);
     assert.ok(end >= 0, `${label} contains an unterminated block comment`);
     cursor = end + 2;
-    blank(start, cursor);
   };
   const regexCanStartHere = () => {
-    let previous = cursor - 1;
-    while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
-    return previous < 0 || /[([{,:;=!?&|+*%^~<>-]/u.test(source[previous]);
+    const previous = tokens.at(-1);
+    if (previous === undefined) return true;
+    if (previous.allowsRegexAfter === true) return true;
+    if (previous.type === "identifier") {
+      return new Set([
+        "await", "case", "delete", "do", "else", "in", "instanceof",
+        "new", "of", "return", "throw", "typeof", "void", "yield",
+      ]).has(previous.value);
+    }
+    return previous.type === "punctuator" && new Set([
+      "(", "[", "{", ",", ";", ":", "=", "=>", "!", "?", "??",
+      "&&", "||", "+", "-", "*", "%", "&", "|", "^", "~", "<",
+      ">", "<=", ">=", "==", "===", "!=", "!==", "+=", "-=", "*=",
+      "/", "/=", "%=", "&=", "|=", "^=", "&&=", "||=", "??=", "${",
+    ]).has(previous.value);
   };
   const consumeRegex = () => {
     const start = cursor;
@@ -227,8 +305,8 @@ function moduleLoaderCodeView(source, label) {
       if (source[cursor] === "]") inCharacterClass = false;
       if (source[cursor] === "/" && !inCharacterClass) {
         cursor += 1;
-        while (cursor < source.length && /[a-z]/iu.test(source[cursor])) cursor += 1;
-        blank(start, cursor);
+        while (cursor < source.length && identifierContinue(source[cursor])) cursor += 1;
+        push("regex", "<regular-expression>", start);
         return;
       }
       assert.ok(
@@ -239,10 +317,42 @@ function moduleLoaderCodeView(source, label) {
     }
     assert.fail(`${label} contains an unterminated regular expression`);
   };
+  const consumeIdentifier = () => {
+    const start = cursor;
+    let value = "";
+    let first = true;
+    while (cursor < source.length) {
+      let character;
+      if (source[cursor] === "\\" && source[cursor + 1] === "u") {
+        character = decodeUnicodeEscape();
+      } else {
+        character = String.fromCodePoint(source.codePointAt(cursor));
+        if (!(first ? identifierStart(character) : identifierContinue(character))) break;
+        cursor += character.length;
+      }
+      assert.ok(
+        first ? identifierStart(character) : identifierContinue(character),
+        `${label} contains an invalid escaped identifier`,
+      );
+      value += character;
+      first = false;
+    }
+    push("identifier", value, start);
+  };
+  const punctuators = [
+    ">>>=", "**=", "&&=", "||=", "??=", "===", "!==", ">>>", "<<=", ">>=",
+    "...", "=>", "==", "!=", "<=", ">=", "++", "--", "**", "&&", "||",
+    "??", "?.", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<",
+    ">>",
+  ];
   const scanCode = (stopAtTemplateBrace = false) => {
     let braceDepth = 0;
     while (cursor < source.length) {
       const character = source[cursor];
+      if (/\s/u.test(character)) {
+        cursor += 1;
+        continue;
+      }
       if (character === "'" || character === '"') {
         consumeQuoted(character);
         continue;
@@ -264,46 +374,81 @@ function moduleLoaderCodeView(source, label) {
         continue;
       }
       if (stopAtTemplateBrace && character === "}" && braceDepth === 0) {
-        blank(cursor, cursor + 1);
         cursor += 1;
         return;
       }
-      if (stopAtTemplateBrace && character === "{") braceDepth += 1;
-      if (stopAtTemplateBrace && character === "}") braceDepth -= 1;
-      cursor += 1;
+      if (character === "\\" && source[cursor + 1] === "u") {
+        consumeIdentifier();
+        continue;
+      }
+      const codePointCharacter = String.fromCodePoint(source.codePointAt(cursor));
+      if (identifierStart(codePointCharacter)) {
+        consumeIdentifier();
+        continue;
+      }
+      if (/[0-9]/u.test(character)) {
+        const start = cursor;
+        cursor += 1;
+        while (cursor < source.length && /[0-9]/u.test(source[cursor])) cursor += 1;
+        push("number", source.slice(start, cursor), start);
+        continue;
+      }
+      const punctuator = punctuators.find((candidate) => source.startsWith(candidate, cursor)) ?? character;
+      const previous = tokens.at(-1);
+      push("punctuator", punctuator);
+      cursor += punctuator.length;
+      if (punctuator === "(") {
+        parenthesisContexts.push(
+          previous?.type === "identifier" &&
+          new Set(["catch", "for", "if", "switch", "while", "with"]).has(previous.value),
+        );
+      }
+      if (punctuator === ")") {
+        assert.ok(parenthesisContexts.length > 0, `${label} contains an unmatched closing parenthesis`);
+        tokens.at(-1).allowsRegexAfter = parenthesisContexts.pop();
+      }
+      if (stopAtTemplateBrace && punctuator === "{") braceDepth += 1;
+      if (stopAtTemplateBrace && punctuator === "}") braceDepth -= 1;
     }
     assert.equal(stopAtTemplateBrace, false, `${label} contains an unterminated template expression`);
   };
   const consumeTemplate = () => {
     const opening = cursor;
+    const tokenIndex = tokens.length;
+    push("template", null, opening);
     cursor += 1;
-    blank(opening, cursor);
+    let interpolated = false;
+    let value = "";
     while (cursor < source.length) {
       if (source[cursor] === "\\") {
-        const start = cursor;
-        cursor = Math.min(cursor + 2, source.length);
-        blank(start, cursor);
+        value += consumeEscape();
         continue;
       }
       if (source[cursor] === "`") {
-        blank(cursor, cursor + 1);
         cursor += 1;
+        tokens[tokenIndex] = interpolated
+          ? { index: opening, type: "template", value: source.slice(opening, cursor) }
+          : { index: opening, type: "string", value };
         return;
       }
       if (source[cursor] === "$" && source[cursor + 1] === "{") {
-        blank(cursor, cursor + 2);
+        interpolated = true;
+        push("punctuator", "${", cursor);
         cursor += 2;
         scanCode(true);
         continue;
       }
-      blank(cursor, cursor + 1);
-      cursor += 1;
+      const character = String.fromCodePoint(source.codePointAt(cursor));
+      value += character;
+      cursor += character.length;
     }
     const line = source.slice(0, opening).split("\n").length;
     assert.fail(`${label} contains an unterminated template literal opened at line ${line}`);
   };
+  if (source.startsWith("#!")) consumeLineComment();
   scanCode();
-  return output.join("");
+  assert.equal(parenthesisContexts.length, 0, `${label} contains an unmatched opening parenthesis`);
+  return tokens;
 }
 
 function staticModuleSpecifiers(source, label) {
@@ -324,18 +469,141 @@ function staticModuleSpecifiers(source, label) {
 }
 
 function assertReviewedModuleClosure(source, expectedSpecifiers, label) {
-  const code = moduleLoaderCodeView(source, label);
-  for (const [name, pattern] of [
-    ["dynamic import", /\bimport\s*\(/u],
-    ["CommonJS require", /\brequire\s*\(/u],
-    ["createRequire", /\bcreateRequire\b/u],
-    ["module registration", /\bmodule\s*\.\s*(?:register|registerHooks)\b/u],
-    ["builtin module lookup", /\bgetBuiltinModule\b/u],
-    ["worker loader", /\b(?:Worker|SharedWorker|importScripts)\b/u],
-    ["eval loader", /\beval\s*\(/u],
-    ["Function loader", /\bFunction\s*\(/u],
-  ]) {
-    assert.doesNotMatch(code, pattern, `${label} contains forbidden ${name}`);
+  const tokens = moduleLoaderTokens(source, label);
+  const failLoader = (token, detail) => {
+    const line = source.slice(0, token.index).split("\n").length;
+    assert.fail(`${label} contains forbidden loader surface at line ${line}: ${detail}`);
+  };
+  const dangerousIdentifiers = new Set([
+    "Function", "SharedWorker", "Worker", "_linkedBinding", "createRequire",
+    "dlopen", "eval", "getBuiltinModule", "importScripts", "mainModule",
+    "register", "registerHooks", "require",
+  ]);
+  const dangerousProperties = new Set([
+    ...dangerousIdentifiers,
+    "binding",
+    "constructor",
+  ]);
+  const reviewedProcessProperties = new Set([
+    "argv", "egid", "env", "euid", "execPath", "exitCode", "getegid",
+    "geteuid", "getgid", "getuid", "pid", "platform", "stderr", "stdin",
+    "stdout",
+  ]);
+  const nonValueKeywords = new Set([
+    "await", "break", "case", "catch", "class", "const", "continue",
+    "debugger", "default", "delete", "do", "else", "export", "extends",
+    "finally", "for", "function", "if", "import", "in", "instanceof",
+    "let", "new", "of", "return", "static", "switch", "throw", "try",
+    "typeof", "var", "void", "while", "with", "yield",
+  ]);
+  const reviewedInterpolatedMemberAccess = new Map([
+    ["outputs", new Set([
+      "`nft_${family}_before_${suffix}`",
+      "`nft_${family}_before_logging_${suffix}`",
+      "`nft_${family}_logging_deny`",
+    ])],
+    ["stat", new Set(["`${field}Ms`", "`${field}Ns`"])],
+  ]);
+  const computedExpression = (openingIndex) => {
+    let depth = 0;
+    for (let index = openingIndex + 1; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.type === "punctuator" && token.value === "[") depth += 1;
+      if (token.type === "punctuator" && token.value === "]") {
+        if (depth > 0) {
+          depth -= 1;
+          continue;
+        }
+        return tokens.slice(openingIndex + 1, index);
+      }
+    }
+    return null;
+  };
+  const constantString = (expression) => {
+    let position = 0;
+    const primary = () => {
+      const token = expression[position];
+      if (token?.type === "string") {
+        position += 1;
+        return token.value;
+      }
+      if (token?.value === "(") {
+        position += 1;
+        const value = concatenation();
+        if (value === null || expression[position]?.value !== ")") return null;
+        position += 1;
+        return value;
+      }
+      return null;
+    };
+    const concatenation = () => {
+      let value = primary();
+      if (value === null) return null;
+      while (expression[position]?.value === "+") {
+        position += 1;
+        const next = primary();
+        if (next === null) return null;
+        value += next;
+      }
+      return value;
+    };
+    const value = concatenation();
+    return value !== null && position === expression.length ? value : null;
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const next = tokens[index + 1];
+    const afterNext = tokens[index + 2];
+    if (token.type === "identifier" && token.value === "import" && next?.value === "(") {
+      failLoader(token, "dynamic import");
+    }
+    if (token.type === "identifier" && dangerousIdentifiers.has(token.value)) {
+      failLoader(token, `dangerous identifier ${token.value}`);
+    }
+    if (token.type === "identifier" && ["global", "globalThis", "module", "Reflect"].includes(token.value)) {
+      failLoader(token, `unreviewed capability root ${token.value}`);
+    }
+    if (token.type === "identifier" && token.value === "binding" && next?.value === "(") {
+      failLoader(token, "native binding lookup");
+    }
+    if (token.type === "identifier" && token.value === "process") {
+      if (next?.value !== "." || afterNext?.type !== "identifier" ||
+          !reviewedProcessProperties.has(afterNext.value)) {
+        failLoader(token, "process access outside the reviewed property set");
+      }
+    }
+    if ([".", "?."].includes(token.value) && next?.type === "identifier" &&
+        dangerousProperties.has(next.value)) {
+      failLoader(next, `dangerous member property ${next.value}`);
+    }
+    if (token.value === "[") {
+      const previous = tokens[index - 1];
+      const isMemberAccess = previous !== undefined &&
+        ((previous.type === "identifier" && !nonValueKeywords.has(previous.value)) ||
+         new Set(["number", "regex", "string", "template"]).has(previous.type) ||
+         [")", "]", "}"].includes(previous.value));
+      if (isMemberAccess) {
+        const expression = computedExpression(index);
+        const constant = expression === null ? null : constantString(expression);
+        if (constant !== null && dangerousProperties.has(constant)) {
+          failLoader(token, `dangerous computed member property ${constant}`);
+        }
+        const decodedStringProjection = expression?.filter((part) => part.type === "string")
+          .map((part) => part.value).join("");
+        if (decodedStringProjection !== undefined &&
+            dangerousProperties.has(decodedStringProjection)) {
+          failLoader(token, `dangerous decoded member property ${decodedStringProjection}`);
+        }
+        if (tokens[index + 1]?.type === "template") {
+          const reviewedTemplates = previous.type === "identifier"
+            ? reviewedInterpolatedMemberAccess.get(previous.value)
+            : undefined;
+          if (!reviewedTemplates?.has(tokens[index + 1].value)) {
+            failLoader(token, "interpolated computed member property");
+          }
+        }
+      }
+    }
   }
   assert.deepEqual(
     [...staticModuleSpecifiers(source, label)].sort(),
@@ -889,7 +1157,10 @@ test("runtime collector reads credentials only from the systemd Service interfac
   assert.doesNotMatch(collector, /systemctl/);
 });
 
-test("runtime evidence release keeps the exact five-script and builtin import closure", () => {
+// This lexical guard makes loader and dependency expansion review-visible. The
+// exact source pins plus source review remain the authority; this is not a JS
+// sandbox and does not claim to make otherwise-unreviewed source trustworthy.
+test("runtime evidence reviewed sources keep the exact five-script static import set", () => {
   assertReviewedModuleClosure(readFileSync(COLLECTOR, "utf8"), [
     "./payment-v1-publisher-netns-gate.mjs",
     "./payment-v1-rendered-artifact-gate.mjs",
@@ -910,14 +1181,11 @@ test("runtime evidence release keeps the exact five-script and builtin import cl
     "node:path",
     "node:url",
   ], RENDERED_GATE);
-  assertReviewedModuleClosure(readFileSync(TEMPLATE_GATE, "utf8"), [
-    "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
-    "./payment-v1-publisher-netns-gate.mjs",
-    "node:crypto",
-    "node:fs",
-    "node:path",
-    "node:url",
-  ], TEMPLATE_GATE);
+  assertReviewedModuleClosure(
+    readFileSync(TEMPLATE_GATE, "utf8"),
+    TEMPLATE_GATE_MODULE_SPECIFIERS,
+    TEMPLATE_GATE,
+  );
   assertReviewedModuleClosure(readFileSync(PUBLISHER_GATE, "utf8"), [
     "node:crypto",
     "node:fs",
@@ -931,33 +1199,79 @@ test("runtime evidence release keeps the exact five-script and builtin import cl
   );
 });
 
-test("runtime evidence release rejects alternate JavaScript module loaders", () => {
+test("reviewed-source lexer rejects alternate loaders before static dependency comparison", () => {
   const source = readFileSync(TEMPLATE_GATE, "utf8");
   const anchor = "export const ACTIVE_BASELINES";
-  const expected = ["node:crypto", "node:fs", "node:path", "node:url"];
+  assert.doesNotThrow(() => assertReviewedModuleClosure(
+    source,
+    TEMPLATE_GATE_MODULE_SPECIFIERS,
+    "unaltered template gate baseline",
+  ));
   for (const [label, injection, error] of [
-    ["dynamic", 'await import/* separated */("./dynamic-unreviewed.mjs");', /dynamic import/],
+    ["dynamic", 'await import/* separated */("./dynamic-unreviewed.mjs");', /forbidden loader surface.*dynamic import/u],
     ["same-line static", '0; import staticUnreviewed from "./static-unreviewed.mjs";', /dependency closure changed/],
     ["export-from", 'export { default as unreviewed } from "./export-unreviewed.mjs";', /dependency closure changed/],
     ["package", 'import packageUnreviewed from "unreviewed-package";', /dependency closure changed/],
     ["absolute", 'import absoluteUnreviewed from "/tmp/unreviewed.mjs";', /dependency closure changed/],
     ["file URL", 'import fileUnreviewed from "file:///tmp/unreviewed.mjs";', /dependency closure changed/],
     ["data URL", 'import dataUnreviewed from "data:text/javascript,export default 1";', /dependency closure changed/],
-    ["require", 'const unreviewed = require("./unreviewed.cjs");', /CommonJS require/],
-    ["createRequire", 'const unreviewed = createRequire(import.meta.url);', /createRequire/],
-    ["module register", 'module.register("./unreviewed.mjs");', /module registration/],
-    ["worker", 'new Worker("./unreviewed.mjs");', /worker loader/],
+    ["require", 'const unreviewed = require("./unreviewed.cjs");', /forbidden loader surface/u],
+    ["aliased require", 'const load = require; load("./unreviewed.cjs");', /forbidden loader surface/u],
+    ["createRequire", 'const unreviewed = createRequire(import.meta.url);', /forbidden loader surface/u],
+    ["module register", 'module.register("./unreviewed.mjs");', /forbidden loader surface/u],
+    ["module registerHooks", 'module["registerHooks"]("./unreviewed.mjs");', /forbidden loader surface/u],
+    ["computed builtin register", 'process["getBuiltinModule"]("node:module")["register"]("file:///tmp/unreviewed.mjs", import.meta.url);', /forbidden loader surface/u],
+    ["decoded builtin register", 'process["get\\u0042uiltinModule"]("node:module").register("file:///tmp/unreviewed.mjs", import.meta.url);', /forbidden loader surface/u],
+    ["escaped identifier builtin", 'process.get\\u0042uiltinModule("node:module");', /forbidden loader surface/u],
+    ["concatenated builtin register", 'process["get" + "BuiltinModule"]("node:module").register("file:///tmp/unreviewed.mjs", import.meta.url);', /forbidden loader surface/u],
+    ["aliased process", 'const proc = process; proc.getBuiltinModule("node:module");', /forbidden loader surface/u],
+    ["native addon", 'process["dlopen"]({ exports: {} }, "/tmp/unreviewed.node");', /forbidden loader surface/u],
+    ["native binding", 'process["binding"]("fs");', /forbidden loader surface/u],
+    ["linked native binding", 'process["_linkedBinding"]("unreviewed");', /forbidden loader surface/u],
+    ["legacy main module", 'process["mainModule"]["require"]("./unreviewed.cjs");', /forbidden loader surface/u],
+    ["computed eval", 'globalThis["eval"]("import(\\"file:///tmp/unreviewed.mjs\\")");', /forbidden loader surface/u],
+    ["escaped globalThis", 'global\\u0054his["eval"]("import(\\"file:///tmp/unreviewed.mjs\\")");', /forbidden loader surface/u],
+    ["concatenated eval", 'globalThis["ev" + "al"]("import(\\"file:///tmp/unreviewed.mjs\\")");', /forbidden loader surface/u],
+    ["aliased eval", 'const run = globalThis.eval; run("import(\\"file:///tmp/unreviewed.mjs\\")");', /forbidden loader surface/u],
+    ["global Function", 'global["Function"]("return import(\\"file:///tmp/unreviewed.mjs\\")")();', /forbidden loader surface/u],
+    ["computed Function", 'const loader = new globalThis["Function"]("return import(\\"file:///tmp/unreviewed.mjs\\")"); loader();', /forbidden loader surface/u],
+    ["constructor chain", 'const loader = []["filter"]["con" + "structor"]("return import(\\"file:///tmp/unreviewed.mjs\\")"); loader();', /forbidden loader surface/u],
+    ["parenthesized constructor chain", 'const loader = []["filter"]["con" + ("structor")]("return import(\\"file:///tmp/unreviewed.mjs\\")"); loader();', /forbidden loader surface/u],
+    ["joined constructor chain", 'const loader = []["filter"][["con", "structor"].join("")]("return import(\\"file:///tmp/unreviewed.mjs\\")"); loader();', /forbidden loader surface/u],
+    ["escaped constructor chain", 'const loader = [].filter.constr\\u0075ctor("return import(\\"file:///tmp/unreviewed.mjs\\")"); loader();', /forbidden loader surface/u],
+    ["Reflect.get", 'Reflect.get(process, "getBuiltinModule")("node:module");', /forbidden loader surface/u],
+    ["worker", 'new Worker("./unreviewed.mjs");', /forbidden loader surface/u],
+    ["shared worker", 'new SharedWorker("./unreviewed.mjs");', /forbidden loader surface/u],
+    ["worker importScripts", 'importScripts("./unreviewed.js");', /forbidden loader surface/u],
   ]) {
     assert.throws(
       () => assertReviewedModuleClosure(
         source.replace(anchor, `${injection}\n\n${anchor}`),
-        expected,
+        TEMPLATE_GATE_MODULE_SPECIFIERS,
         label,
       ),
       error,
       label,
     );
   }
+});
+
+test("reviewed-source lexer ignores inert loader words in comments, strings, templates and regex", () => {
+  const source = readFileSync(TEMPLATE_GATE, "utf8");
+  const anchor = "export const ACTIVE_BASELINES";
+  const inert = [
+    '// process["getBuiltinModule"] and eval are inert here.',
+    'void "globalThis.eval process.dlopen require";',
+    "void /eval|Function|require|process\\.binding/u;",
+    "if (true) /eval|Function|require|process\\.binding/u.test(\"inert\");",
+    'void `raw eval and require ${1 + 1}`;',
+    'void `raw ${/eval|Function|require/u.test("inert")}`;',
+  ].join("\n");
+  assert.doesNotThrow(() => assertReviewedModuleClosure(
+    source.replace(anchor, `${inert}\n${anchor}`),
+    TEMPLATE_GATE_MODULE_SPECIFIERS,
+    "inert lexical boundaries",
+  ));
 });
 
 test("live collector seals expensive secrets before its final Conditions and generation pass", () => {
