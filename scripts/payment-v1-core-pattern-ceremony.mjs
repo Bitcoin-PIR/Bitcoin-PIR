@@ -3517,16 +3517,19 @@ export function parseBusctlGetAll(text, label) {
   }
   const envelope = parseLosslessJson(text, label);
   exactKeys(envelope, ["data", "type"], label + " envelope");
-  if (envelope.type !== "a{sv}" || !isPlainObject(envelope.data)) {
+  // busctl renders a D-Bus dictionary array as one JSON object inside an array.
+  if (envelope.type !== "a{sv}" || !Array.isArray(envelope.data) ||
+      envelope.data.length !== 1 || !isPlainObject(envelope.data[0])) {
     fail(label + " signature differs from a{sv}");
   }
-  for (const [property, variant] of Object.entries(envelope.data)) {
+  const properties = envelope.data[0];
+  for (const [property, variant] of Object.entries(properties)) {
     exactKeys(variant, ["data", "type"], label + "." + property);
     if (typeof variant.type !== "string" || variant.type.length === 0) {
       fail(label + "." + property + " has an invalid variant signature");
     }
   }
-  return envelope.data;
+  return properties;
 }
 
 function busctlGetAll(path, iface) {
