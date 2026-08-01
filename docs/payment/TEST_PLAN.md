@@ -43,7 +43,10 @@ and complete Unit/Service `GetAll` closure; stable/transient unit separation;
 matching sysctl glob and negative-exclusion rejection; quoted and escaped
 foreign start/stop/reload dependencies; systemd specifier, lexical path,
 interpreter and `ExecSearchPath` handler aliases; systemd-v255 first-executable
-versus child-PATH precedence, `nice`/`env`/shell fallback behavior,
+versus child-PATH precedence; all-argv non-`:` systemd environment-expansion
+rejection; `nice`, `env`, `timeout`, `setsid`, `chrt`, `ionice`, `taskset`,
+`stdbuf`, `nohup`, `setpriv`, GNU `time`, and shell fallback/recursive-wrapper
+behavior; strict option, operand, non-exec, and no-command near misses;
 EnvironmentFile/PassEnvironment uncertainty, cross-fragment/drop-in context,
 namespace bind remapping, optional-source generation, image-view rejection and
 the conservative shell subset; reverse Wants plus socket/path
@@ -1090,13 +1093,20 @@ remain separate acceptance gates.
   `Slice=`/`Sockets=` Requires/Wants, and a
   `RequiresMountsFor=` mount edge, alongside benign controls. The cell also
   runs the complete untouched Noble `/usr/lib/systemd/system` scan. Audit
-  enumeration fixes its only four conservative rejects to the exact
+  enumeration fixes its only nine conservative path exceptions to the exact
   `systemd-fsck@.service`, `systemd-growfs@.service`, and
-  `systemd-pcrfs@.service` dependency-specifier units plus the exact
-  `debug-shell.service` trusted-root-operator entrypoint. Their exact
-  package/path/bytes/SHA/metadata/relevant-directive generations are pinned;
-  version, status, path, owner, byte, digest, mode, link, size and
-  `BindsTo=`/`After=`/`ExecStart=` near misses are negative tests. It then runs
+  `systemd-pcrfs@.service` dependency-specifier units; the exact
+  `debug-shell.service` trusted-root-operator entrypoint; the exact `$TERM`
+  `ExecStart=` units `console-getty.service`, `container-getty@.service`,
+  `getty@.service`, and `serial-getty@.service`; and the exact
+  `autovt@.service -> getty@.service` alias. Regular-file
+  package/path/bytes/SHA/metadata/relevant-directive generations and alias
+  path/target/link/package/target-fragment generations are pinned; every
+  version, status, path, owner, byte, digest, mode, link, size, target, and
+  `BindsTo=`/`After=`/`ExecStart=` near miss is a negative test. The focused
+  scanner tests separately cover each reviewed wrapper at top level and under
+  `sh -c`, including static and late PATH, `PassEnvironment=PATH`, option
+  near misses, and missing-command/non-exec forms. It then runs
   the directory publisher oneshot harness to confirm
   real active/exited metadata, completed ExecStart, environment removal and
   zero UID/GID holders, then exercises both

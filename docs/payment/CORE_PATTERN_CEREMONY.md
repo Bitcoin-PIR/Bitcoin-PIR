@@ -84,9 +84,11 @@ unit names, symlinked units whose targets contain such edges, and implicit
 `.automount`, or `.busname` triggers. Multi-level aliases resolving to the
 official unit and every foreign `Exec*` directive naming the handler are also
 rejected. Physical comment lines do not terminate a systemd continuation,
-matching the pinned systemd 255 parser. Dynamic `$VAR`/`${VAR}` manager
-arguments and every shell/environment-interpreter dollar expansion fail
-closed; manager and interpreter identities are resolved through filesystem
+matching the pinned systemd 255 parser. Every `$VAR`/`${VAR}` expansion in
+every argv word of a non-`:` systemd `Exec*` command fails closed, not only an
+expansion in the executable or an argument to a known manager. Every
+shell/environment-interpreter dollar expansion fails closed too; manager and
+interpreter identities are resolved through filesystem
 symlink and device/inode hard-link aliases, and every deprecated
 semicolon-separated `Exec*` command is scanned individually. An unresolved
 systemd `%` template is rejected when its fixed
@@ -112,18 +114,36 @@ first `Exec*=` executable: only a non-empty `ExecSearchPath=` or systemd's
 compiled default does. For scanning, the four-directory merged-usr Noble
 default is conservatively overapproximated with `/sbin` and `/bin` as well; the
 documentation does not treat that six-directory set as systemd's exact
-compiled value. After that first process starts, `nice`, `env`, and the
-reviewed shell subset resolve their nested command from the effective child
-`PATH`: manager/default environment, `ExecSearchPath=`, `PassEnvironment=`,
-`Environment=`, then execution-time `EnvironmentFile=`, with
-`UnsetEnvironment=` applied last. PATH absence is not treated as “no lookup”;
-the scanner uses the Noble libc `/bin:/usr/bin` fallback for `nice`/`env` and
-the Noble shell fallback for `sh`. Empty, relative, specifier-dependent, or
-Linux non-root-owned/writable search generations fail closed. A present,
-optional, globbed, or later-created `EnvironmentFile=` and an unpinned
-`PassEnvironment=PATH` are unknown execution-time inputs: they are admissible
-for a fully absolute inert command, but not for a wrapper whose nested command
-depends on PATH.
+compiled value. After that first process starts, the scanner recursively
+follows the nested command for the reviewed `nice`, `env`, `timeout`, `setsid`,
+`chrt`, `ionice`, `taskset`, `stdbuf`, `nohup`, `setpriv`, and GNU `time`
+wrappers, as well as the reviewed shell subset. Their simple commands resolve
+from the effective child `PATH`: manager/default environment,
+`ExecSearchPath=`, `PassEnvironment=`, `Environment=`, then execution-time
+`EnvironmentFile=`, with `UnsetEnvironment=` applied last. PATH absence is not
+treated as “no lookup”; the scanner uses the Noble libc `/bin:/usr/bin`
+fallback for execvp-style wrappers and the Noble shell fallback for `sh`.
+Empty, relative, specifier-dependent, or Linux non-root-owned/writable search
+generations fail closed. A present, optional, globbed, or later-created
+`EnvironmentFile=` and an unpinned `PassEnvironment=PATH` are unknown
+execution-time inputs: they are admissible for a fully absolute inert command,
+but not for a wrapper whose nested command depends on PATH. `setpriv
+--reset-env` likewise makes a simple child lookup unknown because its PATH
+depends on `login.defs` and the target identity; an absolute inert child does
+not need that lookup.
+
+Each reviewed wrapper has a conservative, bounded option grammar. Unknown or
+abbreviated options, malformed or missing option operands, a missing nested
+command, help/version modes, and PID/query/dump forms fail closed. Shell
+commands use the same wrapper parsers recursively, so placing a wrapper inside
+`sh -c` does not bypass these rules. This list is a reviewed subset, not the
+universe of programs that can launch another process. `flock` is excluded
+because its file-descriptor/file-lock lifecycle and execution modes need a
+separate model; `unshare` and `nsenter` change or join namespaces; `prlimit`
+mixes process query/mutation and child-exec modes; `chroot` changes root, cwd,
+and path lookup; and `systemd-run` asks the manager to create a transient unit
+rather than directly behaving as an execvp wrapper. These and other
+unreviewed wrappers stay opaque at this boundary.
 
 Fragment and drop-in inputs are therefore combined per effective unit rather
 than assessed only as isolated files. Exact fragments retain manager UnitPath
@@ -154,30 +174,36 @@ arbitrary shell semantics. Static words, quotes, backslash removal and `;`
 command boundaries are recursively checked; expansion, command substitution,
 globs, redirection, pipelines, grouping, `eval`, `source`, `cd`, or malformed
 syntax fail closed. Leading shell assignment words are normalized before the
-command; wrapper options, cwd-changing `env`, relative nested pathnames,
-control flow, and shell entrypoints without a literal `-c` command are outside
-the subset and fail closed. This closes constructions
+command; unreviewed wrapper options, cwd-changing `env`, relative nested
+pathnames, control flow, and shell entrypoints without a literal `-c` command
+are outside the subset and fail closed. This closes constructions
 such as escaped pieces of `systemctl` and `systemd-coredump.socket`. An opaque
-root-owned executable that
-internally chooses to call systemd remains in the explicitly trusted UID 0
-administrator boundary; the scanner does not claim to decompile arbitrary
-binaries.
+root-owned executable or unreviewed wrapper that internally chooses to call
+systemd remains an explicit P2 residual in the trusted-UID-0 administrator
+boundary. The scanner does not claim to decompile arbitrary binaries or prove
+their internal process-launch behavior.
 
 The complete untouched Noble `/usr/lib/systemd/system` tree is a required
-benign test fixture. Its conservative scan produces exactly four reviewed
-false positives. Three are dependency-only `%i` intersections:
+benign test fixture. Its conservative scan produces exactly nine reviewed path
+exceptions. Three are dependency-only `%i` intersections:
 `systemd-fsck@.service`, `systemd-growfs@.service`, and
 `systemd-pcrfs@.service`. The fourth is `debug-shell.service`, whose exact
 `ExecStart=/usr/bin/bash` intentionally enters an interactive root shell
 without the statically reviewed `-c` subset; arbitrary commands entered by a
-root operator are already inside the explicit trusted-UID-0 boundary. These
-are not family, specifier, or shell relaxations. Each exception requires its
-exact absolute path, dpkg owner `systemd`, installed package/status
-`255.4-1ubuntu8.15`, complete fragment bytes and SHA-256, root:root `0644`
-one-link metadata and exact byte size, plus either the exact `%i.device` or
-`%i.mount` `BindsTo=`/`After=` values or the exact debug-shell `ExecStart=`.
-A copied unit, package revision, metadata change, extra byte, or
-directive/value near miss still fails closed.
+root operator are already inside the explicit trusted-UID-0 boundary. Four
+more are the exact `console-getty.service`, `container-getty@.service`,
+`getty@.service`, and `serial-getty@.service` fragments whose reviewed
+`agetty` `ExecStart=` contains `$TERM`. The ninth is the exact
+`autovt@.service -> getty@.service` vendor alias. These are not family,
+specifier, shell, or environment-expansion relaxations. Every regular-file
+exception requires its exact absolute path, dpkg owner `systemd`, installed
+package/status `255.4-1ubuntu8.15`, complete fragment bytes and SHA-256,
+root:root `0644` one-link metadata and exact byte size, plus the exact relevant
+`BindsTo=`/`After=` or `ExecStart=` assignments. The alias requires its exact
+path, literal relative target, root ownership, symlink metadata, dpkg owner and
+the exact reviewed target fragment. A copied unit, package revision, metadata
+change, extra byte, alias-target drift, or directive/value near miss still
+fails closed.
 
 The inspected Hetzner boot also contains one root-owned generator link whose
 literal relative target is currently absent:

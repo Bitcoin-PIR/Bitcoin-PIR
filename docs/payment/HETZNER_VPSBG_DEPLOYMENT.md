@@ -727,11 +727,17 @@ and every inherited drop-in directory systemd would merge are covered,
 including recursive dash truncation that preserves both `@instance` and
 template `@` forms. Protected slice descendants, continuation-through-comment
 parsing, `Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic
-manager/interpreter expansion are closed too. The scanner distinguishes
+manager/interpreter expansion are closed too. Every argv word in a non-`:`
+systemd `Exec*` command fails closed on `$VAR`/`${VAR}`; `:` suppresses only
+manager substitution, not later shell expansion. The scanner distinguishes
 systemd's first-executable lookup (`ExecSearchPath=` or compiled default) from
-the child PATH used by `nice`, `env`, and the reviewed shell subset. It merges
-fragment, instance/template, dash-prefix and type-wide drop-ins before that
-analysis; execution-time `EnvironmentFile=`, unpinned
+the child PATH used by the reviewed `nice`, `env`, `timeout`, `setsid`, `chrt`,
+`ionice`, `taskset`, `stdbuf`, `nohup`, `setpriv`, GNU `time`, and shell
+subsets. Their nested commands are followed recursively under strict bounded
+option grammars; unknown/abbreviated options, malformed or missing structural
+operands, no-command/help/version/query/dump forms, and an unknown child PATH fail
+closed. It merges fragment, instance/template, dash-prefix and type-wide
+drop-ins before that analysis; execution-time `EnvironmentFile=`, unpinned
 `PassEnvironment=PATH`, absent-PATH fallbacks and every executable-position
 specifier are covered. RootDirectory and literal bind mappings are evaluated
 as the service sees them; optional binds, image/extension-backed namespaces,
@@ -740,15 +746,26 @@ closed. This includes binding `/usr/bin/systemctl` onto a differently named
 `ExecStart` path. A benign `Environment=` mention without activation semantics
 and a fully absolute inert command remain admissible; only the exact pinned
 Noble hook drop-in is otherwise admitted as a protected-coredump artifact.
-The full untouched Noble vendor unit root must pass. Its exact
-`systemd-fsck@.service`, `systemd-growfs@.service`, and
-`systemd-pcrfs@.service` dependency-specifier exceptions, plus the exact
-`debug-shell.service` interactive-root-shell entrypoint, are admitted only at
-their original paths with systemd `255.4-1ubuntu8.15` dpkg ownership/status,
-full bytes/SHA-256, root metadata/link count/size and exact relevant
-`BindsTo=`/`After=` or `ExecStart=` values. The interactive shell belongs to
-the explicit trusted-root-operator boundary; any copied or near-miss
-generation fails closed.
+This reviewed wrapper set is not a complete launcher universe: `flock`,
+`unshare`, `nsenter`, `prlimit`, `chroot`, and `systemd-run` remain excluded
+because they add lock lifecycle, namespace/root/path state, process
+query/mutation, or manager-transient-unit semantics. Arbitrary behavior inside
+those or any opaque root-owned binary is an explicit P2 residual in the
+trusted-UID-0 boundary; the scanner does not claim binary decompilation.
+
+The full untouched Noble vendor unit root must pass. Its exact nine path
+exceptions are the three `systemd-fsck@.service`,
+`systemd-growfs@.service`, and `systemd-pcrfs@.service` dependency-specifier
+units; `debug-shell.service`; the four exact `console-getty.service`,
+`container-getty@.service`, `getty@.service`, and
+`serial-getty@.service` `$TERM` `ExecStart=` units; and the exact
+`autovt@.service -> getty@.service` alias. They are admitted only at their
+original paths with systemd `255.4-1ubuntu8.15` dpkg ownership/status, exact
+bytes/SHA-256 and root metadata/link count/size for regular files, exact
+relevant `BindsTo=`/`After=`/`ExecStart=` values, and exact target/link
+metadata plus the reviewed target fragment for the alias. The interactive
+shell belongs to the explicit trusted-root-operator boundary; any copied or
+near-miss generation fails closed.
 
 Each manager `UnitPath` ancestor (including `/`), ordered root, and
 nested directory must be root:root and not group- or world-writable, and its

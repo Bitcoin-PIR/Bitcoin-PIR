@@ -476,19 +476,29 @@ hard-link aliases, is rejected mechanically throughout the complete manager
 truncation while retaining both `@instance` and template `@` forms; protected
 slice descendants, continuation-through-comment parsing,
 `Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic manager/interpreter
-expansion are closed too. The executable review now follows systemd 255.4's
+expansion are closed too. Every argv word in a non-`:` systemd `Exec*` command
+fails closed on `$VAR`/`${VAR}`; `:` suppresses only manager substitution, not
+later shell expansion. The executable review now follows systemd 255.4's
 separate first-executable and child-PATH rules, including effective
 ExecSearchPath/Environment/EnvironmentFile/PassEnvironment/UnsetEnvironment
-precedence, libc/shell PATH-absent fallbacks, wrapper recursion, specifier
-intersection and fragment/drop-in composition. It evaluates literal
+precedence, libc/shell PATH-absent fallbacks, strict recursive grammars for
+`nice`, `env`, `timeout`, `setsid`, `chrt`, `ionice`, `taskset`, `stdbuf`,
+`nohup`, `setpriv`, GNU `time`, and the conservative shell subset, specifier
+intersection and fragment/drop-in composition. Unknown/abbreviated options,
+malformed or missing structural operands, missing child commands, non-exec
+modes, and unknown child PATH fail closed. It evaluates literal
 RootDirectory/bind namespace mappings and rejects optional or untrusted bind
 generations, image/extension-backed views, and unsupported shell semantics.
 This closes the concrete host-view bypass in which `/usr/bin/systemctl` is
 bound onto an innocuous `ExecStart` path after the old host-side identity
 check. A benign `Environment=` mention with no activation semantics and a
-fully absolute inert command remain admissible. Arbitrary behavior hidden
-inside an otherwise opaque root-owned binary remains part of the stated
-trusted-UID-0 boundary, not a claim of binary decompilation. Every
+fully absolute inert command remain admissible. The reviewed wrappers are not
+a complete launcher universe: `flock`, `unshare`, `nsenter`, `prlimit`,
+`chroot`, and `systemd-run` need separate lock, namespace/root/path,
+process-query/mutation, or transient-unit models. Arbitrary behavior hidden
+inside those, another unreviewed wrapper, or an otherwise opaque root-owned
+binary remains an explicit P2 residual in the trusted-UID-0 boundary, not a
+claim of binary decompilation. Every
 UnitPath ancestor (including `/`), present root, and nested directory must be
 root:root and not group- or world-writable, with its complete generation (or
 absence) plan-bound. The same normalized load-path closure and directory
@@ -498,15 +508,21 @@ and again before rollback's first mask removal;
 only generation-only churn in the three runtime generator roots is normalized,
 while filesystem device remains exact.
 The untouched Noble vendor unit root is scanned as a required benign baseline.
-Its only four conservative rejects are the exact dependency-specifier units
-`systemd-fsck@.service`, `systemd-growfs@.service`, and
-`systemd-pcrfs@.service`, plus `debug-shell.service`, whose exact interactive
-`/usr/bin/bash` entrypoint is inside the explicit trusted-root-operator
-boundary. Those four narrow exceptions bind
+Its only nine conservative path exceptions are the exact
+dependency-specifier units `systemd-fsck@.service`,
+`systemd-growfs@.service`, and `systemd-pcrfs@.service`;
+`debug-shell.service`, whose exact interactive `/usr/bin/bash` entrypoint is
+inside the explicit trusted-root-operator boundary; the exact `$TERM`
+`ExecStart=` generations in `console-getty.service`,
+`container-getty@.service`, `getty@.service`, and
+`serial-getty@.service`; and the exact
+`autovt@.service -> getty@.service` alias. Regular-file exceptions bind
 absolute path, dpkg owner, systemd `255.4-1ubuntu8.15` version/status, full
-fragment bytes/SHA-256, uid/gid/mode/link count/size and exact
-relevant `BindsTo=`/`After=` or `ExecStart=` values. No foreign path,
-family-wide specifier/shell relaxation, or near-miss generation is admitted.
+fragment bytes/SHA-256, uid/gid/mode/link count/size and exact relevant
+`BindsTo=`/`After=` or `ExecStart=` values. The alias binds its exact path,
+literal target, root-owned link metadata, dpkg owner, and reviewed target
+fragment. No foreign path, family-wide specifier/shell/environment relaxation,
+or near-miss generation is admitted.
 Matching
 sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
 quoted/escaped external start/stop/reload dependencies, load-path overrides for

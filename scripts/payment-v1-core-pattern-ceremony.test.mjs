@@ -44,18 +44,32 @@ import {
   NOBLE_APPORT_SOURCE_URL,
   NOBLE_APPORT_UNIT_BYTES,
   NOBLE_APPORT_UNIT_SHA256,
+  NOBLE_SYSTEMD_AUTOVT_ALIAS_PATH,
+  NOBLE_SYSTEMD_AUTOVT_ALIAS_TARGET,
+  NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_BYTES,
+  NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_PATH,
+  NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_SHA256,
+  NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_BYTES,
+  NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_PATH,
+  NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_SHA256,
   NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_BYTES,
   NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_PATH,
   NOBLE_SYSTEMD_FSCK_TEMPLATE_UNIT_SHA256,
   NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES,
   NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH,
   NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256,
+  NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_BYTES,
+  NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_PATH,
+  NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_SHA256,
   NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_BYTES,
   NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_PATH,
   NOBLE_SYSTEMD_GROWFS_TEMPLATE_UNIT_SHA256,
   NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES,
   NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_PATH,
   NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_SHA256,
+  NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_BYTES,
+  NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_PATH,
+  NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_SHA256,
   NOBLE_SYSTEMD_SYSCTL_UNIT_BYTES,
   NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256,
   RECOVERY_ACKNOWLEDGEMENTS,
@@ -118,6 +132,7 @@ import {
   validateNobleSystemdFsckTemplateUnitForTest,
   validateNobleSystemdDebugShellUnitForTest,
   validateNobleSystemdSpecifierTemplateUnitForTest,
+  validateNobleSystemdStockAliasExceptionForTest,
   validateNobleSystemdStockUnitExceptionForTest,
   validatePlan,
   validateRecoveryApproval,
@@ -1620,6 +1635,103 @@ test("Noble stock scanner exceptions are exact and source-pinned", () => {
     }, undefined, unit.path + " owner near miss");
   }
 
+  const gettyUnits = [
+    [
+      NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_PATH,
+      NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_BYTES,
+      NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_SHA256,
+    ],
+    [
+      NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_PATH,
+      NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_BYTES,
+      NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_SHA256,
+    ],
+    [
+      NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_PATH,
+      NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_BYTES,
+      NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_SHA256,
+    ],
+    [
+      NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_PATH,
+      NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_BYTES,
+      NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_SHA256,
+    ],
+  ];
+  for (const [path, bytes, digest] of gettyUnits) {
+    const reviewedGetty = {
+      bytes,
+      gid: 0,
+      mode: "0644",
+      nlink: 1,
+      path,
+      sha256: digest,
+      size: Buffer.byteLength(bytes, "utf8"),
+      uid: 0,
+    };
+    const owner = "systemd: " + path + "\n";
+    assert.equal(
+      validateNobleSystemdStockUnitExceptionForTest(
+        reviewedGetty,
+        owner,
+        inventory,
+      ),
+      true,
+      path,
+    );
+    assert.throws(
+      function () {
+        validateNobleSystemdStockUnitExceptionForTest(
+          { ...reviewedGetty, bytes: bytes.replace("$TERM", "${TERM}") },
+          owner,
+          inventory,
+        );
+      },
+      /relevant directive\/value set/u,
+      path + " expansion near miss",
+    );
+    assert.throws(function () {
+      validateNobleSystemdStockUnitExceptionForTest(
+        reviewedGetty,
+        "systemd:arm64: " + path + "\n",
+        inventory,
+      );
+    }, undefined, path + " owner near miss");
+  }
+
+  const autovtAlias = {
+    gid: 0,
+    mode: "0777",
+    nlink: 1,
+    path: NOBLE_SYSTEMD_AUTOVT_ALIAS_PATH,
+    size: Buffer.byteLength(NOBLE_SYSTEMD_AUTOVT_ALIAS_TARGET, "utf8"),
+    target: NOBLE_SYSTEMD_AUTOVT_ALIAS_TARGET,
+    uid: 0,
+  };
+  const autovtOwner = "systemd: " + NOBLE_SYSTEMD_AUTOVT_ALIAS_PATH + "\n";
+  assert.equal(
+    validateNobleSystemdStockAliasExceptionForTest(
+      autovtAlias,
+      autovtOwner,
+      inventory,
+    ),
+    true,
+  );
+  for (const nearMiss of [
+    { ...autovtAlias, target: "console-getty.service" },
+    { ...autovtAlias, mode: "0755" },
+    { ...autovtAlias, nlink: 2 },
+    { ...autovtAlias, size: autovtAlias.size + 1 },
+    { ...autovtAlias, uid: 1 },
+  ]) {
+    assert.throws(function () {
+      validateNobleSystemdStockAliasExceptionForTest(
+        nearMiss,
+        autovtOwner,
+        inventory,
+      );
+    }, undefined, "autovt alias near miss");
+  }
+
   const debugShell = {
     bytes: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_BYTES,
     gid: 0,
@@ -2551,6 +2663,201 @@ test("executable specifiers intersect protected handlers through direct and revi
       "[Service]\nExecSearchPath=/usr/bin\nExecStart=systemd-core%i\n",
     );
     assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("every non-colon systemd Exec argv environment expansion fails closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-exec-environment-"));
+  const path = join(root, "foreign.service");
+  try {
+    for (const command of [
+      "/bin/true $TARGET",
+      "/opt/trusted-root-binary literal ${TARGET}",
+      "/usr/bin/timeout 5s /bin/true $TARGET",
+    ]) {
+      writeFileSync(
+        path,
+        "[Service]\nEnvironment=TARGET=benign\nExecStart=" + command + "\n",
+      );
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        command,
+      );
+    }
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=:/opt/trusted-root-binary literal $TARGET\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=:/bin/sh -c 'systemctl start $TARGET'\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("bounded exec wrappers recurse through known, late, and static child PATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-exec-wrappers-"));
+  const path = join(root, "foreign.service");
+  const wrappers = [
+    ["timeout", "/usr/bin/timeout --preserve-status -k 1s -s TERM -- 5s"],
+    ["setsid", "/usr/bin/setsid -fw --"],
+    ["chrt", "/usr/bin/chrt --fifo --reset-on-fork -- 1"],
+    ["ionice", "/usr/bin/ionice --class best-effort --classdata 4 --ignore --"],
+    ["taskset", "/usr/bin/taskset --cpu-list -- 0-3:2"],
+    ["stdbuf", "/usr/bin/stdbuf --input=0 -oL --error=L --"],
+    ["nohup", "/usr/bin/nohup --"],
+    ["setpriv", "/usr/bin/setpriv --nnp --clear-groups --reuid 0 --"],
+    ["time", "/usr/bin/time --portability --format=elapsed --output=/run/time --"],
+  ];
+  function accepts(bytes, label) {
+    writeFileSync(path, bytes);
+    assert.deepEqual(scanApportEnablement([root]), [], label);
+  }
+  function rejects(bytes, label) {
+    writeFileSync(path, bytes);
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+      label,
+    );
+  }
+  try {
+    for (const [name, wrapper] of wrappers) {
+      accepts(
+        "[Service]\nEnvironment=PATH=/usr/bin\nExecStart=" + wrapper + " true\n",
+        name + " known safe PATH",
+      );
+      rejects(
+        "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+          "ExecStart=" + wrapper + " apport --start\n",
+        name + " static Environment PATH",
+      );
+      rejects(
+        "[Service]\nEnvironmentFile=-/run/late-environment\n" +
+          "ExecStart=" + wrapper + " true\n",
+        name + " late EnvironmentFile PATH",
+      );
+      rejects(
+        "[Service]\nPassEnvironment=PATH\nExecStart=" + wrapper + " true\n",
+        name + " PassEnvironment PATH",
+      );
+      accepts(
+        "[Service]\nEnvironmentFile=-/run/late-environment\n" +
+          "ExecStart=" + wrapper + " /bin/true\n",
+        name + " absolute inert child",
+      );
+      rejects(
+        "[Service]\nExecStart=" + wrapper +
+          " systemctl start systemd-coredump.socket\n",
+        name + " protected manager child",
+      );
+      rejects(
+        "[Service]\nExecStart=/bin/sh -c '" + wrapper +
+          " systemctl start systemd-coredump.socket'\n",
+        name + " shell-nested protected child",
+      );
+    }
+    rejects(
+      "[Service]\nEnvironment=PATH=/usr/bin\n" +
+        "ExecStart=/usr/bin/setpriv --reset-env true\n",
+      "setpriv reset-env unknown PATH",
+    );
+    accepts(
+      "[Service]\nEnvironment=PATH=/usr/share/apport:/usr/bin\n" +
+        "ExecStart=/usr/bin/setpriv --reset-env /bin/true\n",
+      "setpriv reset-env absolute child",
+    );
+    const eightNestedWrappers = Array.from(
+      { length: 8 },
+      function () { return "/usr/bin/nohup --"; },
+    ).join(" ");
+    const nineNestedWrappers = eightNestedWrappers + " /usr/bin/nohup --";
+    accepts(
+      "[Service]\nExecStart=" + eightNestedWrappers + " /bin/true\n",
+      "wrapper recursion at the reviewed depth bound",
+    );
+    rejects(
+      "[Service]\nExecStart=" + nineNestedWrappers + " /bin/true\n",
+      "wrapper recursion beyond the reviewed depth bound",
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("wrapper option near misses and non-exec modes fail closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-wrapper-options-"));
+  const path = join(root, "foreign.service");
+  const nearMisses = [
+    ["timeout", "/usr/bin/timeout --preserve-statu 5s /bin/true"],
+    ["setsid", "/usr/bin/setsid --wai /bin/true"],
+    ["chrt", "/usr/bin/chrt --fif 1 /bin/true"],
+    ["ionice", "/usr/bin/ionice --clas best-effort /bin/true"],
+    ["taskset", "/usr/bin/taskset --cpu-lis 0 /bin/true"],
+    ["stdbuf", "/usr/bin/stdbuf --outpu=L /bin/true"],
+    ["nohup", "/usr/bin/nohup --versio /bin/true"],
+    ["setpriv", "/usr/bin/setpriv --no-new-priv /bin/true"],
+    ["time", "/usr/bin/time --forma=elapsed /bin/true"],
+    ["timeout post-duration delimiter", "/usr/bin/timeout 5s -- /bin/true"],
+    ["chrt post-priority delimiter", "/usr/bin/chrt 1 -- /bin/true"],
+    ["taskset post-mask delimiter", "/usr/bin/taskset 1 -- /bin/true"],
+  ];
+  const noCommandModes = [
+    ["nice", "/usr/bin/nice -n 1"],
+    ["env", "/usr/bin/env -i PATH=/usr/bin"],
+    ["timeout", "/usr/bin/timeout --foreground 5s"],
+    ["setsid", "/usr/bin/setsid --wait"],
+    ["chrt", "/usr/bin/chrt --pid 1 2"],
+    ["ionice", "/usr/bin/ionice --pid 1"],
+    ["taskset", "/usr/bin/taskset --pid 1"],
+    ["stdbuf", "/usr/bin/stdbuf --output=L"],
+    ["nohup", "/usr/bin/nohup --help"],
+    ["setpriv", "/usr/bin/setpriv --dump"],
+    ["time", "/usr/bin/time --version"],
+  ];
+  const helpModes = [
+    ["nice", "/usr/bin/nice --help"],
+    ["env", "/usr/bin/env --help"],
+    ["timeout", "/usr/bin/timeout --help"],
+    ["setsid", "/usr/bin/setsid --help"],
+    ["chrt", "/usr/bin/chrt --help"],
+    ["ionice", "/usr/bin/ionice --help"],
+    ["taskset", "/usr/bin/taskset --help"],
+    ["stdbuf", "/usr/bin/stdbuf --help"],
+    ["nohup", "/usr/bin/nohup --help"],
+    ["setpriv", "/usr/bin/setpriv --help"],
+    ["time", "/usr/bin/time --help"],
+  ];
+  try {
+    for (const [name, command] of [...nearMisses, ...noCommandModes, ...helpModes]) {
+      writeFileSync(path, "[Service]\nExecStart=" + command + "\n");
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        name + ": " + command,
+      );
+      writeFileSync(
+        path,
+        "[Service]\nExecStart=/bin/sh -c '" + command + "'\n",
+      );
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        name + " shell nested: " + command,
+      );
+    }
   } finally {
     rmSync(root, { force: true, recursive: true });
   }

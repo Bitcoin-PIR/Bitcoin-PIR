@@ -272,6 +272,130 @@ export const NOBLE_SYSTEMD_PCRFS_TEMPLATE_UNIT_BYTES =
   "Type=oneshot\n" +
   "RemainAfterExit=yes\n" +
   "ExecStart=/usr/lib/systemd/systemd-pcrextend --graceful --file-system=%f\n";
+export const NOBLE_SYSTEMD_AUTOVT_ALIAS_PATH =
+  "/usr/lib/systemd/system/autovt@.service";
+export const NOBLE_SYSTEMD_AUTOVT_ALIAS_TARGET = "getty@.service";
+export const NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_PATH =
+  "/usr/lib/systemd/system/console-getty.service";
+export const NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_SHA256 =
+  "97009d9e2236871740c8fe4d28a7020c05d3f0ab943ce1610c3414e53d4b6db6";
+export const NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_BYTES = Buffer.from(
+  "IyAgU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IExHUEwtMi4xLW9yLWxhdGVyCiMKIyAgVGhpcyBmaWxlIGlzIHBh" +
+  "cnQgb2Ygc3lzdGVtZC4KIwojICBzeXN0ZW1kIGlzIGZyZWUgc29mdHdhcmU7IHlvdSBjYW4gcmVkaXN0cmlidXRl" +
+  "IGl0IGFuZC9vciBtb2RpZnkgaXQKIyAgdW5kZXIgdGhlIHRlcm1zIG9mIHRoZSBHTlUgTGVzc2VyIEdlbmVyYWwg" +
+  "UHVibGljIExpY2Vuc2UgYXMgcHVibGlzaGVkIGJ5CiMgIHRoZSBGcmVlIFNvZnR3YXJlIEZvdW5kYXRpb247IGVp" +
+  "dGhlciB2ZXJzaW9uIDIuMSBvZiB0aGUgTGljZW5zZSwgb3IKIyAgKGF0IHlvdXIgb3B0aW9uKSBhbnkgbGF0ZXIg" +
+  "dmVyc2lvbi4KCltVbml0XQpEZXNjcmlwdGlvbj1Db25zb2xlIEdldHR5CkRvY3VtZW50YXRpb249bWFuOmFnZXR0" +
+  "eSg4KSBtYW46c3lzdGVtZC1nZXR0eS1nZW5lcmF0b3IoOCkKQWZ0ZXI9c3lzdGVtZC11c2VyLXNlc3Npb25zLnNl" +
+  "cnZpY2UgcGx5bW91dGgtcXVpdC13YWl0LnNlcnZpY2UgZ2V0dHktcHJlLnRhcmdldApBZnRlcj1yYy1sb2NhbC5z" +
+  "ZXJ2aWNlCkJlZm9yZT1nZXR0eS50YXJnZXQKCiMgT0NJIGNvbnRhaW5lcnMgbWF5IGJlIHJ1biB3aXRob3V0IGEg" +
+  "Y29uc29sZQpDb25kaXRpb25QYXRoRXhpc3RzPS9kZXYvY29uc29sZQoKW1NlcnZpY2VdCiMgVGhlICctbycgb3B0" +
+  "aW9uIHZhbHVlIHRlbGxzIGFnZXR0eSB0byByZXBsYWNlICdsb2dpbicgYXJndW1lbnRzIHdpdGggYW4gb3B0aW9u" +
+  "IHRvIHByZXNlcnZlIGVudmlyb25tZW50ICgtcCksCiMgZm9sbG93ZWQgYnkgJy0tJyBmb3Igc2FmZXR5LCBhbmQg" +
+  "dGhlbiB0aGUgZW50ZXJlZCB1c2VybmFtZS4KRXhlY1N0YXJ0PS0vc2Jpbi9hZ2V0dHkgLW8gJy1wIC0tIFxcdScg" +
+  "LS1ub2NsZWFyIC0ta2VlcC1iYXVkIC0gMTE1MjAwLDM4NDAwLDk2MDAgJFRFUk0KVHlwZT1pZGxlClJlc3RhcnQ9" +
+  "YWx3YXlzClV0bXBJZGVudGlmaWVyPWNvbnMKU3RhbmRhcmRJbnB1dD10dHkKU3RhbmRhcmRPdXRwdXQ9dHR5ClRU" +
+  "WVBhdGg9L2Rldi9jb25zb2xlClRUWVJlc2V0PXllcwpUVFlWSGFuZ3VwPXllcwpJZ25vcmVTSUdQSVBFPW5vClNlbm" +
+  "RTSUdIVVA9eWVzCkltcG9ydENyZWRlbnRpYWw9YWdldHR5LioKSW1wb3J0Q3JlZGVudGlhbD1sb2dpbi4qCgpbSW5z" +
+  "dGFsbF0KV2FudGVkQnk9Z2V0dHkudGFyZ2V0Cg==",
+  "base64",
+).toString("utf8");
+export const NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_PATH =
+  "/usr/lib/systemd/system/container-getty@.service";
+export const NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_SHA256 =
+  "aa91811b15046ad7d71e6739a200a7b2fd5a4b56f9be8e2b879f530dd9b937b2";
+export const NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_BYTES = Buffer.from(
+  "IyAgU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IExHUEwtMi4xLW9yLWxhdGVyCiMKIyAgVGhpcyBmaWxlIGlzIHBh" +
+  "cnQgb2Ygc3lzdGVtZC4KIwojICBzeXN0ZW1kIGlzIGZyZWUgc29mdHdhcmU7IHlvdSBjYW4gcmVkaXN0cmlidXRl" +
+  "IGl0IGFuZC9vciBtb2RpZnkgaXQKIyAgdW5kZXIgdGhlIHRlcm1zIG9mIHRoZSBHTlUgTGVzc2VyIEdlbmVyYWwg" +
+  "UHVibGljIExpY2Vuc2UgYXMgcHVibGlzaGVkIGJ5CiMgIHRoZSBGcmVlIFNvZnR3YXJlIEZvdW5kYXRpb247IGVp" +
+  "dGhlciB2ZXJzaW9uIDIuMSBvZiB0aGUgTGljZW5zZSwgb3IKIyAgKGF0IHlvdXIgb3B0aW9uKSBhbnkgbGF0ZXIg" +
+  "dmVyc2lvbi4KCltVbml0XQpEZXNjcmlwdGlvbj1Db250YWluZXIgR2V0dHkgb24gL2Rldi9wdHMvJUkKRG9jdW1l" +
+  "bnRhdGlvbj1tYW46YWdldHR5KDgpIG1hbjpzeXN0ZW1kLWdldHR5LWdlbmVyYXRvcig4KQpEb2N1bWVudGF0aW9u" +
+  "PW1hbjptYWNoaW5lY3RsKDEpCkFmdGVyPXN5c3RlbWQtdXNlci1zZXNzaW9ucy5zZXJ2aWNlIHBseW1vdXRoLXF1" +
+  "aXQtd2FpdC5zZXJ2aWNlIGdldHR5LXByZS50YXJnZXQKQWZ0ZXI9cmMtbG9jYWwuc2VydmljZQpCZWZvcmU9Z2V0" +
+  "dHkudGFyZ2V0Cklnbm9yZU9uSXNvbGF0ZT15ZXMKQ29uZGl0aW9uUGF0aEV4aXN0cz0vZGV2L3B0cy8lSQoKIyBJ" +
+  "Z25vcmVPbklzb2xhdGUgaXMgYW4gaXNzdWU6IHdoZW4gc29tZW9uZSBpc29sYXRlcyByZXNjdWUudGFyZ2V0LAoj" +
+  "IHRyYWRpdGlvbiBleHBlY3RzIHRoYXQgd2Ugc2h1dCBkb3duIGFsbCBidXQgdGhlIG1haW4gY29uc29sZS4KQ29u" +
+  "ZmxpY3RzPXJlc2N1ZS5zZXJ2aWNlCkJlZm9yZT1yZXNjdWUuc2VydmljZQoKW1NlcnZpY2VdCiMgVGhlICctbycg" +
+  "b3B0aW9uIHZhbHVlIHRlbGxzIGFnZXR0eSB0byByZXBsYWNlICdsb2dpbicgYXJndW1lbnRzIHdpdGggYW4gb3B0" +
+  "aW9uIHRvIHByZXNlcnZlIGVudmlyb25tZW50ICgtcCksCiMgZm9sbG93ZWQgYnkgJy0tJyBmb3Igc2FmZXR5LCBh" +
+  "bmQgdGhlbiB0aGUgZW50ZXJlZCB1c2VybmFtZS4KRXhlY1N0YXJ0PS0vc2Jpbi9hZ2V0dHkgLW8gJy1wIC0tIFxc" +
+  "dScgLS1ub2NsZWFyIC0gJFRFUk0KVHlwZT1pZGxlClJlc3RhcnQ9YWx3YXlzClJlc3RhcnRTZWM9MApVdG1wSWRl" +
+  "bnRpZmllcj1wdHMvJUkKU3RhbmRhcmRJbnB1dD10dHkKU3RhbmRhcmRPdXRwdXQ9dHR5ClRUWVBhdGg9L2Rldi9w" +
+  "dHMvJUkKVFRZUmVzZXQ9eWVzClRUWVZIYW5ndXA9eWVzCklnbm9yZVNJR1BJUEU9bm8KU2VuZFNJR0hVUD15ZXMK" +
+  "SW1wb3J0Q3JlZGVudGlhbD1hZ2V0dHkuKgpJbXBvcnRDcmVkZW50aWFsPWxvZ2luLioK",
+  "base64",
+).toString("utf8");
+export const NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_PATH =
+  "/usr/lib/systemd/system/getty@.service";
+export const NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_SHA256 =
+  "6aa3ee077105e9af6979d4be40126af8db7ac402e8600b29390b8e7ff7505684";
+export const NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_BYTES = Buffer.from(
+  "IyAgU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IExHUEwtMi4xLW9yLWxhdGVyCiMKIyAgVGhpcyBmaWxlIGlzIHBh" +
+  "cnQgb2Ygc3lzdGVtZC4KIwojICBzeXN0ZW1kIGlzIGZyZWUgc29mdHdhcmU7IHlvdSBjYW4gcmVkaXN0cmlidXRl" +
+  "IGl0IGFuZC9vciBtb2RpZnkgaXQKIyAgdW5kZXIgdGhlIHRlcm1zIG9mIHRoZSBHTlUgTGVzc2VyIEdlbmVyYWwg" +
+  "UHVibGljIExpY2Vuc2UgYXMgcHVibGlzaGVkIGJ5CiMgIHRoZSBGcmVlIFNvZnR3YXJlIEZvdW5kYXRpb247IGVp" +
+  "dGhlciB2ZXJzaW9uIDIuMSBvZiB0aGUgTGljZW5zZSwgb3IKIyAgKGF0IHlvdXIgb3B0aW9uKSBhbnkgbGF0ZXIg" +
+  "dmVyc2lvbi4KCltVbml0XQpEZXNjcmlwdGlvbj1HZXR0eSBvbiAlSQpEb2N1bWVudGF0aW9uPW1hbjphZ2V0dHko" +
+  "OCkgbWFuOnN5c3RlbWQtZ2V0dHktZ2VuZXJhdG9yKDgpCkRvY3VtZW50YXRpb249aHR0cHM6Ly8wcG9pbnRlci5k" +
+  "ZS9ibG9nL3Byb2plY3RzL3NlcmlhbC1jb25zb2xlLmh0bWwKQWZ0ZXI9c3lzdGVtZC11c2VyLXNlc3Npb25zLnNl" +
+  "cnZpY2UgcGx5bW91dGgtcXVpdC13YWl0LnNlcnZpY2UgZ2V0dHktcHJlLnRhcmdldApBZnRlcj1yYy1sb2NhbC5z" +
+  "ZXJ2aWNlCgojIElmIGFkZGl0aW9uYWwgZ2V0dHlzIGFyZSBzcGF3bmVkIGR1cmluZyBib290IHRoZW4gd2Ugc2hv" +
+  "dWxkIG1ha2UKIyBzdXJlIHRoYXQgdGhpcyBpcyBzeW5jaHJvbml6ZWQgYmVmb3JlIGdldHR5LnRhcmdldCwgZXZl" +
+  "biB0aG91Z2gKIyBnZXR0eS50YXJnZXQgZGlkbid0IGFjdHVhbGx5IHB1bGwgaXQgaW4uCkJlZm9yZT1nZXR0eS50" +
+  "YXJnZXQKSWdub3JlT25Jc29sYXRlPXllcwoKIyBJZ25vcmVPbklzb2xhdGUgY2F1c2VzIGlzc3VlcyB3aXRoIHN1" +
+  "bG9naW4sIGlmIHNvbWVvbmUgaXNvbGF0ZXMKIyByZXNjdWUudGFyZ2V0IG9yIHN0YXJ0cyByZXNjdWUuc2Vydmlj" +
+  "ZSBmcm9tIG11bHRpLXVzZXIudGFyZ2V0IG9yCiMgZ3JhcGhpY2FsLnRhcmdldC4KQ29uZmxpY3RzPXJlc2N1ZS5z" +
+  "ZXJ2aWNlCkJlZm9yZT1yZXNjdWUuc2VydmljZQoKIyBPbiBzeXN0ZW1zIHdpdGhvdXQgdmlydHVhbCBjb25zb2xl" +
+  "cywgZG9uJ3Qgc3RhcnQgYW55IGdldHR5LiBOb3RlCiMgdGhhdCBzZXJpYWwgZ2V0dHlzIGFyZSBjb3ZlcmVkIGJ5" +
+  "IHNlcmlhbC1nZXR0eUAuc2VydmljZSwgbm90IHRoaXMKIyB1bml0LgpDb25kaXRpb25QYXRoRXhpc3RzPS9kZXYv" +
+  "dHR5MAoKW1NlcnZpY2VdCiMgdGhlIFZUIGlzIGNsZWFyZWQgYnkgVFRZVlREaXNhbGxvY2F0ZQojIFRoZSAnLW8n" +
+  "IG9wdGlvbiB2YWx1ZSB0ZWxscyBhZ2V0dHkgdG8gcmVwbGFjZSAnbG9naW4nIGFyZ3VtZW50cyB3aXRoIGFuCiMg" +
+  "b3B0aW9uIHRvIHByZXNlcnZlIGVudmlyb25tZW50ICgtcCksIGZvbGxvd2VkIGJ5ICctLScgZm9yIHNhZmV0eSwg" +
+  "YW5kIHRoZW4KIyB0aGUgZW50ZXJlZCB1c2VybmFtZS4KRXhlY1N0YXJ0PS0vc2Jpbi9hZ2V0dHkgLW8gJy1wIC0t" +
+  "IFxcdScgLS1ub2NsZWFyIC0gJFRFUk0KVHlwZT1pZGxlClJlc3RhcnQ9YWx3YXlzClJlc3RhcnRTZWM9MApVdG1w" +
+  "SWRlbnRpZmllcj0lSQpTdGFuZGFyZElucHV0PXR0eQpTdGFuZGFyZE91dHB1dD10dHkKVFRZUGF0aD0vZGV2LyVJ" +
+  "ClRUWVJlc2V0PXllcwpUVFlWSGFuZ3VwPXllcwpUVFlWVERpc2FsbG9jYXRlPXllcwpJZ25vcmVTSUdQSVBFPW5v" +
+  "ClNlbmRTSUdIVVA9eWVzCkltcG9ydENyZWRlbnRpYWw9YWdldHR5LioKSW1wb3J0Q3JlZGVudGlhbD1sb2dpbi4q" +
+  "CgojIFVuc2V0IGxvY2FsZSBmb3IgdGhlIGNvbnNvbGUgZ2V0dHkgc2luY2UgdGhlIGNvbnNvbGUgaGFzIHByb2Js" +
+  "ZW1zCiMgZGlzcGxheWluZyBzb21lIGludGVybmF0aW9uYWxpemVkIG1lc3NhZ2VzLgpVbnNldEVudmlyb25tZW50" +
+  "PUxBTkcgTEFOR1VBR0UgTENfQ1RZUEUgTENfTlVNRVJJQyBMQ19USU1FIExDX0NPTExBVEUgTENfTU9ORVRBUlkgTENf" +
+  "TUVTU0FHRVMgTENfUEFQRVIgTENfTkFNRSBMQ19BRERSRVNTIExDX1RFTEVQSE9ORSBMQ19NRUFTVVJFTUVOVCBMQ19J" +
+  "REVOVElGSUNBVElPTgoKW0luc3RhbGxdCldhbnRlZEJ5PWdldHR5LnRhcmdldApEZWZhdWx0SW5zdGFuY2U9dHR5MQo=",
+  "base64",
+).toString("utf8");
+export const NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_PATH =
+  "/usr/lib/systemd/system/serial-getty@.service";
+export const NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_SHA256 =
+  "b3ecf20475ea1648da95ea1f30eabcf53eaab2d1bd782478d492b850cf6d0dbf";
+export const NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_BYTES = Buffer.from(
+  "IyAgU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IExHUEwtMi4xLW9yLWxhdGVyCiMKIyAgVGhpcyBmaWxlIGlzIHBh" +
+  "cnQgb2Ygc3lzdGVtZC4KIwojICBzeXN0ZW1kIGlzIGZyZWUgc29mdHdhcmU7IHlvdSBjYW4gcmVkaXN0cmlidXRl" +
+  "IGl0IGFuZC9vciBtb2RpZnkgaXQKIyAgdW5kZXIgdGhlIHRlcm1zIG9mIHRoZSBHTlUgTGVzc2VyIEdlbmVyYWwg" +
+  "UHVibGljIExpY2Vuc2UgYXMgcHVibGlzaGVkIGJ5CiMgIHRoZSBGcmVlIFNvZnR3YXJlIEZvdW5kYXRpb247IGVp" +
+  "dGhlciB2ZXJzaW9uIDIuMSBvZiB0aGUgTGljZW5zZSwgb3IKIyAgKGF0IHlvdXIgb3B0aW9uKSBhbnkgbGF0ZXIg" +
+  "dmVyc2lvbi4KCltVbml0XQpEZXNjcmlwdGlvbj1TZXJpYWwgR2V0dHkgb24gJUkKRG9jdW1lbnRhdGlvbj1tYW46" +
+  "YWdldHR5KDgpIG1hbjpzeXN0ZW1kLWdldHR5LWdlbmVyYXRvcig4KQpEb2N1bWVudGF0aW9uPWh0dHBzOi8vMHBv" +
+  "aW50ZXIuZGUvYmxvZy9wcm9qZWN0cy9zZXJpYWwtY29uc29sZS5odG1sCkJpbmRzVG89ZGV2LSVpLmRldmljZQpB" +
+  "ZnRlcj1kZXYtJWkuZGV2aWNlIHN5c3RlbWQtdXNlci1zZXNzaW9ucy5zZXJ2aWNlIHBseW1vdXRoLXF1aXQtd2Fp" +
+  "dC5zZXJ2aWNlIGdldHR5LXByZS50YXJnZXQKQWZ0ZXI9cmMtbG9jYWwuc2VydmljZQoKIyBJZiBhZGRpdGlvbmFs" +
+  "IGdldHR5cyBhcmUgc3Bhd25lZCBkdXJpbmcgYm9vdCB0aGVuIHdlIHNob3VsZCBtYWtlCiMgc3VyZSB0aGF0IHRo" +
+  "aXMgaXMgc3luY2hyb25pemVkIGJlZm9yZSBnZXR0eS50YXJnZXQsIGV2ZW4gdGhvdWdoCiMgZ2V0dHkudGFyZ2V0" +
+  "IGRpZG4ndCBhY3R1YWxseSBwdWxsIGl0IGluLgpCZWZvcmU9Z2V0dHkudGFyZ2V0Cklnbm9yZU9uSXNvbGF0ZT15" +
+  "ZXMKCiMgSWdub3JlT25Jc29sYXRlIGNhdXNlcyBpc3N1ZXMgd2l0aCBzdWxvZ2luLCBpZiBzb21lb25lIGlzb2xh" +
+  "dGVzCiMgcmVzY3VlLnRhcmdldCBvciBzdGFydHMgcmVzY3VlLnNlcnZpY2UgZnJvbSBtdWx0aS11c2VyLnRhcmdl" +
+  "dCBvcgojIGdyYXBoaWNhbC50YXJnZXQuCkNvbmZsaWN0cz1yZXNjdWUuc2VydmljZQpCZWZvcmU9cmVzY3VlLnNl" +
+  "cnZpY2UKCltTZXJ2aWNlXQojIFRoZSAnLW8nIG9wdGlvbiB2YWx1ZSB0ZWxscyBhZ2V0dHkgdG8gcmVwbGFjZSAn" +
+  "bG9naW4nIGFyZ3VtZW50cyB3aXRoIGFuCiMgb3B0aW9uIHRvIHByZXNlcnZlIGVudmlyb25tZW50ICgtcCksIGZv" +
+  "bGxvd2VkIGJ5ICctLScgZm9yIHNhZmV0eSwgYW5kIHRoZW4KIyB0aGUgZW50ZXJlZCB1c2VybmFtZS4KRXhlY1N0" +
+  "YXJ0PS0vc2Jpbi9hZ2V0dHkgLW8gJy1wIC0tIFxcdScgLS1rZWVwLWJhdWQgMTE1MjAwLDU3NjAwLDM4NDAwLDk2" +
+  "MDAgLSAkVEVSTQpUeXBlPWlkbGUKUmVzdGFydD1hbHdheXMKVXRtcElkZW50aWZpZXI9JUkKU3RhbmRhcmRJbnB1" +
+  "dD10dHkKU3RhbmRhcmRPdXRwdXQ9dHR5ClRUWVBhdGg9L2Rldi8lSQpUVFlSZXNldD15ZXMKVFRZVkhhbmd1cD15" +
+  "ZXMKSWdub3JlU0lHUElQRT1ubwpTZW5kU0lHSFVQPXllcwpJbXBvcnRDcmVkZW50aWFsPWFnZXR0eS4qCkltcG9ydENy" +
+  "ZWRlbnRpYWw9bG9naW4uKgoKW0luc3RhbGxdCldhbnRlZEJ5PWdldHR5LnRhcmdldAo=",
+  "base64",
+).toString("utf8");
 export const NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_PATH =
   "/usr/lib/systemd/system/debug-shell.service";
 export const NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256 =
@@ -3363,8 +3487,17 @@ const SYSTEMD_EXEC_INTERPRETER_NAMES = Object.freeze([
   "bash", "busybox", "dash", "sh", "zsh",
 ]);
 const SYSTEMD_EXEC_MANAGER_NAMES = Object.freeze(["systemctl"]);
+const SYSTEMD_EXEC_CHRT_NAMES = Object.freeze(["chrt"]);
 const SYSTEMD_EXEC_NICE_NAMES = Object.freeze(["nice"]);
 const SYSTEMD_EXEC_ENV_NAMES = Object.freeze(["env"]);
+const SYSTEMD_EXEC_IONICE_NAMES = Object.freeze(["ionice"]);
+const SYSTEMD_EXEC_NOHUP_NAMES = Object.freeze(["nohup"]);
+const SYSTEMD_EXEC_SETSID_NAMES = Object.freeze(["setsid"]);
+const SYSTEMD_EXEC_SETPRIV_NAMES = Object.freeze(["setpriv"]);
+const SYSTEMD_EXEC_STDBUF_NAMES = Object.freeze(["stdbuf"]);
+const SYSTEMD_EXEC_TASKSET_NAMES = Object.freeze(["taskset"]);
+const SYSTEMD_EXEC_TIME_NAMES = Object.freeze(["time"]);
+const SYSTEMD_EXEC_TIMEOUT_NAMES = Object.freeze(["timeout"]);
 const PROTECTED_COREDUMP_EXECUTABLE_PATHS = Object.freeze([
   APPORT_HANDLER_PATH,
   SYSTEMD_COREDUMP_BINARY_PATH,
@@ -4110,19 +4243,43 @@ function isShellAssignmentWord(word) {
   return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word);
 }
 
-function niceNestedCommandIndex(words) {
-  for (let index = 1; index < words.length; index += 1) {
+function dangerousNestedCommand() {
+  return { dangerous: true };
+}
+
+function knownNestedCommand(words, pathState) {
+  if (words.length === 0 || words[0] === "" || words[0].startsWith("-")) {
+    return dangerousNestedCommand();
+  }
+  return {
+    dangerous: false,
+    path_state: pathState,
+    words,
+  };
+}
+
+function niceNestedCommand(words, processPath) {
+  let index = 1;
+  for (; index < words.length; index += 1) {
     const word = words[index];
-    if (word === "--") return index + 1 < words.length ? index + 1 : null;
+    if (word === "--") {
+      index += 1;
+      break;
+    }
     if (word === "-n" || word === "--adjustment") {
       index += 1;
+      if (index >= words.length || !/^[+-]?[0-9]+$/u.test(words[index])) {
+        return dangerousNestedCommand();
+      }
       continue;
     }
-    if (/^--adjustment=/u.test(word) || /^-[0-9]+$/u.test(word)) continue;
-    if (word.startsWith("-")) return undefined;
-    return index;
+    if (/^--adjustment=[+-]?[0-9]+$/u.test(word) || /^-[0-9]+$/u.test(word)) {
+      continue;
+    }
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
   }
-  return null;
+  return knownNestedCommand(words.slice(index), processPath);
 }
 
 function envNestedCommand(words, processPath) {
@@ -4134,39 +4291,41 @@ function envNestedCommand(words, processPath) {
       index += 1;
       break;
     }
-    if (word === "-i" || word === "--ignore-environment") {
+    if (word === "-" || word === "-i" || word === "--ignore-environment") {
       pathState = absentExecPathState("env cleared PATH");
       continue;
     }
     if (word === "-u" || word === "--unset") {
       index += 1;
-      if (index >= words.length) return { dangerous: true };
+      if (index >= words.length || words[index] === "") {
+        return dangerousNestedCommand();
+      }
       if (words[index] === "PATH") pathState = absentExecPathState("env unset PATH");
       continue;
     }
-    if (word.startsWith("--unset=")) {
+    if (/^-u.+/u.test(word)) {
+      if (word.slice(2) === "PATH") pathState = absentExecPathState("env unset PATH");
+      continue;
+    }
+    if (word.startsWith("--unset=") && word.length > "--unset=".length) {
       if (word.slice("--unset=".length) === "PATH") {
         pathState = absentExecPathState("env unset PATH");
       }
       continue;
     }
-    if (word === "-S" || word === "--split-string" || word.startsWith("--split-string=")) {
-      return { dangerous: true };
-    }
-    if (word === "-C" || word === "--chdir" || word.startsWith("--chdir=")) {
+    if (word === "-S" || word === "--split-string" ||
+        word.startsWith("--split-string=") || word === "-C" ||
+        word === "--chdir" || word.startsWith("--chdir=")) {
       // env changes cwd before resolving a nested relative pathname.  The
-      // scanner does not carry cwd state, so this execution form is outside
-      // the reviewed wrapper subset even when the next word is currently
-      // absolute.
-      return { dangerous: true };
+      // scanner does not carry cwd state; split-string also creates a second
+      // argv parser.  Both forms remain outside the reviewed wrapper subset.
+      return dangerousNestedCommand();
     }
-    if (word === "-a" || word === "--argv0") {
-      index += 1;
-      if (index >= words.length) return { dangerous: true };
-      continue;
-    }
-    if (word.startsWith("--argv0=")) continue;
-    if (word.startsWith("-") && word !== "-") return { dangerous: true };
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
+  }
+  for (; index < words.length; index += 1) {
+    const word = words[index];
     const equals = word.indexOf("=");
     if (equals > 0) {
       if (word.slice(0, equals) === "PATH") {
@@ -4179,11 +4338,318 @@ function envNestedCommand(words, processPath) {
     }
     break;
   }
-  return {
-    dangerous: false,
-    path_state: pathState,
-    words: words.slice(index),
-  };
+  return knownNestedCommand(words.slice(index), pathState);
+}
+
+function timeoutNestedCommand(words, processPath) {
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (["--foreground", "--preserve-status", "--verbose", "-v"].includes(word)) {
+      continue;
+    }
+    let optionValue = null;
+    if (["-k", "--kill-after", "-s", "--signal"].includes(word)) {
+      index += 1;
+      if (index >= words.length) return dangerousNestedCommand();
+      optionValue = words[index];
+    } else if (/^-(?:k|s).+/u.test(word)) {
+      optionValue = word.slice(2);
+    } else if (/^--(?:kill-after|signal)=/u.test(word)) {
+      optionValue = word.slice(word.indexOf("=") + 1);
+    } else if (word.startsWith("-")) {
+      return dangerousNestedCommand();
+    } else {
+      break;
+    }
+    if (optionValue === "") return dangerousNestedCommand();
+    if ((word === "-k" || word === "--kill-after" || word.startsWith("-k") ||
+         word.startsWith("--kill-after=")) &&
+        !/^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)[smhd]?$/u.test(optionValue)) {
+      return dangerousNestedCommand();
+    }
+    if ((word === "-s" || word === "--signal" || word.startsWith("-s") ||
+         word.startsWith("--signal=")) &&
+        !/^[A-Za-z0-9+-]+$/u.test(optionValue)) {
+      return dangerousNestedCommand();
+    }
+  }
+  if (index >= words.length ||
+      !/^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)[smhd]?$/u.test(words[index])) {
+    return dangerousNestedCommand();
+  }
+  index += 1;
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function setsidNestedCommand(words, processPath) {
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (["--ctty", "--fork", "--wait"].includes(word) || /^-[cfw]+$/u.test(word)) {
+      continue;
+    }
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
+  }
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function chrtNestedCommand(words, processPath) {
+  let index = 1;
+  const noArgumentOptions = new Set([
+    "--batch", "--deadline", "--fifo", "--idle", "--other", "--reset-on-fork",
+    "--rr", "--verbose",
+  ]);
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (noArgumentOptions.has(word) || /^-[bdfiorRv]+$/u.test(word)) continue;
+    let optionValue = null;
+    if (["-T", "-P", "-D", "--sched-runtime", "--sched-period",
+      "--sched-deadline"].includes(word)) {
+      index += 1;
+      if (index >= words.length) return dangerousNestedCommand();
+      optionValue = words[index];
+    } else if (/^-[TPD].+/u.test(word)) {
+      optionValue = word.slice(2);
+    } else if (/^--(?:sched-runtime|sched-period|sched-deadline)=/u.test(word)) {
+      optionValue = word.slice(word.indexOf("=") + 1);
+    } else if (word.startsWith("-")) {
+      return dangerousNestedCommand();
+    } else {
+      break;
+    }
+    if (!/^[0-9]+$/u.test(optionValue)) return dangerousNestedCommand();
+  }
+  if (index >= words.length || !/^[0-9]+$/u.test(words[index])) {
+    return dangerousNestedCommand();
+  }
+  index += 1;
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function ioniceNestedCommand(words, processPath) {
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (word === "-t" || word === "--ignore") continue;
+    let optionKind = null;
+    let optionValue = null;
+    if (["-c", "--class", "-n", "--classdata"].includes(word)) {
+      optionKind = word === "-c" || word === "--class" ? "class" : "classdata";
+      index += 1;
+      if (index >= words.length) return dangerousNestedCommand();
+      optionValue = words[index];
+    } else if (/^-c.+/u.test(word)) {
+      optionKind = "class";
+      optionValue = word.slice(2);
+    } else if (/^-n.+/u.test(word)) {
+      optionKind = "classdata";
+      optionValue = word.slice(2);
+    } else if (/^--(?:class|classdata)=/u.test(word)) {
+      optionKind = word.startsWith("--class=") ? "class" : "classdata";
+      optionValue = word.slice(word.indexOf("=") + 1);
+    } else if (word.startsWith("-")) {
+      return dangerousNestedCommand();
+    } else {
+      break;
+    }
+    if (optionKind === "class" &&
+        !/^(?:[0-3]|none|realtime|best-effort|idle)$/u.test(optionValue)) {
+      return dangerousNestedCommand();
+    }
+    if (optionKind === "classdata" && !/^[0-7]$/u.test(optionValue)) {
+      return dangerousNestedCommand();
+    }
+  }
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function tasksetNestedCommand(words, processPath) {
+  let cpuList = false;
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (word === "-c" || word === "--cpu-list") {
+      cpuList = true;
+      continue;
+    }
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
+  }
+  if (index >= words.length) return dangerousNestedCommand();
+  const selector = words[index];
+  const selectorPattern = cpuList
+    ? /^[0-9]+(?:-[0-9]+(?::[0-9]+)?)?(?:,[0-9]+(?:-[0-9]+(?::[0-9]+)?)?)*$/u
+    : /^(?:0x)?[0-9A-Fa-f]+(?:,[0-9A-Fa-f]+)*$/u;
+  if (!selectorPattern.test(selector)) return dangerousNestedCommand();
+  index += 1;
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function stdbufNestedCommand(words, processPath) {
+  let index = 1;
+  let optionCount = 0;
+  const modePattern = /^(?:0|L|[1-9][0-9]*(?:[KMGTPEZYRQ](?:i?B)?)?)$/u;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    let stream = null;
+    let mode = null;
+    if (["-i", "-o", "-e", "--input", "--output", "--error"].includes(word)) {
+      stream = word === "-i" || word === "--input" ? "input" :
+        word === "-o" || word === "--output" ? "output" : "error";
+      index += 1;
+      if (index >= words.length) return dangerousNestedCommand();
+      mode = words[index];
+    } else if (/^-[ioe].+/u.test(word)) {
+      stream = word[1] === "i" ? "input" : word[1] === "o" ? "output" : "error";
+      mode = word.slice(2);
+    } else if (/^--(?:input|output|error)=/u.test(word)) {
+      stream = word.startsWith("--input=") ? "input" :
+        word.startsWith("--output=") ? "output" : "error";
+      mode = word.slice(word.indexOf("=") + 1);
+    } else if (word.startsWith("-")) {
+      return dangerousNestedCommand();
+    } else {
+      break;
+    }
+    if (!modePattern.test(mode) || (stream === "input" && mode === "L")) {
+      return dangerousNestedCommand();
+    }
+    optionCount += 1;
+  }
+  if (optionCount === 0) return dangerousNestedCommand();
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function nohupNestedCommand(words, processPath) {
+  let index = 1;
+  if (words[index] === "--") index += 1;
+  else if (words[index]?.startsWith("-")) return dangerousNestedCommand();
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function setprivNestedCommand(words, processPath) {
+  let pathState = processPath;
+  let index = 1;
+  const noArgumentOptions = new Set([
+    "--clear-groups", "--init-groups", "--keep-groups", "--nnp",
+    "--no-new-privs", "--reset-env",
+  ]);
+  const valueOptions = new Set([
+    "--ambient-caps", "--apparmor-profile", "--bounding-set", "--egid", "--euid",
+    "--groups", "--inh-caps", "--pdeathsig", "--regid", "--reuid", "--rgid",
+    "--ruid", "--securebits", "--selinux-label",
+  ]);
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (noArgumentOptions.has(word)) {
+      if (word === "--reset-env") {
+        pathState = unknownExecPathState(
+          "setpriv --reset-env PATH depends on login.defs and the target identity",
+        );
+      }
+      continue;
+    }
+    if (valueOptions.has(word)) {
+      index += 1;
+      if (index >= words.length || words[index] === "") {
+        return dangerousNestedCommand();
+      }
+      continue;
+    }
+    const equals = word.indexOf("=");
+    if (equals > 0 && valueOptions.has(word.slice(0, equals)) &&
+        word.slice(equals + 1) !== "") {
+      continue;
+    }
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
+  }
+  return knownNestedCommand(words.slice(index), pathState);
+}
+
+function timeNestedCommand(words, processPath) {
+  let index = 1;
+  for (; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (["-a", "-p", "-q", "-v", "--append", "--portability", "--quiet",
+      "--verbose"].includes(word)) {
+      continue;
+    }
+    if (["-f", "-o", "--format", "--output"].includes(word)) {
+      index += 1;
+      if (index >= words.length || words[index] === "") {
+        return dangerousNestedCommand();
+      }
+      continue;
+    }
+    if (/^-(?:f|o).+/u.test(word)) continue;
+    if (/^--(?:format|output)=.+/u.test(word)) continue;
+    if (word.startsWith("-")) return dangerousNestedCommand();
+    break;
+  }
+  return knownNestedCommand(words.slice(index), processPath);
+}
+
+function wrapperNestedCommand(
+  executable,
+  words,
+  executablePath,
+  processPath,
+  namespace,
+) {
+  const wrappers = [
+    [SYSTEMD_EXEC_CHRT_NAMES, chrtNestedCommand],
+    [SYSTEMD_EXEC_ENV_NAMES, envNestedCommand],
+    [SYSTEMD_EXEC_IONICE_NAMES, ioniceNestedCommand],
+    [SYSTEMD_EXEC_NICE_NAMES, niceNestedCommand],
+    [SYSTEMD_EXEC_NOHUP_NAMES, nohupNestedCommand],
+    [SYSTEMD_EXEC_SETSID_NAMES, setsidNestedCommand],
+    [SYSTEMD_EXEC_SETPRIV_NAMES, setprivNestedCommand],
+    [SYSTEMD_EXEC_STDBUF_NAMES, stdbufNestedCommand],
+    [SYSTEMD_EXEC_TASKSET_NAMES, tasksetNestedCommand],
+    [SYSTEMD_EXEC_TIME_NAMES, timeNestedCommand],
+    [SYSTEMD_EXEC_TIMEOUT_NAMES, timeoutNestedCommand],
+  ];
+  for (const [names, parser] of wrappers) {
+    if (executableWordCouldBeNamed(executable, executablePath, namespace, names)) {
+      return parser(words, processPath);
+    }
+  }
+  return null;
 }
 
 function shellCommandsCouldReferenceProtected(
@@ -4218,9 +4684,7 @@ function shellCommandsCouldReferenceProtected(
     "case", "do", "done", "elif", "else", "esac", "fi", "for", "function",
     "if", "in", "select", "then", "until", "while",
   ]);
-  const wrapperKeywords = new Set([
-    "!", "builtin", "command", "exec", "nohup", "time",
-  ]);
+  const wrapperKeywords = new Set(["!", "builtin", "command", "exec"]);
   for (const rawCommand of commands) {
     let command = Array.from(rawCommand);
     if (command[0] === "unset" && command.includes("PATH")) {
@@ -4278,7 +4742,8 @@ function executionChainCouldReferenceProtected(
     // intentionally outside this closed scanner subset.
     return true;
   }
-  if (options.argv_environment_expands && containsSystemdEnvironmentExpansion(executable)) {
+  if (options.argv_environment_expands &&
+      words.some(containsSystemdEnvironmentExpansion)) {
     return true;
   }
   const resolvedExecutablePath = options.depth === 0
@@ -4293,42 +4758,18 @@ function executionChainCouldReferenceProtected(
     namespace,
     SYSTEMD_EXEC_MANAGER_NAMES,
   );
-  if (manager && (
-    (options.argv_environment_expands && words.some(containsSystemdEnvironmentExpansion)) ||
-    words.some(systemdTemplateCouldNameProtectedCoreDumpUnit)
-  )) return true;
+  if (manager && words.some(systemdTemplateCouldNameProtectedCoreDumpUnit)) return true;
 
-  const nice = executableWordCouldBeNamed(
+  const nested = wrapperNestedCommand(
     executable,
+    words,
     resolvedExecutablePath,
+    processPath,
     namespace,
-    SYSTEMD_EXEC_NICE_NAMES,
   );
-  if (nice) {
-    const nestedIndex = niceNestedCommandIndex(words);
-    if (nestedIndex === undefined) return true;
-    if (nestedIndex !== null && executionChainCouldReferenceProtected(
-      words.slice(nestedIndex),
-      processPath,
-      processPath,
-      namespace,
-      {
-        argv_environment_expands: options.argv_environment_expands,
-        depth: options.depth + 1,
-      },
-    )) return true;
-  }
-
-  const env = executableWordCouldBeNamed(
-    executable,
-    resolvedExecutablePath,
-    namespace,
-    SYSTEMD_EXEC_ENV_NAMES,
-  );
-  if (env) {
-    const nested = envNestedCommand(words, processPath);
+  if (nested !== null) {
     if (nested.dangerous) return true;
-    if (nested.words.length !== 0 && executionChainCouldReferenceProtected(
+    return executionChainCouldReferenceProtected(
       nested.words,
       nested.path_state,
       nested.path_state,
@@ -4337,7 +4778,7 @@ function executionChainCouldReferenceProtected(
         argv_environment_expands: options.argv_environment_expands,
         depth: options.depth + 1,
       },
-    )) return true;
+    );
   }
 
   const interpreter = executableWordCouldBeNamed(
@@ -5225,6 +5666,56 @@ const NOBLE_SYSTEMD_STOCK_UNIT_EXCEPTIONS = new Map([
     ],
     sha256: NOBLE_SYSTEMD_DEBUG_SHELL_UNIT_SHA256,
   }],
+  [NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_BYTES,
+    exception_kind: "argv-environment-expansion",
+    label: "reviewed Noble console-getty unit",
+    reviewed_assignments: [{
+      directive: "ExecStart",
+      value: "-/sbin/agetty -o '-p -- \\\\u' --noclear --keep-baud - " +
+        "115200,38400,9600 $TERM",
+    }],
+    sha256: NOBLE_SYSTEMD_CONSOLE_GETTY_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_BYTES,
+    exception_kind: "argv-environment-expansion",
+    label: "reviewed Noble container-getty template unit",
+    reviewed_assignments: [{
+      directive: "ExecStart",
+      value: "-/sbin/agetty -o '-p -- \\\\u' --noclear - $TERM",
+    }],
+    sha256: NOBLE_SYSTEMD_CONTAINER_GETTY_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_BYTES,
+    exception_kind: "argv-environment-expansion",
+    label: "reviewed Noble getty template unit",
+    reviewed_assignments: [{
+      directive: "ExecStart",
+      value: "-/sbin/agetty -o '-p -- \\\\u' --noclear - $TERM",
+    }],
+    sha256: NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_SHA256,
+  }],
+  [NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_PATH, {
+    bytes: NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_BYTES,
+    exception_kind: "argv-environment-expansion",
+    label: "reviewed Noble serial-getty template unit",
+    reviewed_assignments: [{
+      directive: "ExecStart",
+      value: "-/sbin/agetty -o '-p -- \\\\u' --keep-baud " +
+        "115200,57600,38400,9600 - $TERM",
+    }],
+    sha256: NOBLE_SYSTEMD_SERIAL_GETTY_UNIT_SHA256,
+  }],
+]);
+
+const NOBLE_SYSTEMD_STOCK_ALIAS_EXCEPTIONS = new Map([
+  [NOBLE_SYSTEMD_AUTOVT_ALIAS_PATH, {
+    label: "reviewed Noble autovt getty alias",
+    resolved_target: NOBLE_SYSTEMD_GETTY_TEMPLATE_UNIT_PATH,
+    target: NOBLE_SYSTEMD_AUTOVT_ALIAS_TARGET,
+  }],
 ]);
 
 export function validateNobleSystemdStockUnitExceptionForTest(
@@ -5260,6 +5751,11 @@ export function validateNobleSystemdStockUnitExceptionForTest(
     relevantAssignments = assignments.filter(function ({ directive }) {
       return /^Exec[A-Za-z]*$/u.test(directive);
     });
+  } else if (reviewed.exception_kind === "argv-environment-expansion") {
+    relevantAssignments = assignments.filter(function ({ directive, value: assignmentValue }) {
+      return /^Exec[A-Za-z]*$/u.test(directive) &&
+        containsSystemdEnvironmentExpansion(assignmentValue);
+    });
   } else {
     fail(label + " has an unreviewed exception kind");
   }
@@ -5287,6 +5783,37 @@ export function validateNobleSystemdStockUnitExceptionForTest(
       packageInventory !==
       "systemd\t255.4-1ubuntu8.15\tinstall ok installed\n") {
     fail(label + " does not have the exact reviewed package owner/version");
+  }
+  return true;
+}
+
+export function validateNobleSystemdStockAliasExceptionForTest(
+  value,
+  packageOwner,
+  packageInventory,
+) {
+  const reviewed = isPlainObject(value)
+    ? NOBLE_SYSTEMD_STOCK_ALIAS_EXCEPTIONS.get(value.path)
+    : undefined;
+  const label = reviewed?.label || "reviewed Noble systemd stock alias";
+  exactKeys(value, ["gid", "mode", "nlink", "path", "size", "target", "uid"], label);
+  if (reviewed === undefined) {
+    fail(label + " path is outside the exact reviewed alias exception set");
+  }
+  const expected = {
+    gid: 0,
+    mode: "0777",
+    nlink: 1,
+    path: value.path,
+    size: Buffer.byteLength(reviewed.target, "utf8"),
+    target: reviewed.target,
+    uid: 0,
+  };
+  if (!same(value, expected) ||
+      packageOwner !== "systemd: " + value.path + "\n" ||
+      packageInventory !==
+      "systemd\t255.4-1ubuntu8.15\tinstall ok installed\n") {
+    fail(label + " differs from the exact source-pinned generation");
   }
   return true;
 }
@@ -5364,6 +5891,38 @@ function assertExactReviewedNobleSystemdStockUnit(opened) {
     packageOwner,
     packageInventory,
   );
+}
+
+function assertExactReviewedNobleSystemdStockAlias(path, target, openedTarget) {
+  const stat = lstatSync(path, { bigint: false });
+  const packageOwner = runCommand(
+    "/usr/bin/dpkg-query",
+    ["-S", path],
+    "Noble systemd stock alias package owner",
+  );
+  const packageInventory = runCommand(
+    "/usr/bin/dpkg-query",
+    [
+      "-W",
+      "-f=${binary:Package}\\t${Version}\\t${Status}\\n",
+      "systemd",
+    ],
+    "Noble systemd stock alias package inventory",
+  );
+  validateNobleSystemdStockAliasExceptionForTest(
+    {
+      gid: stat.gid,
+      mode: modeText(stat),
+      nlink: stat.nlink,
+      path,
+      size: stat.size,
+      target,
+      uid: stat.uid,
+    },
+    packageOwner,
+    packageInventory,
+  );
+  return assertExactReviewedNobleSystemdStockUnit(openedTarget);
 }
 
 function exactSystemdSysctlInputs(plan, managedLoadPaths) {
@@ -5505,6 +6064,15 @@ export function scanApportActivation(
             MAX_JSON_BYTES,
           );
           assertTrustedInput(opened, resolvedTarget);
+          const reviewedAlias = NOBLE_SYSTEMD_STOCK_ALIAS_EXCEPTIONS.get(child);
+          if (reviewedAlias !== undefined) {
+            if (target !== reviewedAlias.target ||
+                resolvedTarget !== reviewedAlias.resolved_target) {
+              fail(reviewedAlias.label + " target differs from the reviewed generation");
+            }
+            assertExactReviewedNobleSystemdStockAlias(child, target, opened);
+            continue;
+          }
           rememberAggregationInput(root, child, opened.bytes, rootPriority);
           if (unitFileReferencesProtectedCrashHandler(opened.bytes)) {
             fail("foreign symlinked systemd unit references apport.service or a protected coredump handler: " + child);
