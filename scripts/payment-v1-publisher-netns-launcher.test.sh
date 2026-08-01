@@ -185,11 +185,15 @@ manifest_sha256="$(sha256sum "${manifest}" | cut -d' ' -f1)"
 
 cp "${node_loader_closure}" /tmp/node-loader-closure.valid
 chmod 0644 "${node_loader_closure}"
-first_digest_nibble="$(cut -c1 /tmp/node-loader-closure.valid)"
+first_digest_nibble="$(head -n 1 /tmp/node-loader-closure.valid | cut -c1)"
 replacement_digest_nibble=0
 [[ "${first_digest_nibble}" == 0 ]] && replacement_digest_nibble=1
 sed "1s/^./${replacement_digest_nibble}/" /tmp/node-loader-closure.valid \
   >"${node_loader_closure}"
+if cmp -s /tmp/node-loader-closure.valid "${node_loader_closure}"; then
+  echo "loader closure tamper fixture did not change the object digest" >&2
+  exit 1
+fi
 chmod 0444 "${node_loader_closure}"
 write_manifest
 manifest_sha256="$(sha256sum "${manifest}" | cut -d' ' -f1)"
