@@ -1,0 +1,8 @@
+[Unit]
+Description=BitcoinPIR disposable publisher failed-recovery systemd probe
+
+[Service]
+Type=notify
+ExecStart=/bin/sleep 30
+TimeoutStartSec=1s
+Restart=no

@@ -812,8 +812,9 @@ systemd `255`, a same-boot privileged
 process/capability inventory, and complete service-UID/site inventories,
 an approved canonical digest/size for the old disk Caddyfile's adapted JSON,
 pre-stop proof that the live TCP-admin readback has that same digest, exact
-effective old `ExecStart`/`ExecReload`, `NeedDaemonReload=no`, no drop-ins or
-environment files, stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
+   effective old `ExecStart`/`ExecReload`, `NeedDaemonReload=no`, exactly the
+   pinned one-way publisher-namespace drop-in and no environment files,
+   stop/inactive evidence, two stopped-file replacements, daemon-reload, start,
 and a new `InvocationID`. Committed evidence must include root API readback over
 the UDS, root:root `0700`/`0200` directory/socket metadata, `EACCES` for every
 approved non-root service UID (including `pir` and `cloudflared`), disappearance
@@ -854,13 +855,18 @@ the admin migration or otherwise hardens the existing root Caddy process. It
 now requires a canonical owner-only committed
 `bhtm-caddy-admin-uds-v1` receipt and requires its target binary, Caddyfile,
 unit and active `InvocationID` to equal that receipt's hardened generation.
+Schema v2 additionally binds the canonical publisher-namespace ceremony
+plan/receipt and rejects it unless the namespace was activated on that same
+hardened Caddy config, PID/InvocationID and active-enter generation. Schema-v1
+hardening, namespace and overlay evidence is not migration authority.
 The overlay executor revalidates the complete canonical hardening plan and
 receipt, not a summary subset. Before exchange and again after validation,
 reload and application health, it freshly seals the runtime directory/socket,
 performs descriptor-pinned `setpriv` root and service-UID probes, requires both
 TCP-2019 endpoints refused, and binds the same boot and Caddy generation. It
-also binds the current effective fragment, absence of drop-ins/environment
-files, explicit environment-name policy, `ExecStart`, UDS `ExecReload`,
+ also binds the current effective fragment, the exact singleton
+ publisher-namespace drop-in, absence of environment files, explicit
+ environment-name policy, `ExecStart`, UDS `ExecReload`,
 `NeedDaemonReload=no`, runtime-directory/identity/umask settings, and exact
 MainPID argv/start ticks with no process `CADDY_ADMIN`. Environment values are
 not retained. Stable snapshots are repeated immediately before each exchange
@@ -1073,8 +1079,8 @@ every static `node:` builtin and rejects dynamic, CommonJS and worker loader
 entry points. Transfer and independently hash all three into the same
 root-owned, non-group/world-writable directory; copying a new collector beside
 an older gate, or copying only the collector, is forbidden. Runtime-evidence
-v8 invalidates v7 runtime requests; live v8,
-stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
+v9 invalidates v8 runtime requests; live v9,
+stopped-edge v5 and stopped-relay v4 invalidate live v8, stopped-edge v4 and
 stopped-relay v3 receipts respectively. Rerender the bundle and recollect
 evidence rather than editing JSON.
 

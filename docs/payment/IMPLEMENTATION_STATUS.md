@@ -425,6 +425,47 @@ operator has activated the path with real money or public infrastructure.
 
 ### Directory and operator tooling
 
+- [x] The fixed same-host directory-publisher network now has a source-closed
+      activation ceremony in addition to its inert render profile. A canonical
+      plan binds exact installed files, external sentinels, firewall evidence,
+      Caddy/publisher preimages, boot identity and regular Node/systemctl/ip
+      executables, plus the executor's exact three-module local import closure.
+      Its native launcher now binds a seven-entry manifest, a machine-parsed
+      static-launcher proof, a recursive descriptor-pinned Node ELF closure and
+      descriptor-sealed Node/module execution that remains safe across atomic
+      pathname replacement. The launcher rejects `/etc/ld.so.preload`, invokes
+      the pinned dynamic loader with a closed library path and validates two
+      `/proc/self/maps` samples. The shared schema-v2 plan and
+      receipt validator is also consumed by the downstream Caddy overlay and
+      now requires a genuinely active/running nonzero Caddy generation. Each
+      IPv4/IPv6 INPUT/FORWARD before chain has exactly one ordered
+      `RELATED,ESTABLISHED` accept; deletion, duplication and post-user-jump
+      placement fail closed. A
+      fresh at-most-one-hour approval can start only the netns
+      unit; a different receipt-bound approval can stop only that unit. Runtime
+      verification closes nsfs, veth txid aliases/MACs/cross-indices, loopback,
+      the reviewed down/addressless kernel fallback subset, connected routes
+      and zero forwarding. Descriptor-pinned command execution and owner-only
+      pending/final receipt recovery pass real Linux tests; the native helper's
+      crash/monitor/cleanup harness passes in a disposable arm64 Linux
+      container. The ceremony never changes Caddy/firewall/sentinels, starts
+      the publisher or handles a private key. This is source/test closure, not
+      target installation or activation. The publication-interval firewall
+      generation guard, exact target pins, remote mutation/start approvals,
+      Caddy overlay receipt and new-boot runtime evidence remain mandatory.
+- [x] The Caddy-admin UDS cold migration and publisher-netns ceremony now use
+      the same publisher lifecycle lock. The cold plan binds an exact inactive
+      netns unit plus absent nsfs path, host veth and five sentinels; checks run
+      before and after lock acquisition and immediately before every Caddy
+      stop/candidate start/rollback start. A pre-stop activation race invokes
+      no Caddy lifecycle command.
+      After a durable start request, any error/nonzero/timeout or later proof
+      failure retains that shared lock. Same-transaction recovery either
+      terminalizes an exact late-active generation or releases the lock only
+      after repeated no-job, exact-inactive, absent nsfs/veth and exact-sentinel
+      proof. Both ordinary pre-start closure passes use a
+      Job/unit-network/Job clamp, and committed replay also rejects a pending
+      PID 1 job.
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
       checkpoints, tombstones, strict-mode relay split-view checks and rollback
       state. The separate centralized-single-relay API requires an explicit
@@ -481,10 +522,14 @@ operator has activated the path with real money or public infrastructure.
 - [x] Offline `bpir-admin service-keygen`, `service-policy`, directory assertion,
       entry and checkpoint builders, plus an explicit native
       `directory-artifact publish` transport. Publishing accepts no signing key,
-      requires a pinned directory public key, two through eight credential-free
-      public `wss://` relay hostnames, exact per-event positive OK and bounded
-      per-relay time/bytes. It attempts every relay and fails the command on any
-      partial result; exact immutable artifacts can be rerun manually.
+      requires a pinned directory public key, and defaults to two through eight
+      credential-free public `wss://` relay hostnames. Exactly one relay requires
+      `--centralized-single-relay`; its receipts are explicitly
+      `centralized=true degraded=true`, while zero relays and mismatched
+      flag/count combinations fail before network I/O. Publishing requires exact
+      per-event positive OK and bounded per-relay time/bytes. It attempts every
+      relay and fails the command on any partial result; exact immutable artifacts
+      can be rerun manually.
 - [x] The staging-only Nostr readback tool accepts no key or publish operation,
       mirrors the Rust canonical public-`wss://` grammar on the raw input, and
       requires the Rust publisher's domain-separated event-set digest, valid
@@ -986,7 +1031,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v8 binds
+      credentials to one machine/boot/invocation. Runtime-evidence v9 binds
       render-plan/manifest schema v2, request and host to exact
       `systemd 255 (255.4-1ubuntu8.15)` and accepts
       only the closed files-authoritative NSS sequences `files` and
@@ -1005,7 +1050,16 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       capabilities, require Caddy-only `CAP_NET_BIND_SERVICE` and zero HAProxy
       capabilities, and re-confirm every
       MainPID/unit generation; runtime paths are rechecked after the scan. This
-      version reads systemd's structured `Conditions` property through a pinned
+      version also closes `NeedDaemonReload=no` for every live unit. The exact
+      directory publisher is the sole processless exception: evidence requires
+      a successful retained `active/exited` oneshot with `MainPID=0`, empty
+      control group, completed zero-status ExecStart, stable activation
+      timestamp/InvocationID, null process identity and no protected publisher
+      UID/GID holder in either full procfs pass. A disposable exact-systemd
+      harness exercises those real manager semantics together with the
+      publisher namespace's pre-READY timeout, post-READY failure and exact
+      `reset-failed` convergence. This version reads
+      systemd's structured `Conditions` property through a pinned
       `/usr/bin/busctl` rather than accepting systemd 255's
       `Conditions=[unprintable]`, and proves the exact evaluated condition set
       plus current path truth before and after collection. It separately reads
@@ -1071,7 +1125,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       `unix//run/bitcoinpir-caddy-admin/admin.sock|0200`, requires root:root
       `RuntimeDirectory` mode `0700`, `UMask=0077`, `LimitCORE=0`,
       `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
-      drop-ins or effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
+      drop-ins other than the exact pinned one-way publisher-namespace
+      `Wants+After` drop-in, no effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
       substitutions, and an explicit UDS reload address. It pins the exact
       production Caddy v2.11.4 preimage at the host's exact
       `/usr/local/bin/caddy` independently from the resolved Caddy 2.11.4 test
@@ -1093,7 +1148,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       both the exact disk preimage bytes and the exact candidate before mutation.
       It requires the approved canonical old adapted-JSON digest to equal the
       live TCP-admin readback and requires the loaded old unit to have the
-      exact fragment and old Exec commands, `NeedDaemonReload=no`, no drop-ins,
+      exact fragment and old Exec commands, `NeedDaemonReload=no`, exactly the
+      approved publisher-namespace drop-in,
       `EnvironmentFile`, or `PassEnvironment`. It requires root, Linux, systemd
       `255`, same-boot/PID/Invocation/preimage pins and a pre-existing exact
       `kernel.core_pattern=|/usr/bin/false`; it never changes the sysctl. The
@@ -1120,7 +1176,10 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       approved overlay transaction plan. It appends only to the exact pinned
       hardened `bhtm-caddy.service` preimage and requires a canonical,
       owner-only committed admin-UDS receipt whose Caddy binary, Caddyfile,
-      unit and InvocationID equal that preimage. It uses a content-addressed
+      unit and InvocationID equal that preimage. Schema v2 also requires the
+      canonical owner-only publisher-namespace ceremony plan/receipt and proves
+      that ceremony occurred on this exact hardened Caddy config,
+      PID/InvocationID/active-enter generation before overlay mutation. It uses a content-addressed
       `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
       until an atomically published durable receipt, and includes deterministic
       stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
@@ -1128,7 +1187,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       plan/receipt and collects fresh descriptor-sealed UDS mode,
       zero-capability UID-denial, root readback, TCP-refusal, boot and
       generation evidence before exchange and after reload/health. Those
-      probes now bind the current effective fragment/drop-ins/environment-name
+      probes now bind the current effective fragment, singleton
+      publisher-namespace drop-in and environment-name
       policy, `ExecStart`, UDS `ExecReload`, daemon-reload state,
       runtime-directory/identity/umask/core/swap/output settings and exact MainPID argv/start
       ticks; process environment values are never retained. Stable runtime

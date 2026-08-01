@@ -21,6 +21,12 @@ import {
   NODE_AMD64_MANIFEST,
   NODE_IMAGE_INDEX,
   PROFILE,
+  PUBLISHER_NETNS_DROPIN_PATH,
+  PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_NAMESPACE_PATH,
+  PUBLISHER_NETNS_SENTINEL_PATHS,
+  PUBLISHER_NETNS_UNIT,
   SETPRIV_PATH,
   buildCandidates,
   buildHardenedCaddyfile,
@@ -57,6 +63,10 @@ const UNIT_HARDENED_FIXTURE = join(
   "fixtures/payment-v1-caddy-admin-uds-hardened.service",
 );
 const PRODUCTION_CADDY_BINARY = "c".repeat(64);
+const PUBLISHER_NETNS_DROPIN = readFileSync(join(
+  DIRECTORY,
+  "../deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+));
 const CONFIG = Buffer.from(`{
 \temail ops@example.invalid
 \tadmin 127.0.0.1:2019
@@ -155,6 +165,23 @@ function stoppedGeneration() {
   };
 }
 
+function inactivePublisherNetnsPreimage() {
+  return {
+    activation_sentinels_absent: [...PUBLISHER_NETNS_SENTINEL_PATHS],
+    host_interface_absent: PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    namespace_path_absent: PUBLISHER_NETNS_NAMESPACE_PATH,
+    unit_generation: {
+      active_enter_timestamp_monotonic: "0",
+      active_state: "inactive",
+      control_group: `/system.slice/${PUBLISHER_NETNS_UNIT}`,
+      invocation_id: "",
+      main_pid: "0",
+      sub_state: "dead",
+      unit_name: PUBLISHER_NETNS_UNIT,
+    },
+  };
+}
+
 function fixture() {
   const candidateConfig = buildHardenedCaddyfile(CONFIG, "replace-explicit-tcp-admin");
   const candidateUnit = buildHardenedUnit(UNIT);
@@ -189,7 +216,7 @@ function fixture() {
         admin_dial: ADMIN_DIAL,
         admin_listen: ADMIN_LISTEN,
         caddy_admin_environment_absent: true,
-        dropins: [],
+        dropins: [PUBLISHER_NETNS_DROPIN_PATH],
         runtime_directory: ADMIN_DIRECTORY,
         runtime_directory_mode: "0700",
         runtime_directory_preserve: "no",
@@ -255,7 +282,14 @@ function fixture() {
       root_or_cap_dac_override_not_isolated: true,
       scope: "capability-free-unprivileged-non-root-dac-only",
     },
-    schema_version: 1,
+    publisher_netns_dropin: snapshot(
+      PUBLISHER_NETNS_DROPIN_PATH,
+      PUBLISHER_NETNS_DROPIN,
+      "0644",
+      9,
+    ),
+    publisher_netns_preimage: inactivePublisherNetnsPreimage(),
+    schema_version: 2,
     service_uid_inventory: [
       { name: "cloudflared", uid: 52901 },
       { name: "pir", uid: 52902 },
@@ -299,7 +333,7 @@ function fixture() {
       },
       daemon_reload_argv: ["/usr/bin/systemctl", "daemon-reload"],
       installation_mode: "service-stopped-two-exact-rename-replacements-with-parent-fsync",
-      lock_path: "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+      lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
       new_invocation_required: true,
       outcome_unknown_conditions: [
         "systemctl-command-error-after-stop-request-without-complete-stopped-proof",
@@ -365,7 +399,7 @@ function receiptFixture(plan) {
   const receipt = {
     activation: {
       binary_version: "v2.11.4",
-      dropin_paths: [],
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
       effective_environment_names: [],
       fragment_path: "/etc/systemd/system/bhtm-caddy.service",
       need_daemon_reload: "no",
@@ -381,6 +415,15 @@ function receiptFixture(plan) {
         UMask: "0077",
         UnsetEnvironment: ["CADDY_ADMIN"],
         User: "root",
+      },
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
       },
       unit_generation: generation({
         activeEnter: "2000000",
@@ -425,6 +468,16 @@ function receiptFixture(plan) {
     before: {
       binary: plan.preimage.binary,
       config: plan.preimage.config,
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
+      },
+      publisher_netns_dropin: plan.publisher_netns_dropin,
       unit: plan.preimage.unit,
       unit_generation: plan.preimage.unit_generation,
     },
@@ -439,13 +492,19 @@ function receiptFixture(plan) {
       boot_id: "323e4567-e89b-42d3-a456-426614174002",
       hostname: "fixture.invalid",
     },
-    installed: { binary: installedBinary, config: installedConfig, unit: installedUnit },
+    installed: {
+      binary: installedBinary,
+      config: installedConfig,
+      publisher_netns_dropin: plan.publisher_netns_dropin,
+      unit: installedUnit,
+    },
     outcome: "committed",
     privileged_access_inventory: plan.privileged_access_inventory,
+    publisher_netns_dropin: plan.publisher_netns_dropin,
     recovery_classification: "candidate/candidate-new-generation",
     rollback: { outcome: "not-required", performed: false },
     runtime: plan.runtime,
-    schema_version: 1,
+    schema_version: 2,
     site_health: plan.site_preservation.probe_ids.map((id) => ({
       after: "passed",
       before: "passed",
@@ -744,6 +803,9 @@ test("unit construction rejects non-root service and all unbounded environment s
 
 test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and warm activation", () => {
   for (const [mutate, pattern] of [
+    [(plan) => { plan.schema_version = 1; }, /schema_version must equal 2/u],
+    [(plan) => { plan.candidate.unit_policy.dropins = []; }, /publisher namespace drop-in/u],
+    [(plan) => { plan.publisher_netns_dropin.path = "/tmp/override.conf"; }, /must equal .*bitcoinpir-publisher-netns\.conf/u],
     [(plan) => {
       plan.preimage.binary.path = "/usr/bin/caddy";
       plan.candidate.binary.path = "/usr/bin/caddy";
@@ -758,6 +820,13 @@ test("plan rejects old Caddy evidence, Node drift, incomplete UID inventory and 
     [(plan) => { plan.site_preservation.probe_ids = ["direct-upstream", "public-site"]; }, /3\.\.128/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "123e4567-e89b-42d3-a456-426614174000"; }, /32-character lowercase systemd InvocationID/u],
     [(plan) => { plan.preimage.unit_generation.invocation_id = "0".repeat(32); }, /nonzero 32-character lowercase systemd InvocationID/u],
+    [(plan) => {
+      plan.publisher_netns_preimage.unit_generation.active_state = "active";
+      plan.publisher_netns_preimage.unit_generation.sub_state = "running";
+    }, /publisher_netns_preimage\.unit_generation must be inactive\/dead/u],
+    [(plan) => { plan.publisher_netns_preimage.namespace_path_absent = "/run/netns/unreviewed"; }, /namespace_path_absent must equal/u],
+    [(plan) => { plan.publisher_netns_preimage.activation_sentinels_absent.pop(); }, /exact reviewed path set/u],
+    [(plan) => { plan.transaction.lock_path = "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock"; }, /publisher-lifecycle\.lock/u],
     [(plan) => { plan.transaction.reload_forbidden = false; }, /reload_forbidden must equal true/u],
     [(plan) => { plan.transaction.automatic_rollback_after_ambiguous_start = true; }, /must equal false/u],
     [(plan) => { plan.candidate.adapted_json_size = "0"; }, /must be inside/u],
@@ -829,6 +898,10 @@ test("an exact committed cold-generation receipt passes", () => {
 
 test("receipt rejects warm generation, non-root access, TCP admin, socket drift and outcome unknown", () => {
   for (const [mutate, pattern] of [
+    [
+      (receipt) => { receipt.schema_version = 1; },
+      /schema_version must equal 2/u,
+    ],
     [
       (receipt, plan) => { receipt.activation.unit_generation.invocation_id = plan.preimage.unit_generation.invocation_id; },
       /new InvocationID/u,

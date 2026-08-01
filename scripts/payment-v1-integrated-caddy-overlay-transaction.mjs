@@ -26,6 +26,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   OVERLAY_COLLECTOR,
+  OVERLAY_RECEIPT_SCHEMA_VERSION,
+  PUBLISHER_NETNS_DROPIN_PATH,
   buildOverlayCandidateFromRendered,
   canonicalJson,
   computeApprovedOverlayPlanSha256,
@@ -44,7 +46,15 @@ import {
   canonicalizeAdaptedCaddyJson,
   computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,
   validateCommittedReceipt as validateAdminUdsCommittedReceipt,
+  validatePublisherNetnsDropInBytes,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
+import {
+  PUBLISHER_NETNS_CEREMONY_KIND,
+  PUBLISHER_NETNS_RECEIPT_KIND,
+  computePublisherNetnsPlanSha256V2,
+  validatePublisherNetnsPlanV2,
+  validatePublisherNetnsReceiptV2,
+} from "./payment-v1-publisher-netns-schema.mjs";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
@@ -52,12 +62,15 @@ const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 const TARGET_CONFIG = "/etc/caddy/Caddyfile";
 const TARGET_UNIT = "bhtm-caddy.service";
 const SOURCE_FAIR_UNIT = "bitcoinpir-payment-v1-source-fair-edge.service";
+const PUBLISHER_NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
+const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
 const RENAME_EXCHANGE_HELPER =
   "/opt/bitcoinpir/payment-v1-rename-exchange/@OVERLAY_EXCHANGE_SHA256@/payment-v1-rename-exchange";
 const RENAME_EXCHANGE_MANIFEST =
   "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256";
 const LOCK_OWNER = "owner.json";
 const LOCK_OWNER_PENDING = `${LOCK_OWNER}.pending`;
+const OVERLAY_LOCK_DOMAIN = "integrated-caddy-overlay";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 export const OVERLAY_STATE_FILES = Object.freeze({
@@ -116,7 +129,7 @@ function exactGeneration(actual, expected, label) {
 function expectedCaddyEffectiveUnit(plan, environmentNames) {
   const binary = plan.target.binary.path;
   return {
-    dropin_paths: [],
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
     environment_names: environmentNames,
     environment_files: [],
     exec_reload: {
@@ -135,6 +148,15 @@ function expectedCaddyEffectiveUnit(plan, environmentNames) {
     memory_swap_max: "0",
     need_daemon_reload: "no",
     pass_environment: [],
+    publisher_netns_dependency: {
+      after_namespace_owner: true,
+      binds_to_namespace_owner: false,
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+      need_daemon_reload: "no",
+      part_of_namespace_owner: false,
+      requires_namespace_owner: false,
+      wants_namespace_owner: true,
+    },
     runtime_directory: ["bitcoinpir-caddy-admin"],
     runtime_directory_mode: "0700",
     runtime_directory_preserve: "no",
@@ -314,6 +336,16 @@ function assertAdminUdsHardeningEvidence(
   if (hardeningPlan.transaction_id !== summary.transaction_id) {
     fail("Caddy admin UDS evidence transaction ID does not equal the overlay summary");
   }
+  if (
+    hardeningPlan.schema_version !== summary.plan_schema_version ||
+    receipt.schema_version !== summary.receipt_schema_version ||
+    hardeningPlan.publisher_netns_dropin.sha256 !==
+      summary.publisher_netns_dropin_sha256 ||
+    receipt.publisher_netns_dropin.sha256 !==
+      summary.publisher_netns_dropin_sha256
+  ) {
+    fail("Caddy admin UDS evidence does not bind the exact schema-v2 publisher drop-in");
+  }
   if (!same(hardeningPlan.runtime.probe, adminProbePin)) {
     fail("overlay admin probe does not equal the exact approved hardening probe generation");
   }
@@ -344,6 +376,132 @@ function assertAdminUdsHardeningEvidence(
     if (key !== expected) fail("Caddy admin UDS full evidence does not equal the overlay preimage summary");
   }
   return { hardeningPlan, receipt };
+}
+
+function parseCanonicalOverlayEvidence(bytes, label) {
+  const buffer = Buffer.from(bytes);
+  const value = parseStrictJson(buffer.toString("utf8"), label);
+  if (!buffer.equals(Buffer.from(canonicalJson(value), "utf8"))) {
+    fail(`${label} bytes must equal their canonical JSON encoding`);
+  }
+  return value;
+}
+
+function assertPublisherNetnsCeremonyEvidence(
+  planBytes,
+  receiptBytes,
+  summary,
+  overlayPlan,
+) {
+  const ceremonyPlan = parseCanonicalOverlayEvidence(
+    planBytes,
+    "publisher namespace ceremony plan",
+  );
+  const receipt = parseCanonicalOverlayEvidence(
+    receiptBytes,
+    "publisher namespace ceremony receipt",
+  );
+  validatePublisherNetnsPlanV2(ceremonyPlan);
+  if (computePublisherNetnsPlanSha256V2(ceremonyPlan) !== summary.approved_plan_sha256) {
+    fail("publisher namespace ceremony plan does not equal its approved digest");
+  }
+  if (
+    ceremonyPlan.schema_version !== summary.plan_schema_version ||
+    ceremonyPlan.kind !== PUBLISHER_NETNS_CEREMONY_KIND ||
+    ceremonyPlan.ceremony_id !== summary.ceremony_id ||
+    ceremonyPlan.transaction?.receipt_path !== summary.receipt.path ||
+    ceremonyPlan.topology?.host_address !== summary.host_address ||
+    ceremonyPlan.topology?.client_address !== summary.client_address ||
+    ceremonyPlan.topology?.publisher_hostname !== summary.publisher_hostname ||
+    ceremonyPlan.topology?.host_port !== summary.host_port
+  ) {
+    fail("publisher namespace ceremony plan identity, endpoint or receipt path drifted");
+  }
+  validatePublisherNetnsReceiptV2({
+    approvedPlanSha256: summary.approved_plan_sha256,
+    plan: ceremonyPlan,
+    receipt,
+  });
+  if (
+    receipt.schema_version !== summary.receipt_schema_version ||
+    receipt.kind !== PUBLISHER_NETNS_RECEIPT_KIND ||
+    receipt.outcome !== "committed" ||
+    receipt.ceremony_id !== summary.ceremony_id ||
+    receipt.approved_plan_sha256 !== summary.approved_plan_sha256
+  ) {
+    fail("publisher namespace ceremony receipt identity or outcome drifted");
+  }
+  const planDropin = ceremonyPlan.installed_files?.find(
+    (entry) => entry?.id === "caddy-netns-dropin",
+  );
+  const receiptDropins = receipt.installed_files?.filter(
+    (entry) => entry?.path === PUBLISHER_NETNS_DROPIN_PATH,
+  );
+  if (
+    planDropin === undefined ||
+    !same(planDropin.pin, summary.dropin) ||
+    !Array.isArray(receiptDropins) ||
+    receiptDropins.length !== 1 ||
+    !same(receiptDropins[0], summary.dropin)
+  ) {
+    fail("publisher namespace ceremony evidence does not bind the unique Caddy drop-in");
+  }
+  if (
+    receipt.netns_unit?.active_state !== "active" ||
+    receipt.netns_unit?.name !== PUBLISHER_NETNS_UNIT ||
+    receipt.netns_unit?.invocation_id !== summary.netns_invocation_id ||
+    receipt.netns_unit?.need_daemon_reload !== "no" ||
+    receipt.publisher_unit?.active_state !== "inactive" ||
+    receipt.publisher_unit?.name !== PUBLISHER_UNIT ||
+    receipt.topology?.namespace?.device !== summary.namespace_device ||
+    receipt.topology?.namespace?.inode !== summary.namespace_inode ||
+    sha256(Buffer.from(canonicalJson(receipt.topology), "utf8")) !== summary.topology_sha256
+  ) {
+    fail("publisher namespace ceremony receipt does not bind the active isolated topology");
+  }
+  const caddy = ceremonyPlan.caddy_preimage;
+  const unit = caddy?.unit;
+  const generation = overlayPlan.target.unit_generation;
+  if (
+    !same(caddy?.config, overlayPlan.target.config_preimage) ||
+    !same(receipt.caddy_before, caddy) ||
+    !same(receipt.caddy_after, caddy) ||
+    unit?.active_enter_timestamp_monotonic !==
+      generation.active_enter_timestamp_monotonic ||
+    unit?.active_state !== generation.active_state ||
+    unit?.invocation_id !== generation.invocation_id ||
+    unit?.main_pid !== generation.main_pid ||
+    unit?.name !== generation.unit_name ||
+    unit?.sub_state !== generation.sub_state ||
+    unit?.load_state !== "loaded" ||
+    unit?.need_daemon_reload !== "no"
+  ) {
+    fail("publisher namespace ceremony did not occur on the exact hardened Caddy preimage generation");
+  }
+  return { ceremonyPlan, receipt };
+}
+
+function assertPublisherNetnsLiveGeneration(actual, expected, label) {
+  if (
+    actual.unit_name !== PUBLISHER_NETNS_UNIT ||
+    actual.active_state !== "active" ||
+    actual.sub_state !== expected.sub_state ||
+    actual.invocation_id !== expected.invocation_id ||
+    actual.main_pid !== expected.main_pid ||
+    actual.active_enter_timestamp_monotonic !== expected.active_enter_timestamp_monotonic
+  ) {
+    fail(`${label} publisher namespace systemd generation drifted`);
+  }
+}
+
+function assertPublisherInactive(actual, label) {
+  if (
+    actual.unit_name !== PUBLISHER_UNIT ||
+    actual.active_state !== "inactive" ||
+    actual.main_pid !== "0"
+  ) {
+    fail(`${label} directory publisher must remain inactive during the network-only overlay`);
+  }
 }
 
 function requireMonotonicNs(value, label) {
@@ -543,6 +701,18 @@ async function collectPinnedState(
     [plan.target.binary, `${label} Caddy binary`],
     [plan.target.unit_fragment, `${label} Caddy unit fragment`],
     [
+      plan.target.publisher_netns_ceremony.dropin,
+      `${label} publisher namespace Caddy drop-in`,
+    ],
+    [
+      plan.target.publisher_netns_ceremony.plan,
+      `${label} publisher namespace ceremony plan`,
+    ],
+    [
+      plan.target.publisher_netns_ceremony.receipt,
+      `${label} publisher namespace ceremony receipt`,
+    ],
+    [
       plan.target.admin_uds_hardening.plan,
       `${label} Caddy admin UDS hardening plan`,
     ],
@@ -567,6 +737,16 @@ async function collectPinnedState(
     snapshots.set(pin.path, observed.snapshot);
   }
   assertManifest(files.get(plan.runtime.exchange_manifest.path), plan.runtime.exchange_helper);
+  validatePublisherNetnsDropInBytes(
+    files.get(plan.target.publisher_netns_ceremony.dropin.path),
+    plan.target.publisher_netns_ceremony.dropin.sha256,
+  );
+  const publisherNetnsCeremony = assertPublisherNetnsCeremonyEvidence(
+    files.get(plan.target.publisher_netns_ceremony.plan.path),
+    files.get(plan.target.publisher_netns_ceremony.receipt.path),
+    plan.target.publisher_netns_ceremony,
+    plan,
+  );
   const hardening = assertAdminUdsHardeningEvidence(
     files.get(plan.target.admin_uds_hardening.plan.path),
     files.get(plan.target.admin_uds_hardening.receipt.path),
@@ -575,6 +755,18 @@ async function collectPinnedState(
     plan.runtime.admin_uds_gate,
     plan.runtime.node_binary,
   );
+  if (
+    !same(
+      hardening.hardeningPlan.publisher_netns_dropin,
+      plan.target.publisher_netns_ceremony.dropin,
+    ) ||
+    !same(
+      hardening.receipt.publisher_netns_dropin,
+      plan.target.publisher_netns_ceremony.dropin,
+    )
+  ) {
+    fail(`${label} admin hardening and namespace ceremony drop-in pins disagree`);
+  }
   const config = await ops.readRegular(plan.target.config_preimage.path);
   if (requirePreimage) {
     exactRegularSnapshot(config.snapshot, plan.target.config_preimage, `${label} Caddyfile preimage`);
@@ -606,6 +798,14 @@ async function collectPinnedState(
     expectedAdaptedJsonSha256s,
   );
   const caddyGeneration = adminRuntime.unit_generation;
+  const publisherNetnsGeneration = await ops.readUnitGeneration(PUBLISHER_NETNS_UNIT);
+  assertPublisherNetnsLiveGeneration(
+    publisherNetnsGeneration,
+    publisherNetnsCeremony.receipt.netns_unit,
+    label,
+  );
+  const publisherGeneration = await ops.readUnitGeneration(PUBLISHER_UNIT);
+  assertPublisherInactive(publisherGeneration, label);
   const sourceFairGeneration = await ops.readUnitGeneration(SOURCE_FAIR_UNIT);
   exactGeneration(sourceFairGeneration, plan.source_fair.unit_generation, `${label} source-fair HAProxy`);
   for (const [index, expected] of plan.source_fair.runtime_paths.entries()) {
@@ -627,6 +827,9 @@ async function collectPinnedState(
     config,
     files,
     hardening,
+    publisherGeneration,
+    publisherNetnsCeremony,
+    publisherNetnsGeneration,
     snapshots,
     sourceFairGeneration,
   };
@@ -677,9 +880,10 @@ function baseReceipt({
     installation,
     outcome,
     preparation,
+    publisher_netns_ceremony: structuredClone(plan.target.publisher_netns_ceremony),
     reload,
     rollback,
-    schema_version: 1,
+    schema_version: OVERLAY_RECEIPT_SCHEMA_VERSION,
     transaction_id: plan.transaction_id,
   };
 }
@@ -1374,7 +1578,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     );
     previousPhase = "reloaded";
 
-    await collectPinnedState(plan, ops, "post-reload", {
+    const postReloadState = await collectPinnedState(plan, ops, "post-reload", {
       expectedAdminRuntime: "managed-candidate",
       requirePreimage: false,
     });
@@ -1382,7 +1586,20 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     assertFinalConfig(committedConfig.snapshot, plan.managed_block.candidate_sha256, "post-reload Caddyfile");
     const healthResults = [];
     for (const check of plan.health_checks) {
-      const result = await ops.health(check);
+      const privateBoundary = check.network_namespace === "bpir-directory-publisher"
+        ? {
+            launcher: structuredClone(
+              postReloadState.publisherNetnsCeremony.ceremonyPlan.runtime.launcher,
+            ),
+            launcher_manifest_sha256:
+              postReloadState.publisherNetnsCeremony.ceremonyPlan.runtime.launcher_manifest.sha256,
+            namespace_device:
+              plan.target.publisher_netns_ceremony.namespace_device,
+            namespace_inode:
+              plan.target.publisher_netns_ceremony.namespace_inode,
+          }
+        : undefined;
+      const result = await ops.health(check, privateBoundary);
       if (
         result.success !== true ||
         result.status !== check.expected_status ||
@@ -2751,6 +2968,9 @@ function realRemoveIfExact(path, expectedSnapshot, expectedParent) {
       }
       const bytes = readFileSync(fd);
       const snapshot = snapshotFromStat(path, stat, bytes);
+      if (snapshot.ctime_ns !== expectedSnapshot.ctime_ns) {
+        fail(`exact removal entry ctime generation drifted: ${path}`);
+      }
       assertExchangeIdentity(snapshot, expectedSnapshot, path, "exact removal entry");
       const pathStat = lstatSync(parent.procPath, { bigint: true, throwIfNoEntry: true });
       if (!pathStat.isFile() || !sameInode(pathStat, stat)) {
@@ -3053,6 +3273,8 @@ function extractSingleSystemdExec(value, label) {
 }
 
 const EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
+  "After",
+  "BindsTo",
   "DropInPaths",
   "Environment",
   "EnvironmentFiles",
@@ -3063,7 +3285,9 @@ const EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
   "LimitCORE",
   "MemorySwapMax",
   "NeedDaemonReload",
+  "PartOf",
   "PassEnvironment",
+  "Requires",
   "RuntimeDirectory",
   "RuntimeDirectoryMode",
   "RuntimeDirectoryPreserve",
@@ -3072,13 +3296,37 @@ const EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
   "UMask",
   "UnsetEnvironment",
   "User",
+  "Wants",
 ]);
 
+function publisherNetnsDependencyFromSystemd(values, label) {
+  const words = (property) => splitSystemdLiteralWords(
+    values.get(property),
+    `${label} ${property}`,
+  );
+  const relation = (property) => words(property).includes(PUBLISHER_NETNS_UNIT);
+  return {
+    after_namespace_owner: relation("After"),
+    binds_to_namespace_owner: relation("BindsTo"),
+    dropin_paths: words("DropInPaths"),
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    part_of_namespace_owner: relation("PartOf"),
+    requires_namespace_owner: relation("Requires"),
+    wants_namespace_owner: relation("Wants"),
+  };
+}
+
 function normalizeEffectiveUnitProperties(values) {
-  if (values.get("DropInPaths") !== "") fail("effective Caddy unit has a drop-in");
+  const dropinPaths = splitSystemdLiteralWords(
+    values.get("DropInPaths"),
+    "effective Caddy DropInPaths",
+  );
+  if (!same(dropinPaths, [PUBLISHER_NETNS_DROPIN_PATH])) {
+    fail("effective Caddy unit does not have the unique publisher namespace drop-in");
+  }
   if (values.get("EnvironmentFiles") !== "") fail("effective Caddy unit has an EnvironmentFile");
   return {
-    dropin_paths: [],
+    dropin_paths: dropinPaths,
     environment_names: systemdEnvironmentNames(values.get("Environment"), "effective Caddy Environment"),
     environment_files: [],
     exec_reload: extractSingleSystemdExec(values.get("ExecReload"), "effective Caddy ExecReload"),
@@ -3089,6 +3337,10 @@ function normalizeEffectiveUnitProperties(values) {
     memory_swap_max: values.get("MemorySwapMax"),
     need_daemon_reload: values.get("NeedDaemonReload"),
     pass_environment: splitSystemdLiteralWords(values.get("PassEnvironment"), "effective Caddy PassEnvironment"),
+    publisher_netns_dependency: publisherNetnsDependencyFromSystemd(
+      values,
+      "effective Caddy",
+    ),
     runtime_directory: splitSystemdLiteralWords(values.get("RuntimeDirectory"), "effective Caddy RuntimeDirectory"),
     runtime_directory_mode: values.get("RuntimeDirectoryMode"),
     runtime_directory_preserve: values.get("RuntimeDirectoryPreserve"),
@@ -3369,6 +3621,127 @@ export function healthCheck(check) {
   });
 }
 
+function validatePublisherPrivateHealthCheck(check) {
+  exactKeys(check, [
+    "connect_ip",
+    "expected_body_sha256",
+    "expected_status",
+    "host",
+    "kind",
+    "lane",
+    "leaf_certificate_sha256",
+    "max_response_bytes",
+    "network_namespace",
+    "path",
+    "timeout_ms",
+  ], "publisher private health check");
+  if (
+    check.connect_ip !== "10.203.0.1" ||
+    check.expected_body_sha256 !== null ||
+    check.expected_status !== 101 ||
+    check.kind !== "websocket-upgrade" ||
+    check.lane !== "directory-publisher" ||
+    check.network_namespace !== "bpir-directory-publisher" ||
+    check.path !== "/" ||
+    typeof check.host !== "string" ||
+    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(check.host) ||
+    typeof check.leaf_certificate_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(check.leaf_certificate_sha256) ||
+    !Number.isSafeInteger(check.max_response_bytes) ||
+    check.max_response_bytes < 1 || check.max_response_bytes > 262_144 ||
+    !Number.isSafeInteger(check.timeout_ms) ||
+    check.timeout_ms < 100 || check.timeout_ms > 30_000
+  ) {
+    fail("publisher private health check differs from the reviewed namespace-only shape");
+  }
+}
+
+function invokePublisherPrivateHealth(check, boundary) {
+  validatePublisherPrivateHealthCheck(check);
+  exactKeys(boundary, [
+    "launcher",
+    "launcher_manifest_sha256",
+    "namespace_device",
+    "namespace_inode",
+  ], "publisher private health boundary");
+  for (const key of ["launcher_manifest_sha256"]) {
+    if (!/^[0-9a-f]{64}$/u.test(boundary[key])) {
+      fail(`publisher private health ${key} is malformed`);
+    }
+  }
+  for (const key of ["namespace_device", "namespace_inode"]) {
+    if (!/^[1-9][0-9]*$/u.test(boundary[key])) {
+      fail(`publisher private health ${key} is malformed`);
+    }
+  }
+  const parent = openSealedParent(boundary.launcher.path);
+  let fd;
+  return runWithSyncCleanups(
+    () => {
+      fd = openSync(
+        parent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      const before = pinnedDescriptorSnapshot(
+        fd,
+        boundary.launcher,
+        "publisher private health launcher",
+        MAX_EXECUTABLE_BYTES,
+      ).stat;
+      parent.confirm();
+      const encoded = Buffer.from(canonicalJson(check), "utf8").toString("base64");
+      const result = commandResult([
+        "/proc/self/fd/3",
+        "--approved-launcher-sha256",
+        boundary.launcher.sha256,
+        "--approved-manifest-sha256",
+        boundary.launcher_manifest_sha256,
+        "--",
+        "publisher-private-health-probe",
+        "--namespace-device",
+        boundary.namespace_device,
+        "--namespace-inode",
+        boundary.namespace_inode,
+        "--check-base64",
+        encoded,
+      ], {
+        captureStdout: true,
+        extraFd: fd,
+        maxBytes: 512 * 1024,
+        timeoutMs: check.timeout_ms + 10_000,
+      });
+      const after = fstatSync(fd, { bigint: true });
+      if (
+        !sameInode(after, before) || after.ctimeNs !== before.ctimeNs ||
+        after.mtimeNs !== before.mtimeNs || after.size !== before.size
+      ) {
+        fail("publisher private health launcher drifted during descriptor execution");
+      }
+      parent.confirm();
+      if (result.status !== 0) {
+        fail(
+          `publisher private health launcher failed: ${result.stderr.toString("utf8").trim()}`,
+        );
+      }
+      const response = parseStrictJson(
+        result.stdout.toString("utf8"),
+        "publisher private health result",
+      );
+      exactKeys(response, [
+        "body_sha256",
+        "leaf_certificate_sha256",
+        "status",
+        "success",
+      ], "publisher private health result");
+      return response;
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
+}
+
 function processStartTicks(pid) {
   const text = readFileSync(`/proc/${pid}/stat`, "utf8");
   const close = text.lastIndexOf(")");
@@ -3418,7 +3791,9 @@ function parseLockOwner(bytes) {
   }
   if (
     typeof owner.transaction_id !== "string" ||
-    !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(owner.transaction_id)
+    !/^(?:bhtm-caddy-admin-uds|integrated-caddy-overlay|publisher-netns|publisher-netns-rollback):[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(
+      owner.transaction_id,
+    )
   ) {
     fail("lock owner transaction ID is malformed");
   }
@@ -3445,6 +3820,7 @@ export function acquireFilesystemLock(
     transactionId,
   },
 ) {
+  const domainTransactionId = `${OVERLAY_LOCK_DOMAIN}:${transactionId}`;
   if (helperPin === undefined && allowUnpinnedTestHelper !== true) {
     fail("transaction lock owner publication requires the pinned no-replace helper");
   }
@@ -3465,7 +3841,7 @@ export function acquireFilesystemLock(
     ) {
       fail("transaction lock directory is not root:root mode 0700");
     }
-    const owner = lockOwner(transactionId);
+    const owner = lockOwner(domainTransactionId);
     const ownerBytes = Buffer.from(canonicalJson(owner), "utf8");
     const pendingPath = `${path}/${LOCK_OWNER_PENDING}`;
     const ownerPath = `${path}/${LOCK_OWNER}`;
@@ -3575,9 +3951,15 @@ export function acquireFilesystemLock(
         // All metadata and directory-shape checks above remain fail closed.
         owner = null;
       }
+      if (owner !== null && owner.transaction_id !== domainTransactionId) {
+        fail(
+          "stale lifecycle lock belongs to another transaction; refusing cross-domain recovery",
+        );
+      }
       if (owner !== null && ownerIsLive(owner)) {
         fail("transaction lock is held by a live process generation");
       }
+      injectFault(testOnlyFaultInjector, "before-stale-lock-owner-removal");
       realRemoveIfExact(
         `${path}/${entries[0].name}`,
         existing.snapshot,
@@ -3600,6 +3982,7 @@ export function acquireFilesystemLock(
     if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
       fail("transaction lock directory changed before release");
     }
+    injectFault(testOnlyFaultInjector, "before-lock-owner-release-removal");
     realRemoveIfExact(
       `${path}/${LOCK_OWNER}`,
       observed.snapshot,
@@ -3682,8 +4065,20 @@ export function linuxOverlayOps() {
     async fsyncRegular(path, expectedSnapshot, expectedParent) {
       fsyncRegularExact(path, expectedSnapshot, expectedParent);
     },
-    async health(check) {
-      return healthCheck(check);
+    async health(check, privateBoundary) {
+      if (check.network_namespace === "host") {
+        if (privateBoundary !== undefined) {
+          fail("host health check received a publisher namespace boundary");
+        }
+        return healthCheck(check);
+      }
+      if (check.network_namespace === "bpir-directory-publisher") {
+        if (privateBoundary === undefined) {
+          fail("publisher private health check is missing its namespace boundary");
+        }
+        return invokePublisherPrivateHealth(check, privateBoundary);
+      }
+      fail("health check selected an unreviewed network namespace");
     },
     async hostIdentity() {
       return {

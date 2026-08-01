@@ -477,6 +477,32 @@ leave those old lots safely uncheckable; do not graft the new pin onto them or
 use an unpinned client. Freeze exposure and perform explicit incident
 reconciliation until an authenticated custody-migration protocol exists.
 
+### Publisher namespace activation before the Caddy overlay
+
+The rendered `directory-publisher-netns-v1` tree must remain inert after
+installation. Use the separate plan and at-most-one-hour approval in
+`PUBLISHER_NETNS_CEREMONY.md` to start only the exact namespace unit and obtain
+an owner-only receipt. Bind that receipt into the integrated-existing-Caddy
+overlay plan before any Caddy change. Do not start the publisher and do not
+create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
+snapshot is point-in-time evidence only.
+
+Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
+the independently pinned native launcher, its approved seven-entry manifest and
+the complete recursive descriptor-pinned Node ELF closure;
+direct Node invocation is not a production ceremony. If the continuous
+publication-interval firewall guard is absent, the terminal state is
+namespace-only: neither the publisher service nor any Nostr publication may
+start, even when the namespace receipt is valid.
+
+Rollback order is the reverse trust order: stop the publisher, restore the
+exact Caddy overlay preimage, then use a distinct receipt-bound rollback
+approval to stop only the namespace. A changed Caddy/boot generation makes the
+narrow rollback unavailable and requires the cold-edge incident procedure.
+After reboot, the Caddy dependency may recreate the namespace, but the old
+ceremony receipt is provenance rather than current evidence; collect fresh
+runtime evidence before publication.
+
 Build and self-verify directory artifacts offline, then inspect the explicit
 publisher help separately:
 
@@ -488,14 +514,21 @@ cargo run --offline -p bpir-admin -- directory-artifact publish --help
 Only `directory-artifact publish` opens a relay connection. It reads no signing
 key: freeze and review the already-signed entry/checkpoint files, pin the
 expected directory public key, and select two through eight credential-free
-public `wss://` relay hostnames. Distinct hostnames are not evidence of distinct
-operators or infrastructure; audit that independently.
+public `wss://` relay hostnames for the strict default. Exactly one relay is
+allowed only with `--centralized-single-relay`; that explicit degraded mode is
+the current central-directory topology and supplies no relay redundancy or
+operator/failure independence. Zero relays, one without the flag, and the flag
+with multiple relays fail before network I/O. Distinct hostnames in strict mode
+are not evidence of distinct operators or infrastructure; audit that
+independently.
 
 Before the approved publication window, run the intended `publish` invocation
 with `--validate-only`. A successful validation performs no DNS or network I/O
 and reports `result=validated` for the frozen artifact set and relay hostnames.
-Record its event-set digest, then remove only `--validate-only` when publication
-is explicitly authorized; any other input change requires a fresh review.
+The receipt also records the publication mode and explicit
+`centralized`/`degraded` booleans. Record its event-set digest, then remove only
+`--validate-only` when publication is explicitly authorized; any other input
+change requires a fresh review.
 
 The publisher sends every exact EVENT to every relay, requires one positive
 matching NIP-01 OK per event, and uses a bounded total timeout for each relay.
@@ -503,7 +536,8 @@ It attempts all relays but exits nonzero on partial success. Preserve the exact
 artifacts and rerun them manually after resolving the failed relay; never
 advance the external per-`d` timestamp/sequence ledger based on a partial run.
 There is no automatic retry, proxy, redirect, relay AUTH, or signing fallback.
-Normal output contains only relay hostname, event count and result code.
+Normal output contains only relay hostname, event count, event-set digest,
+publication-mode fields and result code.
 
 ## 5. Bootstrap stores
 

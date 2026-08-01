@@ -572,11 +572,18 @@ bpir-admin directory-artifact publish \
   --relay-timeout-seconds 60
 ```
 
+Exactly one relay is accepted only when the invocation also carries
+`--centralized-single-relay`. This explicit degraded mode is intended for the
+current centrally operated directory: it does not claim relay redundancy,
+operator independence, or failure independence. Zero relays, one relay without
+the flag, and the flag with multiple relays all fail before DNS or network I/O.
+
 Run that exact command with `--validate-only` first. It performs the complete
 artifact, key-pin, time and relay-set validation and prints the same bounded
-relay-host/event-count/event-set-digest fields with `result=validated`, but it
-does not resolve, connect to or write to a relay. Removing only that flag is the
-explicit network-publication boundary for the reviewed frozen inputs.
+relay-host/event-count/event-set-digest fields with `result=validated`, plus the
+publication mode and explicit `centralized`/`degraded` booleans, but it does not
+resolve, connect to or write to a relay. Removing only that flag is the explicit
+network-publication boundary for the reviewed frozen inputs.
 
 Before dialing, every EVENT is verified through the production entry or
 checkpoint parser against that key and time. Duplicate IDs, noncanonical bytes,

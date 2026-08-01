@@ -934,7 +934,7 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
-- runtime-evidence v8 binds render-plan schema v2, manifest schema v2, the
+- runtime-evidence v9 binds render-plan schema v2, manifest schema v2, the
   runtime request and collected host to the exact first line
   `systemd 255 (255.4-1ubuntu8.15)`, and binds exact Unit-, Service- and
   Manager-interface busctl property lists. `Conditions` must be typed
@@ -948,10 +948,16 @@ remain separate acceptance gates.
   argv boundaries, flags, non-arrays, every non-empty credential value,
   missing/extra properties, literal `[unprintable]`, another systemd build,
   schema downgrade and snapshot drift fail in live, stopped-edge and
-  stopped-relay validation. The scalar `systemctl show` command records remain
+  stopped-relay validation. `NeedDaemonReload=no` is part of every live
+  effective-property snapshot. The scalar `systemctl show` command records remain
   strict redundancy: exactly one newline separates records, live `ExecStart`
   is running under `MainPID`, live `ExecStartPre` is successfully completed,
-  and stopped records are unexecuted. Every typed D-Bus `t` property is parsed
+  and stopped records are unexecuted. The sole exception is the exact
+  `directory-publisher-netns-v1` publisher: it must be a successful retained
+  `Type=oneshot`, `active/exited`, `MainPID=0`, empty `ControlGroup`, with a
+  nonzero same-boot activation timestamp and `InvocationID`, and its one
+  `ExecStart` must have completed as `code=exited status=0` with real start and
+  stop timestamps. Every typed D-Bus `t` property is parsed
   from its raw JSON integer into a canonical decimal string without a
   JavaScript `Number` conversion; duplicate/extra keys, leading zeros,
   exponents, quoted values, unsafe rounding and values above uint64 fail.
@@ -965,12 +971,73 @@ remain separate acceptance gates.
   reject dynamic imports, export-from drift, package/absolute/`file:`/`data:`
   imports, CommonJS loaders and workers. Production transfer pins all three
   bytes from one commit;
+- publisher-netns ceremony tests require canonical closed plans; exact
+  RFC1918/ULA point-to-point pairs; no publisher private key or payment/query
+  correlation fields; exact installed/runtime/sentinel/firewall/Caddy pins;
+  an active/running Caddy generation with nonzero PID, invocation and activation
+  timestamp; the exact loaded Caddy `Wants+After` drop-in relation with no
+  reverse edge or pending daemon reload; inactive publisher/netns units with no pending reload;
+  an exact three-module local import closure for the executor;
+  the exact loaded namespace-unit fragment, commands, conditions, relationships
+  and hardening plus the PID 1 manager generation; a content-addressed native
+  launcher, machine-parsed static-launcher proof, recursive descriptor-pinned
+  Node ELF closure and exact seven-entry
+  Node/executor/import/private-probe/loader-manifest closure; descriptor-bound
+  execution, double `/proc/self/maps` validation,
+  fixed `--no-expose-wasm`, `--jitless` and `--use-openssl-ca` flags,
+  `/etc/ld.so.preload` and atomic pathname replacement negatives; and schema-v2
+  apply/rollback approvals binding both launcher digests, with independent
+  canonical digests and validity windows no longer than one hour;
+- apply starts only the exact namespace unit after an inactive/absent preimage,
+  brackets both pre-start closure passes with no-pending-PID-1-job checks, and
+  repeats exact absence after writing its durable start intent. Ordinary replay
+  refuses an active unit or pending PID 1 job. Lost-start recovery
+  requires the durable start intent, preserves its original approval digest,
+  revalidates exact live topology and never calls start twice. A start error,
+  timeout, nonzero status or later proof failure retains the shared lifecycle
+  lock; only same-domain recovery may release it after repeated no-pending-job,
+  exact inactive/`NeedDaemonReload=no`, absent nsfs/veth and byte/metadata-exact
+  sentinel proof. Pending-job and late-activation races retain the lock;
+- a root-Linux child is SIGKILLed after a real partial
+  `owner.json.pending` write. Explicit recovery may delete only that exact,
+  sole, unpublished root-owned inode after two generation checks; malformed
+  authoritative owners, valid foreign pending owners and concurrent live
+  generations remain untouched;
+- firewall mutations delete, duplicate and move after the user jump the single
+  required `RELATED,ESTABLISHED` accept in each IPv4/IPv6 INPUT/FORWARD before
+  chain; all fail closed. Separate positive mutations exercise every documented
+  optional DHCP/mDNS/SSDP/ICMP/ND/MLD early-accept class;
+- topology negatives cover extra functional interfaces, active/addressed/
+  aliased/wrong-kind fallback tunnels, loopback/client/veth identity drift,
+  extra/default/gateway/NAT routes, IPv4/IPv6 host forwarding, wrong nsfs and
+  Caddy/publisher/input or boot/systemd identity changes before receipt
+  publication;
+- receipt/state tests cover owner-only single-link publication, valid
+  pending-only and final-plus-pending crash windows, contradictory pending
+  refusal, exact live idempotent replay, separate receipt-bound rollback,
+  lost-stop recovery only with an exact receipt-bound durable stop intent,
+  refusal to adopt an externally stopped namespace, and rollback refusal after
+  Caddy/publisher/generation drift, including boot/systemd identity drift after
+  the exact stop and installed/runtime/sentinel/firewall drift during stop;
+- disposable privileged Linux runs the Node suite without skips, including
+  descriptor execution of the exact approved inode inside a real network
+  namespace. The native helper harness injects crashes around namespace mount,
+  veth creation/move and cleanup, then proves exact recovery plus fail-closed
+  monitoring for link/default-route drift and unknown fixed-name preimages;
+- a disposable Ubuntu 24.04 `CAP_NET_ADMIN` firewall test installs the exact
+  UFW policy, reloads it, captures UFW/raw/nft state twice and requires the
+  semantic gate to accept both generations; the launcher container proves a
+  tampered import and `NODE_OPTIONS` payload cannot execute before rejection;
 - runtime-evidence accepts only exact paired `files` or paired
   `files systemd` NSS sources for passwd/group, with files first and inherited
   initgroups; mixed/reversed sequences, action brackets and every other source
   fail closed. It checks stable root-owned policy snapshots,
   identity-relevant `getent` projections, every user's `id -G`, UID/GID
   uniqueness and protected-group closure;
+- live runtime schema v7 parses the typed D-Bus `WatchdogUSec` uint64 token
+  lexically, preserving `UINT64_MAX` exactly for non-watchdog services while
+  retaining systemctl's human `infinity`; numeric rounding, quoted values,
+  schema-v6 evidence and wrong preflight intervals fail closed;
 - render plans, runtime service-account policy, and the Caddy service-UID
   inventory reject IDs outside static `1..60000`, including systemd
   `DynamicUser` `61184..65519` and `nobody` `65534`; checked-in Payment V1
@@ -985,6 +1052,15 @@ remain separate acceptance gates.
   only `CAP_NET_BIND_SERVICE`, HAProxy/business services zero). An unmanaged
   stale holder, wrong cgroup, changed credential/capability, omitted MainPID,
   pass race, DAC/ownership/set-ID/SETFCAP bypass or legacy evidence fails;
+- the completed directory publisher carries `process_identity=null`; its
+  static service UID/GID remain in the protected credential set, so either
+  full procfs pass rejects any residual publisher credential holder. The
+  disposable `payment-v1-systemd-255-pid1.test.sh` wrapper builds and boots the
+  exact Ubuntu `systemd 255 (255.4-1ubuntu8.15)` manager. It runs the directory
+  publisher oneshot harness to confirm real active/exited metadata, completed
+  ExecStart, environment removal and zero UID/GID holders, then exercises both
+  the pre-READY notify-timeout and post-READY exit failure generations plus
+  exact `reset-failed` convergence;
 - an exact managed-unit cgroup may contain master/worker processes only with the
   unit's complete reviewed UID/GID/group set, and a post-scan generation check
   rebinds MainPID, InvocationID and ControlGroup;

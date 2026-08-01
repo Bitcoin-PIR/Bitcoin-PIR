@@ -1,0 +1,167 @@
+{
+  "deployment_id": "replace-directory-publisher-netns-v1",
+  "deployment_profile": "directory-publisher-netns-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "UNRESOLVED/publisher-netns/payment-v1-publisher-netns",
+      "target_path": "/opt/bitcoinpir/publisher-netns/UNRESOLVED/payment-v1-publisher-netns",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/publisher-netns/helper.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "UNRESOLVED/directory-publisher/bpir-admin",
+      "target_path": "/opt/bitcoinpir/bpir-admin/UNRESOLVED/bpir-admin",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/bpir-admin.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/artifacts.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/network-inputs.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/provider-0.event.json",
+      "target_path": "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-0.event.json",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/provider-1.event.json",
+      "target_path": "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-1.event.json",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "UNRESOLVED",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "UNRESOLVED/directory-publisher/checkpoints.json",
+      "target_path": "/var/lib/bitcoinpir-directory-publisher/artifacts/checkpoints.json",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "BPIR_ADMIN_SHA256": "UNRESOLVED",
+    "CHECKPOINT_ARTIFACT": "checkpoints.json",
+    "DIRECTORY_PUBLISHER_HTTPS_HOST": "UNRESOLVED",
+    "DIRECTORY_PUBLISHER_PUBKEY_HEX": "UNRESOLVED",
+    "DIRECTORY_PUBLISH_NOW_UNIX": "UNRESOLVED",
+    "PROVIDER_0_ENTRY_ARTIFACT": "provider-0.event.json",
+    "PROVIDER_1_ENTRY_ARTIFACT": "provider-1.event.json",
+    "PUBLISHER_NETNS_HELPER_SHA256": "UNRESOLVED"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/netns/bpir-directory-publisher/hosts",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/netns/bpir-directory-publisher/resolv.conf",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+      "source_sha256": "UNRESOLVED",
+      "target_path": "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+      "uid": 0
+    }
+  ],
+  "relay_selection_sha256": "688779adb6e1d0f8f84f178da5fdc50b6a05de97845eb21dff1cb746c9ecd7c2",
+  "schema_version": 2,
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)",
+  "service_identities": [
+    {
+      "gid": 52903,
+      "group_name": "bitcoinpir-directory-publisher",
+      "uid": 52903,
+      "unit_name": "bitcoinpir-payment-v1-directory-publisher.service",
+      "user_name": "bitcoinpir-directory-publisher"
+    }
+  ]
+}

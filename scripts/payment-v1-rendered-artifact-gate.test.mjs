@@ -25,6 +25,7 @@ import {
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   canonicalJson,
   computeApprovedPlanSha256,
+  computeDirectoryPublishArgvSha256V1,
   parseStrictJson,
   renderBundle,
   runtimeRequestFromManifest,
@@ -49,6 +50,8 @@ const CADDY_ADMIN_UDS_TRANSACTION =
   "scripts/payment-v1-caddy-admin-uds-transaction.mjs";
 const INTEGRATED_CADDY_TRANSACTION =
   "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs";
+const PUBLISHER_NETNS_SCHEMA =
+  "scripts/payment-v1-publisher-netns-schema.mjs";
 const INTEGRATED_CADDY_BLOCK =
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in";
 const GUARD_UNIT = "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in";
@@ -97,6 +100,15 @@ const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
   "txprepare",
   "wss-proxy",
 ]);
+const PUBLISHER_NETNS_TEMPLATES = [
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+];
 
 function hashBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -320,6 +332,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
   copySource(fixture.sourceRoot, CADDY_ADMIN_UDS_TRANSACTION);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_GATE);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
+  copySource(fixture.sourceRoot, PUBLISHER_NETNS_SCHEMA);
   copySource(fixture.sourceRoot, INTEGRATED_CADDY_BLOCK);
   const haproxyBytes = Buffer.from("reviewed-integrated-haproxy-v1\n");
   const haproxySha = hashBytes(haproxyBytes);
@@ -450,6 +463,15 @@ function makeIntegratedCaddySourceFairFixture(t) {
           "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
         uid: 0,
       },
+      {
+        gid: 0,
+        mode: "0555",
+        source_path: PUBLISHER_NETNS_SCHEMA,
+        source_sha256: hashFile(join(fixture.sourceRoot, PUBLISHER_NETNS_SCHEMA)),
+        target_path:
+          "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+        uid: 0,
+      },
     ],
     schema_version: 2,
     systemd_version: REVIEWED_SYSTEMD_VERSION,
@@ -462,6 +484,126 @@ function makeIntegratedCaddySourceFairFixture(t) {
         user_name: "bitcoinpir-source-fair-edge",
       },
     ],
+  };
+  return { ...fixture, plan, targets };
+}
+
+function makePublisherNetnsFixture(t) {
+  const fixture = temporaryRoots(t);
+  for (const template of PUBLISHER_NETNS_TEMPLATES) copySource(fixture.sourceRoot, template);
+  copySource(fixture.sourceRoot, RELAY_SELECTION);
+  const helperBytes = Buffer.from("reviewed-publisher-netns-helper-v1\n");
+  const helperSha = hashBytes(helperBytes);
+  const adminBytes = Buffer.from("reviewed-bpir-admin-v1\n");
+  const adminSha = hashBytes(adminBytes);
+  const placeholders = {
+    BPIR_ADMIN_SHA256: adminSha,
+    CHECKPOINT_ARTIFACT: "checkpoints.json",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.internal.example",
+    DIRECTORY_PUBLISHER_PUBKEY_HEX:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    DIRECTORY_PUBLISH_NOW_UNIX: "2000",
+    PROVIDER_0_ENTRY_ARTIFACT: "provider-0.event.json",
+    PROVIDER_1_ENTRY_ARTIFACT: "provider-1.event.json",
+    PUBLISHER_NETNS_HELPER_SHA256: helperSha,
+  };
+  const targets = {
+    admin: `/opt/bitcoinpir/bpir-admin/${adminSha}/bpir-admin`,
+    adminManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256",
+    artifactManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+    checkpoint: "/var/lib/bitcoinpir-directory-publisher/artifacts/checkpoints.json",
+    helper: `/opt/bitcoinpir/publisher-netns/${helperSha}/payment-v1-publisher-netns`,
+    helperManifest: "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+    networkManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256",
+    provider0: "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-0.event.json",
+    provider1: "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-1.event.json",
+  };
+  const signedArtifacts = new Map([
+    [targets.checkpoint, Buffer.from('["signed-checkpoint-fixture"]\n')],
+    [targets.provider0, Buffer.from('["EVENT",{"fixture":0}]\n')],
+    [targets.provider1, Buffer.from('["EVENT",{"fixture":1}]\n')],
+  ]);
+  const renderedNetworkTargets = new Map([
+    [
+      "/etc/netns/bpir-directory-publisher/hosts",
+      "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+      "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+    ],
+    [
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+      "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+    ],
+    [
+      "/etc/netns/bpir-directory-publisher/resolv.conf",
+      "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+    ],
+  ]);
+  const manifestBytes = (entries) => Buffer.from(
+    [...entries]
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([target, bytes]) => `${hashBytes(bytes)}  ${target}\n`)
+      .join(""),
+  );
+  const renderedNetworkBytes = new Map([...renderedNetworkTargets].map(([target, source]) => [
+    target,
+    Buffer.from(renderText(fixture.sourceRoot, source, placeholders)),
+  ]));
+  const payloads = [
+    [targets.helper, helperBytes, undefined],
+    [targets.helperManifest, Buffer.from(`${helperSha}  ${targets.helper}\n`), undefined],
+    [targets.admin, adminBytes, undefined],
+    [targets.adminManifest, Buffer.from(`${adminSha}  ${targets.admin}\n`), undefined],
+    [targets.artifactManifest, manifestBytes(signedArtifacts), undefined],
+    [targets.networkManifest, manifestBytes(renderedNetworkBytes), undefined],
+    ...[...signedArtifacts].map(([target, bytes]) => [
+      target,
+      bytes,
+      { class: "config", gid: 0, mode: "0444", uid: 0 },
+    ]),
+  ];
+  const targetForSource = new Map([
+    ["deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "/etc/netns/bpir-directory-publisher/hosts"],
+    ["deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json"],
+    ["deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf"],
+    ["deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "/etc/netns/bpir-directory-publisher/resolv.conf"],
+    ["deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf"],
+    ["deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"],
+    ["deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service"],
+  ]);
+  const plan = {
+    deployment_id: "directory-publisher-netns-v1-test",
+    deployment_profile: "directory-publisher-netns-v1",
+    payload_artifacts: payloads.map(([target, bytes, metadata], index) =>
+      addPayload(fixture, target, bytes, index, metadata)),
+    placeholders,
+    rendered_artifacts: PUBLISHER_NETNS_TEMPLATES.map((sourcePath) => ({
+      gid: 0,
+      mode: sourcePath.includes("/network/") ? "0444" : "0644",
+      source_path: sourcePath,
+      source_sha256: hashFile(join(fixture.sourceRoot, sourcePath)),
+      target_path: targetForSource.get(sourcePath),
+      uid: 0,
+    })),
+    relay_selection_sha256: hashFile(join(fixture.sourceRoot, RELAY_SELECTION)),
+    schema_version: 2,
+    systemd_version: REVIEWED_SYSTEMD_VERSION,
+    service_identities: [{
+      gid: 742,
+      group_name: "bitcoinpir-directory-publisher",
+      uid: 741,
+      unit_name: "bitcoinpir-payment-v1-directory-publisher.service",
+      user_name: "bitcoinpir-directory-publisher",
+    }],
   };
   return { ...fixture, plan, targets };
 }
@@ -1179,7 +1321,7 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 8);
+  assert.equal(first.request.schema_version, 9);
   assert.equal(first.request.systemd_version, REVIEWED_SYSTEMD_VERSION);
   assert.deepEqual(first.request.busctl_unit_properties, [
     "After",
@@ -1299,6 +1441,263 @@ test("service identities and numeric identity placeholders stay below systemd Dy
   );
 });
 
+test("directory publisher namespace profile renders, verifies, and emits its closed runtime request", (t) => {
+  const fixture = makePublisherNetnsFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(model.manifest.deployment_profile, "directory-publisher-netns-v1");
+  assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+  assert.deepEqual(
+    model.manifest.runtime_units.map(({ unit_name }) => unit_name),
+    ["bitcoinpir-payment-v1-directory-publisher.service"],
+  );
+  assert.deepEqual(model.manifest.directory_relay_selection, {
+    directory_mode: "centralized-single-relay",
+    publisher_pubkey_hex:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    relay_origin: "wss://publisher.internal.example",
+    selection_sha256: fixture.plan.relay_selection_sha256,
+    source_path: RELAY_SELECTION,
+    status: "RESOLVED",
+  });
+  const {
+    publication_receipt: publicationReceipt,
+    ...publisherNetworkWithoutReceipt
+  } = model.request.publisher_network;
+  assert.deepEqual(publisherNetworkWithoutReceipt, {
+    caddy_drop_in_path:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    caddy_service_unit: "bhtm-caddy.service",
+    firewall: {
+      forwarding_sysctls: {
+        "net.ipv4.ip_forward": 0,
+        "net.ipv6.conf.all.forwarding": 0,
+      },
+      interface: "bpir-pub-h",
+      semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+      ufw_rules_in_install_order: [
+        "prepend deny in on bpir-pub-h from any to any",
+        "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+        "route prepend deny in on bpir-pub-h from any to any",
+        "route prepend deny out on bpir-pub-h from any to any",
+      ],
+    },
+    forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+    namespace: {
+      client: "10.203.0.2/30",
+      host: "10.203.0.1/30",
+      name: "bpir-directory-publisher",
+      path: "/run/netns/bpir-directory-publisher",
+    },
+    namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+    network_policy_sha256: model.manifest.artifacts.find(
+      ({ target_path }) =>
+        target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    ).rendered_sha256,
+    publication_mode: {
+      centralized: true,
+      degraded: true,
+      name: "centralized-single-relay",
+    },
+    publication_time_firewall_binding: {
+      activation_blocked: true,
+      implemented: false,
+      point_in_time_evidence_only: true,
+    },
+    publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+  });
+  const installedByPath = new Map(
+    model.request.installed_files.map((file) => [file.target_path, file]),
+  );
+  const publicationUnit = model.request.units[0];
+  const publicationIdentity = model.request.service_identities[0];
+  const artifactManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256";
+  const artifactPaths = publicationUnit.exec_start_ex[0].argv
+    .flatMap((value, index, argv) => value === "--artifact" ? [argv[index + 1]] : [])
+    .sort();
+  assert.deepEqual(publicationReceipt, {
+    artifact_manifest: {
+      path: artifactManifestPath,
+      sha256: installedByPath.get(artifactManifestPath).sha256,
+    },
+    artifacts: artifactPaths.map((path) => ({
+      path,
+      sha256: installedByPath.get(path).sha256,
+    })),
+    argv: publicationUnit.exec_start_ex[0].argv,
+    argv_sha256: computeDirectoryPublishArgvSha256V1(
+      publicationUnit.exec_start_ex[0].argv,
+    ),
+    directory_mode: "centralized-single-relay",
+    file: {
+      directory: "/var/lib/bitcoinpir-directory-publication",
+      filename_suffix: ".json",
+      gid: publicationIdentity.gid,
+      mode: "0600",
+      nlink: 1,
+      uid: publicationIdentity.uid,
+    },
+    kind: "bitcoinpir-directory-publication-receipt-v1",
+    publisher_pubkey_hex:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    relay_origins: ["wss://publisher.internal.example"],
+    schema_version: 1,
+  });
+
+  const missingPublicationGuard = makePublisherNetnsFixture(t);
+  const publisherTemplate =
+    "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in";
+  const publisherTemplatePath = join(missingPublicationGuard.sourceRoot, publisherTemplate);
+  const guardedBytes = readFileSync(publisherTemplatePath, "utf8");
+  assert.match(
+    guardedBytes,
+    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED$/mu,
+  );
+  writeFileSync(
+    publisherTemplatePath,
+    guardedBytes.replace(
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED\n",
+      "",
+    ),
+  );
+  missingPublicationGuard.plan.rendered_artifacts.find(
+    ({ source_path: sourcePath }) => sourcePath === publisherTemplate,
+  ).source_sha256 = hashFile(publisherTemplatePath);
+  assert.throws(
+    () => renderFixture(missingPublicationGuard),
+    /must retain the exact global and profile-specific activation conditions/u,
+  );
+
+  for (const artifact of fixture.plan.rendered_artifacts) {
+    const missing = makePublisherNetnsFixture(t);
+    missing.plan.rendered_artifacts = missing.plan.rendered_artifacts.filter(
+      ({ target_path }) => target_path !== artifact.target_path,
+    );
+    assert.throws(
+      () => renderFixture(missing),
+      /deployment profile templates|dependency is missing|references missing artifact/u,
+      artifact.target_path,
+    );
+  }
+  for (const artifact of fixture.plan.payload_artifacts) {
+    const missing = makePublisherNetnsFixture(t);
+    missing.plan.payload_artifacts = missing.plan.payload_artifacts.filter(
+      ({ target_path }) => target_path !== artifact.target_path,
+    );
+    assert.throws(
+      () => renderFixture(missing),
+      /dependency is missing|references missing artifact/u,
+      artifact.target_path,
+    );
+  }
+
+  for (const id of [60_001, 62_900, 62_999, 65_534]) {
+    const invalid = makePublisherNetnsFixture(t);
+    invalid.plan.service_identities[0].uid = id;
+    invalid.plan.service_identities[0].gid = id;
+    assert.throws(() => renderFixture(invalid), /static service uid\/gid/u);
+  }
+});
+
+test("directory publisher plan fails closed on relay-selection and binding drift", (t) => {
+  const updateSelection = (fixture, updates, syncHash = true) => {
+    const selectionPath = join(fixture.sourceRoot, RELAY_SELECTION);
+    let selection = readFileSync(selectionPath, "utf8");
+    for (const [field, value] of Object.entries(updates)) {
+      selection = replaceRelaySelectionField(selection, field, value);
+    }
+    writeFileSync(selectionPath, selection);
+    if (syncHash) fixture.plan.relay_selection_sha256 = hashFile(selectionPath);
+  };
+
+  const hashMismatch = makePublisherNetnsFixture(t);
+  hashMismatch.plan.relay_selection_sha256 = "f".repeat(64);
+  assert.throws(
+    () => renderFixture(hashMismatch),
+    /relay selection source hash does not match the approved render plan/u,
+  );
+
+  const unresolved = makePublisherNetnsFixture(t);
+  updateSelection(unresolved, Object.fromEntries([
+    "status",
+    "directory_mode",
+    "implementation",
+    "source_repository",
+    "source_commit",
+    "source_archive_sha256",
+    "cargo_lock_sha256",
+    "build_manifest_sha256",
+    "binary_sha256",
+    "binary_version_output",
+    "config_sha256",
+    "publisher_pubkey_hex",
+  ].map((field) => [field, "UNRESOLVED"])));
+  assert.throws(
+    () => renderFixture(unresolved),
+    /requires a RESOLVED relay selection/u,
+  );
+
+  const wrongMode = makePublisherNetnsFixture(t);
+  updateSelection(wrongMode, { directory_mode: "strict-multi-relay" });
+  assert.throws(
+    () => renderFixture(wrongMode),
+    /requires directory_mode=centralized-single-relay/u,
+  );
+
+  const publisherKeyMismatch = makePublisherNetnsFixture(t);
+  publisherKeyMismatch.plan.placeholders.DIRECTORY_PUBLISHER_PUBKEY_HEX =
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  assert.throws(
+    () => renderFixture(publisherKeyMismatch),
+    /publisher key placeholder does not match relay selection publisher_pubkey_hex/u,
+  );
+
+  const missingHash = makePublisherNetnsFixture(t);
+  delete missingHash.plan.relay_selection_sha256;
+  assert.throws(
+    () => renderFixture(missingHash),
+    /render plan keys must equal/u,
+  );
+
+  const extraHash = makePublisherNetnsFixture(t);
+  extraHash.plan.unreviewed_relay_selection_sha256 = "e".repeat(64);
+  assert.throws(
+    () => renderFixture(extraHash),
+    /render plan keys must equal/u,
+  );
+
+  const valid = makePublisherNetnsFixture(t);
+  const model = renderFixture(valid);
+  const missingManifestHash = clone(model.manifest);
+  delete missingManifestHash.directory_relay_selection.selection_sha256;
+  assert.throws(
+    () => runtimeRequestFromManifest(missingManifestHash, model.manifestSha256),
+    /rendered manifest directory_relay_selection keys must equal/u,
+  );
+  const extraManifestHash = clone(model.manifest);
+  extraManifestHash.directory_relay_selection.unreviewed_selection_sha256 =
+    "d".repeat(64);
+  assert.throws(
+    () => runtimeRequestFromManifest(extraManifestHash, model.manifestSha256),
+    /rendered manifest directory_relay_selection keys must equal/u,
+  );
+
+  for (const relayOrigin of [
+    "wss://user@publisher.internal.example",
+    "wss://publisher.internal.example/v1/directory",
+    "wss://publisher.internal.example/",
+  ]) {
+    const nonCanonicalOrigin = clone(model.manifest);
+    nonCanonicalOrigin.directory_relay_selection.relay_origin = relayOrigin;
+    assert.throws(
+      () => runtimeRequestFromManifest(nonCanonicalOrigin, model.manifestSha256),
+      /relay_origin/u,
+      relayOrigin,
+    );
+  }
+});
+
 test("integrated existing-Caddy profile closes and proves its HAProxy socket boundary", (t) => {
   const fixture = makeIntegratedCaddySourceFairFixture(t);
   const model = renderFixture(fixture);
@@ -1392,8 +1791,8 @@ test("integrated admin gate rejects additional module dependencies", (t) => {
   writeFileSync(
     gatePath,
     readFileSync(gatePath, "utf8").replace(
-      "export const PLAN_SCHEMA_VERSION = 1;",
-      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 1;',
+      "export const PLAN_SCHEMA_VERSION = 2;",
+      'await import("./unreviewed-gate-helper.mjs");\n\nexport const PLAN_SCHEMA_VERSION = 2;',
     ),
   );
   const gate = fixture.plan.rendered_artifacts.find(
@@ -1415,8 +1814,8 @@ test("integrated overlay gate rejects added dependencies and semantic drift", (t
   );
   for (const changed of [
     original.replace(
-      "export const OVERLAY_PLAN_SCHEMA_VERSION = 1;",
-      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 1;',
+      "export const OVERLAY_PLAN_SCHEMA_VERSION = 2;",
+      'await import/* comment */("./unreviewed-overlay-helper.mjs");\n\nexport const OVERLAY_PLAN_SCHEMA_VERSION = 2;',
     ),
     original.replace(
       'export const OVERLAY_PROFILE = "integrated-existing-bhtm-caddy-v1";',
@@ -1501,7 +1900,7 @@ test("integrated cold executor rejects source drift even when the render-plan so
   );
 });
 
-test("integrated transaction closes both local gate imports", (t) => {
+test("integrated transaction closes both local gates and the shared schema import", (t) => {
   const fixture = makeIntegratedCaddySourceFairFixture(t);
   const executorPath = join(fixture.sourceRoot, INTEGRATED_CADDY_TRANSACTION);
   const expected = 'from "./payment-v1-caddy-admin-uds-gate.mjs";';

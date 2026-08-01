@@ -51,6 +51,9 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-*'
+      - 'scripts/payment-v1-directory-publisher-*'
+      - 'scripts/payment-v1-systemd-255-*'
       - 'web/**'
       - '.github/workflows/**'
   pull_request:
@@ -103,6 +106,9 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-*'
+      - 'scripts/payment-v1-directory-publisher-*'
+      - 'scripts/payment-v1-systemd-255-*'
       - 'web/**'
       - '.github/workflows/**'
   workflow_dispatch:
@@ -523,7 +529,7 @@ jobs:
       - name: Install source-fair edge compatibility test binaries
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends haproxy
+          sudo apt-get install --yes --no-install-recommends haproxy iproute2 nodejs openssl ca-certificates
           /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
           /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
           caddy_container="$(docker create caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)"
@@ -553,6 +559,23 @@ jobs:
           node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+          node --check scripts/payment-v1-publisher-netns-gate.mjs
+          node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+          node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+          node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+          node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+          node --check scripts/payment-v1-publisher-private-health-probe.mjs
+          node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+          sh -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+          bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+          sh -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+          sh -n scripts/payment-v1-systemd-255-pid1.test.sh
+          node scripts/payment-v1-publisher-netns-gate.mjs
+          node --test \
+            scripts/payment-v1-publisher-netns-gate.test.mjs \
+            scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+            scripts/payment-v1-publisher-netns-schema.test.mjs \
+            scripts/payment-v1-publisher-private-health-probe.test.mjs
           node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
           node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
           node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
@@ -594,7 +617,32 @@ jobs:
           systemd-analyze verify scripts/fixtures/payment-v1-caddy-admin-uds-hardened.service
           sudo "$(command -v node)" --test \
             scripts/payment-v1-integrated-caddy-lock.test.mjs \
-            scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+            scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs \
+            scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+            scripts/payment-v1-publisher-netns-schema.test.mjs
+          sudo env \
+            BPIR_PUBLISHER_NETNS_PRIVILEGED_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
+            BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
+            scripts/payment-v1-publisher-netns-privileged-e2e.sh
+          sudo env \
+            BPIR_PUBLISHER_PRIVATE_HEALTH_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
+            BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
+            BPIR_CADDY_BIN=/usr/local/bin/caddy \
+            scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+          scripts/payment-v1-systemd-255-pid1.test.sh
+          docker run --rm \
+            --cap-add NET_ADMIN \
+            --env BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+            bash -lc 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs ufw nftables iproute2 iptables >/dev/null && scripts/payment-v1-publisher-firewall-privileged-e2e.sh'
+          docker run --rm \
+            --env BPIR_DISPOSABLE_TEST_CONTAINER=1 \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:7725a5c2c83eed1d36258c66efae14b1ceccd021db9ed1d9559d3335ed3d68ed \
+            bash scripts/payment-v1-publisher-netns-launcher.test.sh /work
           docker run --rm \
             --network none \
             --read-only \

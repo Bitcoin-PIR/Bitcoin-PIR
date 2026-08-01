@@ -180,6 +180,35 @@ The templates divide responsibilities as follows:
   owns a volatile `0750` runtime directory and four `0660` PROXY-v2 Unix
   sockets. Provider, issuer, public directory, and private publisher lanes have
   independent short-lived source tables and budgets.
+- `systemd/payment-v1-publisher-netns.service.in` owns the fixed named
+  publisher network namespace and `/30` veth using the content-addressed native
+  helper in `scripts/payment-v1-publisher-netns.c`. The helper has no exec or
+  shell path, journals every intent, refuses unknown inode/alias/MAC preimages,
+  drops capabilities, applies seccomp and monitors both namespaces. The
+  corresponding Caddy drop-in orders the shared edge after namespace setup
+  without making namespace teardown stop Caddy. Because the nsfs bind mount must be host-visible, the owner unit
+  cannot use systemd mount-namespace hardening; this exception is closed by the
+  helper pin and runtime evidence rather than hidden in a nominal sandbox.
+- `scripts/payment-v1-publisher-netns-ceremony.mjs` is the source-closed,
+  root-only activation/rollback boundary for that namespace. It verifies the
+  exact installed files, both local gate imports, `/usr/bin/node`,
+  `/usr/bin/systemctl`, regular
+  `/usr/bin/ip`, Caddy/publisher generations, external sentinels, canonical
+  firewall evidence and fixed topology; invokes pinned commands by descriptor;
+  starts or stops only the namespace unit; and atomically publishes
+  receipt-bound state. It never creates sentinels/rules/routes, changes Caddy,
+  starts the publisher or installs a signing key. See
+  `docs/payment/PUBLISHER_NETNS_CEREMONY.md`.
+- `systemd/payment-v1-directory-publisher.service.in` is an explicit one-shot,
+  no-retry, no-key publication input. It joins only that named namespace, uses
+  files-only hostname mappings to `10.203.0.1`, and can send three frozen signed
+  artifacts to one explicitly centralized relay using the degraded
+  `--centralized-single-relay` CLI mode. Relay selection, the one private
+  SNI/certificate SAN, integrated-Caddy transaction coverage, exact UFW
+  input/forward denial and a publication-interval firewall-generation binding
+  remain activation blockers. The last sentinel is intentionally unavailable:
+  the current before/after runtime snapshots are point-in-time evidence and
+  cannot authorize publication; see `network/README.md`.
 - `systemd/payment-v1-public-edge.service.in` runs pinned stock Caddy and binds
   its lifecycle to the source-fair unit. It clears client headers, carries the
   source only in PROXY v2 over those Unix sockets, and has no source-header

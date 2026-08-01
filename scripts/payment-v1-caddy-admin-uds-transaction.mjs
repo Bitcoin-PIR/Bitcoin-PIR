@@ -38,6 +38,12 @@ import {
   COLLECTOR,
   EXECUTOR_PATH,
   PROFILE,
+  PUBLISHER_NETNS_DROPIN_PATH,
+  PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_NAMESPACE_PATH,
+  PUBLISHER_NETNS_SENTINEL_PATHS,
+  PUBLISHER_NETNS_UNIT,
   SETPRIV_PATH,
   TARGET_CONFIG,
   TARGET_FRAGMENT,
@@ -53,6 +59,8 @@ import {
   validateAdaptedCaddyPrivacyPolicy,
   validateCommittedReceipt,
   validatePlan,
+  validatePublisherNetnsDropInBytes,
+  validatePublisherNetnsPreimage,
   validatePreimageAdaptedJson,
 } from "./payment-v1-caddy-admin-uds-gate.mjs";
 
@@ -105,6 +113,15 @@ function exactKeys(value, expected, label) {
 
 function same(left, right) {
   return canonicalJson(left) === canonicalJson(right);
+}
+
+async function assertPublisherNetnsInactivePreimage(plan, ops, label) {
+  const observed = await ops.publisherNetnsPreimage();
+  validatePublisherNetnsPreimage(observed, `${label} publisher namespace preimage`);
+  if (!same(observed, plan.publisher_netns_preimage)) {
+    fail(`${label} publisher namespace preimage drifted from the exact inactive plan binding`);
+  }
+  return observed;
 }
 
 function validateHex64(value, label) {
@@ -360,9 +377,21 @@ function assertProcessRuntime(actual, generation, { binaryPin, hardened, label }
   }
 }
 
+function expectedPublisherNetnsDependency() {
+  return {
+    after_namespace_owner: true,
+    binds_to_namespace_owner: false,
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+    need_daemon_reload: "no",
+    part_of_namespace_owner: false,
+    requires_namespace_owner: false,
+    wants_namespace_owner: true,
+  };
+}
+
 function expectedPreimageEffectiveUnit() {
   return {
-    dropin_paths: [],
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
     environment_files: [],
     exec_reload: {
       argv: `${CADDY_BINARY_PATH} reload --config ${TARGET_CONFIG} --adapter caddyfile --force`,
@@ -377,6 +406,7 @@ function expectedPreimageEffectiveUnit() {
     fragment_path: TARGET_FRAGMENT,
     need_daemon_reload: "no",
     pass_environment: [],
+    publisher_netns_dependency: expectedPublisherNetnsDependency(),
   };
 }
 
@@ -389,14 +419,24 @@ function assertPreimageEffectiveUnit(actual, label) {
 async function collectPinnedActivePreimage(plan, ops, label) {
   const host = await ops.hostIdentity();
   assertHost(host, plan, `${label} host`);
-  const [binary, config, unit] = await Promise.all([
+  const [binary, config, publisherNetnsDropin, unit] = await Promise.all([
     ops.readRegular(plan.preimage.binary.path),
     ops.readRegular(plan.preimage.config.path),
+    ops.readRegular(plan.publisher_netns_dropin.path),
     ops.readRegular(plan.preimage.unit.path),
   ]);
   assertExactSnapshot(binary.snapshot, plan.preimage.binary, `${label} Caddy binary`);
   assertExactSnapshot(config.snapshot, plan.preimage.config, `${label} Caddyfile`);
   assertExactSnapshot(unit.snapshot, plan.preimage.unit, `${label} unit`);
+  assertExactSnapshot(
+    publisherNetnsDropin.snapshot,
+    plan.publisher_netns_dropin,
+    `${label} publisher namespace drop-in`,
+  );
+  validatePublisherNetnsDropInBytes(
+    publisherNetnsDropin.bytes,
+    plan.publisher_netns_dropin.sha256,
+  );
   const generation = await ops.readUnitGeneration(TARGET_UNIT);
   assertGeneration(generation, plan.preimage.unit_generation, `${label} unit`);
   const effectiveUnit = await ops.readPreimageEffectiveUnit(TARGET_UNIT);
@@ -407,7 +447,10 @@ async function collectPinnedActivePreimage(plan, ops, label) {
     hardened: false,
     label: `${label} process`,
   });
-  return { binary, config, effectiveUnit, generation, host, process, unit };
+  return {
+    binary, config, effectiveUnit, generation, host, process,
+    publisherNetnsDropin, unit,
+  };
 }
 
 async function assertRuntimePins(plan, ops, label) {
@@ -583,7 +626,7 @@ function expectedActivationProperties() {
 function assertActivation(value, plan) {
   exactKeys(
     value,
-    ["binary_version", "dropin_paths", "effective_environment_names", "fragment_path", "need_daemon_reload", "properties", "unit_generation"],
+    ["binary_version", "dropin_paths", "effective_environment_names", "fragment_path", "need_daemon_reload", "properties", "publisher_netns_dependency", "unit_generation"],
     "activation evidence",
   );
   const generation = value.unit_generation;
@@ -605,7 +648,8 @@ function assertActivation(value, plan) {
     value.binary_version !== "v2.11.4" ||
     value.fragment_path !== TARGET_FRAGMENT ||
     value.need_daemon_reload !== "no" ||
-    !same(value.dropin_paths, []) ||
+    !same(value.dropin_paths, [PUBLISHER_NETNS_DROPIN_PATH]) ||
+    !same(value.publisher_netns_dependency, expectedPublisherNetnsDependency()) ||
     !same(value.properties, expectedActivationProperties()) ||
     !Array.isArray(value.effective_environment_names) ||
     value.effective_environment_names.includes("CADDY_ADMIN")
@@ -756,6 +800,7 @@ async function validatePreflight({ approvedPlanSha256, inventory, ops, plan }) {
       `kernel.core_pattern must already equal ${REQUIRED_CORE_PATTERN}; this executor never changes it`,
     );
   }
+  await assertPublisherNetnsInactivePreimage(plan, ops, "preflight");
   validateSiteInventory({ bytes: inventory.bytes, plan });
 }
 
@@ -841,6 +886,11 @@ async function rollbackStoppedFailure({
         transaction_id: plan.transaction_id,
       }), "utf8"),
       STATE_MODE,
+    );
+    await assertPublisherNetnsInactivePreimage(
+      plan,
+      ops,
+      "immediate pre-rollback-start",
     );
     rollbackStartRequested = true;
     const start = await ops.run(plan.transaction.start_argv, { label: "rollback start" });
@@ -963,9 +1013,21 @@ async function collectCommittedEvidence({
   const installedBinary = await ops.readRegular(plan.candidate.binary.path);
   const installedConfig = await ops.readRegular(plan.candidate.config.path);
   const installedUnit = await ops.readRegular(plan.candidate.unit.path);
+  const installedPublisherNetnsDropin = await ops.readRegular(
+    plan.publisher_netns_dropin.path,
+  );
   assertContentSnapshot(installedBinary.snapshot, plan.candidate.binary, "installed binary");
   assertContentSnapshot(installedConfig.snapshot, plan.candidate.config, "installed config");
   assertContentSnapshot(installedUnit.snapshot, plan.candidate.unit, "installed unit");
+  assertExactSnapshot(
+    installedPublisherNetnsDropin.snapshot,
+    plan.publisher_netns_dropin,
+    "installed publisher namespace drop-in",
+  );
+  validatePublisherNetnsDropInBytes(
+    installedPublisherNetnsDropin.bytes,
+    plan.publisher_netns_dropin.sha256,
+  );
   const generation = await ops.readUnitGeneration(TARGET_UNIT);
   const effective = await ops.readEffectiveUnit(TARGET_UNIT);
   const binaryVersion = await ops.binaryVersion(plan.candidate.binary);
@@ -976,6 +1038,7 @@ async function collectCommittedEvidence({
     fragment_path: effective.fragment_path,
     need_daemon_reload: effective.need_daemon_reload,
     properties: effective.properties,
+    publisher_netns_dependency: effective.publisher_netns_dependency,
     unit_generation: generation,
   };
   assertActivation(activation, plan);
@@ -1101,6 +1164,8 @@ async function collectCommittedEvidence({
     before: {
       binary: before.binary.snapshot,
       config: before.config.snapshot,
+      publisher_netns_dependency: before.effectiveUnit.publisher_netns_dependency,
+      publisher_netns_dropin: before.publisherNetnsDropin.snapshot,
       unit: before.unit.snapshot,
       unit_generation: before.generation,
     },
@@ -1115,14 +1180,16 @@ async function collectCommittedEvidence({
     installed: {
       binary: installedBinary.snapshot,
       config: installedConfig.snapshot,
+      publisher_netns_dropin: installedPublisherNetnsDropin.snapshot,
       unit: installedUnit.snapshot,
     },
     outcome: "committed",
     privileged_access_inventory: plan.privileged_access_inventory,
+    publisher_netns_dropin: plan.publisher_netns_dropin,
     recovery_classification: "candidate/candidate-new-generation",
     rollback: { outcome: "not-required", performed: false },
     runtime: plan.runtime,
-    schema_version: 1,
+    schema_version: 2,
     site_health: siteHealthReceipt(beforeSites, afterSites),
     stopped,
     transaction_id: plan.transaction_id,
@@ -1255,6 +1322,7 @@ export async function executeCaddyAdminUdsTransaction({
     }
     const finalAdmin = await ops.probeLegacyAdmin();
     assertLegacyAdmin(finalAdmin, beforeAdmin, "immediate pre-stop old admin");
+    await assertPublisherNetnsInactivePreimage(plan, ops, "immediate pre-stop");
 
     stopRequested = true;
     const stop = await ops.run(plan.transaction.stop_argv, { label: "cold stop" });
@@ -1320,6 +1388,7 @@ export async function executeCaddyAdminUdsTransaction({
       }), "utf8"),
       STATE_MODE,
     );
+    await assertPublisherNetnsInactivePreimage(plan, ops, "immediate pre-candidate-start");
     startRequested = true;
     const start = await ops.run(plan.transaction.start_argv, { label: "candidate start" });
     if (start.status !== 0) fail("candidate start command returned nonzero");
@@ -2043,6 +2112,43 @@ function realUnitGeneration(unitName) {
   };
 }
 
+function assertFilesystemPathAbsent(path, label) {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  fail(`${label} exists at ${path}`);
+}
+
+function realPublisherNetnsPreimage() {
+  const generationBefore = realUnitGeneration(PUBLISHER_NETNS_UNIT);
+  const before = {
+    activation_sentinels_absent: [...PUBLISHER_NETNS_SENTINEL_PATHS],
+    host_interface_absent: PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    namespace_path_absent: PUBLISHER_NETNS_NAMESPACE_PATH,
+    unit_generation: generationBefore,
+  };
+  validatePublisherNetnsPreimage(before, "observed publisher namespace preimage");
+  assertFilesystemPathAbsent(
+    PUBLISHER_NETNS_NAMESPACE_PATH,
+    "publisher namespace path",
+  );
+  assertFilesystemPathAbsent(
+    PUBLISHER_NETNS_HOST_INTERFACE_PATH,
+    "publisher namespace host veth",
+  );
+  for (const path of PUBLISHER_NETNS_SENTINEL_PATHS) {
+    assertFilesystemPathAbsent(path, "publisher activation sentinel");
+  }
+  const generationAfter = realUnitGeneration(PUBLISHER_NETNS_UNIT);
+  if (!same(generationAfter, generationBefore)) {
+    fail("publisher namespace unit generation changed while proving inactive absence");
+  }
+  return before;
+}
+
 function splitSystemdWords(value, label) {
   if (value === "") return [];
   if (!/^[A-Za-z0-9_./:@+-]+(?:[\t ]+[A-Za-z0-9_./:@+-]+)*$/u.test(value)) {
@@ -2080,14 +2186,36 @@ function extractSystemdExec(value, label) {
 }
 
 const PREIMAGE_EFFECTIVE_UNIT_PROPERTIES = Object.freeze([
+  "After",
+  "BindsTo",
   "DropInPaths",
   "EnvironmentFiles",
   "ExecReload",
   "ExecStart",
   "FragmentPath",
   "NeedDaemonReload",
+  "PartOf",
   "PassEnvironment",
+  "Requires",
+  "Wants",
 ]);
+
+function publisherNetnsDependencyFromSystemd(values, label) {
+  const words = (property) => splitSystemdWords(
+    values.get(property),
+    `${label} ${property}`,
+  );
+  const relation = (property) => words(property).includes(PUBLISHER_NETNS_UNIT);
+  return {
+    after_namespace_owner: relation("After"),
+    binds_to_namespace_owner: relation("BindsTo"),
+    dropin_paths: words("DropInPaths"),
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    part_of_namespace_owner: relation("PartOf"),
+    requires_namespace_owner: relation("Requires"),
+    wants_namespace_owner: relation("Wants"),
+  };
+}
 
 function normalizePreimageEffectiveUnitProperties(values) {
   return {
@@ -2104,6 +2232,10 @@ function normalizePreimageEffectiveUnitProperties(values) {
       values.get("PassEnvironment"),
       "preimage PassEnvironment",
     ),
+    publisher_netns_dependency: publisherNetnsDependencyFromSystemd(
+      values,
+      "preimage",
+    ),
   };
 }
 
@@ -2116,6 +2248,8 @@ function realPreimageEffectiveUnit(unitName) {
 
 function realEffectiveUnit(unitName) {
   const properties = [
+    "After",
+    "BindsTo",
     "DropInPaths",
     "Environment",
     "EnvironmentFiles",
@@ -2126,7 +2260,9 @@ function realEffectiveUnit(unitName) {
     "LimitCORE",
     "MemorySwapMax",
     "NeedDaemonReload",
+    "PartOf",
     "PassEnvironment",
+    "Requires",
     "RuntimeDirectory",
     "RuntimeDirectoryMode",
     "RuntimeDirectoryPreserve",
@@ -2135,16 +2271,18 @@ function realEffectiveUnit(unitName) {
     "UMask",
     "UnsetEnvironment",
     "User",
+    "Wants",
   ];
   const values = systemctlShowProperties(unitName, properties, {
     optionalEmpty: ["EnvironmentFiles"],
   });
   if (
-    values.get("DropInPaths") !== "" ||
+    canonicalJson(splitSystemdWords(values.get("DropInPaths"), "DropInPaths")) !==
+      canonicalJson([PUBLISHER_NETNS_DROPIN_PATH]) ||
     values.get("EnvironmentFiles") !== "" ||
     values.get("PassEnvironment") !== ""
   ) {
-    fail("effective Caddy unit has a drop-in, EnvironmentFile or PassEnvironment");
+    fail("effective Caddy unit has an unreviewed drop-in, EnvironmentFile or PassEnvironment");
   }
   const start = extractSystemdExec(values.get("ExecStart"), "effective ExecStart");
   const reload = extractSystemdExec(values.get("ExecReload"), "effective ExecReload");
@@ -2164,7 +2302,7 @@ function realEffectiveUnit(unitName) {
     fail("effective Caddy runtime directory or UnsetEnvironment drifted");
   }
   return {
-    dropin_paths: [],
+    dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
     effective_environment_names: environmentNames(values.get("Environment"), "Environment"),
     fragment_path: values.get("FragmentPath"),
     need_daemon_reload: values.get("NeedDaemonReload"),
@@ -2181,6 +2319,10 @@ function realEffectiveUnit(unitName) {
       UnsetEnvironment: unset,
       User: values.get("User"),
     },
+    publisher_netns_dependency: publisherNetnsDependencyFromSystemd(
+      values,
+      "effective",
+    ),
   };
 }
 
@@ -2711,12 +2853,12 @@ function lockOwner(transactionId) {
     boot_id: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
     pid: process.pid,
     process_start_ticks: processStartTicks(process.pid),
-    transaction_id: transactionId,
+    transaction_id: `bhtm-caddy-admin-uds:${transactionId}`,
   };
 }
 
 function realAcquireLock(path, { transactionId }) {
-  if (path !== "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock") {
+  if (path !== PUBLISHER_NETNS_LIFECYCLE_LOCK) {
     fail("transaction lock path is not reviewed");
   }
   const parentPath = dirname(path);
@@ -2869,6 +3011,7 @@ export function linuxCaddyAdminUdsOps() {
     probeAdminApi: async (options) => realPinnedAdminProbe(options),
     probeLegacyAdmin: legacyAdminProbe,
     probeTcpAdmin: realTcpAdminProbes,
+    publisherNetnsPreimage: async () => realPublisherNetnsPreimage(),
     publishReceipt: async (path, bytes, mode) => realPublishExclusive(path, bytes, mode),
     publishState: async (directory, name, bytes, mode) => realPublishState(directory, name, bytes, mode),
     readAdminRuntimePath: async (path) => realAdminRuntimePath(path),

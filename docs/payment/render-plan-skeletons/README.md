@@ -1,13 +1,19 @@
 # Payment V1 private render-plan skeletons
 
-These files mirror schema version `1` and the closed profile catalog in
-`scripts/payment-v1-rendered-artifact-gate.mjs`. They are review aids, not
-ready-to-render examples.
+The main Payment V1 render-plan skeletons mirror schema version `2` and the
+closed profile catalog in `scripts/payment-v1-rendered-artifact-gate.mjs`.
+The Caddy site-inventory and directory-publisher namespace prerequisite inputs
+remain separate schema-version `1` catalogs; the publisher ceremony plan,
+apply approval and rollback approval use schema version `2`. The deliberately
+separate failed-start recovery approval/receipt use schema version `1` of their
+own kinds and are valid only with the exact schema-v2 plan they name. All files
+are review aids, not ready-to-render examples.
 
 Every skeleton is deliberately unusable:
 
 - every `source_sha256`, `expected_sha256` and digest/public-key placeholder is
-  an invalid non-hex marker;
+  an invalid non-hex marker, except the public, committed relay-selection
+  digest in the publisher skeleton;
 - DNS, IP, origin, network-limit and other placeholder values are explicit
   invalid replacement markers;
 - payload `source_path` values name deliberately nonexistent relative entries
@@ -79,6 +85,11 @@ initializing a blank store and calling it a switch.
 | `directory-relay-v1.plan.json.example` | `directory-relay-v1` | One resolved, still sentinel-gated relay: config fixed to UID 52951/GID 52952/mode 0400, exact content-addressed binary, two root-owned one-entry hash manifests, and effective `ProtectProc=invisible` plus `ProcSubset=pid`. V4 stopped-relay evidence still precedes activation; no publisher private key, start or publication authority. |
 | `edge-hetzner-v1.plan.json.example` | `edge-hetzner-v1` | Public Caddy plus source-fair HAProxy edge. |
 | `edge-rollback-authority-v1.plan.json.example` | `edge-rollback-authority-v1` | Sole-client private TLS edge for one rollback authority. |
+| `directory-publisher-netns-v1.plan.json.example` | `directory-publisher-netns-v1` | One no-key publisher bound to the exact committed, resolved centralized relay selection and publisher key, plus a sealed route-less network namespace. |
+| `publisher-netns-ceremony-v1.plan.json.example` | source-closed activation ceremony | Schema-v2 exact installed/runtime/Caddy/firewall/sentinel and loaded-systemd-generation preimages, content-addressed native launcher plus manifest, fixed private topology and owner-only transaction paths for starting only the namespace unit. |
+| `publisher-netns-ceremony-v1.apply-approval.json.example` | short-lived apply authority | At-most-one-hour schema-v2 canonical plan/executor/launcher/manifest approval for starting only the exact namespace unit. |
+| `publisher-netns-ceremony-v1.failed-recovery-approval.json.example` | separate failed-generation recovery authority | At-most-one-hour schema-v1 approval binding one durable start intent, its original activation approval and one complete terminal `failed/failed` InvocationID to the fixed `systemctl reset-failed` argv. A durable reset intent can survive approval expiry only under a fresh approval for the identical tuple, and its receipt preserves both approval digests. It grants no start, stop, restart or reload. |
+| `publisher-netns-ceremony-v1.rollback-approval.json.example` | separate rollback authority | At-most-one-hour schema-v2 plan/executor/launcher/manifest/committed-receipt approval for stopping only the exact namespace unit. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
 | `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Direct receipt, provider-local BAT and shared issuer, without Standard Cashu. |
@@ -98,6 +109,16 @@ separately approved actions. The fixed unit/NSS/config/state paths describe one
 instance, and the selected `centralized-single-relay` mode is explicitly
 degraded; it cannot silently downgrade or masquerade as strict multi-relay.
 
+The directory-publisher skeleton independently pins the same committed
+`deploy/payment-v1/relay-selection.toml.example` bytes. Rendering fails closed
+unless that digest matches, the selection is `RESOLVED`, its mode is exactly
+`centralized-single-relay`, and its `publisher_pubkey_hex` equals the plan's
+`DIRECTORY_PUBLISHER_PUBKEY_HEX`. The rendered manifest carries the selection
+source/digest, publisher key, mode, status, and the canonical credential-free
+`wss://host` relay origin. The runtime request binds that manifest by digest,
+so a later ceremony can cite this exact closure without trusting the unit's
+command line as an independent relay-selection input.
+
 The separate `bhtm-caddy-admin-uds-v1.plan.json.example` is not a rendered
 service profile and is not part of `payment-v1-rendered-artifact-gate.mjs`.
 Its required companion
@@ -112,8 +133,8 @@ externally generated old and candidate adapted-JSON artifacts, rejects
 configured log sinks, and binds both exact digest/size tuples. Before stop the
 cold executor independently adapts the descriptor-read old bytes and requires
 that digest to equal the live TCP-admin readback; it also requires the exact
-loaded old Exec commands, fragment, `NeedDaemonReload=no`, and no drop-ins or
-environment files. It is not itself a
+loaded old Exec commands, fragment, `NeedDaemonReload=no`, exactly the pinned
+one-way publisher-namespace drop-in, and no environment files. It is not itself a
 rendered service profile; the separately source-hash-closed cold executor
 performs the stop/start only with a privately materialized, externally
 approved plan and site inventory. See

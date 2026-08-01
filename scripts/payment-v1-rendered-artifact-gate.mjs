@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -25,14 +25,16 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validatePublisherNamespaceOwnerUnitV1 } from
+  "./payment-v1-publisher-netns-gate.mjs";
 
 import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
 
 const PLAN_SCHEMA_VERSION = 2;
 const MANIFEST_SCHEMA_VERSION = 2;
-const EVIDENCE_SCHEMA_VERSION = 8;
+const EVIDENCE_SCHEMA_VERSION = 9;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v8";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v9";
 export const REVIEWED_SYSTEMD_VERSION =
   "systemd 255 (255.4-1ubuntu8.15)";
 export const REVIEWED_SYSTEMD_MANAGER_VERSION = "255.4-1ubuntu8.15";
@@ -54,6 +56,7 @@ export const NOBODY_ID = 65_534;
 
 const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "AmbientCapabilities",
+  "BindReadOnlyPaths",
   "CapabilityBoundingSet",
   "Group",
   "IPAddressAllow",
@@ -65,9 +68,11 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "MemoryMax",
   "MemorySwapMax",
   "MemoryDenyWriteExecute",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
   "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
   "ProcSubset",
   "ProtectClock",
@@ -97,10 +102,12 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "SupplementaryGroups",
   "SystemCallArchitectures",
   "TasksMax",
+  "TemporaryFileSystem",
   "TimeoutStartSec",
   "TimeoutStopSec",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
   "WatchdogSec",
   "WorkingDirectory",
@@ -112,6 +119,7 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "BindsTo",
   "ConditionPathExists",
   "Description",
+  "PartOf",
   "Requires",
   "Wants",
 ]);
@@ -152,6 +160,7 @@ const PROFILE_CATALOG = Object.freeze({
       "scripts/payment-v1-caddy-admin-uds-transaction.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "scripts/payment-v1-publisher-netns-schema.mjs",
     ]),
   }),
   "edge-hetzner-v1": Object.freeze({
@@ -179,6 +188,17 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
     ]),
   }),
+  "directory-publisher-netns-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+    ]),
+  }),
   "provider-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/systemd/hetzner-provider.service.in",
@@ -203,8 +223,10 @@ const PROFILE_CATALOG = Object.freeze({
 
 const MANAGED_FILE_PREFIXES = Object.freeze([
   "/etc/bitcoinpir/payment-v1/",
+  "/etc/netns/bpir-directory-publisher/",
   "/opt/bitcoinpir/",
   "/usr/local/libexec/bitcoinpir/",
+  "/var/lib/bitcoinpir-directory-publisher/artifacts/",
 ]);
 
 const CLN_ACTIVE_PLUGIN_NAMES_V26066 = Object.freeze(["bcli", "chanbackup"]);
@@ -313,9 +335,12 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "MemoryMax",
   "MemorySwapCurrent",
   "MemorySwapMax",
+  "NeedDaemonReload",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
   "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
   "ProcSubset",
   "ProtectClock",
@@ -340,12 +365,16 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "RootImage",
   "StandardError",
   "StandardOutput",
+  "StateDirectory",
+  "StateDirectoryMode",
   "SubState",
   "SupplementaryGroups",
   "SystemCallArchitectures",
   "TasksMax",
+  "TemporaryFileSystem",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
   "WatchdogUSec",
   "WorkingDirectory",
@@ -379,6 +408,51 @@ export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
 ]);
 
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/hosts",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/resolv.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in": {
+    artifactClass: "systemd-dropin",
+    targetPath:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in": {
+    artifactClass: "systemd-auxiliary-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
     artifactClass: "config",
     targetPath:
@@ -418,6 +492,13 @@ const TEMPLATE_CATALOG = Object.freeze({
     artifactClass: "executable-config",
     targetPath:
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-publisher-netns-schema.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
     modes: ["0555"],
     rootOwned: true,
   },
@@ -561,6 +642,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "HETZNER_PROVIDER_ID_HEX",
   "ISSUER_SETTLEMENT_PUBKEY_HEX",
   "PAYMENT_ISSUER_SHA256",
+  "PUBLISHER_NETNS_HELPER_SHA256",
   "ROLLBACK_AUTHORITY_SHA256",
   "UNIFIED_SERVER_SHA256",
 ]);
@@ -614,6 +696,10 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   "CLN_P2P_BIND_ADDR",
   "HETZNER_PROVIDER_SERVER_ID",
   "LIGHTNING_NETWORK",
+  "CHECKPOINT_ARTIFACT",
+  "DIRECTORY_PUBLISH_NOW_UNIX",
+  "PROVIDER_0_ENTRY_ARTIFACT",
+  "PROVIDER_1_ENTRY_ARTIFACT",
 ]);
 
 function fail(message) {
@@ -815,6 +901,20 @@ function canonicalize(value) {
 
 export function canonicalJson(value) {
   return `${canonicalize(value)}\n`;
+}
+
+export function computeDirectoryPublishArgvSha256V1(argv) {
+  validateStringArray(argv, "directory publication argv", {
+    maxItems: 256,
+    maxLength: 4096,
+  });
+  if (argv.length < 1 || argv.some((value) => value.length < 1)) {
+    fail("directory publication argv must be bounded and non-empty");
+  }
+  return createHash("sha256")
+    .update(Buffer.from("bitcoinpir-directory-publish-argv-v1\0", "utf8"))
+    .update(Buffer.from(canonicalJson(argv), "utf8"))
+    .digest("hex");
 }
 
 export function computeApprovedPlanSha256(plan) {
@@ -1138,6 +1238,16 @@ function validatePlaceholderValue(name, value) {
     case "LIGHTNING_NETWORK":
       if (value !== "signet") fail(`${label} must equal signet for Payment V1 staging`);
       return;
+    case "DIRECTORY_PUBLISH_NOW_UNIX":
+      parseUnsignedDecimal(value, label, 1n, 9_007_199_254_740_991n);
+      return;
+    case "CHECKPOINT_ARTIFACT":
+    case "PROVIDER_0_ENTRY_ARTIFACT":
+    case "PROVIDER_1_ENTRY_ARTIFACT":
+      if (!/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u.test(value)) {
+        fail(`${label} must be one bounded lowercase artifact basename`);
+      }
+      return;
     default:
       fail(`${label} has no validator`);
   }
@@ -1389,28 +1499,102 @@ function validateProviderPayloadClosure(plan) {
   }
 }
 
-function directoryRelaySelectionFromSource(sourceRoot, plan) {
+function relaySelectionFromSource(sourceRoot, plan, profileLabel) {
   const sourcePath = resolveUnder(
     sourceRoot,
     DIRECTORY_RELAY_SELECTION_SOURCE,
-    "directory relay selection source",
+    `${profileLabel} relay selection source`,
   );
   const bytes = readRegularSingleLinkFile(
     sourcePath,
-    "directory relay selection source",
+    `${profileLabel} relay selection source`,
     MAX_TEMPLATE_BYTES,
   );
   const digest = sha256(bytes);
   if (digest !== plan.relay_selection_sha256) {
-    fail("directory relay selection source hash does not match the approved render plan");
+    fail(`${profileLabel} relay selection source hash does not match the approved render plan`);
   }
   let text;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    fail("directory relay selection source is not valid UTF-8");
+    fail(`${profileLabel} relay selection source is not valid UTF-8`);
   }
   return validateRelaySelection(text);
+}
+
+function validateXOnlyPublisherPubkey(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value) || /^0{64}$/u.test(value)) {
+    fail(`${label} must be a non-zero lowercase 32-byte hex key`);
+  }
+  try {
+    const key = createECDH("secp256k1");
+    key.setPublicKey(Buffer.from(`02${value}`, "hex"));
+  } catch {
+    fail(`${label} must be a valid secp256k1 x-only key`);
+  }
+  return value;
+}
+
+function directoryPublisherRelayBinding(plan, selection) {
+  if (plan.deployment_profile !== "directory-publisher-netns-v1") return undefined;
+  if (selection?.status !== "RESOLVED") {
+    fail("directory-publisher-netns-v1 requires a RESOLVED relay selection");
+  }
+  if (selection.directoryMode !== "centralized-single-relay") {
+    fail("directory-publisher-netns-v1 requires directory_mode=centralized-single-relay");
+  }
+  if (selection.publisherPubkey !== plan.placeholders.DIRECTORY_PUBLISHER_PUBKEY_HEX) {
+    fail(
+      "directory-publisher-netns-v1 publisher key placeholder does not match relay selection publisher_pubkey_hex",
+    );
+  }
+  return {
+    directory_mode: selection.directoryMode,
+    publisher_pubkey_hex: selection.publisherPubkey,
+    relay_origin: `wss://${plan.placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST}`,
+    selection_sha256: plan.relay_selection_sha256,
+    source_path: DIRECTORY_RELAY_SELECTION_SOURCE,
+    status: selection.status,
+  };
+}
+
+function validateDirectoryPublisherRelayBinding(binding, label) {
+  exactKeys(
+    binding,
+    [
+      "directory_mode",
+      "publisher_pubkey_hex",
+      "relay_origin",
+      "selection_sha256",
+      "source_path",
+      "status",
+    ],
+    label,
+  );
+  if (binding.status !== "RESOLVED") fail(`${label}.status must equal RESOLVED`);
+  if (binding.directory_mode !== "centralized-single-relay") {
+    fail(`${label}.directory_mode must equal centralized-single-relay`);
+  }
+  if (binding.source_path !== DIRECTORY_RELAY_SELECTION_SOURCE) {
+    fail(`${label}.source_path must equal ${DIRECTORY_RELAY_SELECTION_SOURCE}`);
+  }
+  validateSha256(binding.selection_sha256, `${label}.selection_sha256`);
+  validateXOnlyPublisherPubkey(
+    binding.publisher_pubkey_hex,
+    `${label}.publisher_pubkey_hex`,
+  );
+  if (
+    typeof binding.relay_origin !== "string" ||
+    !binding.relay_origin.startsWith("wss://")
+  ) {
+    fail(`${label}.relay_origin must be one canonical credential-free wss://host origin`);
+  }
+  const host = binding.relay_origin.slice("wss://".length);
+  validateDnsHost(host, `${label}.relay_origin host`);
+  if (binding.relay_origin !== `wss://${host}`) {
+    fail(`${label}.relay_origin must be one canonical credential-free wss://host origin`);
+  }
 }
 
 function validateDirectoryRelayPayloadClosure({
@@ -1562,6 +1746,8 @@ function validateDirectoryRelayConfigOwnerBinding(document) {
 function validatePlan(plan) {
   if (!isPlainObject(plan)) fail("render plan must be an object");
   const directoryRelay = plan.deployment_profile === "directory-relay-v1";
+  const directoryPublisher =
+    plan.deployment_profile === "directory-publisher-netns-v1";
   exactKeys(
     plan,
     [
@@ -1573,7 +1759,9 @@ function validatePlan(plan) {
       "schema_version",
       "service_identities",
       "systemd_version",
-      ...(directoryRelay ? ["relay_selection_sha256"] : []),
+      ...(directoryRelay || directoryPublisher
+        ? ["relay_selection_sha256"]
+        : []),
     ],
     "render plan",
   );
@@ -1597,7 +1785,7 @@ function validatePlan(plan) {
       `render plan deployment_profile must be one of ${JSON.stringify(Object.keys(PROFILE_CATALOG).sort(asciiCompare))}`,
     );
   }
-  if (directoryRelay) {
+  if (directoryRelay || directoryPublisher) {
     validateSha256(
       plan.relay_selection_sha256,
       "render plan relay_selection_sha256",
@@ -1682,7 +1870,13 @@ function validatePlan(plan) {
         ? ["/opt/bitcoinpir/", "/usr/local/libexec/bitcoinpir/"]
         : artifact.class === "policy"
           ? ["/etc/bitcoinpir/payment-v1/", "/home/pir/data/payment-v1/"]
-          : ["/etc/bitcoinpir/payment-v1/"];
+          : [
+              "/etc/bitcoinpir/payment-v1/",
+              ...(plan.deployment_profile === "directory-publisher-netns-v1" &&
+              artifact.class === "config"
+                ? ["/var/lib/bitcoinpir-directory-publisher/artifacts/"]
+                : []),
+            ];
     if (!prefixes.some((prefix) => artifact.target_path.startsWith(prefix))) {
       fail(`${label}.target_path is outside the reviewed ${artifact.class} prefixes`);
     }
@@ -1764,7 +1958,7 @@ function managedReferencesFromCommand(command, label) {
   return references;
 }
 
-function parseSystemdUnit(text, label) {
+function parseSystemdUnit(text, label, deploymentProfile) {
   if (/^\s*\[Install\]\s*$/imu.test(text)) fail(`${label} contains forbidden [Install]`);
   if (/%/u.test(text)) fail(`${label} contains a forbidden systemd percent specifier`);
   if (/\$/u.test(text)) fail(`${label} contains forbidden systemd variable expansion`);
@@ -1804,6 +1998,13 @@ function parseSystemdUnit(text, label) {
     if (!allowedKeys.includes(key)) {
       fail(`${label} contains closed-world forbidden directive ${section}.${key}=`);
     }
+    if (
+      section === "Service" &&
+      ["BindReadOnlyPaths", "NetworkNamespacePath", "PrivateMounts", "UnsetEnvironment"].includes(key) &&
+      deploymentProfile !== "directory-publisher-netns-v1"
+    ) {
+      fail(`${label} contains closed-world forbidden directive ${section}.${key}= for this profile`);
+    }
     if (value === "" && !["AmbientCapabilities", "CapabilityBoundingSet"].includes(key)) {
       fail(`${label} contains a forbidden empty ${key}= reset`);
     }
@@ -1812,7 +2013,7 @@ function parseSystemdUnit(text, label) {
       values.length > 0 &&
       !(
         (section === "Unit" && key === "ConditionPathExists") ||
-        (section === "Service" && key === "ExecStartPre")
+        (section === "Service" && ["BindReadOnlyPaths", "ExecStartPre"].includes(key))
       )
     ) {
       fail(`${label} repeats single-valued directive ${section}.${key}=`);
@@ -1934,6 +2135,24 @@ function parseSystemdUnit(text, label) {
 }
 
 const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "directory-publisher-netns-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
   "directory-relay-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2217,6 +2436,60 @@ function validateProfileUnitPolicy(
       if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
         fail(`${label} must keep ${key}=${expected} so request-source state cannot persist`);
       }
+    }
+  }
+  if (
+    deploymentProfile === "directory-publisher-netns-v1" &&
+    fragmentPath ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"
+  ) {
+    for (const [key, expected] of [
+      ["Type", "oneshot"],
+      ["RemainAfterExit", "true"],
+      ["StateDirectory", "bitcoinpir-directory-publication"],
+      ["StateDirectoryMode", "0700"],
+      ["Restart", "no"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["NetworkNamespacePath", "/run/netns/bpir-directory-publisher"],
+      ["IPAddressDeny", "any"],
+      ["IPAddressAllow", "10.203.0.1"],
+      ["RestrictAddressFamilies", "AF_INET"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    if (
+      canonicalize(hardening.CapabilityBoundingSet ?? []) !== canonicalize([""]) ||
+      canonicalize(hardening.AmbientCapabilities ?? []) !== canonicalize([""])
+    ) {
+      fail(`${label} must keep an empty capability set`);
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize(["/var/lib/bitcoinpir-directory-publication"])
+    ) {
+      fail(`${label} must expose only its dedicated publication receipt StateDirectory as writable`);
+    }
+    if (
+      canonicalize(hardening.TemporaryFileSystem ?? []) !== canonicalize(["/run:ro"]) ||
+      !(hardening.ReadOnlyPaths?.[0] ?? "").split(/\s+/u).some((path) =>
+        /^\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/?$/u.test(path))
+    ) {
+      fail(`${label} must replace /run with a private read-only tmpfs and bind the sandbox probe helper read-only`);
+    }
+    const command = execStart.join("\n");
+    if (
+      /(?:signing|private|secret)[-_]key|--force|--validate-only/iu.test(command) ||
+      !command.includes(" directory-artifact publish ") ||
+      (command.match(/ --relay /gu) ?? []).length !== 1 ||
+      (command.match(/ --centralized-single-relay(?: |$)/gu) ?? []).length !== 1 ||
+      (command.match(/ --artifact /gu) ?? []).length !== 3 ||
+      (command.match(/ --artifact-manifest /gu) ?? []).length !== 1 ||
+      (command.match(/ --receipt-directory /gu) ?? []).length !== 1
+    ) {
+      fail(`${label} must remain one no-key, three-artifact, explicitly centralized publication`);
     }
   }
   if (
@@ -2508,11 +2781,12 @@ const ADMIN_PROBE_IMPORT_HEADER = [
 ].join("\n");
 
 const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
-  adminGate: "bd4a99dc4a77691c89f1861b93c28b1715f072d266e9cb42ec45a1f0dd474f9b",
+  adminGate: "85f64dc3f922372fe7e37619b888080dd1d6f7063c7d871fbd35cf384fd3bbd6",
   adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
-  adminTransaction: "c56190d9db34bc7481e554f7f81039ee67496cca5d666f141faa0bd652040ccc",
-  overlayGate: "cbc060dc48c164de8ee6faebc1e05ffe7bf7ce1c94b98dad3ec12e96e424b6ab",
-  overlayTransaction: "7d215529237a9b00da5fd162806f291e2802cb1813ee5c63f02a7d8862cd2dcf",
+  adminTransaction: "4d5aa3efd63c5ee98aad701a9b69ffe8cc07153a14984d06f715b43ddb075872",
+  overlayGate: "2e7d03b58e1205ca5732bfed12833246a9d01a466ba4180b00c6164345dbd073",
+  overlayTransaction: "1034ad1888b2730fda039bee401e60cda5d656995faf474885c9b6d24572c360",
+  publisherNetnsSchema: "e222d1f297da268e1c8095fc8317d14ba4ef7253bd01d320f5c383e04554293c",
 });
 
 const OVERLAY_TRANSACTION_IMPORT_HEADER = [
@@ -2544,6 +2818,8 @@ const OVERLAY_TRANSACTION_IMPORT_HEADER = [
   "",
   "import {",
   "  OVERLAY_COLLECTOR,",
+  "  OVERLAY_RECEIPT_SCHEMA_VERSION,",
+  "  PUBLISHER_NETNS_DROPIN_PATH,",
   "  buildOverlayCandidateFromRendered,",
   "  canonicalJson,",
   "  computeApprovedOverlayPlanSha256,",
@@ -2562,7 +2838,15 @@ const OVERLAY_TRANSACTION_IMPORT_HEADER = [
   "  canonicalizeAdaptedCaddyJson,",
   "  computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,",
   "  validateCommittedReceipt as validateAdminUdsCommittedReceipt,",
+  "  validatePublisherNetnsDropInBytes,",
   '} from "./payment-v1-caddy-admin-uds-gate.mjs";',
+  "import {",
+  "  PUBLISHER_NETNS_CEREMONY_KIND,",
+  "  PUBLISHER_NETNS_RECEIPT_KIND,",
+  "  computePublisherNetnsPlanSha256V2,",
+  "  validatePublisherNetnsPlanV2,",
+  "  validatePublisherNetnsReceiptV2,",
+  '} from "./payment-v1-publisher-netns-schema.mjs";',
   "",
   "",
 ].join("\n");
@@ -2650,6 +2934,28 @@ function configManagedReferences(sourcePath, text, plan) {
     );
     return [];
   }
+  if (sourcePath === "scripts/payment-v1-publisher-netns-schema.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.publisherNetnsSchema,
+      "rendered publisher-netns shared schema validator",
+    );
+    return [];
+  }
+  if (
+    sourcePath ===
+    "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"
+  ) {
+    const binary = text.match(
+      /\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/payment-v1-publisher-netns/u,
+    )?.[0];
+    const manifest =
+      "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256";
+    if (binary === undefined || !text.includes(manifest)) {
+      fail("rendered publisher namespace owner does not close its helper dependencies");
+    }
+    return [binary, manifest].sort(asciiCompare);
+  }
   if (
     sourcePath ===
     "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs"
@@ -2689,6 +2995,7 @@ function configManagedReferences(sourcePath, text, plan) {
       binary,
       "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
     ].sort(asciiCompare);
   }
   const edgeReferences = {
@@ -2864,6 +3171,37 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
   };
   switch (manifestPath) {
+    case "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256":
+      oneExact(
+        `/opt/bitcoinpir/publisher-netns/${plan.placeholders.PUBLISHER_NETNS_HELPER_SHA256}/payment-v1-publisher-netns`,
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256":
+      oneExact(`/opt/bitcoinpir/bpir-admin/${plan.placeholders.BPIR_ADMIN_SHA256}/bpir-admin`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256": {
+      const expected = [
+        plan.placeholders.PROVIDER_0_ENTRY_ARTIFACT,
+        plan.placeholders.PROVIDER_1_ENTRY_ARTIFACT,
+        plan.placeholders.CHECKPOINT_ARTIFACT,
+      ].map((name) => `/var/lib/bitcoinpir-directory-publisher/artifacts/${name}`).sort(asciiCompare);
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind exactly the three frozen signed artifacts`);
+      }
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256": {
+      const expected = [
+        "/etc/netns/bpir-directory-publisher/hosts",
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+        "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+        "/etc/netns/bpir-directory-publisher/resolv.conf",
+      ].sort(asciiCompare);
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind the four exact network inputs`);
+      }
+      return;
+    }
     case "/etc/bitcoinpir/payment-v1/edge/caddy.sha256":
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
@@ -3012,6 +3350,12 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
     ["CLN_LIBPQ_SHA256", "/opt/bitcoinpir/core-lightning-libpq/", "/libpq.so.5", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
+    [
+      "PUBLISHER_NETNS_HELPER_SHA256",
+      "/opt/bitcoinpir/publisher-netns/",
+      "/payment-v1-publisher-netns",
+      true,
+    ],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
     ["UNIFIED_SERVER_SHA256", "/opt/bitcoinpir/unified-server/", "/unified_server", true],
     ["ROLLBACK_AUTHORITY_SHA256", "/opt/bitcoinpir/rollback-authority/", "/rollback-authority", true],
@@ -3045,9 +3389,15 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   const canonicalSourceRoot = requireCanonicalRoot(sourceRoot, "source root");
   const canonicalInputRoot = requireCanonicalRoot(inputRoot, "payload input root");
   validatePlan(plan);
-  const directoryRelaySelection =
-    plan.deployment_profile === "directory-relay-v1"
-      ? directoryRelaySelectionFromSource(canonicalSourceRoot, plan)
+  const relaySelection =
+    new Set(["directory-relay-v1", "directory-publisher-netns-v1"]).has(
+      plan.deployment_profile,
+    )
+      ? relaySelectionFromSource(
+          canonicalSourceRoot,
+          plan,
+          plan.deployment_profile,
+        )
       : undefined;
   const approvedPlanDigest = requireApprovedPlan(plan, approvedPlanSha256);
 
@@ -3127,6 +3477,10 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   ) {
     fail("CLN guard invoice burst must not exceed its per-minute rate");
   }
+  const publisherRelayBinding = directoryPublisherRelayBinding(
+    plan,
+    relaySelection,
+  );
 
   const artifacts = [];
   const fileBytes = new Map();
@@ -3158,7 +3512,11 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       uid: specification.uid,
     });
     if (catalog.artifactClass === "systemd-unit") {
-      const parsed = parseSystemdUnit(renderedText, `rendered unit ${specification.target_path}`);
+      const parsed = parseSystemdUnit(
+        renderedText,
+        `rendered unit ${specification.target_path}`,
+        plan.deployment_profile,
+      );
       validateProfileUnitPolicy(
         plan.deployment_profile,
         specification.target_path,
@@ -3177,6 +3535,8 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         fragment_path: specification.target_path,
         unit_name: basename(specification.target_path),
       });
+    } else if (catalog.artifactClass === "systemd-auxiliary-unit") {
+      validatePublisherNamespaceOwnerUnitV1(renderedText);
     }
     for (const reference of configManagedReferences(specification.source_path, renderedText, plan)) {
       initialReferences.add(reference);
@@ -3235,7 +3595,7 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     fileBytes,
     plan,
     runtimeUnits,
-    selection: directoryRelaySelection,
+    selection: relaySelection,
   });
   enforceDependencyClosure({ artifacts, fileBytes, initialReferences, plan });
   const hashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
@@ -3252,6 +3612,9 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     approved_plan_sha256: approvedPlanDigest,
     deployment_id: plan.deployment_id,
     deployment_profile: plan.deployment_profile,
+    ...(publisherRelayBinding === undefined
+      ? {}
+      : { directory_relay_selection: publisherRelayBinding }),
     hash_bindings: hashBindings,
     placeholder_commitment_sha256: sha256(Buffer.from(canonicalJson(plan.placeholders))),
     plan_sha256: approvedPlanDigest,
@@ -3280,6 +3643,8 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
 
 export function runtimeRequestFromManifest(manifest, manifestSha256) {
   validateSha256(manifestSha256, "manifest SHA-256");
+  const directoryPublisher =
+    manifest?.deployment_profile === "directory-publisher-netns-v1";
   exactKeys(
     manifest,
     [
@@ -3287,6 +3652,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "artifacts",
       "deployment_id",
       "deployment_profile",
+      ...(directoryPublisher ? ["directory_relay_selection"] : []),
       "hash_bindings",
       "placeholder_commitment_sha256",
       "plan_sha256",
@@ -3310,6 +3676,12 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
   }
   if (!PROFILE_CATALOG[manifest.deployment_profile]) {
     fail("rendered manifest deployment profile is not reviewed");
+  }
+  if (directoryPublisher) {
+    validateDirectoryPublisherRelayBinding(
+      manifest.directory_relay_selection,
+      "rendered manifest directory_relay_selection",
+    );
   }
   if (!Array.isArray(manifest.service_identities) || manifest.service_identities.length < 1 || manifest.service_identities.length > 32) {
     fail("rendered manifest service_identities must be a bounded non-empty array");
@@ -3373,6 +3745,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "hash-manifest",
       "policy",
       "secret",
+      "systemd-auxiliary-unit",
+      "systemd-dropin",
       "systemd-unit",
     ].includes(artifact.artifact_class)) {
       fail(`${label}.artifact_class is not reviewed`);
@@ -3600,10 +3974,14 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       fail("issuer Lightning tmpfiles directories must equal the exact protected host layout");
     }
   }
+  const auxiliaryUnitPaths = manifest.artifacts
+    .filter((artifact) => artifact.artifact_class === "systemd-auxiliary-unit")
+    .map((artifact) => artifact.target_path);
   const systemdAnalyzeArgv = [
     "/usr/bin/systemd-analyze",
     "verify",
-    ...manifest.runtime_units.map((unit) => unit.fragment_path),
+    ...[...manifest.runtime_units.map((unit) => unit.fragment_path), ...auxiliaryUnitPaths]
+      .sort(asciiCompare),
   ];
   const secretFiles = manifest.artifacts
     .map((artifact) => ({
@@ -3671,6 +4049,102 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       uid: edgeIdentity.uid,
     });
   }
+  let publisherNetwork;
+  if (manifest.deployment_profile === "directory-publisher-netns-v1") {
+    const networkPolicy = installedFiles.find(
+      (file) => file.target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    );
+    if (!networkPolicy) fail("publisher runtime request is missing its rendered network policy");
+    const publicationArtifactManifest = installedFiles.find(
+      (file) => file.target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+    );
+    const publicationArtifacts = installedFiles
+      .filter((file) =>
+        file.target_path.startsWith(
+          "/var/lib/bitcoinpir-directory-publisher/artifacts/",
+        ))
+      .map((file) => ({ path: file.target_path, sha256: file.sha256 }));
+    const publisherUnit = manifest.runtime_units.find(
+      (unit) => unit.unit_name ===
+        "bitcoinpir-payment-v1-directory-publisher.service",
+    );
+    const publisherIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === publisherUnit?.unit_name,
+    );
+    const publicationArgv = publisherUnit?.exec_start_ex?.[0]?.argv;
+    if (
+      !publicationArtifactManifest ||
+      publicationArtifacts.length !== 3 ||
+      !publisherIdentity ||
+      !Array.isArray(publicationArgv)
+    ) {
+      fail("publisher runtime request is missing its exact publication receipt generation inputs");
+    }
+    publisherNetwork = {
+      caddy_drop_in_path:
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      caddy_service_unit: "bhtm-caddy.service",
+      firewall: {
+        forwarding_sysctls: {
+          "net.ipv4.ip_forward": 0,
+          "net.ipv6.conf.all.forwarding": 0,
+        },
+        interface: "bpir-pub-h",
+        semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+        ufw_rules_in_install_order: [
+          "prepend deny in on bpir-pub-h from any to any",
+          "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+          "route prepend deny in on bpir-pub-h from any to any",
+          "route prepend deny out on bpir-pub-h from any to any",
+        ],
+      },
+      forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+      namespace: {
+        client: "10.203.0.2/30",
+        host: "10.203.0.1/30",
+        name: "bpir-directory-publisher",
+        path: "/run/netns/bpir-directory-publisher",
+      },
+      namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+      network_policy_sha256: networkPolicy.sha256,
+      publication_receipt: {
+        artifact_manifest: {
+          path: publicationArtifactManifest.target_path,
+          sha256: publicationArtifactManifest.sha256,
+        },
+        artifacts: publicationArtifacts,
+        argv: publicationArgv,
+        argv_sha256: computeDirectoryPublishArgvSha256V1(publicationArgv),
+        directory_mode: manifest.directory_relay_selection.directory_mode,
+        file: {
+          directory: "/var/lib/bitcoinpir-directory-publication",
+          filename_suffix: ".json",
+          gid: publisherIdentity.gid,
+          mode: "0600",
+          nlink: 1,
+          uid: publisherIdentity.uid,
+        },
+        kind: "bitcoinpir-directory-publication-receipt-v1",
+        publisher_pubkey_hex:
+          manifest.directory_relay_selection.publisher_pubkey_hex,
+        relay_origins: [manifest.directory_relay_selection.relay_origin],
+        schema_version: 1,
+      },
+      publication_mode: {
+        centralized: true,
+        degraded: true,
+        name: "centralized-single-relay",
+      },
+      publication_time_firewall_binding: {
+        activation_blocked: true,
+        implemented: false,
+        point_in_time_evidence_only: true,
+      },
+      publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+    };
+  }
   return {
     approved_plan_sha256: manifest.approved_plan_sha256,
     collector: RUNTIME_COLLECTOR,
@@ -3689,6 +4163,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
     units: manifest.runtime_units,
+    ...(publisherNetwork === undefined ? {} : { publisher_network: publisherNetwork }),
   };
 }
 

@@ -30,7 +30,9 @@
       "admin_dial": "unix//run/bitcoinpir-caddy-admin/admin.sock",
       "admin_listen": "unix//run/bitcoinpir-caddy-admin/admin.sock|0200",
       "caddy_admin_environment_absent": true,
-      "dropins": [],
+      "dropins": [
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf"
+      ],
       "runtime_directory": "/run/bitcoinpir-caddy-admin",
       "runtime_directory_mode": "0700",
       "runtime_directory_preserve": "no",
@@ -109,6 +111,39 @@
     "root_or_cap_dac_override_not_isolated": true,
     "scope": "capability-free-unprivileged-non-root-dac-only"
   },
+  "publisher_netns_dropin": {
+    "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+    "device": "INVALID_REPLACE_WITH_DEVICE",
+    "gid": 0,
+    "inode": "INVALID_REPLACE_WITH_INODE",
+    "mode": "0644",
+    "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+    "nlink": 1,
+    "path": "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    "sha256": "INVALID_REPLACE_WITH_EXACT_PUBLISHER_NETNS_DROPIN_SHA256",
+    "size": "INVALID_REPLACE_WITH_SIZE",
+    "uid": 0
+  },
+  "publisher_netns_preimage": {
+    "activation_sentinels_absent": [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+      "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED"
+    ],
+    "host_interface_absent": "/sys/class/net/bpir-pub-h",
+    "namespace_path_absent": "/run/netns/bpir-directory-publisher",
+    "unit_generation": {
+      "active_enter_timestamp_monotonic": "0",
+      "active_state": "inactive",
+      "control_group": "/system.slice/bitcoinpir-payment-v1-publisher-netns.service",
+      "invocation_id": "",
+      "main_pid": "0",
+      "sub_state": "dead",
+      "unit_name": "bitcoinpir-payment-v1-publisher-netns.service"
+    }
+  },
   "runtime": {
     "executor": {
       "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
@@ -178,7 +213,7 @@
     },
     "systemd_version": "255"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "service_uid_inventory": [
     {
       "name": "cloudflared",
@@ -237,7 +272,7 @@
       "daemon-reload"
     ],
     "installation_mode": "service-stopped-two-exact-rename-replacements-with-parent-fsync",
-    "lock_path": "/run/lock/bitcoinpir-bhtm-caddy-admin-uds.lock",
+    "lock_path": "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
     "new_invocation_required": true,
     "outcome_unknown_conditions": [
       "systemctl-command-error-after-stop-request-without-complete-stopped-proof",

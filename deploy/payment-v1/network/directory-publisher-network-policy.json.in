@@ -1,0 +1,44 @@
+{
+  "caddy_dependency": {
+    "after": "bitcoinpir-payment-v1-publisher-netns.service",
+    "forbidden_reverse_stop_edges": [
+      "BindsTo",
+      "PartOf",
+      "Requires"
+    ],
+    "wants": "bitcoinpir-payment-v1-publisher-netns.service"
+  },
+  "certificate_dns_sans": [
+    "@DIRECTORY_PUBLISHER_HTTPS_HOST@"
+  ],
+  "firewall": {
+    "forwarding_sysctls": {
+      "net.ipv4.ip_forward": 0,
+      "net.ipv6.conf.all.forwarding": 0
+    },
+    "interface": "bpir-pub-h",
+    "ufw_rules_in_install_order": [
+      "prepend deny in on bpir-pub-h from any to any",
+      "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+      "route prepend deny in on bpir-pub-h from any to any",
+      "route prepend deny out on bpir-pub-h from any to any"
+    ]
+  },
+  "namespace": {
+    "client": "10.203.0.2/30",
+    "host": "10.203.0.1/30",
+    "name": "bpir-directory-publisher",
+    "path": "/run/netns/bpir-directory-publisher"
+  },
+  "publication_mode": {
+    "centralized": true,
+    "degraded": true,
+    "name": "centralized-single-relay"
+  },
+  "publication_time_firewall_binding": {
+    "activation_blocked": true,
+    "implemented": false,
+    "point_in_time_evidence_only": true
+  },
+  "schema_version": 1
+}

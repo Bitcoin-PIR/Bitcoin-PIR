@@ -171,7 +171,7 @@ were introduced before runtime-evidence v7; the discussion below records the
 earlier reviewed baseline that the current v8 retains. Offline review is meaningful only with
 an independently transferred full evidence digest.
 
-Runtime-evidence v8 retains the files-authoritative NSS closed set: both
+Runtime-evidence v9 retains the files-authoritative NSS closed set: both
 `passwd` and `group` must use exactly `files`, or both must use exactly
 `files systemd`, with inherited group-based `initgroups`. Only the latter exact
 Ubuntu fallback sequence is accepted; mixed sequences, reversed order, action
@@ -189,7 +189,7 @@ remote/cached or optionally enumerable NSS providers are not accepted by this
 V1 claim; the sole reviewed systemd fallback passes only while its complete
 enumeration projection remains exactly the local-files projection.
 
-Runtime-evidence v8 also closes credentials and capabilities retained in the
+Runtime-evidence v9 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce
 the same protected-holder records, record all four active sets plus `CapBnd`,
 and fail on a reviewed dangerous active capability held by non-root. Each
@@ -201,7 +201,7 @@ cgroup with the same reviewed credentials and zero capabilities. Only the
 Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
 set is checked against that exact systemd policy.
 
-Runtime-evidence v8 also retains v7's rule that systemd's structured
+Runtime-evidence v9 also retains v8's rule that systemd's structured
 `Conditions` property is not treated as printable `systemctl show` text.
 Ubuntu 24.04's systemd 255 renders
 that property as `[unprintable]`. The collector therefore pins `/usr/bin/busctl`
@@ -232,7 +232,7 @@ in live, stopped-edge and stopped-relay evidence and are repeated during final
 sealing. `[unprintable]` is never special-cased as empty. This schema change
 invalidated v6 live/runtime requests, v3 stopped-edge and v2 stopped-relay evidence.
 
-Runtime-evidence v8 additionally closes the systemd command representation.
+Runtime-evidence v8 introduced closure of the systemd command representation.
 Render-plan and manifest schema v2, the schema-v8 runtime request, and collected
 host evidence all bind the exact first line
 `systemd 255 (255.4-1ubuntu8.15)`; a different Ubuntu revision or abbreviated
@@ -248,6 +248,18 @@ running under the unit's `MainPID`; every live pre-start has completed with
 `code=exited` and status zero; and stopped records remain unexecuted. Live v8,
 stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
 stopped-relay v3 evidence rather than upgrading it in place.
+
+Runtime-evidence v9 retains those typed command checks and adds
+`NeedDaemonReload=no` to every effective live-unit snapshot. It admits an
+exited processless lifecycle only for the exact directory-publisher unit and
+only as `Type=oneshot`, `RemainAfterExit=yes`, `active/exited`, `MainPID=0`,
+empty `ControlGroup`, `Result=success`, `ExecMainCode=1` and
+`ExecMainStatus=0`. The completed ExecStart must contain non-placeholder start
+and stop timestamps with `code=exited status=0`; the unit still has a nonzero
+same-boot activation timestamp and InvocationID. Its process identity is null,
+while the protected UID/GID closure must prove no process or thread retains
+the publisher credential. Live v9 evidence and requests invalidate live v8;
+stopped-edge v5 and stopped-relay v4 remain unchanged.
 
 V8 also stores every standalone typed D-Bus `t` value as a canonical decimal
 string. Its parser extracts the raw JSON integer before any JavaScript
@@ -303,6 +315,54 @@ the transferred result, not the honesty of target root or the script that
 created it. The activation ceremony must independently verify and run the
 collector bytes from the frozen commit; adding the collector script itself to
 the approved rendered manifest remains a defense-in-depth follow-up.
+
+### Same-host publisher namespace ceremony closure
+
+The fixed directory-publisher namespace now has a separate source-closed
+activation boundary rather than relying on an operator to run `systemctl` from
+the render documentation. Its canonical plan binds the exact installed helper,
+units, one-way Caddy drop-in, files-only NSS inputs, policy/manifests, five
+external sentinels, canonical UFW/nft evidence, Caddyfile and active Caddy
+generation, exact loaded one-way Caddy dependency with no pending daemon
+reload, inactive publisher/netns preimages with no pending daemon reload,
+current boot/machine/systemd
+identity, fixed `10.203.0.0/30` topology and regular Node/systemctl/ip command
+inodes. The executor's only two local imports are separately pinned as exact
+root-owned sibling gate modules and revalidated across the mutation.
+`/usr/sbin/ip` is rejected because reviewed Ubuntu/Debian exposes it as
+a symlink; the executor pins and invokes `/usr/bin/ip` by file descriptor.
+
+Apply and rollback authorities are distinct canonical documents, each valid no
+longer than one hour. Apply starts only the namespace unit. Rollback additionally
+binds the exact committed receipt and stops only that unit. Neither operation
+creates a sentinel/rule/route, changes or reloads Caddy, starts the publisher,
+publishes Nostr events or handles the offline signing key. Receipts and phase
+state use owner-only no-replace pending/link/fsync publication with exact
+recovery for both durable crash windows. Lost-start recovery requires the
+durable start intent and records both its original approval digest and the fresh
+terminalization approval; an unknown active namespace is never adopted.
+Lost-stop recovery is symmetric: it requires the exact receipt-bound durable
+stop intent, records both the original stop authorization and fresh
+terminalization approval, and never adopts an externally stopped namespace.
+
+Runtime closure checks the nsfs inode, transaction-specific host/client aliases,
+random locally administered MACs, cross-linked ifindices, exact loopback and
+client addresses, only the connected route, both forwarding sysctls and the
+same closed inert kernel-fallback tunnel subset monitored by the native helper.
+Any fallback device that is up, addressed, aliased or the wrong kind fails.
+Real arm64 Linux tests execute descriptor-pinned iproute2 inside a namespace,
+exercise pending/final crash recovery and pass the helper's injected setup,
+monitor and exact-cleanup failures.
+
+Residual blockers remain explicit. The receipt is one-boot/one-generation
+evidence; a reboot may recreate the namespace through persistent sentinels and
+Caddy `Wants+After`, but requires fresh runtime evidence. The narrow rollback
+is unavailable after Caddy/boot generation drift and cannot replace the cold
+incident procedure. Point-in-time firewall JSON is not the still-missing
+publication-interval firewall-generation guard. Target installation, exact
+pins, remote mutation/start approval, private SNI/SAN, integrated-Caddy receipt,
+stopped/fresh edge evidence and proof that no production publisher key reached
+the host remain pre-activation gates.
 
 ## P1 production activation blockers
 
@@ -429,7 +489,8 @@ The cold plan now binds strict-parsed canonical adapted JSON digests and sizes
 for both the old disk preimage and candidate. Before stop, descriptor-pinned
 Caddy adapts the exact old bytes and that digest must equal the live TCP-admin
 `/config/` readback; the loaded unit must also have the exact fragment and old
-Exec commands, `NeedDaemonReload=no`, no drop-ins, `EnvironmentFile`, or
+Exec commands, `NeedDaemonReload=no`, no drop-ins other than the exact pinned
+one-way publisher-namespace `Wants+After` drop-in, no `EnvironmentFile`, or
 `PassEnvironment`. A committed root `/config/` readback must reproduce the
 candidate digest.
 The read-only gate does not invoke Caddy. The separate source-hash-closed cold
@@ -474,7 +535,8 @@ and the overlay candidate's adapted digest after reload/health. Recovery may
 initially accept either reviewed digest across an ambiguous exchange/reload
 boundary, but must re-probe the exact outcome-specific generation before
 terminal state, cleanup or return. It also
-binds current effective unit properties (including no drop-ins, the approved
+binds current effective unit properties (including the exact singleton
+publisher-namespace drop-in, the approved
 `ExecStart` and UDS `ExecReload`, daemon-reload state, environment-name policy,
 runtime-directory/identity/umask/core/swap/output settings) plus exact MainPID
 argv/start ticks

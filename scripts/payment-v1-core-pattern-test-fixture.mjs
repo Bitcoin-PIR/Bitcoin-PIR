@@ -151,7 +151,7 @@ export function fixturePlan() {
     executor: {
       busctl: executable("/usr/bin/busctl", "busctl"),
       exchange_helper: executable(
-        "/opt/bitcoinpir/payment-v1-rename-exchange/" + "e".repeat(64) +
+        "/opt/bitcoinpir/payment-v1-rename-exchange/" + hash("exchange\n") +
           "/payment-v1-rename-exchange",
         "exchange",
       ),

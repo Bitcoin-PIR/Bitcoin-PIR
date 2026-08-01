@@ -1,0 +1,75 @@
+# Explicit no-key, no-retry publication unit; render once per frozen artifact set.
+[Unit]
+Description=BitcoinPIR Payment V1 one-shot signed directory publication (template only)
+Requires=bitcoinpir-payment-v1-publisher-netns.service bitcoinpir-payment-v1-source-fair-edge.service bhtm-caddy.service bitcoinpir-directory-relay.service
+BindsTo=bitcoinpir-payment-v1-publisher-netns.service
+After=bitcoinpir-payment-v1-publisher-netns.service bitcoinpir-payment-v1-source-fair-edge.service bhtm-caddy.service bitcoinpir-directory-relay.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+User=bitcoinpir-directory-publisher
+Group=bitcoinpir-directory-publisher
+UMask=0077
+StateDirectory=bitcoinpir-directory-publication
+StateDirectoryMode=0700
+NetworkNamespacePath=/run/netns/bpir-directory-publisher
+PrivateMounts=true
+BindReadOnlyPaths=/etc/netns/bpir-directory-publisher/hosts:/etc/hosts
+BindReadOnlyPaths=/etc/netns/bpir-directory-publisher/resolv.conf:/etc/resolv.conf
+BindReadOnlyPaths=/etc/netns/bpir-directory-publisher/nsswitch.conf:/etc/nsswitch.conf
+UnsetEnvironment=BASH_ENV ENV GLIBC_TUNABLES LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD NODE_EXTRA_CA_CERTS NODE_OPTIONS NODE_PATH http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256
+ExecStartPre=/opt/bitcoinpir/publisher-netns/@PUBLISHER_NETNS_HELPER_SHA256@/payment-v1-publisher-netns publisher-sandbox-self-test
+ExecStart=/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin directory-artifact publish --artifact /var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_0_ENTRY_ARTIFACT@ --artifact /var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_1_ENTRY_ARTIFACT@ --artifact /var/lib/bitcoinpir-directory-publisher/artifacts/@CHECKPOINT_ARTIFACT@ --artifact-manifest /etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256 --receipt-directory /var/lib/bitcoinpir-directory-publication --relay wss://@DIRECTORY_PUBLISHER_HTTPS_HOST@ --centralized-single-relay --directory-pubkey-hex @DIRECTORY_PUBLISHER_PUBKEY_HEX@ --now-unix @DIRECTORY_PUBLISH_NOW_UNIX@ --relay-timeout-seconds 60
+Restart=no
+TimeoutStartSec=150
+TimeoutStopSec=15
+LimitCORE=0
+MemoryMax=268435456
+MemorySwapMax=0
+TasksMax=64
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET
+IPAddressDeny=any
+IPAddressAllow=10.203.0.1
+TemporaryFileSystem=/run:ro
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-publisher /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/publisher-netns/@PUBLISHER_NETNS_HELPER_SHA256@ /var/lib/bitcoinpir-directory-publisher/artifacts
+ReadWritePaths=/var/lib/bitcoinpir-directory-publication
+InaccessiblePaths=-/etc/bitcoinpir/payment-v1/directory-publisher/keys -/var/lib/bitcoinpir-directory-relay -/var/lib/bitcoinpir-payment-issuer -/var/lib/bitcoinpir-provider
+
+# The account can read only already-signed artifacts. No signing key argument,
+# key path, proxy, default route, Unix socket, retry or [Install] section exists.
+# The firewall-generation guard sentinel is intentionally unavailable in this
+# slice: point-in-time post-state evidence is not permission to create it. A
+# failed or partial publish is reconciled manually using the exact frozen set.

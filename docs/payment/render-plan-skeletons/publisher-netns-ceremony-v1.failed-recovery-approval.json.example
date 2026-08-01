@@ -1,0 +1,41 @@
+{
+  "acknowledgements": [
+    "only-the-approved-failed-publisher-namespace-invocation-will-be-reset",
+    "reset-failed-will-use-the-fixed-argv-and-will-not-start-stop-reload-or-restart-any-unit",
+    "the-durable-start-intent-original-activation-approval-and-failed-invocation-are-one-bound-attempt",
+    "no-pid1-job-main-process-namespace-interface-or-input-generation-may-exist-or-drift-before-or-after-reset"
+  ],
+  "activation_approval_sha256": "INVALID_REPLACE_WITH_ORIGINAL_START_APPROVAL_SHA256",
+  "approved_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC",
+  "approved_by": "INVALID_REPLACE_WITH_OPERATOR_OR_SIGNING_KEY_ID",
+  "ceremony_id": "invalid-replace-with-fresh-ceremony-id",
+  "decision": "approve-reset-exact-failed-publisher-netns",
+  "executor_sha256": "INVALID_REPLACE_WITH_EXECUTOR_SHA256",
+  "expires_at_utc": "INVALID_REPLACE_WITH_WHOLE_SECOND_UTC_WITHIN_ONE_HOUR",
+  "failed_unit": {
+    "active_enter_timestamp_monotonic": "0",
+    "active_state": "failed",
+    "exec_main_code": "INVALID_REPLACE_WITH_CANONICAL_DECIMAL",
+    "exec_main_status": "INVALID_REPLACE_WITH_CANONICAL_DECIMAL",
+    "inactive_enter_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+    "invocation_id": "INVALID_REPLACE_WITH_NONZERO_32_LOWERCASE_HEX_INVOCATION_ID",
+    "load_state": "loaded",
+    "main_pid": "0",
+    "name": "bitcoinpir-payment-v1-publisher-netns.service",
+    "need_daemon_reload": "no",
+    "result": "INVALID_REPLACE_WITH_REVIEWED_NON_SUCCESS_SYSTEMD_RESULT",
+    "state_change_timestamp_monotonic": "INVALID_REPLACE_WITH_NONZERO_DECIMAL",
+    "sub_state": "failed"
+  },
+  "failed_unit_sha256": "INVALID_REPLACE_WITH_CANONICAL_FAILED_UNIT_SHA256",
+  "kind": "bitcoinpir-payment-v1-publisher-netns-failed-recovery-approval-v1",
+  "launcher_manifest_sha256": "INVALID_REPLACE_WITH_LAUNCHER_MANIFEST_SHA256",
+  "launcher_sha256": "INVALID_REPLACE_WITH_LAUNCHER_SHA256",
+  "plan_sha256": "INVALID_REPLACE_WITH_CANONICAL_PLAN_SHA256",
+  "reset_failed_argv": [
+    "reset-failed",
+    "bitcoinpir-payment-v1-publisher-netns.service"
+  ],
+  "schema_version": 1,
+  "start_intent_sha256": "INVALID_REPLACE_WITH_DURABLE_START_INTENT_SHA256"
+}

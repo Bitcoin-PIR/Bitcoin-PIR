@@ -290,7 +290,7 @@ test("Noble side-effect fixture proves start/stop mutate all three sysctls in da
   assert.ok(stop.indexOf("\"fs/suid_dumpable\", \"0\"") < stop.indexOf("\"kernel/core_pattern\", \"core\""));
 });
 
-test("plan rejects relaxation of any three-sysctl, Noble, symlink, guard, crash-dir, or persistent-state binding", () => {
+test("plan rejects relaxation of sysctl, Noble, helper, guard, crash-dir, or persistent-state bindings", () => {
   const mutations = [
     function (plan) { plan.preimage.sysctls["fs.suid_dumpable"] = "0"; },
     function (plan) { plan.preimage.sysctls["kernel.core_pipe_limit"] = "0"; },
@@ -309,6 +309,11 @@ test("plan rejects relaxation of any three-sysctl, Noble, symlink, guard, crash-
     function (plan) { plan.preimage.sysctl_credential_closure_state = "present"; },
     function (plan) { plan.preimage.crash_directory.inode = "0"; },
     function (plan) { plan.preimage.crash_entries = ["old.crash"]; },
+    function (plan) {
+      plan.executor.exchange_helper.path =
+        "/opt/bitcoinpir/payment-v1-rename-exchange/" + "f".repeat(64) +
+        "/payment-v1-rename-exchange";
+    },
     function (plan) { plan.transaction.lock_path = "/run/unsafe-lock"; },
     function (plan) { plan.transaction.temp_paths.state_exchange += ".random"; },
   ];

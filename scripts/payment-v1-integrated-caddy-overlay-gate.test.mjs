@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   MANAGED_BLOCK_SOURCE,
   OVERLAY_COLLECTOR,
+  PUBLISHER_NETNS_DROPIN_PATH,
   buildOverlayCandidate,
   canonicalJson,
   computeApprovedOverlayPlanSha256,
@@ -74,9 +75,9 @@ function generation(unitName, { canReload, pid }) {
 
 function makePlan() {
   const placeholders = {
-    DIRECTORY_PUBLISHER_CLIENT_IP: "10.23.0.6",
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.203.0.2",
     DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
-    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.23.0.5",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.203.0.1",
     DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
     PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
     PROVIDER_WSS_HOST: "pir.example.net",
@@ -91,6 +92,8 @@ function makePlan() {
   const exchangeManifest = Buffer.from(`${exchangeSha}  ${exchangePath}\n`);
   const preimageSha = sha256(PREIMAGE);
   const transactionId = "integrated-caddy-test-1";
+  const netnsCeremonyId = "publisher-netns-test-1";
+  const netnsDropinSha256 = "8".repeat(64);
   const targetGeneration = generation("bhtm-caddy.service", {
     canReload: "yes",
     pid: "4343",
@@ -107,6 +110,7 @@ function makePlan() {
         lane: "directory-public",
         leaf_certificate_sha256: "a".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "host",
         path: "/",
         timeout_ms: 5000,
       },
@@ -119,6 +123,7 @@ function makePlan() {
         lane: "directory-publisher",
         leaf_certificate_sha256: "b".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "bpir-directory-publisher",
         path: "/",
         timeout_ms: 5000,
       },
@@ -131,6 +136,7 @@ function makePlan() {
         lane: "issuer",
         leaf_certificate_sha256: "d".repeat(64),
         max_response_bytes: 65536,
+        network_namespace: "host",
         path: "/v1/quote-keys/current",
         timeout_ms: 5000,
       },
@@ -143,6 +149,7 @@ function makePlan() {
         lane: "provider",
         leaf_certificate_sha256: "e".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "host",
         path: "/v1/pir",
         timeout_ms: 5000,
       },
@@ -192,7 +199,7 @@ function makePlan() {
       node_binary: pin("/usr/bin/node", "f".repeat(64), "0755"),
       setpriv_binary: pin("/usr/bin/setpriv", "4".repeat(64), "0755"),
     },
-    schema_version: 1,
+    schema_version: 2,
     source_fair: {
       deployment_manifest_sha256: "1".repeat(64),
       deployment_profile: "integrated-existing-bhtm-caddy-v1",
@@ -249,6 +256,8 @@ function makePlan() {
         cold_new_generation: true,
         config_sha256: preimageSha,
         deployment_profile: "bhtm-caddy-admin-uds-v1",
+        plan_schema_version: 2,
+        publisher_netns_dropin_sha256: netnsDropinSha256,
         plan: pin(
           "/var/lib/bitcoinpir/payment-v1/bhtm-caddy-admin-uds/plans/caddy-admin-uds-test-1.json",
           "9".repeat(64),
@@ -259,6 +268,7 @@ function makePlan() {
           "d".repeat(64),
           "0400",
         ),
+        receipt_schema_version: 2,
         runtime_directory: "/run/bitcoinpir-caddy-admin",
         runtime_directory_mode: "0700",
         setpriv_binary_sha256: "4".repeat(64),
@@ -290,6 +300,31 @@ function makePlan() {
         "0644",
         { size: String(PREIMAGE.length) },
       ),
+      publisher_netns_ceremony: {
+        approved_plan_sha256: "a".repeat(64),
+        client_address: placeholders.DIRECTORY_PUBLISHER_CLIENT_IP,
+        ceremony_id: netnsCeremonyId,
+        dropin: pin(PUBLISHER_NETNS_DROPIN_PATH, netnsDropinSha256, "0644"),
+        host_address: placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND,
+        host_port: 443,
+        namespace_device: "13",
+        namespace_inode: "9001",
+        netns_invocation_id: "a".repeat(32),
+        plan: pin(
+          `/var/lib/bitcoinpir/payment-v1/publisher-netns/plans/${netnsCeremonyId}.json`,
+          "a".repeat(64),
+          "0400",
+        ),
+        plan_schema_version: 2,
+        publisher_hostname: placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST,
+        receipt: pin(
+          `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts/${netnsCeremonyId}.json`,
+          "b".repeat(64),
+          "0400",
+        ),
+        receipt_schema_version: 2,
+        topology_sha256: "c".repeat(64),
+      },
       unit_fragment: pin(
         "/etc/systemd/system/bhtm-caddy.service",
         "6".repeat(64),
@@ -349,7 +384,7 @@ function makePlan() {
       installation_mode:
         "same-directory-renameat2-exchange-verify-swapped-preimage-and-live-candidate-parent-fsync",
       lock_path:
-        "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock",
+        "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
       reload_argv: ["/usr/bin/systemctl", "reload", "bhtm-caddy.service"],
       receipt_path:
         `/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/receipts/${transactionId}.json`,
@@ -409,7 +444,7 @@ function adminRuntime(plan, start, adaptedJsonSha256) {
       { cap_eff: "0000000000000000", error: "EACCES", gid: 52902, groups: [52902], name: "pir", uid: 52902 },
     ],
     effective_unit: {
-      dropin_paths: [],
+      dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
       environment_names: [],
       environment_files: [],
       exec_reload: {
@@ -428,6 +463,15 @@ function adminRuntime(plan, start, adaptedJsonSha256) {
       memory_swap_max: "0",
       need_daemon_reload: "no",
       pass_environment: [],
+      publisher_netns_dependency: {
+        after_namespace_owner: true,
+        binds_to_namespace_owner: false,
+        dropin_paths: [PUBLISHER_NETNS_DROPIN_PATH],
+        need_daemon_reload: "no",
+        part_of_namespace_owner: false,
+        requires_namespace_owner: false,
+        wants_namespace_owner: true,
+      },
       runtime_directory: ["bitcoinpir-caddy-admin"],
       runtime_directory_mode: "0700",
       runtime_directory_preserve: "no",
@@ -575,6 +619,7 @@ function makeReceipt(plan, outcome = "committed") {
       validate_argv: clone(plan.transaction.validate_argv),
       validate_exit_status: 0,
     },
+    publisher_netns_ceremony: clone(plan.target.publisher_netns_ceremony),
     reload: {
       argv: clone(plan.transaction.reload_argv),
       exit_status: committed ? 0 : 1,
@@ -600,7 +645,7 @@ function makeReceipt(plan, outcome = "committed") {
           reload_exit_status: 0,
           runtime_before: clone(runtimeBefore),
         },
-    schema_version: 1,
+    schema_version: 2,
     transaction_id: plan.transaction_id,
   };
   return receipt;
@@ -643,6 +688,21 @@ test("committed and exact rolled-back receipts pass", () => {
 });
 
 for (const [label, mutate, expected] of [
+  [
+    "schema-v1 plan",
+    (plan) => { plan.schema_version = 1; },
+    /schema_version must equal 2/,
+  ],
+  [
+    "schema-v1 admin UDS evidence",
+    (plan) => { plan.target.admin_uds_hardening.plan_schema_version = 1; },
+    /schema-v2 plan and receipt evidence/,
+  ],
+  [
+    "schema-v1 publisher namespace evidence",
+    (plan) => { plan.target.publisher_netns_ceremony.receipt_schema_version = 1; },
+    /schema-v2 plan and receipt evidence/,
+  ],
   [
     "different Caddy unit",
     (plan) => { plan.target.unit_generation.unit_name = "caddy.service"; },
@@ -703,6 +763,37 @@ for (const [label, mutate, expected] of [
     /RFC1918|ULA/,
   ],
   [
+    "non-profile publisher host topology",
+    (plan) => { plan.target.publisher_netns_ceremony.host_address = "172.20.0.1"; },
+    /fixed 10\.203\.0\.1\/10\.203\.0\.2 production topology/u,
+  ],
+  [
+    "non-profile publisher client topology",
+    (plan) => { plan.target.publisher_netns_ceremony.client_address = "fd42::2"; },
+    /fixed 10\.203\.0\.1\/10\.203\.0\.2 production topology/u,
+  ],
+  [
+    "publisher private bind differs from namespace topology",
+    (plan) => {
+      plan.managed_block.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND = "10.203.0.5";
+    },
+    /must equal the approved publisher namespace topology/,
+  ],
+  [
+    "publisher client differs from namespace topology",
+    (plan) => {
+      plan.managed_block.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP = "10.203.0.6";
+    },
+    /must equal the approved publisher namespace topology/,
+  ],
+  [
+    "publisher hostname differs from namespace topology",
+    (plan) => {
+      plan.managed_block.placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST = "other-publisher.example.net";
+    },
+    /must equal the approved publisher namespace topology/,
+  ],
+  [
     "hostname reuse",
     (plan) => { plan.managed_block.placeholders.PROVIDER_WSS_HOST = plan.managed_block.placeholders.PAYMENT_ISSUER_HTTPS_HOST; },
     /four distinct hostnames/,
@@ -711,6 +802,18 @@ for (const [label, mutate, expected] of [
     "legacy directory path",
     (plan) => { plan.health_checks[0].path = "/v1/directory"; },
     /health_checks\[0\]\.path must equal \/$/,
+  ],
+  [
+    "publisher health executed from host namespace",
+    (plan) => { plan.health_checks[1].network_namespace = "host"; },
+    /health_checks\[1\]\.network_namespace must equal bpir-directory-publisher/,
+  ],
+  [
+    "public health executed from publisher namespace",
+    (plan) => {
+      plan.health_checks[0].network_namespace = "bpir-directory-publisher";
+    },
+    /health_checks\[0\]\.network_namespace must equal host/,
   ],
   [
     "hyphenated target InvocationID",
@@ -726,6 +829,14 @@ for (const [label, mutate, expected] of [
     "restart command",
     (plan) => { plan.transaction.reload_argv[1] = "restart"; },
     /reload_argv/,
+  ],
+  [
+    "private overlay lock instead of shared publisher lifecycle lock",
+    (plan) => {
+      plan.transaction.lock_path =
+        "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock";
+    },
+    /transaction\.lock_path must equal \/run\/lock\/bitcoinpir-payment-v1-publisher-lifecycle\.lock/,
   ],
   [
     "weak backup mode",
@@ -803,6 +914,11 @@ test("candidate rejects changed preimage, duplicate marker and changed source", 
 });
 
 for (const [label, mutate, expected] of [
+  [
+    "schema-v1 receipt",
+    (receipt) => { receipt.schema_version = 1; },
+    /schema_version must equal 2/,
+  ],
   [
     "restart invocation",
     (receipt) => { receipt.reload.restart_invoked = true; },

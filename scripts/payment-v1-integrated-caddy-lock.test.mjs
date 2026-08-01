@@ -51,6 +51,17 @@ function regularPin(path) {
   };
 }
 
+function forceOwnerCtimeDrift(path, beforeCtimeNs) {
+  const waitCell = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    chmodSync(path, 0o600);
+    chmodSync(path, 0o400);
+    if (regularPin(path).ctime_ns !== beforeCtimeNs) return;
+    Atomics.wait(waitCell, 0, 0, 5);
+  }
+  assert.fail("test fixture could not produce a distinct owner ctime generation");
+}
+
 function compileHelper(root, name, definitions = []) {
   const helper = join(root, name);
   const compile = spawnSync(
@@ -99,7 +110,7 @@ test("filesystem lock distinguishes a live holder from an exact stale process ge
     async () => acquireFilesystemLock(lock, {
       allowUnpinnedTestHelper: true,
       recoverStale: true,
-      transactionId: "lock-contender-test",
+      transactionId: "lock-live-test",
     }),
     /live process generation/,
   );
@@ -112,7 +123,7 @@ test("filesystem lock distinguishes a live holder from an exact stale process ge
       boot_id: "00000000-0000-4000-8000-000000000000",
       pid: 1,
       process_start_ticks: "1",
-      transaction_id: "crashed-generation",
+      transaction_id: "integrated-caddy-overlay:lock-recovery-test",
     }),
     { mode: 0o400 },
   );
@@ -130,7 +141,7 @@ test("filesystem lock distinguishes a live holder from an exact stale process ge
       boot_id: "00000000-0000-4000-8000-000000000000",
       pid: 1,
       process_start_ticks: "1",
-      transaction_id: "crashed-pending-generation",
+      transaction_id: "integrated-caddy-overlay:lock-pending-recovery-test",
     }),
     { mode: 0o400 },
   );
@@ -142,6 +153,35 @@ test("filesystem lock distinguishes a live holder from an exact stale process ge
   assert.equal(existsSync(join(lock, "owner.json")), true);
   assert.equal(existsSync(join(lock, "owner.json.pending")), false);
   await releasePendingRecovered();
+});
+
+test("stale lifecycle lock recovery refuses another transaction or ceremony domain", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and procfs semantics are required",
+}, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-cross-domain-lock-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  for (const ownerName of ["owner.json", "owner.json.pending"]) {
+    const lock = join(root, ownerName === "owner.json" ? "authoritative.lock" : "pending.lock");
+    mkdirSync(lock, { mode: 0o700 });
+    const ownerBytes = canonicalJson({
+      boot_id: "00000000-0000-4000-8000-000000000000",
+      pid: 1,
+      process_start_ticks: "1",
+      transaction_id: "publisher-netns:same-slug",
+    });
+    writeFileSync(join(lock, ownerName), ownerBytes, { mode: 0o400 });
+    await assert.rejects(
+      async () => acquireFilesystemLock(lock, {
+        allowUnpinnedTestHelper: true,
+        recoverStale: true,
+        transactionId: "same-slug",
+      }),
+      /belongs to another transaction; refusing cross-domain recovery/u,
+    );
+    assert.equal(readFileSync(join(lock, ownerName), "utf8"), ownerBytes);
+  }
 });
 
 test("stale-lock recovery refuses an unknown directory shape", {
@@ -274,6 +314,65 @@ acquireFilesystemLock(process.argv[1], {
   assert.equal(existsSync(join(lock, "owner.json")), true);
   assert.equal(existsSync(join(lock, "owner.json.pending")), false);
   await release();
+});
+
+test("stale-lock reclaim rejects same-inode ctime drift before exact deletion", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and procfs semantics are required",
+}, (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-stale-ctime-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const lock = join(root, "transaction.lock");
+  const ownerPath = join(lock, "owner.json");
+  mkdirSync(lock, { mode: 0o700 });
+  writeFileSync(ownerPath, canonicalJson({
+    boot_id: "00000000-0000-4000-8000-000000000000",
+    pid: 1,
+    process_start_ticks: "1",
+    transaction_id: "integrated-caddy-overlay:lock-stale-ctime",
+  }), { mode: 0o400 });
+  const before = regularPin(ownerPath);
+  assert.throws(
+    () => acquireFilesystemLock(lock, {
+      allowUnpinnedTestHelper: true,
+      recoverStale: true,
+      transactionId: "lock-stale-ctime",
+      testOnlyFaultInjector(point) {
+        if (point !== "before-stale-lock-owner-removal") return;
+        forceOwnerCtimeDrift(ownerPath, before.ctime_ns);
+      },
+    }),
+    /exact removal entry ctime generation drifted/u,
+  );
+  assert.notEqual(regularPin(ownerPath).ctime_ns, before.ctime_ns);
+  assert.equal(existsSync(ownerPath), true);
+});
+
+test("lock release rejects same-inode ctime drift before exact deletion", {
+  skip: ROOT_LINUX ? false : "root Linux descriptor and procfs semantics are required",
+}, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-overlay-lock-release-ctime-"));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const lock = join(root, "transaction.lock");
+  const ownerPath = join(lock, "owner.json");
+  let before;
+  const release = acquireFilesystemLock(lock, {
+    allowUnpinnedTestHelper: true,
+    recoverStale: false,
+    transactionId: "lock-release-ctime",
+    testOnlyFaultInjector(point) {
+      if (point !== "before-lock-owner-release-removal") return;
+      before = regularPin(ownerPath);
+      forceOwnerCtimeDrift(ownerPath, before.ctime_ns);
+    },
+  });
+  await assert.rejects(
+    release,
+    /exact removal entry ctime generation drifted/u,
+  );
+  assert.notEqual(regularPin(ownerPath).ctime_ns, before.ctime_ns);
+  assert.equal(existsSync(ownerPath), true);
 });
 
 test("production lock owner uses the pinned no-replace helper", {
