@@ -1089,7 +1089,8 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       and directory-public HAProxy artifact gate. With the pinned Node version,
       tests use `SourceTextModule.moduleRequests` as a review aid to exact-match
       each file's static local edges and `node:` builtin request set and reject
-      import attributes. This is neither proof that dynamic, CommonJS, worker
+      import attributes; when Node exposes request phase, only evaluation is
+      accepted. This is neither proof that dynamic, CommonJS, worker
       or reflective loaders are absent nor a JavaScript sandbox. Independent
       semantic review bound to the five exact SHA-256 values, frozen commit and
       exact Node binary/version/toolchain is the authority. This source-only PR

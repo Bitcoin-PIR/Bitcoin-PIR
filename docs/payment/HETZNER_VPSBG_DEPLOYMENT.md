@@ -1076,7 +1076,8 @@ runtime collector, rendered-artifact gate, deployment-template gate,
 publisher-netns gate and directory-public HAProxy artifact gate. With the
 pinned Node version, the release test uses `SourceTextModule.moduleRequests`
 only as a review aid: it exact-matches each file's static local edges and
-`node:` builtin request set and requires empty import attributes. It does not
+`node:` builtin request set, requires empty import attributes and, when Node
+exposes it, permits only evaluation phase. It does not
 prove the absence of dynamic, CommonJS, worker or reflective loading and is not
 a JavaScript sandbox. The authority is independent semantic review bound to
 the exact SHA-256 of all five files, one frozen source commit and the exact Node

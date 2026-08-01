@@ -965,12 +965,17 @@ remain separate acceptance gates.
   run stopped unit is `infinity` / `18446744073709551615`, an ordinary live
   unit is `0` / `0`, and the live preflight is `1min 30s` / `90000000` with a
   fresh nonzero monotonic timestamp;
-- release tests close the runtime collector's three local script files to the
-  collector, rendered-artifact gate and deployment-template gate, in that
-  import order; exact-match every static local and `node:` specifier; and
-  reject dynamic imports, export-from drift, package/absolute/`file:`/`data:`
-  imports, CommonJS loaders and workers. Production transfer pins all three
-  bytes from one commit;
+- release tests use the pinned Node `SourceTextModule.moduleRequests` parser as
+  a review aid over the runtime collector's exact five-file static request
+  closure: collector, rendered-artifact gate, deployment-template gate,
+  publisher-netns gate and directory-public HAProxy artifact gate. They
+  exact-match static local-edge and `node:` builtin request sets, require empty
+  import attributes and, when the Node API exposes it, require evaluation
+  phase. This does not prove the absence of dynamic, CommonJS, worker or
+  reflective loading and is not a JavaScript sandbox. Production transfer pins
+  all five exact bytes from one frozen commit; the real release boundary is
+  independent semantic review bound to those hashes and the exact Node
+  binary/version/toolchain;
 - publisher-netns ceremony tests require canonical closed plans; exact
   RFC1918/ULA point-to-point pairs; no publisher private key or payment/query
   correlation fields; exact installed/runtime/sentinel/firewall/Caddy pins;

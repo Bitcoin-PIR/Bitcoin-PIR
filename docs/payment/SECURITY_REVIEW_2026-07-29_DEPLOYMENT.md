@@ -311,7 +311,8 @@ rendered-artifact gate, deployment-template gate, publisher-netns gate and
 directory-public HAProxy artifact gate from one frozen commit. With the pinned
 Node version, release tests use `SourceTextModule.moduleRequests` only to
 exact-match each file's static local edges and `node:` builtin request set and
-to reject import attributes. That parser-backed check neither proves the
+to reject import attributes; when Node exposes request phase, only evaluation
+is accepted. That parser-backed check neither proves the
 absence of dynamic, CommonJS, worker or reflective loading nor provides a
 JavaScript sandbox. The real boundary is independent semantic review bound to
 all five exact SHA-256 values, the frozen source commit and the exact Node

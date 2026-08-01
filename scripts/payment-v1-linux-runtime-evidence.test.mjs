@@ -193,6 +193,31 @@ function staticModuleRequests(source, label) {
   return JSON.parse(result.stdout);
 }
 
+function assertStaticModuleRequestShapeV1(request, label) {
+  const keys = Object.keys(request).sort();
+  const node22Keys = ["attributes", "specifier"];
+  const node24Keys = ["attributes", "phase", "specifier"];
+  assert.ok(
+    [node22Keys, node24Keys].some(
+      (expected) => JSON.stringify(keys) === JSON.stringify(expected),
+    ),
+    `${label} static module request shape changed`,
+  );
+  if (Object.hasOwn(request, "phase")) {
+    assert.equal(
+      request.phase,
+      "evaluation",
+      `${label} static module request phase must remain evaluation`,
+    );
+  }
+  assert.deepEqual(
+    request.attributes,
+    {},
+    `${label} static module request attributes must remain empty`,
+  );
+  assert.equal(typeof request.specifier, "string", `${label} specifier must be a string`);
+}
+
 function assertExactStaticModuleRequests(
   source,
   expected,
@@ -202,17 +227,7 @@ function assertExactStaticModuleRequests(
   const builtins = [];
   const locals = [];
   for (const request of staticModuleRequests(source, label)) {
-    assert.deepEqual(
-      Object.keys(request).sort(),
-      ["attributes", "specifier"],
-      `${label} static module request shape changed`,
-    );
-    assert.deepEqual(
-      request.attributes,
-      {},
-      `${label} static module request attributes must remain empty`,
-    );
-    assert.equal(typeof request.specifier, "string", `${label} specifier must be a string`);
+    assertStaticModuleRequestShapeV1(request, label);
     if (request.specifier.startsWith("node:")) {
       builtins.push(request.specifier);
       continue;
@@ -837,6 +852,59 @@ test("runtime evidence review aid keeps exact five-file static module requests",
   }
 });
 
+test("static module request schema accepts only Node 22 and Node 24 evaluation shapes", () => {
+  for (const [label, request] of [
+    ["Node 22", { attributes: {}, specifier: "node:fs" }],
+    ["Node 24", { attributes: {}, phase: "evaluation", specifier: "node:fs" }],
+  ]) {
+    assert.doesNotThrow(() => assertStaticModuleRequestShapeV1(request, label));
+  }
+  for (const [label, request, error] of [
+    ["missing attributes", { specifier: "node:fs" }, /shape changed/u],
+    ["extra key", { attributes: {}, extra: true, specifier: "node:fs" }, /shape changed/u],
+    [
+      "source phase",
+      { attributes: {}, phase: "source", specifier: "node:fs" },
+      /phase must remain evaluation/u,
+    ],
+    [
+      "unknown phase",
+      { attributes: {}, phase: "unknown", specifier: "node:fs" },
+      /phase must remain evaluation/u,
+    ],
+    [
+      "attributes",
+      { attributes: { type: "json" }, specifier: "node:fs" },
+      /attributes must remain empty/u,
+    ],
+    ["non-string specifier", { attributes: {}, specifier: 1 }, /specifier must be a string/u],
+  ]) {
+    assert.throws(() => assertStaticModuleRequestShapeV1(request, label), error, label);
+  }
+});
+
+// moduleRequests intentionally exposes a dependency set: repeated requests are
+// deduplicated by Node and comparison sorts away source order. Exact file hashes
+// plus semantic review, not this aid, remain responsible for those source edits.
+test("static module request review aid keeps dependency-set duplicate and order semantics", () => {
+  const expected = { builtins: ["node:fs", "node:path"], locals: [] };
+  for (const [label, source] of [
+    ["baseline order", 'import "node:fs"; import "node:path";'],
+    ["reverse order", 'import "node:path"; import "node:fs";'],
+    [
+      "duplicate request",
+      'import "node:fs"; import "node:path"; import * as fs from "node:fs";',
+    ],
+  ]) {
+    assert.doesNotThrow(() => assertExactStaticModuleRequests(
+      source,
+      expected,
+      TEMPLATE_GATE,
+      label,
+    ));
+  }
+});
+
 test("static module request review aid rejects changed edges and attributes", () => {
   const source = readFileSync(TEMPLATE_GATE, "utf8");
   const anchor = "export const ACTIVE_BASELINES";
@@ -855,8 +923,10 @@ test("static module request review aid rejects changed edges and attributes", ()
   ));
   for (const [label, injection, error] of [
     ["unknown local", 'import unreviewed from "./static-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["unknown local side effect", 'import "./side-effect-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
     ["unexpected reviewed edge", 'import unexpected from "./payment-v1-rendered-artifact-gate.mjs";', /local static module edge set changed/u],
     ["export-from", 'export { default as unreviewed } from "./export-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["export-star-from", 'export * from "./export-star-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
     ["unknown builtin", 'import * as unreviewedVm from "node:vm";', /static Node builtin request set changed/u],
     ["package", 'import packageUnreviewed from "unreviewed-package";', /contains an unreviewed static module request/u],
     ["absolute", 'import absoluteUnreviewed from "/tmp/unreviewed.mjs";', /contains an unreviewed static module request/u],

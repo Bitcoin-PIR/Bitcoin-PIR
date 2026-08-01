@@ -666,6 +666,17 @@ jobs:
               scripts/payment-v1-caddy-admin-uds-gate.test.mjs \
               scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs \
               scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
+            node --test \
+              --test-name-pattern='runtime evidence review aid|static module request' \
+              scripts/payment-v1-linux-runtime-evidence.test.mjs
           sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
           scripts/payment-v1-caddy-admin-uds-process.test.sh
           sh -n scripts/payment-v1-caddy-admin-uds-systemd.test.sh
