@@ -28,7 +28,10 @@ helper="$test_root/payment-v1-publisher-netns"
 listener_pid=""
 owner_pid=""
 cleanup_pid=""
+pre_ready_coordinator_pid=""
 xtables_test_link=""
+pre_ready_control=/tmp/bitcoinpir-publisher-netns-pre-ready-control.sock
+pre_ready_observer=/tmp/bitcoinpir-publisher-netns-pre-ready-observer.sock
 
 terminate_child() {
   local pid="$1"
@@ -43,6 +46,7 @@ terminate_child() {
 }
 
 cleanup() {
+  terminate_child "$pre_ready_coordinator_pid"
   terminate_child "$cleanup_pid"
   terminate_child "$owner_pid"
   terminate_child "$listener_pid"
@@ -53,7 +57,8 @@ cleanup() {
     rm -f -- "$xtables_test_link"
   fi
   nft delete table inet bpir_pub_guard_test >/dev/null 2>&1 || true
-  rm -f /tmp/bitcoinpir-publisher-netns-test-pause
+  rm -f /tmp/bitcoinpir-publisher-netns-test-pause \
+    "$pre_ready_control" "$pre_ready_observer"
   rm -rf -- "$test_root"
 }
 trap cleanup EXIT
@@ -100,6 +105,51 @@ PY
     sleep 0.1
   done
   echo "timed out waiting for readiness listener" >&2
+  return 1
+}
+
+start_pre_ready_nft_coordinator() {
+  local ready_path="$1"
+  local mutation_path="$2"
+  rm -f -- "$ready_path" "$mutation_path"
+  if [[ -e "$pre_ready_control" || -L "$pre_ready_control" ||
+        -e "$pre_ready_observer" || -L "$pre_ready_observer" ]]; then
+    echo "pre-ready nft coordinator socket preimage is not absent" >&2
+    return 1
+  fi
+  python3 - "$pre_ready_observer" "$pre_ready_control" \
+    "$ready_path" "$mutation_path" <<'PY' &
+import pathlib
+import socket
+import subprocess
+import sys
+
+observer_path, control_path, ready_path, mutation_path = sys.argv[1:]
+coordinator = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+coordinator.bind(observer_path)
+pathlib.Path(ready_path).write_bytes(b"ready\n")
+coordinator.settimeout(20)
+message, sender = coordinator.recvfrom(32)
+if message != b"1" or sender != control_path:
+    raise SystemExit("unexpected pre-ready barrier notification")
+subprocess.run(
+    ["nft", "add", "table", "inet", "bpir_pub_guard_test"],
+    check=True,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path(mutation_path).write_bytes(b"nft-generation-mutated\n")
+coordinator.sendto(b"1", control_path)
+coordinator.close()
+PY
+  pre_ready_coordinator_pid=$!
+  for _ in $(seq 1 80); do
+    [[ -f "$ready_path" ]] && return 0
+    if ! kill -0 "$pre_ready_coordinator_pid" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  echo "timed out waiting for pre-ready nft coordinator" >&2
   return 1
 }
 
@@ -225,20 +275,53 @@ if [[ -f "$ready_receipt" ]]; then
 fi
 "$helper" cleanup
 
-# A guard initialization failure must happen before READY just like a client
-# monitor initialization failure.
-start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
-if NOTIFY_SOCKET="$notify_socket" BPIR_TEST_FAIL_MONITOR_INIT=firewall "$helper" run; then
-  echo "helper succeeded despite injected firewall monitor initialization failure" >&2
+# A real nftables mutation is deterministically injected after the client
+# monitor reports ready and before the parent's final barrier. The owner must
+# consume the kernel notification, fail nonzero and never emit READY.
+pre_ready_coordinator_ready="$test_root/pre-ready-coordinator.ready"
+pre_ready_mutation_receipt="$test_root/pre-ready-mutation.receipt"
+if nft list table inet bpir_pub_guard_test >/dev/null 2>&1; then
+  echo "pre-ready nft generation test table unexpectedly exists" >&2
   exit 1
 fi
+start_pre_ready_nft_coordinator \
+  "$pre_ready_coordinator_ready" "$pre_ready_mutation_receipt"
+start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
+NOTIFY_SOCKET="$notify_socket" BPIR_TEST_PRE_READY_NFT_MUTATION=1 "$helper" run &
+owner_pid=$!
+if ! wait "$pre_ready_coordinator_pid"; then
+  pre_ready_coordinator_pid=""
+  echo "pre-ready nft coordinator failed" >&2
+  exit 1
+fi
+pre_ready_coordinator_pid=""
+if [[ ! -f "$pre_ready_mutation_receipt" ]]; then
+  echo "pre-ready nft mutation did not complete" >&2
+  exit 1
+fi
+for _ in $(seq 1 100); do
+  if ! kill -0 "$owner_pid" 2>/dev/null; then break; fi
+  sleep 0.05
+done
 kill "$listener_pid" >/dev/null 2>&1 || true
 wait "$listener_pid" >/dev/null 2>&1 || true
 listener_pid=""
 if [[ -f "$ready_receipt" ]]; then
-  echo "helper emitted READY before the firewall monitor initialized" >&2
+  echo "helper emitted READY after the deterministic pre-ready nft mutation" >&2
   exit 1
 fi
+if kill -0 "$owner_pid" 2>/dev/null; then
+  echo "helper survived the deterministic pre-ready nft mutation" >&2
+  exit 1
+fi
+if wait "$owner_pid"; then
+  owner_pid=""
+  echo "helper reported success after the deterministic pre-ready nft mutation" >&2
+  exit 1
+fi
+owner_pid=""
+nft delete table inet bpir_pub_guard_test
+rm -f -- "$pre_ready_control" "$pre_ready_observer"
 "$helper" cleanup
 
 BPIR_TEST_SKIP_NOTIFY=1 "$helper" run &

@@ -59,6 +59,20 @@ test("checked-in failed-recovery ceremony and schema pass the source guard", () 
   ), true);
 });
 
+test("privileged pre-ready firewall test uses a real deterministic nft mutation", () => {
+  const harness = readFileSync(
+    join(REPOSITORY, "scripts/payment-v1-publisher-netns-privileged-e2e.sh"),
+    "utf8",
+  );
+  assert.match(harness, /BPIR_TEST_PRE_READY_NFT_MUTATION=1/u);
+  assert.match(
+    harness,
+    /\["nft", "add", "table", "inet", "bpir_pub_guard_test"\]/u,
+  );
+  assert.match(harness, /pre-ready nft mutation did not complete/u);
+  assert.doesNotMatch(harness, /BPIR_TEST_FAIL_MONITOR_INIT=firewall/u);
+});
+
 test("failed-recovery source guard rejects broad reset and lost InvocationID binding", () => {
   const ceremony = readFileSync(
     join(REPOSITORY, "scripts/payment-v1-publisher-netns-ceremony.mjs"),
@@ -125,9 +139,9 @@ for (const [label, path, transform, error] of [
     (text) => text.replaceAll("SECCOMP_RET_KILL_PROCESS", "SECCOMP_RET_ALLOW"), /SECCOMP_RET_KILL_PROCESS/u],
   ["early readiness", "scripts/payment-v1-publisher-netns.c",
     (text) => text.replace(
-      "    if (fail_firewall_monitor ||\n        nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||",
-      "    if (notify_ready(&notifier) != 0) return -1;\n    if (fail_firewall_monitor ||\n        nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||",
-    ), /notify READY only after/u],
+      "    if (!initialization_failed &&\n        (stop_requested ||",
+      "    if (notify_ready(&notifier) != 0) return -1;\n    if (!initialization_failed &&\n        (stop_requested ||",
+    ), /immediately before READY/u],
   ["firewall monitor startup", "scripts/payment-v1-publisher-netns.c",
     (text) => text.replace(
       "int firewall_monitor_fd = open_nftables_generation_monitor();",
@@ -135,11 +149,18 @@ for (const [label, path, transform, error] of [
     ), /seal firewall before setup/u],
   ["pre-ready firewall barriers", "scripts/payment-v1-publisher-netns.c",
     (text) => text.replace(
-      "    if (fail_firewall_monitor ||\n" +
-      "        nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||\n" +
-      "        xtables_lock_guard_is_held(&xtables_guard) != 0 ||",
-      "    if (fail_firewall_monitor ||",
-    ), /notify READY only after every monitor/u],
+      "        (stop_requested ||\n" +
+      "         nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||\n" +
+      "         xtables_lock_guard_is_held(&xtables_guard) != 0 ||",
+      "        (stop_requested ||\n" +
+      "         xtables_lock_guard_is_held(&xtables_guard) != 0 ||",
+    ), /immediately before READY/u],
+  ["pre-ready stop barrier", "scripts/payment-v1-publisher-netns.c",
+    (text) => text.replace(
+      "        (stop_requested ||\n" +
+      "         nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||",
+      "        (nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||",
+    ), /full stop\/firewall/u],
   ["xtables serialization lock", "scripts/payment-v1-publisher-netns.c",
     (text) => text.replaceAll("LOCK_EX | LOCK_NB", "LOCK_EX"),
     /LOCK_EX \| LOCK_NB/u],
@@ -177,6 +198,11 @@ for (const [label, path, transform, error] of [
       "BindsTo=bitcoinpir-payment-v1-publisher-netns.service\n",
       "",
     ), /Unit keys must equal|BindsTo must equal/u],
+  ["publisher live firewall lineage blocker", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+    (text) => text.replace(
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED\n",
+      "",
+    ), /ConditionPathExists must equal/u],
   ["publisher key", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
     (text) => text.replace(" --now-unix", " --signing-key /tmp/key --now-unix"),
     /must not read a key/u],
@@ -213,9 +239,9 @@ for (const [label, path, transform, error] of [
     (text) => text.replace("127.0.0.1", "1.1.1.1"), /resolver must be local/u],
   ["ambient NSS", "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
     (text) => text.replace("hosts: files", "hosts: files dns"), /NSS must use files only/u],
-  ["disabled firewall generation guard",
+  ["unblocked missing live firewall lineage",
     "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
-    (text) => text.replace('"implemented": true', '"implemented": false'),
+    (text) => text.replace('"activation_blocked": true', '"activation_blocked": false'),
     /closed V1 policy/u],
 ]) {
   test(`gate rejects ${label}`, () => {

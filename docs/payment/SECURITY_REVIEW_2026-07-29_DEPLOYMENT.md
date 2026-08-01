@@ -355,20 +355,26 @@ exercise pending/final crash recovery and pass the helper's injected setup,
 monitor and exact-cleanup failures.
 
 The reviewed owner now opens the host nftables generation subscription and
-takes the root-owned single-link xtables lock before topology setup. It reaches
-READY only after an empty event queue and retains both descriptors after
-capability drop/seccomp; any nftables event, queue failure or lock-inode drift
-fails the owner. The publisher's exact `BindsTo=` edge makes that owner lifetime
-a superset of publication. Disposable kernel and exact systemd-255 PID-1 tests
-cover pre-READY, in-flight and post-success failure propagation. This does not
-defend against adversarial host root and does not replace semantic pre/post
-UFW/raw/nft and forwarding evidence.
+takes the root-owned single-link xtables lock before topology setup. It repeats
+stop/event-queue/lock/child/topology checks immediately before READY and retains
+both descriptors after capability drop/seccomp; any nftables event, queue
+failure or lock-inode drift fails the owner. A deterministic real nft mutation
+after client-ready is rejected without READY. The publisher's exact `BindsTo=`
+edge closes owner-lifetime failure propagation.
+
+This still does not bind the earlier semantic evidence to the guarded live
+generation. No post-lock/pre-READY collector currently binds owner InvocationID,
+boot, canonical UFW/raw/nft/forwarding digest and publication approval into a
+receipt. The policy remains `activation_blocked=true` and the systemd condition
+is intentionally unavailable. This also does not defend against adversarial
+host root.
 
 Residual blockers remain explicit. The receipt is one-boot/one-generation
 evidence; a reboot may recreate the namespace through persistent sentinels and
 Caddy `Wants+After`, but requires fresh runtime evidence. The narrow rollback
 is unavailable after Caddy/boot generation drift and cannot replace the cold
-incident procedure. Target installation, exact pins, an available uncontended
+incident procedure. The missing owner-pre-READY live semantic lineage is a P1
+publication blocker. Target installation, exact pins, an available uncontended
 `/run/xtables.lock`, remote mutation/start approval, private SNI/SAN,
 integrated-Caddy receipt, stopped/fresh edge evidence and proof that no
 production publisher key reached the host remain pre-activation gates.

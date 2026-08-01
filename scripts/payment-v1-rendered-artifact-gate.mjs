@@ -2144,6 +2144,7 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
@@ -4152,27 +4153,41 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         name: "centralized-single-relay",
       },
       publication_time_firewall_binding: {
-        activation_blocked: false,
+        activation_blocked: true,
+        activation_blocker_condition_path:
+          "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
         continuous_checks: [
           "reject-any-nftables-generation-event",
           "reject-xtables-lock-inode-drift",
         ],
+        continuous_generation_guard_implemented: true,
         graceful_stop_barriers: [
           "require-empty-nftables-event-queue",
           "require-stable-xtables-lock-inode",
         ],
         guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
-        implemented: true,
+        implemented: false,
+        initial_live_semantic_lineage: {
+          binds_boot_id: false,
+          binds_owner_invocation_id: false,
+          binds_publication_approval: false,
+          binds_rule_summary: false,
+          implemented: false,
+          required_before_owner_ready: true,
+        },
         lifecycle_scope: "publisher-netns-owner-lifetime",
-        point_in_time_evidence_only: false,
+        missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
+        point_in_time_evidence_only: true,
         pre_ready_barriers: [
           "open-host-netns-nftables-multicast-before-network-setup",
           "hold-root-single-link-xtables-lock",
           "require-empty-nftables-event-queue",
+          "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
         ],
         privileged_mutation_boundary: "non-adversarial-root-maintenance",
         semantic_pre_post_evidence_required: true,
-        state_machine: "sealed-before-ready-monitor-until-owner-exit",
+        state_machine:
+          "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
       },
       publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
     };

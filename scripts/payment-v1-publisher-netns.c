@@ -117,6 +117,8 @@ static int remove_owned_mount_target(const char *path,
 
 #ifdef BPIR_PUBLISHER_NETNS_TEST_PROFILE
 #define TEST_PAUSE_MARKER "/tmp/bitcoinpir-publisher-netns-test-pause"
+#define TEST_PRE_READY_CONTROL "/tmp/bitcoinpir-publisher-netns-pre-ready-control.sock"
+#define TEST_PRE_READY_OBSERVER "/tmp/bitcoinpir-publisher-netns-pre-ready-observer.sock"
 static void test_pause_at(const char *stage)
 {
     const char *wanted = getenv("BPIR_TEST_PAUSE_AT");
@@ -1774,6 +1776,104 @@ struct ready_notifier {
     socklen_t address_length;
 };
 
+struct test_pre_ready_barrier {
+    int fd;
+    struct sockaddr_un observer;
+    socklen_t observer_length;
+};
+
+static int prepare_test_pre_ready_barrier(struct test_pre_ready_barrier *barrier)
+{
+    memset(barrier, 0, sizeof(*barrier));
+    barrier->fd = -1;
+#ifdef BPIR_PUBLISHER_NETNS_TEST_PROFILE
+    const char *enabled = getenv("BPIR_TEST_PRE_READY_NFT_MUTATION");
+    if (enabled == NULL || strcmp(enabled, "1") != 0) return 0;
+    struct stat observer;
+    if (lstat(TEST_PRE_READY_OBSERVER, &observer) != 0 ||
+        !S_ISSOCK(observer.st_mode) || observer.st_uid != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    barrier->fd = socket(AF_UNIX,
+                         SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (barrier->fd < 0) return -1;
+    struct sockaddr_un control;
+    memset(&control, 0, sizeof(control));
+    control.sun_family = AF_UNIX;
+    memcpy(control.sun_path, TEST_PRE_READY_CONTROL,
+           sizeof(TEST_PRE_READY_CONTROL));
+    socklen_t control_length = (socklen_t)(
+        offsetof(struct sockaddr_un, sun_path) + sizeof(TEST_PRE_READY_CONTROL));
+    if (bind(barrier->fd, (struct sockaddr *)&control, control_length) != 0) {
+        close(barrier->fd);
+        barrier->fd = -1;
+        return -1;
+    }
+    barrier->observer.sun_family = AF_UNIX;
+    memcpy(barrier->observer.sun_path, TEST_PRE_READY_OBSERVER,
+           sizeof(TEST_PRE_READY_OBSERVER));
+    barrier->observer_length = (socklen_t)(
+        offsetof(struct sockaddr_un, sun_path) + sizeof(TEST_PRE_READY_OBSERVER));
+#else
+    (void)barrier;
+#endif
+    return 0;
+}
+
+static void close_test_pre_ready_barrier(struct test_pre_ready_barrier *barrier)
+{
+    if (barrier->fd >= 0) close(barrier->fd);
+    barrier->fd = -1;
+}
+
+static int wait_for_test_pre_ready_nft_mutation(
+    struct test_pre_ready_barrier *barrier)
+{
+    if (barrier->fd < 0) return 0;
+#ifdef BPIR_PUBLISHER_NETNS_TEST_PROFILE
+    if (sendto(barrier->fd, "1", 1, MSG_NOSIGNAL,
+               (struct sockaddr *)&barrier->observer,
+               barrier->observer_length) != 1) return -1;
+    struct timespec delay = { .tv_sec = 0, .tv_nsec = 100000000L };
+    for (unsigned attempt = 0; attempt < 100U; ++attempt) {
+        char byte = 0;
+        struct sockaddr_un sender;
+        memset(&sender, 0, sizeof(sender));
+        socklen_t sender_length = sizeof(sender);
+        ssize_t count = recvfrom(barrier->fd, &byte, 1, MSG_DONTWAIT,
+                                 (struct sockaddr *)&sender, &sender_length);
+        if (count == 1) {
+            if (byte == '1' && sender_length == barrier->observer_length &&
+                memcmp(&sender, &barrier->observer, sender_length) == 0) return 0;
+            errno = ESTALE;
+            return -1;
+        }
+        if (count == 0) {
+            errno = EPIPE;
+            return -1;
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
+        if (stop_requested) {
+            errno = EINTR;
+            return -1;
+        }
+        struct timespec remaining = delay;
+        while (clock_nanosleep(CLOCK_MONOTONIC, 0, &remaining, &remaining) == EINTR) {
+            if (stop_requested) {
+                errno = EINTR;
+                return -1;
+            }
+        }
+    }
+    errno = ETIMEDOUT;
+    return -1;
+#else
+    (void)barrier;
+    return 0;
+#endif
+}
+
 static int prepare_ready_notifier(struct ready_notifier *notifier)
 {
     memset(notifier, 0, sizeof(*notifier));
@@ -2391,25 +2491,31 @@ static int run_service(void)
         close_ready_notifier(&notifier);
         return fail_errno("create client monitor readiness pipe");
     }
+    struct test_pre_ready_barrier test_pre_ready_barrier;
+    if (prepare_test_pre_ready_barrier(&test_pre_ready_barrier) != 0) {
+        close(monitor_ready_pipe[0]);
+        close(monitor_ready_pipe[1]);
+        close_ready_notifier(&notifier);
+        return fail_errno("prepare deterministic pre-ready test barrier");
+    }
 #ifdef BPIR_PUBLISHER_NETNS_TEST_PROFILE
     const char *test_failure = getenv("BPIR_TEST_FAIL_MONITOR_INIT");
     bool fail_client_monitor =
         test_failure != NULL && strcmp(test_failure, "client") == 0;
-    bool fail_firewall_monitor =
-        test_failure != NULL && strcmp(test_failure, "firewall") == 0;
 #else
     bool fail_client_monitor = false;
-    bool fail_firewall_monitor = false;
 #endif
     pid_t monitor_child = fork();
     if (monitor_child < 0) {
         close(monitor_ready_pipe[0]);
         close(monitor_ready_pipe[1]);
+        close_test_pre_ready_barrier(&test_pre_ready_barrier);
         close_ready_notifier(&notifier);
         return fail_errno("fork client namespace monitor");
     }
     if (monitor_child == 0) {
         close(monitor_ready_pipe[0]);
+        close_test_pre_ready_barrier(&test_pre_ready_barrier);
         close_ready_notifier(&notifier);
         if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() == 1 ||
             setns(namespace_fd, CLONE_NEWNET) != 0) _exit(1);
@@ -2453,6 +2559,7 @@ static int run_service(void)
     close(monitor_ready_pipe[1]);
     if (drop_capabilities() != 0) {
         close(monitor_ready_pipe[0]);
+        close_test_pre_ready_barrier(&test_pre_ready_barrier);
         close_ready_notifier(&notifier);
         return fail_errno("drop monitor capabilities");
     }
@@ -2462,18 +2569,35 @@ static int run_service(void)
     close(state_fd);
     if (install_monitor_seccomp() != 0) {
         close(monitor_ready_pipe[0]);
+        close_test_pre_ready_barrier(&test_pre_ready_barrier);
         close_ready_notifier(&notifier);
         return fail_errno("install monitor seccomp");
     }
-    if (fail_firewall_monitor ||
+    bool initialization_failed =
         nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||
         xtables_lock_guard_is_held(&xtables_guard) != 0 ||
         verify_host_topology(host_nl, &topology, true) != 0 ||
         monitor_fd_is_one(host_ipv6_fd) != 0 ||
-        wait_for_client_monitor_ready(monitor_ready_pipe[0], monitor_child) != 0) {
-        close(monitor_ready_pipe[0]);
+        wait_for_client_monitor_ready(monitor_ready_pipe[0], monitor_child) != 0;
+    close(monitor_ready_pipe[0]);
+    if (!initialization_failed &&
+        wait_for_test_pre_ready_nft_mutation(&test_pre_ready_barrier) != 0)
+        initialization_failed = true;
+    close_test_pre_ready_barrier(&test_pre_ready_barrier);
+    int final_child_status = 0;
+    pid_t final_waited = initialization_failed ? -2 :
+        waitpid(monitor_child, &final_child_status, WNOHANG);
+    if (!initialization_failed &&
+        (stop_requested ||
+         nftables_generation_is_quiet(firewall_monitor_fd) != 0 ||
+         xtables_lock_guard_is_held(&xtables_guard) != 0 ||
+         final_waited != 0 ||
+         verify_host_topology(host_nl, &topology, true) != 0 ||
+         monitor_fd_is_one(host_ipv6_fd) != 0))
+        initialization_failed = true;
+    if (initialization_failed) {
         close_ready_notifier(&notifier);
-        log_error("monitor initialization failed before readiness");
+        log_error("final monitor/firewall barrier failed before readiness");
         (void)kill(monitor_child, SIGTERM);
         while (waitpid(monitor_child, NULL, 0) < 0 && errno == EINTR) {}
         close(host_ipv6_fd);
@@ -2483,7 +2607,6 @@ static int run_service(void)
         close(lock_fd);
         return 1;
     }
-    close(monitor_ready_pipe[0]);
     if (notify_ready(&notifier) != 0) {
         log_error("systemd readiness notification failed");
         (void)kill(monitor_child, SIGTERM);

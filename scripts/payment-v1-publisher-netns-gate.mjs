@@ -163,7 +163,7 @@ function validateHelperSource(source) {
   const preprocessorDigest = createHash("sha256")
     .update(preprocessorSurface, "utf8")
     .digest("hex");
-  if (preprocessorDigest !== "9eed848e2c7aebc74513fbc2b41c14f7bcb57a4cbba2d01387a3a5466388da4c") {
+  if (preprocessorDigest !== "20b62ffc988ceadfe79842d79f713f1d47df4d9228754b45a1ebad418c71a73a") {
     fail(`${label} preprocessor surface drifted from the reviewed include/macro/branch set`);
   }
   for (const exact of [
@@ -195,7 +195,7 @@ function validateHelperSource(source) {
     "wait_for_client_monitor_ready", "publisher-sandbox-self-test",
     "NETLINK_NETFILTER", "NFNLGRP_NFTABLES", '"xtables.lock"',
     "LOCK_EX | LOCK_NB", "nftables_generation_is_quiet",
-    "xtables_lock_guard_is_held",
+    "xtables_lock_guard_is_held", "wait_for_test_pre_ready_nft_mutation",
     "publisher sandbox /run is not a private read-only tmpfs",
     "publisher sandbox private /run exposes a host runtime entry",
   ]) {
@@ -356,7 +356,20 @@ function validateHelperSource(source) {
   const parentFirstCheck = source.indexOf(
     "verify_host_topology(host_nl, &topology, true)", parentFirewallLock);
   const monitorReady = source.indexOf("wait_for_client_monitor_ready(", parentFirstCheck);
+  const deterministicMutationBarrier = source.indexOf(
+    "wait_for_test_pre_ready_nft_mutation(&test_pre_ready_barrier)", monitorReady);
+  const finalStopBarrier = source.indexOf("stop_requested ||", deterministicMutationBarrier);
+  const finalFirewallQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", finalStopBarrier);
+  const finalFirewallLock = source.indexOf(
+    "xtables_lock_guard_is_held(&xtables_guard)", finalFirewallQuiet);
+  const finalChildBarrier = source.indexOf("final_waited != 0", finalFirewallLock);
+  const finalTopologyBarrier = source.indexOf(
+    "verify_host_topology(host_nl, &topology, true)", finalChildBarrier);
+  const finalIpv6Barrier = source.indexOf(
+    "monitor_fd_is_one(host_ipv6_fd)", finalTopologyBarrier);
   const readiness = source.indexOf("notify_ready(&notifier)", run);
+  const readinessCalls = source.match(/notify_ready\(&notifier\)/gu) ?? [];
   const monitorLoop = source.indexOf("while (!stop_requested)", readiness);
   const continuousQuiet = source.indexOf(
     "nftables_generation_is_quiet(firewall_monitor_fd)", monitorLoop);
@@ -373,10 +386,15 @@ function validateHelperSource(source) {
       parent < parentDrop && parentDrop < parentSandbox &&
       parentSandbox < parentFirewallQuiet && parentFirewallQuiet < parentFirewallLock &&
       parentFirewallLock < parentFirstCheck &&
-      parentFirstCheck < monitorReady && monitorReady < readiness && readiness < monitorLoop &&
+      parentFirstCheck < monitorReady && monitorReady < deterministicMutationBarrier &&
+      deterministicMutationBarrier < finalStopBarrier &&
+      finalStopBarrier < finalFirewallQuiet && finalFirewallQuiet < finalFirewallLock &&
+      finalFirewallLock < finalChildBarrier && finalChildBarrier < finalTopologyBarrier &&
+      finalTopologyBarrier < finalIpv6Barrier && finalIpv6Barrier < readiness &&
+      readinessCalls.length === 1 && readiness < monitorLoop &&
       monitorLoop < continuousQuiet && continuousQuiet < continuousLock &&
       continuousLock < gracefulQuiet && gracefulQuiet < gracefulLock)) {
-    fail(`${label} must seal firewall before setup, notify READY only after every monitor, and retain continuous plus graceful-stop checks`);
+    fail(`${label} must seal firewall before setup, repeat the full stop/firewall/child/topology barrier immediately before READY, and retain continuous plus graceful-stop checks`);
   }
 }
 
@@ -624,6 +642,7 @@ export function validatePublisherUnitV1(unitInput, concretePlaceholders = {}) {
     "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
     "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
     "/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
     "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
   ], label);
   const starts = directiveValues(unit, "ExecStart");
@@ -747,27 +766,41 @@ export function validatePublisherNetworkPolicy(
       name: "centralized-single-relay",
     },
     publication_time_firewall_binding: {
-      activation_blocked: false,
+      activation_blocked: true,
+      activation_blocker_condition_path:
+        "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
       continuous_checks: [
         "reject-any-nftables-generation-event",
         "reject-xtables-lock-inode-drift",
       ],
+      continuous_generation_guard_implemented: true,
       graceful_stop_barriers: [
         "require-empty-nftables-event-queue",
         "require-stable-xtables-lock-inode",
       ],
       guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
-      implemented: true,
+      implemented: false,
+      initial_live_semantic_lineage: {
+        binds_boot_id: false,
+        binds_owner_invocation_id: false,
+        binds_publication_approval: false,
+        binds_rule_summary: false,
+        implemented: false,
+        required_before_owner_ready: true,
+      },
       lifecycle_scope: "publisher-netns-owner-lifetime",
-      point_in_time_evidence_only: false,
+      missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
+      point_in_time_evidence_only: true,
       pre_ready_barriers: [
         "open-host-netns-nftables-multicast-before-network-setup",
         "hold-root-single-link-xtables-lock",
         "require-empty-nftables-event-queue",
+        "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
       ],
       privileged_mutation_boundary: "non-adversarial-root-maintenance",
       semantic_pre_post_evidence_required: true,
-      state_machine: "sealed-before-ready-monitor-until-owner-exit",
+      state_machine:
+        "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
     },
     schema_version: 2,
   };

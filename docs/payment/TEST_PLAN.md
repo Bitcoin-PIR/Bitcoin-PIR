@@ -1025,9 +1025,11 @@ remain separate acceptance gates.
   veth creation/move and cleanup, then proves exact recovery plus fail-closed
   monitoring for link/default-route drift and unknown fixed-name preimages. It
   also proves that the owner takes the standard xtables lock before READY,
-  fails on a second-link identity drift, fails before READY when guard
-  initialization is injected to fail, and exits nonzero after a direct
-  isolated nftables generation mutation;
+  fails on a second-link identity drift and exits nonzero after a direct
+  isolated nftables generation mutation. A Unix-datagram test barrier causes a
+  real nft mutation deterministically after client-ready and before the final
+  parent stop/firewall/child/topology barrier; the owner must exit nonzero and
+  emit no READY. No Boolean firewall-failure simulation satisfies this case;
 - the exact systemd-255 PID-1 harness models the publisher's real
   `Requires`/`After`/`BindsTo` relationship: guard failure before READY prevents
   publisher start, in-flight failure terminates publication before its commit
