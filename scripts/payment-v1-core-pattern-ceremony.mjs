@@ -756,9 +756,13 @@ export function validatePlan(plan) {
       rootExecutable: true,
     });
   }
-  if (!/^\/opt\/bitcoinpir\/payment-v1-rename-exchange\/[0-9a-f]{64}\/payment-v1-rename-exchange$/u.test(
-    plan.executor.exchange_helper.path,
-  ) || plan.executor.maintenance_lock_helper.path !==
+  const exchangeHelperPath =
+    /^\/opt\/bitcoinpir\/payment-v1-rename-exchange\/([0-9a-f]{64})\/payment-v1-rename-exchange$/u.exec(
+      plan.executor.exchange_helper.path,
+    );
+  if (exchangeHelperPath === null ||
+      exchangeHelperPath[1] !== plan.executor.exchange_helper.sha256 ||
+      plan.executor.maintenance_lock_helper.path !==
       "/usr/local/libexec/bitcoinpir/payment-v1-core-pattern-lock-exec") {
     fail("executor helper paths are not the reviewed content-addressed closure");
   }
