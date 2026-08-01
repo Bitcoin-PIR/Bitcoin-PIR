@@ -324,6 +324,24 @@ const SYSTEMD_UNIT_ROOTS = Object.freeze([
 export const SYSTEMD_MANAGER_UNIT_PATHS = Object.freeze(
   SYSTEMD_UNIT_ROOTS.filter(function (path) { return path !== "/lib/systemd/system"; }),
 );
+const SYSTEMD_V255_UNIT_TYPES = Object.freeze([
+  "automount",
+  "device",
+  "mount",
+  "path",
+  "scope",
+  "service",
+  "slice",
+  "socket",
+  "swap",
+  "target",
+  "timer",
+]);
+const SYSTEMD_V255_UNIT_TYPE_SET = new Set(SYSTEMD_V255_UNIT_TYPES);
+const PROTECTED_COREDUMP_UNIT_PREFIXES = Object.freeze([
+  "apport-coredump-hook",
+  "systemd-coredump",
+]);
 const REVIEWED_SYSCTLS = new Set(Object.keys(TARGET_SYSCTLS));
 const SYSCTL_ASSIGNMENT = /^\s*(-)?([^\s=]+)\s*=.*$/u;
 const POLICY_BYTES =
@@ -512,6 +530,68 @@ function validateDirectoryPin(value, label, expectedPath) {
       typeof value.inode !== "string" || !/^[1-9][0-9]*$/u.test(value.inode)) {
     fail(label + " device/inode must be canonical positive decimal strings");
   }
+}
+
+export function validateManagerUnitPathGenerationForTest(value, label) {
+  const generationLabel = label || "systemd UnitPath generation";
+  exactKeys(value, ["directories", "unit_path"], generationLabel);
+  exactArray(value.unit_path, Array.from(SYSTEMD_MANAGER_UNIT_PATHS), generationLabel + ".unit_path");
+  if (!Array.isArray(value.directories)) {
+    fail(generationLabel + ".directories must be an array");
+  }
+  const paths = [];
+  const rootStates = new Map();
+  value.directories.forEach(function (entry, index) {
+    const entryLabel = generationLabel + ".directories[" + index + "]";
+    if (!isPlainObject(entry) || !["absent", "present"].includes(entry.state)) {
+      fail(entryLabel + " has an unreviewed state");
+    }
+    validatePath(entry.path, entryLabel + ".path");
+    const containingRoot = SYSTEMD_MANAGER_UNIT_PATHS.find(function (root) {
+      return entry.path === root || entry.path.startsWith(root + "/");
+    });
+    if (containingRoot === undefined) {
+      fail(entryLabel + " is outside Manager.UnitPath");
+    }
+    if (entry.state === "absent") {
+      exactKeys(entry, ["path", "state"], entryLabel);
+      if (entry.path !== containingRoot) {
+        fail(entryLabel + " records absence below a missing UnitPath root");
+      }
+    } else {
+      exactKeys(entry, [
+        "ctime_ns", "device", "gid", "inode", "mode", "mtime_ns", "nlink",
+        "path", "state", "uid",
+      ], entryLabel);
+      const mode = Number.parseInt(entry.mode, 8);
+      if (!MODE.test(entry.mode) || entry.uid !== 0 || entry.gid !== 0 ||
+          (mode & 0o022) !== 0 || !Number.isSafeInteger(entry.nlink) || entry.nlink < 1 ||
+          typeof entry.device !== "string" || !/^[1-9][0-9]*$/u.test(entry.device) ||
+          typeof entry.inode !== "string" || !/^[1-9][0-9]*$/u.test(entry.inode) ||
+          typeof entry.ctime_ns !== "string" || !/^[0-9]+$/u.test(entry.ctime_ns) ||
+          typeof entry.mtime_ns !== "string" || !/^[0-9]+$/u.test(entry.mtime_ns)) {
+        fail(entryLabel + " is not a canonical trusted directory generation");
+      }
+    }
+    if (entry.path === containingRoot) rootStates.set(containingRoot, entry.state);
+    paths.push(entry.path);
+  });
+  const sortedPaths = Array.from(paths).sort();
+  if (!same(paths, sortedPaths) || new Set(paths).size !== paths.length) {
+    fail(generationLabel + ".directories must be unique and path-sorted");
+  }
+  if (!same(Array.from(rootStates.keys()).sort(), Array.from(SYSTEMD_MANAGER_UNIT_PATHS).sort())) {
+    fail(generationLabel + " does not describe every Manager.UnitPath root");
+  }
+  for (const entry of value.directories) {
+    const absentRoot = SYSTEMD_MANAGER_UNIT_PATHS.find(function (root) {
+      return entry.path.startsWith(root + "/") && rootStates.get(root) === "absent";
+    });
+    if (absentRoot !== undefined) {
+      fail(generationLabel + " contains descendants below absent root " + absentRoot);
+    }
+  }
+  return value;
 }
 
 function validateManagedDirectory(value, label, expectedPath) {
@@ -942,7 +1022,13 @@ export function validatePlan(plan) {
   validateOfficialNoble(plan.official_noble_apport);
   validateSystemdSysctlInputs(plan.systemd_sysctl);
 
-  exactKeys(plan.host, ["machine_id_sha256", "os_release", "plan_boot_id", "systemd_version"], "host");
+  exactKeys(plan.host, [
+    "machine_id_sha256",
+    "os_release",
+    "plan_boot_id",
+    "systemd_unit_path_generation",
+    "systemd_version",
+  ], "host");
   if (!UUID.test(plan.host.plan_boot_id)) fail("host.plan_boot_id must be a UUID");
   validateSha(plan.host.machine_id_sha256, "host.machine_id_sha256");
   validatePin(plan.host.os_release, "host.os_release");
@@ -951,6 +1037,10 @@ export function validatePlan(plan) {
       plan.host.systemd_version !== "systemd 255 (255.4-1ubuntu8.15)") {
     fail("host OS/systemd identity is not Noble-compatible");
   }
+  validateManagerUnitPathGenerationForTest(
+    plan.host.systemd_unit_path_generation,
+    "host.systemd_unit_path_generation",
+  );
 
   exactKeys(plan.executor, [
     "busctl",
@@ -3210,6 +3300,84 @@ function systemdTemplateCouldEqual(value, target) {
   return new RegExp(pattern + "$", "u").test(target);
 }
 
+const TEMPLATE_ANY = Symbol("systemd-template-any");
+const TEMPLATE_STAR = Symbol("systemd-template-star");
+
+function systemdTemplateTokens(value) {
+  const tokens = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== "%") {
+      tokens.push(character);
+      continue;
+    }
+    const specifier = value[index + 1];
+    if (specifier === undefined) return null;
+    index += 1;
+    if (specifier === "%") {
+      tokens.push("%");
+    } else if (tokens[tokens.length - 1] !== TEMPLATE_STAR) {
+      tokens.push(TEMPLATE_STAR);
+    }
+  }
+  return tokens;
+}
+
+function templateTokensIntersect(left, right) {
+  const pending = [[0, 0]];
+  const visited = new Set();
+  while (pending.length !== 0) {
+    const [leftIndex, rightIndex] = pending.pop();
+    const key = leftIndex + ":" + rightIndex;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (leftIndex === left.length && rightIndex === right.length) return true;
+    const leftToken = left[leftIndex];
+    const rightToken = right[rightIndex];
+    if (leftToken === TEMPLATE_STAR) pending.push([leftIndex + 1, rightIndex]);
+    if (rightToken === TEMPLATE_STAR) pending.push([leftIndex, rightIndex + 1]);
+    if (leftToken === undefined || rightToken === undefined) continue;
+    const leftConsumes = leftToken === TEMPLATE_STAR || leftToken === TEMPLATE_ANY ||
+      typeof leftToken === "string";
+    const rightConsumes = rightToken === TEMPLATE_STAR || rightToken === TEMPLATE_ANY ||
+      typeof rightToken === "string";
+    const compatible = leftConsumes && rightConsumes &&
+      (leftToken === TEMPLATE_STAR || leftToken === TEMPLATE_ANY ||
+       rightToken === TEMPLATE_STAR || rightToken === TEMPLATE_ANY ||
+       leftToken === rightToken);
+    if (compatible) {
+      pending.push([
+        leftToken === TEMPLATE_STAR ? leftIndex : leftIndex + 1,
+        rightToken === TEMPLATE_STAR ? rightIndex : rightIndex + 1,
+      ]);
+    }
+  }
+  return false;
+}
+
+function systemdTemplateCouldNameProtectedCoreDumpUnit(value) {
+  if (isProtectedCoreDumpUnitName(value)) return true;
+  const template = systemdTemplateTokens(value);
+  if (template === null) return true;
+  const minimumLength = template.filter(function (token) {
+    return token !== TEMPLATE_STAR;
+  }).length;
+  if (minimumLength > 255) return false;
+  for (const prefix of PROTECTED_COREDUMP_UNIT_PREFIXES) {
+    for (const type of SYSTEMD_V255_UNIT_TYPES) {
+      const suffix = Array.from("." + type);
+      for (const protectedPattern of [
+        Array.from(prefix).concat(suffix),
+        Array.from(prefix + "@").concat(suffix),
+        Array.from(prefix + "@").concat([TEMPLATE_ANY, TEMPLATE_STAR], suffix),
+      ]) {
+        if (templateTokensIntersect(template, protectedPattern)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function normalizedExecPathReferencesApport(value) {
   if (!value.startsWith("/")) return false;
   const normalized = resolve("/", value);
@@ -3233,10 +3401,6 @@ function literalExecWordReferencesApport(value) {
 
 function unitFileReferencesProtectedCrashHandler(bytes) {
   const logical = bytes.toString("utf8").replace(/\\\r?\n[ \t]*/gu, " ");
-  if (logical.includes("apport-coredump-hook") || logical.includes("systemd-coredump") ||
-      logical.includes("--from-systemd-coredump")) {
-    return true;
-  }
   const assignments = [];
   for (const raw of logical.split("\n")) {
     const line = raw.trim();
@@ -3261,6 +3425,7 @@ function unitFileReferencesProtectedCrashHandler(bytes) {
         "/bin/bash", "/bin/dash", "/bin/sh", "/bin/zsh", "/usr/bin/env",
       ]).has(resolve("/", executable)) ||
         new Set(["bash", "dash", "env", "sh", "zsh"]).has(executable);
+      const systemctlCommand = basename(executable) === "systemctl";
       const searchResolved = searchPaths.some(function (directory) {
         if (!directory.startsWith("/") || executable.startsWith("/")) return false;
         return systemdTemplateCouldEqual(resolve("/", directory, executable), APPORT_HANDLER_PATH);
@@ -3268,6 +3433,14 @@ function unitFileReferencesProtectedCrashHandler(bytes) {
       if (systemdTemplateCouldEqual(executable, APPORT_HANDLER_PATH) ||
           normalizedExecPathReferencesApport(executable) || searchResolved ||
           command.some(literalExecWordReferencesApport) ||
+          command.some(function (word) {
+            return word.includes("apport-coredump-hook") ||
+              word.includes("systemd-coredump") ||
+              word.includes("--from-systemd-coredump");
+          }) ||
+          (systemctlCommand && command.slice(1).some(function (word) {
+            return systemdTemplateCouldNameProtectedCoreDumpUnit(word);
+          })) ||
           (interpreter && command.slice(1).some(function (word) { return word.includes("%"); }))) {
         return true;
       }
@@ -3276,10 +3449,7 @@ function unitFileReferencesProtectedCrashHandler(bytes) {
     const dependencies = parseSystemdWords(value);
     if (dependencies.some(function (unit) {
       return systemdTemplateCouldEqual(unit, APPORT_UNIT) ||
-        isProtectedCoreDumpUnitName(unit) ||
-        systemdTemplateCouldEqual(unit, APPORT_COREDUMP_HOOK_UNIT) ||
-        systemdTemplateCouldEqual(unit, SYSTEMD_COREDUMP_SERVICE_UNIT) ||
-        systemdTemplateCouldEqual(unit, SYSTEMD_COREDUMP_SOCKET_UNIT);
+        systemdTemplateCouldNameProtectedCoreDumpUnit(unit);
     })) return true;
   }
   return false;
@@ -3336,16 +3506,94 @@ function defaultManagedUnitAllowlist() {
 }
 
 function isProtectedCoreDumpUnitName(name) {
-  return name === APPORT_COREDUMP_HOOK_UNIT ||
-    name === SYSTEMD_COREDUMP_SERVICE_UNIT ||
-    name === SYSTEMD_COREDUMP_SOCKET_UNIT ||
-    /^apport-coredump-hook@[^/]+\.service$/u.test(name) ||
-    /^systemd-coredump@[^/]+\.service$/u.test(name);
+  const separator = name.lastIndexOf(".");
+  if (separator < 1 || !SYSTEMD_V255_UNIT_TYPE_SET.has(name.slice(separator + 1))) {
+    return false;
+  }
+  const stem = name.slice(0, separator);
+  return PROTECTED_COREDUMP_UNIT_PREFIXES.some(function (prefix) {
+    return stem === prefix || stem === prefix + "@" ||
+      (stem.startsWith(prefix + "@") && stem.length > prefix.length + 1);
+  });
 }
 
-function isProtectedCoreDumpInstanceDropinDirectoryName(name) {
-  return /^apport-coredump-hook@[^/]+\.service\.d$/u.test(name) ||
-    /^systemd-coredump@[^/]+\.service\.d$/u.test(name);
+function parseSystemdV255UnitName(name) {
+  const separator = name.lastIndexOf(".");
+  if (separator < 1 || separator === name.length - 1) {
+    fail("managed systemd unit name has no reviewed type suffix");
+  }
+  const type = name.slice(separator + 1);
+  if (!SYSTEMD_V255_UNIT_TYPE_SET.has(type)) {
+    fail("managed systemd unit name has an unreviewed type suffix");
+  }
+  const stem = name.slice(0, separator);
+  const templateSeparator = stem.indexOf("@");
+  if (templateSeparator < 0) {
+    return { instance: null, prefix: stem, type };
+  }
+  if (stem.indexOf("@", templateSeparator + 1) >= 0 || templateSeparator === 0) {
+    fail("managed systemd template/instance name is malformed");
+  }
+  return {
+    instance: stem.slice(templateSeparator + 1),
+    prefix: stem.slice(0, templateSeparator),
+    type,
+  };
+}
+
+function truncatedSystemdUnitPrefix(prefix) {
+  let candidate = prefix;
+  let choppedTrailingDash = false;
+  for (;;) {
+    const dash = candidate.lastIndexOf("-");
+    if (dash < 0 || dash === 0) return null;
+    if (dash + 1 !== candidate.length || choppedTrailingDash) {
+      return candidate.slice(0, dash + 1);
+    }
+    candidate = candidate.slice(0, dash);
+    choppedTrailingDash = true;
+  }
+}
+
+export function systemdDropinDirectoryNamesForTest(unit) {
+  const names = new Set();
+  const visited = new Set();
+  function add(current) {
+    if (visited.has(current)) return;
+    visited.add(current);
+    names.add(current + ".d");
+    const parsed = parseSystemdV255UnitName(current);
+    const isInstance = parsed.instance !== null && parsed.instance !== "";
+    if (isInstance) {
+      add(parsed.prefix + "@." + parsed.type);
+    }
+    const truncated = truncatedSystemdUnitPrefix(parsed.prefix);
+    if (truncated === null) return;
+    add(
+      truncated + (isInstance ? "@" + parsed.instance : "") + "." + parsed.type,
+    );
+  }
+  const parsed = parseSystemdV255UnitName(unit);
+  add(unit);
+  names.add(parsed.type + ".d");
+  return names;
+}
+
+function isProtectedCoreDumpDropinDirectoryName(name) {
+  if (!name.endsWith(".d")) return false;
+  const unit = name.slice(0, -2);
+  if (isProtectedCoreDumpUnitName(unit)) return true;
+  const separator = unit.lastIndexOf(".");
+  if (separator < 1 || !SYSTEMD_V255_UNIT_TYPE_SET.has(unit.slice(separator + 1))) {
+    return false;
+  }
+  const stem = unit.slice(0, separator);
+  return /^(?:apport-coredump-|apport-|systemd-)(?:@[^/]*)?$/u.test(stem);
+}
+
+function isSystemdV255TypeDropinDirectoryName(name) {
+  return name.endsWith(".d") &&
+    SYSTEMD_V255_UNIT_TYPE_SET.has(name.slice(0, -2));
 }
 
 function symlinkChainReferencesProtectedCoreDumpUnit(path) {
@@ -3366,28 +3614,67 @@ function symlinkChainReferencesProtectedCoreDumpUnit(path) {
     current = resolve(dirname(current), target);
     const name = basename(current);
     if (isProtectedCoreDumpUnitName(name) ||
-        isProtectedCoreDumpInstanceDropinDirectoryName(name)) {
+        isProtectedCoreDumpDropinDirectoryName(name)) {
       return true;
     }
   }
   fail("systemd symlink alias chain exceeds the reviewed depth: " + path);
 }
 
-function systemdDropinDirectoryNames(unit) {
-  const separator = unit.lastIndexOf(".");
-  if (separator < 1 || separator === unit.length - 1) {
-    fail("managed systemd unit name has no reviewed type suffix");
-  }
-  const stem = unit.slice(0, separator);
-  const type = unit.slice(separator + 1);
-  const names = new Set([unit + ".d", type + ".d"]);
-  for (let index = stem.indexOf("-"); index >= 0; index = stem.indexOf("-", index + 1)) {
-    names.add(stem.slice(0, index + 1) + "." + type + ".d");
-  }
-  return names;
+const systemdDropinDirectoryNames = systemdDropinDirectoryNamesForTest;
+
+function sameDirectoryGenerationStat(left, right) {
+  return left.dev === right.dev && left.ino === right.ino &&
+    left.ctimeNs === right.ctimeNs && left.mtimeNs === right.mtimeNs &&
+    left.mode === right.mode && left.nlink === right.nlink &&
+    left.uid === right.uid && left.gid === right.gid;
 }
 
-export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
+function directoryGenerationEntry(path, stat) {
+  return {
+    ctime_ns: stat.ctimeNs.toString(),
+    device: stat.dev.toString(),
+    gid: Number(stat.gid),
+    inode: stat.ino.toString(),
+    mode: modeText(stat),
+    mtime_ns: stat.mtimeNs.toString(),
+    nlink: Number(stat.nlink),
+    path,
+    state: "present",
+    uid: Number(stat.uid),
+  };
+}
+
+function assertTrustedUnitPathDirectory(stat, path, enforceRootOwnership) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() ||
+      (Number(stat.mode) & 0o022) !== 0 ||
+      (enforceRootOwnership && (stat.uid !== 0n || stat.gid !== 0n))) {
+    fail("systemd UnitPath directory is not root:root and group/world non-writable: " + path);
+  }
+}
+
+function assertTrustedUnitPathAncestors(path, enforceRootOwnership) {
+  if (!enforceRootOwnership) return;
+  const parts = resolve("/", path).split("/").filter(function (part) { return part !== ""; });
+  let current = "/";
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    current = join(current, parts[index]);
+    let stat;
+    try {
+      stat = lstatSync(current, { bigint: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    assertTrustedUnitPathDirectory(stat, current, true);
+  }
+}
+
+function scanManagedUnitConfiguration(
+  configuredRoots,
+  configuredAllowlist,
+  enforceRootOwnership,
+) {
   const roots = configuredRoots || SYSTEMD_UNIT_ROOTS;
   const allowlist = configuredAllowlist || defaultManagedUnitAllowlist();
   const units = Object.keys(allowlist).sort();
@@ -3413,6 +3700,13 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
       SYSTEMD_COREDUMP_SOCKET_UNIT].includes(unit)) return [];
     return [...(entry.fragment_paths || []), ...(entry.dropin_paths || [])];
   });
+  const reviewedProtectedDropinDirectories = new Set(
+    Object.entries(allowlist).flatMap(function ([unit, entry]) {
+      if (![APPORT_COREDUMP_HOOK_UNIT, SYSTEMD_COREDUMP_SERVICE_UNIT,
+        SYSTEMD_COREDUMP_SOCKET_UNIT].includes(unit)) return [];
+      return (entry.dropin_paths || []).map(dirname);
+    }),
+  );
   function aliasesProtectedCoreDumpInode(path, entry) {
     if (!entry.isFile() || protectedCoreDumpLoadPaths.includes(path)) return false;
     const candidate = lstatSync(path, { bigint: true });
@@ -3430,9 +3724,20 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
   }
   function record(path, entry, root) {
     const parentName = basename(dirname(path));
-    if (isProtectedCoreDumpInstanceDropinDirectoryName(entry.name) ||
-        isProtectedCoreDumpInstanceDropinDirectoryName(parentName)) {
-      fail("managed systemd unit has an unreviewed coredump instance drop-in path: " + path);
+    const isOfficialDropinDirectory = reviewedProtectedDropinDirectories.has(path);
+    const isInsideOfficialDropinDirectory = reviewedProtectedDropinDirectories.has(dirname(path));
+    if ((isProtectedCoreDumpDropinDirectoryName(entry.name) &&
+         !isOfficialDropinDirectory) ||
+        (isProtectedCoreDumpDropinDirectoryName(parentName) &&
+         !isInsideOfficialDropinDirectory)) {
+      fail("managed systemd unit has an unreviewed coredump family drop-in path: " + path);
+    }
+    if (isSystemdV255TypeDropinDirectoryName(parentName)) {
+      fail("managed systemd unit has an unreviewed type-level drop-in path: " + path);
+    }
+    if (isSystemdV255TypeDropinDirectoryName(entry.name) &&
+        (!entry.isDirectory() || entry.isSymbolicLink())) {
+      fail("managed systemd type-level drop-in path is not a directory: " + path);
     }
     if (aliasesProtectedCoreDumpInode(path, entry)) {
       fail("managed systemd unit has an unreviewed hard-link alias to a coredump artifact: " + path);
@@ -3460,7 +3765,7 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
         fail("managed systemd alias differs from reviewed state: " + path);
       }
       const stat = lstatSync(path, { bigint: false });
-      if (configuredRoots === undefined && (stat.uid !== 0 || stat.gid !== 0)) {
+      if (enforceRootOwnership && (stat.uid !== 0 || stat.gid !== 0)) {
         fail("managed systemd alias is not root-owned: " + path);
       }
       let resolvedTarget;
@@ -3510,7 +3815,7 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
       const expectedTarget = allowlist[unit].enablement_targets?.[path];
       const stat = lstatSync(path, { bigint: false });
       if ((expectedTarget !== undefined && readlinkSync(path) !== expectedTarget) ||
-          (configuredRoots === undefined && (stat.uid !== 0 || stat.gid !== 0))) {
+          (enforceRootOwnership && (stat.uid !== 0 || stat.gid !== 0))) {
         fail("managed systemd enablement symlink differs from reviewed state: " + path);
       }
       observed[unit].enablement_paths.push(path);
@@ -3533,23 +3838,46 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     observed[unit].fragment_paths.push(path);
   }
   const visited = new Set();
+  const directories = [];
   for (const configured of roots) {
-    let root;
+    assertTrustedUnitPathAncestors(configured, enforceRootOwnership);
+    let configuredStat;
     try {
-      root = realpathSync(configured);
+      configuredStat = lstatSync(configured, { bigint: true });
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (error.code === "ENOENT") {
+        directories.push({ path: configured, state: "absent" });
+        continue;
+      }
       throw error;
+    }
+    assertTrustedUnitPathDirectory(configuredStat, configured, enforceRootOwnership);
+    const root = realpathSync(configured);
+    if (enforceRootOwnership && root !== configured) {
+      fail("systemd UnitPath directory is not canonical: " + configured);
     }
     if (visited.has(root)) continue;
     visited.add(root);
     function visit(path, depth) {
       if (depth > 4) fail("managed systemd load-path scan exceeded reviewed depth");
-      for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const before = lstatSync(path, { bigint: true });
+      assertTrustedUnitPathDirectory(before, path, enforceRootOwnership);
+      const entries = readdirSync(path, { withFileTypes: true }).sort(function (left, right) {
+        if (left.name < right.name) return -1;
+        if (left.name > right.name) return 1;
+        return 0;
+      });
+      for (const entry of entries) {
         const child = join(path, entry.name);
         record(child, entry, root);
         if (entry.isDirectory() && !entry.isSymbolicLink()) visit(child, depth + 1);
       }
+      const after = lstatSync(path, { bigint: true });
+      assertTrustedUnitPathDirectory(after, path, enforceRootOwnership);
+      if (!sameDirectoryGenerationStat(before, after)) {
+        fail("systemd UnitPath directory generation changed during traversal: " + path);
+      }
+      directories.push(directoryGenerationEntry(path, after));
     }
     visit(root, 0);
   }
@@ -3559,7 +3887,34 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     observed[unit].enablement_paths.sort();
     observed[unit].fragment_paths.sort();
   }
-  return observed;
+  directories.sort(function (left, right) {
+    if (left.path < right.path) return -1;
+    if (left.path > right.path) return 1;
+    return 0;
+  });
+  return {
+    directory_generation: {
+      directories,
+      unit_path: Array.from(roots),
+    },
+    managed_load_paths: observed,
+  };
+}
+
+export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
+  return scanManagedUnitConfiguration(
+    configuredRoots,
+    configuredAllowlist,
+    configuredRoots === undefined,
+  ).managed_load_paths;
+}
+
+export function scanManagerUnitPathGenerationForTest(configuredRoots, configuredAllowlist) {
+  return scanManagedUnitConfiguration(
+    configuredRoots,
+    configuredAllowlist || {},
+    false,
+  ).directory_generation;
 }
 
 export function validateSystemdSysctlLoadPathsForTest(managed) {
@@ -3626,7 +3981,7 @@ function exactSystemdSysctlInputs(plan, managedLoadPaths) {
   if (aliasStat.uid !== 0n || aliasStat.gid !== 0n) {
     fail("systemd-sysctl procps alias is not root-owned");
   }
-  const managed = managedLoadPaths || scanManagedUnitLoadPaths(reviewedManagerUnitPath());
+  const managed = managedLoadPaths || reviewedManagedUnitConfiguration().managed_load_paths;
   validateSystemdSysctlLoadPathsForTest(managed);
   return {
     binary: binary.pin,
@@ -3977,7 +4332,7 @@ function exactCoreDumpVendorClosure(plan, managedLoadPaths) {
   systemdCoreDumpPackageAbsent();
   assertSystemdCoreDumpAbsentPaths();
   const normalizedManagedLoadPaths = normalizeCoreDumpManagedLoadPaths(
-    managedLoadPaths || scanManagedUnitLoadPaths(reviewedManagerUnitPath()),
+    managedLoadPaths || reviewedManagedUnitConfiguration().managed_load_paths,
   );
   if (!same(normalizedManagedLoadPaths, plan.preimage.coredump_managed_load_paths)) {
     fail("coredump managed load-path closure differs from the exact plan generation");
@@ -4192,6 +4547,11 @@ function reviewedManagerUnitPath() {
   ));
 }
 
+function reviewedManagedUnitConfiguration() {
+  const unitPath = reviewedManagerUnitPath();
+  return scanManagedUnitConfiguration(unitPath, undefined, true);
+}
+
 function parseExecCommands(properties, property, label) {
   const value = variantProperty(properties, property, "a(sasasttttuii)", label);
   if (!Array.isArray(value) || value.length > 16) fail(label + "." + property + " is unbounded");
@@ -4362,7 +4722,7 @@ export function assertNoCoreDumpRuntimeForTest(units, jobs) {
     return isProtectedCoreDumpUnitName(job[1]);
   });
   if (loaded.length !== 0 || queued.length !== 0) {
-    fail("coredump template/socket instance is loaded or has a queued manager job");
+    fail("coredump protected-family unit is loaded or has a queued manager job");
   }
   return true;
 }
@@ -4641,9 +5001,11 @@ function assertCoreDumpRollbackRemovalClosure(plan) {
   const configurationBefore = systemdConfigurationGeneration(plan);
   runtimeServiceSnapshot("guarded-candidate");
   const configurationAfter = systemdConfigurationGeneration(plan);
-  if (configurationBefore !== configurationAfter) {
-    fail("coredump rollback absence closure changed across its final runtime fence");
-  }
+  assertSystemdConfigurationGenerationFenceForTest(
+    configurationBefore,
+    configurationAfter,
+    "coredump rollback absence closure",
+  );
   const masks = coredumpAdminMasksSnapshot(plan);
   if (!same(masks, coreDumpMaskSnapshot("present", plan.candidate.coredump_admin_masks))) {
     fail("coredump rollback removal requires the exact complete masked generation");
@@ -4844,14 +5206,14 @@ function coredumpAdminMasksSnapshot(plan) {
   return observed;
 }
 
-function systemdConfigurationGeneration(plan) {
-  const unitPath = reviewedManagerUnitPath();
-  const managedLoadPaths = scanManagedUnitLoadPaths(unitPath);
+function systemdConfigurationSnapshot(plan) {
+  const managerConfiguration = reviewedManagedUnitConfiguration();
+  const managedLoadPaths = managerConfiguration.managed_load_paths;
   const coredumpAdminMasks = coredumpAdminMasksSnapshot(plan);
   const coredumpMasked = coredumpAdminMasks[0].state === "present";
   validateCoreDumpManagedLoadPathsForTest(managedLoadPaths, coredumpMasked);
   const sysctlDropins = systemdSysctlDropinsSnapshot(plan);
-  return sha256(Buffer.from(canonicalJson({
+  return {
     apport_activation: scanApportActivation(
       undefined,
       plan.candidate.guard_unit,
@@ -4862,13 +5224,76 @@ function systemdConfigurationGeneration(plan) {
     coredump_vendor_closure: exactCoreDumpVendorClosure(plan, managedLoadPaths),
     guard: guardSnapshot(plan),
     managed_load_paths: managedLoadPaths,
+    systemd_unit_path_generation: managerConfiguration.directory_generation,
     systemd_sysctl_inputs: exactSystemdSysctlInputs(plan, managedLoadPaths),
     sysctl_dropins: sysctlDropins,
-  }), "utf8"));
+  };
+}
+
+function systemdConfigurationGeneration(plan) {
+  return sha256(Buffer.from(canonicalJson(systemdConfigurationSnapshot(plan)), "utf8"));
+}
+
+export function assertSystemdConfigurationGenerationFenceForTest(before, after, label) {
+  if (!same(before, after)) {
+    fail((label || "systemd configuration") + " changed across its generation fence");
+  }
+  return true;
+}
+
+export function assertPlanUnitPathGenerationForTest(observed, approved) {
+  if (!same(observed, approved)) {
+    fail("systemd Manager.UnitPath directory generation differs from the exact plan preimage");
+  }
+  return true;
+}
+
+function reloadStableDirectoryGeneration(generation) {
+  if (!isPlainObject(generation) || !Array.isArray(generation.directories)) return generation;
+  const generatorRoots = [
+    "/run/systemd/generator",
+    "/run/systemd/generator.early",
+    "/run/systemd/generator.late",
+  ];
+  return {
+    ...generation,
+    directories: generation.directories.map(function (entry) {
+      const isGeneratorEntry = generatorRoots.some(function (root) {
+        return entry.path === root || entry.path.startsWith(root + "/");
+      });
+      if (!isGeneratorEntry || entry.state !== "present") return entry;
+      return {
+        device: entry.device,
+        gid: entry.gid,
+        mode: entry.mode,
+        path: entry.path,
+        state: entry.state,
+        uid: entry.uid,
+      };
+    }),
+  };
+}
+
+export function assertSystemdReloadConfigurationFenceForTest(before, after, label) {
+  function normalize(value) {
+    if (!isPlainObject(value)) return value;
+    const copy = { ...value };
+    for (const key of ["directory_generation", "systemd_unit_path_generation"]) {
+      if (Object.hasOwn(copy, key)) {
+        copy[key] = reloadStableDirectoryGeneration(copy[key]);
+      }
+    }
+    return copy;
+  }
+  if (!same(normalize(before), normalize(after))) {
+    fail((label || "systemd manager reload") + " changed its directory/trigger closure");
+  }
+  return true;
 }
 
 function realInspect(plan) {
-  const managedLoadPaths = scanManagedUnitLoadPaths(reviewedManagerUnitPath());
+  const managerConfiguration = reviewedManagedUnitConfiguration();
+  const managedLoadPaths = managerConfiguration.managed_load_paths;
   exactSystemdSysctlInputs(plan, managedLoadPaths);
   const coredumpAdminMasks = coredumpAdminMasksSnapshot(plan);
   validateCoreDumpManagedLoadPathsForTest(
@@ -5638,7 +6063,7 @@ export function realOps(plan) {
       validateCoreDumpMaskLinks(links, "coredump administrative masks");
       // This synchronous re-proof is deliberately inside the mutator: no
       // caller can remove even the first mask without exact package/path,
-      // foreign-edge, loaded-instance/job, and D-Bus `masked` evidence.
+      // foreign-edge, loaded-family/job, and D-Bus `masked` evidence.
       assertCoreDumpRollbackRemovalClosure(plan);
       const quarantines = [
         plan.transaction.temp_paths.apport_coredump_hook_mask_quarantine,
@@ -5705,21 +6130,40 @@ export function realOps(plan) {
     },
     async reloadManager() {
       requireMutationLease("reload systemd manager");
+      const configurationBefore = systemdConfigurationSnapshot(plan);
       runCommand(
         "/usr/bin/busctl",
         ["--system", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
           "org.freedesktop.systemd1.Manager", "Reload"],
         "systemd Manager.Reload",
       );
+      const configurationAfter = systemdConfigurationSnapshot(plan);
+      assertSystemdReloadConfigurationFenceForTest(
+        configurationBefore,
+        configurationAfter,
+        "systemd manager reload directory/trigger closure",
+      );
     },
     async assertRuntime(phase) {
       if (actionUsesPlanBoot === null) fail("runtime validation precedes action-boot verification");
-      const configurationBefore = systemdConfigurationGeneration(plan);
+      const configurationBeforeSnapshot = systemdConfigurationSnapshot(plan);
+      if (phase === "fresh-preimage") {
+        assertPlanUnitPathGenerationForTest(
+          configurationBeforeSnapshot.systemd_unit_path_generation,
+          plan.host.systemd_unit_path_generation,
+        );
+      }
+      const configurationBefore = sha256(Buffer.from(
+        canonicalJson(configurationBeforeSnapshot),
+        "utf8",
+      ));
       const snapshot = runtimeServiceSnapshot(phase);
       const configurationAfter = systemdConfigurationGeneration(plan);
-      if (configurationBefore !== configurationAfter) {
-        fail("systemd configuration changed across the D-Bus GetAll snapshot during " + phase);
-      }
+      assertSystemdConfigurationGenerationFenceForTest(
+        configurationBefore,
+        configurationAfter,
+        "systemd D-Bus GetAll snapshot during " + phase,
+      );
       assertApportRuntimeLineageForTest(
         snapshot,
         plan.preimage.apport_runtime_observation,
@@ -5754,6 +6198,7 @@ export function realOps(plan) {
       exactPin(os, approved.host.os_release, "os-release");
       const version = runCommand("/usr/bin/systemctl", ["--version"], "systemd version").split("\n")[0];
       if (version !== approved.host.systemd_version) fail("systemd version drifted");
+      reviewedManagedUnitConfiguration();
       const official = openBoundRegular(APPORT_UNIT_PATH, "official Noble Apport unit");
       exactPin(official, approved.official_noble_apport.unit, "official Noble Apport unit");
       const officialHandler = openBoundRegular(APPORT_HANDLER_PATH, "official Noble Apport handler");
@@ -5899,7 +6344,8 @@ function observePlan(ceremonyId) {
   );
   const candidateGuard = embeddedPin(GUARD_UNIT_PATH, guardUnitBytes(ceremonyId), "0644");
   const candidateCoreDumpMasks = reviewedCoreDumpMaskLinks();
-  const managedLoadPaths = scanManagedUnitLoadPaths(reviewedManagerUnitPath());
+  const managerConfiguration = reviewedManagedUnitConfiguration();
+  const managedLoadPaths = managerConfiguration.managed_load_paths;
   validateSystemdSysctlLoadPathsForTest(managedLoadPaths);
   validateCoreDumpManagedLoadPathsForTest(managedLoadPaths, false);
   const apportActivation = scanApportActivation(
@@ -5966,6 +6412,7 @@ function observePlan(ceremonyId) {
       machine_id_sha256: openBoundRegular("/etc/machine-id", "machine-id", 4096).pin.sha256,
       os_release: os.pin,
       plan_boot_id: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+      systemd_unit_path_generation: managerConfiguration.directory_generation,
       systemd_version: runCommand("/usr/bin/systemctl", ["--version"], "systemd version").split("\n")[0],
     },
     kind: CEREMONY_KIND,
@@ -6042,6 +6489,10 @@ function observePlan(ceremonyId) {
     transaction: transactionLayout(ceremonyId),
   };
   validatePlan(plan);
+  const managerConfigurationAfter = reviewedManagedUnitConfiguration();
+  if (!same(managerConfiguration, managerConfigurationAfter)) {
+    fail("systemd Manager.UnitPath generation changed while the plan was observed");
+  }
   return plan;
 }
 

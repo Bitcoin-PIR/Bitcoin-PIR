@@ -39,6 +39,7 @@ import {
   SYSTEMD_SYSCTL_ENABLEMENT_TARGET,
   SYSTEMD_SYSCTL_UNIT_PATH,
   SYSTEMD_COREDUMP_ABSENT_PATHS,
+  SYSTEMD_MANAGER_UNIT_PATHS,
   TARGET_CORE_PATTERN,
   TARGET_SYSCTLS,
   canonicalJson,
@@ -179,6 +180,23 @@ export function fixturePlan() {
       machine_id_sha256: "9".repeat(64),
       os_release: pin("/usr/lib/os-release", "ubuntu noble\n", "0644"),
       plan_boot_id: PLAN_BOOT_ID,
+      systemd_unit_path_generation: {
+        directories: Array.from(SYSTEMD_MANAGER_UNIT_PATHS).sort().map(function (path, index) {
+          return {
+            ctime_ns: String(1_000_000 + index),
+            device: "2049",
+            gid: 0,
+            inode: String(10_000 + index),
+            mode: "0755",
+            mtime_ns: String(2_000_000 + index),
+            nlink: 2,
+            path,
+            state: "present",
+            uid: 0,
+          };
+        }),
+        unit_path: Array.from(SYSTEMD_MANAGER_UNIT_PATHS),
+      },
       systemd_version: "systemd 255 (255.4-1ubuntu8.15)",
     },
     kind: CEREMONY_KIND,

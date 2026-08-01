@@ -66,6 +66,8 @@ import {
   assertNoCoreDumpRuntimeForTest,
   assertApportRuntimeLineageForTest,
   assertManagerSnapshotFenceForTest,
+  assertPlanUnitPathGenerationForTest,
+  assertSystemdReloadConfigurationFenceForTest,
   atomicCreatePinnedForTest,
   canonicalJson,
   classifyRetainedGeneration,
@@ -89,8 +91,10 @@ import {
   scanApportActivation,
   scanApportEnablement,
   scanManagedUnitLoadPaths,
+  scanManagerUnitPathGenerationForTest,
   scanSysctlAssignments,
   sha256,
+  systemdDropinDirectoryNamesForTest,
   transactionLayout,
   validateApplyApproval,
   validateLoadedUnitMetadataForTest,
@@ -98,6 +102,7 @@ import {
   validateCoreDumpUnitFileStatesForTest,
   validateDpkgSystemdCoreDumpAbsenceForTest,
   validateManagerUnitPathForTest,
+  validateManagerUnitPathGenerationForTest,
   validatePlan,
   validateRecoveryApproval,
   validateRollbackApproval,
@@ -200,6 +205,32 @@ test("v2 plan validates and deterministically binds the official Noble source/un
     NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256,
   );
   assert.equal(plan.systemd_sysctl.unit.sha256, NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256);
+  assert.equal(
+    validateManagerUnitPathGenerationForTest(plan.host.systemd_unit_path_generation),
+    plan.host.systemd_unit_path_generation,
+  );
+  assert.deepEqual(
+    plan.host.systemd_unit_path_generation.unit_path,
+    SYSTEMD_MANAGER_UNIT_PATHS,
+  );
+  assert.equal(
+    assertPlanUnitPathGenerationForTest(
+      plan.host.systemd_unit_path_generation,
+      structuredClone(plan.host.systemd_unit_path_generation),
+    ),
+    true,
+  );
+  const directoryDrift = structuredClone(plan.host.systemd_unit_path_generation);
+  directoryDrift.directories[0].ctime_ns = "9999999";
+  assert.throws(
+    function () {
+      assertPlanUnitPathGenerationForTest(
+        directoryDrift,
+        plan.host.systemd_unit_path_generation,
+      );
+    },
+    /differs from the exact plan preimage/u,
+  );
   assert.deepEqual(plan.official_noble_apport.unit_semantics, {
     exec_start: ["/usr/share/apport/apport --start"],
     exec_stop: ["/usr/share/apport/apport --stop"],
@@ -380,6 +411,12 @@ test("plan rejects relaxation of sysctl, Noble, helper, guard, crash-dir, or per
     function (plan) { plan.preimage.sysctl_credential_closure_state = "present"; },
     function (plan) { plan.preimage.crash_directory.inode = "0"; },
     function (plan) { plan.preimage.crash_entries = ["old.crash"]; },
+    function (plan) { plan.host.systemd_unit_path_generation.directories[0].mode = "0775"; },
+    function (plan) { plan.host.systemd_unit_path_generation.directories[0].uid = 1; },
+    function (plan) { plan.host.systemd_unit_path_generation.directories.pop(); },
+    function (plan) {
+      plan.host.systemd_unit_path_generation.directories[0].ctime_ns = "not-a-generation";
+    },
     function (plan) {
       plan.executor.exchange_helper.path =
         "/opt/bitcoinpir/payment-v1-rename-exchange/" + "f".repeat(64) +
@@ -1388,6 +1425,44 @@ test("activation closure rejects coredump template instances, jobs edges, aliase
     assert.throws(function () {
       scanApportEnablement([root]);
     }, /foreign coredump unit alias/u);
+    rmSync(join(root, "apport-coredump-hook@.service"));
+    const unitTypes = [
+      "automount", "device", "mount", "path", "scope", "service", "slice",
+      "socket", "swap", "target", "timer",
+    ];
+    const names = ["apport-coredump-hook", "systemd-coredump"].flatMap(
+      function (prefix) {
+        return unitTypes.flatMap(function (type) {
+          return [prefix + "." + type, prefix + "@." + type, prefix + "@probe." + type];
+        });
+      },
+    );
+    for (const name of names) {
+      writeFileSync(
+        join(root, name),
+        name.endsWith(".socket") ? "[Socket]\nAccept=yes\nListenStream=12345\n" : "[Unit]\n",
+      );
+      assert.throws(function () {
+        scanApportEnablement([root]);
+      }, /coredump unit fragment or instance/u, name);
+      rmSync(join(root, name));
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("benign Environment drop-ins do not become crash-handler activation edges", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-benign-systemd-environment-"));
+  try {
+    const directory = join(root, "unrelated.service.d");
+    mkdirSync(directory);
+    writeFileSync(
+      join(directory, "10-environment.conf"),
+      "[Service]\nEnvironment=CRASH_BACKEND=systemd-coredump\n" +
+        "Environment=HOOK_NAME=apport-coredump-hook\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
@@ -1553,7 +1628,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       writeFileSync(bypass, "[Service]\nExecCondition=\n");
       assert.throws(
         function () { scanManagedUnitLoadPaths(roots, allowlist); },
-        /unreviewed drop-in\/load path/u,
+        /unreviewed (?:(?:coredump family|type-level) )?drop-in(?:\/load)? path/u,
       );
       unlinkSync(bypass);
       rmSync(directory, { recursive: true });
@@ -1565,7 +1640,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       writeFileSync(bypass, "[Service]\nExecCondition=\n");
       assert.throws(
         function () { scanManagedUnitLoadPaths(roots, allowlist); },
-        /unreviewed drop-in\/load path/u,
+        /unreviewed (?:(?:coredump family|type-level) )?drop-in(?:\/load)? path/u,
       );
       rmSync(directory, { recursive: true });
     }
@@ -1574,7 +1649,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
     writeFileSync(join(aliasDropinDirectory, "99-alias-bypass.conf"), "[Service]\nExecCondition=\n");
     assert.throws(
       function () { scanManagedUnitLoadPaths(roots, allowlist); },
-      /unreviewed drop-in\/load path/u,
+      /unreviewed (?:(?:coredump family|type-level) )?drop-in(?:\/load)? path/u,
     );
     rmSync(aliasDropinDirectory, { recursive: true });
     const shadow = join(runtime, SYSTEMD_SYSCTL_UNIT);
@@ -1586,6 +1661,91 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
+});
+
+test("UnitPath traversal records stable directory generations and rejects writable empty drop-ins", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-unit-path-generation-"));
+  try {
+    const dropin = join(root, "unrelated.service.d");
+    mkdirSync(dropin, { mode: 0o755 });
+    mkdirSync(join(root, "a_"), { mode: 0o755 });
+    mkdirSync(join(root, "a-"), { mode: 0o755 });
+    const generation = scanManagerUnitPathGenerationForTest([root]);
+    const generationPaths = generation.directories.map(function (entry) { return entry.path; });
+    assert.deepEqual(generationPaths, Array.from(generationPaths).sort());
+    const observed = generation.directories.find(function (entry) {
+      return entry.path === realpathSync(dropin);
+    });
+    assert.equal(observed.state, "present");
+    assert.equal(observed.mode, "0755");
+    assert.deepEqual(scanManagedUnitLoadPaths([root], {}), {});
+    chmodSync(dropin, 0o775);
+    assert.throws(
+      function () { scanManagedUnitLoadPaths([root], {}); },
+      /UnitPath directory is not root:root and group\/world non-writable/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("manager reload generation fence rejects directory and protected-trigger drift", () => {
+  const before = {
+    directory_generation: {
+      directories: [{
+        ctime_ns: "1", device: "1", gid: 0, inode: "1", mode: "0755",
+        mtime_ns: "1", nlink: 2, path: "/etc/systemd/system", state: "present", uid: 0,
+      }, {
+        ctime_ns: "2", device: "1", gid: 0, inode: "2", mode: "0755",
+        mtime_ns: "2", nlink: 2, path: "/run/systemd/generator", state: "present", uid: 0,
+      }],
+      unit_path: ["/etc/systemd/system"],
+    },
+    trigger_closure: { paths: [], sockets: [] },
+  };
+  assert.equal(
+    assertSystemdReloadConfigurationFenceForTest(before, structuredClone(before)),
+    true,
+  );
+  const directoryDrift = structuredClone(before);
+  directoryDrift.directory_generation.directories[0].inode = "2";
+  assert.throws(
+    function () {
+      assertSystemdReloadConfigurationFenceForTest(
+        before,
+        directoryDrift,
+        "systemd manager reload directory/trigger closure",
+      );
+    },
+    /changed its directory\/trigger closure/u,
+  );
+  const generatorRegeneration = structuredClone(before);
+  generatorRegeneration.directory_generation.directories[1].inode = "200";
+  generatorRegeneration.directory_generation.directories[1].ctime_ns = "200";
+  assert.equal(
+    assertSystemdReloadConfigurationFenceForTest(before, generatorRegeneration),
+    true,
+  );
+  const generatorDeviceDrift = structuredClone(before);
+  generatorDeviceDrift.directory_generation.directories[1].device = "2";
+  assert.throws(
+    function () {
+      assertSystemdReloadConfigurationFenceForTest(before, generatorDeviceDrift);
+    },
+    /changed its directory\/trigger closure/u,
+  );
+  const triggerDrift = structuredClone(before);
+  triggerDrift.trigger_closure.paths.push("systemd-coredump.path");
+  assert.throws(
+    function () {
+      assertSystemdReloadConfigurationFenceForTest(
+        before,
+        triggerDrift,
+        "systemd manager reload directory/trigger closure",
+      );
+    },
+    /changed its directory\/trigger closure/u,
+  );
 });
 
 test("systemd-sysctl load-path validation requires the exact vendor boot enablement", () => {
@@ -1650,6 +1810,36 @@ test("coredump managed load paths admit only exact vendor artifacts and the thre
   assert.throws(function () {
     validateCoreDumpManagedLoadPathsForTest(foreign, true);
   }, /load-path closure differs/u);
+});
+
+test("systemd 255 drop-in name generation includes recursive template and instance truncation", () => {
+  assert.deepEqual(
+    Array.from(systemdDropinDirectoryNamesForTest(
+      "apport-coredump-hook@probe.service",
+    )).sort(),
+    [
+      "apport-.service.d",
+      "apport-@.service.d",
+      "apport-@probe.service.d",
+      "apport-coredump-.service.d",
+      "apport-coredump-@.service.d",
+      "apport-coredump-@probe.service.d",
+      "apport-coredump-hook@.service.d",
+      "apport-coredump-hook@probe.service.d",
+      "service.d",
+    ],
+  );
+  assert.deepEqual(
+    Array.from(systemdDropinDirectoryNamesForTest(
+      "apport-coredump-hook@.service",
+    )).sort(),
+    [
+      "apport-.service.d",
+      "apport-coredump-.service.d",
+      "apport-coredump-hook@.service.d",
+      "service.d",
+    ],
+  );
 });
 
 test("observe load-path closure mechanically rejects protected instances and inherited drop-ins", () => {
@@ -1794,12 +1984,25 @@ test("observe load-path closure mechanically rejects protected instances and inh
         linkSync(hook, join(roots[1], "apparently-benign.service"));
       },
     },
-    ...["service.d", "apport-.service.d", "systemd-.service.d"].map(
+    ...[
+      ...[
+        "automount", "device", "mount", "path", "scope", "service", "slice",
+        "socket", "swap", "target", "timer",
+      ].map(function (type) { return type + ".d"; }),
+      "apport-.service.d",
+      "systemd-.service.d",
+      "apport-coredump-@probe.service.d",
+      "apport-@probe.service.d",
+      "apport-coredump-@.service.d",
+      "apport-@.service.d",
+      "systemd-@probe.service.d",
+      "systemd-@.service.d",
+    ].map(
       function (directoryName, index) {
         return {
           name: "inherited drop-in " + directoryName,
           mutate({ roots }) {
-            const directory = join(roots[index], directoryName);
+            const directory = join(roots[index % roots.length], directoryName);
             mkdirSync(directory);
             writeFileSync(join(directory, "90-bypass.conf"), "[Service]\nProtectSystem=false\n");
           },
@@ -1870,6 +2073,9 @@ test("systemd unit discovery rejects unresolved specifiers in action and Exec di
   try {
     const cases = [
       "[Unit]\nWants=%i.service\n",
+      "[Unit]\nWants=systemd-core%i.timer\n",
+      "[Unit]\nOnSuccess=apport-%icoredump-hook@fixed.path\n",
+      "[Service]\nExecStart=/bin/systemctl start systemd-core%i.timer\n",
       "[Service]\nExecStart=/usr/share/%i/apport --start\n",
       "[Service]\nExecStart=/usr/share/foo/../%i/apport --start\n",
       "[Service]\nExecStart=/usr/share/apport/../apport/apport --start\n",
@@ -1975,11 +2181,18 @@ test("systemd-coredump package and non-loading runtime closures fail closed", ()
       "/",
     ];
   };
-  for (const name of [
-    "apport-coredump-hook@probe.service",
-    "systemd-coredump@probe.service",
-    "systemd-coredump.socket",
-  ]) {
+  const unitTypes = [
+    "automount", "device", "mount", "path", "scope", "service", "slice",
+    "socket", "swap", "target", "timer",
+  ];
+  const protectedNames = ["apport-coredump-hook", "systemd-coredump"].flatMap(
+    function (prefix) {
+      return unitTypes.flatMap(function (type) {
+        return [prefix + "." + type, prefix + "@." + type, prefix + "@probe." + type];
+      });
+    },
+  );
+  for (const name of protectedNames) {
     assert.throws(function () {
       assertNoCoreDumpRuntimeForTest([row(name)], []);
     }, /loaded or has a queued manager job/u);

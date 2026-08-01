@@ -834,23 +834,34 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       unit/drop-in generations and the exact enablement symlink. Apply installs
       three fixed root-owned `/dev/null` masks for the Apport coredump hook and
       systemd-coredump service/socket names. It requires exact D-Bus `masked`
-      state, rejects loaded template instances/jobs/foreign edges, and proves
+      state, rejects every loaded or queued protected-family unit across all
+      systemd 255 unit types and foreign edges, and proves
       the `systemd-coredump` package, binary, vendor service/socket and config
       roots absent. Rollback removes those masks only after repeating that
       absence closure inside the mutator. These masks constrain systemd and
       non-root activation, not malicious UID 0 or direct handler execution.
-      The full manager `UnitPath` scan mechanically rejects protected concrete
-      instance fragments, instance `.service.d` trees, aliases/hard links and
-      all type/dash-truncated inherited drop-ins without relying on content
-      keywords. The normalized closure is identical in the plan, configuration
-      generation, receipt and first-mask-removal re-proof; only the exact pinned
-      Noble coredump hook drop-in is admitted.
+      The full manager `UnitPath` scan mechanically rejects protected-family
+      fragments including `.path`, `.timer`, `.socket`, implicit same-name
+      service/template activation and `Accept=yes`, plus aliases/hard links and
+      every inherited drop-in systemd 255 would merge. Recursive dash
+      truncation retains both `@instance` and template `@` forms; a benign
+      `Environment=` mention with no activation semantics remains admissible.
+      Every present UnitPath root and nested directory must be root:root and not
+      group- or world-writable, with its complete generation (or absence)
+      plan-bound. The normalized closure and directory generations are fenced
+      at runtime, around manager reload, and before rollback's first mask
+      removal; only expected generation-only churn in the three runtime
+      generator roots is normalized, while filesystem device remains exact.
+      The exact pinned Noble coredump hook drop-in remains the sole admitted
+      exception.
       It separates stable configuration from accepted
       settled active/exited or inactive/dead observation; rejects matching
       sysctl globs/negative exclusions, quoted/escaped foreign action
       dependencies, load-path overrides, reverse Wants and implicit socket/path
       triggers, multi-level aliases and direct handler `Exec*`; and never
-      executes stock Apport start/stop. Runtime checks use complete
+      executes stock Apport start/stop. Specifier-bearing action edges are
+      intersected with every protected family/type instead of only three fixed
+      mask names. Runtime checks use complete
       Unit/Service `GetAll` values fenced by stable unit/job lists and static
       configuration. The exact Noble systemd-sysctl unit/binary and vendor boot
       symlink are pinned; candidate retains a drop-in that clears every

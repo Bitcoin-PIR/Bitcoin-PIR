@@ -79,6 +79,10 @@ test "$(docker exec "$container" cat /proc/1/comm)" = "systemd"
 docker exec \
   --env BITCOINPIR_DISPOSABLE_SYSTEMD_TEST=1 \
   "$container" \
+  /bin/sh /work/scripts/payment-v1-systemd-255-unit-lookup.test.sh
+docker exec \
+  --env BITCOINPIR_DISPOSABLE_SYSTEMD_TEST=1 \
+  "$container" \
   /work/scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
 docker exec \
   --env BITCOINPIR_DISPOSABLE_SYSTEMD_TEST=1 \
@@ -89,4 +93,4 @@ docker exec \
   "$container" \
   /bin/sh /work/scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
 
-echo "systemd-255-pid1=PASS version=255.4-1ubuntu8.15 oneshot=executed failed-recovery=pre-and-post-ready firewall-guard=pre-in-flight-post"
+echo "systemd-255-pid1=PASS version=255.4-1ubuntu8.15 unit-lookup=verified oneshot=executed failed-recovery=pre-and-post-ready firewall-guard=pre-in-flight-post"

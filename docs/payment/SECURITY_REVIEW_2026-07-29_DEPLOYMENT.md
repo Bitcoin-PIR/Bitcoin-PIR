@@ -462,21 +462,31 @@ stock Apport ExecStart/ExecStop, and directly manages only the exact enablement,
 Apport/coredump masks, approval-bound lease/preflight, both preflight gates, and reboot-guard
 generations. It also pins the exact Noble coredump hook unit/drop-in, installs
 fixed masks for that hook plus the systemd-coredump service/socket, requires
-exact D-Bus `masked` state, and rejects any loaded instance, queued job or
-foreign action edge. The `systemd-coredump` package, binary, vendor units and
+exact D-Bus `masked` state, and rejects any loaded or queued protected-family
+unit across all systemd 255 unit types or foreign action edge. The
+`systemd-coredump` package, binary, vendor units and
 config roots must be absent; rollback removes the masks only after a fresh
 in-mutator closure proof. These masks are a systemd/non-root control, not a
 claim that malicious UID 0 cannot remove or directly bypass them. Stable unit configuration is
-separate from settled active/exited or inactive/dead observation. Concrete
-protected-template fragments, instance `.service.d` trees, symlink or
-hard-link aliases, and type/dash-truncated inherited drop-ins are rejected
-mechanically throughout the complete manager `UnitPath`, regardless of benign-
-looking contents. The same normalized load-path closure is bound into the plan,
-configuration generation, receipt, and rollback's first-mask-removal proof. Matching
+separate from settled active/exited or inactive/dead observation. Every
+protected-family fragment, including `.path`, `.timer`, `.socket`, implicit
+same-name service/template activation and `Accept=yes`, plus symlink or
+hard-link aliases, is rejected mechanically throughout the complete manager
+`UnitPath`. The inherited drop-in closure follows systemd 255 recursive dash
+truncation while retaining both `@instance` and template `@` forms; a benign
+`Environment=` mention with no activation semantics remains admissible. Every
+present UnitPath root and nested directory must be root:root and not group- or
+world-writable, with its complete generation (or absence) plan-bound. The same
+normalized load-path closure and directory generations are fenced at runtime,
+on both sides of manager reload, and before rollback's first mask removal;
+only generation-only churn in the three runtime generator roots is normalized,
+while filesystem device remains exact.
+Matching
 sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
 quoted/escaped external start/stop/reload dependencies, load-path overrides for
 Apport/systemd-sysctl/guard, systemd specifier/path-normalization handler
-aliases, and implicit socket/path triggers are rejected.
+aliases, specifier-generated protected family/type edges, and implicit
+socket/path triggers are rejected.
 Runtime evidence uses complete Unit/Service `Properties.GetAll` values fenced
 by identical `ListUnits` and `ListJobs` generations plus an unchanged static
 configuration generation. The Apport gate and guard explicitly clear

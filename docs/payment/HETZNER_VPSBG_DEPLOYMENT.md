@@ -719,10 +719,20 @@ also prove both hook artifacts have the exact `apport` dpkg ownership output;
 this is source/test coverage until a fresh host plan and explicit host-global
 approval are materialized and run.
 The plan and receipt also bind the exact normalized load-path closure used by
-the rollback removal re-proof. Concrete protected-template instance fragments,
-instance drop-in trees, aliases/hard links, and inherited type/dash-truncated
-drop-ins anywhere in the manager `UnitPath` fail closed independently of their
-contents; only the exact pinned Noble hook drop-in is admitted.
+the rollback removal re-proof. Every `apport-coredump-hook` and
+`systemd-coredump` family name across all systemd 255 unit types fails closed,
+including `.path`, `.timer`, `.socket`, implicit same-name service/template
+activation and `Accept=yes`. Concrete instance fragments, aliases/hard links,
+and every inherited drop-in directory systemd would merge are covered,
+including recursive dash truncation that preserves both `@instance` and
+template `@` forms. A benign `Environment=` mention without activation
+semantics remains admissible; only the exact pinned Noble hook drop-in is
+otherwise admitted. Each ordered manager `UnitPath` root and nested directory
+must be root:root and not group- or world-writable, and its full generation (or
+absence) is plan-bound and rechecked by runtime and rollback fences. Reload is
+checked on both sides; only expected generation-only churn under the three
+`/run/systemd/generator*` roots is normalized, while filesystem device,
+ownership, mode, trigger, load-path or any other directory drift rejects.
 
 The code does not by itself clear this P1 blocker. Before public activation,
 the exact rendered Linux host must prove both units active, the volatile

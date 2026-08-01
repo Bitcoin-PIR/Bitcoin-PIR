@@ -58,6 +58,16 @@ the Unit and Service interfaces; any row, job, static load-path, PID, fragment,
 drop-in, dependency, or `Exec*Ex` mismatch is rejected. The manager's ordered
 `UnitPath` must equal the reviewed systemd 255 default search path; a custom or
 reordered manager path is not silently treated as an additional trusted root.
+Every present `UnitPath` root and nested directory is opened without following
+symlinks and must remain root:root and not group- or world-writable. The plan
+records either an absent root or the complete device/inode/time/link/owner/mode
+generation for every traversed directory. Empty writable drop-in directories
+therefore fail closed too. Runtime configuration fences repeat that traversal;
+`Manager.Reload` is fenced before and after, allowing only systemd's own
+inode/time/link churn in the three `/run/systemd/generator*` roots while
+holding their path, presence, owner and mode plus every trigger/load-path byte
+and filesystem device exact. Directory or trigger drift elsewhere rejects the
+operation.
 
 The official unit bytes, semantics, fragment path, empty drop-in set, and exact
 single enablement symlink are plan inputs. The scan closes administrator,
@@ -70,7 +80,8 @@ such edges, and implicit `apport.socket`, `.path`, `.timer`,
 `.automount`, or `.busname` triggers. Multi-level aliases resolving to the
 official unit and every foreign `Exec*` directive naming the handler are also
 rejected. An unresolved systemd `%` template is rejected when its fixed
-prefix/suffix and normalized path can expand to the Apport unit or handler;
+prefix/suffix and normalized path can expand to the Apport unit, any protected
+coredump-family unit/type, or the handler;
 interpreter commands with unresolved arguments also fail closed. Stock-like
 templates whose fixed text cannot name Apport remain admissible. The same
 closed search covers every effective fragment and drop-in
@@ -125,14 +136,18 @@ and a complete absence closure for the `systemd-coredump` package, binary,
 vendor service/socket and configuration roots. Rollback removes these three
 masks only after synchronously repeating the package/path/vendor/static-load-
 path proof around a fenced runtime snapshot. It never invokes `systemctl stop`
-to make a loaded handler disappear; any loaded instance or job fails closed.
-The static proof mechanically rejects every concrete protected-template
-fragment and instance-specific `.service.d` directory in the complete manager
-`UnitPath`, independent of the file contents. It likewise rejects symlink and
-hard-link aliases, nested instance drop-ins, and every type-level or
-dash-truncated drop-in that systemd would merge. The sole admitted coredump
-drop-in remains the exact pinned Noble
-`systemd-coredump@.service.d/apport-coredump-hook.conf` generation.
+to make a loaded handler disappear; any loaded protected-family unit of any
+systemd 255 unit type or queued job fails closed. The static proof mechanically
+rejects every protected-family fragment, including `.path`, `.timer`,
+`.socket`, implicit same-name service/template activation and `Accept=yes`, in
+the complete manager `UnitPath`, independent of the file contents. It likewise
+rejects symlink and hard-link aliases and every drop-in directory systemd 255
+would merge, including recursive dash truncation while retaining both the
+concrete `@instance` and template `@` forms. A benign `Environment=` value that
+only contains a protected-family string remains admissible because it has no
+activation semantics. The sole admitted coredump drop-in remains the exact
+pinned Noble `systemd-coredump@.service.d/apport-coredump-hook.conf`
+generation.
 
 The candidate persistent policy has exact safety-first bytes:
 
@@ -204,6 +219,9 @@ The canonical schema-v2 plan binds:
   bind the same normalized protected-template load-path closure used by runtime
   generation fences and the rollback in-mutator re-proof, as well as the masks
   and pinned vendor closure;
+- the exact ordered manager `UnitPath`, plus absent-root or complete trusted
+  directory generations for every root and nested directory traversed by the
+  static proof;
 - /var/crash directory device, inode, uid, gid, mode 3777, and sorted empty
   entry observation.
 
