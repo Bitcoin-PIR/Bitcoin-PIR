@@ -9,6 +9,10 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { validatePublisherNetnsTree } from "./payment-v1-publisher-netns-gate.mjs";
+import {
+  validateBuildManifestV1,
+  validateClosedHaproxyConfigV1,
+} from "./payment-v1-directory-public-haproxy-artifact-gate.mjs";
 
 export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/pir-primary.service":
@@ -26,6 +30,12 @@ export const ACTIVE_BASELINES = Object.freeze({
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in":
+    "e33aec1e3fc70e6705ef9673fe5f0b0af11f86b8d550c03c52769fed7123ad93",
+  "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in":
+    "ea303dfe0de1b689d0f80d75b4b0edd32e5f94734bede5c5d282c4b2391b2d85",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in":
+    "5114ce5b56b77f057df04453c7f4af55db47f4e59efb317df9f801207ebe2473",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
     "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
@@ -52,12 +62,18 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
     "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "9f8e90084553bfa0e36768631e21295720b627fc0b25489d124ddee4657f823c",
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
+    "5a5927d344c5750da8882af981b67916bd2801551e3de2a62d03f6a99955e6d1",
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in":
+    "ab75460760ef79721bf430f9ae80d5b613cde0d58bc5cb88ee80d1f0b4693876",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
     "8e416e9010f11722cfdf21433c86b9a1bb3dab380988bb62af7af565666f9453",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in":
     "f7cb021b605454861f5c52e2ddf11610b545227b8b343f19e0309ed07e753728",
+  "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs":
+    "6061cd5b04feed6ba425f589eea10dbb5103060df8328716bf4ca08ce37c4827",
 });
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
@@ -65,6 +81,9 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+  "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
@@ -78,6 +97,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
@@ -98,6 +119,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
   "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",
   "scripts/payment-v1-publisher-netns.c",
+  "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs",
 ]);
 
 const TEMPLATE_ROOT = "deploy/payment-v1";
@@ -1420,6 +1442,156 @@ function validateSourceFairEdgeUnit(text) {
   rejectPattern(text, /(?:^|\n)\s*StateDirectory/um, label, "persistent state directory");
 }
 
+function validateDirectoryPublicEdgeUnit(text) {
+  const label = "Payment V1 directory-public HAProxy edge template";
+  const unit = validateInactiveSystemdTemplate(text, label, [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED",
+  ], { requireStateDirectoryMode: false });
+  exactDirectiveKeys(unit, "Unit", [
+    "Description", "After", "Wants", "Before", "ConditionPathExists",
+  ], label);
+  exactDirectiveKeys(unit, "Service", [
+    "Type", "User", "Group", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
+    "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart",
+    "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE", "LimitCORE",
+    "MemoryMax", "MemorySwapMax", "TasksMax", "StandardOutput", "StandardError",
+    "NoNewPrivileges", "PrivateDevices", "PrivateTmp", "ProtectSystem",
+    "ProtectHome", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
+    "ProtectControlGroups", "ProtectClock", "ProtectHostname", "ProtectProc", "ProcSubset",
+    "LockPersonality", "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
+    "RestrictNamespaces", "SystemCallArchitectures", "CapabilityBoundingSet",
+    "AmbientCapabilities", "RestrictAddressFamilies", "IPAddressDeny",
+    "IPAddressAllow", "ReadOnlyPaths", "ReadWritePaths",
+  ], label);
+  for (const key of [
+    "NoNewPrivileges", "PrivateDevices", "PrivateTmp", "ProtectHome",
+    "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
+    "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
+    "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
+    "RestrictNamespaces",
+  ]) exactDirectiveValues(unit, "Service", key, ["true"], label);
+  for (const [key, value] of [
+    ["Description", "BitcoinPIR directory-public source-fair edge (template only)"],
+    ["After", "network-online.target"],
+    ["Wants", "network-online.target"],
+    ["Before", "bhtm-caddy.service"],
+  ]) exactDirectiveValues(unit, "Unit", key, [value], label);
+  for (const [key, value] of [
+    ["Type", "exec"],
+    ["User", "bitcoinpir-directory-public-edge"],
+    ["Group", "bitcoinpir-directory-public-edge"],
+    ["UMask", "0007"],
+    ["RuntimeDirectory", "bitcoinpir-directory-public-edge"],
+    ["RuntimeDirectoryMode", "0750"],
+    ["WorkingDirectory", "/run/bitcoinpir-directory-public-edge"],
+    ["Restart", "no"],
+    ["TimeoutStartSec", "30"],
+    ["TimeoutStopSec", "15"],
+    ["LimitNOFILE", "512"],
+    ["LimitCORE", "0"],
+    ["MemoryMax", "134217728"],
+    ["MemorySwapMax", "0"],
+    ["TasksMax", "64"],
+    ["StandardOutput", "null"],
+    ["StandardError", "null"],
+    ["ProtectSystem", "strict"],
+    ["ProtectProc", "invisible"],
+    ["ProcSubset", "pid"],
+    ["SystemCallArchitectures", "native"],
+    ["CapabilityBoundingSet", ""],
+    ["AmbientCapabilities", ""],
+    ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
+    ["IPAddressDeny", "any"],
+    ["IPAddressAllow", "localhost"],
+    ["ReadOnlyPaths", "/etc/bitcoinpir/payment-v1/directory-public-edge /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@"],
+    ["ReadWritePaths", "/run/bitcoinpir-directory-public-edge"],
+  ]) exactDirectiveValues(unit, "Service", key, [value], label);
+  exactDirectiveValues(unit, "Service", "ExecStartPre", [
+    "/usr/bin/test -x /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256",
+    "/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -c -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg",
+  ], label);
+  exactDirectiveValues(unit, "Service", "ExecStart", [
+    "/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -W -db -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg",
+  ], label);
+  rejectPattern(text, /(?:^|\n)\s*(?:StateDirectory|RestartSec|NotifyAccess)/mu, label, "persistent, restart or notify policy");
+  rejectPattern(text, /(?:^|\s)-Ws(?:\s|$)/mu, label, "systemd-notify HAProxy mode unsupported by the static artifact");
+}
+
+function validateDirectoryPublicCaddyManagedBlock(text) {
+  const label = "integrated existing bhtm-Caddy directory-public managed block";
+  const begin =
+    "# BEGIN BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-directory-public-v1";
+  const end =
+    "# END BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-directory-public-v1";
+  if ((text.match(new RegExp(begin, "gu")) ?? []).length !== 1 ||
+      (text.match(new RegExp(end, "gu")) ?? []).length !== 1) {
+    fail(`${label} must contain one exact transaction marker pair`);
+  }
+  if (!text.endsWith("\n")) fail(`${label} must end in canonical LF`);
+  rejectPattern(text, /\r|\0/u, label, "non-canonical text");
+  rejectPattern(text, /(?:^|\n)\s*\{\s*(?:\n|$)/mu, label, "global options block");
+  rejectPattern(text, /(?:^|\n)\s*(?:log|log_append|log_name)(?:\s|$)/mu, label, "logging");
+  rejectPattern(text, /\b(?:import|invoke|forward_auth|php_fastcgi|file_server|redir)\b/mu, label, "unreviewed expansion or handler");
+  const headers = topLevelCaddyBlockHeaders(text, label);
+  if (JSON.stringify(headers) !== JSON.stringify(["@DIRECTORY_RELAY_WSS_HOST@ {"])) {
+    fail(`${label} must contain exactly the public directory hostname block`);
+  }
+  const active = activeTemplateLines(text, label);
+  const upstreams = active
+    .filter((line) => line.startsWith("reverse_proxy "))
+    .map((line) => /^reverse_proxy\s+(\S+)\s+\{$/u.exec(line)?.[1]);
+  if (JSON.stringify(upstreams) !== JSON.stringify([
+    "unix//run/bitcoinpir-directory-public-edge/directory-public.sock",
+  ])) {
+    fail(`${label} must use only the isolated directory-public Unix socket`);
+  }
+  for (const required of [
+    "bind @PUBLIC_HTTPS_BIND@",
+    "path /",
+    "expression {http.request.uri} == \"/\"",
+    "proxy_protocol v2",
+    "header_up -*",
+    "header_down -Set-Cookie",
+    "respond \"\" 404",
+  ]) requireText(active.join("\n"), required, label);
+  rejectPattern(text, /reverse_proxy\s+(?:127\.0\.0\.1|localhost|\[[^\]]+\]|[A-Za-z0-9.-]+):/iu, label, "direct or hostname application bypass");
+}
+
+function validateDirectoryPublicCaddyDropin(text) {
+  const label = "bhtm-Caddy directory-public ordering drop-in";
+  const active = activeTemplateLines(text, label);
+  const expected = [
+    "[Unit]",
+    "Wants=bitcoinpir-payment-v1-directory-public-edge.service",
+    "After=bitcoinpir-payment-v1-directory-public-edge.service",
+  ];
+  if (JSON.stringify(active) !== JSON.stringify(expected)) {
+    fail(`${label} must contain only the exact one-way ordering relation`);
+  }
+}
+
+function validateDirectoryPublicBuildManifestTemplate(text) {
+  const label = "directory-public static HAProxy build-manifest template";
+  if ((text.match(/@HAPROXY_SHA256@/gu) ?? []).length !== 3) {
+    fail(`${label} must bind the selected artifact digest exactly three times`);
+  }
+  const rendered = text.replaceAll("@HAPROXY_SHA256@", "0".repeat(64));
+  let manifest;
+  try {
+    manifest = JSON.parse(rendered);
+  } catch {
+    fail(`${label} must remain valid JSON after placeholder rendering`);
+  }
+  validateBuildManifestV1(manifest);
+}
+
 function activeTemplateLines(text, label) {
   rejectPattern(text, /\r/u, label, "carriage return");
   rejectPattern(text, /\0/u, label, "NUL byte");
@@ -2452,6 +2624,36 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
   );
   validateSourceFairHaproxy(sourceFairHaproxy.text);
+
+  const directoryPublicEdgeUnit = readRequired(
+    root,
+    "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+  );
+  validateDirectoryPublicEdgeUnit(directoryPublicEdgeUnit.text);
+
+  const directoryPublicHaproxy = readRequired(
+    root,
+    "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+  );
+  validateClosedHaproxyConfigV1(directoryPublicHaproxy.text);
+
+  const directoryPublicBuildManifest = readRequired(
+    root,
+    "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+  );
+  validateDirectoryPublicBuildManifestTemplate(directoryPublicBuildManifest.text);
+
+  const directoryPublicCaddyBlock = readRequired(
+    root,
+    "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
+  );
+  validateDirectoryPublicCaddyManagedBlock(directoryPublicCaddyBlock.text);
+
+  const directoryPublicCaddyDropin = readRequired(
+    root,
+    "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+  );
+  validateDirectoryPublicCaddyDropin(directoryPublicCaddyDropin.text);
 
   const activationPrerequisites = readRequired(
     root,

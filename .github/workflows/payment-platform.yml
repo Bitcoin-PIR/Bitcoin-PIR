@@ -44,6 +44,8 @@ on:
       - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-core-pattern-*'
+      - 'scripts/payment-v1-directory-public-overlay-assets.test.mjs'
+      - 'scripts/payment-v1-directory-public-haproxy-artifact-gate*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -99,6 +101,8 @@ on:
       - 'scripts/payment-v1-integrated-caddy-*'
       - 'scripts/payment-v1-caddy-admin-uds-*'
       - 'scripts/payment-v1-core-pattern-*'
+      - 'scripts/payment-v1-directory-public-overlay-assets.test.mjs'
+      - 'scripts/payment-v1-directory-public-haproxy-artifact-gate*'
       - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
@@ -601,8 +605,13 @@ jobs:
             scripts/payment-v1-core-pattern-lock-exec.test.mjs
           sh -n scripts/payment-v1-core-pattern-independent-kernel-gate.sh
           node --test scripts/payment-v1-core-pattern-independent-kernel-gate.test.mjs
+          node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+          node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+          node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
           node --check scripts/payment-v1-source-fair-edge.test.mjs
           node --test --test-concurrency=1 \
+            scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+            scripts/payment-v1-directory-public-overlay-assets.test.mjs \
             scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
             scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
             scripts/payment-v1-source-fair-edge.test.mjs
@@ -657,6 +666,17 @@ jobs:
               scripts/payment-v1-caddy-admin-uds-gate.test.mjs \
               scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs \
               scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
+            node --test \
+              --test-name-pattern='runtime evidence review aid|static module request' \
+              scripts/payment-v1-linux-runtime-evidence.test.mjs
           sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
           scripts/payment-v1-caddy-admin-uds-process.test.sh
           sh -n scripts/payment-v1-caddy-admin-uds-systemd.test.sh

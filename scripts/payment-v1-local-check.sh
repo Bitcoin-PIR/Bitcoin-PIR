@@ -125,6 +125,12 @@ node --test \
   scripts/payment-v1-publisher-netns-ceremony.test.mjs \
   scripts/payment-v1-publisher-netns-schema.test.mjs \
   scripts/payment-v1-publisher-private-health-probe.test.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+  scripts/payment-v1-directory-public-overlay-assets.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
@@ -444,6 +450,12 @@ node --test \
   scripts/payment-v1-publisher-netns-ceremony.test.mjs \
   scripts/payment-v1-publisher-netns-schema.test.mjs \
   scripts/payment-v1-publisher-private-health-probe.test.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+  scripts/payment-v1-directory-public-overlay-assets.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \

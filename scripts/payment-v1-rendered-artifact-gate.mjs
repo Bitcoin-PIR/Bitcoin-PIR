@@ -31,6 +31,8 @@ import {
   validatePublisherUnitV1,
 } from
   "./payment-v1-publisher-netns-gate.mjs";
+import { validateBuildManifestV1 } from
+  "./payment-v1-directory-public-haproxy-artifact-gate.mjs";
 
 import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
 
@@ -165,6 +167,19 @@ const PROFILE_CATALOG = Object.freeze({
       "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
       "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
       "scripts/payment-v1-publisher-netns-schema.mjs",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-directory-public-v1": Object.freeze({
+    // This profile renders only the isolated public-directory edge assets.
+    // It deliberately retains absent source-ready and generation-guard
+    // sentinels; rendering is not activation approval.
+    templates: Object.freeze([
+      "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+      "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+      "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
+      "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+      "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs",
     ]),
   }),
   "edge-hetzner-v1": Object.freeze({
@@ -441,6 +456,48 @@ const TEMPLATE_CATALOG = Object.freeze({
     targetPath:
       "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
     modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in": {
+    artifactClass: "systemd-dropin",
+    targetPath:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-directory-public-edge.conf",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/directory-public.managed.Caddyfile",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg",
+    modes: ["0400", "0440", "0600", "0640"],
+    rootOwned: false,
+  },
+  "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.json",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-directory-public-haproxy-artifact-gate.mjs",
+    modes: ["0555"],
     rootOwned: true,
   },
   "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in": {
@@ -2172,6 +2229,15 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
     ]),
   }),
+  "integrated-existing-bhtm-caddy-directory-public-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2420,6 +2486,53 @@ function validateProfileUnitPolicy(
       fail(`${label} blocked directory-relay-v1 must not configure RestartSec`);
     }
   }
+  if (
+    deploymentProfile ===
+      "integrated-existing-bhtm-caddy-directory-public-v1" &&
+    fragmentPath ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service"
+  ) {
+    for (const [key, expected] of [
+      ["Type", "exec"],
+      ["Restart", "no"],
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "512"],
+      ["MemoryMax", "134217728"],
+      ["MemorySwapMax", "0"],
+      ["TasksMax", "64"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep directory-public ${key}=${expected}`);
+      }
+    }
+    if (hardening.RestartSec !== undefined || hardening.NotifyAccess !== undefined) {
+      fail(`${label} must not configure restart delay or notify semantics`);
+    }
+    const commandMatch =
+      /^(\/opt\/bitcoinpir\/haproxy\/[0-9a-f]{64}\/haproxy) -W -db -q -f \/etc\/bitcoinpir\/payment-v1\/directory-public-edge\/haproxy\.cfg$/u.exec(
+        execStart[0] ?? "",
+      );
+    if (execStart.length !== 1 || commandMatch === null) {
+      fail(`${label} must execute the static-compatible HAProxy master-worker command`);
+    }
+    const selectedBinary = commandMatch[1];
+    const expectedPreflight = [
+      `/usr/bin/test -x ${selectedBinary}`,
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256",
+      `${selectedBinary} -c -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg`,
+    ];
+    if (canonicalize(execStartPre) !== canonicalize(expectedPreflight)) {
+      fail(`${label} must preflight the exact directory-public artifact closure`);
+    }
+  }
   const privateRequestEdge =
     (deploymentProfile === "integrated-existing-bhtm-caddy-v1" &&
       fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service") ||
@@ -2429,7 +2542,11 @@ function validateProfileUnitPolicy(
         "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
       ]).has(fragmentPath)) ||
     (deploymentProfile === "edge-rollback-authority-v1" &&
-      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-edge.service");
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-edge.service") ||
+    (deploymentProfile ===
+      "integrated-existing-bhtm-caddy-directory-public-v1" &&
+      fragmentPath ===
+        "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service");
   if (privateRequestEdge) {
     for (const [key, expected] of [
       ["StandardError", "null"],
@@ -2891,6 +3008,20 @@ function normalizedOverlayTransactionSource(text, expectedHelperSha256) {
 }
 
 function configManagedReferences(sourcePath, text, plan) {
+  if (
+    sourcePath ===
+    "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in"
+  ) {
+    const manifest = parseStrictJson(
+      text,
+      "rendered directory-public HAProxy build manifest",
+    );
+    const artifactSha256 = validateBuildManifestV1(manifest);
+    if (artifactSha256 !== plan.placeholders.HAPROXY_SHA256) {
+      fail("rendered directory-public HAProxy build manifest differs from the selected binary");
+    }
+    return [`/opt/bitcoinpir/haproxy/${artifactSha256}/haproxy`];
+  }
   if (sourcePath === "scripts/payment-v1-caddy-admin-uds-gate.mjs") {
     requireClosedJavaScriptImportHeader(
       text,
@@ -3221,6 +3352,17 @@ function validateHashManifestScope(manifestPath, entries, plan) {
       return;
     case "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg");
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256":
+      oneExact(`/opt/bitcoinpir/haproxy/${plan.placeholders.HAPROXY_SHA256}/haproxy`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg");
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256":
+      oneExact(
+        "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.json",
+      );
       return;
     case "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256":
       oneExact(
@@ -4048,6 +4190,34 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         uid: sourceFairIdentity.uid,
       });
     }
+  }
+  if (
+    manifest.deployment_profile ===
+    "integrated-existing-bhtm-caddy-directory-public-v1"
+  ) {
+    const identity = manifest.service_identities.find(
+      (entry) =>
+        entry.unit_name ===
+        "bitcoinpir-payment-v1-directory-public-edge.service",
+    );
+    if (!identity) {
+      fail("directory-public edge runtime request is missing its service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: identity.gid,
+      mode: "0750",
+      target_path: "/run/bitcoinpir-directory-public-edge",
+      uid: identity.uid,
+    });
+    runtimePaths.push({
+      file_type: "socket",
+      gid: identity.gid,
+      mode: "0660",
+      target_path:
+        "/run/bitcoinpir-directory-public-edge/directory-public.sock",
+      uid: identity.uid,
+    });
   }
   if (manifest.deployment_profile === "edge-rollback-authority-v1") {
     const edgeIdentity = manifest.service_identities.find(

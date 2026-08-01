@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -96,6 +96,17 @@ const PUBLISHER_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-publisher-netns-gate.mjs",
 );
+const DIRECTORY_PUBLIC_HAPROXY_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-directory-public-haproxy-artifact-gate.mjs",
+);
+const REVIEWED_RUNTIME_EVIDENCE_MODULE_PATHS = new Set([
+  COLLECTOR,
+  RENDERED_GATE,
+  TEMPLATE_GATE,
+  PUBLISHER_GATE,
+  DIRECTORY_PUBLIC_HAPROXY_GATE,
+]);
 const UINT64_MAX_DECIMAL = "18446744073709551615";
 assert.equal(
   REVIEWED_SYSTEMD_VERSION,
@@ -165,149 +176,12 @@ function emptyCredentialProperties() {
   };
 }
 
-function moduleLoaderCodeView(source, label) {
-  const output = source.split("");
-  let cursor = 0;
-  const blank = (start, end) => {
-    for (let index = start; index < end; index += 1) {
-      if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
-    }
-  };
-  const consumeQuoted = (quote) => {
-    const start = cursor;
-    cursor += 1;
-    while (cursor < source.length) {
-      if (source[cursor] === "\\") {
-        cursor += 2;
-        continue;
-      }
-      if (source[cursor] === quote) {
-        cursor += 1;
-        blank(start, cursor);
-        return;
-      }
-      cursor += 1;
-    }
-    assert.fail(`${label} contains an unterminated string literal`);
-  };
-  const consumeLineComment = () => {
-    const start = cursor;
-    cursor += 2;
-    while (cursor < source.length && !new Set(["\n", "\r"]).has(source[cursor])) {
-      cursor += 1;
-    }
-    blank(start, cursor);
-  };
-  const consumeBlockComment = () => {
-    const start = cursor;
-    const end = source.indexOf("*/", cursor + 2);
-    assert.ok(end >= 0, `${label} contains an unterminated block comment`);
-    cursor = end + 2;
-    blank(start, cursor);
-  };
-  const regexCanStartHere = () => {
-    let previous = cursor - 1;
-    while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
-    return previous < 0 || /[([{,:;=!?&|+*%^~<>-]/u.test(source[previous]);
-  };
-  const consumeRegex = () => {
-    const start = cursor;
-    let inCharacterClass = false;
-    cursor += 1;
-    while (cursor < source.length) {
-      if (source[cursor] === "\\") {
-        cursor += 2;
-        continue;
-      }
-      if (source[cursor] === "[") inCharacterClass = true;
-      if (source[cursor] === "]") inCharacterClass = false;
-      if (source[cursor] === "/" && !inCharacterClass) {
-        cursor += 1;
-        while (cursor < source.length && /[a-z]/iu.test(source[cursor])) cursor += 1;
-        blank(start, cursor);
-        return;
-      }
-      assert.ok(
-        source[cursor] !== "\n" && source[cursor] !== "\r",
-        `${label} contains an unterminated regular expression`,
-      );
-      cursor += 1;
-    }
-    assert.fail(`${label} contains an unterminated regular expression`);
-  };
-  const scanCode = (stopAtTemplateBrace = false) => {
-    let braceDepth = 0;
-    while (cursor < source.length) {
-      const character = source[cursor];
-      if (character === "'" || character === '"') {
-        consumeQuoted(character);
-        continue;
-      }
-      if (character === "`") {
-        consumeTemplate();
-        continue;
-      }
-      if (character === "/" && source[cursor + 1] === "/") {
-        consumeLineComment();
-        continue;
-      }
-      if (character === "/" && source[cursor + 1] === "*") {
-        consumeBlockComment();
-        continue;
-      }
-      if (character === "/" && regexCanStartHere()) {
-        consumeRegex();
-        continue;
-      }
-      if (stopAtTemplateBrace && character === "}" && braceDepth === 0) {
-        blank(cursor, cursor + 1);
-        cursor += 1;
-        return;
-      }
-      if (stopAtTemplateBrace && character === "{") braceDepth += 1;
-      if (stopAtTemplateBrace && character === "}") braceDepth -= 1;
-      cursor += 1;
-    }
-    assert.equal(stopAtTemplateBrace, false, `${label} contains an unterminated template expression`);
-  };
-  const consumeTemplate = () => {
-    const opening = cursor;
-    cursor += 1;
-    blank(opening, cursor);
-    while (cursor < source.length) {
-      if (source[cursor] === "\\") {
-        const start = cursor;
-        cursor = Math.min(cursor + 2, source.length);
-        blank(start, cursor);
-        continue;
-      }
-      if (source[cursor] === "`") {
-        blank(cursor, cursor + 1);
-        cursor += 1;
-        return;
-      }
-      if (source[cursor] === "$" && source[cursor + 1] === "{") {
-        blank(cursor, cursor + 2);
-        cursor += 2;
-        scanCode(true);
-        continue;
-      }
-      blank(cursor, cursor + 1);
-      cursor += 1;
-    }
-    const line = source.slice(0, opening).split("\n").length;
-    assert.fail(`${label} contains an unterminated template literal opened at line ${line}`);
-  };
-  scanCode();
-  return output.join("");
-}
-
-function staticModuleSpecifiers(source, label) {
+function staticModuleRequests(source, label) {
   const parser = String.raw`
     const { readFileSync } = require("node:fs");
     const { SourceTextModule } = require("node:vm");
     const parsedModule = new SourceTextModule(readFileSync(0, "utf8"));
-    process.stdout.write(JSON.stringify(parsedModule.dependencySpecifiers));
+    process.stdout.write(JSON.stringify(parsedModule.moduleRequests));
   `;
   const result = spawnSync(
     process.execPath,
@@ -319,24 +193,65 @@ function staticModuleSpecifiers(source, label) {
   return JSON.parse(result.stdout);
 }
 
-function assertReviewedModuleClosure(source, expectedSpecifiers, label) {
-  const code = moduleLoaderCodeView(source, label);
-  for (const [name, pattern] of [
-    ["dynamic import", /\bimport\s*\(/u],
-    ["CommonJS require", /\brequire\s*\(/u],
-    ["createRequire", /\bcreateRequire\b/u],
-    ["module registration", /\bmodule\s*\.\s*(?:register|registerHooks)\b/u],
-    ["builtin module lookup", /\bgetBuiltinModule\b/u],
-    ["worker loader", /\b(?:Worker|SharedWorker|importScripts)\b/u],
-    ["eval loader", /\beval\s*\(/u],
-    ["Function loader", /\bFunction\s*\(/u],
-  ]) {
-    assert.doesNotMatch(code, pattern, `${label} contains forbidden ${name}`);
+function assertStaticModuleRequestShapeV1(request, label) {
+  const keys = Object.keys(request).sort();
+  const node22Keys = ["attributes", "specifier"];
+  const node24Keys = ["attributes", "phase", "specifier"];
+  assert.ok(
+    [node22Keys, node24Keys].some(
+      (expected) => JSON.stringify(keys) === JSON.stringify(expected),
+    ),
+    `${label} static module request shape changed`,
+  );
+  if (Object.hasOwn(request, "phase")) {
+    assert.equal(
+      request.phase,
+      "evaluation",
+      `${label} static module request phase must remain evaluation`,
+    );
   }
   assert.deepEqual(
-    [...staticModuleSpecifiers(source, label)].sort(),
-    [...expectedSpecifiers].sort(),
-    `${label} static module dependency closure changed`,
+    request.attributes,
+    {},
+    `${label} static module request attributes must remain empty`,
+  );
+  assert.equal(typeof request.specifier, "string", `${label} specifier must be a string`);
+}
+
+function assertExactStaticModuleRequests(
+  source,
+  expected,
+  modulePath,
+  label = modulePath,
+) {
+  const builtins = [];
+  const locals = [];
+  for (const request of staticModuleRequests(source, label)) {
+    assertStaticModuleRequestShapeV1(request, label);
+    if (request.specifier.startsWith("node:")) {
+      builtins.push(request.specifier);
+      continue;
+    }
+    if (request.specifier.startsWith("./")) {
+      const resolved = resolve(dirname(modulePath), request.specifier);
+      assert.ok(
+        REVIEWED_RUNTIME_EVIDENCE_MODULE_PATHS.has(resolved),
+        `${label} local static module request leaves the reviewed five-file closure: ${request.specifier}`,
+      );
+      locals.push(request.specifier);
+      continue;
+    }
+    assert.fail(`${label} contains an unreviewed static module request: ${request.specifier}`);
+  }
+  assert.deepEqual(
+    builtins.sort(),
+    [...expected.builtins].sort(),
+    `${label} static Node builtin request set changed`,
+  );
+  assert.deepEqual(
+    locals.sort(),
+    [...expected.locals].sort(),
+    `${label} local static module edge set changed`,
   );
 }
 
@@ -885,62 +800,145 @@ test("runtime collector reads credentials only from the systemd Service interfac
   assert.doesNotMatch(collector, /systemctl/);
 });
 
-test("runtime evidence release keeps the exact four-script and builtin import closure", () => {
-  assertReviewedModuleClosure(readFileSync(COLLECTOR, "utf8"), [
-    "./payment-v1-publisher-netns-gate.mjs",
-    "./payment-v1-rendered-artifact-gate.mjs",
-    "node:child_process",
-    "node:crypto",
-    "node:fs",
-    "node:path",
-    "node:perf_hooks",
-    "node:url",
-  ], COLLECTOR);
-  assertReviewedModuleClosure(readFileSync(RENDERED_GATE, "utf8"), [
-    "./payment-v1-deployment-template-gate.mjs",
-    "./payment-v1-publisher-netns-gate.mjs",
-    "node:crypto",
-    "node:fs",
-    "node:net",
-    "node:path",
-    "node:url",
-  ], RENDERED_GATE);
-  assertReviewedModuleClosure(readFileSync(TEMPLATE_GATE, "utf8"), [
-    "./payment-v1-publisher-netns-gate.mjs",
-    "node:crypto",
-    "node:fs",
-    "node:path",
-    "node:url",
-  ], TEMPLATE_GATE);
-  assertReviewedModuleClosure(readFileSync(PUBLISHER_GATE, "utf8"), [
-    "node:crypto",
-    "node:fs",
-    "node:path",
-    "node:url",
-  ], PUBLISHER_GATE);
+// This parser-backed check makes static dependency expansion review-visible.
+// Exact five-file hashes, a frozen source commit, the exact Node/toolchain, and
+// independent semantic review remain the authority. This is not a JavaScript
+// sandbox and does not prove the absence of alternate runtime loader surfaces.
+test("runtime evidence review aid keeps exact five-file static module requests", () => {
+  for (const [modulePath, expected] of [
+    [COLLECTOR, {
+      builtins: [
+        "node:child_process",
+        "node:crypto",
+        "node:fs",
+        "node:path",
+        "node:perf_hooks",
+        "node:url",
+      ],
+      locals: [
+        "./payment-v1-publisher-netns-gate.mjs",
+        "./payment-v1-rendered-artifact-gate.mjs",
+      ],
+    }],
+    [RENDERED_GATE, {
+      builtins: ["node:crypto", "node:fs", "node:net", "node:path", "node:url"],
+      locals: [
+        "./payment-v1-deployment-template-gate.mjs",
+        "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
+        "./payment-v1-publisher-netns-gate.mjs",
+      ],
+    }],
+    [TEMPLATE_GATE, {
+      builtins: ["node:crypto", "node:fs", "node:path", "node:url"],
+      locals: [
+        "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
+        "./payment-v1-publisher-netns-gate.mjs",
+      ],
+    }],
+    [PUBLISHER_GATE, {
+      builtins: ["node:crypto", "node:fs", "node:path", "node:url"],
+      locals: [],
+    }],
+    [DIRECTORY_PUBLIC_HAPROXY_GATE, {
+      builtins: ["node:crypto", "node:fs", "node:path", "node:url"],
+      locals: [],
+    }],
+  ]) {
+    assertExactStaticModuleRequests(
+      readFileSync(modulePath, "utf8"),
+      expected,
+      modulePath,
+    );
+  }
 });
 
-test("runtime evidence release rejects alternate JavaScript module loaders", () => {
+test("static module request schema accepts only Node 22 and Node 24 evaluation shapes", () => {
+  for (const [label, request] of [
+    ["Node 22", { attributes: {}, specifier: "node:fs" }],
+    ["Node 24", { attributes: {}, phase: "evaluation", specifier: "node:fs" }],
+  ]) {
+    assert.doesNotThrow(() => assertStaticModuleRequestShapeV1(request, label));
+  }
+  for (const [label, request, error] of [
+    ["missing attributes", { specifier: "node:fs" }, /shape changed/u],
+    ["extra key", { attributes: {}, extra: true, specifier: "node:fs" }, /shape changed/u],
+    [
+      "source phase",
+      { attributes: {}, phase: "source", specifier: "node:fs" },
+      /phase must remain evaluation/u,
+    ],
+    [
+      "unknown phase",
+      { attributes: {}, phase: "unknown", specifier: "node:fs" },
+      /phase must remain evaluation/u,
+    ],
+    [
+      "attributes",
+      { attributes: { type: "json" }, specifier: "node:fs" },
+      /attributes must remain empty/u,
+    ],
+    ["non-string specifier", { attributes: {}, specifier: 1 }, /specifier must be a string/u],
+  ]) {
+    assert.throws(() => assertStaticModuleRequestShapeV1(request, label), error, label);
+  }
+});
+
+// moduleRequests intentionally exposes a dependency set: repeated requests are
+// deduplicated by Node and comparison sorts away source order. Exact file hashes
+// plus semantic review, not this aid, remain responsible for those source edits.
+test("static module request review aid keeps dependency-set duplicate and order semantics", () => {
+  const expected = { builtins: ["node:fs", "node:path"], locals: [] };
+  for (const [label, source] of [
+    ["baseline order", 'import "node:fs"; import "node:path";'],
+    ["reverse order", 'import "node:path"; import "node:fs";'],
+    [
+      "duplicate request",
+      'import "node:fs"; import "node:path"; import * as fs from "node:fs";',
+    ],
+  ]) {
+    assert.doesNotThrow(() => assertExactStaticModuleRequests(
+      source,
+      expected,
+      TEMPLATE_GATE,
+      label,
+    ));
+  }
+});
+
+test("static module request review aid rejects changed edges and attributes", () => {
   const source = readFileSync(TEMPLATE_GATE, "utf8");
   const anchor = "export const ACTIVE_BASELINES";
-  const expected = ["node:crypto", "node:fs", "node:path", "node:url"];
+  const expected = {
+    builtins: ["node:crypto", "node:fs", "node:path", "node:url"],
+    locals: [
+      "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
+      "./payment-v1-publisher-netns-gate.mjs",
+    ],
+  };
+  assert.doesNotThrow(() => assertExactStaticModuleRequests(
+    source,
+    expected,
+    TEMPLATE_GATE,
+    "unaltered template gate baseline",
+  ));
   for (const [label, injection, error] of [
-    ["dynamic", 'await import/* separated */("./dynamic-unreviewed.mjs");', /dynamic import/],
-    ["same-line static", '0; import staticUnreviewed from "./static-unreviewed.mjs";', /dependency closure changed/],
-    ["export-from", 'export { default as unreviewed } from "./export-unreviewed.mjs";', /dependency closure changed/],
-    ["package", 'import packageUnreviewed from "unreviewed-package";', /dependency closure changed/],
-    ["absolute", 'import absoluteUnreviewed from "/tmp/unreviewed.mjs";', /dependency closure changed/],
-    ["file URL", 'import fileUnreviewed from "file:///tmp/unreviewed.mjs";', /dependency closure changed/],
-    ["data URL", 'import dataUnreviewed from "data:text/javascript,export default 1";', /dependency closure changed/],
-    ["require", 'const unreviewed = require("./unreviewed.cjs");', /CommonJS require/],
-    ["createRequire", 'const unreviewed = createRequire(import.meta.url);', /createRequire/],
-    ["module register", 'module.register("./unreviewed.mjs");', /module registration/],
-    ["worker", 'new Worker("./unreviewed.mjs");', /worker loader/],
+    ["unknown local", 'import unreviewed from "./static-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["unknown local side effect", 'import "./side-effect-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["unexpected reviewed edge", 'import unexpected from "./payment-v1-rendered-artifact-gate.mjs";', /local static module edge set changed/u],
+    ["export-from", 'export { default as unreviewed } from "./export-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["export-star-from", 'export * from "./export-star-unreviewed.mjs";', /leaves the reviewed five-file closure/u],
+    ["unknown builtin", 'import * as unreviewedVm from "node:vm";', /static Node builtin request set changed/u],
+    ["package", 'import packageUnreviewed from "unreviewed-package";', /contains an unreviewed static module request/u],
+    ["absolute", 'import absoluteUnreviewed from "/tmp/unreviewed.mjs";', /contains an unreviewed static module request/u],
+    ["file URL", 'import fileUnreviewed from "file:///tmp/unreviewed.mjs";', /contains an unreviewed static module request/u],
+    ["data URL", 'import dataUnreviewed from "data:text/javascript,export default 1";', /contains an unreviewed static module request/u],
+    ["attributes", 'import * as attributedCrypto from "node:crypto" with { type: "json" };', /attributes must remain empty/u],
   ]) {
     assert.throws(
-      () => assertReviewedModuleClosure(
+      () => assertExactStaticModuleRequests(
         source.replace(anchor, `${injection}\n\n${anchor}`),
         expected,
+        TEMPLATE_GATE,
         label,
       ),
       error,

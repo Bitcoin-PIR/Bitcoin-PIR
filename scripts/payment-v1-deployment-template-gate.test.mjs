@@ -862,6 +862,42 @@ test("integrated existing-Caddy managed block rejects trust and privacy bypasses
   }
 });
 
+test("directory-public static edge rejects notify, restart and dynamic artifact drift", () => {
+  const mutations = [
+    [
+      "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      (text) => text.replace("Type=exec", "Type=notify"),
+      /Service\.Type must equal/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      (text) => text.replace("-W -db", "-Ws -db"),
+      /static|systemd-notify|ExecStart/u,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      (text) => text.replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
+      /Service directive keys|Restart must equal|restart/u,
+    ],
+    [
+      "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+      (text) => `${text}\nresolvers ambient_dns\n  nameserver dns 127.0.0.53:53\n`,
+      /not a reviewed section|section order/u,
+    ],
+    [
+      "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+      (text) => text.replace("2.8.26.tar.gz", "2.8.25.tar.gz"),
+      /build manifest source/u,
+    ],
+  ];
+  for (const [relativePath, transform, expected] of mutations) {
+    withFixture((root) => {
+      mutate(root, relativePath, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
 test("source-fair edge rejects identity leaks, persistence, bypasses, and unbounded lanes", () => {
   const mutations = [
     [

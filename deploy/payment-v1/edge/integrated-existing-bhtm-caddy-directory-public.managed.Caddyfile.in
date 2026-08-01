@@ -1,0 +1,52 @@
+# BEGIN BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-directory-public-v1
+#
+# This append-only site block exposes only the public read side of the
+# directory relay. It has no global options and inherits the exact reviewed
+# bhtm-caddy.service trust boundary.
+
+@DIRECTORY_RELAY_WSS_HOST@ {
+	bind @PUBLIC_HTTPS_BIND@
+	@directory_ws {
+		method GET
+		path /
+		header Host @DIRECTORY_RELAY_WSS_HOST@
+		header Connection *Upgrade*
+		header Upgrade websocket
+		header Sec-WebSocket-Version 13
+		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
+		expression {http.request.uri} == "/"
+	}
+
+	handle @directory_ws {
+		request_body {
+			max_size 1KiB
+		}
+		reverse_proxy unix//run/bitcoinpir-directory-public-edge/directory-public.sock {
+			header_up -*
+			header_up Host @DIRECTORY_RELAY_WSS_HOST@
+			header_up Connection Upgrade
+			header_up Upgrade websocket
+			header_up Sec-WebSocket-Version 13
+			header_up Sec-WebSocket-Key {http.request.header.Sec-WebSocket-Key}
+			header_down -Via
+			header_down -Set-Cookie
+			flush_interval -1
+			transport http {
+				versions 1.1
+				proxy_protocol v2
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_response_header 16KiB
+				max_conns_per_host 48
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}
+
+# END BITCOINPIR PAYMENT V1 MANAGED BLOCK integrated-existing-bhtm-caddy-directory-public-v1

@@ -1,0 +1,65 @@
+# BitcoinPIR directory-public source-fair edge; never install this template directly.
+[Unit]
+Description=BitcoinPIR directory-public source-fair edge (template only)
+After=network-online.target
+Wants=network-online.target
+Before=bhtm-caddy.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED
+
+[Service]
+Type=exec
+User=bitcoinpir-directory-public-edge
+Group=bitcoinpir-directory-public-edge
+UMask=0007
+RuntimeDirectory=bitcoinpir-directory-public-edge
+RuntimeDirectoryMode=0750
+WorkingDirectory=/run/bitcoinpir-directory-public-edge
+StandardOutput=null
+StandardError=null
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256
+ExecStartPre=/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -c -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg
+ExecStart=/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -W -db -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg
+Restart=no
+TimeoutStartSec=30
+TimeoutStopSec=15
+LimitNOFILE=512
+LimitCORE=0
+MemoryMax=134217728
+MemorySwapMax=0
+TasksMax=64
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-public-edge /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@
+ReadWritePaths=/run/bitcoinpir-directory-public-edge
+
+# No StateDirectory or [Install] section is allowed. Source buckets die with
+# the process and the unit can start only through the profile-specific ceremony.

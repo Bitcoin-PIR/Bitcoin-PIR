@@ -1,0 +1,108 @@
+{
+  "deployment_id": "replace-integrated-existing-bhtm-caddy-directory-public-v1",
+  "deployment_profile": "integrated-existing-bhtm-caddy-directory-public-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/directory-public-edge/haproxy",
+      "target_path": "/opt/bitcoinpir/haproxy/INVALID-REPLACE-WITH-HAPROXY-SHA256/haproxy",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/directory-public-edge/haproxy.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/directory-public-edge/directory-public-config.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/directory-public-edge/haproxy-build-manifest.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "DIRECTORY_RELAY_WSS_HOST": "INVALID_REPLACE_WITH_DIRECTORY_HOST",
+    "HAPROXY_SHA256": "INVALID_REPLACE_WITH_HAPROXY_SHA256",
+    "PUBLIC_HTTPS_BIND": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.json",
+      "uid": 0
+    },
+    {
+      "gid": 52953,
+      "mode": "0440",
+      "source_path": "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/directory-public.managed.Caddyfile",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-directory-public-edge.conf",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-directory-public-haproxy-artifact-gate.mjs",
+      "uid": 0
+    }
+  ],
+  "schema_version": 2,
+  "service_identities": [
+    {
+      "gid": 52953,
+      "group_name": "bitcoinpir-directory-public-edge",
+      "uid": 52953,
+      "unit_name": "bitcoinpir-payment-v1-directory-public-edge.service",
+      "user_name": "bitcoinpir-directory-public-edge"
+    }
+  ],
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)"
+}

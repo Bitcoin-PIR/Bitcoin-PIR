@@ -1,0 +1,7 @@
+# Reviewed one-way ordering drop-in for the pre-existing bhtm-caddy.service.
+[Unit]
+Wants=bitcoinpir-payment-v1-directory-public-edge.service
+After=bitcoinpir-payment-v1-directory-public-edge.service
+
+# The shared Caddy service is not stopped when this optional read edge stops.
+# A cold activation ceremony must still prove the edge started before Caddy.
