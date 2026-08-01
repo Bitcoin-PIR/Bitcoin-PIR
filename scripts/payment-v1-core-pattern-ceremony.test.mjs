@@ -1471,8 +1471,8 @@ test("production canonical and D-Bus parsers reject non-canonical, duplicate, an
 
 test("GetAll parsing and manager fences reject duplicate, torn, queued, PID, job, and reload evidence", () => {
   const getAll = parseBusctlGetAll(
-    '{"type":"a{sv}","data":{"NeedDaemonReload":{"type":"b","data":false},' +
-      '"Huge":{"type":"t","data":18446744073709551615}}}',
+    '{"type":"a{sv}","data":[{"NeedDaemonReload":{"type":"b","data":false},' +
+      '"Huge":{"type":"t","data":18446744073709551615}}]}',
     "GetAll",
   );
   assert.equal(getAll.NeedDaemonReload.data, false);
@@ -1480,13 +1480,26 @@ test("GetAll parsing and manager fences reject duplicate, torn, queued, PID, job
   assert.throws(
     function () {
       parseBusctlGetAll(
-        '{"type":"a{sv}","data":{"Id":{"type":"s","data":"a"},' +
-          '"Id":{"type":"s","data":"a"}}}',
+        '{"type":"a{sv}","data":[{"Id":{"type":"s","data":"a"},' +
+          '"Id":{"type":"s","data":"a"}}]}',
         "GetAll",
       );
     },
     /duplicate JSON key/u,
   );
+  for (const malformedData of [
+    '{}',
+    '[]',
+    '[{},{}]',
+    '[[]]',
+  ]) {
+    assert.throws(
+      function () {
+        parseBusctlGetAll('{"type":"a{sv}","data":' + malformedData + '}', "GetAll");
+      },
+      /signature differs from a\{sv\}/u,
+    );
+  }
   const objectPath = "/org/freedesktop/systemd1/unit/apport_2eservice";
   const row = [APPORT_UNIT, "Apport", "loaded", "active", "exited", "", objectPath, 0, "", "/"];
   const variant = function (type, data) { return { data, type }; };
