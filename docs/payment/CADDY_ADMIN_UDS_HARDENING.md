@@ -115,11 +115,8 @@ rather than widening this executor.
 `LimitCORE`, `MemorySwapMax`, `StandardOutput` and `StandardError` are
 deliberately replaced rather than rejected because closing the existing dump,
 swap and journald paths is part of this migration. `LimitCORE=0` does not make
-a Linux pipe core handler safe by itself; target activation still requires the
-separate exact `kernel.core_pattern=|/usr/bin/false` host proof.
-That proof comes from the independently approved, all-three-sysctl ceremony in
-[`CORE_PATTERN_CEREMONY.md`](CORE_PATTERN_CEREMONY.md); this Caddy executor is
-forbidden from changing Apport, its enablement symlink, or any host sysctl.
+a Linux pipe core handler safe by itself; it remains a service-local
+best-effort setting and does not impose a host-policy prerequisite.
 
 ACME storage is not copied, renamed or reinitialized. The complete existing
 site inventory and its before/after probes are separate approved plan inputs.
@@ -254,9 +251,7 @@ The checked-in gate validates this plan and an already-collected committed
 receipt. The separate
 `scripts/payment-v1-caddy-admin-uds-transaction.mjs` implements these steps on
 the local Linux host only. It has no SSH or remote-control surface, requires
-EUID 0, Linux and exact systemd `255`, and refuses the transaction unless
-`kernel.core_pattern` already reads exactly `|/usr/bin/false`. It never writes
-that sysctl; the sysctl change and its approval remain a separate ceremony.
+EUID 0, Linux and exact systemd `255`.
 
 The executor accepts a private canonical site-inventory JSON document whose
 SHA-256 is exactly `site_preservation.existing_site_inventory_sha256`. Its

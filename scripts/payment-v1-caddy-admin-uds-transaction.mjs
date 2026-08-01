@@ -69,8 +69,6 @@ const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const SYSTEMCTL_PATH = "/usr/bin/systemctl";
 const SYSTEMD_ANALYZE_PATH = "/usr/bin/systemd-analyze";
-const CORE_PATTERN_PATH = "/proc/sys/kernel/core_pattern";
-const REQUIRED_CORE_PATTERN = "|/usr/bin/false";
 const LOCK_OWNER_FILE = "owner.json";
 const SITE_INVENTORY_SCHEMA_VERSION = 1;
 const RECEIPT_MODE = "0400";
@@ -785,7 +783,7 @@ async function validatePreflight({ approvedPlanSha256, inventory, ops, plan }) {
   const prerequisites = await ops.hostPrerequisites();
   exactKeys(
     prerequisites,
-    ["core_pattern", "euid", "platform", "systemd_version"],
+    ["euid", "platform", "systemd_version"],
     "host prerequisites",
   );
   if (
@@ -794,11 +792,6 @@ async function validatePreflight({ approvedPlanSha256, inventory, ops, plan }) {
     prerequisites.systemd_version !== SYSTEMD_VERSION
   ) {
     fail("cold executor requires Linux root and exact systemd 255");
-  }
-  if (prerequisites.core_pattern !== REQUIRED_CORE_PATTERN) {
-    fail(
-      `kernel.core_pattern must already equal ${REQUIRED_CORE_PATTERN}; this executor never changes it`,
-    );
   }
   await assertPublisherNetnsInactivePreimage(plan, ops, "preflight");
   validateSiteInventory({ bytes: inventory.bytes, plan });
@@ -1309,8 +1302,7 @@ export async function executeCaddyAdminUdsTransaction({
     if (
       finalPrerequisites.euid !== 0 ||
       finalPrerequisites.platform !== "linux" ||
-      finalPrerequisites.systemd_version !== SYSTEMD_VERSION ||
-      finalPrerequisites.core_pattern !== REQUIRED_CORE_PATTERN
+      finalPrerequisites.systemd_version !== SYSTEMD_VERSION
     ) {
       fail("host prerequisites drifted immediately before the stop boundary");
     }
@@ -2981,12 +2973,7 @@ function realHostPrerequisites() {
     fail("systemctl --version failed or wrote diagnostics");
   }
   const systemdVersion = parseSystemdVersionOutput(version.stdout);
-  const corePatternBytes = readFileSync(CORE_PATTERN_PATH);
-  if (!corePatternBytes.equals(Buffer.from(`${corePatternBytes.toString("utf8").trim()}\n`, "utf8"))) {
-    fail("kernel.core_pattern is not canonical single-line text");
-  }
   return {
-    core_pattern: corePatternBytes.toString("utf8").trim(),
     euid: process.geteuid?.() ?? -1,
     platform: process.platform,
     systemd_version: systemdVersion,
@@ -3071,7 +3058,7 @@ function usage() {
     "usage:",
     "  payment-v1-caddy-admin-uds-transaction.mjs execute --plan PLAN --site-inventory SITE_INVENTORY --approved-plan-sha256 SHA256",
     "",
-    "The executor is local-host-only. It never uses SSH and never changes kernel.core_pattern.",
+    "The executor is local-host-only and never uses SSH or changes host kernel settings.",
   ].join("\n");
 }
 

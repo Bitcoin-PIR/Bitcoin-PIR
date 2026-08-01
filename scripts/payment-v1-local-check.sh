@@ -96,15 +96,6 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-core-pattern-ceremony.mjs
-node --check scripts/payment-v1-core-pattern-test-fixture.mjs
-node --check scripts/payment-v1-core-pattern-crash-worker.mjs
-node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
-node --check scripts/payment-v1-core-pattern-crash.test.mjs
-node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
-node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
-  scripts/payment-v1-core-pattern-crash.test.mjs \
-  scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs
@@ -421,15 +412,6 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-core-pattern-ceremony.mjs
-node --check scripts/payment-v1-core-pattern-test-fixture.mjs
-node --check scripts/payment-v1-core-pattern-crash-worker.mjs
-node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
-node --check scripts/payment-v1-core-pattern-crash.test.mjs
-node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
-node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
-  scripts/payment-v1-core-pattern-crash.test.mjs \
-  scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs

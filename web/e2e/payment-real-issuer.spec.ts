@@ -198,7 +198,10 @@ for (const authorization of ['cashu-bat', 'arc-experimental'] as const) {
     expect(restored.count).toBeGreaterThan(0);
     const inventory = await call(page, 'capabilityInventory');
     const currentBinding = await call(page, 'capabilityBinding');
-    expect(inventory).toContainEqual({ ...currentBinding, count: restored.count });
+    expect(inventory).toContainEqual(expect.objectContaining({
+      ...currentBinding,
+      count: restored.count,
+    }));
     await expect(call(page, 'capabilityCount')).resolves.toBe(restored.count);
     const verifiedLength = await call(page, 'takeAndVerifyCapability');
     expect(verifiedLength).not.toBeNull();

@@ -61,7 +61,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
     "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "9f8e90084553bfa0e36768631e21295720b627fc0b25489d124ddee4657f823c",
+    "2f3392c6326c0c458b925effb23707d40c43eed7c78af7c3e89aa66f36342e08",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
     "5a5927d344c5750da8882af981b67916bd2801551e3de2a62d03f6a99955e6d1",
   "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in":
@@ -78,6 +78,10 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/README.md",
+  "deploy/payment-v1/functional-beta/README.md",
+  "deploy/payment-v1/functional-beta/issuer-all-methods.args.in",
+  "deploy/payment-v1/functional-beta/provider-all-methods.args.in",
+  "deploy/payment-v1/functional-beta/service-policy.toml.in",
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
@@ -655,7 +659,7 @@ function validateHetznerProvider(
   exactDirectiveValues(unit, "Service", "ProtectHostname", ["true"], label);
   exactDirectiveValues(unit, "Service", "ReadOnlyPaths", [configRoot], label);
   exactDirectiveValues(unit, "Service", "ReadWritePaths", [`/var/lib/${stateDirectory}`], label);
-  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["-/run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(
     unit,
     "Service",
@@ -786,7 +790,7 @@ function validateHetznerIssuer(text) {
   exactDirectiveValues(unit, "Service", "ProtectHostname", ["true"], label);
   exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/issuer /run/bitcoinpir-cln-rpc-guard/issuer /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@"], label);
   exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-payment-issuer"], label);
-  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge"], label);
+  exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["-/srv/lightning -/srv/bitcoin -/run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(
     unit,
     "Service",
@@ -2510,6 +2514,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".conf.in") &&
       !rel.endsWith(".json.in") &&
       !rel.endsWith(".sh.in") &&
+      !rel.endsWith(".toml.in") &&
       !rel.endsWith(".toml.example") &&
       !rel.endsWith(".md")
     ) {
@@ -2938,7 +2943,7 @@ export function validateDeploymentTree(rootInput) {
     relayLabel,
   );
   exactDirectiveValues(relayParsed, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-directory-relay"], relayLabel);
-  exactDirectiveValues(relayParsed, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], relayLabel);
+  exactDirectiveValues(relayParsed, "Service", "InaccessiblePaths", ["-/run/bitcoinpir-source-fair-edge"], relayLabel);
   rejectPattern(
     relayUnit.text,
     /publisher-(?:private|signing)-key|directory-(?:private|signing)-key/i,
