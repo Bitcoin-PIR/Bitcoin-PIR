@@ -305,16 +305,23 @@ These gates are source and staging controls, not hardware attestation. Their
 first real systemd/Linux execution on the target Hetzner staging host remains
 mandatory.
 
-The collector and its two local imports are also part of the trusted-root TCB.
-The exact closure is the runtime collector, rendered-artifact gate and
-deployment-template gate from one frozen commit. Release tests exact-match all
-static local and `node:` specifiers and reject alternate dynamic, CommonJS and
-worker loaders; all three scripts must be transferred and hash-verified
-together. The evidence digest binds
-the transferred result, not the honesty of target root or the script that
-created it. The activation ceremony must independently verify and run the
-collector bytes from the frozen commit; adding the collector script itself to
-the approved rendered manifest remains a defense-in-depth follow-up.
+The collector and its four transitive local modules are also part of the
+trusted-root TCB. The exact five-file closure is the runtime collector,
+rendered-artifact gate, deployment-template gate, publisher-netns gate and
+directory-public HAProxy artifact gate from one frozen commit. With the pinned
+Node version, release tests use `SourceTextModule.moduleRequests` only to
+exact-match each file's static local edges and `node:` builtin request set and
+to reject import attributes. That parser-backed check neither proves the
+absence of dynamic, CommonJS, worker or reflective loading nor provides a
+JavaScript sandbox. The real boundary is independent semantic review bound to
+all five exact SHA-256 values, the frozen source commit and the exact Node
+binary/version/toolchain; all five files must be transferred and hash-verified
+together. The evidence digest binds the transferred result, not the honesty of
+target root or the script that created it. This source-only PR does not create
+either directory-public PathExists blocker file and cannot activate the edge.
+The activation ceremony must independently verify and run the collector bytes
+from the frozen commit; adding the collector script itself to the approved
+rendered manifest remains a defense-in-depth follow-up.
 
 ### Same-host publisher namespace ceremony closure
 

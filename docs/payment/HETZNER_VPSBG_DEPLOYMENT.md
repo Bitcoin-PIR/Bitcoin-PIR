@@ -1070,22 +1070,30 @@ also checks installed bytes, NSS, ACLs, xattrs, capabilities and
 live evidence passes, these inputs remain deployment preparation rather than
 an activatable bundle.
 
-The runtime collector is not a standalone file. Its reviewed local import
-closure is exactly three sibling scripts from one frozen commit:
-`payment-v1-linux-runtime-evidence.mjs` imports
-`payment-v1-rendered-artifact-gate.mjs`, which imports
-`payment-v1-deployment-template-gate.mjs`. The release test also exact-matches
-every static `node:` builtin and rejects dynamic, CommonJS and worker loader
-entry points. Transfer and independently hash all three into the same
-root-owned, non-group/world-writable directory; copying a new collector beside
-an older gate, or copying only the collector, is forbidden. Runtime-evidence
+The runtime collector is not a standalone file. Its reviewed transitive local
+import closure is exactly five sibling scripts from one frozen commit: the
+runtime collector, rendered-artifact gate, deployment-template gate,
+publisher-netns gate and directory-public HAProxy artifact gate. With the
+pinned Node version, the release test uses `SourceTextModule.moduleRequests`
+only as a review aid: it exact-matches each file's static local edges and
+`node:` builtin request set and requires empty import attributes. It does not
+prove the absence of dynamic, CommonJS, worker or reflective loading and is not
+a JavaScript sandbox. The authority is independent semantic review bound to
+the exact SHA-256 of all five files, one frozen source commit and the exact Node
+binary/version/toolchain. Transfer and independently hash all five into the
+same root-owned, non-group/world-writable directory; copying a new collector
+beside an older gate, or copying only the collector, is forbidden. This
+source-only PR creates neither
+`/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED` nor
+`/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED`
+and cannot activate the directory-public edge. Runtime-evidence
 v9 invalidates v8 runtime requests; live v9,
 stopped-edge v5 and stopped-relay v4 invalidate live v8, stopped-edge v4 and
 stopped-relay v3 receipts respectively. Rerender the bundle and recollect
 evidence rather than editing JSON.
 
 For collection, create a canonical owner-only evidence directory outside the
-closed rendered bundle and outside the three-script source directory, then use
+closed rendered bundle and outside the five-file source directory, then use
 a new path such as
 `/root/bitcoinpir-evidence/<deployment-id>/stopped-directory-relay-v4.json` for
 `--output`. The collector requests mode `0600`, uses no-overwrite creation and
@@ -1116,11 +1124,12 @@ and unit-generation pass then runs immediately before evidence construction;
 no expensive metadata command follows that pass.
 
 The live file is trusted-root operational evidence, not hardware attestation.
-Before collection, independently verify the three-script import closure from
-the frozen commit, including each exact `node:` builtin import and the absence
-of alternate dynamic/CommonJS/worker loaders, plus its exact Node/helper
-environment. The out-of-band evidence digest detects later handoff changes but
-cannot establish that the target root or the collector was honest; the current
+Before collection, independently verify all five exact SHA-256 values from the
+frozen commit, the complete reviewed semantics and the exact Node/helper
+binary, version and toolchain. The parser-backed static request-set test is a
+review aid only; it is not evidence that alternate runtime loaders are absent.
+The out-of-band evidence digest detects later handoff changes but cannot
+establish that the target root or the collector was honest; the current
 manifest does not self-attest those script bytes.
 
 ## Failure and rollback
