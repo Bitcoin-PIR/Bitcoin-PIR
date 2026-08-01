@@ -126,6 +126,13 @@ vendor service/socket and configuration roots. Rollback removes these three
 masks only after synchronously repeating the package/path/vendor/static-load-
 path proof around a fenced runtime snapshot. It never invokes `systemctl stop`
 to make a loaded handler disappear; any loaded instance or job fails closed.
+The static proof mechanically rejects every concrete protected-template
+fragment and instance-specific `.service.d` directory in the complete manager
+`UnitPath`, independent of the file contents. It likewise rejects symlink and
+hard-link aliases, nested instance drop-ins, and every type-level or
+dash-truncated drop-in that systemd would merge. The sole admitted coredump
+drop-in remains the exact pinned Noble
+`systemd-coredump@.service.d/apport-coredump-hook.conf` generation.
 
 The candidate persistent policy has exact safety-first bytes:
 
@@ -193,8 +200,10 @@ The canonical schema-v2 plan binds:
   persistent policy, and every fixed symlink/file quarantine or prepared temp,
   lock, pending, receipt, and rollback-receipt path;
 - the fixed ordered three-mask coredump generation plus absence of every
-  reviewed `systemd-coredump` package/path generation; receipts bind both the
-  masks and the pinned vendor closure;
+  reviewed `systemd-coredump` package/path generation; the plan and receipts
+  bind the same normalized protected-template load-path closure used by runtime
+  generation fences and the rollback in-mutator re-proof, as well as the masks
+  and pinned vendor closure;
 - /var/crash directory device, inode, uid, gid, mode 3777, and sorted empty
   entry observation.
 

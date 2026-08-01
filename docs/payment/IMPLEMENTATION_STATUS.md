@@ -839,6 +839,12 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       roots absent. Rollback removes those masks only after repeating that
       absence closure inside the mutator. These masks constrain systemd and
       non-root activation, not malicious UID 0 or direct handler execution.
+      The full manager `UnitPath` scan mechanically rejects protected concrete
+      instance fragments, instance `.service.d` trees, aliases/hard links and
+      all type/dash-truncated inherited drop-ins without relying on content
+      keywords. The normalized closure is identical in the plan, configuration
+      generation, receipt and first-mask-removal re-proof; only the exact pinned
+      Noble coredump hook drop-in is admitted.
       It separates stable configuration from accepted
       settled active/exited or inactive/dead observation; rejects matching
       sysctl globs/negative exclusions, quoted/escaped foreign action

@@ -802,6 +802,52 @@ function validateSystemdCoreDumpAbsence(value, label) {
   }
 }
 
+export function reviewedCoreDumpManagedLoadPathClosure() {
+  return {
+    [APPORT_COREDUMP_HOOK_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [],
+      enablement_paths: [],
+      fragment_paths: [APPORT_COREDUMP_HOOK_UNIT_PATH],
+    },
+    [SYSTEMD_COREDUMP_SERVICE_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [APPORT_COREDUMP_HOOK_DROPIN_PATH],
+      enablement_paths: [],
+      fragment_paths: [],
+    },
+    [SYSTEMD_COREDUMP_SOCKET_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [],
+      enablement_paths: [],
+      fragment_paths: [],
+    },
+  };
+}
+
+function normalizeCoreDumpManagedLoadPaths(managed) {
+  const normalized = {};
+  const reviewed = reviewedCoreDumpManagedLoadPathClosure();
+  const maskPaths = new Set(COREDUMP_ADMIN_MASKS.map(function (mask) { return mask.path; }));
+  for (const unit of Object.keys(reviewed)) {
+    if (!isPlainObject(managed?.[unit])) {
+      fail("coredump managed load-path closure is incomplete for " + unit);
+    }
+    normalized[unit] = {
+      alias_paths: Array.from(managed[unit].alias_paths || []).sort(),
+      dropin_paths: Array.from(managed[unit].dropin_paths || []).sort(),
+      enablement_paths: Array.from(managed[unit].enablement_paths || []).sort(),
+      fragment_paths: Array.from(managed[unit].fragment_paths || []).filter(function (path) {
+        return !maskPaths.has(path);
+      }).sort(),
+    };
+  }
+  if (!same(normalized, reviewed)) {
+    fail("normalized coredump managed load-path closure differs from the reviewed generation");
+  }
+  return normalized;
+}
+
 export function transactionLayout(ceremonyId) {
   if (typeof ceremonyId !== "string" || !SLUG.test(ceremonyId)) {
     fail("transaction ceremony id must be a lowercase slug");
@@ -947,6 +993,7 @@ export function validatePlan(plan) {
     "crash_directory",
     "crash_entries",
     "coredump_admin_masks",
+    "coredump_managed_load_paths",
     "guard_state",
     "persistent_policy_state",
     "preflight_state",
@@ -978,6 +1025,12 @@ export function validatePlan(plan) {
   }
   if (!same(plan.preimage.coredump_admin_masks, coreDumpMaskSnapshot("absent"))) {
     fail("preimage coredump administrative masks must all be absent");
+  }
+  if (!same(
+    plan.preimage.coredump_managed_load_paths,
+    reviewedCoreDumpManagedLoadPathClosure(),
+  )) {
+    fail("preimage coredump managed load-path closure differs from the reviewed generation");
   }
   validateSystemdCoreDumpAbsence(
     plan.preimage.systemd_coredump_absence,
@@ -1246,6 +1299,7 @@ function expectedCoreDumpVendorClosure(plan) {
   return {
     hook_dropin: withoutBytes(plan.official_noble_apport.coredump_hook_dropin),
     hook_unit: withoutBytes(plan.official_noble_apport.coredump_hook_unit),
+    managed_load_paths: plan.preimage.coredump_managed_load_paths,
     systemd_coredump_absence: plan.preimage.systemd_coredump_absence,
   };
 }
@@ -3289,6 +3343,36 @@ function isProtectedCoreDumpUnitName(name) {
     /^systemd-coredump@[^/]+\.service$/u.test(name);
 }
 
+function isProtectedCoreDumpInstanceDropinDirectoryName(name) {
+  return /^apport-coredump-hook@[^/]+\.service\.d$/u.test(name) ||
+    /^systemd-coredump@[^/]+\.service\.d$/u.test(name);
+}
+
+function symlinkChainReferencesProtectedCoreDumpUnit(path) {
+  const visited = new Set();
+  let current = path;
+  for (let depth = 0; depth <= 64; depth += 1) {
+    if (visited.has(current)) fail("systemd symlink alias chain contains a loop: " + path);
+    visited.add(current);
+    let target;
+    try {
+      target = readlinkSync(current);
+    } catch (error) {
+      if (error.code === "EINVAL" || error.code === "ENOENT" || error.code === "ENOTDIR") {
+        return false;
+      }
+      throw error;
+    }
+    current = resolve(dirname(current), target);
+    const name = basename(current);
+    if (isProtectedCoreDumpUnitName(name) ||
+        isProtectedCoreDumpInstanceDropinDirectoryName(name)) {
+      return true;
+    }
+  }
+  fail("systemd symlink alias chain exceeds the reviewed depth: " + path);
+}
+
 function systemdDropinDirectoryNames(unit) {
   const separator = unit.lastIndexOf(".");
   if (separator < 1 || separator === unit.length - 1) {
@@ -3324,8 +3408,35 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
       fragment_paths: [],
     }];
   }));
+  const protectedCoreDumpLoadPaths = Object.entries(allowlist).flatMap(function ([unit, entry]) {
+    if (![APPORT_COREDUMP_HOOK_UNIT, SYSTEMD_COREDUMP_SERVICE_UNIT,
+      SYSTEMD_COREDUMP_SOCKET_UNIT].includes(unit)) return [];
+    return [...(entry.fragment_paths || []), ...(entry.dropin_paths || [])];
+  });
+  function aliasesProtectedCoreDumpInode(path, entry) {
+    if (!entry.isFile() || protectedCoreDumpLoadPaths.includes(path)) return false;
+    const candidate = lstatSync(path, { bigint: true });
+    if (candidate.nlink < 2n) return false;
+    return protectedCoreDumpLoadPaths.some(function (reviewedPath) {
+      let reviewed;
+      try {
+        reviewed = lstatSync(reviewedPath, { bigint: true });
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+        throw error;
+      }
+      return reviewed.isFile() && reviewed.dev === candidate.dev && reviewed.ino === candidate.ino;
+    });
+  }
   function record(path, entry, root) {
     const parentName = basename(dirname(path));
+    if (isProtectedCoreDumpInstanceDropinDirectoryName(entry.name) ||
+        isProtectedCoreDumpInstanceDropinDirectoryName(parentName)) {
+      fail("managed systemd unit has an unreviewed coredump instance drop-in path: " + path);
+    }
+    if (aliasesProtectedCoreDumpInode(path, entry)) {
+      fail("managed systemd unit has an unreviewed hard-link alias to a coredump artifact: " + path);
+    }
     const dropinUnit = units.find(function (unit) { return dropinNames[unit].has(parentName); });
     if (dropinUnit !== undefined) {
       if (!entry.isFile() || entry.isSymbolicLink() ||
@@ -3373,6 +3484,9 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
         fail("managed systemd unit has an unreviewed coredump instance or shadow: " + path);
       }
       if (entry.isSymbolicLink()) {
+        if (symlinkChainReferencesProtectedCoreDumpUnit(path)) {
+          fail("managed systemd unit has an unreviewed coredump alias: " + path);
+        }
         let target;
         try {
           target = realpathSync(path);
@@ -3829,7 +3943,7 @@ function assertSystemdCoreDumpAbsentPaths() {
   }
 }
 
-function exactCoreDumpVendorClosure(plan) {
+function exactCoreDumpVendorClosure(plan, managedLoadPaths) {
   const hook = openBoundRegular(
     APPORT_COREDUMP_HOOK_UNIT_PATH,
     "official Apport coredump hook unit",
@@ -3862,7 +3976,16 @@ function exactCoreDumpVendorClosure(plan) {
   }
   systemdCoreDumpPackageAbsent();
   assertSystemdCoreDumpAbsentPaths();
-  return expectedCoreDumpVendorClosure(plan);
+  const normalizedManagedLoadPaths = normalizeCoreDumpManagedLoadPaths(
+    managedLoadPaths || scanManagedUnitLoadPaths(reviewedManagerUnitPath()),
+  );
+  if (!same(normalizedManagedLoadPaths, plan.preimage.coredump_managed_load_paths)) {
+    fail("coredump managed load-path closure differs from the exact plan generation");
+  }
+  return {
+    ...expectedCoreDumpVendorClosure(plan),
+    managed_load_paths: normalizedManagedLoadPaths,
+  };
 }
 
 export function parseBusctlJson(text, expectedType, label) {
@@ -4736,7 +4859,7 @@ function systemdConfigurationGeneration(plan) {
     ),
     apport_gate: apportGateSnapshot(plan),
     coredump_admin_masks: coredumpAdminMasks,
-    coredump_vendor_closure: exactCoreDumpVendorClosure(plan),
+    coredump_vendor_closure: exactCoreDumpVendorClosure(plan, managedLoadPaths),
     guard: guardSnapshot(plan),
     managed_load_paths: managedLoadPaths,
     systemd_sysctl_inputs: exactSystemdSysctlInputs(plan, managedLoadPaths),
@@ -4752,7 +4875,7 @@ function realInspect(plan) {
     managedLoadPaths,
     coredumpAdminMasks[0].state === "present",
   );
-  const coredumpVendorClosure = exactCoreDumpVendorClosure(plan);
+  const coredumpVendorClosure = exactCoreDumpVendorClosure(plan, managedLoadPaths);
   const apportActivation = scanApportActivation(
     undefined,
     plan.candidate.guard_unit,
@@ -5879,6 +6002,7 @@ function observePlan(ceremonyId) {
       crash_directory: crash.directory,
       crash_entries: crash.entries,
       coredump_admin_masks: coreDumpMaskSnapshot("absent"),
+      coredump_managed_load_paths: normalizeCoreDumpManagedLoadPaths(managedLoadPaths),
       guard_state: observedGuard.state,
       persistent_policy_state: observedPolicy.state,
       preflight_state: [

@@ -467,7 +467,12 @@ foreign action edge. The `systemd-coredump` package, binary, vendor units and
 config roots must be absent; rollback removes the masks only after a fresh
 in-mutator closure proof. These masks are a systemd/non-root control, not a
 claim that malicious UID 0 cannot remove or directly bypass them. Stable unit configuration is
-separate from settled active/exited or inactive/dead observation. Matching
+separate from settled active/exited or inactive/dead observation. Concrete
+protected-template fragments, instance `.service.d` trees, symlink or
+hard-link aliases, and type/dash-truncated inherited drop-ins are rejected
+mechanically throughout the complete manager `UnitPath`, regardless of benign-
+looking contents. The same normalized load-path closure is bound into the plan,
+configuration generation, receipt, and rollback's first-mask-removal proof. Matching
 sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
 quoted/escaped external start/stop/reload dependencies, load-path overrides for
 Apport/systemd-sysctl/guard, systemd specifier/path-normalization handler

@@ -244,6 +244,11 @@ test("v2 plan pins the exact Noble coredump hook/drop-in and fixed administrativ
     function (value) { value.candidate.coredump_admin_masks[0].target = "/tmp/handler"; },
     function (value) { value.candidate.coredump_admin_masks[1].uid = 1; },
     function (value) { value.preimage.coredump_admin_masks[2].state = "present"; },
+    function (value) {
+      value.preimage.coredump_managed_load_paths[
+        "apport-coredump-hook@.service"
+      ].dropin_paths.push("/run/systemd/system/apport-coredump-hook@probe.service.d/90.conf");
+    },
     function (value) { value.preimage.systemd_coredump_absence.package_state = "installed"; },
     function (value) { value.preimage.systemd_coredump_absence.absent_paths.pop(); },
     function (value) { value.official_noble_apport.coredump_hook_unit.sha256 = "f".repeat(64); },
@@ -487,6 +492,10 @@ test("complete apply writes safe core_pattern first, binds all three sysctls, an
   assert.equal(result.outcome, "committed");
   assert.deepEqual(result.receipt.pre_state.sysctls, APPORT_SYSCTLS);
   assert.deepEqual(result.receipt.post_state.sysctls, TARGET_SYSCTLS);
+  assert.deepEqual(
+    result.receipt.post_state.coredump_vendor_closure.managed_load_paths,
+    plan.preimage.coredump_managed_load_paths,
+  );
   assert.equal(
     result.receipt.post_state.coredump_admin_masks.every(function (entry) {
       return entry.state === "present" && entry.link.target === "/dev/null";
@@ -852,6 +861,45 @@ test("rollback restores exact symlink and all three sysctls without stock ExecSt
     ops.calls.indexOf("assert-runtime:rollback-cleanup-pre-release") >= 0 &&
       ops.calls.indexOf("assert-runtime:rollback-cleanup-pre-release") <
         ops.calls.lastIndexOf("release-lock"),
+  );
+});
+
+test("rollback re-proves the receipt-bound load-path closure before removing the first coredump mask", async () => {
+  const plan = fixturePlan();
+  let injected = false;
+  const ops = new FakeOps(plan, undefined, {
+    onBoundary(name) {
+      if (name === "write:kernel.core_pattern=" + APPORT_SYSCTLS["kernel.core_pattern"] &&
+          !injected) {
+        injected = true;
+        ops.state.coredump_vendor_closure.managed_load_paths[
+          "apport-coredump-hook@.service"
+        ].dropin_paths.push(
+          "/run/systemd/system/apport-coredump-hook@probe.service.d/90-bypass.conf",
+        );
+      }
+    },
+  });
+  const apply = await applyCeremony(plan, contextFor(plan), ops);
+  await assert.rejects(
+    function () {
+      return rollbackCeremony(plan, {
+        ...contextFor(plan),
+        applyApprovalSha256: apply.receipt.apply_approval_sha256,
+        receiptSha256: apply.receipt_sha256,
+        rollbackApprovalSha256: "d".repeat(64),
+      }, ops);
+    },
+    function (error) {
+      return error instanceof CeremonyError && error.outcome === "outcome-unknown-lock-retained";
+    },
+  );
+  assert.equal(injected, true);
+  assert.ok(ops.calls.includes("reprove-coredump-absence-closure"));
+  assert.equal(ops.calls.includes("remove-coredump-admin-masks"), false);
+  assert.equal(
+    ops.state.coredump_admin_masks.every(function (entry) { return entry.state === "present"; }),
+    true,
   );
 });
 
@@ -1602,6 +1650,173 @@ test("coredump managed load paths admit only exact vendor artifacts and the thre
   assert.throws(function () {
     validateCoreDumpManagedLoadPathsForTest(foreign, true);
   }, /load-path closure differs/u);
+});
+
+test("observe load-path closure mechanically rejects protected instances and inherited drop-ins", () => {
+  function withFixture(callback) {
+    const root = mkdtempSync(join(tmpdir(), "bitcoinpir-coredump-instance-closure-"));
+    try {
+      const rootNames = [
+        "etc-control", "run-control", "run-transient", "generator-early", "etc-system",
+        "etc-attached", "run-system", "run-attached", "generator", "usr-local", "usr-lib",
+        "generator-late",
+      ];
+      const roots = rootNames.map(function (name) {
+        const path = join(root, name);
+        mkdirSync(path);
+        return realpathSync(path);
+      });
+      const vendor = roots[rootNames.indexOf("usr-lib")];
+      const hook = join(vendor, "apport-coredump-hook@.service");
+      writeFileSync(hook, NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES);
+      const officialDropinDirectory = join(vendor, "systemd-coredump@.service.d");
+      mkdirSync(officialDropinDirectory);
+      const officialDropin = join(
+        officialDropinDirectory,
+        "apport-coredump-hook.conf",
+      );
+      writeFileSync(officialDropin, NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES);
+      const allowlist = {
+        "apport-coredump-hook@.service": {
+          alias_paths: [],
+          dropin_paths: [],
+          enablement_paths: [],
+          fragment_paths: [realpathSync(hook)],
+        },
+        "systemd-coredump@.service": {
+          alias_paths: [],
+          dropin_paths: [realpathSync(officialDropin)],
+          enablement_paths: [],
+          fragment_paths: [],
+        },
+        "systemd-coredump.socket": {
+          alias_paths: [],
+          dropin_paths: [],
+          enablement_paths: [],
+          fragment_paths: [],
+        },
+      };
+      const exact = scanManagedUnitLoadPaths(roots, allowlist);
+      assert.deepEqual(exact["systemd-coredump@.service"].dropin_paths, [
+        realpathSync(officialDropin),
+      ]);
+      callback({ allowlist, hook: realpathSync(hook), rootNames, roots });
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  }
+
+  const cases = [
+    {
+      name: "Apport concrete instance fragment in generator.early",
+      mutate({ roots }) {
+        writeFileSync(join(roots[3], "apport-coredump-hook@probe.service"), "[Service]\n");
+      },
+    },
+    {
+      name: "systemd concrete instance fragment in generator.late",
+      mutate({ roots }) {
+        writeFileSync(join(roots[11], "systemd-coredump@probe.service"), "[Service]\n");
+      },
+    },
+    {
+      name: "benign-looking Apport instance drop-in",
+      mutate({ roots }) {
+        const directory = join(roots[4], "apport-coredump-hook@probe.service.d");
+        mkdirSync(directory);
+        writeFileSync(
+          join(directory, "90-bypass.conf"),
+          "[Service]\nProtectSystem=false\nEnvironment=PYTHONPATH=/var/crash\n",
+        );
+      },
+    },
+    {
+      name: "benign-looking systemd instance drop-in",
+      mutate({ roots }) {
+        const directory = join(roots[6], "systemd-coredump@probe.service.d");
+        mkdirSync(directory);
+        writeFileSync(join(directory, "90-bypass.conf"), "[Service]\nProtectSystem=false\n");
+      },
+    },
+    {
+      name: "instance drop-in symlink directory",
+      mutate({ roots }) {
+        symlinkSync(roots[6], join(roots[4], "apport-coredump-hook@probe.service.d"));
+      },
+    },
+    {
+      name: "instance drop-in symlink file",
+      mutate({ roots }) {
+        const directory = join(roots[2], "systemd-coredump@probe.service.d");
+        mkdirSync(directory);
+        symlinkSync("/dev/null", join(directory, "90-bypass.conf"));
+      },
+    },
+    {
+      name: "instance drop-in nested directory",
+      mutate({ roots }) {
+        mkdirSync(
+          join(roots[8], "apport-coredump-hook@probe.service.d", "nested", "deeper"),
+          { recursive: true },
+        );
+      },
+    },
+    {
+      name: "instance drop-in hard link",
+      mutate({ hook, roots }) {
+        const directory = join(roots[9], "systemd-coredump@probe.service.d");
+        mkdirSync(directory);
+        linkSync(hook, join(directory, "90-bypass.conf"));
+      },
+    },
+    {
+      name: "arbitrary alias to a protected concrete instance",
+      mutate({ roots }) {
+        symlinkSync(
+          "systemd-coredump@probe.service",
+          join(roots[7], "apparently-benign.service"),
+        );
+      },
+    },
+    {
+      name: "multi-level alias to a protected concrete instance",
+      mutate({ roots }) {
+        symlinkSync(
+          "systemd-coredump@probe.service",
+          join(roots[7], "middle.service"),
+        );
+        symlinkSync("middle.service", join(roots[7], "apparently-benign.service"));
+      },
+    },
+    {
+      name: "hard-link alias to the protected template",
+      mutate({ hook, roots }) {
+        linkSync(hook, join(roots[1], "apparently-benign.service"));
+      },
+    },
+    ...["service.d", "apport-.service.d", "systemd-.service.d"].map(
+      function (directoryName, index) {
+        return {
+          name: "inherited drop-in " + directoryName,
+          mutate({ roots }) {
+            const directory = join(roots[index], directoryName);
+            mkdirSync(directory);
+            writeFileSync(join(directory, "90-bypass.conf"), "[Service]\nProtectSystem=false\n");
+          },
+        };
+      },
+    ),
+  ];
+  for (const testCase of cases) {
+    withFixture(function (fixture) {
+      testCase.mutate(fixture);
+      assert.throws(
+        function () { scanManagedUnitLoadPaths(fixture.roots, fixture.allowlist); },
+        /unreviewed|drop-in\/load path/u,
+        testCase.name,
+      );
+    });
+  }
 });
 
 test("coredump D-Bus unit-file state requires exactly the three masked units", () => {

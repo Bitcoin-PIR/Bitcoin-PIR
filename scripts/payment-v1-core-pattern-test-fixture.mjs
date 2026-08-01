@@ -43,6 +43,7 @@ import {
   TARGET_SYSCTLS,
   canonicalJson,
   expectedPreimage,
+  reviewedCoreDumpManagedLoadPathClosure,
   sha256,
   planSha256,
   guardUnitBytes,
@@ -245,6 +246,7 @@ export function fixturePlan() {
       coredump_admin_masks: COREDUMP_ADMIN_MASKS.map(function ({ name, path }) {
         return { name, path, state: "absent" };
       }),
+      coredump_managed_load_paths: reviewedCoreDumpManagedLoadPathClosure(),
       guard_state: "absent",
       persistent_policy_state: "absent",
       preflight_state: "absent",
@@ -687,8 +689,8 @@ export class FakeOps {
   async removeCoreDumpMasks() {
     this.before("reprove-coredump-absence-closure");
     assert.deepEqual(
-      this.state.coredump_vendor_closure.systemd_coredump_absence,
-      this.plan.preimage.systemd_coredump_absence,
+      this.state.coredump_vendor_closure,
+      expectedPreimage(this.plan).coredump_vendor_closure,
     );
     assert.equal(
       this.state.coredump_admin_masks.every(function (entry) {
