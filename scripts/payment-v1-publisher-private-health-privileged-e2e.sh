@@ -114,20 +114,10 @@ cleanup() {
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" >/dev/null 2>&1 || true
   fi
-  if [[ "$namespace_created" -eq 1 &&
-        ( -e "/run/netns/$namespace" || -L "/run/netns/$namespace" ) ]]; then
-    if [[ ! -L "/run/netns/$namespace" && -n "$namespace_identity" &&
-          "$(stat -Lc '%d:%i' -- "/run/netns/$namespace" 2>/dev/null || true)" == "$namespace_identity" ]]; then
-      ip netns delete "$namespace" >/dev/null 2>&1 || cleanup_failed=1
-    else
-      echo "publisher private-health e2e preserves drifted publisher namespace" >&2
-      cleanup_failed=1
-    fi
-  fi
-  if [[ "$namespace_created" -eq 1 &&
-        ( -e "/run/netns/$namespace" || -L "/run/netns/$namespace" ) ]]; then
-    cleanup_failed=1
-  fi
+  # Delete the exact host veth before unmounting the named namespace. Deleting
+  # the namespace first tears the veth pair down asynchronously on some Linux
+  # kernels, so a sysfs existence check can race between the ifindex and MAC
+  # reads and falsely report identity drift during otherwise-clean teardown.
   if [[ "$host_interface_created" -eq 1 &&
         ( -e "/sys/class/net/$host_interface" || -L "/sys/class/net/$host_interface" ) ]]; then
     if [[ -n "$host_interface_ifindex" && -n "$host_interface_mac" &&
@@ -141,6 +131,20 @@ cleanup() {
   fi
   if [[ "$host_interface_created" -eq 1 &&
         ( -e "/sys/class/net/$host_interface" || -L "/sys/class/net/$host_interface" ) ]]; then
+    cleanup_failed=1
+  fi
+  if [[ "$namespace_created" -eq 1 &&
+        ( -e "/run/netns/$namespace" || -L "/run/netns/$namespace" ) ]]; then
+    if [[ ! -L "/run/netns/$namespace" && -n "$namespace_identity" &&
+          "$(stat -Lc '%d:%i' -- "/run/netns/$namespace" 2>/dev/null || true)" == "$namespace_identity" ]]; then
+      ip netns delete "$namespace" >/dev/null 2>&1 || cleanup_failed=1
+    else
+      echo "publisher private-health e2e preserves drifted publisher namespace" >&2
+      cleanup_failed=1
+    fi
+  fi
+  if [[ "$namespace_created" -eq 1 &&
+        ( -e "/run/netns/$namespace" || -L "/run/netns/$namespace" ) ]]; then
     cleanup_failed=1
   fi
   for ((index = ${#created_files[@]} - 1; index >= 0; index--)); do
