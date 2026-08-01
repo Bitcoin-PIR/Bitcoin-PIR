@@ -222,7 +222,7 @@ function fakeOps(fixture, { failAt } = {}) {
       return { boot_id: plan.privileged_access_inventory.boot_id, hostname: "fixture.invalid" };
     },
     async hostPrerequisites() {
-      return { core_pattern: "|/usr/bin/false", euid: 0, platform: "linux", systemd_version: "255" };
+      return { euid: 0, platform: "linux", systemd_version: "255" };
     },
     async prepareArtifact(path, bytes, mode) {
       calls.push(`prepare:${path}`);
@@ -1051,32 +1051,11 @@ test("same-boot and exact legacy process generation/argv drift fail before stop"
   }
 });
 
-test("kernel core-pattern mismatch blocks before lock acquisition or filesystem work", async () => {
-  const fixture = makePlanAndInventory();
-  const ops = fakeOps(fixture);
-  ops.hostPrerequisites = async () => ({
-    core_pattern: "|/usr/share/apport/apport",
-    euid: 0,
-    platform: "linux",
-    systemd_version: "255",
-  });
-  await assert.rejects(
-    executeCaddyAdminUdsTransaction({
-      approvedPlanSha256: fixture.approvedPlanSha256,
-      ops,
-      plan: fixture.plan,
-      siteInventoryBytes: fixture.inventoryBytes,
-    }),
-    /kernel\.core_pattern must already equal/u,
-  );
-  assert.deepEqual(ops.calls, []);
-});
-
 test("non-root, non-Linux and non-systemd-255 hosts fail before lock acquisition", async () => {
   for (const prerequisites of [
-    { core_pattern: "|/usr/bin/false", euid: 1000, platform: "linux", systemd_version: "255" },
-    { core_pattern: "|/usr/bin/false", euid: 0, platform: "darwin", systemd_version: "255" },
-    { core_pattern: "|/usr/bin/false", euid: 0, platform: "linux", systemd_version: "256" },
+    { euid: 1000, platform: "linux", systemd_version: "255" },
+    { euid: 0, platform: "darwin", systemd_version: "255" },
+    { euid: 0, platform: "linux", systemd_version: "256" },
   ]) {
     const fixture = makePlanAndInventory();
     const ops = fakeOps(fixture);

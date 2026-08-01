@@ -28,40 +28,6 @@ browser/issuer/two-provider E2E. One authorized short-lived public-relay
 publish/readback smoke with disposable keys has run; production-catalog
 publication and monitored relay operation remain unexecuted.
 
-The host-global core-pattern v2 suites are independent of service activation:
-
-```sh
-node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
-  scripts/payment-v1-core-pattern-crash.test.mjs \
-  scripts/payment-v1-core-pattern-lock-exec.test.mjs
-sh -n scripts/payment-v1-core-pattern-independent-kernel-gate.sh
-node --test scripts/payment-v1-core-pattern-independent-kernel-gate.test.mjs
-```
-
-They cover the official Noble three-sysctl side effects; exact systemd load-path
-and complete Unit/Service `GetAll` closure; stable/transient unit separation;
-matching sysctl glob and negative-exclusion rejection; quoted and escaped
-foreign start/stop/reload dependencies; systemd specifier, lexical path,
-interpreter and `ExecSearchPath` handler aliases; reverse Wants plus socket/path
-activation closure; fixed-temp, live-plus-quarantine, empty-lock-directory,
-guard, both gates, mask, lease, preflight, pending, receipt and rollback
-boundaries; SIGTERM, SIGKILL and SIGABRT restart at every mutation boundary;
-actual-boot and newest-subject recovery lineage; ordered recovery approval
-receipt binding; post-pending terminal-state drift rejection; torn manager
-unit/job snapshot rejection; commit-uncertain exact-receipt terminality;
-concurrent-mutation restoration; closed lock-helper executable/argv/environment;
-official Noble systemd-sysctl unit/binary pins, exact vendor boot enablement,
-phase-exact credential/drop-in closure; and `/var/crash` final recheck. Crash
-tests assert the exact complete three-sysctl tuple after simulated reboot.
-
-The former privileged-container PID1 matrix is deliberately retired: a
-container shares the host kernel and is not `core_pattern` isolation evidence.
-Automatic CI only checks the independent-kernel gate's fail-closed policy. A
-separately provisioned disposable VM may run a separately reviewed matrix only
-after the guest gate verifies VM (not container) virtualization, kernel-command
-line run ID, current boot ID, root-only marker, and exact matrix SHA-256. That
-VM matrix is not automatic and was not run by this implementation task.
-
 ## Positive conformance matrix
 
 Every cell must exercise a real secure-channel authorization frame, durable

@@ -164,19 +164,6 @@ plan. The later overlay plan must repeat those exact full pins as
 artifact after the hardening receipt requires a new cold hardening transaction
 and receipt.
 
-The four `core-pattern-ceremony-v2.*.json.example` files are unusable
-materialization skeletons for the independent host-global ceremony. Plan,
-apply, recovery, and rollback authority are separate. Recovery binds the exact
-newest persistent `lease`, `preflight`, or `pending` digest and fresh actual
-`/proc` action boot; each approval that advances nonterminal state is appended
-to the terminal receipt's ordered digest chain. Post-receipt cleanup approvals
-bind retained state but do not rewrite the immutable receipt. Rollback binds the committed receipt. The plan
-skeleton also includes both preflight gates, the Apport mask,
-stable/runtime split, closed systemd load-path and D-Bus evidence expectations,
-official Noble systemd-sysctl bytes/boot enablement, the persistent credential
-closure, and all fixed symlink/file/empty-lock crash-replay paths. See
-[`../CORE_PATTERN_CEREMONY.md`](../CORE_PATTERN_CEREMONY.md).
-
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the
 non-secret input, failure-domain, approval and evidence register.
 

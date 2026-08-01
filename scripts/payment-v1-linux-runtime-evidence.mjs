@@ -4330,10 +4330,6 @@ function readLinuxUptimeMillisecondsV1() {
 function readHostBinding() {
   const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   validateUuid(bootId, "Linux boot id");
-  const corePattern = readFileSync("/proc/sys/kernel/core_pattern", "utf8").trim();
-  if (corePattern === "" || /[\r\n\0]/u.test(corePattern)) {
-    fail("Linux core_pattern is malformed");
-  }
   const machineId = readFileSync("/etc/machine-id");
   const uptimeMilliseconds = readLinuxUptimeMillisecondsV1();
   const kernel = runAbsolute("/usr/bin/uname", ["-r"]);
@@ -4348,7 +4344,6 @@ function readHostBinding() {
   const pidNamespace = readPidNamespaceBinding();
   return {
     boot_id: bootId,
-    core_pattern: corePattern,
     kernel_release: kernel.stdout.trim(),
     machine_id_sha256: hashBytes(machineId),
     ...pidNamespace,
@@ -5239,7 +5234,6 @@ function validateStoppedHost(
     [
       "boot_id",
       "collector_pid_namespace",
-      "core_pattern",
       "kernel_release",
       "machine_id_sha256",
       "pid1_name",
@@ -5264,10 +5258,9 @@ function validateStoppedHost(
     !Number.isSafeInteger(host.uptime_finished_milliseconds) ||
     host.uptime_finished_milliseconds < host.uptime_started_milliseconds ||
     request.deployment_profile !== expectedProfile ||
-    host.systemd_version !== request.systemd_version ||
-    host.core_pattern !== "|/usr/bin/false"
+    host.systemd_version !== request.systemd_version
   ) {
-    fail("stopped-edge host, boot, PID namespace, or core policy is not approved");
+    fail("stopped-edge host, boot, or PID namespace is not approved");
   }
 }
 
@@ -7650,7 +7643,6 @@ export function validateLiveRuntimeEvidence({
     [
       "boot_id",
       "collector_pid_namespace",
-      "core_pattern",
       "kernel_release",
       "machine_id_sha256",
       "pid1_name",
@@ -7676,14 +7668,6 @@ export function validateLiveRuntimeEvidence({
   }
   if (evidence.host.systemd_version !== request.systemd_version) {
     fail("live evidence systemd build is not the reviewed request build");
-  }
-  if (
-    new Set(["edge-hetzner-v1", "edge-rollback-authority-v1"]).has(
-      request.deployment_profile,
-    ) &&
-    evidence.host.core_pattern !== "|/usr/bin/false"
-  ) {
-    fail("edge live evidence requires kernel.core_pattern=|/usr/bin/false");
   }
   if (
     !Number.isSafeInteger(evidence.host.uptime_started_milliseconds) ||
@@ -8262,7 +8246,6 @@ function assertRootLinuxCollector(command) {
 function sameHostGeneration(started, finished) {
   return (
     finished.boot_id === started.boot_id &&
-    finished.core_pattern === started.core_pattern &&
     finished.machine_id_sha256 === started.machine_id_sha256 &&
     finished.collector_pid_namespace === started.collector_pid_namespace &&
     finished.pid1_pid_namespace === started.pid1_pid_namespace &&
@@ -8402,7 +8385,6 @@ function collectStoppedPreparationEvidence({
     host: {
       boot_id: hostStarted.boot_id,
       collector_pid_namespace: hostStarted.collector_pid_namespace,
-      core_pattern: hostStarted.core_pattern,
       kernel_release: hostStarted.kernel_release,
       machine_id_sha256: hostStarted.machine_id_sha256,
       pid1_name: hostStarted.pid1_name,
@@ -8728,7 +8710,6 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     host: {
       boot_id: hostStarted.boot_id,
       collector_pid_namespace: hostStarted.collector_pid_namespace,
-      core_pattern: hostStarted.core_pattern,
       kernel_release: hostStarted.kernel_release,
       machine_id_sha256: hostStarted.machine_id_sha256,
       pid1_name: hostStarted.pid1_name,
