@@ -8,9 +8,11 @@ plus exact binary/configuration hash manifests.
 
 `integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in`,
 `directory-public-haproxy.cfg.in`,
+`directory-public-haproxy-build-manifest.json.in`,
 `payment-v1-directory-public-edge.service.in`, and
-`bhtm-caddy.directory-public-edge.conf.in` are an independent, non-activating
-asset set for the single public read side of the directory relay. They use the
+`bhtm-caddy.directory-public-edge.conf.in`, together with the rendered
+`payment-v1-directory-public-haproxy-artifact-gate.mjs`, are an independent,
+non-activating asset set for the single public read side of the directory relay. They use the
 separate `bitcoinpir-directory-public-edge` runtime root and the exact
 `DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED` and
 `DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED` conditions. They contain no private
@@ -18,6 +20,33 @@ directory-write route and no payment or PIR application lane. These assets are
 not activation-ready until the rendered profile, integrated cold stopped/fresh
 evidence lineage, rollback transaction, identities, manifests, and runtime
 gate are implemented and reviewed.
+
+The directory-public HAProxy unit intentionally matches the staged target-host
+artifact: HAProxy 2.8.26 was built twice to byte-identical output as a static
+`TARGET=generic` GCC 13.3.0 binary with `USE_SYSTEMD`, Lua, OpenSSL,
+`USE_GETADDRINFO`, and `USE_LIBCRYPT` disabled. The unit therefore uses
+`Type=exec`, HAProxy `-W -db`, and `Restart=no`; `Type=notify`, `-Ws`, or an
+automatic restart would claim readiness/generation semantics that this binary
+does not supply. The canonical build-manifest template binds the official
+source URL and SHA-256, compiler, exact enabled/disabled option sets, both
+independent build digests, and the absence of `PT_INTERP` and `PT_DYNAMIC`.
+`payment-v1-directory-public-haproxy-artifact-gate.mjs` descriptor-reads and
+checks those facts and rejects hostname servers, resolvers, server templates,
+Lua, external checks, state loaders, or module/dlopen-like configuration.
+The service unit performs only content-addressed file-hash preflights; it does
+not execute this semantic artifact gate. The later source-ready ceremony must
+run the gate against the exact target-host files and bind its result into the
+reviewed receipt before its blocker may be satisfied.
+
+`DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED` and
+`DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED` deliberately remain
+unsatisfied production blockers. These `ConditionPathExists` names reduce
+accidental or non-root activation only: host UID 0 can create either path, so
+their existence is not a production security boundary. They must not be
+created until a separately reviewed, digest-bound source-ready receipt and a
+live generation guard bind the exact target-host binary, config, process tree,
+listener inode/ownership, Caddy generation, and stopped-to-fresh ordering.
+This asset set supplies neither ceremony and remains activation blocked.
 
 This split isolates the public directory source table, Unix socket, runtime
 directory, service account, cgroup, and HAProxy process. It does not create a

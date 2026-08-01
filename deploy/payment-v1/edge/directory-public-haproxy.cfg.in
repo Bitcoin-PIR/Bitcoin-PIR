@@ -1,5 +1,7 @@
 # BitcoinPIR directory-public source-fair edge. This rendered configuration
-# has one ephemeral public-read lane and no persistent source state.
+# has one ephemeral public-read lane and no persistent source state. Hostname
+# servers, resolvers, Lua, external modules and dynamic state loaders are not
+# part of this closed configuration.
 
 global
     maxconn 64

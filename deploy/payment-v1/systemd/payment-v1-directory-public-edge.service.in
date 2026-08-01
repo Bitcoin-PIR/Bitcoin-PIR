@@ -7,9 +7,11 @@ Before=bhtm-caddy.service
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED
 
 [Service]
-Type=notify
+Type=exec
 User=bitcoinpir-directory-public-edge
 Group=bitcoinpir-directory-public-edge
 UMask=0007
@@ -21,10 +23,10 @@ StandardError=null
 ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256
 ExecStartPre=/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -c -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg
-ExecStart=/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -Ws -db -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg
-Restart=on-failure
-RestartSec=5
+ExecStart=/opt/bitcoinpir/haproxy/@HAPROXY_SHA256@/haproxy -W -db -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg
+Restart=no
 TimeoutStartSec=30
 TimeoutStopSec=15
 LimitNOFILE=512
