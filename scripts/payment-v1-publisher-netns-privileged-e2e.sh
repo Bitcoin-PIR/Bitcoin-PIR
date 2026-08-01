@@ -26,12 +26,25 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 test_root="$(mktemp -d /tmp/bitcoinpir-publisher-netns-e2e.XXXXXX)"
 helper="$test_root/payment-v1-publisher-netns"
 listener_pid=""
+owner_pid=""
+cleanup_pid=""
+
+terminate_child() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill -TERM "$pid" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then break; fi
+    sleep 0.05
+  done
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+}
 
 cleanup() {
-  if [[ -n "$listener_pid" ]]; then
-    kill "$listener_pid" >/dev/null 2>&1 || true
-    wait "$listener_pid" >/dev/null 2>&1 || true
-  fi
+  terminate_child "$cleanup_pid"
+  terminate_child "$owner_pid"
+  terminate_child "$listener_pid"
   if [[ -x "$helper" ]]; then
     "$helper" cleanup >/dev/null 2>&1 || true
   fi
@@ -104,6 +117,7 @@ wait "$listener_pid"
 listener_pid=""
 kill -TERM "$owner_pid"
 wait "$owner_pid"
+owner_pid=""
 "$helper" cleanup
 
 # A client monitor initialization failure must make the owner fail before any
@@ -127,6 +141,7 @@ owner_pid=$!
 sleep 2
 kill -TERM "$owner_pid"
 wait "$owner_pid"
+owner_pid=""
 "$helper" cleanup
 assert_namespace_transaction_clean
 
@@ -159,6 +174,7 @@ do
   wait_for_pause
   kill -KILL "$owner_pid"
   wait "$owner_pid" || true
+  owner_pid=""
   rm /tmp/bitcoinpir-publisher-netns-test-pause
   "$helper" cleanup
   assert_namespace_transaction_clean
@@ -174,12 +190,14 @@ do
   sleep 2
   kill -TERM "$owner_pid"
   wait "$owner_pid"
+  owner_pid=""
   rm -f /tmp/bitcoinpir-publisher-netns-test-pause
   BPIR_TEST_PAUSE_AT="$crash_stage" "$helper" cleanup &
   cleanup_pid=$!
   wait_for_pause
   kill -KILL "$cleanup_pid"
   wait "$cleanup_pid" || true
+  cleanup_pid=""
   rm /tmp/bitcoinpir-publisher-netns-test-pause
   "$helper" cleanup
   assert_namespace_transaction_clean
@@ -192,6 +210,7 @@ owner_pid=$!
 sleep 2
 kill -KILL "$owner_pid"
 wait "$owner_pid" || true
+owner_pid=""
 sleep 1
 "$helper" cleanup
 assert_namespace_transaction_clean
@@ -211,9 +230,11 @@ if kill -0 "$owner_pid" 2>/dev/null; then
   exit 1
 fi
 if wait "$owner_pid"; then
+  owner_pid=""
   echo "namespace owner reported success after link drift" >&2
   exit 1
 fi
+owner_pid=""
 "$helper" cleanup
 
 # The namespace-side monitor independently rejects a newly injected default
@@ -231,9 +252,11 @@ if kill -0 "$owner_pid" 2>/dev/null; then
   exit 1
 fi
 if wait "$owner_pid"; then
+  owner_pid=""
   echo "namespace owner reported success after default-route drift" >&2
   exit 1
 fi
+owner_pid=""
 "$helper" cleanup
 
 # With no active journal, an unrelated fixed-name preimage is never adopted.

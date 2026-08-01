@@ -10,6 +10,7 @@
       "lane": "directory-public",
       "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "max_response_bytes": 16384,
+      "network_namespace": "host",
       "path": "/",
       "timeout_ms": 5000
     },
@@ -22,6 +23,7 @@
       "lane": "directory-publisher",
       "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "max_response_bytes": 16384,
+      "network_namespace": "bpir-directory-publisher",
       "path": "/",
       "timeout_ms": 5000
     },
@@ -34,6 +36,7 @@
       "lane": "issuer",
       "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "max_response_bytes": 65536,
+      "network_namespace": "host",
       "path": "/v1/quote-keys/current",
       "timeout_ms": 5000
     },
@@ -46,6 +49,7 @@
       "lane": "provider",
       "leaf_certificate_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "max_response_bytes": 16384,
+      "network_namespace": "host",
       "path": "/v1/pir",
       "timeout_ms": 5000
     }
@@ -363,6 +367,7 @@
     },
     "publisher_netns_ceremony": {
       "approved_plan_sha256": "INVALID_REPLACE_WITH_APPROVED_PUBLISHER_NETNS_PLAN_SHA256",
+      "client_address": "INVALID_REPLACE_WITH_PUBLISHER_NETNS_CLIENT_ADDRESS",
       "ceremony_id": "INVALID_REPLACE_WITH_PUBLISHER_NETNS_CEREMONY_ID",
       "dropin": {
         "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
@@ -377,6 +382,8 @@
         "size": "INVALID_REPLACE_WITH_SIZE",
         "uid": 0
       },
+      "host_address": "INVALID_REPLACE_WITH_PUBLISHER_NETNS_HOST_ADDRESS",
+      "host_port": 443,
       "namespace_device": "INVALID_REPLACE_WITH_NSFS_DEVICE",
       "namespace_inode": "INVALID_REPLACE_WITH_NSFS_INODE",
       "netns_invocation_id": "INVALID_REPLACE_WITH_32_LOWERCASE_HEX_SYSTEMD_INVOCATION_ID",
@@ -394,6 +401,7 @@
         "uid": 0
       },
       "plan_schema_version": 2,
+      "publisher_hostname": "INVALID_REPLACE_WITH_PUBLISHER_NETNS_HOSTNAME",
       "receipt": {
         "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
         "device": "INVALID_REPLACE_WITH_DEVICE",
@@ -498,7 +506,7 @@
     "backup_path": "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/backups/replace-integrated-existing-bhtm-caddy-v1-INVALID_REPLACE_WITH_PREIMAGE_SHA256.Caddyfile",
     "candidate_path": "/etc/caddy/.bitcoinpir-replace-integrated-existing-bhtm-caddy-v1.candidate",
     "installation_mode": "same-directory-renameat2-exchange-verify-swapped-preimage-and-live-candidate-parent-fsync",
-    "lock_path": "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock",
+    "lock_path": "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
     "reload_argv": [
       "/usr/bin/systemctl",
       "reload",

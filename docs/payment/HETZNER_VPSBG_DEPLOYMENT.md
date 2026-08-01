@@ -1079,8 +1079,8 @@ every static `node:` builtin and rejects dynamic, CommonJS and worker loader
 entry points. Transfer and independently hash all three into the same
 root-owned, non-group/world-writable directory; copying a new collector beside
 an older gate, or copying only the collector, is forbidden. Runtime-evidence
-v8 invalidates v7 runtime requests; live v8,
-stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
+v9 invalidates v8 runtime requests; live v9,
+stopped-edge v5 and stopped-relay v4 invalidate live v8, stopped-edge v4 and
 stopped-relay v3 receipts respectively. Rerender the bundle and recollect
 evidence rather than editing JSON.
 

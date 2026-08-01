@@ -934,7 +934,7 @@ remain separate acceptance gates.
 
 ## Deployment evidence tests
 
-- runtime-evidence v8 binds render-plan schema v2, manifest schema v2, the
+- runtime-evidence v9 binds render-plan schema v2, manifest schema v2, the
   runtime request and collected host to the exact first line
   `systemd 255 (255.4-1ubuntu8.15)`, and binds exact Unit-, Service- and
   Manager-interface busctl property lists. `Conditions` must be typed
@@ -948,10 +948,16 @@ remain separate acceptance gates.
   argv boundaries, flags, non-arrays, every non-empty credential value,
   missing/extra properties, literal `[unprintable]`, another systemd build,
   schema downgrade and snapshot drift fail in live, stopped-edge and
-  stopped-relay validation. The scalar `systemctl show` command records remain
+  stopped-relay validation. `NeedDaemonReload=no` is part of every live
+  effective-property snapshot. The scalar `systemctl show` command records remain
   strict redundancy: exactly one newline separates records, live `ExecStart`
   is running under `MainPID`, live `ExecStartPre` is successfully completed,
-  and stopped records are unexecuted. Every typed D-Bus `t` property is parsed
+  and stopped records are unexecuted. The sole exception is the exact
+  `directory-publisher-netns-v1` publisher: it must be a successful retained
+  `Type=oneshot`, `active/exited`, `MainPID=0`, empty `ControlGroup`, with a
+  nonzero same-boot activation timestamp and `InvocationID`, and its one
+  `ExecStart` must have completed as `code=exited status=0` with real start and
+  stop timestamps. Every typed D-Bus `t` property is parsed
   from its raw JSON integer into a canonical decimal string without a
   JavaScript `Number` conversion; duplicate/extra keys, leading zeros,
   exponents, quoted values, unsafe rounding and values above uint64 fail.
@@ -974,9 +980,12 @@ remain separate acceptance gates.
   an exact three-module local import closure for the executor;
   the exact loaded namespace-unit fragment, commands, conditions, relationships
   and hardening plus the PID 1 manager generation; a content-addressed native
-  launcher, machine-parsed static-ELF proof and exact five-entry
-  Node/executor/import manifest; descriptor-bound execution and atomic pathname
-  replacement negatives; and schema-v2
+  launcher, machine-parsed static-launcher proof, recursive descriptor-pinned
+  Node ELF closure and exact seven-entry
+  Node/executor/import/private-probe/loader-manifest closure; descriptor-bound
+  execution, double `/proc/self/maps` validation,
+  fixed `--no-expose-wasm`, `--jitless` and `--use-openssl-ca` flags,
+  `/etc/ld.so.preload` and atomic pathname replacement negatives; and schema-v2
   apply/rollback approvals binding both launcher digests, with independent
   canonical digests and validity windows no longer than one hour;
 - apply starts only the exact namespace unit after an inactive/absent preimage,
@@ -989,6 +998,11 @@ remain separate acceptance gates.
   lock; only same-domain recovery may release it after repeated no-pending-job,
   exact inactive/`NeedDaemonReload=no`, absent nsfs/veth and byte/metadata-exact
   sentinel proof. Pending-job and late-activation races retain the lock;
+- a root-Linux child is SIGKILLed after a real partial
+  `owner.json.pending` write. Explicit recovery may delete only that exact,
+  sole, unpublished root-owned inode after two generation checks; malformed
+  authoritative owners, valid foreign pending owners and concurrent live
+  generations remain untouched;
 - firewall mutations delete, duplicate and move after the user jump the single
   required `RELATED,ESTABLISHED` accept in each IPv4/IPv6 INPUT/FORWARD before
   chain; all fail closed. Separate positive mutations exercise every documented
@@ -1038,6 +1052,15 @@ remain separate acceptance gates.
   only `CAP_NET_BIND_SERVICE`, HAProxy/business services zero). An unmanaged
   stale holder, wrong cgroup, changed credential/capability, omitted MainPID,
   pass race, DAC/ownership/set-ID/SETFCAP bypass or legacy evidence fails;
+- the completed directory publisher carries `process_identity=null`; its
+  static service UID/GID remain in the protected credential set, so either
+  full procfs pass rejects any residual publisher credential holder. The
+  disposable `payment-v1-systemd-255-pid1.test.sh` wrapper builds and boots the
+  exact Ubuntu `systemd 255 (255.4-1ubuntu8.15)` manager. It runs the directory
+  publisher oneshot harness to confirm real active/exited metadata, completed
+  ExecStart, environment removal and zero UID/GID holders, then exercises both
+  the pre-READY notify-timeout and post-READY exit failure generations plus
+  exact `reset-failed` convergence;
 - an exact managed-unit cgroup may contain master/worker processes only with the
   unit's complete reviewed UID/GID/group set, and a post-scan generation check
   rebinds MainPID, InvocationID and ControlGroup;

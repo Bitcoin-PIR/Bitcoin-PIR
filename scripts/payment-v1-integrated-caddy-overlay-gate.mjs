@@ -47,7 +47,7 @@ const ADMIN_UDS_GATE =
   "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs";
 const SETPRIV_BINARY = "/usr/bin/setpriv";
 const LOCK_PATH =
-  "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock";
+  "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock";
 const TRANSACTION_ROOT =
   "/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy";
 const TLS_ROOT = "/etc/bitcoinpir/payment-v1/edge";
@@ -731,13 +731,17 @@ function validatePublisherNetnsCeremony(value) {
     value,
     [
       "approved_plan_sha256",
+      "client_address",
       "ceremony_id",
       "dropin",
+      "host_address",
+      "host_port",
       "namespace_device",
       "namespace_inode",
       "netns_invocation_id",
       "plan",
       "plan_schema_version",
+      "publisher_hostname",
       "receipt",
       "receipt_schema_version",
       "topology_sha256",
@@ -750,6 +754,24 @@ function validatePublisherNetnsCeremony(value) {
     "target.publisher_netns_ceremony.approved_plan_sha256",
   );
   validateSha256(value.topology_sha256, "target.publisher_netns_ceremony.topology_sha256");
+  validateIp(value.host_address, "target.publisher_netns_ceremony.host_address", {
+    privateOnly: true,
+  });
+  validateIp(value.client_address, "target.publisher_netns_ceremony.client_address", {
+    privateOnly: true,
+  });
+  if (value.host_address !== "10.203.0.1" || value.client_address !== "10.203.0.2") {
+    fail(
+      "target.publisher_netns_ceremony must equal the fixed 10.203.0.1/10.203.0.2 production topology",
+    );
+  }
+  validateDnsHost(
+    value.publisher_hostname,
+    "target.publisher_netns_ceremony.publisher_hostname",
+  );
+  if (value.host_port !== 443) {
+    fail("target.publisher_netns_ceremony.host_port must equal 443");
+  }
   if (value.plan_schema_version !== 2 || value.receipt_schema_version !== 2) {
     fail("target.publisher_netns_ceremony must bind schema-v2 plan and receipt evidence");
   }
@@ -1083,6 +1105,7 @@ function validateHealthChecks(value, placeholders) {
         "lane",
         "leaf_certificate_sha256",
         "max_response_bytes",
+        "network_namespace",
         "path",
         "timeout_ms",
       ],
@@ -1102,6 +1125,14 @@ function validateHealthChecks(value, placeholders) {
       : placeholders.PUBLIC_HTTPS_BIND;
     if (check.connect_ip !== expectedIp) {
       fail(`health_checks[${index}].connect_ip does not match its exact bind`);
+    }
+    const expectedNamespace = expected.private
+      ? "bpir-directory-publisher"
+      : "host";
+    if (check.network_namespace !== expectedNamespace) {
+      fail(
+        `health_checks[${index}].network_namespace must equal ${expectedNamespace}`,
+      );
     }
     if (check.expected_status !== expected.status) {
       fail(`health_checks[${index}].expected_status must equal ${expected.status}`);
@@ -1176,6 +1207,18 @@ export function validateOverlayPlan(plan) {
     fail("overlay runtime setpriv binary must equal the approved hardening setpriv digest");
   }
   validateManagedBlock(plan.managed_block);
+  const publisherTopology = plan.target.publisher_netns_ceremony;
+  const publisherPlaceholders = plan.managed_block.placeholders;
+  if (
+    publisherTopology.host_address !==
+      publisherPlaceholders.DIRECTORY_PUBLISHER_PRIVATE_BIND ||
+    publisherTopology.client_address !==
+      publisherPlaceholders.DIRECTORY_PUBLISHER_CLIENT_IP ||
+    publisherTopology.publisher_hostname !==
+      publisherPlaceholders.DIRECTORY_PUBLISHER_HTTPS_HOST
+  ) {
+    fail("managed publisher endpoint must equal the approved publisher namespace topology");
+  }
   if (plan.runtime.managed_block.sha256 !== plan.managed_block.rendered_sha256) {
     fail("runtime managed block must equal the reviewed rendered block digest");
   }

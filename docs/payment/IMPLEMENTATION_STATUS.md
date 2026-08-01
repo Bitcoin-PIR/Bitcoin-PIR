@@ -430,9 +430,12 @@ operator has activated the path with real money or public infrastructure.
       plan binds exact installed files, external sentinels, firewall evidence,
       Caddy/publisher preimages, boot identity and regular Node/systemctl/ip
       executables, plus the executor's exact three-module local import closure.
-      Its native launcher now binds a five-entry manifest, a machine-parsed
-      static-ELF proof and descriptor-sealed Node/module execution that remains
-      safe across atomic pathname replacement. The shared schema-v2 plan and
+      Its native launcher now binds a seven-entry manifest, a machine-parsed
+      static-launcher proof, a recursive descriptor-pinned Node ELF closure and
+      descriptor-sealed Node/module execution that remains safe across atomic
+      pathname replacement. The launcher rejects `/etc/ld.so.preload`, invokes
+      the pinned dynamic loader with a closed library path and validates two
+      `/proc/self/maps` samples. The shared schema-v2 plan and
       receipt validator is also consumed by the downstream Caddy overlay and
       now requires a genuinely active/running nonzero Caddy generation. Each
       IPv4/IPv6 INPUT/FORWARD before chain has exactly one ordered
@@ -1028,7 +1031,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       adapted-JSON/socket test proves wrong-bind requests return 4xx without
       touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. Runtime-evidence v8 binds
+      credentials to one machine/boot/invocation. Runtime-evidence v9 binds
       render-plan/manifest schema v2, request and host to exact
       `systemd 255 (255.4-1ubuntu8.15)` and accepts
       only the closed files-authoritative NSS sequences `files` and
@@ -1047,7 +1050,16 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       capabilities, require Caddy-only `CAP_NET_BIND_SERVICE` and zero HAProxy
       capabilities, and re-confirm every
       MainPID/unit generation; runtime paths are rechecked after the scan. This
-      version reads systemd's structured `Conditions` property through a pinned
+      version also closes `NeedDaemonReload=no` for every live unit. The exact
+      directory publisher is the sole processless exception: evidence requires
+      a successful retained `active/exited` oneshot with `MainPID=0`, empty
+      control group, completed zero-status ExecStart, stable activation
+      timestamp/InvocationID, null process identity and no protected publisher
+      UID/GID holder in either full procfs pass. A disposable exact-systemd
+      harness exercises those real manager semantics together with the
+      publisher namespace's pre-READY timeout, post-READY failure and exact
+      `reset-failed` convergence. This version reads
+      systemd's structured `Conditions` property through a pinned
       `/usr/bin/busctl` rather than accepting systemd 255's
       `Conditions=[unprintable]`, and proves the exact evaluated condition set
       plus current path truth before and after collection. It separately reads

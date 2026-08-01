@@ -12,6 +12,14 @@ export const PUBLISHER_NETNS_APPLY_APPROVAL_KIND =
   "bitcoinpir-payment-v1-publisher-netns-apply-approval-v1";
 export const PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND =
   "bitcoinpir-payment-v1-publisher-netns-rollback-approval-v1";
+export const PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND =
+  "bitcoinpir-payment-v1-publisher-netns-failed-recovery-approval-v1";
+export const PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND =
+  "bitcoinpir-payment-v1-publisher-netns-failed-recovery-receipt-v1";
+export const PUBLISHER_NODE_ELF_CLOSURE_KIND =
+  "bitcoinpir-payment-v1-publisher-node-elf-closure-v1";
+export const PUBLISHER_NODE_LOADER_CLOSURE_PATH =
+  "/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256";
 export const PUBLISHER_NETNS_LIFECYCLE_LOCK =
   "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock";
 
@@ -27,6 +35,13 @@ export const PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS = Object.freeze([
   "rollback-is-forbidden-after-the-caddy-preimage-or-publisher-service-generation-changes",
   "caddy-source-fair-publisher-and-payment-services-will-not-be-started-stopped-or-reloaded",
   "installed-files-activation-sentinels-firewall-rules-and-signed-public-artifacts-will-not-be-removed",
+]);
+
+export const PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS = Object.freeze([
+  "only-the-approved-failed-publisher-namespace-invocation-will-be-reset",
+  "reset-failed-will-use-the-fixed-argv-and-will-not-start-stop-reload-or-restart-any-unit",
+  "the-durable-start-intent-original-activation-approval-and-failed-invocation-are-one-bound-attempt",
+  "no-pid1-job-main-process-namespace-interface-or-input-generation-may-exist-or-drift-before-or-after-reset",
 ]);
 
 export const PUBLISHER_NETNS_SENTINELS = Object.freeze([
@@ -248,6 +263,59 @@ function validateUnitState(value, label, { active, name }) {
   }
 }
 
+const PUBLISHER_NETNS_FAILED_RESULTS = Object.freeze(new Set([
+  "assert",
+  "core-dump",
+  "exit-code",
+  "oom-kill",
+  "protocol",
+  "resources",
+  "signal",
+  "start-limit-hit",
+  "timeout",
+  "watchdog",
+]));
+
+export function validatePublisherNetnsFailedUnitV1(value, label = "failed publisher namespace unit") {
+  exactKeys(value, [
+    "active_enter_timestamp_monotonic", "active_state", "exec_main_code",
+    "exec_main_status", "inactive_enter_timestamp_monotonic", "invocation_id",
+    "load_state", "main_pid", "name", "need_daemon_reload", "result",
+    "state_change_timestamp_monotonic", "sub_state",
+  ], label);
+  for (const key of [
+    "active_enter_timestamp_monotonic", "exec_main_code", "exec_main_status",
+    "inactive_enter_timestamp_monotonic", "main_pid", "state_change_timestamp_monotonic",
+  ]) validateDecimal(value[key], `${label}.${key}`);
+  const activeEnter = BigInt(value.active_enter_timestamp_monotonic);
+  const inactiveEnter = BigInt(value.inactive_enter_timestamp_monotonic);
+  const stateChange = BigInt(value.state_change_timestamp_monotonic);
+  const terminalTimestampRelation =
+    inactiveEnter > 0n &&
+    inactiveEnter === stateChange &&
+    (activeEnter === 0n || (activeEnter > 0n && activeEnter < inactiveEnter));
+  if (
+    value.name !== NETNS_UNIT ||
+    value.load_state !== "loaded" ||
+    value.need_daemon_reload !== "no" ||
+    value.active_state !== "failed" ||
+    value.sub_state !== "failed" ||
+    value.main_pid !== "0" ||
+    !terminalTimestampRelation ||
+    !/^[0-9a-f]{32}$/u.test(value.invocation_id) ||
+    /^0{32}$/u.test(value.invocation_id) ||
+    !PUBLISHER_NETNS_FAILED_RESULTS.has(value.result)
+  ) {
+    fail(`${label} is not one terminal failed/failed systemd invocation`);
+  }
+  return true;
+}
+
+export function computePublisherNetnsFailedUnitSha256V1(value) {
+  validatePublisherNetnsFailedUnitV1(value);
+  return sha256(Buffer.from(canonicalPublisherNetnsJsonV2(value), "utf8"));
+}
+
 function expectedLoadedExec(plan) {
   const helper = plan.installed_files.find((entry) => entry.id === "helper-binary")?.pin;
   if (helper === undefined) fail("loaded namespace unit lacks its helper pin");
@@ -294,6 +362,10 @@ function expectedLoadedServicePolicy() {
     timeout_stop_usec: "30s",
     type: "notify",
     umask: "0077",
+    unset_environment: [
+      "BASH_ENV", "ENV", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH",
+      "LD_PRELOAD", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+    ],
     user: "root",
     working_directory: "/var/lib/bitcoinpir-publisher-netns",
   };
@@ -458,13 +530,15 @@ function validateInstalledFiles(plan) {
 
 function validateRuntime(runtime) {
   exactKeys(runtime, [
-    "executor", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest", "node",
-    "publisher_netns_gate", "schema_validator", "systemctl",
+    "executor", "health_probe", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest", "node",
+    "node_loader_closure_manifest", "publisher_netns_gate", "schema_validator", "systemctl",
   ], "runtime");
   const specifications = [
     ["launcher", [`/opt/bitcoinpir/publisher-netns-launcher/${runtime.launcher.sha256}/payment-v1-publisher-netns-launcher`], ["0555"]],
     ["launcher_manifest", ["/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256"], ["0444"]],
+    ["node_loader_closure_manifest", [PUBLISHER_NODE_LOADER_CLOSURE_PATH], ["0444"]],
     ["executor", ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs"], ["0555"]],
+    ["health_probe", ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs"], ["0555"]],
     ["integrated_caddy_gate", ["/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs"], ["0555"]],
     ["publisher_netns_gate", ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs"], ["0555"]],
     ["schema_validator", [SCHEMA_VALIDATOR_PATH], ["0555"]],
@@ -484,6 +558,8 @@ export function expectedPublisherNetnsLauncherManifestBytesV2(runtime) {
     runtime.executor,
     runtime.publisher_netns_gate,
     runtime.schema_validator,
+    runtime.health_probe,
+    runtime.node_loader_closure_manifest,
   ].map((pin) => `${pin.sha256}  ${pin.path}\n`).join(""), "utf8");
 }
 
@@ -525,6 +601,325 @@ export function inspectStaticElfV1(bytes) {
     pt_interp: false,
     sha256: sha256(input),
   };
+}
+
+function boundedElfRange(input, offsetValue, sizeValue, label) {
+  if (
+    offsetValue > BigInt(Number.MAX_SAFE_INTEGER) ||
+    sizeValue > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    fail(`${label} exceeds the reviewed ELF offset range`);
+  }
+  const offset = Number(offsetValue);
+  const size = Number(sizeValue);
+  if (offset < 0 || size < 0 || offset + size > input.length) {
+    fail(`${label} exceeds the pinned ELF bytes`);
+  }
+  return { offset, size };
+}
+
+function dynamicElfString(table, offset, label) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= table.length) {
+    fail(`${label} offset exceeds the ELF dynamic string table`);
+  }
+  const end = table.indexOf(0, offset);
+  if (end < 0) fail(`${label} is not NUL terminated`);
+  const bytes = table.subarray(offset, end);
+  if ([...bytes].some((value) => value > 0x7f)) {
+    fail(`${label} is not strict ASCII`);
+  }
+  const value = bytes.toString("ascii");
+  if (!/^[A-Za-z0-9][A-Za-z0-9+_.-]{0,254}$/u.test(value)) {
+    fail(`${label} is not one canonical dependency name`);
+  }
+  return value;
+}
+
+export function inspectDynamicElfV1(bytes) {
+  const input = Buffer.from(bytes);
+  if (
+    input.length < 64 || input.length > 512 * 1024 * 1024 ||
+    input[0] !== 0x7f || input.subarray(1, 4).toString("ascii") !== "ELF" ||
+    input[4] !== 2 || input[5] !== 1 || input[6] !== 1 ||
+    ![2, 3].includes(input.readUInt16LE(16)) || input.readUInt16LE(18) !== 62 ||
+    input.readUInt32LE(20) !== 1 || input.readUInt16LE(52) !== 64 ||
+    input.readUInt16LE(54) !== 56
+  ) {
+    fail("Node loader object is not a reviewed ELF64 little-endian x86-64 image");
+  }
+  const phoff = input.readBigUInt64LE(32);
+  const phnum = input.readUInt16LE(56);
+  if (phnum < 1 || phnum > 256) fail("Node loader ELF has an invalid program-header count");
+  const phdrs = boundedElfRange(input, phoff, BigInt(phnum * 56), "Node loader program headers");
+  const loads = [];
+  let dynamic = null;
+  let interpreter = null;
+  for (let index = 0; index < phnum; index += 1) {
+    const offset = phdrs.offset + index * 56;
+    const type = input.readUInt32LE(offset);
+    const fileOffset = input.readBigUInt64LE(offset + 8);
+    const virtualAddress = input.readBigUInt64LE(offset + 16);
+    const fileSize = input.readBigUInt64LE(offset + 32);
+    boundedElfRange(input, fileOffset, fileSize, `Node loader program header[${index}]`);
+    if (type === 1) {
+      loads.push({ fileOffset, fileSize, virtualAddress });
+    } else if (type === 2) {
+      if (dynamic !== null) fail("Node loader ELF contains duplicate PT_DYNAMIC segments");
+      dynamic = { fileOffset, fileSize };
+    } else if (type === 3) {
+      if (interpreter !== null) fail("Node loader ELF contains duplicate PT_INTERP segments");
+      const range = boundedElfRange(input, fileOffset, fileSize, "Node loader PT_INTERP");
+      if (
+        range.size < 2 || range.size > 4096 || input[range.offset + range.size - 1] !== 0 ||
+        input.subarray(range.offset, range.offset + range.size - 1).includes(0) ||
+        [...input.subarray(range.offset, range.offset + range.size - 1)]
+          .some((value) => value > 0x7f)
+      ) {
+        fail("Node loader PT_INTERP is not one bounded strict-ASCII NUL-terminated path");
+      }
+      interpreter = input.subarray(range.offset, range.offset + range.size - 1).toString("ascii");
+      validateCanonicalAbsolute(interpreter, "Node loader PT_INTERP");
+    }
+  }
+  if (dynamic === null || dynamic.fileSize < 16n || dynamic.fileSize % 16n !== 0n) {
+    fail("Node loader ELF has no canonical PT_DYNAMIC table");
+  }
+  const dynamicRange = boundedElfRange(
+    input,
+    dynamic.fileOffset,
+    dynamic.fileSize,
+    "Node loader PT_DYNAMIC",
+  );
+  let stringTableAddress = null;
+  let stringTableSize = null;
+  let sonameOffset = null;
+  const neededOffsets = [];
+  const dynamicTags = [];
+  let terminated = false;
+  const forbiddenDynamicTags = new Map([
+    [15n, "DT_RPATH"],
+    [29n, "DT_RUNPATH"],
+    [0x6ffffefbn, "DT_DEPAUDIT"],
+    [0x6ffffefcn, "DT_AUDIT"],
+    [0x7ffffffdn, "DT_AUXILIARY"],
+    [0x7fffffffn, "DT_FILTER"],
+  ]);
+  for (let offset = dynamicRange.offset; offset < dynamicRange.offset + dynamicRange.size; offset += 16) {
+    const tag = input.readBigInt64LE(offset);
+    const value = input.readBigUInt64LE(offset + 8);
+    if (tag === 0n) {
+      terminated = true;
+      break;
+    }
+    dynamicTags.push(tag.toString());
+    const forbiddenTag = forbiddenDynamicTags.get(tag);
+    if (forbiddenTag !== undefined) {
+      fail(`Node loader ELF contains forbidden dependency-injection tag ${forbiddenTag}`);
+    }
+    if (tag === 1n) neededOffsets.push(value);
+    if (tag === 5n) {
+      if (stringTableAddress !== null) fail("Node loader ELF contains duplicate DT_STRTAB");
+      stringTableAddress = value;
+    }
+    if (tag === 10n) {
+      if (stringTableSize !== null) fail("Node loader ELF contains duplicate DT_STRSZ");
+      stringTableSize = value;
+    }
+    if (tag === 14n) {
+      if (sonameOffset !== null) fail("Node loader ELF contains duplicate DT_SONAME");
+      sonameOffset = value;
+    }
+  }
+  if (!terminated || stringTableAddress === null || stringTableSize === null ||
+      stringTableSize < 1n || stringTableSize > 16n * 1024n * 1024n) {
+    fail("Node loader ELF dynamic string-table metadata is incomplete");
+  }
+  const containingLoads = loads.filter((load) =>
+    stringTableAddress >= load.virtualAddress &&
+    stringTableAddress + stringTableSize <= load.virtualAddress + load.fileSize);
+  if (containingLoads.length !== 1) {
+    fail("Node loader ELF dynamic string table is not in one file-backed PT_LOAD segment");
+  }
+  const load = containingLoads[0];
+  const tableOffset = load.fileOffset + (stringTableAddress - load.virtualAddress);
+  const tableRange = boundedElfRange(input, tableOffset, stringTableSize, "Node loader string table");
+  const table = input.subarray(tableRange.offset, tableRange.offset + tableRange.size);
+  const needed = neededOffsets.map((offset, index) =>
+    dynamicElfString(table, Number(offset), `Node loader DT_NEEDED[${index}]`));
+  if (new Set(needed).size !== needed.length) {
+    fail("Node loader ELF contains duplicate DT_NEEDED entries");
+  }
+  const soname = sonameOffset === null
+    ? null
+    : dynamicElfString(table, Number(sonameOffset), "Node loader DT_SONAME");
+  return {
+    architecture: "elf64-le-x86_64",
+    dynamic_tags: [...new Set(dynamicTags)].sort((left, right) => {
+      const leftValue = BigInt(left);
+      const rightValue = BigInt(right);
+      return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+    }),
+    needed: [...needed].sort(),
+    object_type: input.readUInt16LE(16) === 2 ? "ET_EXEC" : "ET_DYN",
+    pt_interp: interpreter,
+    soname,
+  };
+}
+
+function canonicalPublisherNodeElfLoadOrderV1(value) {
+  const bySoname = new Map(value.objects.map((object) => [object.soname, object]));
+  const interpreter = value.interpreter_soname;
+  const visited = new Set([interpreter]);
+  const visiting = new Set();
+  const order = [interpreter];
+  const visit = (soname) => {
+    if (visited.has(soname)) return;
+    if (visiting.has(soname)) {
+      fail("node_elf_closure contains a dependency cycle not anchored at the interpreter");
+    }
+    const object = bySoname.get(soname);
+    if (object === undefined) {
+      fail(`node_elf_closure is missing recursively required object ${soname}`);
+    }
+    visiting.add(soname);
+    for (const needed of object.needed) visit(needed);
+    visiting.delete(soname);
+    visited.add(soname);
+    order.push(soname);
+  };
+  const interpreterObject = bySoname.get(interpreter);
+  if (interpreterObject === undefined) {
+    fail("node_elf_closure is missing its interpreter object");
+  }
+  for (const needed of interpreterObject.needed) visit(needed);
+  for (const needed of value.node_needed) visit(needed);
+  if (visited.size !== value.objects.length) {
+    fail("node_elf_closure contains an unreachable preload object");
+  }
+  return order;
+}
+
+export function expectedPublisherNodeLoaderClosureManifestBytesV1(closure) {
+  return Buffer.from(
+    closure.objects.map((object) => `${object.pin.sha256}  ${object.pin.path}\n`).join(""),
+    "utf8",
+  );
+}
+
+function validatePublisherNodeElfClosureV1(value, runtime) {
+  exactKeys(value, [
+    "activation_state", "architecture", "interpreter_soname", "kind", "node_needed",
+    "objects", "pt_interp", "schema_version",
+  ], "node_elf_closure");
+  if (
+    value.schema_version !== 1 || value.kind !== PUBLISHER_NODE_ELF_CLOSURE_KIND ||
+    value.architecture !== "elf64-le-x86_64" ||
+    value.activation_state !==
+      "descriptor-pinned-loader-recursive-needed-closure-and-double-maps-sampling" ||
+    value.pt_interp !== "/lib64/ld-linux-x86-64.so.2" ||
+    value.interpreter_soname !== "ld-linux-x86-64.so.2" ||
+    !Array.isArray(value.node_needed) || value.node_needed.length < 2 ||
+    !Array.isArray(value.objects) || value.objects.length < 2 || value.objects.length > 32
+  ) {
+    fail("node_elf_closure does not use the reviewed Hetzner x86-64 loader profile");
+  }
+  if (
+    !Array.isArray(value.node_needed) ||
+    !value.node_needed.every((name) => /^[A-Za-z0-9][A-Za-z0-9+_.-]{0,254}$/u.test(name)) ||
+    new Set(value.node_needed).size !== value.node_needed.length ||
+    canonicalPublisherNetnsJsonV2(value.node_needed) !==
+      canonicalPublisherNetnsJsonV2([...value.node_needed].sort())
+  ) {
+    fail("node_elf_closure.node_needed is not one sorted unique SONAME set");
+  }
+  const sonames = [];
+  const paths = [];
+  for (const [index, object] of value.objects.entries()) {
+    const label = `node_elf_closure.objects[${index}]`;
+    exactKeys(object, ["needed", "pin", "soname"], label);
+    if (typeof object.soname !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9+_.-]{0,254}$/u.test(object.soname)) {
+      fail(`${label}.soname is malformed`);
+    }
+    if (!Array.isArray(object.needed) ||
+        !object.needed.every((name) => /^[A-Za-z0-9][A-Za-z0-9+_.-]{0,254}$/u.test(name)) ||
+        new Set(object.needed).size !== object.needed.length ||
+        canonicalPublisherNetnsJsonV2(object.needed) !==
+          canonicalPublisherNetnsJsonV2([...object.needed].sort())) {
+      fail(`${label}.needed is not one sorted unique SONAME set`);
+    }
+    validateFilePin(object.pin, `${label}.pin`, {
+      paths: [object.pin.path], modes: ["0444", "0555", "0644", "0755"],
+    });
+    if (!object.pin.path.startsWith("/usr/lib/x86_64-linux-gnu/") ||
+        object.pin.path.slice("/usr/lib/x86_64-linux-gnu/".length).includes("/") ||
+        !object.pin.path.split("/").at(-1).startsWith(object.soname)) {
+      fail(`${label}.pin is outside the reviewed resolved host ABI directory`);
+    }
+    sonames.push(object.soname);
+    paths.push(object.pin.path);
+  }
+  if (
+    new Set(sonames).size !== sonames.length || new Set(paths).size !== paths.length ||
+    !sonames.includes(value.interpreter_soname) ||
+    value.node_needed.some((name) => !sonames.includes(name)) ||
+    value.objects.some((object) => object.needed.some((name) => !sonames.includes(name)))
+  ) {
+    fail("node_elf_closure is not one unique and recursively closed object set");
+  }
+  if (
+    value.objects[0].soname !== value.interpreter_soname ||
+    value.objects[0].needed.length !== 0
+  ) {
+    fail("node_elf_closure interpreter must be the dependency-free explicit loader");
+  }
+  const canonicalLoadOrder = canonicalPublisherNodeElfLoadOrderV1(value);
+  if (
+    canonicalPublisherNetnsJsonV2(sonames) !== canonicalPublisherNetnsJsonV2(canonicalLoadOrder) ||
+    value.objects[0].pin.path !==
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ||
+    value.objects.some((object, index) => index > 0 && object.needed.some((needed) =>
+      needed !== value.interpreter_soname &&
+      canonicalLoadOrder.indexOf(needed) >= index))
+  ) {
+    fail("node_elf_closure is not in canonical dependency-first preload order");
+  }
+  if (runtime.node_loader_closure_manifest.sha256 !==
+      sha256(expectedPublisherNodeLoaderClosureManifestBytesV1(value))) {
+    fail("Node loader closure manifest digest does not equal the plan-bound object closure");
+  }
+}
+
+export function validatePublisherNodeElfClosureBytesV1({ closure, nodeBytes, objectBytes }) {
+  const node = inspectDynamicElfV1(nodeBytes);
+  if (
+    node.pt_interp !== closure.pt_interp || node.soname !== null ||
+    canonicalPublisherNetnsJsonV2(node.needed) !== canonicalPublisherNetnsJsonV2(closure.node_needed)
+  ) {
+    fail("pinned Node ELF PT_INTERP or direct DT_NEEDED set differs from its approved closure");
+  }
+  if (!(objectBytes instanceof Map) || objectBytes.size !== closure.objects.length) {
+    fail("Node loader object byte closure is incomplete");
+  }
+  const objects = closure.objects.map((object, index) => {
+    const bytes = objectBytes.get(object.pin.path);
+    if (!Buffer.isBuffer(bytes) || sha256(bytes) !== object.pin.sha256) {
+      fail(`Node loader object bytes differ from the approved pin: ${object.pin.path}`);
+    }
+    const inspection = inspectDynamicElfV1(bytes);
+    if (
+      (index === 0
+        ? inspection.pt_interp !== null || inspection.needed.length !== 0
+        : ![null, closure.pt_interp].includes(inspection.pt_interp)) ||
+      inspection.soname !== object.soname ||
+      canonicalPublisherNetnsJsonV2(inspection.needed) !==
+        canonicalPublisherNetnsJsonV2(object.needed)
+    ) {
+      fail(`Node loader object ELF metadata differs from its approved closure: ${object.pin.path}`);
+    }
+    return { path: object.pin.path, ...inspection };
+  });
+  return { node, objects };
 }
 
 function validateLauncherStaticElfEvidence(value, launcherSha256) {
@@ -584,7 +979,7 @@ function rejectSecretSurface(plan) {
 export function validatePublisherNetnsPlanV2(plan) {
   exactKeys(plan, [
     "activation_sentinels", "caddy_preimage", "ceremony_id", "firewall_evidence", "host",
-    "installed_files", "kind", "launcher_static_elf", "preimage",
+    "installed_files", "kind", "launcher_static_elf", "node_elf_closure", "preimage",
     "publisher_private_key_installed", "relationship", "runtime", "schema_version",
     "source_commit", "topology", "transaction",
   ], "plan");
@@ -598,6 +993,7 @@ export function validatePublisherNetnsPlanV2(plan) {
   validateInstalledFiles(plan);
   validateRuntime(plan.runtime);
   validateLauncherStaticElfEvidence(plan.launcher_static_elf, plan.runtime.launcher.sha256);
+  validatePublisherNodeElfClosureV1(plan.node_elf_closure, plan.runtime);
   rejectSecretSurface(plan);
   if (!Array.isArray(plan.activation_sentinels) ||
       plan.activation_sentinels.length !== PUBLISHER_NETNS_SENTINELS.length) {
@@ -717,6 +1113,68 @@ export function validatePublisherNetnsApprovalV2({
   if (approval.decision !== decision) fail("approval decision drifted");
   if (rollback) validateSha256(approval.committed_receipt_sha256,
     "rollback approval committed_receipt_sha256");
+  return true;
+}
+
+export function validatePublisherNetnsFailedRecoveryApprovalV1({
+  approval, approvedPlanSha256, nowUnix, plan,
+}) {
+  validatePublisherNetnsPlanV2(plan);
+  exactKeys(approval, [
+    "acknowledgements", "activation_approval_sha256", "approved_at_utc", "approved_by",
+    "ceremony_id", "decision", "executor_sha256", "expires_at_utc", "failed_unit",
+    "failed_unit_sha256", "kind", "launcher_manifest_sha256", "launcher_sha256",
+    "plan_sha256", "reset_failed_argv", "schema_version", "start_intent_sha256",
+  ], "failed-start recovery approval");
+  if (
+    approval.schema_version !== 1 ||
+    approval.kind !== PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND ||
+    approval.ceremony_id !== plan.ceremony_id ||
+    approval.plan_sha256 !== approvedPlanSha256 ||
+    approvedPlanSha256 !== computePublisherNetnsPlanSha256V2(plan) ||
+    approval.executor_sha256 !== plan.runtime.executor.sha256 ||
+    approval.launcher_sha256 !== plan.runtime.launcher.sha256 ||
+    approval.launcher_manifest_sha256 !== plan.runtime.launcher_manifest.sha256
+  ) {
+    fail("failed-start recovery approval binding drifted from identity or closed inputs");
+  }
+  if (typeof approval.approved_by !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u.test(approval.approved_by)) {
+    fail("failed-start recovery approval approved_by identifier is malformed");
+  }
+  exactArray(
+    approval.acknowledgements,
+    PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+    "failed-start recovery approval acknowledgements",
+  );
+  if (approval.decision !== "approve-reset-exact-failed-publisher-netns" ||
+      !same(approval.reset_failed_argv, ["reset-failed", NETNS_UNIT])) {
+    fail("failed-start recovery approval decision or fixed reset argv drifted");
+  }
+  for (const [value, label] of [
+    [approval.activation_approval_sha256, "activation approval SHA-256"],
+    [approval.failed_unit_sha256, "failed unit SHA-256"],
+    [approval.start_intent_sha256, "start intent SHA-256"],
+  ]) validateSha256(value, `failed-start recovery approval ${label}`);
+  validatePublisherNetnsFailedUnitV1(
+    approval.failed_unit,
+    "failed-start recovery approval.failed_unit",
+  );
+  if (approval.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(
+    approval.failed_unit,
+  )) fail("failed-start recovery approval failed-unit digest drifted");
+  const approved = parseUtc(
+    approval.approved_at_utc,
+    "failed-start recovery approval.approved_at_utc",
+  );
+  const expires = parseUtc(
+    approval.expires_at_utc,
+    "failed-start recovery approval.expires_at_utc",
+  );
+  if (expires <= approved || expires - approved > MAX_APPROVAL_WINDOW_SECONDS ||
+      nowUnix < approved - MAX_CLOCK_SKEW_SECONDS || nowUnix > expires) {
+    fail("failed-start recovery approval is not currently valid within the one-hour window");
+  }
   return true;
 }
 
@@ -843,5 +1301,62 @@ export function validatePublisherNetnsReceiptV2({ receipt, plan, approvedPlanSha
     active: false, name: PUBLISHER_UNIT,
   });
   validateRuntimeTopology(receipt.topology, plan);
+  return true;
+}
+
+export function validatePublisherNetnsFailedRecoveryReceiptV1({
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  plan,
+  receipt,
+}) {
+  validatePublisherNetnsPlanV2(plan);
+  exactKeys(receipt, [
+    "activation_approval_sha256", "approved_plan_sha256",
+    "approved_recovery_approval_sha256", "caddy", "ceremony_id",
+    "failed_unit", "failed_unit_sha256", "firewall_evidence_sha256", "host",
+    "installed_files", "kind", "loaded_netns_unit", "outcome", "publisher_unit",
+    "recovered_unit", "reset_failed_argv", "reset_intent_approval_sha256", "runtime",
+    "schema_version", "sentinels", "start_intent_sha256", "topology_absent",
+  ], "failed-start recovery receipt");
+  if (
+    receipt.schema_version !== 1 ||
+    receipt.kind !== PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND ||
+    receipt.outcome !== "failed-start-recovered" ||
+    receipt.ceremony_id !== plan.ceremony_id ||
+    receipt.approved_plan_sha256 !== approvedPlanSha256 ||
+    approvedPlanSha256 !== computePublisherNetnsPlanSha256V2(plan) ||
+    receipt.approved_recovery_approval_sha256 !== approvedRecoveryApprovalSha256 ||
+    receipt.topology_absent !== true ||
+    !same(receipt.reset_failed_argv, ["reset-failed", NETNS_UNIT])
+  ) {
+    fail("failed-start recovery receipt identity or outcome drifted");
+  }
+  for (const [value, label] of [
+    [receipt.activation_approval_sha256, "activation approval SHA-256"],
+    [receipt.approved_recovery_approval_sha256, "recovery approval SHA-256"],
+    [receipt.failed_unit_sha256, "failed unit SHA-256"],
+    [receipt.firewall_evidence_sha256, "firewall evidence SHA-256"],
+    [receipt.reset_intent_approval_sha256, "reset-intent approval SHA-256"],
+    [receipt.start_intent_sha256, "start intent SHA-256"],
+  ]) validateSha256(value, `failed-start recovery receipt ${label}`);
+  validatePublisherNetnsFailedUnitV1(
+    receipt.failed_unit,
+    "failed-start recovery receipt.failed_unit",
+  );
+  if (
+    receipt.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(receipt.failed_unit) ||
+    receipt.firewall_evidence_sha256 !== plan.firewall_evidence.sha256 ||
+    !same(receipt.caddy, plan.caddy_preimage) ||
+    !same(receipt.host, plan.host) ||
+    !same(receipt.installed_files, plan.installed_files.map((entry) => entry.pin)) ||
+    !same(receipt.loaded_netns_unit, plan.preimage.loaded_netns_unit) ||
+    !same(receipt.publisher_unit, plan.preimage.publisher_unit) ||
+    !same(receipt.recovered_unit, plan.preimage.netns_unit) ||
+    !same(receipt.runtime, plan.runtime) ||
+    !same(receipt.sentinels, plan.activation_sentinels)
+  ) {
+    fail("failed-start recovery receipt closed inputs or exact unit generations drifted");
+  }
   return true;
 }

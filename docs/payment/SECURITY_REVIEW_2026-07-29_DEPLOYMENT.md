@@ -171,7 +171,7 @@ were introduced before runtime-evidence v7; the discussion below records the
 earlier reviewed baseline that the current v8 retains. Offline review is meaningful only with
 an independently transferred full evidence digest.
 
-Runtime-evidence v8 retains the files-authoritative NSS closed set: both
+Runtime-evidence v9 retains the files-authoritative NSS closed set: both
 `passwd` and `group` must use exactly `files`, or both must use exactly
 `files systemd`, with inherited group-based `initgroups`. Only the latter exact
 Ubuntu fallback sequence is accepted; mixed sequences, reversed order, action
@@ -189,7 +189,7 @@ remote/cached or optionally enumerable NSS providers are not accepted by this
 V1 claim; the sole reviewed systemd fallback passes only while its complete
 enumeration projection remains exactly the local-files projection.
 
-Runtime-evidence v8 also closes credentials and capabilities retained in the
+Runtime-evidence v9 also closes credentials and capabilities retained in the
 kernel after an NSS edit. Two bounded full process/thread scans must produce
 the same protected-holder records, record all four active sets plus `CapBnd`,
 and fail on a reviewed dangerous active capability held by non-root. Each
@@ -201,7 +201,7 @@ cgroup with the same reviewed credentials and zero capabilities. Only the
 Caddy units may retain `CAP_NET_BIND_SERVICE`; every managed `CapBnd` and active
 set is checked against that exact systemd policy.
 
-Runtime-evidence v8 also retains v7's rule that systemd's structured
+Runtime-evidence v9 also retains v8's rule that systemd's structured
 `Conditions` property is not treated as printable `systemctl show` text.
 Ubuntu 24.04's systemd 255 renders
 that property as `[unprintable]`. The collector therefore pins `/usr/bin/busctl`
@@ -232,7 +232,7 @@ in live, stopped-edge and stopped-relay evidence and are repeated during final
 sealing. `[unprintable]` is never special-cased as empty. This schema change
 invalidated v6 live/runtime requests, v3 stopped-edge and v2 stopped-relay evidence.
 
-Runtime-evidence v8 additionally closes the systemd command representation.
+Runtime-evidence v8 introduced closure of the systemd command representation.
 Render-plan and manifest schema v2, the schema-v8 runtime request, and collected
 host evidence all bind the exact first line
 `systemd 255 (255.4-1ubuntu8.15)`; a different Ubuntu revision or abbreviated
@@ -248,6 +248,18 @@ running under the unit's `MainPID`; every live pre-start has completed with
 `code=exited` and status zero; and stopped records remain unexecuted. Live v8,
 stopped-edge v5 and stopped-relay v4 invalidate live v7, stopped-edge v4 and
 stopped-relay v3 evidence rather than upgrading it in place.
+
+Runtime-evidence v9 retains those typed command checks and adds
+`NeedDaemonReload=no` to every effective live-unit snapshot. It admits an
+exited processless lifecycle only for the exact directory-publisher unit and
+only as `Type=oneshot`, `RemainAfterExit=yes`, `active/exited`, `MainPID=0`,
+empty `ControlGroup`, `Result=success`, `ExecMainCode=1` and
+`ExecMainStatus=0`. The completed ExecStart must contain non-placeholder start
+and stop timestamps with `code=exited status=0`; the unit still has a nonzero
+same-boot activation timestamp and InvocationID. Its process identity is null,
+while the protected UID/GID closure must prove no process or thread retains
+the publisher credential. Live v9 evidence and requests invalidate live v8;
+stopped-edge v5 and stopped-relay v4 remain unchanged.
 
 V8 also stores every standalone typed D-Bus `t` value as a canonical decimal
 string. Its parser extracts the raw JSON integer before any JavaScript

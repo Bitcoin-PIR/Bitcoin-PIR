@@ -40,23 +40,36 @@ import {
   PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS,
   PUBLISHER_NETNS_APPLY_APPROVAL_KIND,
   PUBLISHER_NETNS_CEREMONY_KIND,
+  PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND,
+  PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND,
   PUBLISHER_NETNS_LIFECYCLE_LOCK,
   PUBLISHER_NETNS_PLAN_SCHEMA_VERSION,
   PUBLISHER_NETNS_RECEIPT_KIND,
   PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS,
   PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND,
   computePublisherNetnsPlanSha256V2,
+  computePublisherNetnsFailedUnitSha256V1,
+  expectedPublisherNodeLoaderClosureManifestBytesV1,
   expectedPublisherNetnsLauncherManifestBytesV2,
   inspectStaticElfV1,
   validatePublisherNetnsApprovalV2,
+  validatePublisherNetnsFailedRecoveryApprovalV1,
+  validatePublisherNetnsFailedRecoveryReceiptV1,
+  validatePublisherNetnsFailedUnitV1,
   validatePublisherNetnsPlanV2,
   validatePublisherNetnsReceiptV2,
+  validatePublisherNodeElfClosureBytesV1,
 } from "./payment-v1-publisher-netns-schema.mjs";
 
 export const CEREMONY_KIND = PUBLISHER_NETNS_CEREMONY_KIND;
 export const APPLY_APPROVAL_KIND = PUBLISHER_NETNS_APPLY_APPROVAL_KIND;
 export const ROLLBACK_APPROVAL_KIND = PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND;
+export const FAILED_RECOVERY_APPROVAL_KIND =
+  PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND;
 export const RECEIPT_KIND = PUBLISHER_NETNS_RECEIPT_KIND;
+export const FAILED_RECOVERY_RECEIPT_KIND =
+  PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND;
 export const ROLLBACK_RECEIPT_KIND =
   "bitcoinpir-payment-v1-publisher-netns-rollback-receipt-v1";
 
@@ -72,9 +85,14 @@ const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 const MAX_APPROVAL_WINDOW_SECONDS = 60 * 60;
 const MAX_CLOCK_SKEW_SECONDS = 300;
 const LOCK_OWNER = "owner.json";
+const LOCK_OWNER_PENDING = `${LOCK_OWNER}.pending`;
+const MAX_LOCK_RECOVERY_TRANSITIONS = 16;
+const MAX_LOCK_OWNER_BYTES = 4096;
 const STATE_FILENAMES = Object.freeze([
   "00-prepared.json",
   "05-start-intent.json",
+  "06-reset-failed-intent.json",
+  "07-failed-start-recovered.json",
   "10-runtime-verified.json",
   "20-committed.json",
   "25-stop-intent.json",
@@ -84,6 +102,9 @@ const STATE_FILENAMES = Object.freeze([
 export const APPLY_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS;
 
 export const ROLLBACK_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS;
+
+export const FAILED_RECOVERY_ACKNOWLEDGEMENTS =
+  PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS;
 
 export function formatPublisherNetnsPlanValidationV2(planSha256) {
   return `valid schema_version=${PUBLISHER_NETNS_PLAN_SCHEMA_VERSION} plan_sha256=${planSha256}\n`;
@@ -96,6 +117,18 @@ export function formatPublisherNetnsCeremonyOutcomeV2(outcome, receiptPath) {
 export function assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId) {
   exactKeys(owner, ["boot_id", "pid", "process_start_ticks", "transaction_id"],
     "stale lock owner");
+  if (
+    typeof owner.boot_id !== "string" ||
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(owner.boot_id) ||
+    owner.boot_id === "00000000-0000-0000-0000-000000000000"
+  ) fail("stale lifecycle lock boot_id must be one canonical nonzero UUID");
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
+    fail("stale lifecycle lock pid must be one positive safe integer");
+  }
+  if (typeof owner.process_start_ticks !== "string" ||
+      !/^[1-9][0-9]*$/u.test(owner.process_start_ticks)) {
+    fail("stale lifecycle lock process_start_ticks must be canonical positive decimal text");
+  }
   if (owner.transaction_id !== transactionId) {
     fail("stale lifecycle lock belongs to a different transaction and requires explicit review");
   }
@@ -403,6 +436,10 @@ function expectedLoadedServicePolicy() {
     timeout_stop_usec: "30s",
     type: "notify",
     umask: "0077",
+    unset_environment: [
+      "BASH_ENV", "ENV", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH",
+      "LD_PRELOAD", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+    ],
     user: "root",
     working_directory: "/var/lib/bitcoinpir-publisher-netns",
   };
@@ -597,8 +634,8 @@ function validateInstalledFiles(plan) {
 
 function validateRuntime(value) {
   exactKeys(value, [
-    "executor", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest",
-    "node", "publisher_netns_gate", "schema_validator", "systemctl",
+    "executor", "health_probe", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest",
+    "node", "node_loader_closure_manifest", "publisher_netns_gate", "schema_validator", "systemctl",
   ], "runtime");
   validateFilePin(value.launcher, "runtime.launcher", {
     paths: [
@@ -614,6 +651,12 @@ function validateRuntime(value) {
   });
   validateFilePin(value.executor, "runtime.executor", {
     paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs"],
+    modes: ["0555"],
+  });
+  validateFilePin(value.health_probe, "runtime.health_probe", {
+    paths: [
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs",
+    ],
     modes: ["0555"],
   });
   validateFilePin(value.integrated_caddy_gate, "runtime.integrated_caddy_gate", {
@@ -633,6 +676,11 @@ function validateRuntime(value) {
   validateFilePin(value.node, "runtime.node", {
     paths: ["/usr/bin/node"], modes: ["0555", "0755"],
   });
+  validateFilePin(value.node_loader_closure_manifest,
+    "runtime.node_loader_closure_manifest", {
+      paths: ["/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256"],
+      modes: ["0444"],
+    });
   validateFilePin(value.systemctl, "runtime.systemctl", {
     paths: ["/usr/bin/systemctl"], modes: ["0555", "0755"],
   });
@@ -706,7 +754,7 @@ export function validateCeremonyPlan(plan) {
   validatePublisherNetnsPlanV2(plan);
   exactKeys(plan, [
     "activation_sentinels", "caddy_preimage", "ceremony_id", "firewall_evidence",
-    "host", "installed_files", "kind", "launcher_static_elf", "preimage",
+    "host", "installed_files", "kind", "launcher_static_elf", "node_elf_closure", "preimage",
     "publisher_private_key_installed", "relationship", "runtime", "schema_version",
     "source_commit", "topology", "transaction",
   ], "plan");
@@ -837,6 +885,67 @@ function validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, rol
   if (rollback) validateSha256(approval.committed_receipt_sha256,
     "rollback approval committed_receipt_sha256");
   return true;
+}
+
+function validateFailedRecoveryApproval(
+  approval,
+  plan,
+  approvedPlanSha256,
+  nowUnix,
+) {
+  validatePublisherNetnsFailedRecoveryApprovalV1({
+    approval,
+    approvedPlanSha256,
+    nowUnix,
+    plan,
+  });
+  exactKeys(approval, [
+    "acknowledgements", "activation_approval_sha256", "approved_at_utc", "approved_by",
+    "ceremony_id", "decision", "executor_sha256", "expires_at_utc", "failed_unit",
+    "failed_unit_sha256", "kind", "launcher_manifest_sha256", "launcher_sha256",
+    "plan_sha256", "reset_failed_argv", "schema_version", "start_intent_sha256",
+  ], "failed-start recovery approval");
+  if (
+    approval.schema_version !== 1 ||
+    approval.kind !== FAILED_RECOVERY_APPROVAL_KIND ||
+    approval.ceremony_id !== plan.ceremony_id ||
+    approval.plan_sha256 !== approvedPlanSha256 ||
+    approval.executor_sha256 !== plan.runtime.executor.sha256 ||
+    approval.launcher_sha256 !== plan.runtime.launcher.sha256 ||
+    approval.launcher_manifest_sha256 !== plan.runtime.launcher_manifest.sha256 ||
+    approval.decision !== "approve-reset-exact-failed-publisher-netns" ||
+    canonicalJson(approval.reset_failed_argv) !== canonicalJson(["reset-failed", NETNS_UNIT])
+  ) fail("failed-start recovery approval binding or fixed reset argv drifted");
+  exactArray(
+    approval.acknowledgements,
+    FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+    "failed-start recovery approval acknowledgements",
+  );
+  validatePublisherNetnsFailedUnitV1(
+    approval.failed_unit,
+    "failed-start recovery approval.failed_unit",
+  );
+  if (approval.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(
+    approval.failed_unit,
+  )) fail("failed-start recovery approval failed unit digest drifted");
+  return true;
+}
+
+function failedRecoveryReceiptPath(plan) {
+  return `${dirname(plan.transaction.receipt_path)}/${plan.ceremony_id}.failed-start-recovery.json`;
+}
+
+function failedRecoveryStateProjection(value) {
+  return {
+    active_enter_timestamp_monotonic: value.active_enter_timestamp_monotonic,
+    active_state: value.active_state,
+    invocation_id: value.invocation_id,
+    load_state: value.load_state,
+    main_pid: value.main_pid,
+    name: value.name,
+    need_daemon_reload: value.need_daemon_reload,
+    sub_state: value.sub_state,
+  };
 }
 
 function validateRuntimeTopology(value, plan) {
@@ -972,6 +1081,30 @@ function validateReceipt(receipt, plan, approvedPlanSha256) {
   return true;
 }
 
+function validateFailedRecoveryReceipt(
+  receipt,
+  plan,
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+) {
+  validatePublisherNetnsFailedRecoveryReceiptV1({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    plan,
+    receipt,
+  });
+  if (
+    receipt.kind !== FAILED_RECOVERY_RECEIPT_KIND ||
+    receipt.schema_version !== 1 ||
+    receipt.outcome !== "failed-start-recovered" ||
+    receipt.approved_recovery_approval_sha256 !== approvedRecoveryApprovalSha256 ||
+    receipt.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(
+      receipt.failed_unit,
+    )
+  ) fail("failed-start recovery receipt binding drifted");
+  return true;
+}
+
 function stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, phase, extra = {}) {
   return {
     approved_approval_sha256: approvedApprovalSha256,
@@ -1026,6 +1159,7 @@ async function collectClosedInputs(plan, ops) {
     installed.push(observed.snapshot);
   }
   const runtime = {};
+  let nodeBytes = null;
   for (const [name, pin] of Object.entries(plan.runtime)) {
     const observed = await ops.readRegular(pin.path);
     if (canonicalJson(observed.snapshot) !== canonicalJson(pin)) {
@@ -1040,8 +1174,29 @@ async function collectClosedInputs(plan, ops) {
           canonicalJson(plan.launcher_static_elf)) {
       fail("launcher bytes do not equal the approved machine-verifiable static ELF proof");
     }
+    if (name === "node") nodeBytes = observed.bytes;
+    if (name === "node_loader_closure_manifest" &&
+        !observed.bytes.equals(
+          expectedPublisherNodeLoaderClosureManifestBytesV1(plan.node_elf_closure),
+        )) {
+      fail("Node loader closure manifest does not equal the exact plan-bound object set");
+    }
     runtime[name] = observed.snapshot;
   }
+  if (nodeBytes === null) fail("Node runtime bytes were not collected");
+  const objectBytes = new Map();
+  for (const object of plan.node_elf_closure.objects) {
+    const observed = await ops.readRegular(object.pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(object.pin)) {
+      fail(`Node loader object ${object.soname} drifted`);
+    }
+    objectBytes.set(object.pin.path, observed.bytes);
+  }
+  validatePublisherNodeElfClosureBytesV1({
+    closure: plan.node_elf_closure,
+    nodeBytes,
+    objectBytes,
+  });
   const sentinels = [];
   for (const pin of plan.activation_sentinels) {
     const observed = await ops.readRegular(pin.path);
@@ -1135,10 +1290,158 @@ async function assertInactiveFailedStartRecovery(plan, ops) {
 
   await requireNoJob("initial failed-start recovery proof");
   await requireInactiveAbsent("initial failed-start recovery proof");
-  await commonPreflight(plan, ops);
+  const before = await commonPreflight(plan, ops);
   await requireNoJob("terminal failed-start recovery proof");
   await requireInactiveAbsent("terminal failed-start recovery proof");
   await requireNoJob("final failed-start recovery proof");
+  return before;
+}
+
+function validateDurableResetFailedIntent(
+  observed,
+  plan,
+  approvedPlanSha256,
+) {
+  const intent = parseStrictJson(observed.bytes.toString("utf8"), "durable reset-failed intent");
+  exactKeys(intent, [
+    "activation_approval_sha256", "approved_approval_sha256", "approved_plan_sha256",
+    "ceremony_id", "failed_unit_sha256", "phase", "reset_failed_argv", "schema_version",
+    "start_intent_sha256",
+  ], "durable reset-failed intent");
+  if (
+    intent.schema_version !== 1 ||
+    intent.phase !== "reset-failed-intent" ||
+    intent.ceremony_id !== plan.ceremony_id ||
+    intent.approved_plan_sha256 !== approvedPlanSha256 ||
+    canonicalJson(intent.reset_failed_argv) !== canonicalJson(["reset-failed", NETNS_UNIT])
+  ) fail("durable reset-failed intent identity, approval or fixed argv drifted");
+  for (const key of [
+    "activation_approval_sha256", "approved_approval_sha256", "failed_unit_sha256",
+    "start_intent_sha256",
+  ]) validateSha256(intent[key], `durable reset-failed intent.${key}`);
+  return intent;
+}
+
+async function assertExactFailedStartRecoveryPreimage(
+  plan,
+  ops,
+  approvedFailedUnit,
+  label,
+) {
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
+  const failed = await ops.failedUnitState(NETNS_UNIT);
+  validatePublisherNetnsFailedUnitV1(failed, `${label}.failed_unit`);
+  if (canonicalJson(failed) !== canonicalJson(approvedFailedUnit)) {
+    fail(`${label} failed publisher namespace invocation drifted from approval`);
+  }
+  if (!(await ops.networkAbsent(plan))) {
+    fail(`${label} retained a publisher namespace nsfs path or host veth`);
+  }
+  const before = await commonPreflight(plan, ops);
+  if (
+    await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+    canonicalJson(await ops.failedUnitState(NETNS_UNIT)) !== canonicalJson(approvedFailedUnit) ||
+    !(await ops.networkAbsent(plan)) ||
+    await ops.unitJobAbsent(NETNS_UNIT) !== true
+  ) fail(`${label} failed invocation, topology or PID1 job changed during terminal proof`);
+  return before;
+}
+
+function buildFailedRecoveryReceipt({
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  before,
+  failedUnit,
+  intent,
+  plan,
+  recoveredUnit,
+  startIntentSha256,
+}) {
+  return {
+    activation_approval_sha256: intent.activation_approval_sha256,
+    approved_plan_sha256: approvedPlanSha256,
+    approved_recovery_approval_sha256: approvedRecoveryApprovalSha256,
+    caddy: before.caddy,
+    ceremony_id: plan.ceremony_id,
+    failed_unit: failedUnit,
+    failed_unit_sha256: computePublisherNetnsFailedUnitSha256V1(failedUnit),
+    firewall_evidence_sha256: plan.firewall_evidence.sha256,
+    host: before.host,
+    installed_files: before.closed.installed,
+    kind: FAILED_RECOVERY_RECEIPT_KIND,
+    loaded_netns_unit: before.loadedNetnsUnit,
+    outcome: "failed-start-recovered",
+    publisher_unit: before.publisher,
+    recovered_unit: recoveredUnit,
+    reset_failed_argv: ["reset-failed", NETNS_UNIT],
+    reset_intent_approval_sha256: intent.approved_approval_sha256,
+    runtime: before.closed.runtime,
+    schema_version: 1,
+    sentinels: before.closed.sentinels,
+    start_intent_sha256: startIntentSha256,
+    topology_absent: true,
+  };
+}
+
+function failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt) {
+  return stateRecord(
+    plan,
+    approvedPlanSha256,
+    receipt.approved_recovery_approval_sha256,
+    "failed-start-recovered",
+    {
+      activation_approval_sha256: receipt.activation_approval_sha256,
+      failed_unit_sha256: receipt.failed_unit_sha256,
+      recovery_receipt_sha256: sha256(Buffer.from(canonicalJson(receipt), "utf8")),
+      reset_intent_approval_sha256: receipt.reset_intent_approval_sha256,
+      start_intent_sha256: receipt.start_intent_sha256,
+    },
+  );
+}
+
+async function finishFailedStartRecovery({
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  before,
+  failedUnit,
+  intent,
+  ops,
+  plan,
+  startIntentSha256,
+}) {
+  const terminal = await assertInactiveFailedStartRecovery(plan, ops);
+  if (canonicalJson(terminal) !== canonicalJson(before)) {
+    fail("failed-start recovery closed inputs drifted across reset-failed");
+  }
+  const recoveredUnit = await ops.unitState(NETNS_UNIT);
+  if (canonicalJson(recoveredUnit) !== canonicalJson(plan.preimage.netns_unit)) {
+    fail("failed-start recovery terminal unit drifted after proof");
+  }
+  const receipt = buildFailedRecoveryReceipt({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    before,
+    failedUnit,
+    intent,
+    plan,
+    recoveredUnit,
+    startIntentSha256,
+  });
+  validateFailedRecoveryReceipt(
+    receipt,
+    plan,
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+  );
+  await ops.writeReceipt(failedRecoveryReceiptPath(plan), receipt);
+  await ops.writeState(
+    plan.transaction.state_directory,
+    "07-failed-start-recovered.json",
+    failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt),
+  );
+  return receipt;
 }
 
 async function buildCommittedReceipt({
@@ -1195,7 +1498,174 @@ async function buildCommittedReceipt({
   };
 }
 
+async function recoverFailedStartLocked({
+  approval,
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  lifecycle,
+  ops,
+  plan,
+}) {
+  lifecycle.retainLockOnError = true;
+  const startIntentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
+  const observedStartIntent = await ops.readOptionalRegular(startIntentPath);
+  if (observedStartIntent === null) {
+    fail("failed-start recovery found no durable start intent");
+  }
+  const startIntent = validateDurableStartIntent(
+    observedStartIntent,
+    plan,
+    approvedPlanSha256,
+  );
+  const startIntentSha256 = sha256(observedStartIntent.bytes);
+  if (
+    startIntentSha256 !== approval.start_intent_sha256 ||
+    startIntent.approved_approval_sha256 !== approval.activation_approval_sha256
+  ) fail("failed-start recovery approval does not bind the durable approved start attempt");
+
+  const recoveryReceiptPath = failedRecoveryReceiptPath(plan);
+  const existingReceipt = await ops.readOptionalRegular(recoveryReceiptPath);
+  if (existingReceipt !== null) {
+    const receipt = parseStrictJson(
+      existingReceipt.bytes.toString("utf8"),
+      "existing failed-start recovery receipt",
+    );
+    validateFailedRecoveryReceipt(
+      receipt,
+      plan,
+      approvedPlanSha256,
+      receipt.approved_recovery_approval_sha256,
+    );
+    const observedResetIntent = await ops.readOptionalRegular(
+      `${plan.transaction.state_directory}/06-reset-failed-intent.json`,
+    );
+    if (observedResetIntent === null) {
+      fail("existing failed-start recovery receipt has no durable reset-failed intent");
+    }
+    const resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    const terminal = await assertInactiveFailedStartRecovery(plan, ops);
+    if (
+      receipt.activation_approval_sha256 !== approval.activation_approval_sha256 ||
+      receipt.failed_unit_sha256 !== approval.failed_unit_sha256 ||
+      receipt.start_intent_sha256 !== approval.start_intent_sha256 ||
+      resetIntent.activation_approval_sha256 !== receipt.activation_approval_sha256 ||
+      resetIntent.approved_approval_sha256 !== receipt.reset_intent_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== receipt.failed_unit_sha256 ||
+      resetIntent.start_intent_sha256 !== receipt.start_intent_sha256 ||
+      canonicalJson(terminal.caddy) !== canonicalJson(receipt.caddy) ||
+      canonicalJson(terminal.closed.installed) !== canonicalJson(receipt.installed_files) ||
+      canonicalJson(terminal.closed.runtime) !== canonicalJson(receipt.runtime) ||
+      canonicalJson(terminal.closed.sentinels) !== canonicalJson(receipt.sentinels) ||
+      canonicalJson(terminal.host) !== canonicalJson(receipt.host) ||
+      canonicalJson(terminal.loadedNetnsUnit) !== canonicalJson(receipt.loaded_netns_unit) ||
+      canonicalJson(terminal.publisher) !== canonicalJson(receipt.publisher_unit)
+    ) fail("existing failed-start recovery receipt no longer describes terminal closed inputs");
+    await ops.writeState(
+      plan.transaction.state_directory,
+      "07-failed-start-recovered.json",
+      failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt),
+    );
+    lifecycle.retainLockOnError = false;
+    return receipt;
+  }
+
+  const resetIntentPath = `${plan.transaction.state_directory}/06-reset-failed-intent.json`;
+  const observedResetIntent = await ops.readOptionalRegular(resetIntentPath);
+  const current = await ops.unitState(NETNS_UNIT);
+  const exactInactive = canonicalJson(current) === canonicalJson(plan.preimage.netns_unit);
+  if (exactInactive) {
+    if (observedResetIntent === null) {
+      fail("failed-start recovery found inactive state without its durable reset-failed intent");
+    }
+    const resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    if (
+      resetIntent.start_intent_sha256 !== startIntentSha256 ||
+      resetIntent.activation_approval_sha256 !== startIntent.approved_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== approval.failed_unit_sha256
+    ) fail("durable reset-failed intent does not bind the approved failed start attempt");
+    const before = await assertInactiveFailedStartRecovery(plan, ops);
+    const receipt = await finishFailedStartRecovery({
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256,
+      before,
+      failedUnit: approval.failed_unit,
+      intent: resetIntent,
+      ops,
+      plan,
+      startIntentSha256,
+    });
+    lifecycle.retainLockOnError = false;
+    return receipt;
+  }
+
+  if (
+    canonicalJson(failedRecoveryStateProjection(approval.failed_unit)) !== canonicalJson(current)
+  ) fail("failed-start recovery current unit is not the exact approved failed invocation");
+  let resetIntent;
+  if (observedResetIntent === null) {
+    resetIntent = stateRecord(
+      plan,
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256,
+      "reset-failed-intent",
+      {
+        activation_approval_sha256: startIntent.approved_approval_sha256,
+        failed_unit_sha256: approval.failed_unit_sha256,
+        reset_failed_argv: ["reset-failed", NETNS_UNIT],
+        start_intent_sha256: startIntentSha256,
+      },
+    );
+    await ops.writeState(
+      plan.transaction.state_directory,
+      "06-reset-failed-intent.json",
+      resetIntent,
+    );
+  } else {
+    resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    if (
+      resetIntent.start_intent_sha256 !== startIntentSha256 ||
+      resetIntent.activation_approval_sha256 !== startIntent.approved_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== approval.failed_unit_sha256
+    ) fail("durable reset-failed intent does not bind the approved failed start attempt");
+  }
+  const before = await assertExactFailedStartRecoveryPreimage(
+    plan,
+    ops,
+    approval.failed_unit,
+    "reset-adjacent failed-start recovery proof",
+  );
+  const result = await ops.systemctl(["reset-failed", NETNS_UNIT]);
+  if (result.status !== 0) {
+    fail("exact publisher namespace reset-failed returned nonzero with an unknown final outcome");
+  }
+  const receipt = await finishFailedStartRecovery({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    before,
+    failedUnit: approval.failed_unit,
+    intent: resetIntent,
+    ops,
+    plan,
+    startIntentSha256,
+  });
+  lifecycle.retainLockOnError = false;
+  return receipt;
+}
+
 async function applyLocked({
+  approval,
   approvedApprovalSha256,
   approvedPlanSha256,
   lifecycle,
@@ -1204,6 +1674,17 @@ async function applyLocked({
   recover,
 }) {
   if (recover) lifecycle.retainLockOnError = true;
+  if (recover && approval.kind === FAILED_RECOVERY_APPROVAL_KIND) {
+    lifecycle.outcome = "reset-failed";
+    return recoverFailedStartLocked({
+      approval,
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256: approvedApprovalSha256,
+      lifecycle,
+      ops,
+      plan,
+    });
+  }
   const existing = await ops.readOptionalRegular(plan.transaction.receipt_path);
   if (existing !== null) {
     const receipt = parseStrictJson(existing.bytes.toString("utf8"), "existing receipt");
@@ -1240,6 +1721,9 @@ async function applyLocked({
   const intentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
   const observedIntent = await ops.readOptionalRegular(intentPath);
   const exactInactive = canonicalJson(current) === canonicalJson(plan.preimage.netns_unit);
+  if (recover && current.active_state === "failed") {
+    fail("recover-commit requires an exact failed-start recovery approval for failed/failed state");
+  }
   if (exactInactive && !(await ops.networkAbsent(plan))) {
     fail("inactive namespace unit has an unknown namespace path or host-interface preimage");
   }
@@ -1337,25 +1821,33 @@ export async function executeApply({
 }) {
   validateCeremonyPlan(plan);
   if (computePlanSha256(plan) !== approvedPlanSha256) fail("plan digest was not independently approved");
-  validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, false);
+  const failedRecovery = recover && approval.kind === FAILED_RECOVERY_APPROVAL_KIND;
+  if (failedRecovery) {
+    validateFailedRecoveryApproval(approval, plan, approvedPlanSha256, nowUnix);
+  } else {
+    validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, false);
+  }
   const approvalBytes = Buffer.from(canonicalJson(approval), "utf8");
-  if (sha256(approvalBytes) !== approvedApprovalSha256) fail("apply approval digest drifted");
+  if (sha256(approvalBytes) !== approvedApprovalSha256) {
+    fail(`${failedRecovery ? "failed-start recovery" : "apply"} approval digest drifted`);
+  }
   const release = await ops.acquireLock(plan.transaction.lock_path, {
     recoverStale: recover,
-    transactionId: plan.ceremony_id,
+    transactionId: `publisher-netns:${plan.ceremony_id}`,
   });
-  const lifecycle = { retainLockOnError: false };
+  const lifecycle = { outcome: "start", retainLockOnError: false };
   let releaseLock = true;
   try {
     return await applyLocked({
-      approvedApprovalSha256, approvedPlanSha256, lifecycle, ops, plan, recover,
+      approval, approvedApprovalSha256, approvedPlanSha256, lifecycle, ops, plan, recover,
     });
   } catch (error) {
     if (lifecycle.retainLockOnError) {
       releaseLock = false;
       if (error instanceof PublisherNetnsStartOutcomeUnknownError) throw error;
       throw new PublisherNetnsStartOutcomeUnknownError(
-        "publisher namespace start outcome is unknown; shared lifecycle lock retained",
+        `publisher namespace ${lifecycle.outcome} outcome is unknown; ` +
+          "shared lifecycle lock retained",
         error,
       );
     }
@@ -1558,7 +2050,7 @@ export async function executeRollback({
   validateReceipt(committed, plan, approvedPlanSha256);
   const release = await ops.acquireLock(plan.transaction.lock_path, {
     recoverStale: recover,
-    transactionId: `${plan.ceremony_id}-rollback`,
+    transactionId: `publisher-netns-rollback:${plan.ceremony_id}`,
   });
   try {
     return await rollbackLocked({
@@ -1659,6 +2151,20 @@ function exactOwnerRecord(observed, path, bytes, allowedLinks = [1]) {
   }
 }
 
+export function writeAllSyncV1(fd, bytes, writer = writeSync) {
+  if (!Buffer.isBuffer(bytes)) fail("atomic record bytes must be a Buffer");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const remaining = bytes.length - offset;
+    const written = writer(fd, bytes, offset, remaining, offset);
+    if (!Number.isSafeInteger(written) || written <= 0 || written > remaining) {
+      fail("atomic record write returned an invalid short-write length");
+    }
+    offset += written;
+  }
+  return offset;
+}
+
 function writeAtomicNoReplace(path, value) {
   const bytes = Buffer.from(canonicalJson(value), "utf8");
   const pending = `${path}.pending`;
@@ -1707,7 +2213,7 @@ function writeAtomicNoReplace(path, value) {
   try {
     fchmodSync(fd, 0o400);
     fchownSync(fd, 0, 0);
-    writeSync(fd, bytes);
+    writeAllSyncV1(fd, bytes);
     fsyncSync(fd);
   } finally { closeSync(fd); }
   try {
@@ -1748,52 +2254,752 @@ function currentBootId() {
   return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 }
 
-function acquireLock(path, { recoverStale, transactionId }) {
+function validateLockDirectoryStat(stat, label) {
+  const mode = Number(stat.mode) & 0o7777;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0n || stat.gid !== 0n ||
+      mode !== 0o700) {
+    fail(`${label} must be a root-owned no-follow 0700 directory`);
+  }
+}
+
+function openStableLockDirectory(path, label) {
+  const before = lstatSync(path, { bigint: true });
+  validateLockDirectoryStat(before, label);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY |
+    constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    const afterPath = lstatSync(path, { bigint: true });
+    validateLockDirectoryStat(opened, label);
+    validateLockDirectoryStat(afterPath, label);
+    if (!sameStableStat(before, opened) || !sameStableStat(opened, afterPath)) {
+      fail(`${label} changed while its descriptor was opened`);
+    }
+    return { fd, path, stat: opened };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function lockDirectoryEntryPath(directory, name = "") {
+  return `/proc/self/fd/${directory.fd}${name === "" ? "" : `/${name}`}`;
+}
+
+function assertLockDirectoryGeneration(directory, expected, label) {
+  const descriptor = fstatSync(directory.fd, { bigint: true });
+  const named = lstatSync(directory.path, { bigint: true });
+  validateLockDirectoryStat(descriptor, label);
+  validateLockDirectoryStat(named, label);
+  if (!sameStableStat(descriptor, named) ||
+      (expected !== null && !sameStableStat(expected, descriptor))) {
+    fail(`${label} directory generation changed`);
+  }
+  return descriptor;
+}
+
+function openLockRecord(directory, name) {
+  const opened = openStableRegular(lockDirectoryEntryPath(directory, name));
+  opened.snapshot.path = `${directory.path}/${name}`;
+  return opened;
+}
+
+function closeLockState(state) {
+  for (const record of [state.owner, state.pending]) {
+    if (record !== null) closeSync(record.fd);
+  }
+}
+
+function readLockState(directory) {
+  const entries = readdirSync(lockDirectoryEntryPath(directory), { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  if (entries.some((entry) =>
+    ![LOCK_OWNER, LOCK_OWNER_PENDING].includes(entry.name) || !entry.isFile())) {
+    fail("stale lock has an unknown shape");
+  }
+  const names = entries.map((entry) => entry.name);
+  return {
+    names,
+    owner: names.includes(LOCK_OWNER) ? openLockRecord(directory, LOCK_OWNER) : null,
+    pending: names.includes(LOCK_OWNER_PENDING) ?
+      openLockRecord(directory, LOCK_OWNER_PENDING) : null,
+  };
+}
+
+function parseLockOwnerRecord(observed, path, transactionId, allowedLinks) {
+  if (observed.bytes.length === 0 || observed.bytes.length > MAX_LOCK_OWNER_BYTES) {
+    fail(`stale lock owner ${path} exceeds its closed byte bound`);
+  }
+  const owner = parseStrictJson(observed.bytes.toString("utf8"), "stale lock owner");
+  assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId);
+  const canonical = Buffer.from(canonicalJson(owner), "utf8");
+  exactOwnerRecord(observed, path, canonical, allowedLinks);
+  return owner;
+}
+
+function sameLockRecord(left, right) {
+  return left.snapshot.device === right.snapshot.device &&
+    left.snapshot.inode === right.snapshot.inode &&
+    left.snapshot.ctime_ns === right.snapshot.ctime_ns &&
+    left.snapshot.mtime_ns === right.snapshot.mtime_ns &&
+    left.snapshot.mode === right.snapshot.mode &&
+    left.snapshot.uid === right.snapshot.uid &&
+    left.snapshot.gid === right.snapshot.gid &&
+    left.snapshot.nlink === right.snapshot.nlink &&
+    left.snapshot.size === right.snapshot.size &&
+    left.snapshot.sha256 === right.snapshot.sha256 &&
+    left.bytes.equals(right.bytes);
+}
+
+function assertOpenLockRecordStable(directory, name, expected, label) {
+  const descriptor = fstatSync(expected.fd, { bigint: true });
+  const descriptorSnapshot = snapshotFromOpenFile(
+    `${directory.path}/${name}`,
+    descriptor,
+    expected.bytes,
+  );
+  if (canonicalJson(descriptorSnapshot) !== canonicalJson(expected.snapshot)) {
+    fail(`${label} descriptor generation changed`);
+  }
+  const reopened = openLockRecord(directory, name);
+  try {
+    if (!sameLockRecord(expected, reopened)) {
+      fail(`${label} inode, ctime, metadata, or content changed`);
+    }
+  } finally {
+    closeSync(reopened.fd);
+  }
+}
+
+function assertExactLockState(directory, expected, generation, label) {
+  assertLockDirectoryGeneration(directory, generation, label);
+  const state = readLockState(directory);
+  try {
+    const names = Object.entries(expected)
+      .filter(([, value]) => value !== null)
+      .map(([name]) => name === "owner" ? LOCK_OWNER : LOCK_OWNER_PENDING)
+      .sort();
+    if (canonicalJson(state.names) !== canonicalJson(names)) {
+      fail(`${label} entries changed`);
+    }
+    for (const [name, record] of Object.entries(expected)) {
+      if (record === null) continue;
+      assertOpenLockRecordStable(
+        directory,
+        name === "owner" ? LOCK_OWNER : LOCK_OWNER_PENDING,
+        record,
+        label,
+      );
+      if (!sameLockRecord(record, state[name])) {
+        fail(`${label} record generation changed`);
+      }
+    }
+  } finally {
+    closeLockState(state);
+  }
+  assertLockDirectoryGeneration(directory, generation, label);
+}
+
+function stageLockOwner(directory, owner, controls) {
+  const bytes = Buffer.from(canonicalJson(owner), "utf8");
+  if (bytes.length === 0 || bytes.length > MAX_LOCK_OWNER_BYTES) {
+    fail("lock owner exceeds its closed byte bound");
+  }
+  const writer = controls.lockOwnerWriter ?? writeSync;
+  if (typeof writer !== "function") fail("lock owner writer must be a function");
+  const fd = openSync(lockDirectoryEntryPath(directory, LOCK_OWNER_PENDING),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+    constants.O_NOFOLLOW | constants.O_CLOEXEC, 0o400);
+  try {
+    fchmodSync(fd, 0o400);
+    fchownSync(fd, 0, 0);
+    writeAllSyncV1(fd, bytes, writer);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  fsyncSync(directory.fd);
+  const pending = openLockRecord(directory, LOCK_OWNER_PENDING);
+  parseLockOwnerRecord(
+    pending,
+    `${directory.path}/${LOCK_OWNER_PENDING}`,
+    owner.transaction_id,
+    [1],
+  );
+  return pending;
+}
+
+function lockCheckpoint(controls, name, details = {}) {
+  if (controls.checkpoint !== undefined) controls.checkpoint(name, details);
+}
+
+function buildLockOwner(transactionId, controls) {
+  const pid = controls.ownerPid ?? process.pid;
+  const owner = {
+    boot_id: controls.ownerBootId ?? currentBootId(),
+    pid,
+    process_start_ticks: controls.ownerProcessStartTicks ?? processStartTicks(pid),
+    transaction_id: transactionId,
+  };
+  assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId);
+  return owner;
+}
+
+function lockOwnerIsLive(owner, controls) {
+  const observedBootId = controls.observedBootId === undefined ?
+    currentBootId() : controls.observedBootId();
+  if (owner.boot_id !== observedBootId) return false;
+  try {
+    const observedTicks = controls.observedProcessStartTicks === undefined ?
+      processStartTicks(owner.pid) : controls.observedProcessStartTicks(owner.pid);
+    return observedTicks === owner.process_start_ticks;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return false;
+    fail(`cannot prove stale lifecycle lock process generation: ${error.message}`);
+  }
+}
+
+function promotePendingOwner(directory) {
+  linkSync(
+    lockDirectoryEntryPath(directory, LOCK_OWNER_PENDING),
+    lockDirectoryEntryPath(directory, LOCK_OWNER),
+  );
+  fsyncSync(directory.fd);
+}
+
+function unlinkLockEntry(directory, name) {
+  unlinkSync(lockDirectoryEntryPath(directory, name));
+  fsyncSync(directory.fd);
+}
+
+function installOwnerIntoEmptyDirectory(directory, owner, controls) {
+  const emptyGeneration = assertLockDirectoryGeneration(
+    directory,
+    directory.stat,
+    "empty transaction lock",
+  );
+  const empty = readLockState(directory);
+  try {
+    if (empty.names.length !== 0) fail("empty transaction lock changed before owner staging");
+  } finally {
+    closeLockState(empty);
+  }
+  assertLockDirectoryGeneration(directory, emptyGeneration, "empty transaction lock");
+
+  const pending = stageLockOwner(directory, owner, controls);
+  try {
+    lockCheckpoint(controls, "after-lock-owner-pending-fsync", { path: directory.path });
+    const pendingGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "pending transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: null, pending },
+      pendingGeneration,
+      "pending transaction lock",
+    );
+    promotePendingOwner(directory);
+    lockCheckpoint(controls, "after-lock-owner-final-link", { path: directory.path });
+  } finally {
+    closeSync(pending.fd);
+  }
+
+  const linked = readLockState(directory);
+  try {
+    if (linked.owner === null || linked.pending === null ||
+        linked.owner.snapshot.device !== linked.pending.snapshot.device ||
+        linked.owner.snapshot.inode !== linked.pending.snapshot.inode ||
+        !linked.owner.bytes.equals(linked.pending.bytes)) {
+      fail("new transaction lock owner hard-link generation drifted");
+    }
+    parseLockOwnerRecord(linked.owner, `${directory.path}/${LOCK_OWNER}`,
+      owner.transaction_id, [2]);
+    parseLockOwnerRecord(linked.pending, `${directory.path}/${LOCK_OWNER_PENDING}`,
+      owner.transaction_id, [2]);
+    const linkedGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "linked transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: linked.owner, pending: linked.pending },
+      linkedGeneration,
+      "linked transaction lock",
+    );
+    unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+  } finally {
+    closeLockState(linked);
+  }
+  const final = readLockState(directory);
+  try {
+    if (final.owner === null || final.pending !== null || final.names.length !== 1) {
+      fail("new transaction lock did not converge to one owner");
+    }
+    const observed = parseLockOwnerRecord(final.owner, `${directory.path}/${LOCK_OWNER}`,
+      owner.transaction_id, [1]);
+    if (canonicalJson(observed) !== canonicalJson(owner)) {
+      fail("new transaction lock owner drifted during publication");
+    }
+    const finalGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "published transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: final.owner, pending: null },
+      finalGeneration,
+      "published transaction lock",
+    );
+  } finally {
+    closeLockState(final);
+  }
+  return owner;
+}
+
+function removeOwnedPendingAfterRejectedClaim(directory, pending) {
+  try {
+    assertOpenLockRecordStable(
+      directory,
+      LOCK_OWNER_PENDING,
+      pending,
+      "rejected stale-lock replacement pending",
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+}
+
+// `owner.json.pending` is both the durable publication stage and the reclaim
+// claim. Once a live recovery generation stages it, every other reviewed
+// recovery observes that live PID/boot tuple and stops. The fixed lock path is
+// never removed during stale reclaim: all mutations address the already-open
+// directory inode through procfs, so a raced replacement at the ambient path
+// can be detected but can never be unlinked by this recovery generation.
+function recoverExistingLock(directory, owner, transactionId, controls) {
+  for (let transition = 0; transition < MAX_LOCK_RECOVERY_TRANSITIONS; transition += 1) {
+    directory.stat = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "stale transaction lock",
+    );
+    const state = readLockState(directory);
+    try {
+      if (state.names.length === 0) {
+        return installOwnerIntoEmptyDirectory(directory, owner, controls);
+      }
+
+      if (state.owner === null && state.pending !== null) {
+        const pendingPath = `${directory.path}/${LOCK_OWNER_PENDING}`;
+        if (state.pending.bytes.length > MAX_LOCK_OWNER_BYTES) {
+          fail(`stale lock owner ${pendingPath} exceeds its closed byte bound`);
+        }
+        exactOwnerRecord(state.pending, pendingPath, state.pending.bytes, [1]);
+        let pendingOwner = null;
+        if (state.pending.bytes.length !== 0) {
+          try {
+            pendingOwner = parseStrictJson(
+              state.pending.bytes.toString("utf8"),
+              "stale pending lock owner",
+            );
+          } catch {
+            // The pending name is not authoritative until owner.json exists.
+            // A sole malformed/partial root-owned pending inode proves that
+            // acquisition never returned. Removing that exact generation may
+            // abort a concurrent writer, but it cannot create two holders:
+            // the writer will fail its pathname/link verification.
+          }
+        }
+        if (pendingOwner === null) {
+          const malformedGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "malformed unpublished pending transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: null, pending: state.pending },
+            malformedGeneration,
+            "malformed unpublished pending transaction lock",
+          );
+          lockCheckpoint(controls, "before-malformed-pending-delete", {
+            path: directory.path,
+          });
+          assertExactLockState(
+            directory,
+            { owner: null, pending: state.pending },
+            malformedGeneration,
+            "deletion-adjacent malformed unpublished pending transaction lock",
+          );
+          try {
+            unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+          continue;
+        }
+        assertPublisherRecoveryOwnsLifecycleLock(pendingOwner, transactionId);
+        const canonicalPending = Buffer.from(canonicalJson(pendingOwner), "utf8");
+        exactOwnerRecord(state.pending, pendingPath, canonicalPending, [1]);
+        if (lockOwnerIsLive(pendingOwner, controls)) {
+          fail("transaction lock owner publication is held by a live process generation");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "stale pending-only transaction lock",
+        );
+        assertExactLockState(
+          directory,
+          { owner: null, pending: state.pending },
+          generation,
+          "stale pending-only transaction lock",
+        );
+        try {
+          promotePendingOwner(directory);
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+        continue;
+      }
+
+      if (state.owner === null || state.pending === null) {
+        if (state.owner === null) fail("stale lock has an unknown shape");
+        const oldOwner = parseLockOwnerRecord(
+          state.owner,
+          `${directory.path}/${LOCK_OWNER}`,
+          transactionId,
+          [1],
+        );
+        if (lockOwnerIsLive(oldOwner, controls)) {
+          fail("transaction lock is held by a live process generation");
+        }
+        lockCheckpoint(controls, "after-stale-owner-validation", {
+          owner: structuredClone(oldOwner),
+          path: directory.path,
+        });
+
+        let replacement;
+        try {
+          replacement = stageLockOwner(directory, owner, controls);
+        } catch (error) {
+          if (error?.code === "EEXIST") continue;
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-pending-fsync", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        let replacementGeneration;
+        try {
+          replacementGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "claimed stale transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: state.owner, pending: replacement },
+            replacementGeneration,
+            "claimed stale transaction lock",
+          );
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "before-stale-owner-delete", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          // This is deliberately repeated after the testable concurrency
+          // boundary: descriptor identity, inode/ctime/content, the complete
+          // entry set, and the named directory generation must all still be
+          // the exact generation that was claimed above.
+          assertExactLockState(
+            directory,
+            { owner: state.owner, pending: replacement },
+            replacementGeneration,
+            "deletion-adjacent stale transaction lock",
+          );
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+
+        try {
+          unlinkLockEntry(directory, LOCK_OWNER);
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-owner-unlink", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          promotePendingOwner(directory);
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-owner-link", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        closeSync(replacement.fd);
+
+        const linked = readLockState(directory);
+        try {
+          if (linked.owner === null || linked.pending === null ||
+              linked.owner.snapshot.device !== linked.pending.snapshot.device ||
+              linked.owner.snapshot.inode !== linked.pending.snapshot.inode ||
+              !linked.owner.bytes.equals(linked.pending.bytes)) {
+            fail("replacement lock owner hard-link generation drifted");
+          }
+          const linkedOwner = parseLockOwnerRecord(linked.owner,
+            `${directory.path}/${LOCK_OWNER}`, transactionId, [2]);
+          parseLockOwnerRecord(linked.pending,
+            `${directory.path}/${LOCK_OWNER_PENDING}`, transactionId, [2]);
+          if (canonicalJson(linkedOwner) !== canonicalJson(owner)) {
+            fail("replacement lock owner content drifted");
+          }
+          const linkedGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "linked replacement transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: linked.owner, pending: linked.pending },
+            linkedGeneration,
+            "linked replacement transaction lock",
+          );
+          unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+        } finally {
+          closeLockState(linked);
+        }
+        const final = readLockState(directory);
+        try {
+          if (final.owner === null || final.pending !== null || final.names.length !== 1) {
+            fail("replacement lock did not converge to one owner");
+          }
+          const finalOwner = parseLockOwnerRecord(
+            final.owner,
+            `${directory.path}/${LOCK_OWNER}`,
+            transactionId,
+            [1],
+          );
+          if (canonicalJson(finalOwner) !== canonicalJson(owner)) {
+            fail("replacement lock owner changed after pending cleanup");
+          }
+          const finalGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "published replacement transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: final.owner, pending: null },
+            finalGeneration,
+            "published replacement transaction lock",
+          );
+        } finally {
+          closeLockState(final);
+        }
+        return owner;
+      }
+
+      const sameInode = state.owner.snapshot.device === state.pending.snapshot.device &&
+        state.owner.snapshot.inode === state.pending.snapshot.inode;
+      if (sameInode) {
+        const oldOwner = parseLockOwnerRecord(
+          state.owner,
+          `${directory.path}/${LOCK_OWNER}`,
+          transactionId,
+          [2],
+        );
+        const stagedOwner = parseLockOwnerRecord(
+          state.pending,
+          `${directory.path}/${LOCK_OWNER_PENDING}`,
+          transactionId,
+          [2],
+        );
+        if (canonicalJson(oldOwner) !== canonicalJson(stagedOwner) ||
+            !state.owner.bytes.equals(state.pending.bytes)) {
+          fail("linked lock owner records disagree");
+        }
+        if (lockOwnerIsLive(oldOwner, controls)) {
+          fail("transaction lock is held by a live process generation");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "stale linked transaction lock",
+        );
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: state.pending },
+          generation,
+          "stale linked transaction lock",
+        );
+        lockCheckpoint(controls, "before-stale-linked-pending-delete", {
+          path: directory.path,
+        });
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: state.pending },
+          generation,
+          "deletion-adjacent stale linked transaction lock",
+        );
+        try {
+          unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        continue;
+      }
+
+      const oldOwner = parseLockOwnerRecord(
+        state.owner,
+        `${directory.path}/${LOCK_OWNER}`,
+        transactionId,
+        [1],
+      );
+      const stagedOwner = parseLockOwnerRecord(
+        state.pending,
+        `${directory.path}/${LOCK_OWNER_PENDING}`,
+        transactionId,
+        [1],
+      );
+      if (lockOwnerIsLive(oldOwner, controls) || lockOwnerIsLive(stagedOwner, controls)) {
+        fail("transaction lock replacement is held by a live process generation");
+      }
+      const generation = assertLockDirectoryGeneration(
+        directory,
+        null,
+        "stale replacement transaction lock",
+      );
+      assertExactLockState(
+        directory,
+        { owner: state.owner, pending: state.pending },
+        generation,
+        "stale replacement transaction lock",
+      );
+      lockCheckpoint(controls, "before-stale-replacement-pending-delete", {
+        path: directory.path,
+      });
+      assertExactLockState(
+        directory,
+        { owner: state.owner, pending: state.pending },
+        generation,
+        "deletion-adjacent stale replacement transaction lock",
+      );
+      // owner.json remains the authoritative generation until the replacing
+      // process has unlinked it. If both different inodes are still visible,
+      // roll the dead unpublished candidate back instead of promoting it.
+      // A raced recovery may already have removed that candidate or replaced
+      // it with its own live pending claim; ENOENT therefore means "re-read",
+      // while an unlink can at worst abort an acquisition that has not yet
+      // returned. A concurrently completed live owner is never removed here.
+      try {
+        unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      continue;
+    } finally {
+      closeLockState(state);
+    }
+  }
+  fail("stale lock recovery exceeded its bounded generation transitions");
+}
+
+function acquireLock(path, { recoverStale, transactionId }, controls = {}) {
+  if (process.platform !== "linux") fail("transaction lock requires Linux procfs descriptors");
+  const owner = buildLockOwner(transactionId, controls);
   const create = () => {
     mkdirSync(path, { mode: 0o700 });
-    secureDirectory(path, "transaction lock");
-    const owner = {
-      boot_id: currentBootId(),
-      pid: process.pid,
-      process_start_ticks: processStartTicks(process.pid),
-      transaction_id: transactionId,
-    };
-    writeAtomicNoReplace(`${path}/${LOCK_OWNER}`, owner);
-    return owner;
+    fsyncParent(path);
+    const directory = openStableLockDirectory(path, "transaction lock");
+    try {
+      lockCheckpoint(controls, "after-lock-mkdir", { path });
+      installOwnerIntoEmptyDirectory(directory, owner, controls);
+    } finally {
+      closeSync(directory.fd);
+    }
   };
-  let owner;
   try {
-    owner = create();
+    create();
   } catch (error) {
     if (error?.code !== "EEXIST" || !recoverStale) throw error;
-    secureDirectory(path, "stale transaction lock");
-    const entries = readdirSync(path, { withFileTypes: true });
-    if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
-      fail("stale lock has an unknown shape");
+    const directory = openStableLockDirectory(path, "stale transaction lock");
+    try {
+      recoverExistingLock(directory, owner, transactionId, controls);
+    } finally {
+      closeSync(directory.fd);
     }
-    const observed = regularSnapshot(`${path}/${LOCK_OWNER}`);
-    const old = parseStrictJson(observed.bytes.toString("utf8"), "stale lock owner");
-    assertPublisherRecoveryOwnsLifecycleLock(old, transactionId);
-    let live = old.boot_id === currentBootId();
-    if (live) {
-      try { live = processStartTicks(old.pid) === old.process_start_ticks; } catch { live = false; }
-    }
-    if (live) fail("transaction lock is held by a live process generation");
-    unlinkSync(`${path}/${LOCK_OWNER}`);
-    rmdirSync(path);
-    fsyncParent(path);
-    owner = create();
   }
   return async () => {
-    secureDirectory(path, "transaction lock before release");
-    const observed = regularSnapshot(`${path}/${LOCK_OWNER}`);
-    const current = parseStrictJson(observed.bytes.toString("utf8"), "lock owner");
-    if (canonicalJson(current) !== canonicalJson(owner)) fail("transaction lock ownership changed");
-    const entries = readdirSync(path, { withFileTypes: true });
-    if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
-      fail("transaction lock directory changed before release");
+    const directory = openStableLockDirectory(path, "transaction lock before release");
+    try {
+      const state = readLockState(directory);
+      try {
+        if (state.owner === null || state.pending !== null || state.names.length !== 1) {
+          fail("transaction lock directory changed before release");
+        }
+        const current = parseLockOwnerRecord(
+          state.owner,
+          `${path}/${LOCK_OWNER}`,
+          transactionId,
+          [1],
+        );
+        if (canonicalJson(current) !== canonicalJson(owner)) {
+          fail("transaction lock ownership changed");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "transaction lock before release",
+        );
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: null },
+          generation,
+          "transaction lock before release",
+        );
+        unlinkLockEntry(directory, LOCK_OWNER);
+      } finally {
+        closeLockState(state);
+      }
+    } finally {
+      closeSync(directory.fd);
     }
-    unlinkSync(`${path}/${LOCK_OWNER}`);
     rmdirSync(path);
     fsyncParent(path);
   };
@@ -1872,6 +3078,34 @@ function systemctlUnit(name, systemctlPin) {
   };
 }
 
+function systemctlFailedUnit(name, systemctlPin) {
+  if (name !== NETNS_UNIT) fail(`unreviewed failed systemd unit state request: ${name}`);
+  const properties = [
+    "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID",
+    "ActiveEnterTimestampMonotonic", "InactiveEnterTimestampMonotonic",
+    "StateChangeTimestampMonotonic", "NeedDaemonReload", "Result", "ExecMainCode",
+    "ExecMainStatus",
+  ];
+  const values = systemctlProperties(name, properties, systemctlPin);
+  const failed = {
+    active_enter_timestamp_monotonic: values.get("ActiveEnterTimestampMonotonic"),
+    active_state: values.get("ActiveState"),
+    exec_main_code: values.get("ExecMainCode"),
+    exec_main_status: values.get("ExecMainStatus"),
+    inactive_enter_timestamp_monotonic: values.get("InactiveEnterTimestampMonotonic"),
+    invocation_id: values.get("InvocationID"),
+    load_state: values.get("LoadState"),
+    main_pid: values.get("MainPID"),
+    name,
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    result: values.get("Result"),
+    state_change_timestamp_monotonic: values.get("StateChangeTimestampMonotonic"),
+    sub_state: values.get("SubState"),
+  };
+  validatePublisherNetnsFailedUnitV1(failed);
+  return failed;
+}
+
 function systemdWords(value, label) {
   if (value === "") return [];
   const words = value.split(/[\t ]+/u).sort();
@@ -1934,7 +3168,7 @@ function systemctlLoadedNetnsUnit(systemctlPin) {
     "Requires", "Restart", "RestrictAddressFamilies", "RestrictNamespaces",
     "RestrictRealtime", "RestrictSUIDSGID", "StandardError", "StandardOutput",
     "StateDirectory", "StateDirectoryMode", "SystemCallArchitectures", "TasksMax",
-    "TimeoutStartUSec", "TimeoutStopUSec", "Type", "UMask", "User", "Wants",
+    "TimeoutStartUSec", "TimeoutStopUSec", "Type", "UMask", "UnsetEnvironment", "User", "Wants",
     "WorkingDirectory",
   ];
   const values = systemctlProperties(NETNS_UNIT, properties, systemctlPin);
@@ -2005,6 +3239,10 @@ function systemctlLoadedNetnsUnit(systemctlPin) {
       timeout_stop_usec: values.get("TimeoutStopUSec"),
       type: values.get("Type"),
       umask: values.get("UMask"),
+      unset_environment: systemdWords(
+        values.get("UnsetEnvironment"),
+        "publisher namespace UnsetEnvironment",
+      ),
       user: values.get("User"),
       working_directory: values.get("WorkingDirectory"),
     },
@@ -2160,6 +3398,9 @@ export function linuxOps(plan) {
     async loadedNetnsUnit() {
       return systemctlLoadedNetnsUnit(systemctl);
     },
+    async failedUnitState(name) {
+      return systemctlFailedUnit(name, systemctl);
+    },
     async networkAbsent(plan) {
       try { lstatSync(plan.topology.namespace_path); return false; } catch (error) { if (error.code !== "ENOENT") throw error; }
       try { lstatSync(`/sys/class/net/${plan.topology.host_interface}`); return false; } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -2231,7 +3472,11 @@ export function linuxOps(plan) {
     async readOptionalRegular(path) { return optionalRegular(path); },
     async readRegular(path) { return regularSnapshot(path); },
     async systemctl(args) {
-      if (![canonicalJson(["start", NETNS_UNIT]), canonicalJson(["stop", NETNS_UNIT])]
+      if (![
+        canonicalJson(["reset-failed", NETNS_UNIT]),
+        canonicalJson(["start", NETNS_UNIT]),
+        canonicalJson(["stop", NETNS_UNIT]),
+      ]
         .includes(canonicalJson(args))) {
         fail(`unreviewed systemctl mutation: ${args.join(" ")}`);
       }
@@ -2268,6 +3513,7 @@ export function linuxOps(plan) {
 }
 
 export const PUBLISHER_NETNS_CEREMONY_TEST_ONLY_IO = Object.freeze({
+  acquireLock,
   readRegular: regularSnapshot,
   runPinnedBinary: invokePinned,
   writeAtomicNoReplace,
@@ -2320,9 +3566,11 @@ async function main(argv) {
   validateSha256(approvedPlanSha256, "approved plan SHA-256");
   if (computePlanSha256(plan) !== approvedPlanSha256) fail("approved plan digest drifted");
   const approvedSourceSha256 = required(values, "--approved-source-sha256");
+  const approvedLoader = plan.node_elf_closure.objects[0].pin.path;
   if (approvedSourceSha256 !== plan.runtime.executor.sha256 ||
       fileURLToPath(import.meta.url) !== plan.runtime.executor.path ||
-      process.execPath !== plan.runtime.node.path) {
+      process.execPath !== approvedLoader || process.argv0 !== plan.runtime.node.path ||
+      process.argv[0] !== plan.runtime.node.path) {
     fail("executor source/path or Node path drifted from the exact plan");
   }
   for (const [name, pin] of Object.entries(plan.runtime)) {
@@ -2365,15 +3613,16 @@ async function main(argv) {
   }
   process.stdout.write(formatPublisherNetnsCeremonyOutcomeV2(
     result.outcome,
-    commandName.startsWith("recover-rollback") || commandName === "rollback" ?
-      plan.transaction.rollback_receipt_path : plan.transaction.receipt_path,
+    result.outcome === "failed-start-recovered" ? failedRecoveryReceiptPath(plan) :
+      commandName.startsWith("recover-rollback") || commandName === "rollback" ?
+        plan.transaction.rollback_receipt_path : plan.transaction.receipt_path,
   ));
 }
 
 const isMain = process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMain) {
-  main(process.argv.slice(2)).catch((error) => {
+  await main(process.argv.slice(2)).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });

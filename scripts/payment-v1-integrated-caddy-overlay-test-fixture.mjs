@@ -204,6 +204,10 @@ function publisherLoadedNetnsUnit(installedFiles) {
       timeout_stop_usec: "30s",
       type: "notify",
       umask: "0077",
+      unset_environment: [
+        "BASH_ENV", "ENV", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH",
+        "LD_PRELOAD", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+      ],
       user: "root",
       working_directory: "/var/lib/bitcoinpir-publisher-netns",
     },
@@ -711,9 +715,9 @@ export function testPublisherNetnsReceiptBytes(plan) {
 
 export function makeIntegratedOverlayTestPlan() {
   const placeholders = {
-    DIRECTORY_PUBLISHER_CLIENT_IP: "10.23.0.6",
+    DIRECTORY_PUBLISHER_CLIENT_IP: "10.203.0.2",
     DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.example.net",
-    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.23.0.5",
+    DIRECTORY_PUBLISHER_PRIVATE_BIND: "10.203.0.1",
     DIRECTORY_RELAY_WSS_HOST: "directory.example.net",
     PAYMENT_ISSUER_HTTPS_HOST: "pay.example.net",
     PROVIDER_WSS_HOST: "pir.example.net",
@@ -801,10 +805,55 @@ export function makeIntegratedOverlayTestPlan() {
       : testPin(path, digest, mode, { inode: String(42100 + index) }),
   }));
   const launcherSha256 = "a".repeat(64);
+  const publisherNodeElfClosure = {
+    activation_state:
+      "descriptor-pinned-loader-recursive-needed-closure-and-double-maps-sampling",
+    architecture: "elf64-le-x86_64",
+    interpreter_soname: "ld-linux-x86-64.so.2",
+    kind: "bitcoinpir-payment-v1-publisher-node-elf-closure-v1",
+    node_needed: ["libc.so.6", "libm.so.6"],
+    objects: [
+      {
+        needed: [],
+        pin: testPin(
+          "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+          "3".repeat(64), "0755", { inode: "42211" },
+        ),
+        soname: "ld-linux-x86-64.so.2",
+      },
+      {
+        needed: ["ld-linux-x86-64.so.2"],
+        pin: testPin(
+          "/usr/lib/x86_64-linux-gnu/libc.so.6",
+          "4".repeat(64), "0755", { inode: "42212" },
+        ),
+        soname: "libc.so.6",
+      },
+      {
+        needed: ["libc.so.6"],
+        pin: testPin(
+          "/usr/lib/x86_64-linux-gnu/libm.so.6",
+          "5".repeat(64), "0755", { inode: "42213" },
+        ),
+        soname: "libm.so.6",
+      },
+    ],
+    pt_interp: "/lib64/ld-linux-x86-64.so.2",
+    schema_version: 1,
+  };
+  const publisherNodeLoaderClosureManifest = Buffer.from(
+    publisherNodeElfClosure.objects.map((object) =>
+      `${object.pin.sha256}  ${object.pin.path}\n`).join(""),
+    "utf8",
+  );
   const publisherRuntime = {
     executor: testPin(
       "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs",
       "b".repeat(64), "0555", { inode: "42201" },
+    ),
+    health_probe: testPin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs",
+      "9".repeat(64), "0555", { inode: "42210" },
     ),
     integrated_caddy_gate: testPin(
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
@@ -820,6 +869,11 @@ export function makeIntegratedOverlayTestPlan() {
       "e".repeat(64), "0444", { inode: "42205" },
     ),
     node: testPin("/usr/bin/node", "f".repeat(64), "0755", { inode: "42206" }),
+    node_loader_closure_manifest: testPin(
+      "/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256",
+      testSha256(publisherNodeLoaderClosureManifest), "0444",
+      { inode: "42214", size: String(publisherNodeLoaderClosureManifest.length) },
+    ),
     publisher_netns_gate: testPin(
       "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs",
       "0".repeat(64), "0555", { inode: "42207" },
@@ -874,6 +928,7 @@ export function makeIntegratedOverlayTestPlan() {
       pt_interp: false,
       sha256: launcherSha256,
     },
+    node_elf_closure: publisherNodeElfClosure,
     preimage: {
       host_interface: "absent",
       loaded_netns_unit: publisherLoadedNetnsUnit(installedFiles),
@@ -982,6 +1037,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "directory-public",
         leaf_certificate_sha256: "a".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "host",
         path: "/",
         timeout_ms: 5000,
       },
@@ -994,6 +1050,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "directory-publisher",
         leaf_certificate_sha256: "b".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "bpir-directory-publisher",
         path: "/",
         timeout_ms: 5000,
       },
@@ -1006,6 +1063,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "issuer",
         leaf_certificate_sha256: "d".repeat(64),
         max_response_bytes: 65536,
+        network_namespace: "host",
         path: "/v1/quote-keys/current",
         timeout_ms: 5000,
       },
@@ -1018,6 +1076,7 @@ export function makeIntegratedOverlayTestPlan() {
         lane: "provider",
         leaf_certificate_sha256: "e".repeat(64),
         max_response_bytes: 16384,
+        network_namespace: "host",
         path: "/v1/pir",
         timeout_ms: 5000,
       },
@@ -1139,8 +1198,11 @@ export function makeIntegratedOverlayTestPlan() {
       config_preimage: overlayConfigPreimage,
       publisher_netns_ceremony: {
         approved_plan_sha256: publisherNetnsPlanSha256,
+        client_address: publisherTopologyPlan.client_address,
         ceremony_id: publisherNetnsCeremonyId,
         dropin: hardeningEvidence.plan.publisher_netns_dropin,
+        host_address: publisherTopologyPlan.host_address,
+        host_port: publisherTopologyPlan.host_port,
         namespace_device: publisherNetnsTopology.namespace.device,
         namespace_inode: publisherNetnsTopology.namespace.inode,
         netns_invocation_id: publisherNetnsUnit.invocation_id,
@@ -1151,6 +1213,7 @@ export function makeIntegratedOverlayTestPlan() {
           { size: String(publisherNetnsPlanBytes.length), inode: "42014" },
         ),
         plan_schema_version: 2,
+        publisher_hostname: publisherTopologyPlan.publisher_hostname,
         receipt: testPin(
           publisherNetnsReceiptPath,
           testSha256(publisherNetnsReceiptBytes),
@@ -1221,7 +1284,7 @@ export function makeIntegratedOverlayTestPlan() {
       candidate_path: `/etc/caddy/.bitcoinpir-${transactionId}.candidate`,
       installation_mode:
         "same-directory-renameat2-exchange-verify-swapped-preimage-and-live-candidate-parent-fsync",
-      lock_path: "/run/lock/bitcoinpir-payment-v1-integrated-bhtm-caddy.lock",
+      lock_path: "/run/lock/bitcoinpir-payment-v1-publisher-lifecycle.lock",
       reload_argv: ["/usr/bin/systemctl", "reload", "bhtm-caddy.service"],
       receipt_path:
         `/var/lib/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/receipts/${transactionId}.json`,

@@ -25,6 +25,7 @@ import {
   RUNTIME_BUSCTL_SERVICE_PROPERTIES,
   canonicalJson,
   computeApprovedPlanSha256,
+  computeDirectoryPublishArgvSha256V1,
   parseStrictJson,
   renderBundle,
   runtimeRequestFromManifest,
@@ -490,6 +491,7 @@ function makeIntegratedCaddySourceFairFixture(t) {
 function makePublisherNetnsFixture(t) {
   const fixture = temporaryRoots(t);
   for (const template of PUBLISHER_NETNS_TEMPLATES) copySource(fixture.sourceRoot, template);
+  copySource(fixture.sourceRoot, RELAY_SELECTION);
   const helperBytes = Buffer.from("reviewed-publisher-netns-helper-v1\n");
   const helperSha = hashBytes(helperBytes);
   const adminBytes = Buffer.from("reviewed-bpir-admin-v1\n");
@@ -498,7 +500,8 @@ function makePublisherNetnsFixture(t) {
     BPIR_ADMIN_SHA256: adminSha,
     CHECKPOINT_ARTIFACT: "checkpoints.json",
     DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.internal.example",
-    DIRECTORY_PUBLISHER_PUBKEY_HEX: "2c".repeat(32),
+    DIRECTORY_PUBLISHER_PUBKEY_HEX:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
     DIRECTORY_PUBLISH_NOW_UNIX: "2000",
     PROVIDER_0_ENTRY_ARTIFACT: "provider-0.event.json",
     PROVIDER_1_ENTRY_ARTIFACT: "provider-1.event.json",
@@ -591,6 +594,7 @@ function makePublisherNetnsFixture(t) {
       target_path: targetForSource.get(sourcePath),
       uid: 0,
     })),
+    relay_selection_sha256: hashFile(join(fixture.sourceRoot, RELAY_SELECTION)),
     schema_version: 2,
     systemd_version: REVIEWED_SYSTEMD_VERSION,
     service_identities: [{
@@ -1317,7 +1321,7 @@ test("edge bundle is deterministic, externally plan-pinned, and closed", (t) => 
     "binary", "config", "hash_manifest", "policy", "secret",
   ]);
   assert.equal(first.request.units.length, 2);
-  assert.equal(first.request.schema_version, 8);
+  assert.equal(first.request.schema_version, 9);
   assert.equal(first.request.systemd_version, REVIEWED_SYSTEMD_VERSION);
   assert.deepEqual(first.request.busctl_unit_properties, [
     "After",
@@ -1446,7 +1450,20 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
     model.manifest.runtime_units.map(({ unit_name }) => unit_name),
     ["bitcoinpir-payment-v1-directory-publisher.service"],
   );
-  assert.deepEqual(model.request.publisher_network, {
+  assert.deepEqual(model.manifest.directory_relay_selection, {
+    directory_mode: "centralized-single-relay",
+    publisher_pubkey_hex:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    relay_origin: "wss://publisher.internal.example",
+    selection_sha256: fixture.plan.relay_selection_sha256,
+    source_path: RELAY_SELECTION,
+    status: "RESOLVED",
+  });
+  const {
+    publication_receipt: publicationReceipt,
+    ...publisherNetworkWithoutReceipt
+  } = model.request.publisher_network;
+  assert.deepEqual(publisherNetworkWithoutReceipt, {
     caddy_drop_in_path:
       "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
     caddy_service_unit: "bhtm-caddy.service",
@@ -1488,6 +1505,44 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
       point_in_time_evidence_only: true,
     },
     publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+  });
+  const installedByPath = new Map(
+    model.request.installed_files.map((file) => [file.target_path, file]),
+  );
+  const publicationUnit = model.request.units[0];
+  const publicationIdentity = model.request.service_identities[0];
+  const artifactManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256";
+  const artifactPaths = publicationUnit.exec_start_ex[0].argv
+    .flatMap((value, index, argv) => value === "--artifact" ? [argv[index + 1]] : [])
+    .sort();
+  assert.deepEqual(publicationReceipt, {
+    artifact_manifest: {
+      path: artifactManifestPath,
+      sha256: installedByPath.get(artifactManifestPath).sha256,
+    },
+    artifacts: artifactPaths.map((path) => ({
+      path,
+      sha256: installedByPath.get(path).sha256,
+    })),
+    argv: publicationUnit.exec_start_ex[0].argv,
+    argv_sha256: computeDirectoryPublishArgvSha256V1(
+      publicationUnit.exec_start_ex[0].argv,
+    ),
+    directory_mode: "centralized-single-relay",
+    file: {
+      directory: "/var/lib/bitcoinpir-directory-publication",
+      filename_suffix: ".json",
+      gid: publicationIdentity.gid,
+      mode: "0600",
+      nlink: 1,
+      uid: publicationIdentity.uid,
+    },
+    kind: "bitcoinpir-directory-publication-receipt-v1",
+    publisher_pubkey_hex:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    relay_origins: ["wss://publisher.internal.example"],
+    schema_version: 1,
   });
 
   const missingPublicationGuard = makePublisherNetnsFixture(t);
@@ -1542,6 +1597,104 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
     invalid.plan.service_identities[0].uid = id;
     invalid.plan.service_identities[0].gid = id;
     assert.throws(() => renderFixture(invalid), /static service uid\/gid/u);
+  }
+});
+
+test("directory publisher plan fails closed on relay-selection and binding drift", (t) => {
+  const updateSelection = (fixture, updates, syncHash = true) => {
+    const selectionPath = join(fixture.sourceRoot, RELAY_SELECTION);
+    let selection = readFileSync(selectionPath, "utf8");
+    for (const [field, value] of Object.entries(updates)) {
+      selection = replaceRelaySelectionField(selection, field, value);
+    }
+    writeFileSync(selectionPath, selection);
+    if (syncHash) fixture.plan.relay_selection_sha256 = hashFile(selectionPath);
+  };
+
+  const hashMismatch = makePublisherNetnsFixture(t);
+  hashMismatch.plan.relay_selection_sha256 = "f".repeat(64);
+  assert.throws(
+    () => renderFixture(hashMismatch),
+    /relay selection source hash does not match the approved render plan/u,
+  );
+
+  const unresolved = makePublisherNetnsFixture(t);
+  updateSelection(unresolved, Object.fromEntries([
+    "status",
+    "directory_mode",
+    "implementation",
+    "source_repository",
+    "source_commit",
+    "source_archive_sha256",
+    "cargo_lock_sha256",
+    "build_manifest_sha256",
+    "binary_sha256",
+    "binary_version_output",
+    "config_sha256",
+    "publisher_pubkey_hex",
+  ].map((field) => [field, "UNRESOLVED"])));
+  assert.throws(
+    () => renderFixture(unresolved),
+    /requires a RESOLVED relay selection/u,
+  );
+
+  const wrongMode = makePublisherNetnsFixture(t);
+  updateSelection(wrongMode, { directory_mode: "strict-multi-relay" });
+  assert.throws(
+    () => renderFixture(wrongMode),
+    /requires directory_mode=centralized-single-relay/u,
+  );
+
+  const publisherKeyMismatch = makePublisherNetnsFixture(t);
+  publisherKeyMismatch.plan.placeholders.DIRECTORY_PUBLISHER_PUBKEY_HEX =
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  assert.throws(
+    () => renderFixture(publisherKeyMismatch),
+    /publisher key placeholder does not match relay selection publisher_pubkey_hex/u,
+  );
+
+  const missingHash = makePublisherNetnsFixture(t);
+  delete missingHash.plan.relay_selection_sha256;
+  assert.throws(
+    () => renderFixture(missingHash),
+    /render plan keys must equal/u,
+  );
+
+  const extraHash = makePublisherNetnsFixture(t);
+  extraHash.plan.unreviewed_relay_selection_sha256 = "e".repeat(64);
+  assert.throws(
+    () => renderFixture(extraHash),
+    /render plan keys must equal/u,
+  );
+
+  const valid = makePublisherNetnsFixture(t);
+  const model = renderFixture(valid);
+  const missingManifestHash = clone(model.manifest);
+  delete missingManifestHash.directory_relay_selection.selection_sha256;
+  assert.throws(
+    () => runtimeRequestFromManifest(missingManifestHash, model.manifestSha256),
+    /rendered manifest directory_relay_selection keys must equal/u,
+  );
+  const extraManifestHash = clone(model.manifest);
+  extraManifestHash.directory_relay_selection.unreviewed_selection_sha256 =
+    "d".repeat(64);
+  assert.throws(
+    () => runtimeRequestFromManifest(extraManifestHash, model.manifestSha256),
+    /rendered manifest directory_relay_selection keys must equal/u,
+  );
+
+  for (const relayOrigin of [
+    "wss://user@publisher.internal.example",
+    "wss://publisher.internal.example/v1/directory",
+    "wss://publisher.internal.example/",
+  ]) {
+    const nonCanonicalOrigin = clone(model.manifest);
+    nonCanonicalOrigin.directory_relay_selection.relay_origin = relayOrigin;
+    assert.throws(
+      () => runtimeRequestFromManifest(nonCanonicalOrigin, model.manifestSha256),
+      /relay_origin/u,
+      relayOrigin,
+    );
   }
 });
 

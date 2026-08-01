@@ -70,6 +70,7 @@ const RENAME_EXCHANGE_MANIFEST =
   "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256";
 const LOCK_OWNER = "owner.json";
 const LOCK_OWNER_PENDING = `${LOCK_OWNER}.pending`;
+const OVERLAY_LOCK_DOMAIN = "integrated-caddy-overlay";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 export const OVERLAY_STATE_FILES = Object.freeze({
@@ -408,9 +409,13 @@ function assertPublisherNetnsCeremonyEvidence(
     ceremonyPlan.schema_version !== summary.plan_schema_version ||
     ceremonyPlan.kind !== PUBLISHER_NETNS_CEREMONY_KIND ||
     ceremonyPlan.ceremony_id !== summary.ceremony_id ||
-    ceremonyPlan.transaction?.receipt_path !== summary.receipt.path
+    ceremonyPlan.transaction?.receipt_path !== summary.receipt.path ||
+    ceremonyPlan.topology?.host_address !== summary.host_address ||
+    ceremonyPlan.topology?.client_address !== summary.client_address ||
+    ceremonyPlan.topology?.publisher_hostname !== summary.publisher_hostname ||
+    ceremonyPlan.topology?.host_port !== summary.host_port
   ) {
-    fail("publisher namespace ceremony plan identity or receipt path drifted");
+    fail("publisher namespace ceremony plan identity, endpoint or receipt path drifted");
   }
   validatePublisherNetnsReceiptV2({
     approvedPlanSha256: summary.approved_plan_sha256,
@@ -1573,7 +1578,7 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     );
     previousPhase = "reloaded";
 
-    await collectPinnedState(plan, ops, "post-reload", {
+    const postReloadState = await collectPinnedState(plan, ops, "post-reload", {
       expectedAdminRuntime: "managed-candidate",
       requirePreimage: false,
     });
@@ -1581,7 +1586,20 @@ async function executeLocked({ approvedPlanSha256, ops, plan }) {
     assertFinalConfig(committedConfig.snapshot, plan.managed_block.candidate_sha256, "post-reload Caddyfile");
     const healthResults = [];
     for (const check of plan.health_checks) {
-      const result = await ops.health(check);
+      const privateBoundary = check.network_namespace === "bpir-directory-publisher"
+        ? {
+            launcher: structuredClone(
+              postReloadState.publisherNetnsCeremony.ceremonyPlan.runtime.launcher,
+            ),
+            launcher_manifest_sha256:
+              postReloadState.publisherNetnsCeremony.ceremonyPlan.runtime.launcher_manifest.sha256,
+            namespace_device:
+              plan.target.publisher_netns_ceremony.namespace_device,
+            namespace_inode:
+              plan.target.publisher_netns_ceremony.namespace_inode,
+          }
+        : undefined;
+      const result = await ops.health(check, privateBoundary);
       if (
         result.success !== true ||
         result.status !== check.expected_status ||
@@ -2950,6 +2968,9 @@ function realRemoveIfExact(path, expectedSnapshot, expectedParent) {
       }
       const bytes = readFileSync(fd);
       const snapshot = snapshotFromStat(path, stat, bytes);
+      if (snapshot.ctime_ns !== expectedSnapshot.ctime_ns) {
+        fail(`exact removal entry ctime generation drifted: ${path}`);
+      }
       assertExchangeIdentity(snapshot, expectedSnapshot, path, "exact removal entry");
       const pathStat = lstatSync(parent.procPath, { bigint: true, throwIfNoEntry: true });
       if (!pathStat.isFile() || !sameInode(pathStat, stat)) {
@@ -3600,6 +3621,127 @@ export function healthCheck(check) {
   });
 }
 
+function validatePublisherPrivateHealthCheck(check) {
+  exactKeys(check, [
+    "connect_ip",
+    "expected_body_sha256",
+    "expected_status",
+    "host",
+    "kind",
+    "lane",
+    "leaf_certificate_sha256",
+    "max_response_bytes",
+    "network_namespace",
+    "path",
+    "timeout_ms",
+  ], "publisher private health check");
+  if (
+    check.connect_ip !== "10.203.0.1" ||
+    check.expected_body_sha256 !== null ||
+    check.expected_status !== 101 ||
+    check.kind !== "websocket-upgrade" ||
+    check.lane !== "directory-publisher" ||
+    check.network_namespace !== "bpir-directory-publisher" ||
+    check.path !== "/" ||
+    typeof check.host !== "string" ||
+    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(check.host) ||
+    typeof check.leaf_certificate_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(check.leaf_certificate_sha256) ||
+    !Number.isSafeInteger(check.max_response_bytes) ||
+    check.max_response_bytes < 1 || check.max_response_bytes > 262_144 ||
+    !Number.isSafeInteger(check.timeout_ms) ||
+    check.timeout_ms < 100 || check.timeout_ms > 30_000
+  ) {
+    fail("publisher private health check differs from the reviewed namespace-only shape");
+  }
+}
+
+function invokePublisherPrivateHealth(check, boundary) {
+  validatePublisherPrivateHealthCheck(check);
+  exactKeys(boundary, [
+    "launcher",
+    "launcher_manifest_sha256",
+    "namespace_device",
+    "namespace_inode",
+  ], "publisher private health boundary");
+  for (const key of ["launcher_manifest_sha256"]) {
+    if (!/^[0-9a-f]{64}$/u.test(boundary[key])) {
+      fail(`publisher private health ${key} is malformed`);
+    }
+  }
+  for (const key of ["namespace_device", "namespace_inode"]) {
+    if (!/^[1-9][0-9]*$/u.test(boundary[key])) {
+      fail(`publisher private health ${key} is malformed`);
+    }
+  }
+  const parent = openSealedParent(boundary.launcher.path);
+  let fd;
+  return runWithSyncCleanups(
+    () => {
+      fd = openSync(
+        parent.procPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      const before = pinnedDescriptorSnapshot(
+        fd,
+        boundary.launcher,
+        "publisher private health launcher",
+        MAX_EXECUTABLE_BYTES,
+      ).stat;
+      parent.confirm();
+      const encoded = Buffer.from(canonicalJson(check), "utf8").toString("base64");
+      const result = commandResult([
+        "/proc/self/fd/3",
+        "--approved-launcher-sha256",
+        boundary.launcher.sha256,
+        "--approved-manifest-sha256",
+        boundary.launcher_manifest_sha256,
+        "--",
+        "publisher-private-health-probe",
+        "--namespace-device",
+        boundary.namespace_device,
+        "--namespace-inode",
+        boundary.namespace_inode,
+        "--check-base64",
+        encoded,
+      ], {
+        captureStdout: true,
+        extraFd: fd,
+        maxBytes: 512 * 1024,
+        timeoutMs: check.timeout_ms + 10_000,
+      });
+      const after = fstatSync(fd, { bigint: true });
+      if (
+        !sameInode(after, before) || after.ctimeNs !== before.ctimeNs ||
+        after.mtimeNs !== before.mtimeNs || after.size !== before.size
+      ) {
+        fail("publisher private health launcher drifted during descriptor execution");
+      }
+      parent.confirm();
+      if (result.status !== 0) {
+        fail(
+          `publisher private health launcher failed: ${result.stderr.toString("utf8").trim()}`,
+        );
+      }
+      const response = parseStrictJson(
+        result.stdout.toString("utf8"),
+        "publisher private health result",
+      );
+      exactKeys(response, [
+        "body_sha256",
+        "leaf_certificate_sha256",
+        "status",
+        "success",
+      ], "publisher private health result");
+      return response;
+    },
+    [
+      () => { if (fd !== undefined) closeSync(fd); },
+      () => parent.close(),
+    ],
+  );
+}
+
 function processStartTicks(pid) {
   const text = readFileSync(`/proc/${pid}/stat`, "utf8");
   const close = text.lastIndexOf(")");
@@ -3649,7 +3791,9 @@ function parseLockOwner(bytes) {
   }
   if (
     typeof owner.transaction_id !== "string" ||
-    !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(owner.transaction_id)
+    !/^(?:bhtm-caddy-admin-uds|integrated-caddy-overlay|publisher-netns|publisher-netns-rollback):[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(
+      owner.transaction_id,
+    )
   ) {
     fail("lock owner transaction ID is malformed");
   }
@@ -3676,6 +3820,7 @@ export function acquireFilesystemLock(
     transactionId,
   },
 ) {
+  const domainTransactionId = `${OVERLAY_LOCK_DOMAIN}:${transactionId}`;
   if (helperPin === undefined && allowUnpinnedTestHelper !== true) {
     fail("transaction lock owner publication requires the pinned no-replace helper");
   }
@@ -3696,7 +3841,7 @@ export function acquireFilesystemLock(
     ) {
       fail("transaction lock directory is not root:root mode 0700");
     }
-    const owner = lockOwner(transactionId);
+    const owner = lockOwner(domainTransactionId);
     const ownerBytes = Buffer.from(canonicalJson(owner), "utf8");
     const pendingPath = `${path}/${LOCK_OWNER_PENDING}`;
     const ownerPath = `${path}/${LOCK_OWNER}`;
@@ -3806,9 +3951,15 @@ export function acquireFilesystemLock(
         // All metadata and directory-shape checks above remain fail closed.
         owner = null;
       }
+      if (owner !== null && owner.transaction_id !== domainTransactionId) {
+        fail(
+          "stale lifecycle lock belongs to another transaction; refusing cross-domain recovery",
+        );
+      }
       if (owner !== null && ownerIsLive(owner)) {
         fail("transaction lock is held by a live process generation");
       }
+      injectFault(testOnlyFaultInjector, "before-stale-lock-owner-removal");
       realRemoveIfExact(
         `${path}/${entries[0].name}`,
         existing.snapshot,
@@ -3831,6 +3982,7 @@ export function acquireFilesystemLock(
     if (entries.length !== 1 || entries[0].name !== LOCK_OWNER || !entries[0].isFile()) {
       fail("transaction lock directory changed before release");
     }
+    injectFault(testOnlyFaultInjector, "before-lock-owner-release-removal");
     realRemoveIfExact(
       `${path}/${LOCK_OWNER}`,
       observed.snapshot,
@@ -3913,8 +4065,20 @@ export function linuxOverlayOps() {
     async fsyncRegular(path, expectedSnapshot, expectedParent) {
       fsyncRegularExact(path, expectedSnapshot, expectedParent);
     },
-    async health(check) {
-      return healthCheck(check);
+    async health(check, privateBoundary) {
+      if (check.network_namespace === "host") {
+        if (privateBoundary !== undefined) {
+          fail("host health check received a publisher namespace boundary");
+        }
+        return healthCheck(check);
+      }
+      if (check.network_namespace === "bpir-directory-publisher") {
+        if (privateBoundary === undefined) {
+          fail("publisher private health check is missing its namespace boundary");
+        }
+        return invokePublisherPrivateHealth(check, privateBoundary);
+      }
+      fail("health check selected an unreviewed network namespace");
     },
     async hostIdentity() {
       return {

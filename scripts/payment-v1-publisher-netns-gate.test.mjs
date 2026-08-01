@@ -13,6 +13,7 @@ import {
   PUBLISHER_FIREWALL_OUTPUT_KEYS,
   PUBLISHER_NETNS_FILES,
   publisherFirewallEvidenceFromDirectory,
+  validatePublisherFailedRecoverySourcesV1,
   validatePublisherFirewallOutputs,
   validatePublisherNetnsTree,
 } from "./payment-v1-publisher-netns-gate.mjs";
@@ -49,6 +50,35 @@ test("checked-in publisher namespace topology passes", () => {
 
 test("copied publisher namespace topology passes", () => {
   withFixture((root) => assert.equal(validatePublisherNetnsTree(root), true));
+});
+
+test("checked-in failed-recovery ceremony and schema pass the source guard", () => {
+  assert.equal(validatePublisherFailedRecoverySourcesV1(
+    readFileSync(join(REPOSITORY, "scripts/payment-v1-publisher-netns-ceremony.mjs"), "utf8"),
+    readFileSync(join(REPOSITORY, "scripts/payment-v1-publisher-netns-schema.mjs"), "utf8"),
+  ), true);
+});
+
+test("failed-recovery source guard rejects broad reset and lost InvocationID binding", () => {
+  const ceremony = readFileSync(
+    join(REPOSITORY, "scripts/payment-v1-publisher-netns-ceremony.mjs"),
+    "utf8",
+  );
+  const schema = readFileSync(
+    join(REPOSITORY, "scripts/payment-v1-publisher-netns-schema.mjs"),
+    "utf8",
+  );
+  assert.throws(() => validatePublisherFailedRecoverySourcesV1(
+    ceremony.replace(
+      'ops.systemctl(["reset-failed", NETNS_UNIT])',
+      'ops.systemctl(["reset-failed", name])',
+    ),
+    schema,
+  ), /failed-recovery ceremony lost exact guard|broad reset-failed/u);
+  assert.throws(() => validatePublisherFailedRecoverySourcesV1(
+    ceremony,
+    schema.replaceAll('!/^[0-9a-f]{32}$/u.test(value.invocation_id)', "false"),
+  ), /failed-recovery schema lost exact binding/u);
 });
 
 for (const [label, path, transform, error] of [
@@ -113,6 +143,8 @@ for (const [label, path, transform, error] of [
   ["namespace owner shell preflight", "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
     (text) => text.replace("ExecStartPre=/usr/bin/test -x", "ExecStartPre=/bin/sh -c true\nExecStartPre=/usr/bin/test -x"),
     /ExecStartPre must equal/u],
+  ["namespace owner inherited loader environment", "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+    (text) => text.replace(" LD_PRELOAD", ""), /UnsetEnvironment must equal/u],
   ["helper restart", "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
     (text) => text.replace("Restart=no", "Restart=on-failure"), /Restart must equal/u],
   ["Caddy lifecycle", "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
@@ -147,6 +179,8 @@ for (const [label, path, transform, error] of [
     ), /unreviewed publication argv shape/u],
   ["publisher retry", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
     (text) => text.replace("Restart=no", "Restart=on-failure"), /Restart must equal/u],
+  ["publisher inherited loader environment", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+    (text) => text.replace(" LD_PRELOAD", ""), /UnsetEnvironment must equal/u],
   ["publisher host runtime visibility", "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
     (text) => text.replace("TemporaryFileSystem=/run:ro", "TemporaryFileSystem=/tmp:ro"),
     /TemporaryFileSystem must equal/u],

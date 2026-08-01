@@ -54,13 +54,22 @@ This source slice intentionally does not claim deployability. All of the
 following remain mandatory before an installed Caddy transaction or service
 start:
 
-1. The relay selection and content-addressed relay binary are still resolved
-   in their own reviewed PR. The checked-in relay unit remains blocked.
+1. The checked-in relay selection is `RESOLVED` for the reviewed
+   content-addressed directory-only relay and explicitly records degraded
+   `centralized-single-relay` mode. Relay activation remains separately
+   sentinel-gated.
 2. `directory-publisher-netns-v1` is the only rendered/runtime profile for this
    slice. It closes over the content-addressed helper and `bpir-admin`, their
    hash manifests, the two units, the Caddy drop-in, the three files-only name
    service inputs, the frozen signed artifacts and the network policy. An
    installed file not present in that manifest is not an approved substitute.
+   Its render plan must also pin the exact committed
+   `deploy/payment-v1/relay-selection.toml.example` SHA-256. Rendering accepts
+   only `status=RESOLVED`, `directory_mode=centralized-single-relay`, and a
+   selection publisher key exactly equal to
+   `DIRECTORY_PUBLISHER_PUBKEY_HEX`. The manifest records that digest/key/mode
+   together with one canonical credential-free `wss://host` origin; the
+   runtime request binds the manifest digest for later ceremony checks.
 3. The one files-only publisher hostname remains an explicit deployment input.
    The checked-in example retains an `UNRESOLVED` marker and cannot render. The
    integrated-Caddy transaction has one private site block and performs an
@@ -140,6 +149,17 @@ BPIR_PUBLISHER_NETNS_PRIVILEGED_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
   scripts/payment-v1-publisher-netns-privileged-e2e.sh
 ```
 
+The private-ingress harness additionally runs Caddy v2.11.4 with the exact
+source-address matcher and a real TLS/WebSocket backend. It requires a
+disposable root environment and proves host-namespace 404 versus
+receipt-bound publisher-netns 101:
+
+```sh
+BPIR_PUBLISHER_PRIVATE_HEALTH_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
+BPIR_CADDY_BIN=/usr/local/bin/caddy \
+  scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+```
+
 The UFW/nft reload harness is even more destructive and refuses to run outside
 a marked disposable container:
 
@@ -156,7 +176,13 @@ separate source-closed ceremony in
 external sentinels, canonical firewall output, Caddy/publisher preimages,
 runtime command inodes and current boot before it starts only the namespace
 unit. Its rollback has a distinct short-lived receipt-bound approval and stops
-only that unit. Neither path changes Caddy, the firewall, publication state or
-the offline publisher key boundary. Exact order, crash recovery, reboot scope
-and remaining blockers are in
+only that unit. A start that reaches terminal systemd `failed/failed` may be
+cleared only by a third, short-lived approval binding the durable start intent,
+original activation approval and exact failed InvocationID; that path invokes
+only fixed-argv `systemctl reset-failed` after no-job/no-process/no-topology
+proofs. Its durable reset intent survives short-lived approval expiry; only a
+fresh approval for the identical complete failed-attempt tuple may continue it,
+and the receipt preserves both approval digests. None of the three paths
+changes Caddy, the firewall, publication state or the offline publisher key
+boundary. Exact order, crash recovery, reboot scope and remaining blockers are in
 `docs/payment/PUBLISHER_NETNS_CEREMONY.md`.

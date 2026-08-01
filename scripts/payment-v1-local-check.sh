@@ -109,12 +109,21 @@ node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+bash -n scripts/payment-v1-systemd-255-pid1.test.sh
 bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
 bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
   scripts/payment-v1-publisher-netns-gate.test.mjs \
-  scripts/payment-v1-publisher-netns-ceremony.test.mjs
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+  scripts/payment-v1-publisher-netns-schema.test.mjs \
+  scripts/payment-v1-publisher-private-health-probe.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
@@ -418,12 +427,21 @@ node --check scripts/payment-v1-publisher-netns-gate.mjs
 node --check scripts/payment-v1-publisher-netns-gate.test.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.mjs
 node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+bash -n scripts/payment-v1-systemd-255-pid1.test.sh
 bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
 bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
   scripts/payment-v1-publisher-netns-gate.test.mjs \
-  scripts/payment-v1-publisher-netns-ceremony.test.mjs
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+  scripts/payment-v1-publisher-netns-schema.test.mjs \
+  scripts/payment-v1-publisher-private-health-probe.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \

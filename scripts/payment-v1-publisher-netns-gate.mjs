@@ -20,6 +20,44 @@ export const PUBLISHER_NETNS_FILES = Object.freeze([
   "deploy/payment-v1/network/README.md",
 ]);
 
+export function validatePublisherFailedRecoverySourcesV1(ceremonySource, schemaSource) {
+  const ceremonyRequired = [
+    'ops.systemctl(["reset-failed", NETNS_UNIT])',
+    'canonicalJson(["reset-failed", NETNS_UNIT])',
+    'await ops.unitJobAbsent(NETNS_UNIT)',
+    'await ops.failedUnitState(NETNS_UNIT)',
+    'await ops.networkAbsent(plan)',
+    '"06-reset-failed-intent.json"',
+    '"07-failed-start-recovered.json"',
+  ];
+  for (const required of ceremonyRequired) {
+    if (!ceremonySource.includes(required)) {
+      fail(`publisher failed-recovery ceremony lost exact guard: ${required}`);
+    }
+  }
+  if (
+    ceremonySource.includes('ops.systemctl(["reset-failed"])') ||
+    ceremonySource.includes('ops.systemctl(["reset-failed", name])') ||
+    ceremonySource.includes('ops.systemctl(["reset-failed", PUBLISHER_UNIT])')
+  ) fail("publisher failed-recovery ceremony contains a broad reset-failed mutation");
+  const schemaRequired = [
+    '"bitcoinpir-payment-v1-publisher-netns-failed-recovery-approval-v1"',
+    '"approve-reset-exact-failed-publisher-netns"',
+    'value.active_state !== "failed"',
+    'value.sub_state !== "failed"',
+    'value.main_pid !== "0"',
+    '!/^[0-9a-f]{32}$/u.test(value.invocation_id)',
+    'approval.start_intent_sha256',
+    'approval.activation_approval_sha256',
+  ];
+  for (const required of schemaRequired) {
+    if (!schemaSource.includes(required)) {
+      fail(`publisher failed-recovery schema lost exact binding: ${required}`);
+    }
+  }
+  return true;
+}
+
 export const PUBLISHER_FIREWALL_OUTPUT_KEYS = Object.freeze([
   "nft_ip6_base_forward",
   "nft_ip6_base_input",
@@ -341,7 +379,7 @@ export function validatePublisherNamespaceOwnerUnitV1(unitInput) {
   ], label);
   exactSectionKeys(unit, "Service", [
     "Type", "NotifyAccess", "User", "Group", "UMask", "StateDirectory",
-    "StateDirectoryMode", "WorkingDirectory", "ExecStartPre", "ExecStart",
+    "StateDirectoryMode", "WorkingDirectory", "UnsetEnvironment", "ExecStartPre", "ExecStart",
     "ExecStopPost", "Restart", "TimeoutStartSec", "TimeoutStopSec", "KillMode",
     "LimitCORE", "MemoryMax", "MemorySwapMax", "TasksMax", "StandardOutput",
     "StandardError", "NoNewPrivileges", "CapabilityBoundingSet",
@@ -371,6 +409,9 @@ export function validatePublisherNamespaceOwnerUnitV1(unitInput) {
     StateDirectory: ["bitcoinpir-publisher-netns"],
     StateDirectoryMode: ["0700"],
     WorkingDirectory: ["/var/lib/bitcoinpir-publisher-netns"],
+    UnsetEnvironment: [
+      "BASH_ENV ENV GLIBC_TUNABLES LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD NODE_EXTRA_CA_CERTS NODE_OPTIONS NODE_PATH",
+    ],
     ExecStartPre: [
       `/usr/bin/test -x ${helper}`,
       "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
@@ -429,7 +470,8 @@ function validatePublisherUnit(unit) {
     "Description", "Requires", "BindsTo", "After", "ConditionPathExists",
   ], label);
   exactSectionKeys(unit, "Service", [
-    "Type", "RemainAfterExit", "User", "Group", "UMask", "NetworkNamespacePath", "PrivateMounts",
+    "Type", "RemainAfterExit", "User", "Group", "UMask", "StateDirectory",
+    "StateDirectoryMode", "NetworkNamespacePath", "PrivateMounts",
     "BindReadOnlyPaths", "UnsetEnvironment", "ExecStartPre", "ExecStart",
     "Restart", "TimeoutStartSec", "TimeoutStopSec", "LimitCORE", "MemoryMax",
     "MemorySwapMax", "TasksMax", "StandardOutput", "StandardError",
@@ -440,12 +482,14 @@ function validatePublisherUnit(unit) {
     "RestrictSUIDSGID", "RestrictRealtime", "RestrictNamespaces",
     "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
     "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow",
-    "ReadOnlyPaths", "InaccessiblePaths", "TemporaryFileSystem",
+    "ReadOnlyPaths", "ReadWritePaths", "InaccessiblePaths", "TemporaryFileSystem",
   ], label);
   exactValues(unit, "Type", ["oneshot"], label);
   exactValues(unit, "RemainAfterExit", ["true"], label);
   exactValues(unit, "User", ["bitcoinpir-directory-publisher"], label);
   exactValues(unit, "Group", ["bitcoinpir-directory-publisher"], label);
+  exactValues(unit, "StateDirectory", ["bitcoinpir-directory-publication"], label);
+  exactValues(unit, "StateDirectoryMode", ["0700"], label);
   exactValues(unit, "NetworkNamespacePath",
     ["/run/netns/bpir-directory-publisher"], label);
   exactValues(unit, "Restart", ["no"], label);
@@ -461,7 +505,7 @@ function validatePublisherUnit(unit) {
     "/etc/netns/bpir-directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
   ], label);
   exactValues(unit, "UnsetEnvironment", [
-    "http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy",
+    "BASH_ENV ENV GLIBC_TUNABLES LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD NODE_EXTRA_CA_CERTS NODE_OPTIONS NODE_PATH http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy",
   ], label);
   const admin = "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin";
   const helper =
@@ -497,6 +541,8 @@ function validatePublisherUnit(unit) {
     "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_0_ENTRY_ARTIFACT@",
     "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_1_ENTRY_ARTIFACT@",
     "--artifact", "/var/lib/bitcoinpir-directory-publisher/artifacts/@CHECKPOINT_ARTIFACT@",
+    "--artifact-manifest", "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+    "--receipt-directory", "/var/lib/bitcoinpir-directory-publication",
     "--relay", "wss://@DIRECTORY_PUBLISHER_HTTPS_HOST@",
     "--centralized-single-relay",
     "--directory-pubkey-hex", "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
@@ -508,6 +554,9 @@ function validatePublisherUnit(unit) {
   if (JSON.stringify(tokens) !== JSON.stringify(wantedTokens)) {
     fail(`${label} has an unreviewed publication argv shape`);
   }
+  exactValues(unit, "ReadWritePaths", [
+    "/var/lib/bitcoinpir-directory-publication",
+  ], label);
   reject(unit, /Restart=(?!no)|StartLimit|OnFailure|ExecStartPost/u,
     `${label} must not introduce retry/restart orchestration`);
   exactValues(unit, "StandardOutput", ["null"], label);

@@ -11,7 +11,10 @@ mutation on apply: it asks systemd to start exactly
 `bitcoinpir-payment-v1-publisher-netns.service`. Its separately approved
 rollback asks systemd to stop exactly that unit. It never starts, stops or
 reloads Caddy, the directory publisher, source-fair edge, relay, issuer,
-provider or payment services.
+provider or payment services. A third authority exists only after a failed
+start: it may clear one approved terminal `failed/failed` InvocationID with the
+fixed argv `systemctl reset-failed bitcoinpir-payment-v1-publisher-netns.service`.
+It is neither implicit apply authority nor a wildcard systemd repair action.
 
 ## Closed topology and trust boundary
 
@@ -59,12 +62,15 @@ ceremony plan, it must have installed and independently pinned:
   `payment-v1-publisher-netns-gate.mjs`, plus the no-cycle
   `payment-v1-publisher-netns-schema.mjs` validator, installed root-owned and
   pinned in the same plan;
+- the source-closed private ingress probe at
+  `/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs`;
 - the independently compiled, statically linked, content-addressed native launcher at
   `/opt/bitcoinpir/publisher-netns-launcher/<launcher-sha256>/payment-v1-publisher-netns-launcher`;
-- the exact five-entry, root-owned `0444` launcher manifest at
+- the exact seven-entry, root-owned `0444` launcher manifest at
   `/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256`, in this
   canonical order: `/usr/bin/node`, integrated-Caddy gate, ceremony executor,
-  publisher-netns gate, shared schema validator;
+  publisher-netns gate, shared schema validator, private health probe, Node
+  loader-closure manifest;
 - regular, no-follow `/usr/bin/node`, `/usr/bin/systemctl` and `/usr/bin/ip`;
 - root-owned `0700` transaction parents
   `/var/lib/bitcoinpir/payment-v1/publisher-netns/receipts` and
@@ -140,7 +146,7 @@ sha256sum /absolute/staging/payment-v1-publisher-netns-launcher
 ```
 
 Create `launcher-inputs.sha256` with ordinary `sha256sum` output in the exact
-five-path order listed above. Its bytes and its SHA-256 are independent review
+seven-path order listed above. Its bytes and its SHA-256 are independent review
 inputs; the launcher accepts neither reordered nor additional entries.
 
 `ldd` is only an operator convenience. The schema-v2 plan additionally binds a
@@ -150,12 +156,25 @@ machine-parsed ELF64 little-endian `ET_EXEC` record: exact launcher SHA-256,
 derives that record from the same launcher bytes, and the ceremony recomputes
 it from the pinned file before mutation.
 
-After the launcher's final manifest identity recheck, Node and all four local
+After the launcher's final manifest identity recheck, Node and all five local
 modules are executed from already-open, hash-verified descriptors. A fixed
 `vm.SourceTextModule` loader permits only those sealed file URLs and Node
 built-ins; it never reopens the entrypoint or a local import by pathname. All
 other inherited descriptors are marked close-on-exec, and the bootstrap closes
-the four intentional module descriptors after reading them.
+the five intentional module descriptors after reading them.
+
+The only launcher subcommand that changes network namespaces is the fixed
+`publisher-private-health-probe` shape. Before `setns(CLONE_NEWNET)`, the
+launcher descriptor-opens `/run/netns/bpir-directory-publisher` and requires
+its nsfs device/inode to equal the committed ceremony receipt; it then proves
+the current namespace has the same identity. The sealed probe performs an
+ordinary WebPKI/SNI TLS validation against the host OpenSSL CA store (selected
+by the launcher's fixed `--use-openssl-ca` flag), an independently pinned
+leaf-certificate SHA-256 check, and a bounded RFC 6455 upgrade check. CA-store
+drift can deny availability but cannot substitute a different leaf because the
+full leaf DER digest is checked after WebPKI. A disposable privileged
+E2E proves that the same request receives 404 from the host namespace and 101
+only after this receipt-bound transition.
 
 The lifecycle lock is also shared with the Caddy-admin UDS cold transaction.
 Explicit publisher recovery may replace only a dead owner record for the exact
@@ -164,10 +183,11 @@ preserves an Admin transaction's deliberately retained outcome-unknown lock.
 
 ## Plan and short-lived approvals
 
-Start from the three inert skeletons:
+Start from the four inert skeletons:
 
 - `publisher-netns-ceremony-v1.plan.json.example`;
 - `publisher-netns-ceremony-v1.apply-approval.json.example`;
+- `publisher-netns-ceremony-v1.failed-recovery-approval.json.example`; and
 - `publisher-netns-ceremony-v1.rollback-approval.json.example`.
 
 Replace every `INVALID_...` marker from two stable observations of the target.
@@ -183,8 +203,11 @@ closure is exactly the two sibling gates above; both are runtime pins and are
 re-read before and after namespace mutation. Plan schema v2 additionally binds
 the loaded namespace unit, the current PID 1/systemd manager generation, the
 native launcher and its exact manifest. Apply and rollback approval schema v2
-bind both launcher digests. Schema v1 plans, approvals and receipts are invalid
-and must never be migrated or replayed as v2 authority.
+bind both launcher digests. Legacy schema-v1 documents using the apply,
+rollback or committed-receipt kinds are invalid and must never be migrated or
+replayed as v2 authority. The distinct failed-recovery approval/receipt v1
+kinds are not legacy apply authority and are accepted only with the exact
+schema-v2 plan they name.
 
 The launcher first hashes its own `/proc/self/exe` and requires both the
 independently approved launcher digest and its exact content-addressed path. It
@@ -196,6 +219,11 @@ influence variables, rechecks every descriptor/path identity, clears the
 environment and executes the pinned Node descriptor. Production ceremony
 commands must go through this launcher; direct `sudo /usr/bin/node ...` is
 test-only and is not an approved operator path.
+
+Continuous namespace-owner runtime evidence also reads the effective
+`UnsetEnvironment` property and requires the exact reviewed removal set for
+shell, dynamic-loader and Node injection variables. A correct fragment on disk
+is insufficient if the loaded property or daemon generation has drifted.
 
 The independently reviewed digest is SHA-256 over canonical JSON, not the
 whitespace of the source file. A reviewer can calculate it without trusting the
@@ -212,11 +240,18 @@ node --input-type=module -e '
 ' /absolute/review/publisher-netns.plan.json
 ```
 
-Apply and rollback approvals are different documents. Each binds the canonical
+Apply, failed-start recovery and rollback approvals are different documents.
+Apply and rollback each bind the canonical
 plan digest, exact executor digest, ceremony ID, reviewer identity, exact
 acknowledgement list and a whole-second UTC validity interval of at most one
 hour. Rollback additionally binds the SHA-256 of the exact committed receipt
-bytes. Approval-document digests are likewise over canonical JSON. A future or
+bytes. A failed-start recovery approval can be prepared only after observing a
+terminal failure. It additionally binds the exact bytes of the durable
+`05-start-intent.json`, the original activation-approval digest, and the full
+failed unit snapshot: nonzero InvocationID, `failed/failed`, `MainPID=0`,
+nonzero inactive/state-change monotonic timestamps, exact `Result`,
+`ExecMainCode`/`ExecMainStatus`, loaded fragment generation and fixed reset
+argv. Approval-document digests are likewise over canonical JSON. A future or
 expired approval, more than five minutes of negative clock skew, or any field
 drift fails before the lock or systemd mutation.
 
@@ -293,18 +328,28 @@ therefore cannot outlive it.
 
 ## Atomicity, idempotency and crash recovery
 
-The root-only lock records boot ID, PID and `/proc/<pid>/stat` start ticks.
-`recover-*` can reclaim only one exact owner record whose process generation is
-dead; an empty, malformed, linked, foreign or live lock fails closed for manual
-review.
+The root-only lock records a canonical nonzero boot UUID, positive safe-integer
+PID and canonical positive `/proc/<pid>/stat` start ticks; malformed owner
+fields are never interpolated into a `/proc` path.
+`recover-*` can reclaim only one exact authoritative owner record whose process
+generation is dead. A malformed authoritative owner, linked/foreign/live owner
+or unknown directory shape fails closed for manual review. The sole exception
+is one exact root-owned `0400`, single-link `owner.json.pending` with empty or
+strict-JSON-malformed bytes: that name is unpublished authority, so recovery
+may remove only its twice-revalidated inode generation and retry. A concurrent
+writer whose partial inode is removed must fail its later pathname/link proof;
+it cannot proceed as a second holder.
 
 State and receipts are canonical owner-only records. Publication uses an
 exclusive pending inode, fsync, no-replace hard link, parent fsync, pending
-unlink and a second parent fsync. Recovery handles both durable crash windows:
+unlink and a second parent fsync. The pending inode write loops until every byte
+is written and rejects zero, negative or otherwise invalid short-write results.
+Recovery handles both durable crash windows:
 a valid pending-only record and a final+pending two-link inode. Contradictory
 bytes, owners, modes, links or inodes are never normalized. Transaction
-directories accept only the six reviewed phase filenames and their pending
-counterparts.
+directories accept only the eight reviewed phase filenames and their pending
+counterparts. A real Linux SIGKILL test stops owner publication after a partial
+write and proves explicit recovery converges without adopting those bytes.
 
 Plain `apply` refuses an already-active namespace. If the systemctl response
 was lost after the durable `05-start-intent.json`, run `recover-commit` with a
@@ -325,6 +370,54 @@ with `NeedDaemonReload=no`, the nsfs path and host veth are absent, and all five
 external sentinels still have the plan-bound bytes and metadata. Any pending
 job, late activation during that proof, sentinel drift or unknown state keeps
 the lock for further explicit recovery.
+
+Real `Type=notify` and `ExecStart` timeouts commonly terminate as
+`ActiveState=failed`, `SubState=failed`, `MainPID=0` while retaining a nonzero
+InvocationID. That state is never treated as the inactive plan preimage and an
+ordinary apply approval cannot clear it. Collect the complete failed snapshot
+twice, hash the durable start intent, and issue a fresh
+`publisher-netns-failed-recovery-approval-v1` for exactly that tuple. Recovery
+then proves no PID 1 job, exact failed InvocationID, `MainPID=0`, absent nsfs
+and host veth, unchanged boot/manager/Caddy/publisher/loaded-unit generation,
+and unchanged installed/runtime/sentinel/firewall inputs. Immediately before
+mutation it durably writes `06-reset-failed-intent.json` and invokes only:
+
+```text
+/usr/bin/systemctl reset-failed bitcoinpir-payment-v1-publisher-netns.service
+```
+
+Afterwards it repeats no-job, exact `inactive/dead`, no-process-generation,
+absent-topology and closed-input proofs before atomically writing the dedicated
+failed-recovery receipt and `07-failed-start-recovered.json`. A lost reset
+response is idempotent: an exact inactive terminal state is adopted only when
+that exact reset intent already exists and binds its first recovery approval,
+the start intent, original activation approval and failed-unit digest. If that
+short-lived approval expires after the intent is durable, a fresh approval may
+continue only when it independently binds the same complete tuple; it cannot
+replace or broaden the existing intent. The receipt records both
+`reset_intent_approval_sha256` (the approval authorizing the first mutation
+attempt) and `approved_recovery_approval_sha256` (the currently valid approval
+that proved and published the terminal result). Otherwise the shared lifecycle
+lock remains retained. A different InvocationID, pending job, surviving
+namespace/interface, changed sentinel or missing intent never causes a reset.
+Receipt replay revalidates that durable intent and restores a missing
+`07-failed-start-recovered.json` after the receipt-to-state crash window; it
+does not issue another reset.
+
+The recovery invocation deliberately reuses the `--approval` transport name,
+but its document kind is distinct and accepted only by `recover-commit`:
+
+```sh
+sudo /opt/bitcoinpir/publisher-netns-launcher/LAUNCHER_SHA256/payment-v1-publisher-netns-launcher \
+  --approved-launcher-sha256 LAUNCHER_SHA256 \
+  --approved-manifest-sha256 LAUNCHER_MANIFEST_SHA256 -- \
+  recover-commit \
+  --plan /absolute/review/publisher-netns.plan.json \
+  --approved-plan-sha256 PLAN_SHA256 \
+  --approved-source-sha256 EXECUTOR_SHA256 \
+  --approval /absolute/review/publisher-netns.failed-recovery-approval.json \
+  --approved-approval-sha256 FAILED_RECOVERY_APPROVAL_SHA256
+```
 
 An exact committed replay requires no pending PID 1 job and revalidates the
 live unit generation, topology, Caddy/publisher state and every closed input
@@ -393,7 +486,9 @@ not a stale receipt or an ad-hoc `systemctl` command.
 | --- | --- | --- |
 | Plan, source, runtime pin, sentinel, firewall or Caddy preflight fails | None | Correct the external input; create a new plan/approval when any pin changes. |
 | Lock exists with a live/unknown owner | None | Wait for the exact process or perform manual forensic review; never delete by name alone. |
-| Start command errors, times out or returns nonzero after durable intent | Helper/PID 1 may activate late or have partial kernel work; no ceremony receipt; shared lifecycle lock retained | Run same-transaction `recover-commit`. It terminalizes an exact late-active generation, or releases the lock only after repeated no-job, exact-inactive, absent-nsfs/veth and exact-sentinel proof. |
+| Start command errors, times out or returns nonzero after durable intent | Helper/PID 1 may activate late, terminate `failed/failed`, or have partial kernel work; no ceremony receipt; shared lifecycle lock retained | Run same-transaction `recover-commit`. It terminalizes an exact late-active generation. Exact-inactive recovery uses repeated no-job/absence/input proof. Terminal `failed/failed` additionally requires a fresh approval binding the exact InvocationID, failed snapshot, durable start intent and original activation approval before fixed-argv `reset-failed`. |
+| Failed recovery has a different InvocationID, PID 1 job, MainPID, topology, input generation or missing/mismatched reset intent | None, unless a prior exact reset response was lost; shared lifecycle lock retained | Fail closed and investigate. Never issue a wildcard or manually broadened `reset-failed`; prepare a new approval only for a separately proven same start attempt. |
+| `reset-failed` response is lost or its approval expires after durable reset intent | Unit may already be exact `inactive/dead`, or remain the exact approved `failed/failed` generation; no failed-recovery receipt; shared lifecycle lock retained | Repeat `recover-commit` with the same still-valid approval or a fresh approval binding the identical start/activation/failed-generation tuple. The durable intent is never replaced; an already-inactive result is proved and adopted without resetting twice. |
 | Start response is lost but durable start intent and exact topology exist | Namespace active; no receipt | Run `recover-commit` with a fresh valid approval. |
 | Active namespace has no exact start intent | Unknown | Fail closed; do not adopt or publish a receipt. |
 | Runtime interface/address/route/sysctl/nsfs/Caddy/input or boot/systemd identity verification fails | Namespace may be active or stopped; no new receipt | Keep publisher/Caddy overlay inactive; investigate and explicitly clean up under the cold incident procedure. |
@@ -411,7 +506,11 @@ Pure Node tests cover canonical plans, RFC1918/ULA validation, expired and
 overlong approvals, active/adopt refusal, lost-response recovery, Caddy and
 firewall drift, veth identity, route/forwarding/interface negatives, receipt
 idempotency, boot/systemd identity drift across start and stop, separate
-rollback authority and both receipt crash windows.
+rollback authority and both receipt crash windows. The failed-start mocks use
+the real systemd 255 `failed/failed`, nonzero InvocationID, `MainPID=0`,
+`Result=timeout`, signal code/status shape and prove exact-generation approval,
+pending-job/topology refusal, fixed reset argv, lost-reset-response recovery
+and dedicated receipt replay.
 Privileged disposable-Linux tests execute pinned command descriptors across a
 real network namespace and exercise the native helper's setup, monitoring,
 fault injection and exact cleanup.

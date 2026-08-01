@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +21,8 @@ import {
   APPLY_ACKNOWLEDGEMENTS,
   APPLY_APPROVAL_KIND,
   CEREMONY_KIND,
+  FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+  FAILED_RECOVERY_APPROVAL_KIND,
   PUBLISHER_NETNS_CEREMONY_TEST_ONLY_IO as realFs,
   ROLLBACK_ACKNOWLEDGEMENTS,
   ROLLBACK_APPROVAL_KIND,
@@ -31,16 +35,26 @@ import {
   parseSystemdExecRecordsV1,
   validateCeremonyPlan,
   validatePrivatePairV1,
+  writeAllSyncV1,
 } from "./payment-v1-publisher-netns-ceremony.mjs";
 import {
+  computePublisherNetnsFailedUnitSha256V1,
+  inspectDynamicElfV1,
   inspectStaticElfV1,
+  validatePublisherNetnsFailedRecoveryReceiptV1,
+  validatePublisherNetnsFailedUnitV1,
   validatePublisherNetnsPlanV2,
+  validatePublisherNodeElfClosureBytesV1,
 } from "./payment-v1-publisher-netns-schema.mjs";
 
 const NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
 const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
 const CADDY_UNIT = "bhtm-caddy.service";
 const NOW = 1_788_000_000;
+const CEREMONY_MODULE_URL = new URL(
+  "./payment-v1-publisher-netns-ceremony.mjs",
+  import.meta.url,
+).href;
 
 test("schema-v2 CLI status lines are explicit and machine-parseable", () => {
   assert.equal(
@@ -69,6 +83,57 @@ test("publisher recovery cannot clear another lifecycle transaction's stale lock
     assertPublisherRecoveryOwnsLifecycleLock(owner, "publisher-activation"),
     true,
   );
+});
+
+test("publisher recovery rejects malformed stale-lock process identities", () => {
+  const valid = {
+    boot_id: "22345678-1234-4234-9234-123456789abc",
+    pid: 999999,
+    process_start_ticks: "1",
+    transaction_id: "publisher-activation",
+  };
+  for (const [field, value, expected] of [
+    ["boot_id", "22345678123442349234123456789abc", /canonical nonzero UUID/u],
+    ["boot_id", "00000000-0000-0000-0000-000000000000", /canonical nonzero UUID/u],
+    ["pid", 0, /positive safe integer/u],
+    ["pid", -1, /positive safe integer/u],
+    ["pid", 1.5, /positive safe integer/u],
+    ["pid", Number.MAX_SAFE_INTEGER + 1, /positive safe integer/u],
+    ["pid", "1", /positive safe integer/u],
+    ["process_start_ticks", "0", /canonical positive decimal/u],
+    ["process_start_ticks", "01", /canonical positive decimal/u],
+    ["process_start_ticks", 1, /canonical positive decimal/u],
+  ]) {
+    const owner = structuredClone(valid);
+    owner[field] = value;
+    assert.throws(
+      () => assertPublisherRecoveryOwnsLifecycleLock(owner, valid.transaction_id),
+      expected,
+    );
+  }
+});
+
+test("atomic record writes loop over short writes and reject non-progress", () => {
+  const bytes = Buffer.from("short-write-proof", "utf8");
+  const observed = Buffer.alloc(bytes.length);
+  const calls = [];
+  const written = writeAllSyncV1(17, bytes, (fd, buffer, offset, length, position) => {
+    assert.equal(fd, 17);
+    assert.equal(position, offset);
+    const count = Math.min(3, length);
+    buffer.copy(observed, position, offset, offset + count);
+    calls.push({ count, length, offset, position });
+    return count;
+  });
+  assert.equal(written, bytes.length);
+  assert.equal(observed.equals(bytes), true);
+  assert.equal(calls.length > 1, true);
+  for (const invalid of [0, -1, 1.5, bytes.length + 1]) {
+    assert.throws(
+      () => writeAllSyncV1(17, bytes, () => invalid),
+      /invalid short-write length/u,
+    );
+  }
 });
 
 function hash(value) {
@@ -107,7 +172,52 @@ function launcherManifestBytes(runtime) {
     runtime.executor,
     runtime.publisher_netns_gate,
     runtime.schema_validator,
+    runtime.health_probe,
+    runtime.node_loader_closure_manifest,
   ].map((pinValue) => `${pinValue.sha256}  ${pinValue.path}\n`).join(""), "utf8");
+}
+
+function nodeElfClosureFixture() {
+  const closure = {
+    activation_state:
+      "descriptor-pinned-loader-recursive-needed-closure-and-double-maps-sampling",
+    architecture: "elf64-le-x86_64",
+    interpreter_soname: "ld-linux-x86-64.so.2",
+    kind: "bitcoinpir-payment-v1-publisher-node-elf-closure-v1",
+    node_needed: ["libc.so.6", "libm.so.6"],
+    objects: [
+      {
+        needed: [],
+        pin: pin(
+          "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "0755", "ld-linux",
+        ),
+        soname: "ld-linux-x86-64.so.2",
+      },
+      {
+        needed: ["ld-linux-x86-64.so.2"],
+        pin: pin("/usr/lib/x86_64-linux-gnu/libc.so.6", "0755", "libc"),
+        soname: "libc.so.6",
+      },
+      {
+        needed: ["libc.so.6"],
+        pin: pin("/usr/lib/x86_64-linux-gnu/libm.so.6", "0755", "libm"),
+        soname: "libm.so.6",
+      },
+    ],
+    pt_interp: "/lib64/ld-linux-x86-64.so.2",
+    schema_version: 1,
+  };
+  for (const object of closure.objects) {
+    const bytes = dynamicElfFixture({ needed: object.needed, soname: object.soname });
+    object.pin.sha256 = hash(bytes);
+    object.pin.size = String(bytes.length);
+  }
+  return closure;
+}
+
+function nodeLoaderClosureManifestBytes(closure) {
+  return Buffer.from(closure.objects.map((object) =>
+    `${object.pin.sha256}  ${object.pin.path}\n`).join(""), "utf8");
 }
 
 function staticElfFixture() {
@@ -122,6 +232,74 @@ function staticElfFixture() {
   bytes.writeUInt16LE(1, 56);
   bytes.writeUInt32LE(1, 64);
   return bytes;
+}
+
+function dynamicElfFixture({
+  extraDynamicTags = [], interpreter = null, needed = [], soname = null,
+} = {}) {
+  const bytes = Buffer.alloc(4096);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+  bytes.writeUInt16LE(3, 16);
+  bytes.writeUInt16LE(62, 18);
+  bytes.writeUInt32LE(1, 20);
+  bytes.writeBigUInt64LE(64n, 32);
+  bytes.writeUInt16LE(64, 52);
+  bytes.writeUInt16LE(56, 54);
+  const programHeaderCount = interpreter === null ? 2 : 3;
+  bytes.writeUInt16LE(programHeaderCount, 56);
+  const base = 0x400000n;
+  const dynamicOffset = 512;
+  const stringTableOffset = 1024;
+  const strings = ["", ...needed, ...(soname === null ? [] : [soname])];
+  const stringOffsets = new Map();
+  let stringCursor = 0;
+  for (const value of strings) {
+    if (!stringOffsets.has(value)) stringOffsets.set(value, stringCursor);
+    bytes.write(`${value}\0`, stringTableOffset + stringCursor, "ascii");
+    stringCursor += Buffer.byteLength(value, "ascii") + 1;
+  }
+  const dynamicEntries = [
+    ...needed.map((name) => [1n, BigInt(stringOffsets.get(name))]),
+    [5n, base + BigInt(stringTableOffset)],
+    [10n, BigInt(stringCursor)],
+    ...(soname === null ? [] : [[14n, BigInt(stringOffsets.get(soname))]]),
+    ...extraDynamicTags.map((tag) => [BigInt(tag), 0n]),
+    [0n, 0n],
+  ];
+  for (const [index, [tag, value]] of dynamicEntries.entries()) {
+    bytes.writeBigInt64LE(tag, dynamicOffset + index * 16);
+    bytes.writeBigUInt64LE(value, dynamicOffset + index * 16 + 8);
+  }
+  const writeProgramHeader = (index, type, fileOffset, fileSize) => {
+    const offset = 64 + index * 56;
+    bytes.writeUInt32LE(type, offset);
+    bytes.writeUInt32LE(type === 1 ? 5 : 4, offset + 4);
+    bytes.writeBigUInt64LE(BigInt(fileOffset), offset + 8);
+    bytes.writeBigUInt64LE(base + BigInt(fileOffset), offset + 16);
+    bytes.writeBigUInt64LE(base + BigInt(fileOffset), offset + 24);
+    bytes.writeBigUInt64LE(BigInt(fileSize), offset + 32);
+    bytes.writeBigUInt64LE(BigInt(fileSize), offset + 40);
+    bytes.writeBigUInt64LE(type === 1 ? 4096n : 8n, offset + 48);
+  };
+  writeProgramHeader(0, 1, 0, bytes.length);
+  writeProgramHeader(1, 2, dynamicOffset, dynamicEntries.length * 16);
+  if (interpreter !== null) {
+    const interpreterOffset = 384;
+    bytes.write(`${interpreter}\0`, interpreterOffset, "ascii");
+    writeProgramHeader(2, 3, interpreterOffset, Buffer.byteLength(interpreter, "ascii") + 1);
+  }
+  return bytes;
+}
+
+function nodeElfFixtureBytes(closure) {
+  return dynamicElfFixture({
+    interpreter: closure.pt_interp,
+    needed: closure.node_needed,
+  });
+}
+
+function objectElfFixtureBytes(object) {
+  return dynamicElfFixture({ needed: object.needed, soname: object.soname });
 }
 
 function installedFileBytes(id, topology, installedFiles = undefined) {
@@ -193,6 +371,37 @@ function active(name, id = "a".repeat(32), pid = "123") {
   };
 }
 
+function failed(name, id = "d".repeat(32)) {
+  return {
+    active_enter_timestamp_monotonic: "0",
+    active_state: "failed",
+    exec_main_code: "2",
+    exec_main_status: "15",
+    inactive_enter_timestamp_monotonic: "123457",
+    invocation_id: id,
+    load_state: "loaded",
+    main_pid: "0",
+    name,
+    need_daemon_reload: "no",
+    result: "timeout",
+    state_change_timestamp_monotonic: "123457",
+    sub_state: "failed",
+  };
+}
+
+function failedProjection(value) {
+  return {
+    active_enter_timestamp_monotonic: value.active_enter_timestamp_monotonic,
+    active_state: value.active_state,
+    invocation_id: value.invocation_id,
+    load_state: value.load_state,
+    main_pid: value.main_pid,
+    name: value.name,
+    need_daemon_reload: value.need_daemon_reload,
+    sub_state: value.sub_state,
+  };
+}
+
 function loadedNetnsUnit(installedFiles) {
   const helper = installedFiles.find((entry) => entry.id === "helper-binary").pin.path;
   return {
@@ -255,6 +464,10 @@ function loadedNetnsUnit(installedFiles) {
       timeout_stop_usec: "30s",
       type: "notify",
       umask: "0077",
+      unset_environment: [
+        "BASH_ENV", "ENV", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH",
+        "LD_PRELOAD", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+      ],
       user: "root",
       working_directory: "/var/lib/bitcoinpir-publisher-netns",
     },
@@ -437,6 +650,11 @@ function fixture() {
     executor: pin(
       "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs", "0555",
       "executor"),
+    health_probe: pin(
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs",
+      "0555",
+      "publisher-private-health-probe",
+    ),
     integrated_caddy_gate: pin(
       "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
       "0555",
@@ -454,6 +672,11 @@ function fixture() {
       "launcher-manifest",
     ),
     node: pin("/usr/bin/node", "0755", "node"),
+    node_loader_closure_manifest: pin(
+      "/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256",
+      "0444",
+      "node-loader-closure-manifest",
+    ),
     publisher_netns_gate: pin(
       "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs",
       "0555",
@@ -468,6 +691,13 @@ function fixture() {
   };
   runtime.launcher.sha256 = launcherSha256;
   runtime.launcher.size = String(launcherBytes.length);
+  const nodeElfClosure = nodeElfClosureFixture();
+  const nodeBytes = nodeElfFixtureBytes(nodeElfClosure);
+  runtime.node.sha256 = hash(nodeBytes);
+  runtime.node.size = String(nodeBytes.length);
+  const nodeLoaderClosureManifest = nodeLoaderClosureManifestBytes(nodeElfClosure);
+  runtime.node_loader_closure_manifest.sha256 = hash(nodeLoaderClosureManifest);
+  runtime.node_loader_closure_manifest.size = String(nodeLoaderClosureManifest.length);
   const launcherManifest = launcherManifestBytes(runtime);
   runtime.launcher_manifest.sha256 = hash(launcherManifest);
   runtime.launcher_manifest.size = String(launcherManifest.length);
@@ -494,6 +724,7 @@ function fixture() {
     installed_files: installedFiles,
     kind: CEREMONY_KIND,
     launcher_static_elf: inspectStaticElfV1(launcherBytes),
+    node_elf_closure: nodeElfClosure,
     preimage: {
       host_interface: "absent",
       loaded_netns_unit: loadedNetnsUnit(installedFiles),
@@ -608,8 +839,18 @@ function fakeOps(fixtureValue) {
         ? staticElfFixture()
         : name === "launcher_manifest"
         ? launcherManifestBytes(plan.runtime)
+        : name === "node"
+        ? nodeElfFixtureBytes(plan.node_elf_closure)
+        : name === "node_loader_closure_manifest"
+        ? nodeLoaderClosureManifestBytes(plan.node_elf_closure)
         : Buffer.from(`${name}\n`, "utf8"),
       snapshot: structuredClone(runtimePin),
+    });
+  }
+  for (const object of plan.node_elf_closure.objects) {
+    files.set(object.pin.path, {
+      bytes: objectElfFixtureBytes(object),
+      snapshot: structuredClone(object.pin),
     });
   }
   for (const sentinel of plan.activation_sentinels) {
@@ -622,6 +863,7 @@ function fakeOps(fixtureValue) {
   const receipts = new Map();
   const states = new Map();
   let netns = structuredClone(plan.preimage.netns_unit);
+  let failedNetns = null;
   let publisher = structuredClone(plan.preimage.publisher_unit);
   let caddy = structuredClone(plan.caddy_preimage);
   let host = structuredClone(plan.host);
@@ -631,6 +873,8 @@ function fakeOps(fixtureValue) {
   let startStatus = 0;
   let startError = null;
   let stopStatus = 0;
+  let resetFailedStatus = 0;
+  let resetFailedError = null;
   let jobAbsent = true;
   let networkAbsentOverride = null;
   let afterStart = () => {};
@@ -656,7 +900,9 @@ function fakeOps(fixtureValue) {
     states,
     seedState(filename, value) {
       const key = `${plan.transaction.state_directory}/${filename}`;
-      states.set(key, stateObservation(key, value));
+      const observed = stateObservation(key, value);
+      states.set(key, observed);
+      return observed;
     },
     get caddy() { return caddy; },
     set caddy(value) { caddy = structuredClone(value); },
@@ -666,7 +912,15 @@ function fakeOps(fixtureValue) {
     set loaded(value) { loaded = structuredClone(value); },
     get lockHeld() { return lockHeld; },
     get netns() { return netns; },
-    set netns(value) { netns = structuredClone(value); },
+    set netns(value) {
+      failedNetns = value.active_state === "failed" ? structuredClone(value) : null;
+      netns = value.active_state === "failed" ? failedProjection(value) : structuredClone(value);
+    },
+    get failedNetns() { return failedNetns; },
+    set failedNetns(value) {
+      failedNetns = structuredClone(value);
+      netns = failedProjection(value);
+    },
     get publisher() { return publisher; },
     set publisher(value) { publisher = structuredClone(value); },
     set jobAbsent(value) { jobAbsent = value; },
@@ -674,6 +928,8 @@ function fakeOps(fixtureValue) {
     set startError(value) { startError = value; },
     set startStatus(value) { startStatus = value; },
     set stopStatus(value) { stopStatus = value; },
+    set resetFailedError(value) { resetFailedError = value; },
+    set resetFailedStatus(value) { resetFailedStatus = value; },
     set afterStart(value) { afterStart = value; },
     set afterStop(value) { afterStop = value; },
     set beforeNetworkAbsent(value) { beforeNetworkAbsent = value; },
@@ -700,10 +956,15 @@ function fakeOps(fixtureValue) {
       beforeLoadedNetnsUnit();
       return structuredClone(loaded);
     },
+    async failedUnitState(name) {
+      calls.push(["failedUnitState", name]);
+      if (name !== NETNS_UNIT || failedNetns === null) throw new Error("unit is not failed");
+      return structuredClone(failedNetns);
+    },
     async networkAbsent() {
       calls.push(["networkAbsent"]);
       beforeNetworkAbsent();
-      return networkAbsentOverride ?? netns.active_state === "inactive";
+      return networkAbsentOverride ?? netns.active_state !== "active";
     },
     async networkState() { return structuredClone(topology); },
     async readOptionalRegular(path) {
@@ -720,18 +981,41 @@ function fakeOps(fixtureValue) {
       calls.push(["systemctl", ...args]);
       assert.deepEqual(args.slice(1), [NETNS_UNIT]);
       if (args[0] === "start" && startError !== null) {
+        failedNetns = failed(NETNS_UNIT);
+        netns = failedProjection(failedNetns);
         afterStart();
         throw startError;
       }
       if (args[0] === "start" && startStatus === 0) {
         netns = active(NETNS_UNIT);
+        failedNetns = null;
+        afterStart();
+      }
+      if (args[0] === "start" && startStatus !== 0) {
+        failedNetns = failed(NETNS_UNIT);
+        netns = failedProjection(failedNetns);
         afterStart();
       }
       if (args[0] === "stop" && stopStatus === 0) {
         netns = inactive(NETNS_UNIT);
+        failedNetns = null;
         afterStop();
       }
-      return { status: args[0] === "start" ? startStatus : stopStatus };
+      if (args[0] === "reset-failed") {
+        if (resetFailedError !== null) {
+          netns = inactive(NETNS_UNIT);
+          failedNetns = null;
+          throw resetFailedError;
+        }
+        if (resetFailedStatus === 0) {
+          netns = inactive(NETNS_UNIT);
+          failedNetns = null;
+        }
+      }
+      return {
+        status: args[0] === "start" ? startStatus :
+          args[0] === "reset-failed" ? resetFailedStatus : stopStatus,
+      };
     },
     async unitJobAbsent(name) {
       calls.push(["unitJobAbsent", name]);
@@ -784,6 +1068,55 @@ async function applyFixture(value, ops, recover = false) {
   });
 }
 
+function durableStartIntent(value, activationApprovalSha256 = approvalDigest(value.approval)) {
+  return {
+    approved_approval_sha256: activationApprovalSha256,
+    approved_plan_sha256: value.planSha256,
+    ceremony_id: value.plan.ceremony_id,
+    phase: "start-intent",
+    schema_version: 1,
+  };
+}
+
+function failedRecoveryApproval(
+  value,
+  observedStartIntent,
+  failedUnit,
+  activationApprovalSha256 = approvalDigest(value.approval),
+) {
+  return {
+    acknowledgements: [...FAILED_RECOVERY_ACKNOWLEDGEMENTS],
+    activation_approval_sha256: activationApprovalSha256,
+    approved_at_utc: new Date((NOW - 30) * 1000).toISOString().replace(".000Z", "Z"),
+    approved_by: "security-reviewer:failed-recovery-test-key-v1",
+    ceremony_id: value.plan.ceremony_id,
+    decision: "approve-reset-exact-failed-publisher-netns",
+    executor_sha256: value.plan.runtime.executor.sha256,
+    expires_at_utc: new Date((NOW + 300) * 1000).toISOString().replace(".000Z", "Z"),
+    failed_unit: structuredClone(failedUnit),
+    failed_unit_sha256: computePublisherNetnsFailedUnitSha256V1(failedUnit),
+    kind: FAILED_RECOVERY_APPROVAL_KIND,
+    launcher_manifest_sha256: value.plan.runtime.launcher_manifest.sha256,
+    launcher_sha256: value.plan.runtime.launcher.sha256,
+    plan_sha256: value.planSha256,
+    reset_failed_argv: ["reset-failed", NETNS_UNIT],
+    schema_version: 1,
+    start_intent_sha256: hash(observedStartIntent.bytes),
+  };
+}
+
+async function recoverFailedFixture(value, ops, approval, nowUnix = NOW) {
+  return executeApply({
+    approval,
+    approvedApprovalSha256: approvalDigest(approval),
+    approvedPlanSha256: value.planSha256,
+    nowUnix,
+    ops,
+    plan: value.plan,
+    recover: true,
+  });
+}
+
 test("closed publisher namespace ceremony plan validates", () => {
   const value = fixture();
   assert.equal(validateCeremonyPlan(value.plan), true);
@@ -793,6 +1126,70 @@ test("closed publisher namespace ceremony plan validates", () => {
     hash(Buffer.from(canonicalJson(value.plan), "utf8")),
     "shared schema validator must preserve the established canonical plan digest",
   );
+});
+
+test("Node ELF closure is byte-verified and excludes unreachable preload objects", () => {
+  const value = fixture();
+  const closure = value.plan.node_elf_closure;
+  const nodeBytes = nodeElfFixtureBytes(closure);
+  const objectBytes = new Map(closure.objects.map((object) => [
+    object.pin.path,
+    objectElfFixtureBytes(object),
+  ]));
+  const inspected = validatePublisherNodeElfClosureBytesV1({
+    closure,
+    nodeBytes,
+    objectBytes,
+  });
+  assert.equal(inspected.node.pt_interp, closure.pt_interp);
+  assert.deepEqual(inspected.node.needed, closure.node_needed);
+
+  const unreachable = structuredClone(value.plan);
+  unreachable.node_elf_closure.objects.push({
+    needed: [],
+    pin: pin(
+      "/usr/lib/x86_64-linux-gnu/libunreachable.so.1", "0755", "unreachable",
+    ),
+    soname: "libunreachable.so.1",
+  });
+  unreachable.runtime.node_loader_closure_manifest.sha256 = hash(
+    nodeLoaderClosureManifestBytes(unreachable.node_elf_closure),
+  );
+  assert.throws(
+    () => validatePublisherNetnsPlanV2(unreachable),
+    /unreachable preload object/u,
+  );
+
+  const misordered = structuredClone(value.plan);
+  const [loader, libc, libm] = misordered.node_elf_closure.objects;
+  misordered.node_elf_closure.objects = [loader, libm, libc];
+  misordered.runtime.node_loader_closure_manifest.sha256 = hash(
+    nodeLoaderClosureManifestBytes(misordered.node_elf_closure),
+  );
+  assert.throws(
+    () => validatePublisherNetnsPlanV2(misordered),
+    /canonical dependency-first preload order/u,
+  );
+});
+
+test("dynamic ELF parser rejects dependency-injection tags before activation", () => {
+  for (const [tag, name] of [
+    [15n, "DT_RPATH"],
+    [29n, "DT_RUNPATH"],
+    [0x6ffffefbn, "DT_DEPAUDIT"],
+    [0x6ffffefcn, "DT_AUDIT"],
+    [0x7ffffffdn, "DT_AUXILIARY"],
+    [0x7fffffffn, "DT_FILTER"],
+  ]) {
+    assert.throws(
+      () => inspectDynamicElfV1(dynamicElfFixture({
+        extraDynamicTags: [tag],
+        needed: ["libc.so.6"],
+        soname: "libtest.so.1",
+      })),
+      new RegExp(name, "u"),
+    );
+  }
 });
 
 test("loaded-unit Exec parser accepts only exact systemd record separators", () => {
@@ -853,7 +1250,7 @@ test("executor local import closure is exact and both sibling gates are plan-pin
   assert.throws(() => validateCeremonyPlan(value.plan), /path is not approved/u);
 });
 
-test("launcher and its five-entry manifest are plan- and approval-bound", async () => {
+test("launcher and its seven-entry manifest are plan- and approval-bound", async () => {
   {
     const value = fixture();
     value.plan.runtime.launcher.path =
@@ -1307,6 +1704,360 @@ test("nonzero systemctl start is outcome-unknown and retains the shared lifecycl
   assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
 });
 
+test("real systemd-shaped failed/failed state requires a separately bound reset approval", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  assert.equal(ops.netns.active_state, "failed");
+  validatePublisherNetnsFailedUnitV1(ops.failedNetns);
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => applyFixture(value, ops, true),
+    /requires an exact failed-start recovery approval/u,
+  );
+  assert.equal(
+    ops.calls.some((call) => call[0] === "systemctl" && call[1] === "reset-failed"),
+    false,
+  );
+  assert.equal(ops.lockHeld, true);
+});
+
+test("failed-start recovery resets only the exact approved InvocationID and commits its receipt", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  ops.calls.length = 0;
+  const receipt = await recoverFailedFixture(value, ops, recoveryApproval);
+  assert.equal(receipt.outcome, "failed-start-recovered");
+  assert.equal(receipt.failed_unit.invocation_id, "d".repeat(32));
+  assert.deepEqual(receipt.reset_failed_argv, ["reset-failed", NETNS_UNIT]);
+  assert.equal(
+    receipt.approved_recovery_approval_sha256,
+    approvalDigest(recoveryApproval),
+  );
+  assert.equal(
+    receipt.reset_intent_approval_sha256,
+    approvalDigest(recoveryApproval),
+  );
+  assert.equal(receipt.recovered_unit.active_state, "inactive");
+  assert.equal(receipt.topology_absent, true);
+  assert.deepEqual(ops.calls.filter((call) => call[0] === "systemctl"), [
+    ["systemctl", "reset-failed", NETNS_UNIT],
+  ]);
+  assert.equal(ops.lockHeld, false);
+  assert.equal(
+    ops.states.has(`${value.plan.transaction.state_directory}/06-reset-failed-intent.json`),
+    true,
+  );
+  assert.equal(
+    ops.states.has(`${value.plan.transaction.state_directory}/07-failed-start-recovered.json`),
+    true,
+  );
+  assert.equal(
+    validatePublisherNetnsFailedRecoveryReceiptV1({
+      approvedPlanSha256: value.planSha256,
+      approvedRecoveryApprovalSha256: approvalDigest(recoveryApproval),
+      plan: value.plan,
+      receipt,
+    }),
+    true,
+  );
+});
+
+test("failed-start recovery refuses a different failed generation before reset", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  ops.failedNetns = failed(NETNS_UNIT, "e".repeat(32));
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /current unit is not the exact approved failed invocation/u,
+  );
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.lockHeld, true);
+});
+
+test("failed-start recovery approval rejects broadened authority before locking", async () => {
+  for (const [mutate, expected] of [
+    [
+      (approval) => { approval.reset_failed_argv = ["reset-failed", PUBLISHER_UNIT]; },
+      /decision or fixed reset argv drifted/u,
+    ],
+    [
+      (approval) => { approval.failed_unit.main_pid = "9"; },
+      /not one terminal failed\/failed systemd invocation/u,
+    ],
+    [
+      (approval) => {
+        approval.expires_at_utc = new Date((NOW - 1) * 1000)
+          .toISOString().replace(".000Z", "Z");
+      },
+      /not currently valid/u,
+    ],
+  ]) {
+    const value = fixture();
+    const ops = fakeOps(value);
+    const observedStartIntent = ops.seedState(
+      "05-start-intent.json",
+      durableStartIntent(value),
+    );
+    ops.failedNetns = failed(NETNS_UNIT);
+    const recoveryApproval = failedRecoveryApproval(
+      value,
+      observedStartIntent,
+      ops.failedNetns,
+    );
+    mutate(recoveryApproval);
+    await assert.rejects(
+      () => recoverFailedFixture(value, ops, recoveryApproval),
+      expected,
+    );
+    assert.equal(ops.calls.length, 0);
+    assert.equal(ops.lockHeld, false);
+  }
+});
+
+test("failed-start recovery binds both the durable intent and original activation approval", async () => {
+  for (const mutate of [
+    (approval) => { approval.start_intent_sha256 = "9".repeat(64); },
+    (approval) => { approval.activation_approval_sha256 = "8".repeat(64); },
+  ]) {
+    const value = fixture();
+    const ops = fakeOps(value);
+    ops.startStatus = 1;
+    await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+    const observedStartIntent = ops.states.get(
+      `${value.plan.transaction.state_directory}/05-start-intent.json`,
+    );
+    const recoveryApproval = failedRecoveryApproval(
+      value,
+      observedStartIntent,
+      ops.failedNetns,
+    );
+    mutate(recoveryApproval);
+    ops.calls.length = 0;
+    await assert.rejects(
+      () => recoverFailedFixture(value, ops, recoveryApproval),
+      /does not bind the durable approved start attempt/u,
+    );
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+    assert.equal(ops.lockHeld, true);
+  }
+});
+
+test("failed-start recovery never adopts inactive state without its exact reset intent", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  ops.netns = inactive(NETNS_UNIT);
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /inactive state without its durable reset-failed intent/u,
+  );
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.lockHeld, true);
+});
+
+test("failed-start recovery proves no PID1 job and no topology before reset", async () => {
+  for (const mutate of [
+    (ops) => { ops.jobAbsent = false; },
+    (ops) => { ops.networkAbsentOverride = false; },
+  ]) {
+    const value = fixture();
+    const ops = fakeOps(value);
+    ops.startStatus = 1;
+    await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+    const observedStartIntent = ops.states.get(
+      `${value.plan.transaction.state_directory}/05-start-intent.json`,
+    );
+    const recoveryApproval = failedRecoveryApproval(
+      value,
+      observedStartIntent,
+      ops.failedNetns,
+    );
+    mutate(ops);
+    ops.calls.length = 0;
+    await assert.rejects(
+      () => recoverFailedFixture(value, ops, recoveryApproval),
+      /pending publisher namespace systemd job|retained a publisher namespace nsfs path/u,
+    );
+    assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+    assert.equal(ops.lockHeld, true);
+  }
+});
+
+test("lost reset-failed response is completed from its durable intent without resetting twice", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  ops.resetFailedError = new Error("systemctl reset-failed response lost");
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /reset-failed outcome is unknown; shared lifecycle lock retained.*response lost/us,
+  );
+  assert.equal(ops.netns.active_state, "inactive");
+  assert.equal(ops.lockHeld, true);
+  assert.equal(
+    ops.calls.filter((call) => call[0] === "systemctl" && call[1] === "reset-failed").length,
+    1,
+  );
+  ops.resetFailedError = null;
+  ops.calls.length = 0;
+  const receipt = await recoverFailedFixture(value, ops, recoveryApproval);
+  assert.equal(receipt.outcome, "failed-start-recovered");
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.lockHeld, false);
+});
+
+test("nonzero reset-failed accepts a fresh exact approval after expiry without replacing intent", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  recoveryApproval.expires_at_utc = new Date((NOW + 1) * 1000)
+    .toISOString().replace(".000Z", "Z");
+  const firstApprovalSha256 = approvalDigest(recoveryApproval);
+  ops.resetFailedStatus = 1;
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /reset-failed outcome is unknown; shared lifecycle lock retained.*returned nonzero/us,
+  );
+  assert.equal(ops.netns.active_state, "failed");
+  assert.equal(ops.lockHeld, true);
+  assert.equal(
+    ops.states.has(`${value.plan.transaction.state_directory}/06-reset-failed-intent.json`),
+    true,
+  );
+  assert.equal(
+    [...ops.receipts.keys()].some((path) => path.endsWith(".failed-start-recovery.json")),
+    false,
+  );
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval, NOW + 2),
+    /not currently valid/u,
+  );
+  assert.equal(ops.lockHeld, true);
+  ops.resetFailedStatus = 0;
+  const freshApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  freshApproval.approved_at_utc = new Date((NOW + 1) * 1000)
+    .toISOString().replace(".000Z", "Z");
+  freshApproval.expires_at_utc = new Date((NOW + 302) * 1000)
+    .toISOString().replace(".000Z", "Z");
+  freshApproval.approved_by = "security-reviewer:fresh-failed-recovery-test-key-v1";
+  const freshApprovalSha256 = approvalDigest(freshApproval);
+  assert.notEqual(freshApprovalSha256, firstApprovalSha256);
+  const receipt = await recoverFailedFixture(value, ops, freshApproval, NOW + 2);
+  assert.equal(receipt.outcome, "failed-start-recovered");
+  assert.equal(receipt.reset_intent_approval_sha256, firstApprovalSha256);
+  assert.equal(receipt.approved_recovery_approval_sha256, freshApprovalSha256);
+  assert.equal(ops.lockHeld, false);
+});
+
+test("failed-start recovery receipt replay accepts a fresh exact approval and never resets again", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  const first = await recoverFailedFixture(value, ops, recoveryApproval);
+  const replayApproval = structuredClone(recoveryApproval);
+  replayApproval.approved_by = "security-reviewer:receipt-replay-test-key-v1";
+  assert.notEqual(approvalDigest(replayApproval), approvalDigest(recoveryApproval));
+  const terminalStatePath =
+    `${value.plan.transaction.state_directory}/07-failed-start-recovered.json`;
+  ops.states.delete(terminalStatePath);
+  ops.calls.length = 0;
+  const second = await recoverFailedFixture(value, ops, replayApproval);
+  assert.equal(canonicalJson(second), canonicalJson(first));
+  assert.equal(ops.states.has(terminalStatePath), true);
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.lockHeld, false);
+});
+
+test("failed-start recovery receipt replay requires its durable reset intent", async () => {
+  const value = fixture();
+  const ops = fakeOps(value);
+  ops.startStatus = 1;
+  await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
+  const observedStartIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    observedStartIntent,
+    ops.failedNetns,
+  );
+  await recoverFailedFixture(value, ops, recoveryApproval);
+  ops.states.delete(`${value.plan.transaction.state_directory}/06-reset-failed-intent.json`);
+  ops.calls.length = 0;
+  await assert.rejects(
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /no durable reset-failed intent/u,
+  );
+  assert.equal(ops.calls.some((call) => call[0] === "systemctl"), false);
+  assert.equal(ops.lockHeld, true);
+});
+
 test("a durable start intent and its retained lock prevent an implicit start retry", async () => {
   const value = fixture();
   const ops = fakeOps(value);
@@ -1324,12 +2075,13 @@ test("a durable start intent and its retained lock prevent an implicit start ret
   assert.equal(ops.receipts.size, 0);
 });
 
-test("recover-commit releases a failed-start lock only after exact inactive terminal proof", async () => {
+test("recover-commit releases a lost-start lock already in exact inactive terminal state", async () => {
   const value = fixture();
   const ops = fakeOps(value);
   ops.startStatus = 1;
   await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
   ops.startStatus = 0;
+  ops.netns = inactive(NETNS_UNIT);
   ops.calls.length = 0;
   await assert.rejects(
     () => applyFixture(value, ops, true),
@@ -1346,7 +2098,7 @@ test("recover-commit releases a failed-start lock only after exact inactive term
   assert.deepEqual(ops.calls.at(-1), ["unlock"]);
 });
 
-test("recover-commit retains the lock while a timed-out PID1 job remains pending", async () => {
+test("failed-start recovery retains the lock while a timed-out PID1 job remains pending", async () => {
   const value = fixture();
   const ops = fakeOps(value);
   ops.startError = new Error("systemctl start timed out");
@@ -1355,11 +2107,19 @@ test("recover-commit retains the lock while a timed-out PID1 job remains pending
     /start outcome is unknown; shared lifecycle lock retained.*timed out/us,
   );
   ops.startError = null;
+  const startIntent = ops.states.get(
+    `${value.plan.transaction.state_directory}/05-start-intent.json`,
+  );
+  const recoveryApproval = failedRecoveryApproval(
+    value,
+    startIntent,
+    ops.failedNetns,
+  );
   ops.jobAbsent = false;
   ops.calls.length = 0;
   await assert.rejects(
-    () => applyFixture(value, ops, true),
-    /start outcome is unknown; shared lifecycle lock retained.*pending .*systemd job/us,
+    () => recoverFailedFixture(value, ops, recoveryApproval),
+    /reset-failed outcome is unknown; shared lifecycle lock retained.*pending .*systemd job/us,
   );
   assert.equal(ops.lockHeld, true);
   assert.equal(ops.calls.some((call) => call[0] === "unlock"), false);
@@ -1411,6 +2171,7 @@ test("recover-commit retains the lock when late activation still has a PID1 job"
   ops.afterStart = () => { ops.netns = active(NETNS_UNIT, "d".repeat(32), "789"); };
   await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
   ops.startError = null;
+  ops.netns = inactive(NETNS_UNIT);
   ops.jobAbsent = false;
   ops.calls.length = 0;
   await assert.rejects(
@@ -1428,6 +2189,7 @@ test("recover-commit retains the lock when a timed-out start activates late", as
   ops.startError = new Error("systemctl start timed out");
   await assert.rejects(() => applyFixture(value, ops), /start outcome is unknown/u);
   ops.startError = null;
+  ops.netns = inactive(NETNS_UNIT);
   let absenceReads = 0;
   ops.beforeNetworkAbsent = () => {
     absenceReads += 1;
@@ -1728,6 +2490,395 @@ test("an installed input drift during stop prevents rollback receipt publication
   assert.equal(committed.ops.netns.active_state, "inactive");
   assert.equal(committed.ops.receipts.has(
     committed.value.plan.transaction.rollback_receipt_path), false);
+});
+
+const ROOT_LINUX_LOCK_TEST = process.platform === "linux" && process.geteuid?.() === 0;
+const DEAD_LOCK_OWNER = Object.freeze({
+  ownerBootId: "32345678-1234-4234-9234-123456789abc",
+  ownerPid: 999999,
+  ownerProcessStartTicks: "1",
+});
+
+test("Linux explicit recovery converges every mkdir-to-owner publication crash window", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, async () => {
+  for (const crashPoint of [
+    "after-lock-mkdir",
+    "after-lock-owner-pending-fsync",
+    "after-lock-owner-final-link",
+  ]) {
+    const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-create-crash-"));
+    const lock = join(parent, "lifecycle.lock");
+    const transactionId = `publisher-netns-apply:create-crash-${crashPoint}`;
+    let injected = false;
+    try {
+      assert.throws(
+        () => realFs.acquireLock(lock, {
+          recoverStale: false,
+          transactionId,
+        }, {
+          ...DEAD_LOCK_OWNER,
+          checkpoint(name) {
+            if (name === crashPoint) {
+              injected = true;
+              throw new Error(`injected lock crash at ${name}`);
+            }
+          },
+        }),
+        /injected lock crash/u,
+      );
+      assert.equal(injected, true);
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: false, transactionId }),
+        /EEXIST|file already exists/u,
+      );
+
+      const release = realFs.acquireLock(lock, { recoverStale: true, transactionId });
+      assert.deepEqual(readdirSync(lock), ["owner.json"]);
+      const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.transaction_id, transactionId);
+      await release();
+      assert.equal(existsSync(lock), false);
+    } finally {
+      rmSync(parent, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Linux explicit recovery reclaims an exact partial pending owner after SIGKILL", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, async () => {
+  const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-partial-sigkill-"));
+  const lock = join(parent, "lifecycle.lock");
+  const transactionId = "publisher-netns-apply:partial-sigkill";
+  try {
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `import { writeSync } from "node:fs";
+const { PUBLISHER_NETNS_CEREMONY_TEST_ONLY_IO: io } = await import(${JSON.stringify(CEREMONY_MODULE_URL)});
+io.acquireLock(process.argv[1], {
+  recoverStale: false,
+  transactionId: process.argv[2],
+}, {
+  lockOwnerWriter(fd, bytes, offset, remaining, position) {
+    const written = writeSync(fd, bytes, offset, Math.max(1, Math.floor(remaining / 2)), position);
+    process.kill(process.pid, "SIGKILL");
+    return written;
+  },
+});`,
+        lock,
+        transactionId,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(child.status, null, child.stderr);
+    assert.equal(child.signal, "SIGKILL");
+    assert.deepEqual(readdirSync(lock), ["owner.json.pending"]);
+    const partial = readFileSync(join(lock, "owner.json.pending"), "utf8");
+    assert.equal(partial.length > 0, true);
+    assert.equal(partial.endsWith("}"), false);
+
+    const release = realFs.acquireLock(lock, { recoverStale: true, transactionId });
+    assert.deepEqual(readdirSync(lock), ["owner.json"]);
+    const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+    assert.equal(owner.pid, process.pid);
+    assert.equal(owner.transaction_id, transactionId);
+    await release();
+    assert.equal(existsSync(lock), false);
+  } finally {
+    rmSync(parent, { force: true, recursive: true });
+  }
+});
+
+test("Linux malformed-pending recovery rejects deletion-adjacent generation drift", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, () => {
+  for (const [name, mutate, expectedEntries] of [
+    ["content", (lock) => {
+      writeFileSync(join(lock, "owner.json.pending"), '{"boot_id":"changed');
+    }, ["owner.json.pending"]],
+    ["inode", (lock) => {
+      rmSync(join(lock, "owner.json.pending"), { force: true });
+      writeFileSync(join(lock, "owner.json.pending"), '{"boot_id":', { mode: 0o400 });
+    }, ["owner.json.pending"]],
+    ["directory-entry", (lock) => {
+      writeFileSync(join(lock, "unexpected-entry"), "drift", { mode: 0o400 });
+    }, ["owner.json.pending", "unexpected-entry"]],
+  ]) {
+    const parent = mkdtempSync(join(tmpdir(), `bpir-publisher-lock-malformed-${name}-`));
+    const lock = join(parent, "lifecycle.lock");
+    const transactionId = `publisher-netns-apply:malformed-race-${name}`;
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(join(lock, "owner.json.pending"), '{"boot_id":', { mode: 0o400 });
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+          checkpoint(checkpoint) {
+            if (checkpoint === "before-malformed-pending-delete") mutate(lock);
+          },
+        }),
+        /descriptor generation changed|inode, ctime, metadata, or content changed|directory generation changed|entries changed|unknown shape/u,
+      );
+      assert.deepEqual(readdirSync(lock), expectedEntries);
+    } finally {
+      rmSync(parent, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Linux explicit recovery converges every stale-owner replacement crash window", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, async () => {
+  for (const crashPoint of [
+    "after-lock-replacement-pending-fsync",
+    "before-stale-owner-delete",
+    "after-lock-replacement-owner-unlink",
+    "after-lock-replacement-owner-link",
+  ]) {
+    const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-reclaim-crash-"));
+    const lock = join(parent, "lifecycle.lock");
+    const transactionId = `publisher-netns-apply:reclaim-crash-${crashPoint}`;
+    try {
+      realFs.acquireLock(lock, { recoverStale: false, transactionId }, DEAD_LOCK_OWNER);
+      let injected = false;
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+          ownerBootId: "42345678-1234-4234-9234-123456789abc",
+          ownerPid: 999998,
+          ownerProcessStartTicks: "2",
+          checkpoint(name) {
+            if (name === crashPoint) {
+              injected = true;
+              throw new Error(`injected stale replacement crash at ${name}`);
+            }
+          },
+        }),
+        /injected stale replacement crash/u,
+      );
+      assert.equal(injected, true);
+
+      const release = realFs.acquireLock(lock, { recoverStale: true, transactionId });
+      assert.deepEqual(readdirSync(lock), ["owner.json"]);
+      const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.transaction_id, transactionId);
+      await release();
+      assert.equal(existsSync(lock), false);
+    } finally {
+      rmSync(parent, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Linux stale reclaim revalidates the old descriptor generation and preserves a concurrent live lock", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, async () => {
+  const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-race-"));
+  const lock = join(parent, "lifecycle.lock");
+  const transactionId = "publisher-netns-apply:deterministic-race";
+  let concurrentRelease = null;
+  let raced = false;
+  try {
+    const staleRelease = realFs.acquireLock(
+      lock,
+      { recoverStale: false, transactionId },
+      DEAD_LOCK_OWNER,
+    );
+    assert.throws(
+      () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+        checkpoint(name) {
+          if (name === "after-stale-owner-validation" && !raced) {
+            raced = true;
+            concurrentRelease = realFs.acquireLock(lock, {
+              recoverStale: true,
+              transactionId,
+            });
+          }
+        },
+      }),
+      /descriptor generation changed|record generation changed|directory generation changed/u,
+    );
+    assert.equal(raced, true);
+    assert.equal(typeof concurrentRelease, "function");
+    assert.deepEqual(readdirSync(lock), ["owner.json"]);
+    const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+    assert.equal(owner.pid, process.pid);
+    assert.equal(owner.transaction_id, transactionId);
+    await assert.rejects(
+      () => staleRelease(),
+      /transaction lock ownership changed/u,
+    );
+    assert.deepEqual(readdirSync(lock), ["owner.json"]);
+    await concurrentRelease();
+    assert.equal(existsSync(lock), false);
+  } finally {
+    rmSync(parent, { force: true, recursive: true });
+  }
+});
+
+test("Linux crashed replacement normalization never deletes a concurrent completed live owner", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, async () => {
+  for (const [crashPoint, racePoint] of [
+    [
+      "after-lock-replacement-pending-fsync",
+      "before-stale-replacement-pending-delete",
+    ],
+    [
+      "after-lock-replacement-owner-link",
+      "before-stale-linked-pending-delete",
+    ],
+  ]) {
+    const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-normalize-race-"));
+    const lock = join(parent, "lifecycle.lock");
+    const transactionId = `publisher-netns-apply:normalize-race-${crashPoint}`;
+    let concurrentRelease = null;
+    let raced = false;
+    try {
+      realFs.acquireLock(lock, { recoverStale: false, transactionId }, DEAD_LOCK_OWNER);
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+          ownerBootId: "42345678-1234-4234-9234-123456789abc",
+          ownerPid: 999998,
+          ownerProcessStartTicks: "2",
+          checkpoint(name) {
+            if (name === crashPoint) throw new Error(`injected normalize state at ${name}`);
+          },
+        }),
+        /injected normalize state/u,
+      );
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+          checkpoint(name) {
+            if (name === racePoint && !raced) {
+              raced = true;
+              concurrentRelease = realFs.acquireLock(lock, {
+                recoverStale: true,
+                transactionId,
+              });
+            }
+          },
+        }),
+        /descriptor generation changed|record generation changed|directory generation changed|entries changed/u,
+      );
+      assert.equal(raced, true);
+      assert.equal(typeof concurrentRelease, "function");
+      assert.deepEqual(readdirSync(lock), ["owner.json"]);
+      const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.transaction_id, transactionId);
+      await concurrentRelease();
+      assert.equal(existsSync(lock), false);
+    } finally {
+      rmSync(parent, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Linux stale reclaim detects deletion-adjacent content, ctime, and directory-generation drift", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, () => {
+  for (const [name, mutate, expectedEntries] of [
+    ["owner-content", (lock) => {
+      const changed = {
+        boot_id: DEAD_LOCK_OWNER.ownerBootId,
+        pid: DEAD_LOCK_OWNER.ownerPid,
+        process_start_ticks: "2",
+        transaction_id: "publisher-netns-apply:deletion-adjacent-owner-content",
+      };
+      writeFileSync(join(lock, "owner.json"), canonicalJson(changed));
+    }, ["owner.json"]],
+    ["directory-entry", (lock) => {
+      writeFileSync(join(lock, "unexpected-entry"), "drift", { mode: 0o400 });
+    }, ["owner.json", "unexpected-entry"]],
+  ]) {
+    const parent = mkdtempSync(join(tmpdir(), `bpir-publisher-lock-${name}-`));
+    const lock = join(parent, "lifecycle.lock");
+    const transactionId = `publisher-netns-apply:deletion-adjacent-${name}`;
+    try {
+      realFs.acquireLock(lock, { recoverStale: false, transactionId }, DEAD_LOCK_OWNER);
+      assert.throws(
+        () => realFs.acquireLock(lock, { recoverStale: true, transactionId }, {
+          checkpoint(checkpoint) {
+            if (checkpoint === "before-stale-owner-delete") mutate(lock);
+          },
+        }),
+        /descriptor generation changed|inode, ctime, metadata, or content changed|directory generation changed|entries changed|unknown shape/u,
+      );
+      assert.deepEqual(readdirSync(lock), expectedEntries);
+      assert.equal(existsSync(join(lock, "owner.json.pending")), false);
+    } finally {
+      rmSync(parent, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Linux recovery refuses a live pending-only owner publication", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, () => {
+  const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-live-pending-"));
+  const lock = join(parent, "lifecycle.lock");
+  const transactionId = "publisher-netns-apply:live-pending";
+  try {
+    assert.throws(
+      () => realFs.acquireLock(lock, { recoverStale: false, transactionId }, {
+        checkpoint(name) {
+          if (name === "after-lock-owner-pending-fsync") {
+            throw new Error("injected live pending crash");
+          }
+        },
+      }),
+      /injected live pending crash/u,
+    );
+    assert.deepEqual(readdirSync(lock), ["owner.json.pending"]);
+    assert.throws(
+      () => realFs.acquireLock(lock, { recoverStale: true, transactionId }),
+      /publication is held by a live process generation/u,
+    );
+    assert.deepEqual(readdirSync(lock), ["owner.json.pending"]);
+  } finally {
+    rmSync(parent, { force: true, recursive: true });
+  }
+});
+
+test("Linux recovery never adopts a pending owner from another transaction", {
+  skip: !ROOT_LINUX_LOCK_TEST,
+}, () => {
+  const parent = mkdtempSync(join(tmpdir(), "bpir-publisher-lock-foreign-pending-"));
+  const lock = join(parent, "lifecycle.lock");
+  const originalTransaction = "publisher-netns-apply:original-pending";
+  try {
+    assert.throws(
+      () => realFs.acquireLock(lock, {
+        recoverStale: false,
+        transactionId: originalTransaction,
+      }, {
+        ...DEAD_LOCK_OWNER,
+        checkpoint(name) {
+          if (name === "after-lock-owner-pending-fsync") {
+            throw new Error("injected foreign pending crash");
+          }
+        },
+      }),
+      /injected foreign pending crash/u,
+    );
+    const before = readFileSync(join(lock, "owner.json.pending"));
+    assert.throws(
+      () => realFs.acquireLock(lock, {
+        recoverStale: true,
+        transactionId: "publisher-netns-rollback:foreign-pending",
+      }),
+      /different transaction/u,
+    );
+    assert.deepEqual(readdirSync(lock), ["owner.json.pending"]);
+    assert.equal(readFileSync(join(lock, "owner.json.pending")).equals(before), true);
+  } finally {
+    rmSync(parent, { force: true, recursive: true });
+  }
 });
 
 test("Linux executes the exact descriptor-approved command inode and rejects a pin drift", {

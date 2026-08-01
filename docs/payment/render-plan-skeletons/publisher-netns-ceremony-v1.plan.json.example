@@ -303,6 +303,102 @@
     "pt_interp": false,
     "sha256": "INVALID_REPLACE_WITH_LAUNCHER_SHA256"
   },
+  "node_elf_closure": {
+    "activation_state": "descriptor-pinned-loader-recursive-needed-closure-and-double-maps-sampling",
+    "architecture": "elf64-le-x86_64",
+    "interpreter_soname": "ld-linux-x86-64.so.2",
+    "kind": "bitcoinpir-payment-v1-publisher-node-elf-closure-v1",
+    "node_needed": [
+      "ld-linux-x86-64.so.2",
+      "libc.so.6",
+      "libdl.so.2",
+      "libgcc_s.so.1",
+      "libm.so.6",
+      "libpthread.so.0",
+      "libstdc++.so.6"
+    ],
+    "objects": [
+      {
+        "needed": [],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0755",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "ld-linux-x86-64.so.2"
+      },
+      {
+        "needed": ["ld-linux-x86-64.so.2"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0755",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libc.so.6"
+      },
+      {
+        "needed": ["libc.so.6"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0644",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libdl.so.2"
+      },
+      {
+        "needed": ["ld-linux-x86-64.so.2", "libc.so.6"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0644",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libgcc_s.so.1"
+      },
+      {
+        "needed": ["ld-linux-x86-64.so.2", "libc.so.6"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0644",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libm.so.6"
+      },
+      {
+        "needed": ["libc.so.6"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0644",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libpthread.so.0"
+      },
+      {
+        "needed": ["ld-linux-x86-64.so.2", "libc.so.6", "libgcc_s.so.1", "libm.so.6"],
+        "pin": {
+          "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS", "device": "INVALID_REPLACE_WITH_DEVICE",
+          "gid": 0, "inode": "INVALID_REPLACE_WITH_INODE", "mode": "0644",
+          "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS", "nlink": 1,
+          "path": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6",
+          "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256", "size": "INVALID_REPLACE_WITH_SIZE", "uid": 0
+        },
+        "soname": "libstdc++.so.6"
+      }
+    ],
+    "pt_interp": "/lib64/ld-linux-x86-64.so.2",
+    "schema_version": 1
+  },
   "preimage": {
     "host_interface": "absent",
     "loaded_netns_unit": {
@@ -403,6 +499,17 @@
         "timeout_stop_usec": "30s",
         "type": "notify",
         "umask": "0077",
+        "unset_environment": [
+          "BASH_ENV",
+          "ENV",
+          "GLIBC_TUNABLES",
+          "LD_AUDIT",
+          "LD_LIBRARY_PATH",
+          "LD_PRELOAD",
+          "NODE_EXTRA_CA_CERTS",
+          "NODE_OPTIONS",
+          "NODE_PATH"
+        ],
         "user": "root",
         "working_directory": "/var/lib/bitcoinpir-publisher-netns"
       }
@@ -449,6 +556,19 @@
       "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
       "nlink": 1,
       "path": "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs",
+      "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "health_probe": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0555",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs",
       "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
@@ -515,6 +635,19 @@
       "nlink": 1,
       "path": "/usr/bin/node",
       "sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "size": "INVALID_REPLACE_WITH_SIZE",
+      "uid": 0
+    },
+    "node_loader_closure_manifest": {
+      "ctime_ns": "INVALID_REPLACE_WITH_CTIME_NS",
+      "device": "INVALID_REPLACE_WITH_DEVICE",
+      "gid": 0,
+      "inode": "INVALID_REPLACE_WITH_INODE",
+      "mode": "0444",
+      "mtime_ns": "INVALID_REPLACE_WITH_MTIME_NS",
+      "nlink": 1,
+      "path": "/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256",
+      "sha256": "INVALID_REPLACE_WITH_NODE_LOADER_CLOSURE_MANIFEST_SHA256",
       "size": "INVALID_REPLACE_WITH_SIZE",
       "uid": 0
     },

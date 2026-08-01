@@ -152,7 +152,9 @@
       "uid": 0
     }
   ],
-  "schema_version": 1,
+  "relay_selection_sha256": "688779adb6e1d0f8f84f178da5fdc50b6a05de97845eb21dff1cb746c9ecd7c2",
+  "schema_version": 2,
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)",
   "service_identities": [
     {
       "gid": 52903,

@@ -167,6 +167,7 @@ class MockOverlayOps {
     this.adminBodySha256AfterHealth = null;
     this.adminProbeApiCalls = 0;
     this.healthCalls = 0;
+    this.healthBoundaries = [];
     this.adaptedJson = clone(TEST_OVERLAY_ADAPTED_JSON);
     this.effectiveUnit = testCaddyEffectiveUnit(plan);
     this.processRuntime = testCaddyProcessRuntime(plan);
@@ -337,8 +338,12 @@ class MockOverlayOps {
     }
   }
 
-  async health(check) {
+  async health(check, privateBoundary) {
     this.healthCalls += 1;
+    this.healthBoundaries.push({
+      boundary: privateBoundary === undefined ? null : clone(privateBoundary),
+      lane: check.lane,
+    });
     if (check.lane === this.failHealthLane) throw new Error(`mock health failed: ${check.lane}`);
     return {
       body_sha256: check.expected_body_sha256,
@@ -769,6 +774,32 @@ test("transaction commits only after verified exchange, health and durable recei
   assert.equal(ops.state.has(OVERLAY_STATE_FILES.committed), true);
   assert.equal(ops.reloadCalls, 1);
   assert.equal(ops.releaseCalls, 1);
+  assert.deepEqual(
+    ops.healthBoundaries.map(({ boundary, lane }) => ({
+      lane,
+      namespace: boundary === null
+        ? "host"
+        : `${boundary.namespace_device}:${boundary.namespace_inode}`,
+    })),
+    [
+      { lane: "directory-public", namespace: "host" },
+      {
+        lane: "directory-publisher",
+        namespace:
+          `${plan.target.publisher_netns_ceremony.namespace_device}:` +
+          plan.target.publisher_netns_ceremony.namespace_inode,
+      },
+      { lane: "issuer", namespace: "host" },
+      { lane: "provider", namespace: "host" },
+    ],
+  );
+  const publisherBoundary = ops.healthBoundaries[1].boundary;
+  const ceremony = JSON.parse(testPublisherNetnsPlanBytes(plan).toString("utf8"));
+  assert.deepEqual(publisherBoundary.launcher, ceremony.runtime.launcher);
+  assert.equal(
+    publisherBoundary.launcher_manifest_sha256,
+    ceremony.runtime.launcher_manifest.sha256,
+  );
   assert.equal(ops.adminProbeApiCalls, 12, "four fresh runtime collections probe root and both service UIDs");
 });
 

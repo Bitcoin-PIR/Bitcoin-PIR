@@ -35,6 +35,7 @@ import {
   NSS_ENUMERATION_KIND,
   PROTECTED_PROCESS_ENUMERATION_KIND,
   collectInstalledFileForTestV1,
+  computePublisherArtifactEventSetForTestV1,
   confirmInstalledFileAcrossCollectionsForTestV1,
   confirmDescriptorBoundCommandPinsForTestV1,
   collectSecretParentDirectoryForTestV1,
@@ -69,6 +70,8 @@ import {
   validateStoppedRelayPreparationEvidence,
 } from "./payment-v1-linux-runtime-evidence.mjs";
 import {
+  canonicalJson,
+  computeDirectoryPublishArgvSha256V1,
   REVIEWED_SYSTEMD_MANAGER_VERSION,
   REVIEWED_SYSTEMD_VERSION,
   RUNTIME_BUSCTL_MANAGER_PROPERTIES,
@@ -977,34 +980,51 @@ test("live collector seals expensive secrets before its final Conditions and gen
 
   const finalStatePass = source.slice(finalStateMarker, finishedMarker);
   assert.match(finalStatePass, /collectEffectiveCredentialProperties\(/);
-  assert.match(finalStatePass, /collectPublisherNetworkRuntimeEvidence\(request\)/);
-  assert.ok(
-    finalStatePass.indexOf("collectPublisherNetworkRuntimeEvidence(request)") <
-      finalStatePass.indexOf("collectEffectiveConditions(request.units[index].unit_name)"),
-    "publisher network probes must finish before final Conditions/generation sealing",
-  );
+  assert.match(finalStatePass, /collectPublisherNetworkRuntimeEvidence\(/);
+  assert.match(finalStatePass, /publicationUnit\?\.properties\.InvocationID/);
+  assert.match(finalStatePass, /confirmAllInstalledFilesUnchanged\(/);
   assert.match(finalStatePass, /collectEffectiveConditions\(/);
   assert.match(finalStatePass, /collectEffectiveUnitDependenciesV1\(/);
   assert.match(finalStatePass, /collectEffectiveServicePropertiesV1\(/);
   assert.match(finalStatePass, /assertEffectiveSystemdPolicySnapshotUnchangedV1\(/);
   assert.match(finalStatePass, /confirmUnitGeneration\(/);
-  assert.match(finalStatePass, /sealPublisherNamespaceOwnerRuntimeEvidence\(publisherNetwork\)/);
+  assert.match(finalStatePass, /sealPublisherNamespaceOwnerRuntimeEvidence\(/);
+  assert.match(finalStatePass, /crossSealPublisherPublicationAfterInstalledFilesV1\(/);
   assert.match(finalStatePass, /finishTrustedCommandSession\(trustedCommands\)/);
+  const networkIndex = finalStatePass.indexOf("collectPublisherNetworkRuntimeEvidence(");
+  const requestedUnitIndex = finalStatePass.indexOf(
+    "confirmUnitGeneration(request.units[index]",
+  );
+  const publisherSealIndex = finalStatePass.indexOf(
+    "sealPublisherNamespaceOwnerRuntimeEvidence(",
+  );
+  const installedFileSealIndex = finalStatePass.indexOf(
+    "confirmAllInstalledFilesUnchanged(",
+  );
+  const publicationCrossSealIndex = finalStatePass.indexOf(
+    "crossSealPublisherPublicationAfterInstalledFilesV1(",
+  );
   assert.ok(
-    finalStatePass.indexOf("confirmUnitGeneration(request.units[index]") <
-      finalStatePass.indexOf("sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork)"),
+    networkIndex < requestedUnitIndex &&
+      requestedUnitIndex < publisherSealIndex &&
+      publisherSealIndex < installedFileSealIndex &&
+      installedFileSealIndex < publicationCrossSealIndex,
+    "receipt, unit, receipt, installed-file, and unit/receipt seals must be strictly ordered",
+  );
+  assert.ok(
+    requestedUnitIndex < publisherSealIndex,
     "auxiliary namespace owner must be sealed after the final requested-unit pass",
   );
   assert.ok(
-    finalStatePass.indexOf("sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork)") <
+    publicationCrossSealIndex <
       finalStatePass.indexOf("finishTrustedCommandSession(trustedCommands)"),
-    "all external command pins must be rechecked after publisher/Caddy final sealing",
+    "all external command pins must be rechecked after post-file publication cross-sealing",
   );
   const afterFinalUnitSeal = source.slice(finalUnitMarker, finishedMarker);
   assert.doesNotMatch(
     afterFinalUnitSeal,
-    /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectExtendedMetadata|collectInstalledFile/,
-    "expensive secret or metadata probes must not run after final Conditions/generation sealing",
+    /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectExtendedMetadata/,
+    "secret and unbounded metadata probes must not run after final Conditions/generation sealing",
   );
   assert.doesNotMatch(
     afterFinalUnitSeal,
@@ -1017,6 +1037,12 @@ test("live collector seals expensive secrets before its final Conditions and gen
   );
   assert.match(publisherSeal, /collectPublisherCaddyConfigGeneration\(\)/);
   assert.match(publisherSeal, /collectPublisherCaddyUnitGeneration\(\)/);
+  const publicationCrossSeal = source.slice(
+    source.indexOf("function crossSealPublisherPublicationAfterInstalledFilesV1("),
+    source.indexOf("function validatePublisherNamespaceOwnerEvidence("),
+  );
+  assert.match(publicationCrossSeal, /confirmUnitGeneration\(/);
+  assert.match(publicationCrossSeal, /collectPublisherPublicationReceiptPassV1\(/);
 });
 
 test("stopped edge and relay collectors put only the final unit seal after long probes", () => {
@@ -1059,6 +1085,60 @@ test("stopped edge and relay collectors put only the final unit seal after long 
     finalStatePass,
     /collectLockedServiceAccountPolicy|confirmCompleteNssSnapshotUnchanged|readHostBinding|confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectSecretAccessChecks|collectInstalledFile/,
     "no long host, private-loader or metadata probe may run after final Conditions/stopped-state sealing",
+  );
+});
+
+test("publisher runtime recomputes the Rust event-set digest from two entries and one checkpoint bundle", () => {
+  const event = (index) => [
+    "EVENT",
+    {
+      content: "",
+      created_at: 2_000,
+      id: index.toString(16).padStart(64, "0"),
+      kind: 30_078,
+      pubkey: "ab".repeat(32),
+      sig: (index + 32).toString(16).padStart(2, "0").repeat(64),
+      tags: [],
+    },
+  ];
+  const messages = Array.from({ length: 18 }, (_, index) => event(index + 1));
+  const encode = (value) => Buffer.from(JSON.stringify(value));
+  const artifacts = [
+    encode(messages[0]),
+    encode(messages[1]),
+    encode(messages.slice(2)),
+  ];
+  assert.deepEqual(computePublisherArtifactEventSetForTestV1(artifacts), {
+    event_count: 18,
+    event_set_digest_hex:
+      "679c55bb35ebba04b91dd9f8f84ac716111c490128c5f5af3b26ef1f31f89d9f",
+  });
+  assert.deepEqual(
+    computePublisherArtifactEventSetForTestV1([
+      artifacts[2],
+      artifacts[1],
+      artifacts[0],
+    ]),
+    computePublisherArtifactEventSetForTestV1(artifacts),
+  );
+
+  const duplicate = messages.map((message) => clone(message));
+  duplicate[17][1].id = duplicate[16][1].id;
+  assert.throws(
+    () => computePublisherArtifactEventSetForTestV1([
+      encode(duplicate[0]),
+      encode(duplicate[1]),
+      encode(duplicate.slice(2)),
+    ]),
+    /duplicate Nostr event id/u,
+  );
+  assert.throws(
+    () => computePublisherArtifactEventSetForTestV1([
+      artifacts[0],
+      artifacts[1],
+      encode(messages.slice(2, 17)),
+    ]),
+    /not one EVENT or one exact 16-EVENT bundle/u,
   );
 });
 
@@ -1210,7 +1290,7 @@ function fixture() {
       uid: 730,
     }],
     busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
-    schema_version: 8,
+    schema_version: 9,
     secret_files: [],
     service_identities: [{
       gid: 731,
@@ -1264,6 +1344,7 @@ function fixture() {
     MemoryMax: "268435456",
     MemorySwapCurrent: "0",
     MemorySwapMax: "0",
+    NeedDaemonReload: "no",
     NetworkNamespacePath: "",
     NoNewPrivileges: "yes",
     NotifyAccess: "none",
@@ -1293,6 +1374,8 @@ function fixture() {
     RootImage: "",
     StandardError: "null",
     StandardOutput: "null",
+    StateDirectory: "",
+    StateDirectoryMode: "0755",
     SubState: "running",
     SupplementaryGroups: "bitcoinpir-shared",
     SystemCallArchitectures: "native",
@@ -1460,7 +1543,7 @@ function fixture() {
       uid: 730,
       xattr_sha256: hash("socket-xattr"),
     }],
-    schema_version: 8,
+    schema_version: 9,
     secret_access_checks: [],
     secret_parent_directories: [],
     systemd_analyze_verify: {
@@ -1524,6 +1607,103 @@ function fixture() {
     }],
   };
   return { boot, evidence, machine, request };
+}
+
+function completedPublisherOneshotFixture() {
+  const value = fixture();
+  const network = publisherNetworkFixture();
+  const unit = value.request.units[0];
+  const actual = value.evidence.units[0];
+  const fragmentPath =
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service";
+  const unitName = "bitcoinpir-payment-v1-directory-publisher.service";
+
+  unit.unit_name = unitName;
+  unit.fragment_path = fragmentPath;
+  unit.exec_start = clone(network.request.units[0].exec_start);
+  unit.exec_start_ex = clone(network.request.units[0].exec_start_ex);
+  unit.hardening.Type = ["oneshot"];
+  unit.hardening.RemainAfterExit = ["true"];
+  unit.hardening.StateDirectory = ["bitcoinpir-directory-publication"];
+  unit.hardening.StateDirectoryMode = ["0700"];
+  unit.hardening.ReadWritePaths = [
+    "/var/lib/bitcoinpir-directory-publication",
+  ];
+  value.request.service_identities[0].unit_name = unitName;
+  value.request.deployment_profile = "directory-publisher-netns-v1";
+  value.request.publisher_network = clone(network.request.publisher_network);
+  value.evidence.publisher_network = clone(network.evidence);
+  value.request.systemd_analyze_argv = [
+    "/usr/bin/systemd-analyze",
+    "verify",
+    fragmentPath,
+  ];
+  value.request.installed_files[0].target_path = fragmentPath;
+  value.evidence.installed_files[0].target_path = fragmentPath;
+
+  Object.assign(actual.properties, {
+    BindReadOnlyPaths: [
+      "/etc/netns/bpir-directory-publisher/hosts:/etc/hosts",
+      "/etc/netns/bpir-directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
+      "/etc/netns/bpir-directory-publisher/resolv.conf:/etc/resolv.conf",
+    ].join(" "),
+    ControlGroup: "",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    ExecStart: execValue(unit.exec_start[0], {
+      pid: "4242",
+      state: "completed",
+    }),
+    FragmentPath: fragmentPath,
+    MainPID: "0",
+    NeedDaemonReload: "no",
+    ReadWritePaths: "/var/lib/bitcoinpir-directory-publication",
+    RemainAfterExit: "yes",
+    Result: "success",
+    SubState: "exited",
+    StateDirectory: "bitcoinpir-directory-publication",
+    StateDirectoryMode: "0700",
+    Type: "oneshot",
+  });
+  actual.process_identity = null;
+  actual.unit_name = unitName;
+  for (const pass of actual.service_property_passes) {
+    pass.properties.ExecStartEx = clone(unit.exec_start_ex);
+  }
+  for (const confirmation of actual.generation_confirmations) {
+    confirmation.control_group = "";
+    confirmation.main_pid = "0";
+  }
+  actual.generation_confirmations.push(
+    clone(actual.generation_confirmations.at(-1)),
+  );
+  for (const pass of value.evidence.protected_process_closure.passes) {
+    pass.holders = [];
+  }
+  value.evidence.systemd_analyze_verify.argv = value.request.systemd_analyze_argv;
+  for (const [index, expected] of network.request.installed_files.entries()) {
+    value.request.installed_files.push(clone(expected));
+    value.evidence.installed_files.push({
+      ...clone(value.evidence.installed_files[0]),
+      ...clone(expected),
+      ino: String(900 + index),
+      sha256_command_sha256: hash(`publisher-owner-sha-command-${index}`),
+      stat_command_sha256: hash(`publisher-owner-stat-${index}`),
+    });
+  }
+  for (const [index, path] of [
+    "/usr/bin/python3.12",
+    "/usr/sbin/nft",
+    "/usr/sbin/ufw",
+  ].entries()) {
+    value.evidence.trusted_commands.push({
+      ...clone(value.evidence.trusted_commands[0]),
+      ino: String(20_000 + index),
+      path,
+      sha256: hash(`publisher-command-${index}`),
+    });
+  }
+  return value;
 }
 
 function stoppedEdgeFixture() {
@@ -2077,6 +2257,8 @@ function resolvedLiveRelayFixture() {
     ReadWritePaths: "/var/lib/bitcoinpir-directory-relay",
     Restart: "on-failure",
     RestrictAddressFamilies: "AF_INET AF_INET6 AF_UNIX",
+    StateDirectory: "bitcoinpir-directory-relay",
+    StateDirectoryMode: "0700",
     SupplementaryGroups: "",
     User: "bitcoinpir-directory-relay",
     WorkingDirectory: "/var/lib/bitcoinpir-directory-relay",
@@ -2251,6 +2433,73 @@ function publisherNetworkFixture() {
   const helperPath =
     `/opt/bitcoinpir/publisher-netns/${helperSha256}/payment-v1-publisher-netns`;
   const fragmentSha256 = hash("publisher-namespace-owner-fragment");
+  const publicationInvocationId = "a".repeat(32);
+  const publicationManifestPath =
+    "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256";
+  const publicationArtifactPins = [
+    ["checkpoints.json", hash("publisher-checkpoints")],
+    ["provider-0.event.json", hash("publisher-provider-0")],
+    ["provider-1.event.json", hash("publisher-provider-1")],
+  ].map(([name, sha256]) => ({
+    path: `/var/lib/bitcoinpir-directory-publisher/artifacts/${name}`,
+    sha256,
+  }));
+  const publisherAdmin = `/opt/bitcoinpir/bpir-admin/${hash("publisher-admin")}/bpir-admin`;
+  const publicationArgv = [
+    publisherAdmin,
+    "directory-artifact",
+    "publish",
+    ...publicationArtifactPins.flatMap((pin) => ["--artifact", pin.path]),
+    "--artifact-manifest",
+    publicationManifestPath,
+    "--receipt-directory",
+    "/var/lib/bitcoinpir-directory-publication",
+    "--relay",
+    "wss://publisher.internal.example",
+    "--centralized-single-relay",
+    "--directory-pubkey-hex",
+    "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    "--now-unix",
+    "2000",
+    "--relay-timeout-seconds",
+    "60",
+  ];
+  const publicationUnit = {
+    exec_start: [publicationArgv.join(" ")],
+    exec_start_ex: [{ argv: publicationArgv, flags: [], path: publisherAdmin }],
+    unit_name: "bitcoinpir-payment-v1-directory-publisher.service",
+  };
+  const publicationIdentity = {
+    gid: 731,
+    group_name: "bitcoinpir-directory-publisher",
+    uid: 730,
+    unit_name: publicationUnit.unit_name,
+    user_name: "bitcoinpir-directory-publisher",
+  };
+  const publicationManifestSha256 = hash("publisher-artifact-manifest");
+  const publicationReceiptRequest = {
+    artifact_manifest: {
+      path: publicationManifestPath,
+      sha256: publicationManifestSha256,
+    },
+    artifacts: publicationArtifactPins,
+    argv: publicationArgv,
+    argv_sha256: computeDirectoryPublishArgvSha256V1(publicationArgv),
+    directory_mode: "centralized-single-relay",
+    file: {
+      directory: "/var/lib/bitcoinpir-directory-publication",
+      filename_suffix: ".json",
+      gid: publicationIdentity.gid,
+      mode: "0600",
+      nlink: 1,
+      uid: publicationIdentity.uid,
+    },
+    kind: "bitcoinpir-directory-publication-receipt-v1",
+    publisher_pubkey_hex:
+      "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c",
+    relay_origins: ["wss://publisher.internal.example"],
+    schema_version: 1,
+  };
   const request = {
     caddy_drop_in_path:
       "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
@@ -2278,6 +2527,7 @@ function publisherNetworkFixture() {
     },
     namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
     network_policy_sha256: hash("publisher-network-policy"),
+    publication_receipt: publicationReceiptRequest,
     publication_mode: {
       centralized: true,
       degraded: true,
@@ -2310,6 +2560,24 @@ function publisherNetworkFixture() {
       target_path: helperPath,
       uid: 0,
     },
+    {
+      file_type: "regular",
+      gid: 0,
+      mode: "0444",
+      nlink: 1,
+      sha256: publicationManifestSha256,
+      target_path: publicationManifestPath,
+      uid: 0,
+    },
+    ...publicationArtifactPins.map((pin) => ({
+      file_type: "regular",
+      gid: 0,
+      mode: "0444",
+      nlink: 1,
+      sha256: pin.sha256,
+      target_path: pin.path,
+      uid: 0,
+    })),
   ];
   const ownerConditions = [
     "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2380,6 +2648,8 @@ function publisherNetworkFixture() {
     TimeoutStopUSec: "30s",
     Type: "notify",
     UMask: "0077",
+    UnsetEnvironment:
+      "BASH_ENV ENV GLIBC_TUNABLES LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD NODE_EXTRA_CA_CERTS NODE_OPTIONS NODE_PATH",
     User: "root",
     WorkingDirectory: "/var/lib/bitcoinpir-publisher-netns",
   };
@@ -2552,6 +2822,7 @@ function publisherNetworkFixture() {
   const evidence = {
     boundary_confirmations: [clone(boundary), clone(boundary)],
     firewall_passes: [clone(firewallPass), clone(firewallPass)],
+    publication_receipt_passes: [],
     ufw_dry_run_reload: {
       argv: ["/usr/sbin/ufw", "--dry-run", "reload"],
       exit_status: 0,
@@ -2559,11 +2830,81 @@ function publisherNetworkFixture() {
       stdout_sha256: hash("publisher-ufw-dry-run"),
     },
   };
+  const publicationReceipt = {
+    artifact_manifest: clone(publicationReceiptRequest.artifact_manifest),
+    artifacts: clone(publicationReceiptRequest.artifacts),
+    argv: clone(publicationReceiptRequest.argv),
+    argv_sha256: publicationReceiptRequest.argv_sha256,
+    directory_mode: publicationReceiptRequest.directory_mode,
+    event_count: 18,
+    event_set_digest_hex: hash("publisher-event-set"),
+    invocation_id: publicationInvocationId,
+    kind: publicationReceiptRequest.kind,
+    outcome: "published",
+    publisher_pubkey_hex: publicationReceiptRequest.publisher_pubkey_hex,
+    relay_origins: clone(publicationReceiptRequest.relay_origins),
+    schema_version: 1,
+  };
+  const parentDirectory = {
+    acl_sha256: hash("publisher-receipt-parent-acl"),
+    capability_sha256: hash(""),
+    dev: "21",
+    expected_type: "directory",
+    file_type: "directory",
+    gid: publicationIdentity.gid,
+    ino: "91001",
+    mode: "0700",
+    nlink: 2,
+    size: 4096,
+    stat_command_sha256: hash("publisher-receipt-parent-stat"),
+    target_path: "/var/lib/bitcoinpir-directory-publication",
+    uid: publicationIdentity.uid,
+    xattr_sha256: hash(""),
+  };
+  const parentFingerprint = {
+    ctime_ns: "1800000000000000000",
+    dev: parentDirectory.dev,
+    gid: String(parentDirectory.gid),
+    ino: parentDirectory.ino,
+    mode: parentDirectory.mode,
+    mtime_ns: "1799999999000000000",
+    nlink: String(parentDirectory.nlink),
+    size: String(parentDirectory.size),
+    uid: String(parentDirectory.uid),
+  };
+  const publicationReceiptPass = {
+    ctime_ns: "1800000001000000000",
+    current_event_set: {
+      event_count: publicationReceipt.event_count,
+      event_set_digest_hex: publicationReceipt.event_set_digest_hex,
+    },
+    dev: "21",
+    gid: publicationIdentity.gid,
+    ino: "91002",
+    mode: "0600",
+    mtime_ns: "1800000000000000000",
+    nlink: 1,
+    parent_directory: parentDirectory,
+    parent_fingerprint: parentFingerprint,
+    path:
+      `${publicationReceiptRequest.file.directory}/${publicationInvocationId}` +
+      publicationReceiptRequest.file.filename_suffix,
+    receipt: publicationReceipt,
+    sha256: hash(canonicalJson(publicationReceipt)),
+    size: Buffer.byteLength(canonicalJson(publicationReceipt)),
+    uid: publicationIdentity.uid,
+  };
+  evidence.publication_receipt_passes = Array.from(
+    { length: 4 },
+    () => clone(publicationReceiptPass),
+  );
   return {
     evidence,
     request: {
       installed_files: installedFiles,
       publisher_network: request,
+      service_identities: [publicationIdentity],
+      units: [publicationUnit],
     },
   };
 }
@@ -2726,6 +3067,10 @@ test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way C
     ["effective drop-in", (candidate) => mutatePublisherOwners(candidate, (owner) => {
       owner.effective_properties.DropInPaths = "/etc/systemd/system/unsafe.conf";
     }), /DropInPaths drifted/u],
+    ["effective environment-removal mutation", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      owner.effective_properties.UnsetEnvironment =
+        "BASH_ENV ENV LD_PRELOAD NODE_OPTIONS";
+    }), /UnsetEnvironment drifted/u],
     ["daemon reload pending", (candidate) => mutatePublisherOwners(candidate, (owner) => {
       owner.effective_properties.NeedDaemonReload = "yes";
       for (const confirmation of owner.generation_confirmations) {
@@ -2780,6 +3125,22 @@ test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way C
       label,
     );
   }
+});
+
+test("publisher receipt rejects artifact generation A after current pins advance to B", () => {
+  const value = publisherNetworkFixture();
+  const oldPin = value.request.publisher_network.publication_receipt.artifacts[0];
+  const replacement = hash("publisher-artifact-generation-b");
+  assert.notEqual(oldPin.sha256, replacement);
+  oldPin.sha256 = replacement;
+  const installed = value.request.installed_files.find(
+    (file) => file.target_path === oldPin.path,
+  );
+  installed.sha256 = replacement;
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(value.evidence, value.request),
+    /does not bind the current publication artifacts generation/u,
+  );
 });
 
 function testProbeArgv({ gid, groups, uid }, targetPath) {
@@ -2989,6 +3350,178 @@ test("systemd 255 text redundancy accepts one running start and completed pre-st
   assert.match(value.evidence.units[0].properties.ExecStart, /code=\(null\) ; status=0\/0/u);
   assert.match(value.evidence.units[0].properties.ExecStartPre, /code=exited ; status=0/u);
   assert.equal(validate(value), true);
+});
+
+test("exact directory publisher accepts only a successful retained oneshot with no process holder", () => {
+  const value = completedPublisherOneshotFixture();
+  assert.equal(value.evidence.units[0].properties.MainPID, "0");
+  assert.equal(value.evidence.units[0].properties.SubState, "exited");
+  assert.equal(value.evidence.units[0].process_identity, null);
+  assert.deepEqual(
+    value.evidence.protected_process_closure.passes.map((pass) => pass.holders),
+    [[], []],
+  );
+  assert.equal(validate(value), true);
+
+  const mutations = [
+    ["MainPID", "4242", /successful retained oneshot generation/u],
+    ["SubState", "running", /successful retained oneshot generation/u],
+    ["Result", "exit-code", /successful retained oneshot generation/u],
+    ["ExecMainCode", "0", /successful retained oneshot generation/u],
+    ["ExecMainStatus", "1", /successful retained oneshot generation/u],
+    ["NeedDaemonReload", "yes", /NeedDaemonReload drift/u],
+    ["RemainAfterExit", "no", /RemainAfterExit drift/u],
+  ];
+  for (const [property, replacement, pattern] of mutations) {
+    const candidate = completedPublisherOneshotFixture();
+    candidate.evidence.units[0].properties[property] = replacement;
+    assert.throws(() => validate(candidate), pattern, property);
+  }
+
+  const runningExec = completedPublisherOneshotFixture();
+  runningExec.evidence.units[0].properties.ExecStart = execValue(
+    runningExec.request.units[0].exec_start[0],
+    { pid: "4242", state: "running" },
+  );
+  assert.throws(
+    () => validate(runningExec),
+    /successful completed oneshot ExecStart/u,
+  );
+
+  const staleProcessIdentity = completedPublisherOneshotFixture();
+  staleProcessIdentity.evidence.units[0].process_identity =
+    fixture().evidence.units[0].process_identity;
+  assert.throws(
+    () => validate(staleProcessIdentity),
+    /unexpectedly retains process identity evidence/u,
+  );
+
+  const staleCredentialHolder = completedPublisherOneshotFixture();
+  const holder = protectedHolder({
+    controlGroup:
+      "/system.slice/bitcoinpir-payment-v1-directory-publisher.service",
+    gid: 731,
+    groups: [731, 732],
+    ino: "99",
+    pid: 4242,
+    startTime: "123456",
+    uid: 730,
+  });
+  for (const pass of staleCredentialHolder.evidence.protected_process_closure.passes) {
+    pass.holders = [clone(holder)];
+  }
+  assert.throws(
+    () => validate(staleCredentialHolder),
+    /outside every managed unit cgroup/u,
+  );
+
+  const wrongReceiptInvocation = completedPublisherOneshotFixture();
+  for (const pass of
+    wrongReceiptInvocation.evidence.publisher_network.publication_receipt_passes) {
+    pass.receipt.invocation_id = "e".repeat(32);
+    pass.path =
+      `/var/lib/bitcoinpir-directory-publication/${pass.receipt.invocation_id}.json`;
+    pass.sha256 = hash(canonicalJson(pass.receipt));
+    pass.size = Buffer.byteLength(canonicalJson(pass.receipt));
+  }
+  assert.throws(
+    () => validate(wrongReceiptInvocation),
+    /receipt is not bound to the exact successful oneshot InvocationID/u,
+  );
+
+  const reorderedReceiptArgv = completedPublisherOneshotFixture();
+  for (const pass of
+    reorderedReceiptArgv.evidence.publisher_network.publication_receipt_passes) {
+    [pass.receipt.argv[3], pass.receipt.argv[4]] =
+      [pass.receipt.argv[4], pass.receipt.argv[3]];
+    pass.sha256 = hash(canonicalJson(pass.receipt));
+    pass.size = Buffer.byteLength(canonicalJson(pass.receipt));
+  }
+  assert.throws(
+    () => validate(reorderedReceiptArgv),
+    /does not bind the current publication argv generation/u,
+  );
+
+  const forgedReceiptDigest = completedPublisherOneshotFixture();
+  for (const pass of
+    forgedReceiptDigest.evidence.publisher_network.publication_receipt_passes) {
+    pass.sha256 = hash("forged receipt digest");
+  }
+  assert.throws(
+    () => validate(forgedReceiptDigest),
+    /size or digest does not bind its canonical receipt bytes/u,
+  );
+
+  const forgedReceiptSize = completedPublisherOneshotFixture();
+  for (const pass of
+    forgedReceiptSize.evidence.publisher_network.publication_receipt_passes) {
+    pass.size += 1;
+  }
+  assert.throws(
+    () => validate(forgedReceiptSize),
+    /size or digest does not bind its canonical receipt bytes/u,
+  );
+
+  const staleCurrentArtifactSet = completedPublisherOneshotFixture();
+  for (const pass of
+    staleCurrentArtifactSet.evidence.publisher_network.publication_receipt_passes) {
+    pass.current_event_set.event_set_digest_hex = hash("current artifact generation b");
+  }
+  assert.throws(
+    () => validate(staleCurrentArtifactSet),
+    /event count or digest was not recomputed from the current artifacts/u,
+  );
+
+  const missingPostFileReceiptSeal = completedPublisherOneshotFixture();
+  missingPostFileReceiptSeal.evidence.publisher_network.publication_receipt_passes.pop();
+  assert.throws(
+    () => validate(missingPostFileReceiptSeal),
+    /not stable across four descriptor-bound passes/u,
+  );
+
+  const postFileReceiptRace = completedPublisherOneshotFixture();
+  postFileReceiptRace.evidence.publisher_network.publication_receipt_passes[3].ino =
+    "91003";
+  assert.throws(
+    () => validate(postFileReceiptRace),
+    /not stable across four descriptor-bound passes/u,
+  );
+
+  const postFileUnitRace = completedPublisherOneshotFixture();
+  postFileUnitRace.evidence.units[0].generation_confirmations[3].invocation_id =
+    "e".repeat(32);
+  assert.throws(
+    () => validate(postFileUnitRace),
+    /unit generation changed during collection/u,
+  );
+
+  const wrongProfile = completedPublisherOneshotFixture();
+  wrongProfile.request.deployment_profile = "test";
+  assert.throws(
+    () => validate(wrongProfile),
+    /reviewed running ExecStart|unreviewed long-running Type/u,
+  );
+
+  const unreviewedOneshot = completedPublisherOneshotFixture();
+  const unreviewedName = "bitcoinpir-unreviewed-oneshot.service";
+  unreviewedOneshot.request.units[0].unit_name = unreviewedName;
+  unreviewedOneshot.request.service_identities[0].unit_name = unreviewedName;
+  unreviewedOneshot.evidence.units[0].unit_name = unreviewedName;
+  unreviewedOneshot.evidence.units[0].properties.BindReadOnlyPaths = "";
+  unreviewedOneshot.evidence.units[0].properties.ControlGroup =
+    `/system.slice/${unreviewedName}`;
+  unreviewedOneshot.evidence.units[0].properties.ExecStart = execValue(
+    unreviewedOneshot.request.units[0].exec_start[0],
+    { pid: "0", state: "running" },
+  );
+  for (const confirmation of
+    unreviewedOneshot.evidence.units[0].generation_confirmations) {
+    confirmation.control_group = `/system.slice/${unreviewedName}`;
+  }
+  assert.throws(
+    () => validate(unreviewedOneshot),
+    /publication receipt request lacks its exact unit\/identity generation|unreviewed long-running Type/u,
+  );
 });
 
 test("systemd 255 watchdog text and typed uint64 agree with each lifecycle", () => {
@@ -4507,6 +5040,24 @@ test("live verifier rejects omitted service identities and noncanonical complete
 });
 
 test("live verifier rejects legacy request/evidence and untrusted NSS policy metadata", () => {
+  const v8Evidence = fixture();
+  v8Evidence.evidence.schema_version = 8;
+  assert.throws(() => validate(v8Evidence), /schema or kind/);
+
+  const v8EvidenceKind = fixture();
+  v8EvidenceKind.evidence.evidence_kind =
+    "bitcoinpir-payment-v1-linux-root-live-v8";
+  assert.throws(() => validate(v8EvidenceKind), /schema or kind/);
+
+  const v8Request = fixture();
+  v8Request.request.schema_version = 8;
+  assert.throws(() => validate(v8Request), /request schema or collector/);
+
+  const v8RequestCollector = fixture();
+  v8RequestCollector.request.collector =
+    "bitcoinpir-payment-v1-linux-runtime-evidence-v8";
+  assert.throws(() => validate(v8RequestCollector), /request schema or collector/);
+
   const legacyEvidence = fixture();
   legacyEvidence.evidence.schema_version = 7;
   legacyEvidence.evidence.evidence_kind =
@@ -4818,6 +5369,7 @@ for (const [label, mutate, expected] of [
   ["effective MemoryMax drift", (f) => { f.evidence.units[0].properties.MemoryMax = "infinity"; }, /MemoryMax drift/],
   ["effective MemorySwapCurrent drift", (f) => { f.evidence.units[0].properties.MemorySwapCurrent = "1"; }, /MemorySwapCurrent drift/],
   ["effective MemorySwapMax drift", (f) => { f.evidence.units[0].properties.MemorySwapMax = "infinity"; }, /MemorySwapMax drift/],
+  ["effective NeedDaemonReload drift", (f) => { f.evidence.units[0].properties.NeedDaemonReload = "yes"; }, /NeedDaemonReload drift/],
   ["effective TasksMax drift", (f) => { f.evidence.units[0].properties.TasksMax = "infinity"; }, /TasksMax drift/],
   ["missing TemporaryFileSystem evidence", (f) => { delete f.evidence.units[0].properties.TemporaryFileSystem; }, /keys/u],
   ["effective StandardOutput drift", (f) => { f.evidence.units[0].properties.StandardOutput = "journal"; }, /StandardOutput drift/],

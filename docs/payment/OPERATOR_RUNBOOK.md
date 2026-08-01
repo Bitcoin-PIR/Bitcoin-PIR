@@ -488,7 +488,8 @@ create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
 snapshot is point-in-time evidence only.
 
 Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
-the independently pinned native launcher and its approved five-entry manifest;
+the independently pinned native launcher, its approved seven-entry manifest and
+the complete recursive descriptor-pinned Node ELF closure;
 direct Node invocation is not a production ceremony. If the continuous
 publication-interval firewall guard is absent, the terminal state is
 namespace-only: neither the publisher service nor any Nostr publication may
