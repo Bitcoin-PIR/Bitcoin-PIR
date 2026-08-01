@@ -28,10 +28,23 @@ pub struct ServicePolicyArgs {
 
 #[derive(Subcommand, Debug)]
 enum ServicePolicyCommand {
+    /// Print the provider ID and scope IDs from an unsigned policy config.
+    ///
+    /// This intentionally does not read credential bindings or a signing key,
+    /// so operators can derive the IDs needed to build those bindings before
+    /// signing the complete policy.
+    #[command(name = "scope-ids")]
+    ScopeIds(ScopeIdsArgs),
     /// Sign a declarative TOML policy with a dedicated Ed25519 policy key.
     Sign(SignArgs),
     /// Verify and summarize one exact canonical signed policy.
     Verify(VerifyArgs),
+}
+
+#[derive(Args, Debug)]
+struct ScopeIdsArgs {
+    #[arg(long)]
+    config: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -154,9 +167,34 @@ enum PriceConfig {
 
 pub fn run(args: ServicePolicyArgs) -> Result<(), String> {
     match args.command {
+        ServicePolicyCommand::ScopeIds(args) => scope_ids(args),
         ServicePolicyCommand::Sign(args) => sign(args),
         ServicePolicyCommand::Verify(args) => verify(args),
     }
+}
+
+fn scope_ids(args: ScopeIdsArgs) -> Result<(), String> {
+    let config_text = read_utf8_bounded(&args.config, MAX_SIGNED_POLICY_LEN, "policy config")?;
+    let config: PolicyConfig = toml::from_str(&config_text)
+        .map_err(|error| format!("invalid service-policy TOML: {error}"))?;
+    let operator_key = decode_fixed_hex::<32>(&config.operator_pubkey_hex, "operator public key")?;
+    VerifyingKey::from_bytes(&operator_key)
+        .map_err(|_| "operator public key is not valid Ed25519".to_owned())?;
+    validate_stable_server_id(&config.stable_server_id)?;
+    let provider_id = derive_provider_id(&operator_key, &config.stable_server_id);
+
+    println!("provider_id={}", hex::encode(provider_id));
+    for (index, config) in config.scopes.iter().enumerate() {
+        let scope = scope_from_config(config, provider_id)?;
+        println!(
+            "scope_index={index} backend={} workload={} entitlement_profile={} scope_id={}",
+            config.backend,
+            config.workload,
+            config.entitlement_profile,
+            hex::encode(scope.scope_id())
+        );
+    }
+    Ok(())
 }
 
 fn sign(args: SignArgs) -> Result<(), String> {
@@ -276,27 +314,7 @@ fn build_scope(
     provider_id: [u8; 32],
     base: &Path,
 ) -> Result<ServiceScopePolicyV1, String> {
-    let backend = parse_backend(&config.backend)?;
-    let workload = parse_workload(&config.workload)?;
-    let dataset = match config.dataset {
-        DatasetConfig::Class { class_id } => DatasetBindingV1::Class { class_id },
-        DatasetConfig::CatalogEpoch { epoch } => DatasetBindingV1::CatalogEpoch { epoch },
-        DatasetConfig::ManifestRoot { root_hex } => DatasetBindingV1::ManifestRoot {
-            root: decode_fixed_hex::<32>(&root_hex, "dataset manifest root")?,
-        },
-    };
-    let scope = ServiceScopeV1 {
-        provider_id,
-        backend,
-        workload,
-        protocol_version: config.protocol_version,
-        dataset,
-        operation_profile: config.operation_profile,
-        entitlement_profile: config.entitlement_profile,
-    };
-    scope
-        .validate()
-        .map_err(|error| format!("invalid service scope: {error}"))?;
+    let scope = scope_from_config(&config, provider_id)?;
     let offers = config
         .offers
         .into_iter()
@@ -316,6 +334,34 @@ fn build_scope(
         },
         offers,
     })
+}
+
+fn scope_from_config(
+    config: &ScopeConfig,
+    provider_id: [u8; 32],
+) -> Result<ServiceScopeV1, String> {
+    let dataset = match &config.dataset {
+        DatasetConfig::Class { class_id } => DatasetBindingV1::Class {
+            class_id: *class_id,
+        },
+        DatasetConfig::CatalogEpoch { epoch } => DatasetBindingV1::CatalogEpoch { epoch: *epoch },
+        DatasetConfig::ManifestRoot { root_hex } => DatasetBindingV1::ManifestRoot {
+            root: decode_fixed_hex::<32>(root_hex, "dataset manifest root")?,
+        },
+    };
+    let scope = ServiceScopeV1 {
+        provider_id,
+        backend: parse_backend(&config.backend)?,
+        workload: parse_workload(&config.workload)?,
+        protocol_version: config.protocol_version,
+        dataset,
+        operation_profile: config.operation_profile,
+        entitlement_profile: config.entitlement_profile,
+    };
+    scope
+        .validate()
+        .map_err(|error| format!("invalid service scope: {error}"))?;
+    Ok(scope)
 }
 
 fn build_offer(config: OfferConfig, base: &Path) -> Result<ServiceOfferV1, String> {

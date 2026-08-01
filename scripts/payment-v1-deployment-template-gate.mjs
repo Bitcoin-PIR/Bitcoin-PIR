@@ -78,6 +78,10 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/README.md",
+  "deploy/payment-v1/functional-beta/README.md",
+  "deploy/payment-v1/functional-beta/issuer-all-methods.args.in",
+  "deploy/payment-v1/functional-beta/provider-all-methods.args.in",
+  "deploy/payment-v1/functional-beta/service-policy.toml.in",
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
@@ -2510,6 +2514,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".conf.in") &&
       !rel.endsWith(".json.in") &&
       !rel.endsWith(".sh.in") &&
+      !rel.endsWith(".toml.in") &&
       !rel.endsWith(".toml.example") &&
       !rel.endsWith(".md")
     ) {

@@ -271,6 +271,7 @@ mod cli_tests {
         let mut command = Cli::command();
         let help = command.render_long_help().to_string();
         for subcommand in [
+            "service-policy",
             "service-keygen",
             "service-store-init",
             "service-store-check",
@@ -283,6 +284,19 @@ mod cli_tests {
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
+    }
+
+    #[test]
+    fn service_policy_scope_ids_accepts_an_unsigned_config() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "service-policy",
+            "scope-ids",
+            "--config",
+            "/private/service-policy.toml",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::ServicePolicy(_)));
     }
 
     #[test]
