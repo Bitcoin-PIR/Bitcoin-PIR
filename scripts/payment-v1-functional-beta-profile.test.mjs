@@ -34,6 +34,15 @@ function priceFor(scope, authorization) {
   return Number(amount);
 }
 
+function offerFor(scope, authorization) {
+  const offers = scope.split("\n[[scopes.offers]]\n").slice(1);
+  const offer = offers.find((candidate) =>
+    candidate.includes(`authorization = "${authorization}"`)
+  );
+  assert.ok(offer, `missing ${authorization} offer`);
+  return offer;
+}
+
 test("functional beta policy has five independent workload scopes and methods", () => {
   const scopes = scopeBlocks();
   assert.equal(scopes.length, 5);
@@ -78,11 +87,88 @@ test("functional beta policy has five independent workload scopes and methods", 
   assert.ok(priceFor(hint, "cashu-ecash") > priceFor(query, "cashu-ecash"));
 });
 
-test("provider fragment loads every local and shared runtime adapter", () => {
+test("functional beta keeps direct, BAT, and ARC lineages distinct per scope", () => {
+  const lineages = [
+    [
+      "dpf-evaluate-job-v1",
+      "DIRECT_RECEIPT_KEY_ID_DPF_EVALUATE_JOB_V1_HEX",
+      "BAT_KEY_ID_DPF_EVALUATE_JOB_V1_HEX",
+      "ARC_KEY_ID_DPF_EVALUATE_JOB_V1_HEX",
+    ],
+    [
+      "harmony-hint-bundle-v1",
+      "DIRECT_RECEIPT_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX",
+      "BAT_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX",
+      "ARC_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX",
+    ],
+    [
+      "harmony-query-job-v1",
+      "DIRECT_RECEIPT_KEY_ID_HARMONY_QUERY_JOB_V1_HEX",
+      "BAT_KEY_ID_HARMONY_QUERY_JOB_V1_HEX",
+      "ARC_KEY_ID_HARMONY_QUERY_JOB_V1_HEX",
+    ],
+    [
+      "onion-evaluate-job-v1",
+      "DIRECT_RECEIPT_KEY_ID_ONION_EVALUATE_JOB_V1_HEX",
+      "BAT_KEY_ID_ONION_EVALUATE_JOB_V1_HEX",
+      "ARC_KEY_ID_ONION_EVALUATE_JOB_V1_HEX",
+    ],
+    [
+      "tee-oram-query-v1",
+      "DIRECT_RECEIPT_KEY_ID_TEE_ORAM_QUERY_V1_HEX",
+      "BAT_KEY_ID_TEE_ORAM_QUERY_V1_HEX",
+      "ARC_KEY_ID_TEE_ORAM_QUERY_V1_HEX",
+    ],
+  ];
+  const seen = {
+    "bolt11-direct-receipt": new Set(),
+    "cashu-bat": new Set(),
+    "arc-experimental": new Set(),
+  };
+
+  for (const [workload, directKeyId, batKeyId, arcKeyId] of lineages) {
+    const scope = scopeBlocks().find((candidate) =>
+      candidate.includes(`workload = "${workload}"`)
+    );
+    assert.ok(scope, `missing ${workload}`);
+    for (const [authorization, keyId] of [
+      ["bolt11-direct-receipt", directKeyId],
+      ["cashu-bat", batKeyId],
+      ["arc-experimental", arcKeyId],
+    ]) {
+      const offer = offerFor(scope, authorization);
+      assert.ok(
+        offer.includes(`key_id_hex = "@${keyId}@"`),
+        `${workload} has the wrong ${authorization} key ID`,
+      );
+      seen[authorization].add(keyId);
+    }
+
+    const slug = workload;
+    assert.ok(
+      issuer.includes(`direct-receipt-${slug}.key`),
+      `issuer missing ${workload} direct receipt key`,
+    );
+    assert.ok(
+      issuer.includes(`cashu-bat-${slug}.key`),
+      `issuer missing ${workload} BAT key`,
+    );
+    assert.ok(
+      issuer.includes(`arc-experimental-${slug}.key`),
+      `issuer missing ${workload} ARC key`,
+    );
+  }
+  for (const [authorization, keyIds] of Object.entries(seen)) {
+    assert.equal(keyIds.size, lineages.length, `${authorization} key IDs are reused`);
+  }
+  assert.ok(!provider.includes("--service-arc-key"));
+  assert.ok(!providerUnit.includes("--service-arc-key"));
+});
+
+test("provider fragment loads its selected and shared runtime adapters", () => {
   for (const flag of [
     "--require-service-auth-v1",
     "--service-bat-key",
-    "--service-arc-key",
     "--allow-experimental-arc",
     "--service-cashu-recovery-key",
     "--service-cashu-custody-key",
@@ -136,7 +222,6 @@ test("functional beta units and Caddy fragment stay isolated from legacy listene
         "--require-service-auth-v1",
         "--service-cashu-exposure-limit",
         "--service-bat-key",
-        "--service-arc-key",
         "--allow-experimental-arc",
         "--service-shared-authorization",
       ],
