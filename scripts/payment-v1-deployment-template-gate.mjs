@@ -26,6 +26,10 @@ export const ACTIVE_BASELINES = Object.freeze({
 });
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in":
+    "cb1c8b7b8fb244ec11ae71724375f02f4bedb6cbfbd731c4200afe406eae29a1",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in":
+    "5114ce5b56b77f057df04453c7f4af55db47f4e59efb317df9f801207ebe2473",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in":
     "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
@@ -52,6 +56,10 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
     "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "9f8e90084553bfa0e36768631e21295720b627fc0b25489d124ddee4657f823c",
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
+    "5a5927d344c5750da8882af981b67916bd2801551e3de2a62d03f6a99955e6d1",
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in":
+    "81371180e5738c188ef9b3daa9063e941de8f0105754a3759edfc600b04f84cd",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in":
     "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
@@ -65,6 +73,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
@@ -78,6 +88,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",

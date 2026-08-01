@@ -6,6 +6,28 @@ still requires the global `ACTIVATION-APPROVED`, profile-specific
 `EDGE-ACTIVATION-APPROVED`, edge-preflight, and source-fair-preflight sentinels
 plus exact binary/configuration hash manifests.
 
+`integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in`,
+`directory-public-haproxy.cfg.in`,
+`payment-v1-directory-public-edge.service.in`, and
+`bhtm-caddy.directory-public-edge.conf.in` are an independent, non-activating
+asset set for the single public read side of the directory relay. They use the
+separate `bitcoinpir-directory-public-edge` runtime root and the exact
+`DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED` and
+`DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED` conditions. They contain no private
+directory-write route and no payment or PIR application lane. These assets are
+not activation-ready until the rendered profile, integrated cold stopped/fresh
+evidence lineage, rollback transaction, identities, manifests, and runtime
+gate are implemented and reviewed.
+
+This split isolates the public directory source table, Unix socket, runtime
+directory, service account, cgroup, and HAProxy process. It does not create a
+separate TLS failure domain: the exact existing root Caddy process still sees
+client address and timing. Nor is `IPAddressAllow=localhost` a port-level
+network sandbox; the pinned HAProxy configuration opens only
+`127.0.0.1:8080`, but a compromised process remains inside the co-located host
+trust boundary. A hard network boundary would require a separately reviewed
+namespace or Unix backend protocol and is not inferred from these assets.
+
 ## Public-edge trust boundary
 
 The Hetzner public path is deliberately two layers:

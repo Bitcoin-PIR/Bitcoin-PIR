@@ -74,10 +74,16 @@ deploy/
 deploy/*
 !deploy/payment-v1/
 deploy/payment-v1/*
+!deploy/payment-v1/edge/
+deploy/payment-v1/edge/*
+!deploy/payment-v1/edge/directory-public-haproxy.cfg.in
+!deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in
 !deploy/payment-v1/systemd/
 deploy/payment-v1/systemd/*
+!deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in
 !deploy/payment-v1/systemd/hetzner-provider-direct.service.in
 !deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in
+!deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in
 !deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in
 !deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in
 !deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in

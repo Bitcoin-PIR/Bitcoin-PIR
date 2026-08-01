@@ -1,0 +1,71 @@
+# BitcoinPIR directory-public source-fair edge. This rendered configuration
+# has one ephemeral public-read lane and no persistent source state.
+
+global
+    maxconn 64
+    hard-stop-after 10s
+    zero-warning
+
+defaults
+    mode http
+    no log
+    option http-server-close
+    option http-no-delay
+    timeout connect 3s
+    timeout client 15s
+    timeout client-fin 5s
+    timeout server 15s
+    timeout server-fin 5s
+    timeout http-request 5s
+    timeout http-keep-alive 1s
+    timeout queue 3s
+    timeout tunnel 300s
+
+backend directory_public_sources
+    stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)
+
+frontend directory_public
+    bind /run/bitcoinpir-directory-public-edge/directory-public.sock accept-proxy mode 660
+    maxconn 48
+    http-request deny deny_status 429 if { table_avl(directory_public_sources) eq 0 } !{ src,ipmask(32,64),in_table(directory_public_sources) }
+    http-request track-sc0 src,ipmask(32,64) table directory_public_sources
+    http-request deny deny_status 429 unless { sc0_tracked }
+    http-request deny deny_status 429 if { sc0_conn_cur gt 4 }
+    http-request deny deny_status 429 if { sc0_conn_rate gt 12 }
+    http-request deny deny_status 429 unless { method GET }
+    http-request deny deny_status 404 unless { path -m str / }
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request del-header X-Forwarded-Host
+    http-request del-header X-Forwarded-Proto
+    http-request del-header CF-Connecting-IP
+    http-request del-header Client-IP
+    http-request del-header Fastly-Client-IP
+    http-request del-header Fly-Client-IP
+    http-request del-header True-Client-IP
+    http-request del-header X-Client-IP
+    http-request del-header X-Cluster-Client-IP
+    http-request del-header X-Envoy-External-Address
+    http-request del-header X-Original-Client-IP
+    http-request del-header X-Original-Forwarded-For
+    http-request del-header X-Real-IP
+    http-request del-header X-Request-ID
+    http-request del-header X-Correlation-ID
+    http-request del-header Traceparent
+    http-request del-header Tracestate
+    http-request del-header Baggage
+    http-request del-header Via
+    http-request del-header Proxy-Authorization
+    http-request del-header Authorization
+    http-request del-header Cookie
+    http-response del-header Via
+    http-response del-header Set-Cookie
+    filter bwlim-out directory_public_source_egress key src,ipmask(32,64) table directory_public_sources limit 4m min-size 2896
+    filter bwlim-out directory_public_stream_egress default-limit 2m default-period 1s min-size 2896
+    http-request set-bandwidth-limit directory_public_source_egress
+    http-request set-bandwidth-limit directory_public_stream_egress
+    default_backend directory_public_application
+
+backend directory_public_application
+    http-reuse never
+    server directory-public 127.0.0.1:8080 maxconn 48
