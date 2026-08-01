@@ -49,6 +49,7 @@ mod keygen;
 mod lightning_staging;
 mod payment_artifact;
 mod payment_fixture;
+mod payment_v1_signet_smoke;
 mod rollback_authority_deployment_lint;
 mod service_keygen;
 mod service_policy;
@@ -119,6 +120,11 @@ enum Command {
     /// Emit the deterministic two-provider Payment V1 no-funds fixture.
     #[command(name = "payment-v1-no-funds-fixture")]
     PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
+    /// Explicit Signet-only paid capability smoke: verify provider and quote,
+    /// invoke an isolated payer CLN, claim one capability, and prove provider
+    /// admission without executing a PIR query.
+    #[command(name = "payment-v1-signet-smoke")]
+    PaymentV1SignetSmoke(payment_v1_signet_smoke::PaymentV1SignetSmokeArgs),
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
@@ -230,6 +236,13 @@ async fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("payment-v1-no-funds-fixture: {}", e);
+                1
+            }
+        },
+        Command::PaymentV1SignetSmoke(args) => match payment_v1_signet_smoke::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("payment-v1-signet-smoke: {e}");
                 1
             }
         },
