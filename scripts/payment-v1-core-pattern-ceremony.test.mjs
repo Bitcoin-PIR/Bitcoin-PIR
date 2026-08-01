@@ -43,6 +43,9 @@ import {
   RECOVERY_APPROVAL_KIND,
   ROLLBACK_ACKNOWLEDGEMENTS,
   ROLLBACK_APPROVAL_KIND,
+  SYSTEMD_SYSCTL_ALIAS_PATH,
+  SYSTEMD_SYSCTL_ALIAS_TARGET,
+  SYSTEMD_SYSCTL_ALIAS_UNIT,
   SYSTEMD_SYSCTL_UNIT,
   SYSTEMD_SYSCTL_UNIT_PATH,
   SYSTEMD_SYSCTL_ENABLEMENT_PATH,
@@ -1278,6 +1281,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
     }
     const apportFragment = join(vendor, APPORT_UNIT);
     const sysctlFragment = join(vendor, SYSTEMD_SYSCTL_UNIT);
+    const sysctlAlias = join(realpathSync(vendor), SYSTEMD_SYSCTL_ALIAS_UNIT);
     const sysctlWants = join(vendor, "sysinit.target.wants");
     const sysctlEnablement = join(sysctlWants, SYSTEMD_SYSCTL_UNIT);
     const guardFragment = join(etc, GUARD_UNIT);
@@ -1290,6 +1294,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       writeFileSync(path, "[Unit]\nDescription=reviewed\n");
     }
     symlinkSync("../" + SYSTEMD_SYSCTL_UNIT, sysctlEnablement);
+    symlinkSync(SYSTEMD_SYSCTL_ALIAS_TARGET, sysctlAlias);
     const canonicalSysctlEnablement = join(realpathSync(sysctlWants), SYSTEMD_SYSCTL_UNIT);
     const allowlist = {
       [APPORT_UNIT]: {
@@ -1298,6 +1303,8 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       },
       [GUARD_UNIT]: { dropin_paths: [], fragment_paths: [realpathSync(guardFragment)] },
       [SYSTEMD_SYSCTL_UNIT]: {
+        alias_paths: [sysctlAlias],
+        alias_targets: { [sysctlAlias]: SYSTEMD_SYSCTL_ALIAS_TARGET },
         dropin_paths: [realpathSync(sysctlGate)],
         enablement_paths: [canonicalSysctlEnablement],
         enablement_targets: { [canonicalSysctlEnablement]: "../" + SYSTEMD_SYSCTL_UNIT },
@@ -1306,6 +1313,7 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
     };
     const roots = [control, runtime, generator, etc, vendor];
     const closed = scanManagedUnitLoadPaths(roots, allowlist);
+    assert.deepEqual(closed[SYSTEMD_SYSCTL_UNIT].alias_paths, [sysctlAlias]);
     assert.deepEqual(closed[SYSTEMD_SYSCTL_UNIT].dropin_paths, [realpathSync(sysctlGate)]);
     assert.deepEqual(closed[SYSTEMD_SYSCTL_UNIT].enablement_paths, [canonicalSysctlEnablement]);
     const nestedAlias = join(sysctlWants, "evil.service");
@@ -1315,6 +1323,21 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       /unreviewed alias or activation path/u,
     );
     unlinkSync(nestedAlias);
+    const topLevelAlias = join(runtime, "evil.service");
+    symlinkSync(realpathSync(sysctlFragment), topLevelAlias);
+    assert.throws(
+      function () { scanManagedUnitLoadPaths(roots, allowlist); },
+      /unreviewed alias or activation path/u,
+    );
+    unlinkSync(topLevelAlias);
+    unlinkSync(sysctlAlias);
+    symlinkSync("./" + SYSTEMD_SYSCTL_UNIT, sysctlAlias);
+    assert.throws(
+      function () { scanManagedUnitLoadPaths(roots, allowlist); },
+      /alias differs from reviewed state/u,
+    );
+    unlinkSync(sysctlAlias);
+    symlinkSync(SYSTEMD_SYSCTL_ALIAS_TARGET, sysctlAlias);
     for (const bypassRoot of [runtime, control, generator, vendor]) {
       const directory = join(bypassRoot, SYSTEMD_SYSCTL_UNIT + ".d");
       mkdirSync(directory, { recursive: true });
@@ -1338,6 +1361,14 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
       );
       rmSync(directory, { recursive: true });
     }
+    const aliasDropinDirectory = join(runtime, SYSTEMD_SYSCTL_ALIAS_UNIT + ".d");
+    mkdirSync(aliasDropinDirectory);
+    writeFileSync(join(aliasDropinDirectory, "99-alias-bypass.conf"), "[Service]\nExecCondition=\n");
+    assert.throws(
+      function () { scanManagedUnitLoadPaths(roots, allowlist); },
+      /unreviewed drop-in\/load path/u,
+    );
+    rmSync(aliasDropinDirectory, { recursive: true });
     const shadow = join(runtime, SYSTEMD_SYSCTL_UNIT);
     writeFileSync(shadow, "[Service]\nExecCondition=\n");
     assert.throws(
@@ -1352,11 +1383,24 @@ test("managed unit load-path closure rejects runtime, control, generator, vendor
 test("systemd-sysctl load-path validation requires the exact vendor boot enablement", () => {
   const exact = {
     [SYSTEMD_SYSCTL_UNIT]: {
+      alias_paths: [SYSTEMD_SYSCTL_ALIAS_PATH],
       enablement_paths: [SYSTEMD_SYSCTL_ENABLEMENT_PATH],
       fragment_paths: [SYSTEMD_SYSCTL_UNIT_PATH],
     },
   };
   assert.equal(validateSystemdSysctlLoadPathsForTest(exact), true);
+  const missingAlias = structuredClone(exact);
+  missingAlias[SYSTEMD_SYSCTL_UNIT].alias_paths = [];
+  assert.throws(
+    function () { validateSystemdSysctlLoadPathsForTest(missingAlias); },
+    /alias\/fragment\/boot enablement/u,
+  );
+  const extraAlias = structuredClone(exact);
+  extraAlias[SYSTEMD_SYSCTL_UNIT].alias_paths.push("/usr/lib/systemd/system/extra.service");
+  assert.throws(
+    function () { validateSystemdSysctlLoadPathsForTest(extraAlias); },
+    /alias\/fragment\/boot enablement/u,
+  );
   const missing = structuredClone(exact);
   missing[SYSTEMD_SYSCTL_UNIT].enablement_paths = [];
   assert.throws(
@@ -1518,6 +1562,57 @@ test("GetAll parsing and manager fences reject duplicate, torn, queued, PID, job
   };
   const service = { ControlPID: variant("u", 0), MainPID: variant("u", 0) };
   assert.equal(validateLoadedUnitMetadataForTest(APPORT_UNIT, row, unit, service).values.main_pid, 0);
+  const sysctlObjectPath =
+    "/org/freedesktop/systemd1/unit/systemd_2dsysctl_2eservice";
+  const sysctlRow = [
+    SYSTEMD_SYSCTL_UNIT,
+    "Apply Kernel Variables",
+    "loaded",
+    "active",
+    "exited",
+    "",
+    sysctlObjectPath,
+    0,
+    "",
+    "/",
+  ];
+  const sysctlUnit = structuredClone(unit);
+  sysctlUnit.Id.data = SYSTEMD_SYSCTL_UNIT;
+  sysctlUnit.Names.data = [SYSTEMD_SYSCTL_UNIT, SYSTEMD_SYSCTL_ALIAS_UNIT];
+  sysctlUnit.FragmentPath.data = SYSTEMD_SYSCTL_UNIT_PATH;
+  assert.deepEqual(
+    validateLoadedUnitMetadataForTest(
+      SYSTEMD_SYSCTL_UNIT,
+      sysctlRow,
+      sysctlUnit,
+      service,
+    ).values.names,
+    [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT].sort(),
+  );
+  for (const names of [
+    [SYSTEMD_SYSCTL_UNIT],
+    [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT, "extra.service"],
+  ]) {
+    const changedUnit = structuredClone(sysctlUnit);
+    changedUnit.Names.data = names;
+    assert.throws(
+      function () {
+        validateLoadedUnitMetadataForTest(
+          SYSTEMD_SYSCTL_UNIT,
+          sysctlRow,
+          changedUnit,
+          service,
+        );
+      },
+      /aliased/u,
+    );
+  }
+  const apportAlias = structuredClone(unit);
+  apportAlias.Names.data = [APPORT_UNIT, "extra.service"];
+  assert.throws(
+    function () { validateLoadedUnitMetadataForTest(APPORT_UNIT, row, apportAlias, service); },
+    /aliased/u,
+  );
   for (const mutate of [
     function (copy) { copy.unit.NeedDaemonReload.data = true; },
     function (copy) { copy.service.MainPID.data = 99; },
@@ -1591,7 +1686,9 @@ test("effective GetAll closure rejects every foreign Apport edge and requires cl
       job: [0, "/"],
       load_state: "loaded",
       main_pid: 0,
-      names: [],
+      names: fragmentPath === SYSTEMD_SYSCTL_UNIT_PATH
+        ? [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT].sort()
+        : fragmentPath === GUARD_UNIT_PATH ? [GUARD_UNIT] : [APPORT_UNIT],
       need_daemon_reload: false,
       source_path: "",
       sub_state: "dead",
@@ -1652,6 +1749,29 @@ test("effective GetAll closure rejects every foreign Apport edge and requires cl
   snapshot.sysctl.service.SetCredential = variant("a(say)", []);
   snapshot.sysctl.service.SetCredentialEncrypted = variant("a(say)", []);
   assert.equal(validateRuntimeConfigurationForTest(snapshot, "guarded-preimage"), true);
+  for (const names of [
+    [SYSTEMD_SYSCTL_UNIT],
+    [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT, "extra.service"],
+  ]) {
+    const changed = structuredClone(snapshot);
+    changed.sysctl.values.names = names;
+    assert.throws(
+      function () { validateRuntimeConfigurationForTest(changed, "guarded-preimage"); },
+      /Names/u,
+    );
+  }
+  const foreignApportName = structuredClone(snapshot);
+  foreignApportName.apport.values.names = [APPORT_UNIT, "extra.service"];
+  assert.throws(
+    function () { validateRuntimeConfigurationForTest(foreignApportName, "guarded-preimage"); },
+    /Names/u,
+  );
+  const missingGuardName = structuredClone(snapshot);
+  missingGuardName.guard.values.names = [];
+  assert.throws(
+    function () { validateRuntimeConfigurationForTest(missingGuardName, "guarded-preimage"); },
+    /Names/u,
+  );
   for (const property of [
     "Wants", "ConflictedBy", "OnFailureOf", "OnSuccessOf", "RequiredBy",
     "ReloadPropagatedFrom", "StopPropagatedFrom",

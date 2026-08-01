@@ -174,7 +174,10 @@ bind retained state but do not rewrite the immutable receipt. Rollback binds the
 skeleton also includes both preflight gates, the Apport mask,
 stable/runtime split, closed systemd load-path and D-Bus evidence expectations,
 official Noble systemd-sysctl bytes/boot enablement, the persistent credential
-closure, and all fixed symlink/file/empty-lock crash-replay paths. See
+closure, and all fixed symlink/file/empty-lock crash-replay paths. The
+source-bound executor additionally requires the exact root-owned
+`procps.service -> systemd-sysctl.service` vendor alias, its otherwise-empty
+alias drop-in closure, and exact two-name D-Bus identity. See
 [`../CORE_PATTERN_CEREMONY.md`](../CORE_PATTERN_CEREMONY.md).
 
 See [`../DEPLOYMENT_INPUT_MATRIX.md`](../DEPLOYMENT_INPUT_MATRIX.md) for the

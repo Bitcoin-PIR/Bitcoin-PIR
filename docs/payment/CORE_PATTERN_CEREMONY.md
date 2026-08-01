@@ -66,7 +66,13 @@ closed search covers every effective fragment and drop-in
 for Apport, `systemd-sysctl.service`, and the reboot guard across control,
 transient, generator, administrator, local-vendor, and vendor roots. Thus an
 empty `ExecCondition=` reset in an exact-unit, dash-prefix, unit-type, or
-higher-precedence drop-in is not ignored.
+higher-precedence drop-in is not ignored. Noble's one reviewed exception to
+the general no-alias rule is the root-owned vendor link
+`/usr/lib/systemd/system/procps.service -> systemd-sysctl.service`. Its path,
+literal relative target, resolved official fragment, and unique presence are
+checked on every managed load-path scan. `procps.service.d` is included in the
+same inherited drop-in closure; any file there, or any other alias or
+activation path resolving to the sysctl fragment, fails closed.
 Observation enumerates already-loaded units with D-Bus `ListUnits` and then
 uses non-loading `GetUnit`; an unloaded Apport unit is rejected.
 Apply removes only this exact symlink:
@@ -84,8 +90,9 @@ reevaluated the oneshot. Apply installs an exact
 `/etc/systemd/system/apport.service -> /dev/null` mask and removes the exact
 enablement link, so the next manager load cannot start Apport. Rollback removes
 that mask, recreates the exact enablement link, and restores all three approved
-sysctl values without starting Apport. No Alias, Also unit, arbitrary
-root-owned fragment, or foreign activation edge is accepted. The ceremony does
+sysctl values without starting Apport. Apart from the single source-fixed
+Noble sysctl alias described above, no Alias, Also unit, arbitrary root-owned
+fragment, or foreign activation edge is accepted. The ceremony does
 not import the handler's Python module graph. A rollback approval authorizes
 restoring the exact top-level handler configuration but is not an attestation
 of every module that a later boot may import.
@@ -112,7 +119,13 @@ stop slots.
 
 The reviewed Noble 255.4-1ubuntu8.15 `systemd-sysctl.service` bytes, amd64
 `systemd-sysctl` binary, and vendor `sysinit.target.wants` symlink are fixed
-inputs. Runtime evidence also requires exact `WantedBy=sysinit.target`. Apply
+inputs. The official `procps.service` compatibility alias is a source-fixed
+Noble platform invariant rather than a new mutable plan field; it is included
+in the configuration-generation digest and every live validation. Runtime
+D-Bus evidence requires `Names` to equal exactly `procps.service` plus
+`systemd-sysctl.service` for this unit. Apport and the reboot guard still admit
+only their canonical name, and any missing or additional name is rejected.
+Runtime evidence also requires exact `WantedBy=sysinit.target`. Apply
 retains an exact `80-bitcoinpir-credential-closure.conf` drop-in which clears
 `ImportCredential`, `LoadCredential`, `LoadCredentialEncrypted`,
 `SetCredential`, and `SetCredentialEncrypted`; this prevents a boot-time
@@ -135,8 +148,11 @@ The canonical schema-v2 plan binds:
   same-basename precedence and `/dev/null` masks; any glob or negative
   exclusion that can match a reviewed key is rejected rather than silently
   omitted;
-- the official Noble systemd-sysctl unit/binary generation, its exact boot
+- the official Noble systemd-sysctl unit/binary generation, exact boot
   enablement symlink and `WantedBy`, and the candidate credential-reset drop-in;
+- through the approval-bound executor source, the exact root-owned
+  `procps.service` compatibility alias and its otherwise-empty alias drop-in
+  closure;
 - exact stable Apport fragment and empty drop-ins, the closed enablement and
   activation set, plus a separately labelled settled `active/exited` or
   `inactive/dead` observation with `NeedDaemonReload=no`;

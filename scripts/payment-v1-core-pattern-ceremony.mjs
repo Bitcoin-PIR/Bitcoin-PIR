@@ -74,6 +74,10 @@ export const APPORT_UNIT_PATH = "/usr/lib/systemd/system/apport.service";
 export const SYSTEMD_SYSCTL_UNIT = "systemd-sysctl.service";
 export const SYSTEMD_SYSCTL_UNIT_PATH =
   "/usr/lib/systemd/system/systemd-sysctl.service";
+export const SYSTEMD_SYSCTL_ALIAS_UNIT = "procps.service";
+export const SYSTEMD_SYSCTL_ALIAS_PATH =
+  "/usr/lib/systemd/system/procps.service";
+export const SYSTEMD_SYSCTL_ALIAS_TARGET = SYSTEMD_SYSCTL_UNIT;
 export const SYSTEMD_SYSCTL_BINARY_PATH = "/usr/lib/systemd/systemd-sysctl";
 export const SYSTEMD_SYSCTL_ENABLEMENT_PATH =
   "/usr/lib/systemd/system/sysinit.target.wants/systemd-sysctl.service";
@@ -3030,6 +3034,10 @@ function defaultManagedUnitAllowlist() {
       fragment_paths: [GUARD_UNIT_PATH],
     },
     [SYSTEMD_SYSCTL_UNIT]: {
+      alias_paths: [SYSTEMD_SYSCTL_ALIAS_PATH],
+      alias_targets: {
+        [SYSTEMD_SYSCTL_ALIAS_PATH]: SYSTEMD_SYSCTL_ALIAS_TARGET,
+      },
       dropin_paths: [SYSCTL_CREDENTIAL_CLOSURE_PATH, SYSCTL_GATE_PATH],
       enablement_paths: [SYSTEMD_SYSCTL_ENABLEMENT_PATH],
       enablement_targets: {
@@ -3059,10 +3067,21 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
   const allowlist = configuredAllowlist || defaultManagedUnitAllowlist();
   const units = Object.keys(allowlist).sort();
   const dropinNames = Object.fromEntries(units.map(function (unit) {
-    return [unit, systemdDropinDirectoryNames(unit)];
+    const names = systemdDropinDirectoryNames(unit);
+    for (const aliasPath of allowlist[unit].alias_paths || []) {
+      for (const aliasDropinName of systemdDropinDirectoryNames(basename(aliasPath))) {
+        names.add(aliasDropinName);
+      }
+    }
+    return [unit, names];
   }));
   const observed = Object.fromEntries(units.map(function (unit) {
-    return [unit, { dropin_paths: [], enablement_paths: [], fragment_paths: [] }];
+    return [unit, {
+      alias_paths: [],
+      dropin_paths: [],
+      enablement_paths: [],
+      fragment_paths: [],
+    }];
   }));
   function record(path, entry, root) {
     const parentName = basename(dirname(path));
@@ -3078,6 +3097,34 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     if (units.some(function (unit) { return dropinNames[unit].has(entry.name); }) &&
         (!entry.isDirectory() || entry.isSymbolicLink())) {
       fail("managed systemd drop-in path is not a directory: " + path);
+    }
+    const aliasUnit = units.find(function (candidate) {
+      return (allowlist[candidate].alias_paths || []).includes(path);
+    });
+    if (aliasUnit !== undefined) {
+      const expectedTarget = allowlist[aliasUnit].alias_targets?.[path];
+      if (!entry.isSymbolicLink() || expectedTarget === undefined ||
+          readlinkSync(path) !== expectedTarget) {
+        fail("managed systemd alias differs from reviewed state: " + path);
+      }
+      const stat = lstatSync(path, { bigint: false });
+      if (configuredRoots === undefined && (stat.uid !== 0 || stat.gid !== 0)) {
+        fail("managed systemd alias is not root-owned: " + path);
+      }
+      let resolvedTarget;
+      try {
+        resolvedTarget = realpathSync(path);
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          fail("managed systemd alias target is missing: " + path);
+        }
+        throw error;
+      }
+      if (!(allowlist[aliasUnit].fragment_paths || []).includes(resolvedTarget)) {
+        fail("managed systemd alias does not resolve to the reviewed fragment: " + path);
+      }
+      observed[aliasUnit].alias_paths.push(path);
+      return;
     }
     const unit = units.find(function (candidate) { return entry.name === candidate; });
     if (unit === undefined) {
@@ -3145,6 +3192,7 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     visit(root, 0);
   }
   for (const unit of units) {
+    observed[unit].alias_paths.sort();
     observed[unit].dropin_paths.sort();
     observed[unit].enablement_paths.sort();
     observed[unit].fragment_paths.sort();
@@ -3154,12 +3202,13 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
 
 export function validateSystemdSysctlLoadPathsForTest(managed) {
   if (!isPlainObject(managed) || !isPlainObject(managed[SYSTEMD_SYSCTL_UNIT]) ||
+      !same(managed[SYSTEMD_SYSCTL_UNIT].alias_paths, [SYSTEMD_SYSCTL_ALIAS_PATH]) ||
       !same(managed[SYSTEMD_SYSCTL_UNIT].fragment_paths, [SYSTEMD_SYSCTL_UNIT_PATH]) ||
       !same(
         managed[SYSTEMD_SYSCTL_UNIT].enablement_paths,
         [SYSTEMD_SYSCTL_ENABLEMENT_PATH],
       )) {
-    fail("systemd-sysctl fragment/boot enablement closure differs from the plan");
+    fail("systemd-sysctl alias/fragment/boot enablement closure differs from the plan");
   }
   return true;
 }
@@ -3175,6 +3224,13 @@ function exactSystemdSysctlInputs(plan, managedLoadPaths) {
   );
   if (enablementStat.uid !== 0n || enablementStat.gid !== 0n) {
     fail("systemd-sysctl enablement is not root-owned");
+  }
+  const aliasStat = exactSymlinkAt(
+    SYSTEMD_SYSCTL_ALIAS_PATH,
+    SYSTEMD_SYSCTL_ALIAS_TARGET,
+  );
+  if (aliasStat.uid !== 0n || aliasStat.gid !== 0n) {
+    fail("systemd-sysctl procps alias is not root-owned");
   }
   const managed = managedLoadPaths || scanManagedUnitLoadPaths(reviewedManagerUnitPath());
   validateSystemdSysctlLoadPathsForTest(managed);
@@ -3712,6 +3768,12 @@ function managerListJobs() {
   ));
 }
 
+function expectedManagedUnitNames(name) {
+  return name === SYSTEMD_SYSCTL_UNIT
+    ? [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT].sort()
+    : [name];
+}
+
 function validateLoadedUnitMetadata(name, row, unit, service) {
   const label = "effective systemd unit " + name;
   if (!Array.isArray(row) || row.length !== 10 || row[0] !== name ||
@@ -3735,7 +3797,8 @@ function validateLoadedUnitMetadata(name, row, unit, service) {
   };
   if (variantProperty(unit, "Id", "s", label) !== name || values.control_pid !== 0 ||
       values.main_pid !== 0 || !same(values.job, [0, "/"]) ||
-      !same(values.names, [name]) || values.need_daemon_reload !== false ||
+      !same(values.names, expectedManagedUnitNames(name)) ||
+      values.need_daemon_reload !== false ||
       values.source_path !== "" || values.transient !== false) {
     fail(name + " is executing, transitioning, aliased, transient, generated, or needs reload");
   }
@@ -3812,6 +3875,7 @@ function validateRuntimeConfiguration(snapshot, phase) {
   }
   if (!expected.guarded && guard !== null) fail("guard remains loaded during " + phase);
   const apportLabel = "effective systemd unit " + APPORT_UNIT;
+  exactArray(apport.values.names, [APPORT_UNIT], apportLabel + ".Names");
   if (apport.values.load_state !== (expected.masked ? "masked" : "loaded") ||
       apport.values.fragment_path !== (expected.masked ? APPORT_MASK_PATH : APPORT_UNIT_PATH) ||
       !same(apport.values.dropin_paths, expected.guarded ? [APPORT_GATE_PATH] : [])) {
@@ -3831,6 +3895,11 @@ function validateRuntimeConfiguration(snapshot, phase) {
     exactExec(apport.service, property, [], apportLabel);
   }
   const sysctlLabel = "effective systemd unit " + SYSTEMD_SYSCTL_UNIT;
+  exactArray(
+    sysctl.values.names,
+    expectedManagedUnitNames(SYSTEMD_SYSCTL_UNIT),
+    sysctlLabel + ".Names",
+  );
   const expectedSysctlDropins = [
     expected.credentialClosure ? SYSCTL_CREDENTIAL_CLOSURE_PATH : null,
     expected.guarded ? SYSCTL_GATE_PATH : null,
@@ -3873,6 +3942,7 @@ function validateRuntimeConfiguration(snapshot, phase) {
   }
   if (guard !== null) {
     const guardLabel = "effective systemd unit " + GUARD_UNIT;
+    exactArray(guard.values.names, [GUARD_UNIT], guardLabel + ".Names");
     if (guard.values.load_state !== "loaded" || guard.values.fragment_path !== GUARD_UNIT_PATH ||
         !same(guard.values.dropin_paths, [])) {
       fail("guard FragmentPath/DropInPaths/LoadState differ during " + phase);
@@ -3933,7 +4003,12 @@ function runtimeServiceSnapshot(phase) {
     unitPathBefore,
     unitPathAfter,
   );
-  const managed = new Set([APPORT_UNIT, GUARD_UNIT, SYSTEMD_SYSCTL_UNIT]);
+  const managed = new Set([
+    APPORT_UNIT,
+    GUARD_UNIT,
+    SYSTEMD_SYSCTL_ALIAS_UNIT,
+    SYSTEMD_SYSCTL_UNIT,
+  ]);
   if (jobsBefore.some(function (job) { return managed.has(job[1]); })) {
     fail("managed systemd unit has a queued manager job");
   }
@@ -5106,15 +5181,7 @@ function observePlan(ceremonyId) {
   );
   const candidateGuard = embeddedPin(GUARD_UNIT_PATH, guardUnitBytes(ceremonyId), "0644");
   const managedLoadPaths = scanManagedUnitLoadPaths(reviewedManagerUnitPath());
-  if (!same(
-    managedLoadPaths[SYSTEMD_SYSCTL_UNIT].fragment_paths,
-    [SYSTEMD_SYSCTL_UNIT_PATH],
-  ) || !same(
-    managedLoadPaths[SYSTEMD_SYSCTL_UNIT].enablement_paths,
-    [SYSTEMD_SYSCTL_ENABLEMENT_PATH],
-  )) {
-    fail("observe-plan requires exact systemd-sysctl fragment and boot enablement");
-  }
+  validateSystemdSysctlLoadPathsForTest(managedLoadPaths);
   const apportActivation = scanApportActivation(
     undefined,
     candidateGuard,
