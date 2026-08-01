@@ -128,16 +128,80 @@ test("build manifest rejects source, compiler, options and reproducibility drift
   }
 });
 
-test("closed HAProxy config rejects hostname, resolver, Lua and dynamic-loader hooks", () => {
+test("closed HAProxy config rejects every unreviewed section and directive", () => {
   const base = readFileSync(CONFIG, "utf8");
-  for (const [mutated, expected] of [
-    [base.replace("127.0.0.1:8080", "relay.internal:8080"), /server set/u],
-    [`${base}\nresolvers ambient_dns\n  nameserver dns 127.0.0.53:53\n`, /dynamic feature/u],
-    [`${base}\nglobal\n  lua-load /tmp/evil.lua\n`, /dynamic feature/u],
-    [`${base}\nbackend extra\n  server-template app 1-2 relay.internal:8080\n`, /dynamic feature/u],
-    [`${base}\nglobal\n  dlopen /tmp/evil.so\n`, /dynamic feature/u],
+  const mutations = [
+    ["hostname backend", (value) => value.replace("127.0.0.1:8080", "relay.internal:8080")],
+    ["second bind", (value) => value.replace(
+      "    maxconn 48",
+      "    bind 127.0.0.1:18080\n    maxconn 48",
+    )],
+    ["source header reinjection", (value) => value.replace(
+      "    default_backend directory_public_application",
+      "    http-request set-header X-Real-IP %[src]\n    default_backend directory_public_application",
+    )],
+    ["forwarded-for reinjection", (value) => value.replace(
+      "    default_backend directory_public_application",
+      "    http-request set-header X-Forwarded-For %[src]\n    default_backend directory_public_application",
+    )],
+    ["automatic forwardfor", (value) => value.replace(
+      "    option http-no-delay",
+      "    option http-no-delay\n    option forwardfor",
+    )],
+    ["backend PROXY protocol", (value) => value.replace(
+      "127.0.0.1:8080 maxconn 48",
+      "127.0.0.1:8080 send-proxy maxconn 48",
+    )],
+    ["logging", (value) => value.replace("    maxconn 64", "    log stdout format raw local0\n    maxconn 64")],
+    ["stats socket", (value) => value.replace(
+      "    maxconn 64",
+      "    stats socket /run/haproxy-admin.sock mode 600 level admin\n    maxconn 64",
+    )],
+    ["extra server", (value) => value.replace(
+      "    server directory-public 127.0.0.1:8080 maxconn 48",
+      "    server directory-public 127.0.0.1:8080 maxconn 48\n    server shadow 127.0.0.1:8081",
+    )],
+    ["unreviewed request rule", (value) => value.replace(
+      "    default_backend directory_public_application",
+      "    http-request set-header X-Unreviewed fixed\n    default_backend directory_public_application",
+    )],
+    ["resolver section", (value) => `${value}\nresolvers ambient_dns\n    nameserver dns 127.0.0.53:53\n`],
+    ["Lua loader", (value) => value.replace("    maxconn 64", "    lua-load /tmp/evil.lua\n    maxconn 64")],
+    ["dynamic server", (value) => value.replace(
+      "    server directory-public 127.0.0.1:8080 maxconn 48",
+      "    server-template app 1-2 relay.internal:8080",
+    )],
+    ["module loader", (value) => value.replace("    maxconn 64", "    dlopen /tmp/evil.so\n    maxconn 64")],
+    ["duplicate section", (value) => `${value}\nfrontend directory_public\n    maxconn 48\n`],
+    ["reordered sections", (value) => {
+      const sources = "backend directory_public_sources\n    stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)\n\n";
+      return value.replace(sources, "").replace(
+        "backend directory_public_application\n",
+        `${sources}backend directory_public_application\n`,
+      );
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    assert.throws(
+      () => validateClosedHaproxyConfigV1(mutate(base)),
+      /reviewed section|section order|directives/u,
+      label,
+    );
+  }
+});
+
+test("closed HAProxy config preserves only semantic whitespace and comments", () => {
+  const base = readFileSync(CONFIG, "utf8");
+  const equivalent = base.replace(
+    "    maxconn 64",
+    "\tmaxconn\t64    # semantically inert reviewed comment",
+  );
+  assert.doesNotThrow(() => validateClosedHaproxyConfigV1(equivalent));
+  for (const mutated of [
+    base.replace("global\n", "defaults\n"),
+    `${base}\nbackend directory_public_application\n    http-reuse never\n`,
   ]) {
-    assert.throws(() => validateClosedHaproxyConfigV1(mutated), expected);
+    assert.throws(() => validateClosedHaproxyConfigV1(mutated), /section order/u);
   }
 });
 

@@ -73,7 +73,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in":
     "f7cb021b605454861f5c52e2ddf11610b545227b8b343f19e0309ed07e753728",
   "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs":
-    "840b364fa2513590ffcbfd5267dc7827f24e05d07512ec91bcf96e2286ef57b4",
+    "6061cd5b04feed6ba425f589eea10dbb5103060df8328716bf4ca08ce37c4827",
 });
 
 export const REQUIRED_PREPARATION_FILES = Object.freeze([

@@ -882,7 +882,7 @@ test("directory-public static edge rejects notify, restart and dynamic artifact 
     [
       "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
       (text) => `${text}\nresolvers ambient_dns\n  nameserver dns 127.0.0.53:53\n`,
-      /dynamic feature/u,
+      /not a reviewed section|section order/u,
     ],
     [
       "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",

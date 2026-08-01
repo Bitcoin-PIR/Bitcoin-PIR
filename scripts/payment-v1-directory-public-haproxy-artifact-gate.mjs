@@ -38,6 +38,96 @@ const EXPECTED_DISABLED_OPTIONS = Object.freeze([
   "USE_OPENSSL",
   "USE_SYSTEMD",
 ]);
+const REVIEWED_HAPROXY_ENDPOINTS = Object.freeze({
+  application: "127.0.0.1:8080",
+  socket: "/run/bitcoinpir-directory-public-edge/directory-public.sock",
+});
+const EXPECTED_HAPROXY_SECTIONS = Object.freeze([
+  Object.freeze({
+    directives: Object.freeze([
+      "maxconn 64",
+      "hard-stop-after 10s",
+      "zero-warning",
+    ]),
+    header: "global",
+  }),
+  Object.freeze({
+    directives: Object.freeze([
+      "mode http",
+      "no log",
+      "option http-server-close",
+      "option http-no-delay",
+      "timeout connect 3s",
+      "timeout client 15s",
+      "timeout client-fin 5s",
+      "timeout server 15s",
+      "timeout server-fin 5s",
+      "timeout http-request 5s",
+      "timeout http-keep-alive 1s",
+      "timeout queue 3s",
+      "timeout tunnel 300s",
+    ]),
+    header: "defaults",
+  }),
+  Object.freeze({
+    directives: Object.freeze([
+      "stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)",
+    ]),
+    header: "backend directory_public_sources",
+  }),
+  Object.freeze({
+    directives: Object.freeze([
+      `bind ${REVIEWED_HAPROXY_ENDPOINTS.socket} accept-proxy mode 660`,
+      "maxconn 48",
+      "http-request deny deny_status 429 if { table_avl(directory_public_sources) eq 0 } !{ src,ipmask(32,64),in_table(directory_public_sources) }",
+      "http-request track-sc0 src,ipmask(32,64) table directory_public_sources",
+      "http-request deny deny_status 429 unless { sc0_tracked }",
+      "http-request deny deny_status 429 if { sc0_conn_cur gt 4 }",
+      "http-request deny deny_status 429 if { sc0_conn_rate gt 12 }",
+      "http-request deny deny_status 429 unless { method GET }",
+      "http-request deny deny_status 404 unless { path -m str / }",
+      "http-request del-header Forwarded",
+      "http-request del-header X-Forwarded-For",
+      "http-request del-header X-Forwarded-Host",
+      "http-request del-header X-Forwarded-Proto",
+      "http-request del-header CF-Connecting-IP",
+      "http-request del-header Client-IP",
+      "http-request del-header Fastly-Client-IP",
+      "http-request del-header Fly-Client-IP",
+      "http-request del-header True-Client-IP",
+      "http-request del-header X-Client-IP",
+      "http-request del-header X-Cluster-Client-IP",
+      "http-request del-header X-Envoy-External-Address",
+      "http-request del-header X-Original-Client-IP",
+      "http-request del-header X-Original-Forwarded-For",
+      "http-request del-header X-Real-IP",
+      "http-request del-header X-Request-ID",
+      "http-request del-header X-Correlation-ID",
+      "http-request del-header Traceparent",
+      "http-request del-header Tracestate",
+      "http-request del-header Baggage",
+      "http-request del-header Via",
+      "http-request del-header Proxy-Authorization",
+      "http-request del-header Authorization",
+      "http-request del-header Cookie",
+      "http-response del-header Via",
+      "http-response del-header Set-Cookie",
+      "filter bwlim-out directory_public_source_egress key src,ipmask(32,64) table directory_public_sources limit 4m min-size 2896",
+      "filter bwlim-out directory_public_stream_egress default-limit 2m default-period 1s min-size 2896",
+      "http-request set-bandwidth-limit directory_public_source_egress",
+      "http-request set-bandwidth-limit directory_public_stream_egress",
+      "default_backend directory_public_application",
+    ]),
+    header: "frontend directory_public",
+  }),
+  Object.freeze({
+    directives: Object.freeze([
+      "http-reuse never",
+      `server directory-public ${REVIEWED_HAPROXY_ENDPOINTS.application} maxconn 48`,
+    ]),
+    header: "backend directory_public_application",
+  }),
+]);
 
 function fail(message) {
   throw new Error(message);
@@ -223,29 +313,42 @@ export function inspectStaticElf64X8664(bytes) {
 }
 
 export function validateClosedHaproxyConfigV1(text) {
-  if (!/^[\x00-\x7f]*$/u.test(text) || /\r|\0/u.test(text)) {
+  if (!/^[\t\n\x20-\x7e]*$/u.test(text) || /\r|\0/u.test(text)) {
     fail("directory-public HAProxy configuration must be canonical ASCII LF text");
   }
-  const active = text
-    .split("\n")
-    .map((line) => line.replace(/\s+#.*$/u, "").trim())
-    .filter((line) => line !== "" && !line.startsWith("#"));
-  const serverLines = active.filter((line) => /^server\s+/u.test(line));
+  const sections = [];
+  let current;
+  for (const [index, original] of text.split("\n").entries()) {
+    if (original.trimStart().startsWith("#")) continue;
+    const withoutComment = original.replace(/[ \t]+#.*$/u, "").trimEnd();
+    if (withoutComment.trim() === "") continue;
+    if (withoutComment.endsWith("\\")) {
+      fail(`directory-public HAProxy configuration line ${index + 1} uses a continuation`);
+    }
+    if (!/^[ \t]/u.test(withoutComment)) {
+      if (!/^(?:global|defaults|frontend [a-z0-9_]+|backend [a-z0-9_]+)$/u.test(withoutComment)) {
+        fail(`directory-public HAProxy configuration line ${index + 1} is not a reviewed section`);
+      }
+      current = { directives: [], header: withoutComment };
+      sections.push(current);
+      continue;
+    }
+    if (current === undefined) {
+      fail(`directory-public HAProxy configuration line ${index + 1} precedes its section`);
+    }
+    current.directives.push(withoutComment.trim().replace(/[ \t]+/gu, " "));
+  }
   exactJson(
-    serverLines,
-    ["server directory-public 127.0.0.1:8080 maxconn 48"],
-    "directory-public HAProxy server set",
+    sections.map((section) => section.header),
+    EXPECTED_HAPROXY_SECTIONS.map((section) => section.header),
+    "directory-public HAProxy section order",
   );
-  const forbidden = /^(?:resolvers|peers|program)\b|\b(?:resolvers|server-template|do-resolve|lua-[a-z0-9_-]*|external-check|load-server-state|server-state-file(?:-base)?|stats\s+socket|spoe-agent|filter\s+spoe|dlopen|plugin|module|setenv|presetenv|unsetenv)\b/iu;
-  const rejected = active.find((line) => forbidden.test(line));
-  if (rejected !== undefined) {
-    fail(`directory-public HAProxy configuration contains forbidden dynamic feature: ${rejected}`);
-  }
-  if (active.filter((line) => /^frontend\s+/u.test(line)).length !== 1) {
-    fail("directory-public HAProxy configuration must contain one frontend");
-  }
-  if (active.filter((line) => /^backend\s+/u.test(line)).length !== 2) {
-    fail("directory-public HAProxy configuration must contain two reviewed backends");
+  for (let index = 0; index < EXPECTED_HAPROXY_SECTIONS.length; index += 1) {
+    exactJson(
+      sections[index].directives,
+      [...EXPECTED_HAPROXY_SECTIONS[index].directives],
+      `directory-public HAProxy ${EXPECTED_HAPROXY_SECTIONS[index].header} directives`,
+    );
   }
 }
 

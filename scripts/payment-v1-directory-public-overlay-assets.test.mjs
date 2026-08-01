@@ -212,7 +212,9 @@ test("directory-public build manifest pins the exact static target-host recipe",
   const gate = read("artifactGate");
   assert.match(gate, /forbidden PT_INTERP/u);
   assert.match(gate, /forbidden PT_DYNAMIC/u);
-  assert.match(gate, /server-template/u);
+  assert.match(gate, /EXPECTED_HAPROXY_SECTIONS/u);
+  assert.match(gate, /directory-public HAProxy section order/u);
+  assert.match(gate, /directory-public HAProxy .* directives/u);
 });
 
 test("directory-public renderer closes the static artifact and keeps both blockers", (t) => {
