@@ -140,10 +140,14 @@ Executable identity is evaluated in the service namespace. Literal
 including directory-prefix binds and `+` sources relative to the service root.
 Their Linux sources/search ancestors must be root:root and non-writable. An
 optional `-` bind is rejected because its source may appear after the scan
-without a manager reload. `RootImage=`, `MountImages=`, `ExtensionImages=`,
-`ExtensionDirectories=`, dynamic roots, and other unresolved image-backed
-views fail closed. Thus binding `/usr/bin/systemctl` onto `/opt/manager` cannot
-hide a manager invocation from the host-side scan.
+without a manager reload. A bind source or destination containing a systemd
+specifier (`%`) or `$` is opaque: in particular, systemd 255 expands a dynamic
+destination, but the scanner cannot reverse-map its directory suffix exactly.
+`RootImage=`, `MountImages=`, `ExtensionImages=`, `ExtensionDirectories=`,
+dynamic roots, and other unresolved image-backed views fail closed. The
+disposable Noble PID 1 test confirms a harmless marker bind with a `%i`
+destination is expanded by systemd. Thus binding `/usr/bin/systemctl` onto
+`/opt/manager` cannot hide a manager invocation from the host-side scan.
 
 Shell handling is intentionally a small conservative parser, not a proof of
 arbitrary shell semantics. Static words, quotes, backslash removal and `;`

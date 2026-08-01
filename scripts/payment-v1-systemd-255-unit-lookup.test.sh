@@ -390,6 +390,21 @@ rm -f /run/bitcoinpir-protected-reached
 systemctl start bitcoinpir-bind-manager.service
 test "$(cat /run/bitcoinpir-protected-reached)" = reached
 
+dynamic_destination_scan="$scanner_root/dynamic-bind-destination"
+mkdir "$dynamic_destination_scan"
+printf '%s\n' harmless > /run/bitcoinpir-dynamic-bind-marker
+printf '%s\n' \
+  '[Service]' \
+  'Type=oneshot' \
+  'BindReadOnlyPaths=/run/bitcoinpir-dynamic-bind-marker:/opt/bitcoinpir-dynamic-bind-marker-%i' \
+  'ExecStart=/usr/bin/test -f /opt/bitcoinpir-dynamic-bind-marker-%i' \
+  > "$dynamic_destination_scan/foreign@probe.service"
+assert_scanner_rejects "$dynamic_destination_scan"
+cp "$dynamic_destination_scan/foreign@probe.service" \
+  /etc/systemd/system/bitcoinpir-dynamic-bind-destination@.service
+systemctl daemon-reload
+systemctl start bitcoinpir-dynamic-bind-destination@probe.service
+
 optional_bind_scan="$scanner_root/optional-bind-manager"
 mkdir "$optional_bind_scan"
 rm -f /usr/local/bin/bitcoinpir-late-manager
@@ -596,4 +611,4 @@ while test ! -s /run/bitcoinpir-accept-instance; do
 done
 systemctl stop bitcoinpir-accept.socket
 
-echo "systemd-255-unit-lookup=PASS recursive-dropins=$index accept-template=activated parser-counterexamples=closed"
+echo "systemd-255-unit-lookup=PASS recursive-dropins=$index accept-template=activated dynamic-bind-destination=expanded parser-counterexamples=closed"

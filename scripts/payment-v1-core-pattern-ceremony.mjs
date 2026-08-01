@@ -3898,7 +3898,7 @@ function parseSystemdExecutionNamespace(assignments) {
       }
       if (!source.startsWith("/") || !destination.startsWith("/") ||
           source.includes("%") || source.includes("$") ||
-          destination.includes("$") ||
+          destination.includes("%") || destination.includes("$") ||
           fields.length > 3 ||
           (fields[2] !== undefined && !["norbind", "rbind"].includes(fields[2]))) {
         opaque = true;

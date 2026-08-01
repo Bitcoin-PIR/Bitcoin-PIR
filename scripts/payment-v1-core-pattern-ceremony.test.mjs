@@ -2754,6 +2754,25 @@ test("execution namespace remaps managers and fails closed on late or image-back
   }
 });
 
+test("execution namespace fails closed on a systemd-specifier bind destination", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-bind-destination-specifier-"));
+  const path = join(root, "foreign@probe.service");
+  try {
+    writeFileSync(
+      path,
+      "[Service]\nType=oneshot\n" +
+        "BindReadOnlyPaths=/usr/bin/true:/opt/bitcoinpir-bind-destination-%i\n" +
+        "ExecStart=/opt/bitcoinpir-bind-destination-%i\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("effective fragment and drop-ins combine PATH and namespace across systemd hierarchy", () => {
   const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-effective-unit-"));
   function writeFragment(name, command) {
