@@ -3,7 +3,7 @@
 # This is an argument fragment for `payment-issuer serve-cln`, not an
 # executable script. Render every @...@ placeholder before use.
 
---bind 127.0.0.1:5610
+--bind 127.0.0.1:@FUNCTIONAL_BETA_ISSUER_PORT@
 --max-connections 128
 --allow-origin @BITCOINPIR_WEB_ORIGIN@
 --store /var/lib/bitcoinpir-payment-issuer-functional-beta/issuer.sqlite3
