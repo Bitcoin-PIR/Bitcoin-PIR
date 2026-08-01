@@ -28,6 +28,7 @@ pir-directory-nostr = { path = "../../crates/directory/nostr" }
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
 pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-cashu-custody = { path = "../../crates/payment/cashu-custody" }
+pir-payment-crypto = { path = "../../crates/payment/crypto" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
 pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
 pir-strict-https = { path = "../../crates/net/strict-https" }
@@ -53,7 +54,6 @@ async-trait = "0.1"
 [dev-dependencies]
 tempfile = "3"
 rustix = { version = "1", features = ["thread"] }
-pir-payment-crypto = { path = "../../crates/payment/crypto" }
 # Used by upload-side tests to confirm the bytes we emit parse and
 # verify cleanly via the same parser the server runs.
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
