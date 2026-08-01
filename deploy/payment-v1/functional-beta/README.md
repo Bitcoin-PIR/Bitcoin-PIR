@@ -35,6 +35,51 @@ BAT/ARC offers without changing the runtime binary. ARC must remain
 - one HTTPS standard Cashu mint whose canonical manifest is embedded in the
   signed policy.
 
+## Minimal isolated Hetzner service shape
+
+The functional-beta units are intentionally separate from the existing
+`pir-primary.service`, `pir-secondary.service`, and `dev-issuer.service`.
+Render and install these files only after generating fresh artifacts:
+
+- `bitcoinpir-payment-issuer-functional-beta.service.in` as
+  `bitcoinpir-payment-issuer-functional-beta.service`;
+- `bitcoinpir-provider-functional-beta.service.in` as
+  `bitcoinpir-provider-functional-beta.service`;
+- `hetzner-existing-caddy.fragment.in` as an appended site-block fragment in
+  the already-running Hetzner Caddyfile.
+
+Use a fresh provider identity, provider ID, policy key, issuer keys and local
+SQLite stores for this beta. The rendered units use separate paths:
+
+| Component | Unit | Loopback listener | State directory | Config tree |
+| --- | --- | --- | --- | --- |
+| Issuer / clearing | `bitcoinpir-payment-issuer-functional-beta.service` | `127.0.0.1:@FUNCTIONAL_BETA_ISSUER_PORT@` (recommend `5610`) | `/var/lib/bitcoinpir-payment-issuer-functional-beta` | `/etc/bitcoinpir/payment-v1/functional-beta/issuer` |
+| Provider | `bitcoinpir-provider-functional-beta.service` | `127.0.0.1:@FUNCTIONAL_BETA_PROVIDER_PORT@` (recommend `8291`) | `/var/lib/bitcoinpir-provider-functional-beta` | `/etc/bitcoinpir/payment-v1/functional-beta/provider` |
+
+The Caddy fragment needs two independently rendered hosts:
+
+- `@FUNCTIONAL_BETA_PROVIDER_WSS_HOST@` forwards `/v1/pir` to the provider;
+- `@FUNCTIONAL_BETA_ISSUER_HTTPS_HOST@` forwards issuer quote, claim, redeem
+  and settlement routes to the issuer.
+
+The issuer's policy `@ISSUER_ORIGIN@` must be the public HTTPS issuer host;
+the provider catalog endpoint must use the public WSS provider host. Neither
+unit takes over ports `8091`, `8092`, or `5601` used by the existing services.
+
+After installing the rendered artifacts and initializing the two stores, the
+minimal launch sequence is:
+
+```sh
+systemctl daemon-reload
+systemctl enable --now bitcoinpir-payment-issuer-functional-beta.service
+systemctl enable --now bitcoinpir-provider-functional-beta.service
+```
+
+Reload the existing Caddy service only after validating its complete rendered
+configuration. The beta's direct BOLT11 route also needs the rendered
+`@CLN_RPC_SOCKET@` to refer to an already-running Signet CLN instance; it does
+not start or modify that Lightning process.
+
 Initialize the two local beta stores once, before either service starts:
 
 ```sh
