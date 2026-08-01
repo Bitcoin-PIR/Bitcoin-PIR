@@ -449,10 +449,15 @@ operator has activated the path with real money or public infrastructure.
       pending/final receipt recovery pass real Linux tests; the native helper's
       crash/monitor/cleanup harness passes in a disposable arm64 Linux
       container. The ceremony never changes Caddy/firewall/sentinels, starts
-      the publisher or handles a private key. This is source/test closure, not
-      target installation or activation. The publication-interval firewall
-      generation guard, exact target pins, remote mutation/start approvals,
-      Caddy overlay receipt and new-boot runtime evidence remain mandatory.
+      the publisher or handles a private key. The content-addressed owner now
+      opens the host nftables generation subscription and takes the exact
+      xtables lock before topology setup; it fails on any event, queue error or
+      lock-inode drift, and the publisher is `BindsTo=` that lifetime. Kernel
+      fault injection plus exact systemd-255 pre/in-flight/post tests pass. This
+      is source/test closure, not target installation or activation. Exact
+      target pins, an uncontended target xtables lock, remote mutation/start
+      approvals, Caddy overlay receipt and new-boot runtime evidence remain
+      mandatory.
 - [x] The Caddy-admin UDS cold migration and publisher-netns ceremony now use
       the same publisher lifecycle lock. The cold plan binds an exact inactive
       netns unit plus absent nsfs path, host veth and five sentinels; checks run

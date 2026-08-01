@@ -529,7 +529,7 @@ jobs:
       - name: Install source-fair edge compatibility test binaries
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends haproxy iproute2 nodejs openssl ca-certificates
+          sudo apt-get install --yes --no-install-recommends haproxy iproute2 nftables nodejs openssl ca-certificates util-linux
           /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
           /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
           caddy_container="$(docker create caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)"
@@ -567,6 +567,7 @@ jobs:
           node --check scripts/payment-v1-publisher-private-health-probe.mjs
           node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
           sh -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+          sh -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
           bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
           sh -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
           sh -n scripts/payment-v1-systemd-255-pid1.test.sh

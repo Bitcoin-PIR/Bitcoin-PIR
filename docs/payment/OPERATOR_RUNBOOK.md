@@ -484,16 +484,22 @@ installation. Use the separate plan and at-most-one-hour approval in
 `PUBLISHER_NETNS_CEREMONY.md` to start only the exact namespace unit and obtain
 an owner-only receipt. Bind that receipt into the integrated-existing-Caddy
 overlay plan before any Caddy change. Do not start the publisher and do not
-create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
-snapshot is point-in-time evidence only.
+create an ad-hoc firewall-generation sentinel. The exact namespace owner now
+opens the host nftables event subscription before topology setup, holds the
+standard xtables lock and fails on any event or lock-inode drift. The publisher
+must retain its exact `BindsTo=` edge to that owner. Semantic pre/post firewall
+evidence remains mandatory; the monitor does not make an arbitrary initial
+policy safe.
 
 Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
 the independently pinned native launcher, its approved seven-entry manifest and
 the complete recursive descriptor-pinned Node ELF closure;
-direct Node invocation is not a production ceremony. If the continuous
-publication-interval firewall guard is absent, the terminal state is
+direct Node invocation is not a production ceremony. If the continuous guard
+cannot subscribe to host nftables notifications, cannot take the exact
+root-owned single-link `/run/xtables.lock`, observes a queued event, or is not
+the same active namespace-owner generation, the terminal state is
 namespace-only: neither the publisher service nor any Nostr publication may
-start, even when the namespace receipt is valid.
+start, even when an older namespace receipt is valid.
 
 Rollback order is the reverse trust order: stop the publisher, restore the
 exact Caddy overlay preimage, then use a distinct receipt-bound rollback

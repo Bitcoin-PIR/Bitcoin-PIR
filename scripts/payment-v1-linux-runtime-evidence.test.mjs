@@ -2534,9 +2534,27 @@ function publisherNetworkFixture() {
       name: "centralized-single-relay",
     },
     publication_time_firewall_binding: {
-      activation_blocked: true,
-      implemented: false,
-      point_in_time_evidence_only: true,
+      activation_blocked: false,
+      continuous_checks: [
+        "reject-any-nftables-generation-event",
+        "reject-xtables-lock-inode-drift",
+      ],
+      graceful_stop_barriers: [
+        "require-empty-nftables-event-queue",
+        "require-stable-xtables-lock-inode",
+      ],
+      guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
+      implemented: true,
+      lifecycle_scope: "publisher-netns-owner-lifetime",
+      point_in_time_evidence_only: false,
+      pre_ready_barriers: [
+        "open-host-netns-nftables-multicast-before-network-setup",
+        "hold-root-single-link-xtables-lock",
+        "require-empty-nftables-event-queue",
+      ],
+      privileged_mutation_boundary: "non-adversarial-root-maintenance",
+      semantic_pre_post_evidence_required: true,
+      state_machine: "sealed-before-ready-monitor-until-owner-exit",
     },
     publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
   };
@@ -3029,7 +3047,7 @@ test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way C
   );
 
   const publicationBinding = publisherNetworkFixture();
-  publicationBinding.request.publisher_network.publication_time_firewall_binding.activation_blocked = false;
+  publicationBinding.request.publisher_network.publication_time_firewall_binding.activation_blocked = true;
   assert.throws(
     () => validatePublisherNetworkRuntimeEvidenceV1(
       publicationBinding.evidence,

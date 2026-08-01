@@ -123,15 +123,29 @@ start:
    shared Caddy process. Stopping/restarting Caddy may stop the namespace through
    the namespace unit's one-way `PartOf=` relation. Runtime evidence rejects any
    effective reverse `Requires=`, `BindsTo=` or `PartOf=` edge from Caddy.
-6. This slice deliberately has no publication-time firewall-generation guard.
-   Its network policy records `activation_blocked=true`, and the publisher unit
-   requires the intentionally unavailable
-   `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED` sentinel. The current live
-   collector proves only two stable point-in-time snapshots around its own UFW
-   dry-run; it does **not** prove that the firewall stayed unchanged while a
-   prior one-shot publication ran. Do not create that sentinel or activate the
-   publisher until a separately reviewed pre/post wrapper or continuous
-   generation monitor hard-binds the exact publication interval.
+6. The content-addressed namespace owner is also the publication-time firewall
+   generation guard. Before any namespace mutation it opens a host-netns
+   `NFNLGRP_NFTABLES` subscription, takes the root-owned, single-link
+   `/run/xtables.lock` with `LOCK_EX|LOCK_NB`, and requires an empty event queue.
+   It retains both descriptors after dropping every capability and installing
+   seccomp. During the complete namespace-owner lifetime it rejects lock-inode
+   drift or any queued nftables generation message; queue overflow is a hard
+   failure. Graceful exit repeats the same checks before releasing the lock.
+   This lifetime strictly contains the publisher `ExecStart` interval. The
+   publisher's existing `BindsTo=` stops an in-flight or retained oneshot if the
+   owner fails. There is no implementation sentinel: executable/policy bytes,
+   dependency edges and live owner generation are the proof.
+
+   Cooperative UFW/iptables mutations cannot acquire the standard xtables lock.
+   A direct nftables mutation bypasses that lock but is retained by the kernel
+   notification queue and fails the owner within the bounded monitor loop. The
+   semantic pre/post UFW/raw/nft evidence and forwarding-sysctl checks remain
+   mandatory: the event monitor proves continuity of an already validated
+   generation, not correctness of an arbitrary starting generation. Planned
+   firewall maintenance must first deauthorize and stop publication/namespace
+   ownership. An adversarial host root can kill or bypass any same-host monitor;
+   the declared boundary is non-adversarial privileged maintenance, not defense
+   against a compromised root account.
 
 Pure checks do not need privileges:
 
@@ -167,6 +181,13 @@ a marked disposable container:
 BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
   scripts/payment-v1-publisher-firewall-privileged-e2e.sh
 ```
+
+The namespace harness additionally proves pre-READY guard failure, exclusive
+xtables-lock ownership, lock-identity drift detection and fail-closed
+termination after a direct, isolated nftables generation mutation. The exact
+systemd-255 PID-1 harness proves the
+`Requires`/`After` precondition, in-flight `BindsTo` stop and post-success
+deauthorization semantics.
 
 ## Activation ceremony
 

@@ -113,6 +113,7 @@ node --check scripts/payment-v1-publisher-netns-schema.test.mjs
 node --check scripts/payment-v1-publisher-private-health-probe.mjs
 node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
 bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
 bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
 bash -n scripts/payment-v1-systemd-255-pid1.test.sh
 bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
@@ -431,6 +432,7 @@ node --check scripts/payment-v1-publisher-netns-schema.test.mjs
 node --check scripts/payment-v1-publisher-private-health-probe.mjs
 node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
 bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
 bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
 bash -n scripts/payment-v1-systemd-255-pid1.test.sh
 bash -n scripts/payment-v1-publisher-netns-launcher.test.sh

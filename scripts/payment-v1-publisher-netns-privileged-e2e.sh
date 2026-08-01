@@ -15,7 +15,7 @@ if [[ ! -f /.dockerenv && "${BPIR_PUBLISHER_NETNS_DISPOSABLE_VM:-}" != "yes" ]];
   exit 2
 fi
 
-for command in gcc ip python3; do
+for command in flock gcc ip nft python3; do
   if ! command -v "$command" >/dev/null; then
     echo "missing required test command: $command" >&2
     exit 2
@@ -28,6 +28,7 @@ helper="$test_root/payment-v1-publisher-netns"
 listener_pid=""
 owner_pid=""
 cleanup_pid=""
+xtables_test_link=""
 
 terminate_child() {
   local pid="$1"
@@ -48,6 +49,10 @@ cleanup() {
   if [[ -x "$helper" ]]; then
     "$helper" cleanup >/dev/null 2>&1 || true
   fi
+  if [[ -n "$xtables_test_link" ]]; then
+    rm -f -- "$xtables_test_link"
+  fi
+  nft delete table inet bpir_pub_guard_test >/dev/null 2>&1 || true
   rm -f /tmp/bitcoinpir-publisher-netns-test-pause
   rm -rf -- "$test_root"
 }
@@ -84,7 +89,7 @@ listener.bind(socket_path)
 pathlib.Path(ready_path).write_bytes(b"ready\n")
 listener.settimeout(20)
 message = listener.recv(4096)
-if message != b"READY=1\nSTATUS=publisher namespace sealed and monitored":
+if message != b"READY=1\nSTATUS=publisher namespace and firewall generation sealed and monitored":
     raise SystemExit("unexpected readiness datagram")
 pathlib.Path(receipt_path).write_bytes(message)
 listener.close()
@@ -120,6 +125,90 @@ wait "$owner_pid"
 owner_pid=""
 "$helper" cleanup
 
+# The held lock is also descriptor/path identity. A second hard link changes
+# that identity without releasing the flock and must still fail the owner.
+xtables_test_link=/run/xtables.lock.bitcoinpir-publisher-test
+if [[ -e "$xtables_test_link" || -L "$xtables_test_link" ]]; then
+  echo "publisher firewall guard test link unexpectedly exists" >&2
+  exit 1
+fi
+start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
+NOTIFY_SOCKET="$notify_socket" "$helper" run &
+owner_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$ready_receipt" ]] && break
+  if ! kill -0 "$owner_pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if [[ ! -f "$ready_receipt" ]]; then
+  echo "lock-identity guard owner did not reach READY" >&2
+  exit 1
+fi
+wait "$listener_pid"
+listener_pid=""
+ln /run/xtables.lock "$xtables_test_link"
+for _ in $(seq 1 100); do
+  if ! kill -0 "$owner_pid" 2>/dev/null; then break; fi
+  sleep 0.05
+done
+if kill -0 "$owner_pid" 2>/dev/null; then
+  echo "publisher namespace owner survived xtables lock identity drift" >&2
+  exit 1
+fi
+if wait "$owner_pid"; then
+  owner_pid=""
+  echo "publisher namespace owner reported success after lock identity drift" >&2
+  exit 1
+fi
+owner_pid=""
+rm -f -- "$xtables_test_link"
+xtables_test_link=""
+"$helper" cleanup
+
+# The host monitor owns the standard xtables serialization lock for the whole
+# namespace lifetime and subscribes to the host nftables generation group
+# before READY. A direct nftables mutation bypasses the cooperative lock, so it
+# must still terminate the owner and leave cleanup to the exact journal.
+if nft list table inet bpir_pub_guard_test >/dev/null 2>&1; then
+  echo "publisher firewall guard test table unexpectedly exists" >&2
+  exit 1
+fi
+start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
+NOTIFY_SOCKET="$notify_socket" "$helper" run &
+owner_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$ready_receipt" ]] && break
+  if ! kill -0 "$owner_pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if [[ ! -f "$ready_receipt" ]]; then
+  echo "firewall-guard owner did not reach READY" >&2
+  exit 1
+fi
+wait "$listener_pid"
+listener_pid=""
+if flock -n /run/xtables.lock -c true; then
+  echo "publisher firewall guard did not hold the xtables lock" >&2
+  exit 1
+fi
+nft add table inet bpir_pub_guard_test
+for _ in $(seq 1 100); do
+  if ! kill -0 "$owner_pid" 2>/dev/null; then break; fi
+  sleep 0.05
+done
+if kill -0 "$owner_pid" 2>/dev/null; then
+  echo "publisher namespace owner survived nftables generation drift" >&2
+  exit 1
+fi
+if wait "$owner_pid"; then
+  owner_pid=""
+  echo "publisher namespace owner reported success after firewall drift" >&2
+  exit 1
+fi
+owner_pid=""
+nft delete table inet bpir_pub_guard_test
+"$helper" cleanup
+
 # A client monitor initialization failure must make the owner fail before any
 # READY datagram is emitted.
 start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
@@ -132,6 +221,22 @@ wait "$listener_pid" >/dev/null 2>&1 || true
 listener_pid=""
 if [[ -f "$ready_receipt" ]]; then
   echo "helper emitted READY before the client monitor initialized" >&2
+  exit 1
+fi
+"$helper" cleanup
+
+# A guard initialization failure must happen before READY just like a client
+# monitor initialization failure.
+start_notify_listener "$notify_socket" "$listener_ready" "$ready_receipt"
+if NOTIFY_SOCKET="$notify_socket" BPIR_TEST_FAIL_MONITOR_INIT=firewall "$helper" run; then
+  echo "helper succeeded despite injected firewall monitor initialization failure" >&2
+  exit 1
+fi
+kill "$listener_pid" >/dev/null 2>&1 || true
+wait "$listener_pid" >/dev/null 2>&1 || true
+listener_pid=""
+if [[ -f "$ready_receipt" ]]; then
+  echo "helper emitted READY before the firewall monitor initialized" >&2
   exit 1
 fi
 "$helper" cleanup

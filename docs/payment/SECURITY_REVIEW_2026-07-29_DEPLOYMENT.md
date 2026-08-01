@@ -354,15 +354,24 @@ Real arm64 Linux tests execute descriptor-pinned iproute2 inside a namespace,
 exercise pending/final crash recovery and pass the helper's injected setup,
 monitor and exact-cleanup failures.
 
+The reviewed owner now opens the host nftables generation subscription and
+takes the root-owned single-link xtables lock before topology setup. It reaches
+READY only after an empty event queue and retains both descriptors after
+capability drop/seccomp; any nftables event, queue failure or lock-inode drift
+fails the owner. The publisher's exact `BindsTo=` edge makes that owner lifetime
+a superset of publication. Disposable kernel and exact systemd-255 PID-1 tests
+cover pre-READY, in-flight and post-success failure propagation. This does not
+defend against adversarial host root and does not replace semantic pre/post
+UFW/raw/nft and forwarding evidence.
+
 Residual blockers remain explicit. The receipt is one-boot/one-generation
 evidence; a reboot may recreate the namespace through persistent sentinels and
 Caddy `Wants+After`, but requires fresh runtime evidence. The narrow rollback
 is unavailable after Caddy/boot generation drift and cannot replace the cold
-incident procedure. Point-in-time firewall JSON is not the still-missing
-publication-interval firewall-generation guard. Target installation, exact
-pins, remote mutation/start approval, private SNI/SAN, integrated-Caddy receipt,
-stopped/fresh edge evidence and proof that no production publisher key reached
-the host remain pre-activation gates.
+incident procedure. Target installation, exact pins, an available uncontended
+`/run/xtables.lock`, remote mutation/start approval, private SNI/SAN,
+integrated-Caddy receipt, stopped/fresh edge evidence and proof that no
+production publisher key reached the host remain pre-activation gates.
 
 ## P1 production activation blockers
 

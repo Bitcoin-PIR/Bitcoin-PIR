@@ -1615,8 +1615,8 @@ test("semantic Caddy ordering, namespace-unit and network-policy drift fail befo
     ["publisher-netns-unit", (text) => text.replace("Restart=no", "Restart=always"),
       /Restart must equal/u],
     ["network-policy", (text) => text.replace(
-      '"point_in_time_evidence_only": true',
       '"point_in_time_evidence_only": false',
+      '"point_in_time_evidence_only": true',
     ), /closed V1 policy/u],
     ["helper-manifest", (text) => `${text[0] === "0" ? "1" : "0"}${text.slice(1)}`,
       /helper manifest does not bind/u],
