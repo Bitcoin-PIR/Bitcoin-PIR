@@ -1,6 +1,10 @@
 import { defineConfig } from '@playwright/test';
 
-const port = 4183;
+const configuredPort = process.env.BITCOINPIR_PAYMENT_CLN_REGTEST_WEB_PORT;
+const port = configuredPort === undefined ? 4183 : Number(configuredPort);
+if (!Number.isInteger(port) || port < 20_000 || port > 65_535) {
+  throw new Error('BITCOINPIR_PAYMENT_CLN_REGTEST_WEB_PORT must be a high TCP port');
+}
 process.env.BITCOINPIR_PAYMENT_REAL_WEB_ORIGIN = `http://127.0.0.1:${port}`;
 process.env.BITCOINPIR_PAYMENT_REAL_BACKEND = 'cln-regtest';
 
