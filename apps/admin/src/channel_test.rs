@@ -36,6 +36,7 @@
 
 use clap::Args;
 use ed25519_dalek::VerifyingKey;
+use pir_cashu_client::{CashuTokenV4V1, MAX_CASHUB_SERIALIZED_CHARS_V1};
 use pir_payment_crypto::sign_bip340_prehash_v1;
 use pir_sdk_client::attest::{attest, SevStatus};
 use pir_sdk_client::channel::establish;
@@ -51,9 +52,12 @@ use pir_sdk_client::PirTransport;
 use pir_sdk_client::WsConnection;
 use pir_service_protocol::{
     AcquisitionMethod, AuthScheme, BackendId, Bolt11QuoteKeyDelegationV1, Bolt11QuoteStatusV1,
-    FreeModeV1, LightningNetworkV1, OperationStartV1, WorkloadId,
+    CashuKeysetBindingV1, FreeModeV1, LightningNetworkV1, OperationStartV1,
+    StandardCashuMintManifestV1, StandardCashuProofV1, StandardCashuSpendV1, VerificationMode,
+    WorkloadId,
 };
 use pir_strict_https::StrictHttpsClientV1;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -76,26 +80,30 @@ pub struct ChannelTestArgs {
     )]
     pub service_free_dpf_admission: bool,
     /// Pinned 64-hex-char provider ID expected in the signed service policy.
-    #[arg(
-        long = "service-provider-id-hex",
-        value_name = "HEX64",
-        requires = "service_free_dpf_admission"
-    )]
+    #[arg(long = "service-provider-id-hex", value_name = "HEX64")]
     pub service_provider_id_hex: Option<String>,
     /// Pinned 64-hex-char Ed25519 public key which signs the service policy.
-    #[arg(
-        long = "service-policy-signing-key-hex",
-        value_name = "HEX64",
-        requires = "service_free_dpf_admission"
-    )]
+    #[arg(long = "service-policy-signing-key-hex", value_name = "HEX64")]
     pub service_policy_signing_key_hex: Option<String>,
-    /// Database ID bound into the harmless Free DPF admission operation.
-    #[arg(
-        long = "service-dpf-db-id",
-        default_value_t = 0,
-        requires = "service_free_dpf_admission"
-    )]
+    /// Database ID bound into a harmless DPF admission operation.
+    #[arg(long = "service-dpf-db-id", default_value_t = 0)]
     pub service_dpf_db_id: u8,
+    /// Present one owner-only Cashu V4 (`cashuB`) token for the exact signed
+    /// DPF standard-Cashu offer. This mode is mutually exclusive with the
+    /// Free admission smoke because a service connection has exactly one
+    /// admission slot. The token is submitted at most once and may be spent
+    /// even if the network result is ambiguous. This neither executes a PIR
+    /// query nor contacts a wallet.
+    #[arg(
+        long = "service-cashu-dpf-token-file",
+        value_name = "PATH",
+        conflicts_with = "service_free_dpf_admission",
+        requires_all = [
+            "service_provider_id_hex",
+            "service_policy_signing_key_hex"
+        ]
+    )]
+    pub service_cashu_dpf_token_file: Option<PathBuf>,
     /// Create and verify one un-paid BOLT11 direct-receipt quote after the
     /// Free admission smoke. This never displays or pays the invoice, claims
     /// a credential, or executes a PIR query.
@@ -305,7 +313,7 @@ pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
         info_resp.len() - 1
     );
 
-    if args.service_free_dpf_admission {
+    if args.service_free_dpf_admission || args.service_cashu_dpf_token_file.is_some() {
         let expected_provider_id = match decode_hex_32(
             args.service_provider_id_hex
                 .as_deref()
@@ -366,57 +374,198 @@ pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
                 return Err(18);
             }
         };
-        let free_offer_id = match dpf_scope.offers.iter().find(|offer| {
-            offer.authorization == AuthScheme::FreeV1
-                && offer.free_mode == FreeModeV1::OpenBestEffort
-        }) {
-            Some(value) => value.offer_id,
-            None => {
-                eprintln!("service admission: DPF scope has no open-best-effort Free offer");
-                return Err(19);
-            }
-        };
         let scope_id = dpf_scope.scope.scope_id();
-        let operation = OperationStartV1::DpfQuery {
-            db_id: args.service_dpf_db_id,
-        };
-        let proof = match dangerous_unpaired_build_authorization_proof_v1(
-            &accepted,
-            &scope_id,
-            free_offer_id,
-            &[],
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("service admission: {error}");
-                return Err(20);
+        if args.service_free_dpf_admission {
+            let free_offer_id = match dpf_scope.offers.iter().find(|offer| {
+                offer.authorization == AuthScheme::FreeV1
+                    && offer.free_mode == FreeModeV1::OpenBestEffort
+            }) {
+                Some(value) => value.offer_id,
+                None => {
+                    eprintln!("service admission: DPF scope has no open-best-effort Free offer");
+                    return Err(19);
+                }
+            };
+            let operation = OperationStartV1::DpfQuery {
+                db_id: args.service_dpf_db_id,
+            };
+            let proof = match dangerous_unpaired_build_authorization_proof_v1(
+                &accepted,
+                &scope_id,
+                free_offer_id,
+                &[],
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("service admission: {error}");
+                    return Err(20);
+                }
+            };
+            let grant = match dangerous_unpaired_authorize_service_operation_v1(
+                &mut secure,
+                &accepted,
+                scope_id,
+                free_offer_id,
+                operation,
+                proof,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("service admission: {error}");
+                    return Err(21);
+                }
+            };
+            println!(
+                "service policy: ok (epoch={}, DPF Free offer={})",
+                accepted.policy().policy_epoch,
+                free_offer_id,
+            );
+            println!(
+                "service admission: granted (enforced_profile={}, expires_in_ms={})",
+                grant.enforced_profile, grant.expires_in_ms
+            );
+        } else {
+            println!(
+                "service policy: ok (epoch={}, DPF standard-Cashu offer selected)",
+                accepted.policy().policy_epoch,
+            );
+        }
+
+        if let Some(token_path) = args.service_cashu_dpf_token_file.as_deref() {
+            let cashu_offer = match dpf_scope.offers.iter().find(|offer| {
+                offer.acquisition == AcquisitionMethod::CashuEcashV1
+                    && offer.authorization == AuthScheme::CashuEcashV1
+                    && offer.free_mode == FreeModeV1::NotFree
+                    && offer.verification == VerificationMode::StandardCashuMintOnline
+            }) {
+                Some(value) => value,
+                None => {
+                    eprintln!("Cashu admission: DPF scope has no standard-Cashu mint-online offer");
+                    return Err(44);
+                }
+            };
+            let manifest = match cashu_offer.cashu_mint_manifest.as_ref() {
+                Some(value) => value,
+                None => {
+                    eprintln!("Cashu admission: selected offer has no signed mint manifest");
+                    return Err(45);
+                }
+            };
+            let token_bytes = match pir_private_files::read_private_file_bounded_v1(
+                token_path,
+                MAX_CASHUB_SERIALIZED_CHARS_V1.saturating_add(1),
+                pir_private_files::PrivateFileModeV1::ReadOnlyOrReadWrite,
+                "Cashu DPF token",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Cashu admission: could not read owner-only token file: {error}");
+                    return Err(46);
+                }
+            };
+            let token_text = match std::str::from_utf8(token_bytes.as_slice()) {
+                Ok(value) => value.strip_suffix('\n').unwrap_or(value),
+                Err(_) => {
+                    eprintln!("Cashu admission: token file is not UTF-8 cashuB text");
+                    return Err(47);
+                }
+            };
+            let token = match CashuTokenV4V1::decode_cashub(token_text) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!(
+                        "Cashu admission: token is not a valid Cashu V4 cashuB value: {error}"
+                    );
+                    return Err(48);
+                }
+            };
+            if token.mint_endpoint() != manifest.mint_endpoint || token.unit() != manifest.unit {
+                eprintln!("Cashu admission: token mint or unit does not match the signed offer");
+                return Err(49);
             }
-        };
-        let grant = match dangerous_unpaired_authorize_service_operation_v1(
-            &mut secure,
-            &accepted,
-            scope_id,
-            free_offer_id,
-            operation,
-            proof,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("service admission: {error}");
-                return Err(21);
+            let mut proofs = Vec::new();
+            for group in token.groups() {
+                let keyset_id = match resolve_cashu_v4_keyset_id(manifest, group.keyset_id()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("Cashu admission: {error}");
+                        return Err(50);
+                    }
+                };
+                for proof in group.proofs() {
+                    proofs.push(StandardCashuProofV1 {
+                        keyset_id: keyset_id.clone(),
+                        amount: proof.amount(),
+                        secret: proof.secret().to_owned(),
+                        c: *proof.c(),
+                    });
+                }
             }
-        };
-        println!(
-            "service policy: ok (epoch={}, DPF Free offer={})",
-            accepted.policy().policy_epoch,
-            free_offer_id,
-        );
-        println!(
-            "service admission: granted (enforced_profile={}, expires_in_ms={})",
-            grant.enforced_profile, grant.expires_in_ms
-        );
+            let spend = match StandardCashuSpendV1::new_canonical(proofs) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Cashu admission: canonical proof construction failed: {error}");
+                    return Err(51);
+                }
+            };
+            let cashu_now_unix = match trusted_now_unix() {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Cashu admission: {error}");
+                    return Err(52);
+                }
+            };
+            let canonical_spend = match accepted.dangerous_unpaired_prepare_standard_cashu_spend_v1(
+                &scope_id,
+                cashu_offer.offer_id,
+                &spend,
+                cashu_now_unix,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Cashu admission: token does not match the signed offer: {error}");
+                    return Err(53);
+                }
+            };
+            let cashu_proof = match dangerous_unpaired_build_authorization_proof_v1(
+                &accepted,
+                &scope_id,
+                cashu_offer.offer_id,
+                &canonical_spend,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Cashu admission: {error}");
+                    return Err(54);
+                }
+            };
+            let cashu_grant = match dangerous_unpaired_authorize_service_operation_v1(
+                &mut secure,
+                &accepted,
+                scope_id,
+                cashu_offer.offer_id,
+                OperationStartV1::DpfQuery {
+                    db_id: args.service_dpf_db_id,
+                },
+                cashu_proof,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!(
+                        "Cashu admission: provider rejected or the single-use token outcome is ambiguous: {error}"
+                    );
+                    return Err(55);
+                }
+            };
+            println!(
+                "Cashu admission: granted (DPF offer={}, enforced_profile={}, expires_in_ms={})",
+                cashu_offer.offer_id, cashu_grant.enforced_profile, cashu_grant.expires_in_ms
+            );
+        }
 
         if args.service_bolt11_dpf_quote {
             let issuer_url = args
@@ -673,6 +822,45 @@ fn trusted_now_unix() -> Result<u64, String> {
         Ok(value) if value.as_secs() != 0 => Ok(value.as_secs()),
         _ => Err("trusted wall clock is unavailable".to_owned()),
     }
+}
+
+/// Resolve only against the signed mint manifest. In particular, this never
+/// fetches unauthenticated `/v1/keys` data while a bearer token is live.
+fn resolve_cashu_v4_keyset_id(
+    manifest: &StandardCashuMintManifestV1,
+    raw_keyset_id: &[u8],
+) -> Result<String, String> {
+    let encoded = hex::encode(raw_keyset_id);
+    let matches: Vec<&CashuKeysetBindingV1> = match raw_keyset_id.len() {
+        8 => manifest
+            .accepted_input_keysets
+            .iter()
+            .filter(|keyset| {
+                keyset.keyset_id.starts_with(&encoded)
+                    || legacy_cashu_short_keyset_id(keyset) == encoded
+            })
+            .collect(),
+        33 => manifest
+            .accepted_input_keysets
+            .iter()
+            .filter(|keyset| keyset.keyset_id == encoded)
+            .collect(),
+        _ => return Err("Cashu V4 keyset ID must be exactly 8 or 33 bytes".to_owned()),
+    };
+    match matches.as_slice() {
+        [keyset] => Ok(keyset.keyset_id.clone()),
+        [] => Err("Cashu token keyset is not accepted by the signed mint manifest".to_owned()),
+        _ => Err("Cashu token short keyset ID is ambiguous in the signed mint manifest".to_owned()),
+    }
+}
+
+fn legacy_cashu_short_keyset_id(keyset: &CashuKeysetBindingV1) -> String {
+    let mut hasher = Sha256::new();
+    for key in &keyset.keys {
+        hasher.update(key.public_key);
+    }
+    let digest = hasher.finalize();
+    format!("00{}", hex::encode(&digest[..7]))
 }
 
 async fn strict_post(
