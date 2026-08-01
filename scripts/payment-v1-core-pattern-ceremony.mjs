@@ -534,11 +534,23 @@ function validateDirectoryPin(value, label, expectedPath) {
 
 export function validateManagerUnitPathGenerationForTest(value, label) {
   const generationLabel = label || "systemd UnitPath generation";
-  exactKeys(value, ["directories", "unit_path"], generationLabel);
+  exactKeys(value, ["ancestors", "directories", "unit_path"], generationLabel);
   exactArray(value.unit_path, Array.from(SYSTEMD_MANAGER_UNIT_PATHS), generationLabel + ".unit_path");
-  if (!Array.isArray(value.directories)) {
-    fail(generationLabel + ".directories must be an array");
+  if (!Array.isArray(value.ancestors) || !Array.isArray(value.directories)) {
+    fail(generationLabel + ".ancestors/directories must be arrays");
   }
+  const expectedAncestorPaths = unitPathAncestorPaths(SYSTEMD_MANAGER_UNIT_PATHS);
+  exactArray(
+    value.ancestors.map(function (entry) { return entry?.path; }),
+    expectedAncestorPaths,
+    generationLabel + ".ancestors paths",
+  );
+  value.ancestors.forEach(function (entry, index) {
+    validateTrustedDirectoryGenerationEntry(
+      entry,
+      generationLabel + ".ancestors[" + index + "]",
+    );
+  });
   const paths = [];
   const rootStates = new Map();
   value.directories.forEach(function (entry, index) {
@@ -553,24 +565,10 @@ export function validateManagerUnitPathGenerationForTest(value, label) {
     if (containingRoot === undefined) {
       fail(entryLabel + " is outside Manager.UnitPath");
     }
+    validateTrustedDirectoryGenerationEntry(entry, entryLabel);
     if (entry.state === "absent") {
-      exactKeys(entry, ["path", "state"], entryLabel);
       if (entry.path !== containingRoot) {
         fail(entryLabel + " records absence below a missing UnitPath root");
-      }
-    } else {
-      exactKeys(entry, [
-        "ctime_ns", "device", "gid", "inode", "mode", "mtime_ns", "nlink",
-        "path", "state", "uid",
-      ], entryLabel);
-      const mode = Number.parseInt(entry.mode, 8);
-      if (!MODE.test(entry.mode) || entry.uid !== 0 || entry.gid !== 0 ||
-          (mode & 0o022) !== 0 || !Number.isSafeInteger(entry.nlink) || entry.nlink < 1 ||
-          typeof entry.device !== "string" || !/^[1-9][0-9]*$/u.test(entry.device) ||
-          typeof entry.inode !== "string" || !/^[1-9][0-9]*$/u.test(entry.inode) ||
-          typeof entry.ctime_ns !== "string" || !/^[0-9]+$/u.test(entry.ctime_ns) ||
-          typeof entry.mtime_ns !== "string" || !/^[0-9]+$/u.test(entry.mtime_ns)) {
-        fail(entryLabel + " is not a canonical trusted directory generation");
       }
     }
     if (entry.path === containingRoot) rootStates.set(containingRoot, entry.state);
@@ -589,6 +587,18 @@ export function validateManagerUnitPathGenerationForTest(value, label) {
     });
     if (absentRoot !== undefined) {
       fail(generationLabel + " contains descendants below absent root " + absentRoot);
+    }
+  }
+  for (const ancestor of value.ancestors) {
+    if (ancestor.state !== "absent") continue;
+    if (value.ancestors.some(function (entry) {
+      return entry.path.startsWith(ancestor.path === "/" ? "/" : ancestor.path + "/") &&
+        entry.path !== ancestor.path && entry.state !== "absent";
+    }) || SYSTEMD_MANAGER_UNIT_PATHS.some(function (root) {
+      return root.startsWith(ancestor.path === "/" ? "/" : ancestor.path + "/") &&
+        rootStates.get(root) !== "absent";
+    })) {
+      fail(generationLabel + " contains a present descendant below absent ancestor " + ancestor.path);
     }
   }
   return value;
@@ -2130,6 +2140,10 @@ async function rollbackFromPending(plan, context, ops, pending) {
     await ops.writeSysctl("kernel.core_pipe_limit", "0");
     phase = "restore-enablement-without-handler-execution";
     await ops.ensureApportEnablement(plan.preimage.apport_enablement_symlinks[0]);
+    phase = "reprove-coredump-closure-before-restoring-apport-pipe";
+    await ops.reproveCoreDumpRollbackRemovalClosure(
+      plan.candidate.coredump_admin_masks,
+    );
     phase = "restore-three-sysctls";
     await ops.writeSysctl("kernel.core_pipe_limit", APPORT_SYSCTLS["kernel.core_pipe_limit"]);
     await ops.writeSysctl("fs.suid_dumpable", APPORT_SYSCTLS["fs.suid_dumpable"]);
@@ -2227,6 +2241,9 @@ async function reestablishVisibleRollbackPostState(plan, ops) {
   await ops.writeSysctl("fs.suid_dumpable", "0");
   await ops.writeSysctl("kernel.core_pipe_limit", "0");
   await ops.ensureApportEnablement(plan.preimage.apport_enablement_symlinks[0]);
+  await ops.reproveCoreDumpRollbackRemovalClosure(
+    plan.candidate.coredump_admin_masks,
+  );
   await ops.writeSysctl("kernel.core_pipe_limit", APPORT_SYSCTLS["kernel.core_pipe_limit"]);
   await ops.writeSysctl("fs.suid_dumpable", APPORT_SYSCTLS["fs.suid_dumpable"]);
   await ops.writeSysctl("kernel.core_pattern", APPORT_SYSCTLS["kernel.core_pattern"]);
@@ -3172,21 +3189,31 @@ function crashDirectorySnapshot() {
 const APPORT_ACTION_DIRECTIVES = new Set([
   "Alias",
   "Also",
+  "After",
+  "Before",
+  "BindTo",
   "BindsTo",
   "Conflicts",
+  "JoinsNamespaceOf",
   "OnFailure",
   "OnFailureOf",
   "OnSuccess",
   "OnSuccessOf",
   "PartOf",
+  "PropagateReloadFrom",
+  "PropagateReloadTo",
   "PropagatesReloadTo",
   "PropagatesStopTo",
   "ReloadPropagatedFrom",
   "Requires",
+  "RequiresOverridable",
   "RequiredBy",
   "Requisite",
+  "RequisiteOverridable",
   "RequisiteOf",
   "Service",
+  "Slice",
+  "Sockets",
   "StopPropagatedFrom",
   "TriggeredBy",
   "Triggers",
@@ -3195,6 +3222,9 @@ const APPORT_ACTION_DIRECTIVES = new Set([
   "UpheldBy",
   "WantedBy",
   "Wants",
+]);
+const SYSTEMD_V255_EXEC_SEARCH_PATHS = Object.freeze([
+  "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
 ]);
 
 function decodeSystemdEscape(text, offset) {
@@ -3370,6 +3400,9 @@ function systemdTemplateCouldNameProtectedCoreDumpUnit(value) {
         Array.from(prefix).concat(suffix),
         Array.from(prefix + "@").concat(suffix),
         Array.from(prefix + "@").concat([TEMPLATE_ANY, TEMPLATE_STAR], suffix),
+        ...(type === "slice" ? [
+          Array.from(prefix + "-").concat([TEMPLATE_ANY, TEMPLATE_STAR], suffix),
+        ] : []),
       ]) {
         if (templateTokensIntersect(template, protectedPattern)) return true;
       }
@@ -3399,10 +3432,110 @@ function literalExecWordReferencesApport(value) {
   });
 }
 
+function systemdLogicalLines(bytes) {
+  const text = bytes.toString("utf8");
+  if (text.includes("\0")) fail("systemd unit contains a NUL byte");
+  const logical = [];
+  let continuation = null;
+  let bomSeen = false;
+  for (let physical of text.split("\n")) {
+    if (physical.endsWith("\r")) physical = physical.slice(0, -1);
+    const first = physical.search(/[^ \t\v\f]/u);
+    const contentOffset = first < 0 ? physical.length : first;
+    const marker = physical[contentOffset];
+    if (marker === "#" || marker === ";") continue;
+    if (!bomSeen && physical.startsWith("\ufeff")) {
+      physical = physical.slice(1);
+      bomSeen = true;
+    }
+    continuation = (continuation === null ? "" : continuation) + physical;
+    let trailingBackslashes = 0;
+    for (let index = continuation.length - 1;
+      index >= 0 && continuation[index] === "\\";
+      index -= 1) {
+      trailingBackslashes += 1;
+    }
+    if (trailingBackslashes % 2 === 1) {
+      continuation = continuation.slice(0, -1) + " ";
+      continue;
+    }
+    logical.push(continuation);
+    continuation = null;
+  }
+  if (continuation !== null) logical.push(continuation);
+  return logical;
+}
+
+function containsSystemdEnvironmentExpansion(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "$") continue;
+    if (value[index + 1] === "$") {
+      index += 1;
+      continue;
+    }
+    if (value[index + 1] === "{" &&
+        /^[A-Za-z_][A-Za-z0-9_]*\}/u.test(value.slice(index + 2))) {
+      return true;
+    }
+    if (/^[A-Za-z_]/u.test(value[index + 1] || "")) return true;
+  }
+  return false;
+}
+
+function resolvedExecIdentities(executable, searchPaths) {
+  const candidates = executable.startsWith("/")
+    ? [resolve("/", executable)]
+    : searchPaths.filter(function (directory) { return directory.startsWith("/"); })
+      .map(function (directory) { return resolve("/", directory, executable); });
+  const identities = new Set([executable, resolve("/", executable)]);
+  for (const candidate of candidates) {
+    identities.add(candidate);
+    try {
+      identities.add(realpathSync(candidate));
+      const stat = statSync(candidate, { bigint: true });
+      identities.add("device-inode:" + stat.dev.toString() + ":" + stat.ino.toString());
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    }
+  }
+  return identities;
+}
+
+function parseSystemdExecCommands(value) {
+  const commands = [];
+  let command = [];
+  for (const word of parseSystemdWords(value)) {
+    if (word === ";") {
+      if (command.length !== 0) commands.push(command);
+      command = [];
+      continue;
+    }
+    command.push(word);
+  }
+  if (command.length !== 0) commands.push(command);
+  return commands;
+}
+
+function requiresMountsForCouldReferenceProtectedUnit(value) {
+  return parseSystemdWords(value).some(function (path) {
+    if (path.includes("%") || !path.startsWith("/")) return true;
+    const components = resolve("/", path).split("/").filter(function (component) {
+      return component !== "";
+    });
+    return [
+      ["apport", "coredump", "hook"],
+      ["systemd", "coredump"],
+    ].some(function (protectedComponents) {
+      return protectedComponents.every(function (component, index) {
+        return components[index] === component;
+      });
+    });
+  });
+}
+
 function unitFileReferencesProtectedCrashHandler(bytes) {
-  const logical = bytes.toString("utf8").replace(/\\\r?\n[ \t]*/gu, " ");
   const assignments = [];
-  for (const raw of logical.split("\n")) {
+  for (const raw of systemdLogicalLines(bytes)) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
     const equals = line.indexOf("=");
@@ -3416,34 +3549,61 @@ function unitFileReferencesProtectedCrashHandler(bytes) {
     .flatMap(function (entry) { return parseSystemdWords(entry.value); })
     .flatMap(function (value) { return value.split(":"); })
     .filter(function (value) { return value !== ""; });
+  const effectiveSearchPaths = Array.from(new Set([
+    ...searchPaths,
+    ...SYSTEMD_V255_EXEC_SEARCH_PATHS,
+  ]));
+  const interpreterNames = ["bash", "busybox", "dash", "env", "sh", "zsh"];
+  const systemctlIdentities = resolvedExecIdentities("systemctl", effectiveSearchPaths);
+  const interpreterIdentities = new Set(interpreterNames.flatMap(function (name) {
+    return Array.from(resolvedExecIdentities(name, effectiveSearchPaths));
+  }));
   for (const { directive, value } of assignments) {
     if (/^Exec[A-Za-z]*$/u.test(directive)) {
-      const command = parseSystemdWords(value);
-      if (command.length === 0) continue;
-      const executable = command[0].replace(/^[-:@+!]+/u, "");
-      const interpreter = new Set([
-        "/bin/bash", "/bin/dash", "/bin/sh", "/bin/zsh", "/usr/bin/env",
-      ]).has(resolve("/", executable)) ||
-        new Set(["bash", "dash", "env", "sh", "zsh"]).has(executable);
-      const systemctlCommand = basename(executable) === "systemctl";
-      const searchResolved = searchPaths.some(function (directory) {
-        if (!directory.startsWith("/") || executable.startsWith("/")) return false;
-        return systemdTemplateCouldEqual(resolve("/", directory, executable), APPORT_HANDLER_PATH);
-      });
-      if (systemdTemplateCouldEqual(executable, APPORT_HANDLER_PATH) ||
-          normalizedExecPathReferencesApport(executable) || searchResolved ||
-          command.some(literalExecWordReferencesApport) ||
-          command.some(function (word) {
-            return word.includes("apport-coredump-hook") ||
-              word.includes("systemd-coredump") ||
-              word.includes("--from-systemd-coredump");
-          }) ||
-          (systemctlCommand && command.slice(1).some(function (word) {
-            return systemdTemplateCouldNameProtectedCoreDumpUnit(word);
-          })) ||
-          (interpreter && command.slice(1).some(function (word) { return word.includes("%"); }))) {
-        return true;
+      for (const command of parseSystemdExecCommands(value)) {
+        const executable = command[0].replace(/^[-:@+!]+/u, "");
+        const identityWords = [executable, ...command.slice(1)];
+        const referencedIdentities = new Set(identityWords.flatMap(function (word) {
+          return Array.from(resolvedExecIdentities(word, effectiveSearchPaths));
+        }));
+        const referencedIdentityBasenames = new Set(Array.from(
+          referencedIdentities,
+          function (identity) { return basename(identity); },
+        ));
+        const interpreter = interpreterNames.some(function (name) {
+          return referencedIdentityBasenames.has(name);
+        }) || Array.from(referencedIdentities).some(function (identity) {
+          return interpreterIdentities.has(identity);
+        });
+        const systemctlReferenced = referencedIdentityBasenames.has("systemctl") ||
+          Array.from(referencedIdentities).some(function (identity) {
+            return systemctlIdentities.has(identity);
+          });
+        const searchResolved = effectiveSearchPaths.some(function (directory) {
+          if (!directory.startsWith("/") || executable.startsWith("/")) return false;
+          return systemdTemplateCouldEqual(resolve("/", directory, executable), APPORT_HANDLER_PATH);
+        });
+        if (systemdTemplateCouldEqual(executable, APPORT_HANDLER_PATH) ||
+            normalizedExecPathReferencesApport(executable) || searchResolved ||
+            command.some(literalExecWordReferencesApport) ||
+            command.some(function (word) {
+              return word.includes("apport-coredump-hook") ||
+                word.includes("systemd-coredump") ||
+                word.includes("--from-systemd-coredump");
+            }) ||
+            (systemctlReferenced && command.some(function (word) {
+              return systemdTemplateCouldNameProtectedCoreDumpUnit(word);
+            })) ||
+            (systemctlReferenced && command.some(containsSystemdEnvironmentExpansion)) ||
+            (interpreter && command.some(function (word) { return word.includes("$"); })) ||
+            (interpreter && command.slice(1).some(function (word) { return word.includes("%"); }))) {
+          return true;
+        }
       }
+    }
+    if (directive === "RequiresMountsFor" &&
+        requiresMountsForCouldReferenceProtectedUnit(value)) {
+      return true;
     }
     if (!APPORT_ACTION_DIRECTIVES.has(directive)) continue;
     const dependencies = parseSystemdWords(value);
@@ -3511,9 +3671,12 @@ function isProtectedCoreDumpUnitName(name) {
     return false;
   }
   const stem = name.slice(0, separator);
+  const type = name.slice(separator + 1);
   return PROTECTED_COREDUMP_UNIT_PREFIXES.some(function (prefix) {
     return stem === prefix || stem === prefix + "@" ||
-      (stem.startsWith(prefix + "@") && stem.length > prefix.length + 1);
+      (stem.startsWith(prefix + "@") && stem.length > prefix.length + 1) ||
+      (type === "slice" && stem.startsWith(prefix + "-") &&
+        stem.length > prefix.length + 1);
   });
 }
 
@@ -3645,6 +3808,46 @@ function directoryGenerationEntry(path, stat) {
   };
 }
 
+function validateTrustedDirectoryGenerationEntry(entry, label) {
+  if (!isPlainObject(entry) || !["absent", "present"].includes(entry.state)) {
+    fail(label + " has an unreviewed state");
+  }
+  validatePath(entry.path, label + ".path");
+  if (entry.state === "absent") {
+    exactKeys(entry, ["path", "state"], label);
+    return;
+  }
+  exactKeys(entry, [
+    "ctime_ns", "device", "gid", "inode", "mode", "mtime_ns", "nlink",
+    "path", "state", "uid",
+  ], label);
+  const mode = Number.parseInt(entry.mode, 8);
+  if (!MODE.test(entry.mode) || entry.uid !== 0 || entry.gid !== 0 ||
+      (mode & 0o022) !== 0 || !Number.isSafeInteger(entry.nlink) || entry.nlink < 1 ||
+      typeof entry.device !== "string" || !/^[1-9][0-9]*$/u.test(entry.device) ||
+      typeof entry.inode !== "string" || !/^[1-9][0-9]*$/u.test(entry.inode) ||
+      typeof entry.ctime_ns !== "string" || !/^[0-9]+$/u.test(entry.ctime_ns) ||
+      typeof entry.mtime_ns !== "string" || !/^[0-9]+$/u.test(entry.mtime_ns)) {
+    fail(label + " is not a canonical trusted directory generation");
+  }
+}
+
+function unitPathAncestorPaths(roots) {
+  const rootSet = new Set(Array.from(roots, function (root) {
+    return resolve("/", root);
+  }));
+  const ancestors = new Set();
+  for (const root of rootSet) {
+    let current = dirname(root);
+    for (;;) {
+      if (!rootSet.has(current)) ancestors.add(current);
+      if (current === "/") break;
+      current = dirname(current);
+    }
+  }
+  return Array.from(ancestors).sort();
+}
+
 function assertTrustedUnitPathDirectory(stat, path, enforceRootOwnership) {
   if (!stat.isDirectory() || stat.isSymbolicLink() ||
       (Number(stat.mode) & 0o022) !== 0 ||
@@ -3653,21 +3856,19 @@ function assertTrustedUnitPathDirectory(stat, path, enforceRootOwnership) {
   }
 }
 
-function assertTrustedUnitPathAncestors(path, enforceRootOwnership) {
-  if (!enforceRootOwnership) return;
-  const parts = resolve("/", path).split("/").filter(function (part) { return part !== ""; });
-  let current = "/";
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    current = join(current, parts[index]);
+function trustedUnitPathAncestorGeneration(roots, enforceRootOwnership) {
+  if (!enforceRootOwnership) return [];
+  return unitPathAncestorPaths(roots).map(function (path) {
     let stat;
     try {
-      stat = lstatSync(current, { bigint: true });
+      stat = lstatSync(path, { bigint: true });
     } catch (error) {
-      if (error.code === "ENOENT") return;
+      if (error.code === "ENOENT") return { path, state: "absent" };
       throw error;
     }
-    assertTrustedUnitPathDirectory(stat, current, true);
-  }
+    assertTrustedUnitPathDirectory(stat, path, true);
+    return directoryGenerationEntry(path, stat);
+  });
 }
 
 function scanManagedUnitConfiguration(
@@ -3839,8 +4040,8 @@ function scanManagedUnitConfiguration(
   }
   const visited = new Set();
   const directories = [];
+  const ancestors = trustedUnitPathAncestorGeneration(roots, enforceRootOwnership);
   for (const configured of roots) {
-    assertTrustedUnitPathAncestors(configured, enforceRootOwnership);
     let configuredStat;
     try {
       configuredStat = lstatSync(configured, { bigint: true });
@@ -3881,6 +4082,10 @@ function scanManagedUnitConfiguration(
     }
     visit(root, 0);
   }
+  const ancestorsAfter = trustedUnitPathAncestorGeneration(roots, enforceRootOwnership);
+  if (!same(ancestors, ancestorsAfter)) {
+    fail("systemd UnitPath ancestor generation changed during traversal");
+  }
   for (const unit of units) {
     observed[unit].alias_paths.sort();
     observed[unit].dropin_paths.sort();
@@ -3894,6 +4099,7 @@ function scanManagedUnitConfiguration(
   });
   return {
     directory_generation: {
+      ancestors,
       directories,
       unit_path: Array.from(roots),
     },
@@ -3909,11 +4115,15 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
   ).managed_load_paths;
 }
 
-export function scanManagerUnitPathGenerationForTest(configuredRoots, configuredAllowlist) {
+export function scanManagerUnitPathGenerationForTest(
+  configuredRoots,
+  configuredAllowlist,
+  enforceRootOwnership = false,
+) {
   return scanManagedUnitConfiguration(
     configuredRoots,
     configuredAllowlist || {},
-    false,
+    enforceRootOwnership,
   ).directory_generation;
 }
 
@@ -6073,6 +6283,13 @@ export function realOps(plan) {
       for (let index = links.length - 1; index >= 0; index -= 1) {
         removeSymlinkQuarantine(links[index].path, links[index].target, quarantines[index]);
       }
+    },
+    async reproveCoreDumpRollbackRemovalClosure(links) {
+      requireMutationLease("re-prove coredump rollback removal closure");
+      validateCoreDumpMaskLinks(links, "coredump administrative masks");
+      // This proof runs before rollback restores the Apport pipe. The mutator
+      // repeats it immediately before removing the first administrative mask.
+      assertCoreDumpRollbackRemovalClosure(plan);
     },
     async removeGuard(unit, enablement) {
       requireMutationLease("remove boot and activation gates");

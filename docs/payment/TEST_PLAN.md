@@ -1072,9 +1072,16 @@ remain separate acceptance gates.
   static service UID/GID remain in the protected credential set, so either
   full procfs pass rejects any residual publisher credential holder. The
   disposable `payment-v1-systemd-255-pid1.test.sh` wrapper builds and boots the
-  exact Ubuntu `systemd 255 (255.4-1ubuntu8.15)` manager. It runs the directory
-  publisher oneshot harness to confirm real active/exited metadata, completed
-  ExecStart, environment removal and zero UID/GID holders, then exercises both
+  exact Ubuntu `systemd 255 (255.4-1ubuntu8.15)` manager. Its unit-lookup cell
+  proves continuation across comments, `$TARGET`, wrapped-interpreter,
+  semicolon-separated and hard-link-aliased manager execution with a real
+  protected-template marker, trusted UnitPath ancestor capture plus writable
+  ancestor rejection, implicit slice parent activation,
+  `Slice=`/`Sockets=` Requires/Wants, and a
+  `RequiresMountsFor=` mount edge, alongside benign controls. It then runs the
+  directory publisher oneshot harness to confirm
+  real active/exited metadata, completed ExecStart, environment removal and
+  zero UID/GID holders, then exercises both
   the pre-READY notify-timeout and post-READY exit failure generations plus
   exact `reset-failed` convergence;
 - an exact managed-unit cgroup may contain master/worker processes only with the

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 
 import {
   APPORT_ENABLEMENT_PATH,
@@ -82,6 +83,20 @@ export function embeddedPin(path, bytes, mode, owner) {
 
 function executable(path, label) {
   return pin(path, label + "\n", "0555");
+}
+
+function fixtureUnitPathAncestors() {
+  const roots = new Set(SYSTEMD_MANAGER_UNIT_PATHS);
+  const ancestors = new Set();
+  for (const root of roots) {
+    let current = dirname(root);
+    for (;;) {
+      if (!roots.has(current)) ancestors.add(current);
+      if (current === "/") break;
+      current = dirname(current);
+    }
+  }
+  return Array.from(ancestors).sort();
 }
 
 export function fixturePlan() {
@@ -181,6 +196,20 @@ export function fixturePlan() {
       os_release: pin("/usr/lib/os-release", "ubuntu noble\n", "0644"),
       plan_boot_id: PLAN_BOOT_ID,
       systemd_unit_path_generation: {
+        ancestors: fixtureUnitPathAncestors().map(function (path, index) {
+          return {
+            ctime_ns: String(3_000_000 + index),
+            device: "2049",
+            gid: 0,
+            inode: String(20_000 + index),
+            mode: "0755",
+            mtime_ns: String(4_000_000 + index),
+            nlink: 2,
+            path,
+            state: "present",
+            uid: 0,
+          };
+        }),
         directories: Array.from(SYSTEMD_MANAGER_UNIT_PATHS).sort().map(function (path, index) {
           return {
             ctime_ns: String(1_000_000 + index),
@@ -705,7 +734,7 @@ export class FakeOps {
   }
 
   async removeCoreDumpMasks() {
-    this.before("reprove-coredump-absence-closure");
+    this.before("reprove-coredump-absence-closure:pre-unmask");
     assert.deepEqual(
       this.state.coredump_vendor_closure,
       expectedPreimage(this.plan).coredump_vendor_closure,
@@ -716,12 +745,27 @@ export class FakeOps {
       }),
       true,
     );
-    this.after("reprove-coredump-absence-closure");
+    this.after("reprove-coredump-absence-closure:pre-unmask");
     this.before("remove-coredump-admin-masks");
     this.state.coredump_admin_masks = COREDUMP_ADMIN_MASKS.map(function ({ name, path }) {
       return { name, path, state: "absent" };
     });
     this.after("remove-coredump-admin-masks");
+  }
+
+  async reproveCoreDumpRollbackRemovalClosure() {
+    this.before("reprove-coredump-absence-closure:pre-restore");
+    assert.deepEqual(
+      this.state.coredump_vendor_closure,
+      expectedPreimage(this.plan).coredump_vendor_closure,
+    );
+    assert.equal(
+      this.state.coredump_admin_masks.every(function (entry) {
+        return entry.state === "present";
+      }),
+      true,
+    );
+    this.after("reprove-coredump-absence-closure:pre-restore");
   }
 
   simulateReboot() {

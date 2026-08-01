@@ -176,10 +176,11 @@ stable/runtime split, closed systemd load-path and D-Bus evidence expectations,
 official Noble systemd-sysctl bytes/boot enablement, the persistent credential
 closure, and all fixed symlink/file/empty-lock crash-replay paths. The
 closed systemd proof binds the exact ordered manager `UnitPath` plus an absent
-root marker or complete device/inode/time/link/owner/mode generation for every
-root and nested directory. Protected coredump-family fragments cover every
-systemd 255 unit type and every recursively dash-truncated `@instance` and
-template `@` drop-in directory that systemd would merge. Runtime, reload and
+marker or complete device/inode/time/link/owner/mode generation for every
+ancestor (including `/`), root, and nested directory. Protected coredump-family
+fragments cover every systemd 255 unit type and every recursively
+dash-truncated `@instance` and template `@` drop-in directory that systemd
+would merge. Runtime, reload and
 rollback fences repeat the directory trust and generation checks; reload keeps
 the generator filesystem device exact while normalizing only expected
 inode/time/link regeneration. The

@@ -213,6 +213,16 @@ test("v2 plan validates and deterministically binds the official Noble source/un
     plan.host.systemd_unit_path_generation.unit_path,
     SYSTEMD_MANAGER_UNIT_PATHS,
   );
+  assert.deepEqual(
+    plan.host.systemd_unit_path_generation.ancestors.map(function (entry) {
+      return entry.path;
+    }),
+    [
+      "/", "/etc", "/etc/systemd", "/run", "/run/systemd", "/usr",
+      "/usr/lib", "/usr/lib/systemd", "/usr/local", "/usr/local/lib",
+      "/usr/local/lib/systemd",
+    ],
+  );
   assert.equal(
     assertPlanUnitPathGenerationForTest(
       plan.host.systemd_unit_path_generation,
@@ -414,6 +424,9 @@ test("plan rejects relaxation of sysctl, Noble, helper, guard, crash-dir, or per
     function (plan) { plan.host.systemd_unit_path_generation.directories[0].mode = "0775"; },
     function (plan) { plan.host.systemd_unit_path_generation.directories[0].uid = 1; },
     function (plan) { plan.host.systemd_unit_path_generation.directories.pop(); },
+    function (plan) { plan.host.systemd_unit_path_generation.ancestors[0].mode = "0777"; },
+    function (plan) { plan.host.systemd_unit_path_generation.ancestors[0].uid = 1; },
+    function (plan) { plan.host.systemd_unit_path_generation.ancestors.pop(); },
     function (plan) {
       plan.host.systemd_unit_path_generation.directories[0].ctime_ns = "not-a-generation";
     },
@@ -878,9 +891,22 @@ test("rollback restores exact symlink and all three sysctls without stock ExecSt
   );
   assert.equal(ops.calls.includes("ensure-apport-enablement"), true);
   assert.equal(ops.calls.includes("start-apport-stock-handler"), false);
-  const closureReproof = ops.calls.lastIndexOf("reprove-coredump-absence-closure");
+  const preRestoreReproof = ops.calls.lastIndexOf(
+    "reprove-coredump-absence-closure:pre-restore",
+  );
+  const closureReproof = ops.calls.lastIndexOf(
+    "reprove-coredump-absence-closure:pre-unmask",
+  );
   const removeCoreMasks = ops.calls.lastIndexOf("remove-coredump-admin-masks");
   const removePersistent = ops.calls.lastIndexOf("remove-persistent");
+  assert.ok(
+    preRestoreReproof >= 0 &&
+      preRestoreReproof < ops.calls.lastIndexOf("write:kernel.core_pipe_limit=10") &&
+      preRestoreReproof < ops.calls.lastIndexOf("write:fs.suid_dumpable=2") &&
+      preRestoreReproof < ops.calls.lastIndexOf(
+        "write:kernel.core_pattern=" + APPORT_SYSCTLS["kernel.core_pattern"],
+      ),
+  );
   assert.ok(closureReproof >= 0 && closureReproof < removeCoreMasks);
   assert.ok(removeCoreMasks < removePersistent);
   assert.equal(
@@ -932,10 +958,43 @@ test("rollback re-proves the receipt-bound load-path closure before removing the
     },
   );
   assert.equal(injected, true);
-  assert.ok(ops.calls.includes("reprove-coredump-absence-closure"));
+  assert.ok(ops.calls.includes("reprove-coredump-absence-closure:pre-unmask"));
   assert.equal(ops.calls.includes("remove-coredump-admin-masks"), false);
   assert.equal(
     ops.state.coredump_admin_masks.every(function (entry) { return entry.state === "present"; }),
+    true,
+  );
+});
+
+test("rollback closure failure cannot restore any native Apport sysctl first", async () => {
+  const plan = fixturePlan();
+  const ops = new FakeOps(plan);
+  const apply = await applyCeremony(plan, contextFor(plan), ops);
+  const rollbackStart = ops.calls.length;
+  ops.options.failBefore = ["reprove-coredump-absence-closure:pre-restore"];
+  await assert.rejects(
+    function () {
+      return rollbackCeremony(plan, {
+        ...contextFor(plan),
+        applyApprovalSha256: apply.receipt.apply_approval_sha256,
+        receiptSha256: apply.receipt_sha256,
+        rollbackApprovalSha256: "d".repeat(64),
+      }, ops);
+    },
+    function (error) {
+      return error instanceof CeremonyError &&
+        error.outcome === "rollback-contained-needs-fresh-recovery-approval";
+    },
+  );
+  const rollbackCalls = ops.calls.slice(rollbackStart);
+  for (const [name, value] of Object.entries(APPORT_SYSCTLS)) {
+    assert.equal(rollbackCalls.includes("write:" + name + "=" + value), false, name);
+  }
+  assert.deepEqual(ops.state.sysctls, TARGET_SYSCTLS);
+  assert.equal(
+    ops.state.coredump_admin_masks.every(function (entry) {
+      return entry.state === "present";
+    }),
     true,
   );
 });
@@ -1692,6 +1751,10 @@ test("UnitPath traversal records stable directory generations and rejects writab
 test("manager reload generation fence rejects directory and protected-trigger drift", () => {
   const before = {
     directory_generation: {
+      ancestors: [{
+        ctime_ns: "3", device: "1", gid: 0, inode: "3", mode: "0755",
+        mtime_ns: "3", nlink: 2, path: "/etc/systemd", state: "present", uid: 0,
+      }],
       directories: [{
         ctime_ns: "1", device: "1", gid: 0, inode: "1", mode: "0755",
         mtime_ns: "1", nlink: 2, path: "/etc/systemd/system", state: "present", uid: 0,
@@ -1716,6 +1779,14 @@ test("manager reload generation fence rejects directory and protected-trigger dr
         directoryDrift,
         "systemd manager reload directory/trigger closure",
       );
+    },
+    /changed its directory\/trigger closure/u,
+  );
+  const ancestorDrift = structuredClone(before);
+  ancestorDrift.directory_generation.ancestors[0].inode = "30";
+  assert.throws(
+    function () {
+      assertSystemdReloadConfigurationFenceForTest(before, ancestorDrift);
     },
     /changed its directory\/trigger closure/u,
   );
@@ -2068,6 +2139,193 @@ test("systemd-equivalent word parsing closes quoted Wants and stop/reload depend
   }
 });
 
+test("systemd continuation skips physical comments without ending a protected dependency", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-continuation-comments-"));
+  try {
+    const path = join(root, "foreign.service");
+    for (const comment of ["# ignored physical comment", "; ignored physical comment"]) {
+      writeFileSync(
+        path,
+        "[Unit]\nWants=unrelated.service \\\n" + comment +
+          "\n  systemd-coredump.socket\n[Service]\nExecStart=/bin/true\n",
+      );
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        comment,
+      );
+    }
+    writeFileSync(
+      path,
+      "[Unit]\nWants=unrelated.service \\\n" +
+        "# comments are skipped before systemd checks a later BOM\n" +
+        "\ufeff  systemd-coredump.socket\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+    writeFileSync(
+      path,
+      "[Unit]\nWants=unrelated.service\\\\\n" +
+        "# this follows an even, literal backslash pair\n" +
+        "[Service]\nExecStart=/bin/true\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("dynamic manager and interpreter Exec expansion cannot hide protected activation", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-dynamic-exec-"));
+  try {
+    const path = join(root, "foreign.service");
+    const cases = [
+      "[Service]\nEnvironment=TARGET=apport-coredump-hook@probe.service\n" +
+        "ExecStart=/usr/bin/systemctl start $TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/systemctl start ${TARGET}\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=-/usr/bin/systemctl start $TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/systemctl start '$'TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/systemctl start \\x24TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/bin/sh -c 'systemctl start $${TARGET}'\n",
+      "[Service]\nType=oneshot\n" +
+        "Environment=TARGET=apport-coredump-hook@probe.service\n" +
+        "ExecStart=/bin/true ; /usr/bin/systemctl start $TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/nice /usr/bin/systemctl start $TARGET\n",
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=/usr/bin/nice /bin/sh -c 'systemctl start $TARGET'\n",
+    ];
+    for (const bytes of cases) {
+      writeFileSync(path, bytes);
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        bytes,
+      );
+    }
+    const manager = join(root, "systemctl");
+    const alias = join(root, "manager-alias");
+    writeFileSync(manager, "not executed\n");
+    symlinkSync(manager, alias);
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=" + alias + " start $TARGET\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+    writeFileSync(
+      path,
+      "[Service]\nExecSearchPath=" + root + "\n" +
+        "Environment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=manager-alias start $TARGET\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+    const hardAlias = join(root, "manager-hard-alias");
+    linkSync(manager, hardAlias);
+    writeFileSync(
+      path,
+      "[Service]\nExecSearchPath=" + root + "\n" +
+        "Environment=TARGET=systemd-coredump.socket\n" +
+        "ExecStart=" + hardAlias + " start $TARGET\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+    writeFileSync(
+      path,
+      "[Service]\nExecSearchPath=" + root + "\n" +
+        "ExecStart=" + hardAlias + " start systemd-core%i.timer\n",
+    );
+    assert.throws(
+      function () { scanApportEnablement([root]); },
+      /protected coredump handler/u,
+    );
+    unlinkSync(hardAlias);
+    unlinkSync(alias);
+    unlinkSync(manager);
+    writeFileSync(
+      path,
+      "[Service]\nEnvironment=LABEL=systemd-coredump\nExecStart=/bin/true\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("implicit dependency directives and protected slice descendants fail closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-implicit-dependencies-"));
+  try {
+    const path = join(root, "foreign.service");
+    const cases = [
+      "[Service]\nSlice=systemd-coredump.slice\nExecStart=/bin/true\n",
+      "[Service]\nSockets=systemd-coredump.socket\nExecStart=/bin/true\n",
+      "[Unit]\nBefore=apport-coredump-hook@probe.service\n",
+      "[Unit]\nAfter=systemd-coredump.socket\n",
+      "[Unit]\nBindTo=systemd-coredump.socket\n",
+      "[Unit]\nJoinsNamespaceOf=systemd-coredump@probe.service\n",
+      "[Unit]\nPropagateReloadTo=systemd-coredump.socket\n",
+      "[Unit]\nPropagateReloadFrom=systemd-coredump.socket\n",
+      "[Unit]\nRequiresOverridable=systemd-coredump.socket\n",
+      "[Unit]\nRequisiteOverridable=systemd-coredump.socket\n",
+      "[Unit]\nRequiresMountsFor=/systemd/coredump\n",
+      "[Unit]\nRequiresMountsFor=/apport/coredump/hook/reports\n",
+      "[Unit]\nRequiresMountsFor=/%i\n",
+      "[Service]\nSlice=systemd-coredump-%i.slice\nExecStart=/bin/true\n",
+    ];
+    for (const bytes of cases) {
+      writeFileSync(path, bytes);
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /protected coredump handler/u,
+        bytes,
+      );
+    }
+    unlinkSync(path);
+    for (const name of [
+      "systemd-coredump-child.slice",
+      "apport-coredump-hook-child-grandchild.slice",
+    ]) {
+      const slice = join(root, name);
+      writeFileSync(slice, "[Slice]\nCPUWeight=100\n");
+      assert.throws(
+        function () { scanApportEnablement([root]); },
+        /coredump unit fragment or instance/u,
+        name,
+      );
+      assert.throws(
+        function () { scanManagedUnitLoadPaths([root], {}); },
+        /unreviewed coredump instance or shadow/u,
+        name,
+      );
+      unlinkSync(slice);
+    }
+    writeFileSync(
+      path,
+      "[Unit]\nRequiresMountsFor=/var/lib/bitcoinpir\n" +
+        "[Service]\nSlice=bitcoinpir-benign.slice\n" +
+        "Sockets=bitcoinpir-benign.socket\nExecStart=/bin/true\n",
+    );
+    assert.deepEqual(scanApportEnablement([root]), []);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("systemd unit discovery rejects unresolved specifiers in action and Exec directives", () => {
   const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-specifiers-"));
   try {
@@ -2189,7 +2447,7 @@ test("systemd-coredump package and non-loading runtime closures fail closed", ()
     function (prefix) {
       return unitTypes.flatMap(function (type) {
         return [prefix + "." + type, prefix + "@." + type, prefix + "@probe." + type];
-      });
+      }).concat([prefix + "-child.slice", prefix + "-child-grandchild.slice"]);
     },
   );
   for (const name of protectedNames) {
@@ -2633,6 +2891,11 @@ test("every production publish, cleanup, and host mutator rejects before mainten
     function () { return ops.removeApportEnablement(plan.preimage.apport_enablement_symlinks[0]); },
     function () { return ops.removeApportMask(plan.candidate.apport_mask); },
     function () { return ops.removeCoreDumpMasks(plan.candidate.coredump_admin_masks); },
+    function () {
+      return ops.reproveCoreDumpRollbackRemovalClosure(
+        plan.candidate.coredump_admin_masks,
+      );
+    },
     function () { return ops.removeGuard(plan.candidate.guard_unit, plan.candidate.guard_enablement); },
     function () { return ops.removePersistent(plan.candidate.persistent_policy); },
     function () { return ops.reloadManager(); },

@@ -58,11 +58,13 @@ the Unit and Service interfaces; any row, job, static load-path, PID, fragment,
 drop-in, dependency, or `Exec*Ex` mismatch is rejected. The manager's ordered
 `UnitPath` must equal the reviewed systemd 255 default search path; a custom or
 reordered manager path is not silently treated as an additional trusted root.
-Every present `UnitPath` root and nested directory is opened without following
-symlinks and must remain root:root and not group- or world-writable. The plan
-records either an absent root or the complete device/inode/time/link/owner/mode
-generation for every traversed directory. Empty writable drop-in directories
-therefore fail closed too. Runtime configuration fences repeat that traversal;
+Every present `UnitPath` root, every ancestor up to and including `/`, and every
+nested directory is opened without following symlinks and must remain root:root
+and not group- or world-writable. The plan records either absence or the
+complete device/inode/time/link/owner/mode generation for every ancestor, root,
+and traversed directory. The ancestor set is fenced before and after the full
+traversal. Empty writable drop-in directories therefore fail closed too.
+Runtime configuration fences repeat that traversal;
 `Manager.Reload` is fenced before and after, allowing only systemd's own
 inode/time/link churn in the three `/run/systemd/generator*` roots while
 holding their path, presence, owner and mode plus every trigger/load-path byte
@@ -75,11 +77,19 @@ runtime, transient, generated, attached, local-vendor, and vendor systemd unit
 roots (with canonical-root deduplication). It rejects reverse activation edges
 such as foreign Wants/Requires/Conflicts/PropagatesStopTo/OnFailure/OnSuccess
 references (including reverse `OnFailureOf` and `OnSuccessOf` properties),
-including quoted or escaped unit names, symlinked units whose targets contain
-such edges, and implicit `apport.socket`, `.path`, `.timer`,
+ordering/namespace edges, `Slice=`, `Sockets=`, and protected mount prefixes in
+`RequiresMountsFor=`, including quoted or escaped
+unit names, symlinked units whose targets contain such edges, and implicit
+`apport.socket`, `.path`, `.timer`,
 `.automount`, or `.busname` triggers. Multi-level aliases resolving to the
 official unit and every foreign `Exec*` directive naming the handler are also
-rejected. An unresolved systemd `%` template is rejected when its fixed
+rejected. Physical comment lines do not terminate a systemd continuation,
+matching the pinned systemd 255 parser. Dynamic `$VAR`/`${VAR}` manager
+arguments and every shell/environment-interpreter dollar expansion fail
+closed; manager and interpreter identities are resolved through filesystem
+symlink and device/inode hard-link aliases, and every deprecated
+semicolon-separated `Exec*` command is scanned individually. An unresolved
+systemd `%` template is rejected when its fixed
 prefix/suffix and normalized path can expand to the Apport unit, any protected
 coredump-family unit/type, or the handler;
 interpreter commands with unresolved arguments also fail closed. Stock-like
@@ -133,9 +143,11 @@ Apply additionally installs fixed root-owned `/dev/null` masks for
 `systemd-coredump.socket`. It requires exact D-Bus unit-file state `masked`, no
 loaded concrete template instance, no queued job, no alias or dependency edge,
 and a complete absence closure for the `systemd-coredump` package, binary,
-vendor service/socket and configuration roots. Rollback removes these three
-masks only after synchronously repeating the package/path/vendor/static-load-
-path proof around a fenced runtime snapshot. It never invokes `systemctl stop`
+vendor service/socket and configuration roots. Rollback proves the
+package/path/vendor/static-load-path closure around a fenced runtime snapshot
+before restoring any approved Apport sysctl, then repeats that proof
+synchronously inside the mutator immediately before removing the first
+coredump mask. It never invokes `systemctl stop`
 to make a loaded handler disappear; any loaded protected-family unit of any
 systemd 255 unit type or queued job fails closed. The static proof mechanically
 rejects every protected-family fragment, including `.path`, `.timer`,
@@ -145,7 +157,9 @@ rejects symlink and hard-link aliases and every drop-in directory systemd 255
 would merge, including recursive dash truncation while retaining both the
 concrete `@instance` and template `@` forms. A benign `Environment=` value that
 only contains a protected-family string remains admissible because it has no
-activation semantics. The sole admitted coredump drop-in remains the exact
+activation semantics. Descendant slice names are protected too because systemd
+automatically requires and activates their dash-truncated parent slices. The
+sole admitted coredump drop-in remains the exact
 pinned Noble `systemd-coredump@.service.d/apport-coredump-hook.conf`
 generation.
 
@@ -219,11 +233,16 @@ The canonical schema-v2 plan binds:
   bind the same normalized protected-template load-path closure used by runtime
   generation fences and the rollback in-mutator re-proof, as well as the masks
   and pinned vendor closure;
-- the exact ordered manager `UnitPath`, plus absent-root or complete trusted
-  directory generations for every root and nested directory traversed by the
-  static proof;
+- the exact ordered manager `UnitPath`, plus absent-or-present trusted
+  directory generations for every ancestor (including `/`), every root, and
+  every nested directory traversed by the static proof;
 - /var/crash directory device, inode, uid, gid, mode 3777, and sorted empty
   entry observation.
+
+Plans rendered by an earlier, unapproved schema-v2 implementation do not carry
+the ancestor generation and are deliberately rejected. Render a fresh plan on
+the target boot and issue fresh approvals; never splice ancestor observations
+into old canonical plan bytes.
 
 /var/crash entries are a point-in-time observation. Apply and rollback repeat
 the directory identity and entries check immediately before their terminal
@@ -269,7 +288,9 @@ manager-reloads the exact gates, and releases the lease last. A visible
 rollback receipt whose preflight survived a reboot re-establishes the approved
 rollback sysctls before cleanup. Apply retains the safe policy, credential
 closure, Apport mask and all three coredump masks; rollback restores the exact
-stable preimage only after the coredump absence closure is re-proved.
+stable preimage only after the coredump absence closure is re-proved before the
+first Apport sysctl restore, then re-proved again immediately before the first
+coredump mask removal.
 
 Pending and preflight updates carry an integer generation plus the SHA-256 of
 their exact predecessor. Exchange replay accepts only a direct predecessor or

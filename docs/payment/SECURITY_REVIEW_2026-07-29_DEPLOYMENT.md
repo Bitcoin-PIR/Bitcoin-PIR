@@ -473,12 +473,17 @@ protected-family fragment, including `.path`, `.timer`, `.socket`, implicit
 same-name service/template activation and `Accept=yes`, plus symlink or
 hard-link aliases, is rejected mechanically throughout the complete manager
 `UnitPath`. The inherited drop-in closure follows systemd 255 recursive dash
-truncation while retaining both `@instance` and template `@` forms; a benign
+truncation while retaining both `@instance` and template `@` forms; protected
+slice descendants, continuation-through-comment parsing,
+`Slice=`/`Sockets=`/`RequiresMountsFor=`, and dynamic manager/interpreter
+expansion are closed too. A benign
 `Environment=` mention with no activation semantics remains admissible. Every
-present UnitPath root and nested directory must be root:root and not group- or
-world-writable, with its complete generation (or absence) plan-bound. The same
-normalized load-path closure and directory generations are fenced at runtime,
-on both sides of manager reload, and before rollback's first mask removal;
+UnitPath ancestor (including `/`), present root, and nested directory must be
+root:root and not group- or world-writable, with its complete generation (or
+absence) plan-bound. The same normalized load-path closure and directory
+generations are fenced at runtime,
+on both sides of manager reload, before rollback restores any Apport sysctl,
+and again before rollback's first mask removal;
 only generation-only churn in the three runtime generator roots is normalized,
 while filesystem device remains exact.
 Matching
