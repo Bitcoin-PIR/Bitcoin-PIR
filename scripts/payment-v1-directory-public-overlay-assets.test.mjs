@@ -177,7 +177,7 @@ test("directory-public unit and Caddy ordering drop-in stay separately sentinel-
 
 test("directory-public assets remain explicitly non-activating until integrated", () => {
   const readme = read("readme");
-  assert.match(readme, /independent, non-activating\nasset set/u);
+  assert.match(readme, /independent,\s+non-activating asset set/u);
   assert.match(readme, /not activation-ready until the rendered profile/u);
   assert.match(readme, /UID 0 can create either path/u);
   assert.match(readme, /not a production security boundary/u);
