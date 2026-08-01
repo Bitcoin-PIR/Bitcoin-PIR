@@ -107,6 +107,9 @@ deliberately replaced rather than rejected because closing the existing dump,
 swap and journald paths is part of this migration. `LimitCORE=0` does not make
 a Linux pipe core handler safe by itself; target activation still requires the
 separate exact `kernel.core_pattern=|/usr/bin/false` host proof.
+That proof comes from the independently approved, all-three-sysctl ceremony in
+[`CORE_PATTERN_CEREMONY.md`](CORE_PATTERN_CEREMONY.md); this Caddy executor is
+forbidden from changing Apport, its enablement symlink, or any host sysctl.
 
 ACME storage is not copied, renamed or reinitialized. The complete existing
 site inventory and its before/after probes are separate approved plan inputs.

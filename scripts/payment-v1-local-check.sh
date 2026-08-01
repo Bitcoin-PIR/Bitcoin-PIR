@@ -96,6 +96,15 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.mjs
+node --check scripts/payment-v1-core-pattern-test-fixture.mjs
+node --check scripts/payment-v1-core-pattern-crash-worker.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
+node --check scripts/payment-v1-core-pattern-crash.test.mjs
+node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
+node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
+  scripts/payment-v1-core-pattern-crash.test.mjs \
+  scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
@@ -386,6 +395,15 @@ node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.mjs
+node --check scripts/payment-v1-core-pattern-test-fixture.mjs
+node --check scripts/payment-v1-core-pattern-crash-worker.mjs
+node --check scripts/payment-v1-core-pattern-ceremony.test.mjs
+node --check scripts/payment-v1-core-pattern-crash.test.mjs
+node --check scripts/payment-v1-core-pattern-lock-exec.test.mjs
+node --test scripts/payment-v1-core-pattern-ceremony.test.mjs \
+  scripts/payment-v1-core-pattern-crash.test.mjs \
+  scripts/payment-v1-core-pattern-lock-exec.test.mjs
 node --check scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
 node --test --test-concurrency=1 \
