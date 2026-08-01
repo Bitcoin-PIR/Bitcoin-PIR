@@ -77,6 +77,7 @@ import {
   realOps,
   rollbackCeremony,
   removePinnedByQuarantineForTest,
+  scanApportActivation,
   scanApportEnablement,
   scanManagedUnitLoadPaths,
   scanSysctlAssignments,
@@ -1225,6 +1226,51 @@ test("Apport activation closure rejects external Wants and implicit socket/path 
     rmSync(linkedTarget);
     writeFileSync(join(root, "apport.socket"), "[Socket]\nListenStream=1234\n");
     assert.throws(function () { scanApportEnablement([root]); }, /fragment\/dependency/u);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("Apport activation closure binds the sole reviewed broken generator symlink", () => {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-core-broken-activation-"));
+  try {
+    const wants = join(root, "multi-user.target.wants");
+    mkdirSync(wants);
+    const link = join(realpathSync(wants), "systemd-networkd.service");
+    const target = "../systemd-networkd.service";
+    symlinkSync(target, link);
+    assert.throws(
+      function () { scanApportActivation([root]); },
+      /broken systemd activation symlink is outside the closed set/u,
+    );
+    const allowlist = { [link]: target };
+    const observed = scanApportActivation(
+      [root],
+      undefined,
+      undefined,
+      undefined,
+      allowlist,
+    );
+    assert.deepEqual(observed.broken_activation_symlinks, [{
+      gid: process.getgid(),
+      path: link,
+      target,
+      uid: process.getuid(),
+    }]);
+    unlinkSync(link);
+    assert.throws(
+      function () {
+        scanApportActivation([root], undefined, undefined, undefined, allowlist);
+      },
+      /reviewed broken systemd activation symlink set is incomplete/u,
+    );
+    symlinkSync("../foreign.service", link);
+    assert.throws(
+      function () {
+        scanApportActivation([root], undefined, undefined, undefined, allowlist);
+      },
+      /broken systemd activation symlink is outside the closed set/u,
+    );
   } finally {
     rmSync(root, { force: true, recursive: true });
   }

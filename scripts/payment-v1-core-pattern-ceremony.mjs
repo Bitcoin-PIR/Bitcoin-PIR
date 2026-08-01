@@ -82,6 +82,10 @@ export const SYSTEMD_SYSCTL_BINARY_PATH = "/usr/lib/systemd/systemd-sysctl";
 export const SYSTEMD_SYSCTL_ENABLEMENT_PATH =
   "/usr/lib/systemd/system/sysinit.target.wants/systemd-sysctl.service";
 export const SYSTEMD_SYSCTL_ENABLEMENT_TARGET = "../systemd-sysctl.service";
+export const HETZNER_BROKEN_NETWORKD_ENABLEMENT_PATH =
+  "/run/systemd/generator/multi-user.target.wants/systemd-networkd.service";
+export const HETZNER_BROKEN_NETWORKD_ENABLEMENT_TARGET =
+  "../systemd-networkd.service";
 export const GUARD_UNIT =
   "bitcoinpir-payment-v1-core-pattern-guard.service";
 export const APPORT_HANDLER_PATH = "/usr/share/apport/apport";
@@ -3246,11 +3250,18 @@ export function scanApportActivation(
   reviewedGuardPin,
   reviewedGatePin,
   configuredOfficialUnitPath,
+  configuredBrokenActivationSymlinks,
 ) {
   const officialUnitPath = configuredOfficialUnitPath === undefined
     ? APPORT_UNIT_PATH
     : realpathSync(configuredOfficialUnitPath);
   const roots = configuredRoots || SYSTEMD_UNIT_ROOTS;
+  const reviewedBrokenActivationSymlinks = configuredBrokenActivationSymlinks ||
+    (configuredRoots === undefined ? {
+      [HETZNER_BROKEN_NETWORKD_ENABLEMENT_PATH]:
+        HETZNER_BROKEN_NETWORKD_ENABLEMENT_TARGET,
+    } : {});
+  const observedBrokenActivationSymlinks = [];
   const found = [];
   const implicitTriggers = new Set([
     "apport.automount",
@@ -3295,7 +3306,19 @@ export function scanApportActivation(
             resolvedTarget = realpathSync(child);
           } catch (error) {
             if (error.code === "ENOENT") {
-              fail("broken systemd activation symlink is outside the closed set: " + child);
+              const expectedTarget = reviewedBrokenActivationSymlinks[child];
+              const stat = lstatSync(child, { bigint: false });
+              if (expectedTarget === undefined || target !== expectedTarget ||
+                  (configuredRoots === undefined && (stat.uid !== 0 || stat.gid !== 0))) {
+                fail("broken systemd activation symlink is outside the closed set: " + child);
+              }
+              observedBrokenActivationSymlinks.push({
+                gid: stat.gid,
+                path: child,
+                target,
+                uid: stat.uid,
+              });
+              continue;
             }
             throw error;
           }
@@ -3351,7 +3374,17 @@ export function scanApportActivation(
     visited.add(root);
     visit(root, 0);
   }
+  observedBrokenActivationSymlinks.sort(function (a, b) {
+    return a.path.localeCompare(b.path);
+  });
+  if (!same(
+    observedBrokenActivationSymlinks.map(function (entry) { return entry.path; }),
+    Object.keys(reviewedBrokenActivationSymlinks).sort(),
+  )) {
+    fail("reviewed broken systemd activation symlink set is incomplete");
+  }
   return {
+    broken_activation_symlinks: observedBrokenActivationSymlinks,
     enablement_symlinks: found.sort(function (a, b) { return a.path.localeCompare(b.path); }),
     mask,
   };
@@ -3362,12 +3395,14 @@ export function scanApportEnablement(
   reviewedGuardPin,
   reviewedGatePin,
   configuredOfficialUnitPath,
+  configuredBrokenActivationSymlinks,
 ) {
   return scanApportActivation(
     configuredRoots,
     reviewedGuardPin,
     reviewedGatePin,
     configuredOfficialUnitPath,
+    configuredBrokenActivationSymlinks,
   ).enablement_symlinks;
 }
 

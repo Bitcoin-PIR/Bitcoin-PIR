@@ -73,6 +73,15 @@ literal relative target, resolved official fragment, and unique presence are
 checked on every managed load-path scan. `procps.service.d` is included in the
 same inherited drop-in closure; any file there, or any other alias or
 activation path resolving to the sysctl fragment, fails closed.
+The inspected Hetzner boot also contains one root-owned generator link whose
+literal relative target is currently absent:
+`/run/systemd/generator/multi-user.target.wants/systemd-networkd.service ->
+../systemd-networkd.service`. The executor source requires exactly this one
+broken activation link and includes its path, target and ownership in the
+configuration-generation digest. Any other broken link, a missing or resolved
+reviewed link, or target/ownership drift fails closed and requires a new plan
+and source review. Existing regular unit targets are still scanned for Apport
+references; this exception does not admit an unresolved Apport basename.
 Observation enumerates already-loaded units with D-Bus `ListUnits` and then
 uses non-loading `GetUnit`; an unloaded Apport unit is rejected.
 Apply removes only this exact symlink:
