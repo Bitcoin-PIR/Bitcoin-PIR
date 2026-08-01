@@ -9,6 +9,13 @@
 // - an approval-bound lease, boot-visible preflight, and early guards survive reboot;
 // - an exact visible receipt is terminal, including commit-uncertain publication;
 // - root-owned replacements use renameat2 exchange and restore raced bytes.
+//
+// Threat boundary: the administrative masks below prevent systemd activation
+// by non-root callers and remain effective across package installation/reboot.
+// The ceremony also holds the cooperative dpkg/apt locks while it proves the
+// package-absence generation. A malicious UID 0 can still remove a mask or
+// execute a pinned handler directly and therefore remains inside the trusted
+// host-administrator boundary; these masks are not claimed to constrain root.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -94,6 +101,54 @@ export const APPORT_ENABLEMENT_PATH =
 export const APPORT_ENABLEMENT_TARGET = APPORT_UNIT_PATH;
 export const APPORT_MASK_PATH = "/etc/systemd/system/apport.service";
 export const APPORT_MASK_TARGET = "/dev/null";
+export const APPORT_COREDUMP_HOOK_UNIT = "apport-coredump-hook@.service";
+export const APPORT_COREDUMP_HOOK_UNIT_PATH =
+  "/usr/lib/systemd/system/apport-coredump-hook@.service";
+export const APPORT_COREDUMP_HOOK_DROPIN_PATH =
+  "/usr/lib/systemd/system/systemd-coredump@.service.d/apport-coredump-hook.conf";
+export const SYSTEMD_COREDUMP_SERVICE_UNIT = "systemd-coredump@.service";
+export const SYSTEMD_COREDUMP_SERVICE_UNIT_PATH =
+  "/usr/lib/systemd/system/systemd-coredump@.service";
+export const SYSTEMD_COREDUMP_SOCKET_UNIT = "systemd-coredump.socket";
+export const SYSTEMD_COREDUMP_SOCKET_UNIT_PATH =
+  "/usr/lib/systemd/system/systemd-coredump.socket";
+export const SYSTEMD_COREDUMP_BINARY_PATH = "/usr/lib/systemd/systemd-coredump";
+export const COREDUMP_ADMIN_MASKS = Object.freeze([
+  Object.freeze({
+    gid: 0,
+    name: APPORT_COREDUMP_HOOK_UNIT,
+    path: "/etc/systemd/system/apport-coredump-hook@.service",
+    target: "/dev/null",
+    uid: 0,
+  }),
+  Object.freeze({
+    gid: 0,
+    name: SYSTEMD_COREDUMP_SERVICE_UNIT,
+    path: "/etc/systemd/system/systemd-coredump@.service",
+    target: "/dev/null",
+    uid: 0,
+  }),
+  Object.freeze({
+    gid: 0,
+    name: SYSTEMD_COREDUMP_SOCKET_UNIT,
+    path: "/etc/systemd/system/systemd-coredump.socket",
+    target: "/dev/null",
+    uid: 0,
+  }),
+]);
+export const SYSTEMD_COREDUMP_ABSENT_PATHS = Object.freeze([
+  "/etc/systemd/coredump.conf",
+  "/etc/systemd/coredump.conf.d",
+  "/run/systemd/coredump.conf",
+  "/run/systemd/coredump.conf.d",
+  "/usr/lib/systemd/coredump.conf",
+  "/usr/lib/systemd/coredump.conf.d",
+  SYSTEMD_COREDUMP_SERVICE_UNIT_PATH,
+  SYSTEMD_COREDUMP_SOCKET_UNIT_PATH,
+  SYSTEMD_COREDUMP_BINARY_PATH,
+  "/usr/local/lib/systemd/coredump.conf",
+  "/usr/local/lib/systemd/coredump.conf.d",
+].sort());
 export const APPORT_GATE_PATH =
   "/etc/systemd/system/apport.service.d/90-bitcoinpir-pending-gate.conf";
 export const APPORT_GATE_DIRECTORY = "/etc/systemd/system/apport.service.d";
@@ -122,6 +177,10 @@ export const NOBLE_APPORT_HANDLER_SOURCE_SHA256 =
   "1b8b5e2c53e8970dd2f47c9a0892030d1ebad57cae1f7242c43a6252f1f6dff2";
 export const NOBLE_APPORT_UNIT_SHA256 =
   "c2026a8f813776108e2d91629f51ff0cf5bf013fac03314164cabcda6c9698aa";
+export const NOBLE_APPORT_COREDUMP_HOOK_UNIT_SHA256 =
+  "fdabfbd44847bd34d03efd9cc52d847d3dbaffec96e13cd413a40b35acc39a00";
+export const NOBLE_APPORT_COREDUMP_HOOK_DROPIN_SHA256 =
+  "d025d2395f1d5f0e9fc183b39db11dd5f121740fd818fc2333ed5ca4a39dbfaa";
 export const NOBLE_SYSTEMD_SYSCTL_UNIT_SHA256 =
   "67802699b135aa011f76ff08ecaf37b3a5d821de3a1e6f8ee55c3404e6df208a";
 export const NOBLE_SYSTEMD_SYSCTL_BINARY_SHA256 =
@@ -165,19 +224,54 @@ export const NOBLE_APPORT_UNIT_BYTES =
   "\n" +
   "[Install]\n" +
   "WantedBy=multi-user.target\n";
+export const NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES =
+  "# This service is responsible for reading the coredump data from systemd journal\n" +
+  "# after a crash has occurred, and generating a crash file to /var/crash/.\n" +
+  "[Service]\n" +
+  "Type=oneshot\n" +
+  "ExecStart=/usr/share/apport/apport --from-systemd-coredump %i\n" +
+  "Nice=9\n" +
+  "OOMScoreAdjust=500\n" +
+  "IPAddressDeny=any\n" +
+  "LockPersonality=yes\n" +
+  "MemoryDenyWriteExecute=yes\n" +
+  "NoNewPrivileges=yes\n" +
+  "PrivateDevices=yes\n" +
+  "PrivateNetwork=yes\n" +
+  "PrivateTmp=yes\n" +
+  "ProtectControlGroups=yes\n" +
+  "ProtectHome=read-only\n" +
+  "ProtectHostname=yes\n" +
+  "ProtectKernelLogs=yes\n" +
+  "ProtectKernelModules=yes\n" +
+  "ProtectKernelTunables=yes\n" +
+  "ProtectSystem=strict\n" +
+  "ReadWritePaths=/var/crash /var/log\n" +
+  "RestrictAddressFamilies=AF_UNIX\n" +
+  "RestrictRealtime=yes\n" +
+  "RestrictSUIDSGID=yes\n" +
+  "SystemCallArchitectures=native\n" +
+  "SystemCallErrorNumber=EPERM\n" +
+  "SystemCallFilter=@system-service @file-system @setuid\n";
+export const NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES =
+  "[Unit]\n" +
+  "OnSuccess=apport-coredump-hook@%i.service\n";
 
 export const APPLY_ACKNOWLEDGEMENTS = Object.freeze([
   "host-wide-native-core-diagnostics-will-be-unavailable",
   "all-three-apport-sysctls-will-be-replaced-host-wide",
+  "three-systemd-coredump-unit-names-will-be-masked-host-wide",
   "apport-handler-execstart-and-execstop-will-not-be-executed",
   "systemd-manager-will-be-reloaded-without-starting-or-stopping-apport",
   "incomplete-transaction-boots-will-skip-systemd-sysctl-and-write-the-safe-tuple-first",
+  "administrative-masks-do-not-constrain-malicious-root-or-direct-handler-execution",
   "existing-var-crash-files-and-journal-records-will-be-retained",
   "this-approval-does-not-authorize-reboot-payment-service-activation-or-history-deletion",
 ]);
 export const RECOVERY_ACKNOWLEDGEMENTS = Object.freeze([
   "a-durable-incomplete-host-wide-transaction-will-be-resumed-fail-closed",
   "the-original-plan-boot-and-current-action-boot-are-distinct-lineage-fields",
+  "three-systemd-coredump-unit-names-will-remain-masked-until-terminal-cleanup",
   "apport-handler-execstart-and-execstop-will-not-be-executed",
   "systemd-manager-will-be-reloaded-without-starting-or-stopping-apport",
   "incomplete-transaction-boots-will-skip-systemd-sysctl-and-write-the-safe-tuple-first",
@@ -186,6 +280,7 @@ export const RECOVERY_ACKNOWLEDGEMENTS = Object.freeze([
 export const ROLLBACK_ACKNOWLEDGEMENTS = Object.freeze([
   "host-wide-apport-diagnostics-will-be-restored",
   "all-three-apport-sysctls-will-be-restored-to-the-approved-preimage",
+  "systemd-coredump-masks-will-be-removed-only-after-the-absence-closure-is-reproved",
   "apport-handler-execstart-and-execstop-will-not-be-executed-during-rollback",
   "systemd-manager-will-be-reloaded-without-starting-or-stopping-apport",
   "restored-crash-material-may-contain-secrets-or-request-correlating-data",
@@ -266,7 +361,8 @@ export function guardUnitBytes(ceremonyId) {
   return "[Unit]\n" +
     "Description=BitcoinPIR fail-closed core-pattern recovery guard\n" +
     "DefaultDependencies=no\n" +
-    "Before=systemd-sysctl.service apport.service sysinit.target\n" +
+    "Before=systemd-sysctl.service apport.service apport-coredump-hook@.service " +
+      "systemd-coredump@.service systemd-coredump.socket sysinit.target\n" +
     "ConditionPathExists=" + PREFLIGHT_PATH + "\n" +
     "\n" +
     "[Service]\n" +
@@ -528,6 +624,8 @@ function validateAssignmentFile(entry, index) {
 function validateOfficialNoble(value) {
   exactKeys(value, [
     "archive_sha256",
+    "coredump_hook_dropin",
+    "coredump_hook_unit",
     "handler",
     "handler_source_sha256",
     "source_url",
@@ -538,6 +636,28 @@ function validateOfficialNoble(value) {
       value.archive_sha256 !== NOBLE_APPORT_ARCHIVE_SHA256 ||
       value.handler_source_sha256 !== NOBLE_APPORT_HANDLER_SOURCE_SHA256) {
     fail("official Noble Apport source identity is not reviewed");
+  }
+  validatePin(value.coredump_hook_unit, "official_noble_apport.coredump_hook_unit", {
+    bytesRequired: true,
+    path: APPORT_COREDUMP_HOOK_UNIT_PATH,
+  });
+  if (Buffer.from(value.coredump_hook_unit.bytes_base64, "base64").toString("utf8") !==
+        NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES ||
+      value.coredump_hook_unit.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_UNIT_SHA256 ||
+      value.coredump_hook_unit.size !== 787 || value.coredump_hook_unit.uid !== 0 ||
+      value.coredump_hook_unit.gid !== 0 || value.coredump_hook_unit.mode !== "0644") {
+    fail("official Noble Apport coredump hook unit bytes/metadata are not exact");
+  }
+  validatePin(value.coredump_hook_dropin, "official_noble_apport.coredump_hook_dropin", {
+    bytesRequired: true,
+    path: APPORT_COREDUMP_HOOK_DROPIN_PATH,
+  });
+  if (Buffer.from(value.coredump_hook_dropin.bytes_base64, "base64").toString("utf8") !==
+        NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES ||
+      value.coredump_hook_dropin.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_DROPIN_SHA256 ||
+      value.coredump_hook_dropin.size !== 49 || value.coredump_hook_dropin.uid !== 0 ||
+      value.coredump_hook_dropin.gid !== 0 || value.coredump_hook_dropin.mode !== "0644") {
+    fail("official Noble Apport coredump hook drop-in bytes/metadata are not exact");
   }
   validatePin(value.handler, "official_noble_apport.handler", {
     path: APPORT_HANDLER_PATH,
@@ -647,6 +767,41 @@ function sysctlCredentialClosureSnapshotShape(state, directory, file) {
     };
 }
 
+function reviewedCoreDumpMaskLinks() {
+  return COREDUMP_ADMIN_MASKS.map(function ({ gid, path, target, uid }) {
+    return { gid, path, target, uid };
+  });
+}
+
+function validateCoreDumpMaskLinks(value, label) {
+  if (!Array.isArray(value) || value.length !== COREDUMP_ADMIN_MASKS.length) {
+    fail(label + " must contain exactly the three reviewed administrative masks");
+  }
+  value.forEach(function (link, index) {
+    const reviewed = COREDUMP_ADMIN_MASKS[index];
+    validateSymlink(link, label + "[" + index + "]", reviewed.path, reviewed.target);
+  });
+  if (!same(value, reviewedCoreDumpMaskLinks())) {
+    fail(label + " ordering or metadata differs from the fixed reviewed set");
+  }
+}
+
+function coreDumpMaskSnapshot(state, links) {
+  return COREDUMP_ADMIN_MASKS.map(function (reviewed, index) {
+    return state === "present"
+      ? { link: links[index], name: reviewed.name, state }
+      : { name: reviewed.name, path: reviewed.path, state };
+  });
+}
+
+function validateSystemdCoreDumpAbsence(value, label) {
+  exactKeys(value, ["absent_paths", "package_state"], label);
+  exactArray(value.absent_paths, Array.from(SYSTEMD_COREDUMP_ABSENT_PATHS), label + ".absent_paths");
+  if (value.package_state !== "absent") {
+    fail(label + ".package_state must be absent");
+  }
+}
+
 export function transactionLayout(ceremonyId) {
   if (typeof ceremonyId !== "string" || !SLUG.test(ceremonyId)) {
     fail("transaction ceremony id must be a lowercase slug");
@@ -669,6 +824,8 @@ export function transactionLayout(ceremonyId) {
       apport_gate_pending: APPORT_GATE_PATH + ".pending",
       apport_gate_quarantine: APPORT_GATE_PATH + ".bitcoinpir-quarantine",
       apport_mask_quarantine: APPORT_MASK_PATH + ".bitcoinpir-quarantine",
+      apport_coredump_hook_mask_quarantine:
+        COREDUMP_ADMIN_MASKS[0].path + ".bitcoinpir-quarantine",
       guard_enablement_quarantine: GUARD_ENABLEMENT_PATH + ".bitcoinpir-quarantine",
       guard_unit_pending: GUARD_UNIT_PATH + ".pending",
       guard_unit_quarantine: GUARD_UNIT_PATH + ".bitcoinpir-quarantine",
@@ -681,6 +838,10 @@ export function transactionLayout(ceremonyId) {
       receipt_pending: receiptPath + ".pending",
       rollback_receipt_pending: rollbackReceiptPath + ".pending",
       state_exchange: pendingPath + ".exchange",
+      systemd_coredump_service_mask_quarantine:
+        COREDUMP_ADMIN_MASKS[1].path + ".bitcoinpir-quarantine",
+      systemd_coredump_socket_mask_quarantine:
+        COREDUMP_ADMIN_MASKS[2].path + ".bitcoinpir-quarantine",
       sysctl_credential_closure_pending: SYSCTL_CREDENTIAL_CLOSURE_PATH + ".pending",
       sysctl_credential_closure_quarantine:
         SYSCTL_CREDENTIAL_CLOSURE_PATH + ".bitcoinpir-quarantine",
@@ -747,6 +908,7 @@ export function validatePlan(plan) {
 
   exactKeys(plan.executor, [
     "busctl",
+    "dpkg_query",
     "exchange_helper",
     "false_handler",
     "maintenance_lock_helper",
@@ -758,6 +920,7 @@ export function validatePlan(plan) {
     validatePin(plan.executor[key], "executor." + key, {
       path: key === "false_handler" ? "/usr/bin/false" :
         key === "busctl" ? "/usr/bin/busctl" :
+        key === "dpkg_query" ? "/usr/bin/dpkg-query" :
         key === "node" ? "/usr/bin/node" :
         key === "source" ? EXECUTOR_PATH :
         key === "systemctl" ? "/usr/bin/systemctl" : undefined,
@@ -783,6 +946,7 @@ export function validatePlan(plan) {
     "apport_service",
     "crash_directory",
     "crash_entries",
+    "coredump_admin_masks",
     "guard_state",
     "persistent_policy_state",
     "preflight_state",
@@ -790,6 +954,7 @@ export function validatePlan(plan) {
     "sysctl_gate_state",
     "sysctl_assignment_files",
     "sysctls",
+    "systemd_coredump_absence",
   ], "preimage");
   validateService(plan.preimage.apport_service, "preimage.apport_service", plan.official_noble_apport.unit);
   validateRuntimeObservation(
@@ -811,6 +976,13 @@ export function validatePlan(plan) {
   if (plan.preimage.apport_mask_state !== "absent") {
     fail("preimage Apport mask must be absent");
   }
+  if (!same(plan.preimage.coredump_admin_masks, coreDumpMaskSnapshot("absent"))) {
+    fail("preimage coredump administrative masks must all be absent");
+  }
+  validateSystemdCoreDumpAbsence(
+    plan.preimage.systemd_coredump_absence,
+    "preimage.systemd_coredump_absence",
+  );
   if (plan.preimage.apport_gate_state !== "absent") {
     fail("preimage Apport activation gate must be absent");
   }
@@ -846,6 +1018,7 @@ export function validatePlan(plan) {
     "apport_mask",
     "apport_gate",
     "apport_gate_directory",
+    "coredump_admin_masks",
     "guard_enablement",
     "guard_unit",
     "persistent_policy",
@@ -859,6 +1032,10 @@ export function validatePlan(plan) {
     "candidate.apport_mask",
     APPORT_MASK_PATH,
     APPORT_MASK_TARGET,
+  );
+  validateCoreDumpMaskLinks(
+    plan.candidate.coredump_admin_masks,
+    "candidate.coredump_admin_masks",
   );
   validatePin(plan.candidate.apport_gate, "candidate.apport_gate", {
     bytesRequired: true,
@@ -1065,6 +1242,14 @@ export function validateRollbackApproval(
   return approval;
 }
 
+function expectedCoreDumpVendorClosure(plan) {
+  return {
+    hook_dropin: withoutBytes(plan.official_noble_apport.coredump_hook_dropin),
+    hook_unit: withoutBytes(plan.official_noble_apport.coredump_hook_unit),
+    systemd_coredump_absence: plan.preimage.systemd_coredump_absence,
+  };
+}
+
 export function expectedPreimage(plan) {
   return {
     apport_enablement_symlinks: plan.preimage.apport_enablement_symlinks,
@@ -1075,6 +1260,8 @@ export function expectedPreimage(plan) {
     },
     apport_mask: { path: APPORT_MASK_PATH, state: "absent" },
     apport_service: plan.preimage.apport_service,
+    coredump_admin_masks: coreDumpMaskSnapshot("absent"),
+    coredump_vendor_closure: expectedCoreDumpVendorClosure(plan),
     crash_directory: plan.preimage.crash_directory,
     crash_entries: plan.preimage.crash_entries,
     guard: { state: "absent" },
@@ -1096,6 +1283,11 @@ export function expectedCandidate(plan) {
     },
     apport_mask: { link: plan.candidate.apport_mask, state: "present" },
     apport_service: plan.preimage.apport_service,
+    coredump_admin_masks: coreDumpMaskSnapshot(
+      "present",
+      plan.candidate.coredump_admin_masks,
+    ),
+    coredump_vendor_closure: expectedCoreDumpVendorClosure(plan),
     crash_directory: plan.preimage.crash_directory,
     crash_entries: plan.preimage.crash_entries,
     guard: { state: "absent" },
@@ -1635,6 +1827,7 @@ async function ensureFailClosedCandidate(plan, ops) {
   await ops.writeSysctl("fs.suid_dumpable", TARGET_SYSCTLS["fs.suid_dumpable"]);
   await ops.writeSysctl("kernel.core_pipe_limit", TARGET_SYSCTLS["kernel.core_pipe_limit"]);
   await ops.assertSysctls(TARGET_SYSCTLS);
+  await ops.ensureCoreDumpMasks(plan.candidate.coredump_admin_masks);
   await ops.ensureApportMask(plan.candidate.apport_mask);
   await ops.removeApportEnablement(plan.preimage.apport_enablement_symlinks[0]);
   await ops.reloadManager();
@@ -1669,6 +1862,9 @@ async function bestEffortContainment(plan, ops) {
   });
   await attempt("ensure-apport-mask", function () {
     return ops.ensureApportMask(plan.candidate.apport_mask);
+  });
+  await attempt("ensure-coredump-admin-masks", function () {
+    return ops.ensureCoreDumpMasks(plan.candidate.coredump_admin_masks);
   });
   await attempt("remove-enablement", function () {
     return ops.removeApportEnablement(plan.preimage.apport_enablement_symlinks[0]);
@@ -1783,6 +1979,7 @@ async function rollbackFromPending(plan, context, ops, pending) {
   try {
     await ops.ensureGuard(plan.candidate.guard_unit, plan.candidate.guard_enablement);
     await ops.installPersistent(plan.candidate.persistent_policy);
+    await ops.ensureCoreDumpMasks(plan.candidate.coredump_admin_masks);
     await ops.ensureApportMask(plan.candidate.apport_mask);
     await ops.writeSysctl("kernel.core_pattern", TARGET_CORE_PATTERN);
     await ops.writeSysctl("fs.suid_dumpable", "0");
@@ -1795,6 +1992,7 @@ async function rollbackFromPending(plan, context, ops, pending) {
     await ops.writeSysctl("kernel.core_pattern", APPORT_SYSCTLS["kernel.core_pattern"]);
     await ops.assertSysctls(APPORT_SYSCTLS);
     phase = "remove-policy-then-mask-with-guard-retained";
+    await ops.removeCoreDumpMasks(plan.candidate.coredump_admin_masks);
     await ops.removePersistent(plan.candidate.persistent_policy);
     await ops.removeApportMask(plan.candidate.apport_mask);
     await ops.reloadManager();
@@ -1879,6 +2077,7 @@ async function reestablishVisibleRollbackPostState(plan, ops) {
     fail("visible rollback receipt drifted after its preflight intent was cleared");
   }
   await ops.installPersistent(plan.candidate.persistent_policy);
+  await ops.ensureCoreDumpMasks(plan.candidate.coredump_admin_masks);
   await ops.ensureApportMask(plan.candidate.apport_mask);
   await ops.writeSysctl("kernel.core_pattern", TARGET_CORE_PATTERN);
   await ops.writeSysctl("fs.suid_dumpable", "0");
@@ -1888,6 +2087,7 @@ async function reestablishVisibleRollbackPostState(plan, ops) {
   await ops.writeSysctl("fs.suid_dumpable", APPORT_SYSCTLS["fs.suid_dumpable"]);
   await ops.writeSysctl("kernel.core_pattern", APPORT_SYSCTLS["kernel.core_pattern"]);
   await ops.assertSysctls(APPORT_SYSCTLS);
+  await ops.removeCoreDumpMasks(plan.candidate.coredump_admin_masks);
   await ops.removePersistent(plan.candidate.persistent_policy);
   await ops.removeApportMask(plan.candidate.apport_mask);
   await ops.reloadManager();
@@ -2977,8 +3177,12 @@ function literalExecWordReferencesApport(value) {
   });
 }
 
-function unitFileReferencesApport(bytes) {
+function unitFileReferencesProtectedCrashHandler(bytes) {
   const logical = bytes.toString("utf8").replace(/\\\r?\n[ \t]*/gu, " ");
+  if (logical.includes("apport-coredump-hook") || logical.includes("systemd-coredump") ||
+      logical.includes("--from-systemd-coredump")) {
+    return true;
+  }
   const assignments = [];
   for (const raw of logical.split("\n")) {
     const line = raw.trim();
@@ -3017,7 +3221,11 @@ function unitFileReferencesApport(bytes) {
     if (!APPORT_ACTION_DIRECTIVES.has(directive)) continue;
     const dependencies = parseSystemdWords(value);
     if (dependencies.some(function (unit) {
-      return systemdTemplateCouldEqual(unit, APPORT_UNIT);
+      return systemdTemplateCouldEqual(unit, APPORT_UNIT) ||
+        isProtectedCoreDumpUnitName(unit) ||
+        systemdTemplateCouldEqual(unit, APPORT_COREDUMP_HOOK_UNIT) ||
+        systemdTemplateCouldEqual(unit, SYSTEMD_COREDUMP_SERVICE_UNIT) ||
+        systemdTemplateCouldEqual(unit, SYSTEMD_COREDUMP_SOCKET_UNIT);
     })) return true;
   }
   return false;
@@ -3037,6 +3245,27 @@ function defaultManagedUnitAllowlist() {
       enablement_targets: { [GUARD_ENABLEMENT_PATH]: GUARD_UNIT_PATH },
       fragment_paths: [GUARD_UNIT_PATH],
     },
+    [APPORT_COREDUMP_HOOK_UNIT]: {
+      dropin_paths: [],
+      enablement_paths: [],
+      enablement_targets: {},
+      fragment_paths: [
+        COREDUMP_ADMIN_MASKS[0].path,
+        APPORT_COREDUMP_HOOK_UNIT_PATH,
+      ],
+    },
+    [SYSTEMD_COREDUMP_SERVICE_UNIT]: {
+      dropin_paths: [APPORT_COREDUMP_HOOK_DROPIN_PATH],
+      enablement_paths: [],
+      enablement_targets: {},
+      fragment_paths: [COREDUMP_ADMIN_MASKS[1].path],
+    },
+    [SYSTEMD_COREDUMP_SOCKET_UNIT]: {
+      dropin_paths: [],
+      enablement_paths: [],
+      enablement_targets: {},
+      fragment_paths: [COREDUMP_ADMIN_MASKS[2].path],
+    },
     [SYSTEMD_SYSCTL_UNIT]: {
       alias_paths: [SYSTEMD_SYSCTL_ALIAS_PATH],
       alias_targets: {
@@ -3050,6 +3279,14 @@ function defaultManagedUnitAllowlist() {
       fragment_paths: [SYSTEMD_SYSCTL_UNIT_PATH],
     },
   };
+}
+
+function isProtectedCoreDumpUnitName(name) {
+  return name === APPORT_COREDUMP_HOOK_UNIT ||
+    name === SYSTEMD_COREDUMP_SERVICE_UNIT ||
+    name === SYSTEMD_COREDUMP_SOCKET_UNIT ||
+    /^apport-coredump-hook@[^/]+\.service$/u.test(name) ||
+    /^systemd-coredump@[^/]+\.service$/u.test(name);
 }
 
 function systemdDropinDirectoryNames(unit) {
@@ -3132,6 +3369,9 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     }
     const unit = units.find(function (candidate) { return entry.name === candidate; });
     if (unit === undefined) {
+      if (isProtectedCoreDumpUnitName(entry.name)) {
+        fail("managed systemd unit has an unreviewed coredump instance or shadow: " + path);
+      }
       if (entry.isSymbolicLink()) {
         let target;
         try {
@@ -3165,9 +3405,13 @@ export function scanManagedUnitLoadPaths(configuredRoots, configuredAllowlist) {
     if (!allowlist[unit].fragment_paths.includes(path)) {
       fail("managed systemd unit has an unreviewed effective fragment: " + path);
     }
-    if (path === APPORT_MASK_PATH) {
+    const administrativeMaskPaths = new Set([
+      APPORT_MASK_PATH,
+      ...COREDUMP_ADMIN_MASKS.map(function (mask) { return mask.path; }),
+    ]);
+    if (administrativeMaskPaths.has(path)) {
       if (!entry.isSymbolicLink() || realpathSync(path) !== APPORT_MASK_TARGET) {
-        fail("Apport mask load path is not the exact /dev/null mask");
+        fail("administrative mask load path is not the exact /dev/null mask");
       }
     } else if (!entry.isFile() || entry.isSymbolicLink()) {
       fail("managed systemd fragment is not a regular file: " + path);
@@ -3213,6 +3457,38 @@ export function validateSystemdSysctlLoadPathsForTest(managed) {
         [SYSTEMD_SYSCTL_ENABLEMENT_PATH],
       )) {
     fail("systemd-sysctl alias/fragment/boot enablement closure differs from the plan");
+  }
+  return true;
+}
+
+export function validateCoreDumpManagedLoadPathsForTest(managed, masked) {
+  const expected = {
+    [APPORT_COREDUMP_HOOK_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [],
+      enablement_paths: [],
+      fragment_paths: [
+        ...(masked ? [COREDUMP_ADMIN_MASKS[0].path] : []),
+        APPORT_COREDUMP_HOOK_UNIT_PATH,
+      ].sort(),
+    },
+    [SYSTEMD_COREDUMP_SERVICE_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [APPORT_COREDUMP_HOOK_DROPIN_PATH],
+      enablement_paths: [],
+      fragment_paths: masked ? [COREDUMP_ADMIN_MASKS[1].path] : [],
+    },
+    [SYSTEMD_COREDUMP_SOCKET_UNIT]: {
+      alias_paths: [],
+      dropin_paths: [],
+      enablement_paths: [],
+      fragment_paths: masked ? [COREDUMP_ADMIN_MASKS[2].path] : [],
+    },
+  };
+  for (const unit of Object.keys(expected)) {
+    if (!isPlainObject(managed?.[unit]) || !same(managed[unit], expected[unit])) {
+      fail("coredump managed load-path closure differs for " + unit);
+    }
   }
   return true;
 }
@@ -3288,6 +3564,24 @@ export function scanApportActivation(
       }
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(child);
+        const reviewedCoreDumpMask = COREDUMP_ADMIN_MASKS.find(function (mask) {
+          return mask.path === child;
+        });
+        if (reviewedCoreDumpMask !== undefined) {
+          if (target !== reviewedCoreDumpMask.target) {
+            fail("coredump administrative mask has an unreviewed target: " + child);
+          }
+          const stat = lstatSync(child, { bigint: false });
+          if (configuredRoots === undefined && (stat.uid !== 0 || stat.gid !== 0)) {
+            fail("coredump administrative mask is not root-owned: " + child);
+          }
+          continue;
+        }
+        if (isProtectedCoreDumpUnitName(entry.name) ||
+            isProtectedCoreDumpUnitName(basename(target)) ||
+            target.includes("apport-coredump-hook") || target.includes("systemd-coredump")) {
+          fail("foreign coredump unit alias or activation symlink exists: " + child);
+        }
         if (entry.name === APPORT_UNIT && target === APPORT_MASK_TARGET) {
           if (child !== APPORT_MASK_PATH || mask.state !== "absent") {
             fail("foreign or duplicate Apport mask exists: " + child);
@@ -3333,11 +3627,32 @@ export function scanApportActivation(
             MAX_JSON_BYTES,
           );
           assertTrustedInput(opened, resolvedTarget);
-          if (unitFileReferencesApport(opened.bytes)) {
-            fail("foreign symlinked systemd unit references apport.service: " + child);
+          if (unitFileReferencesProtectedCrashHandler(opened.bytes)) {
+            fail("foreign symlinked systemd unit references apport.service or a protected coredump handler: " + child);
           }
         }
       } else if (entry.isFile()) {
+        if (child === APPORT_COREDUMP_HOOK_UNIT_PATH) {
+          const opened = openBoundRegular(child, "official Apport coredump hook unit", MAX_JSON_BYTES);
+          if (opened.bytes.toString("utf8") !== NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES ||
+              opened.pin.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_UNIT_SHA256 ||
+              opened.pin.uid !== 0 || opened.pin.gid !== 0 || opened.pin.mode !== "0644") {
+            fail("official Apport coredump hook unit differs from the reviewed generation");
+          }
+          continue;
+        }
+        if (child === APPORT_COREDUMP_HOOK_DROPIN_PATH) {
+          const opened = openBoundRegular(child, "official Apport coredump hook drop-in", MAX_JSON_BYTES);
+          if (opened.bytes.toString("utf8") !== NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES ||
+              opened.pin.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_DROPIN_SHA256 ||
+              opened.pin.uid !== 0 || opened.pin.gid !== 0 || opened.pin.mode !== "0644") {
+            fail("official Apport coredump hook drop-in differs from the reviewed generation");
+          }
+          continue;
+        }
+        if (isProtectedCoreDumpUnitName(entry.name)) {
+          fail("foreign coredump unit fragment or instance exists: " + child);
+        }
         if (entry.name === APPORT_UNIT && child !== officialUnitPath) {
           fail("non-symlink Apport fragment/dependency exists outside the official unit path: " + child);
         }
@@ -3355,8 +3670,8 @@ export function scanApportActivation(
           exactPin(opened, reviewedGuardPin, "reviewed reboot guard");
           continue;
         }
-        if (unitFileReferencesApport(opened.bytes)) {
-          fail("foreign systemd unit references apport.service: " + child);
+        if (unitFileReferencesProtectedCrashHandler(opened.bytes)) {
+          fail("foreign systemd unit references apport.service or a protected coredump handler: " + child);
         }
       }
     }
@@ -3472,6 +3787,82 @@ function runCommand(path, args, label) {
     fail(label + " failed");
   }
   return result.stdout;
+}
+
+export function validateDpkgSystemdCoreDumpAbsenceForTest(text) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_JSON_BYTES ||
+      !text.endsWith("\n")) {
+    fail("dpkg package inventory is not bounded newline-terminated text");
+  }
+  const rows = text.slice(0, -1).split("\n").filter(function (line) { return line !== ""; });
+  for (const row of rows) {
+    const fields = row.split("\t");
+    if (fields.length !== 2 || !/^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$/u.test(fields[0]) ||
+        !/^[a-z]+ [a-z]+ [a-z-]+$/u.test(fields[1])) {
+      fail("dpkg package inventory contains a malformed row");
+    }
+    if ((fields[0] === "systemd-coredump" || fields[0].startsWith("systemd-coredump:")) &&
+        fields[1] === "install ok installed") {
+      fail("systemd-coredump package is installed");
+    }
+    if (fields[0] === "systemd-coredump" || fields[0].startsWith("systemd-coredump:")) {
+      fail("systemd-coredump package retains an unreviewed dpkg generation");
+    }
+  }
+  return true;
+}
+
+function systemdCoreDumpPackageAbsent() {
+  const inventory = runCommand(
+    "/usr/bin/dpkg-query",
+    ["-W", "-f=${binary:Package}\t${Status}\\n"],
+    "dpkg package inventory",
+  );
+  validateDpkgSystemdCoreDumpAbsenceForTest(inventory);
+}
+
+function assertSystemdCoreDumpAbsentPaths() {
+  for (const path of SYSTEMD_COREDUMP_ABSENT_PATHS) {
+    if (pathExistsNoFollow(path)) {
+      fail("systemd-coredump absence closure contains a path: " + path);
+    }
+  }
+}
+
+function exactCoreDumpVendorClosure(plan) {
+  const hook = openBoundRegular(
+    APPORT_COREDUMP_HOOK_UNIT_PATH,
+    "official Apport coredump hook unit",
+    MAX_JSON_BYTES,
+  );
+  exactPin(hook, plan.official_noble_apport.coredump_hook_unit, "Apport coredump hook unit");
+  const dropin = openBoundRegular(
+    APPORT_COREDUMP_HOOK_DROPIN_PATH,
+    "official Apport coredump hook drop-in",
+    MAX_JSON_BYTES,
+  );
+  exactPin(
+    dropin,
+    plan.official_noble_apport.coredump_hook_dropin,
+    "Apport coredump hook drop-in",
+  );
+  const hookOwner = runCommand(
+    "/usr/bin/dpkg-query",
+    ["-S", APPORT_COREDUMP_HOOK_UNIT_PATH],
+    "Apport coredump hook package owner",
+  );
+  const dropinOwner = runCommand(
+    "/usr/bin/dpkg-query",
+    ["-S", APPORT_COREDUMP_HOOK_DROPIN_PATH],
+    "Apport coredump hook drop-in package owner",
+  );
+  if (hookOwner !== "apport: " + APPORT_COREDUMP_HOOK_UNIT_PATH + "\n" ||
+      dropinOwner !== "apport: " + APPORT_COREDUMP_HOOK_DROPIN_PATH + "\n") {
+    fail("Apport coredump hook artifacts do not have the exact apport dpkg owner");
+  }
+  systemdCoreDumpPackageAbsent();
+  assertSystemdCoreDumpAbsentPaths();
+  return expectedCoreDumpVendorClosure(plan);
 }
 
 export function parseBusctlJson(text, expectedType, label) {
@@ -3803,6 +4194,56 @@ function managerListJobs() {
   ));
 }
 
+function managerUnitFileState(name) {
+  const state = busctlJson(
+    ["call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+      "org.freedesktop.systemd1.Manager", "GetUnitFileState", "s", name],
+    "s",
+    "systemd Manager.GetUnitFileState " + name,
+  );
+  if (typeof state !== "string") fail("systemd unit-file state is not a string for " + name);
+  return state;
+}
+
+function exactMaskedCoreDumpUnitFileStates() {
+  const states = Object.fromEntries(COREDUMP_ADMIN_MASKS.map(function (mask) {
+    const state = managerUnitFileState(mask.name);
+    return [mask.name, state];
+  }));
+  return validateCoreDumpUnitFileStatesForTest(states);
+}
+
+export function validateCoreDumpUnitFileStatesForTest(states) {
+  const expectedNames = COREDUMP_ADMIN_MASKS.map(function (mask) {
+    return mask.name;
+  }).sort();
+  if (!states || typeof states !== "object" || Array.isArray(states) ||
+      canonicalJson(Object.keys(states).sort()) !== canonicalJson(expectedNames)) {
+    fail("coredump D-Bus unit-file state set differs from the three reviewed units");
+  }
+  for (const name of expectedNames) {
+    if (states[name] !== "masked") {
+      fail(name + " D-Bus unit-file state is not exactly masked");
+    }
+  }
+  return states;
+}
+
+export function assertNoCoreDumpRuntimeForTest(units, jobs) {
+  const normalizedUnits = normalizeManagerRows(units);
+  const normalizedJobs = normalizeManagerJobs(jobs);
+  const loaded = normalizedUnits.filter(function (row) {
+    return isProtectedCoreDumpUnitName(row[0]);
+  });
+  const queued = normalizedJobs.filter(function (job) {
+    return isProtectedCoreDumpUnitName(job[1]);
+  });
+  if (loaded.length !== 0 || queued.length !== 0) {
+    fail("coredump template/socket instance is loaded or has a queued manager job");
+  }
+  return true;
+}
+
 function expectedManagedUnitNames(name) {
   return name === SYSTEMD_SYSCTL_UNIT
     ? [SYSTEMD_SYSCTL_ALIAS_UNIT, SYSTEMD_SYSCTL_UNIT].sort()
@@ -3894,8 +4335,10 @@ function runtimePhase(phase) {
 function assertNoApportEdge(properties, label) {
   for (const property of APPORT_DBUS_DEPENDENCIES) {
     if (!Object.hasOwn(properties, property)) continue;
-    if (stringSetProperty(properties, property, label).includes(APPORT_UNIT)) {
-      fail(label + "." + property + " contains a foreign Apport action edge");
+    if (stringSetProperty(properties, property, label).some(function (unit) {
+      return unit === APPORT_UNIT || isProtectedCoreDumpUnitName(unit);
+    })) {
+      fail(label + "." + property + " contains a foreign crash-handler action edge");
     }
   }
 }
@@ -4022,6 +4465,10 @@ function runtimeServiceSnapshot(phase) {
   const unitPathBefore = reviewedManagerUnitPath();
   const unitsBefore = managerListUnits();
   const jobsBefore = managerListJobs();
+  assertNoCoreDumpRuntimeForTest(unitsBefore, jobsBefore);
+  const coredumpUnitFileStatesBefore = expected.masked
+    ? exactMaskedCoreDumpUnitFileStates()
+    : null;
   const snapshot = {
     apport: loadedUnitSnapshot(APPORT_UNIT, unitsBefore, true),
     guard: loadedUnitSnapshot(GUARD_UNIT, unitsBefore, expected.guarded),
@@ -4029,6 +4476,10 @@ function runtimeServiceSnapshot(phase) {
   };
   const jobsAfter = managerListJobs();
   const unitsAfter = managerListUnits();
+  assertNoCoreDumpRuntimeForTest(unitsAfter, jobsAfter);
+  const coredumpUnitFileStatesAfter = expected.masked
+    ? exactMaskedCoreDumpUnitFileStates()
+    : null;
   const unitPathAfter = reviewedManagerUnitPath();
   assertManagerSnapshotFenceForTest(
     unitsBefore,
@@ -4038,6 +4489,9 @@ function runtimeServiceSnapshot(phase) {
     unitPathBefore,
     unitPathAfter,
   );
+  if (!same(coredumpUnitFileStatesBefore, coredumpUnitFileStatesAfter)) {
+    fail("coredump D-Bus unit-file states changed across the runtime snapshot");
+  }
   const managed = new Set([
     APPORT_UNIT,
     GUARD_UNIT,
@@ -4058,6 +4512,19 @@ function runtimeServiceSnapshot(phase) {
       fragment_path: snapshot.apport.values.fragment_path,
     },
   };
+}
+
+function assertCoreDumpRollbackRemovalClosure(plan) {
+  const configurationBefore = systemdConfigurationGeneration(plan);
+  runtimeServiceSnapshot("guarded-candidate");
+  const configurationAfter = systemdConfigurationGeneration(plan);
+  if (configurationBefore !== configurationAfter) {
+    fail("coredump rollback absence closure changed across its final runtime fence");
+  }
+  const masks = coredumpAdminMasksSnapshot(plan);
+  if (!same(masks, coreDumpMaskSnapshot("present", plan.candidate.coredump_admin_masks))) {
+    fail("coredump rollback removal requires the exact complete masked generation");
+  }
 }
 
 function publicRuntimeObservation(snapshot) {
@@ -4224,9 +4691,42 @@ function guardSnapshot(plan) {
   };
 }
 
+function coredumpAdminMasksSnapshot(plan) {
+  const observed = [];
+  let present = 0;
+  for (let index = 0; index < COREDUMP_ADMIN_MASKS.length; index += 1) {
+    const reviewed = COREDUMP_ADMIN_MASKS[index];
+    let stat;
+    try {
+      stat = lstatSync(reviewed.path, { bigint: false });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      observed.push({ name: reviewed.name, path: reviewed.path, state: "absent" });
+      continue;
+    }
+    if (!stat.isSymbolicLink() || stat.uid !== 0 || stat.gid !== 0 ||
+        readlinkSync(reviewed.path) !== reviewed.target || realpathSync(reviewed.path) !== "/dev/null") {
+      fail("coredump administrative mask is not the exact root-owned /dev/null link: " + reviewed.path);
+    }
+    present += 1;
+    observed.push({
+      link: plan.candidate.coredump_admin_masks[index],
+      name: reviewed.name,
+      state: "present",
+    });
+  }
+  if (present !== 0 && present !== COREDUMP_ADMIN_MASKS.length) {
+    fail("coredump administrative masks are a partial generation");
+  }
+  return observed;
+}
+
 function systemdConfigurationGeneration(plan) {
   const unitPath = reviewedManagerUnitPath();
   const managedLoadPaths = scanManagedUnitLoadPaths(unitPath);
+  const coredumpAdminMasks = coredumpAdminMasksSnapshot(plan);
+  const coredumpMasked = coredumpAdminMasks[0].state === "present";
+  validateCoreDumpManagedLoadPathsForTest(managedLoadPaths, coredumpMasked);
   const sysctlDropins = systemdSysctlDropinsSnapshot(plan);
   return sha256(Buffer.from(canonicalJson({
     apport_activation: scanApportActivation(
@@ -4235,6 +4735,8 @@ function systemdConfigurationGeneration(plan) {
       plan.candidate.apport_gate,
     ),
     apport_gate: apportGateSnapshot(plan),
+    coredump_admin_masks: coredumpAdminMasks,
+    coredump_vendor_closure: exactCoreDumpVendorClosure(plan),
     guard: guardSnapshot(plan),
     managed_load_paths: managedLoadPaths,
     systemd_sysctl_inputs: exactSystemdSysctlInputs(plan, managedLoadPaths),
@@ -4245,6 +4747,12 @@ function systemdConfigurationGeneration(plan) {
 function realInspect(plan) {
   const managedLoadPaths = scanManagedUnitLoadPaths(reviewedManagerUnitPath());
   exactSystemdSysctlInputs(plan, managedLoadPaths);
+  const coredumpAdminMasks = coredumpAdminMasksSnapshot(plan);
+  validateCoreDumpManagedLoadPathsForTest(
+    managedLoadPaths,
+    coredumpAdminMasks[0].state === "present",
+  );
+  const coredumpVendorClosure = exactCoreDumpVendorClosure(plan);
   const apportActivation = scanApportActivation(
     undefined,
     plan.candidate.guard_unit,
@@ -4267,6 +4775,8 @@ function realInspect(plan) {
     apport_gate: gate,
     apport_mask: apportActivation.mask,
     apport_service: apportService,
+    coredump_admin_masks: coredumpAdminMasks,
+    coredump_vendor_closure: coredumpVendorClosure,
     crash_directory: crash.directory,
     crash_entries: crash.entries,
     guard,
@@ -4851,6 +5361,18 @@ export function realOps(plan) {
         plan.transaction.temp_paths.apport_mask_quarantine,
       );
     },
+    async ensureCoreDumpMasks(links) {
+      requireMutationLease("ensure coredump administrative masks");
+      validateCoreDumpMaskLinks(links, "coredump administrative masks");
+      const quarantines = [
+        plan.transaction.temp_paths.apport_coredump_hook_mask_quarantine,
+        plan.transaction.temp_paths.systemd_coredump_service_mask_quarantine,
+        plan.transaction.temp_paths.systemd_coredump_socket_mask_quarantine,
+      ];
+      for (let index = 0; index < links.length; index += 1) {
+        ensureSymlink(links[index].path, links[index].target, quarantines[index]);
+      }
+    },
     async ensureGuard(unit, enablement) {
       requireMutationLease("ensure boot and activation gates");
       ensureApportGateDirectory();
@@ -4988,6 +5510,22 @@ export function realOps(plan) {
         plan.transaction.temp_paths.apport_mask_quarantine,
       );
     },
+    async removeCoreDumpMasks(links) {
+      requireMutationLease("remove coredump administrative masks");
+      validateCoreDumpMaskLinks(links, "coredump administrative masks");
+      // This synchronous re-proof is deliberately inside the mutator: no
+      // caller can remove even the first mask without exact package/path,
+      // foreign-edge, loaded-instance/job, and D-Bus `masked` evidence.
+      assertCoreDumpRollbackRemovalClosure(plan);
+      const quarantines = [
+        plan.transaction.temp_paths.apport_coredump_hook_mask_quarantine,
+        plan.transaction.temp_paths.systemd_coredump_service_mask_quarantine,
+        plan.transaction.temp_paths.systemd_coredump_socket_mask_quarantine,
+      ];
+      for (let index = links.length - 1; index >= 0; index -= 1) {
+        removeSymlinkQuarantine(links[index].path, links[index].target, quarantines[index]);
+      }
+    },
     async removeGuard(unit, enablement) {
       requireMutationLease("remove boot and activation gates");
       removeSymlinkQuarantine(
@@ -5081,6 +5619,7 @@ export function realOps(plan) {
         "/etc/systemd/system/multi-user.target.wants",
         "/etc/systemd/system/sysinit.target.wants",
         "/usr/lib/systemd/system",
+        "/usr/lib/systemd/system/systemd-coredump@.service.d",
         "/usr/share/apport",
       ]) {
         assertRootDirectory(protectedDirectory);
@@ -5100,6 +5639,7 @@ export function realOps(plan) {
         approved.official_noble_apport.handler,
         "official Noble Apport handler",
       );
+      exactCoreDumpVendorClosure(approved);
       exactSystemdSysctlInputs(approved);
       for (const key of Object.keys(approved.executor)) {
         const opened = openBoundRegular(approved.executor[key].path, "executor " + key);
@@ -5188,6 +5728,26 @@ function observePlan(ceremonyId) {
       handler.pin.mode !== "0755") {
     fail("installed Apport handler does not equal official Noble 2.28.2 source bytes");
   }
+  const coredumpHook = openBoundRegular(
+    APPORT_COREDUMP_HOOK_UNIT_PATH,
+    "official Noble Apport coredump hook unit",
+    MAX_JSON_BYTES,
+  );
+  if (coredumpHook.bytes.toString("utf8") !== NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES ||
+      coredumpHook.pin.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_UNIT_SHA256) {
+    fail("installed Apport coredump hook unit is not the reviewed Noble generation");
+  }
+  const coredumpDropin = openBoundRegular(
+    APPORT_COREDUMP_HOOK_DROPIN_PATH,
+    "official Noble Apport coredump hook drop-in",
+    MAX_JSON_BYTES,
+  );
+  if (coredumpDropin.bytes.toString("utf8") !== NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES ||
+      coredumpDropin.pin.sha256 !== NOBLE_APPORT_COREDUMP_HOOK_DROPIN_SHA256) {
+    fail("installed Apport coredump hook drop-in is not the reviewed Noble generation");
+  }
+  systemdCoreDumpPackageAbsent();
+  assertSystemdCoreDumpAbsentPaths();
   const crash = crashDirectorySnapshot();
   const osPath = realpathSync("/etc/os-release");
   const os = openBoundRegular(osPath, "os-release");
@@ -5215,8 +5775,10 @@ function observePlan(ceremonyId) {
     "0644",
   );
   const candidateGuard = embeddedPin(GUARD_UNIT_PATH, guardUnitBytes(ceremonyId), "0644");
+  const candidateCoreDumpMasks = reviewedCoreDumpMaskLinks();
   const managedLoadPaths = scanManagedUnitLoadPaths(reviewedManagerUnitPath());
   validateSystemdSysctlLoadPathsForTest(managedLoadPaths);
+  validateCoreDumpManagedLoadPathsForTest(managedLoadPaths, false);
   const apportActivation = scanApportActivation(
     undefined,
     candidateGuard,
@@ -5252,6 +5814,7 @@ function observePlan(ceremonyId) {
         uid: 0,
       },
       apport_mask: { gid: 0, path: APPORT_MASK_PATH, target: APPORT_MASK_TARGET, uid: 0 },
+      coredump_admin_masks: candidateCoreDumpMasks,
       guard_enablement: { gid: 0, path: GUARD_ENABLEMENT_PATH, target: GUARD_UNIT_PATH, uid: 0 },
       guard_unit: candidateGuard,
       persistent_policy: embeddedPin(PERSISTENT_POLICY_PATH, POLICY_BYTES, "0644"),
@@ -5268,6 +5831,7 @@ function observePlan(ceremonyId) {
     ceremony_id: ceremonyId,
     executor: {
       busctl: openBoundRegular("/usr/bin/busctl", "busctl").pin,
+      dpkg_query: openBoundRegular("/usr/bin/dpkg-query", "dpkg-query").pin,
       exchange_helper: openBoundRegular(helperPaths.exchange_helper, "exchange helper").pin,
       false_handler: openBoundRegular("/usr/bin/false", "false handler").pin,
       maintenance_lock_helper: openBoundRegular(helperPaths.maintenance_lock_helper, "maintenance lock helper").pin,
@@ -5284,6 +5848,14 @@ function observePlan(ceremonyId) {
     kind: CEREMONY_KIND,
     official_noble_apport: {
       archive_sha256: NOBLE_APPORT_ARCHIVE_SHA256,
+      coredump_hook_dropin: {
+        ...coredumpDropin.pin,
+        bytes_base64: coredumpDropin.bytes.toString("base64"),
+      },
+      coredump_hook_unit: {
+        ...coredumpHook.pin,
+        bytes_base64: coredumpHook.bytes.toString("base64"),
+      },
       handler: handler.pin,
       handler_source_sha256: NOBLE_APPORT_HANDLER_SOURCE_SHA256,
       source_url: NOBLE_APPORT_SOURCE_URL,
@@ -5306,6 +5878,7 @@ function observePlan(ceremonyId) {
       }, observedGate),
       crash_directory: crash.directory,
       crash_entries: crash.entries,
+      coredump_admin_masks: coreDumpMaskSnapshot("absent"),
       guard_state: observedGuard.state,
       persistent_policy_state: observedPolicy.state,
       preflight_state: [
@@ -5321,6 +5894,10 @@ function observePlan(ceremonyId) {
         "fs.suid_dumpable": readSysctl("fs.suid_dumpable"),
         "kernel.core_pattern": readSysctl("kernel.core_pattern"),
         "kernel.core_pipe_limit": readSysctl("kernel.core_pipe_limit"),
+      },
+      systemd_coredump_absence: {
+        absent_paths: Array.from(SYSTEMD_COREDUMP_ABSENT_PATHS),
+        package_state: "absent",
       },
     },
     rollback_policy: "fresh-receipt-bound-approval-with-reboot-lineage-v2",

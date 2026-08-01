@@ -459,8 +459,14 @@ The repository now contains a non-deployed core-pattern ceremony v2. It binds
 the full Noble Apport side effect (`core_pattern`, `suid_dumpable`, and
 `core_pipe_limit`), exact installed handler and unit generations, never calls
 stock Apport ExecStart/ExecStop, and directly manages only the exact enablement,
-mask, approval-bound lease/preflight, both preflight gates, and reboot-guard
-generations. Stable unit configuration is
+Apport/coredump masks, approval-bound lease/preflight, both preflight gates, and reboot-guard
+generations. It also pins the exact Noble coredump hook unit/drop-in, installs
+fixed masks for that hook plus the systemd-coredump service/socket, requires
+exact D-Bus `masked` state, and rejects any loaded instance, queued job or
+foreign action edge. The `systemd-coredump` package, binary, vendor units and
+config roots must be absent; rollback removes the masks only after a fresh
+in-mutator closure proof. These masks are a systemd/non-root control, not a
+claim that malicious UID 0 cannot remove or directly bypass them. Stable unit configuration is
 separate from settled active/exited or inactive/dead observation. Matching
 sysctl globs/negative exclusions, multi-level aliases, direct handler `Exec*`,
 quoted/escaped external start/stop/reload dependencies, load-path overrides for

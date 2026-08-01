@@ -34,6 +34,7 @@ function readState(path) {
 const APPLY_BOUNDARIES = [
   "create-preflight",
   "create-pending",
+  "ensure-coredump-admin-masks",
   "install-persistent",
   "write:kernel.core_pattern=" + TARGET_CORE_PATTERN,
   "write:fs.suid_dumpable=0",
@@ -59,6 +60,7 @@ const ROLLBACK_BOUNDARIES = [
   "write:kernel.core_pipe_limit=10",
   "write:fs.suid_dumpable=2",
   "write:kernel.core_pattern=" + APPORT_SYSCTLS["kernel.core_pattern"],
+  "remove-coredump-admin-masks",
   "remove-persistent",
   "remove-apport-mask",
   "write-pending",

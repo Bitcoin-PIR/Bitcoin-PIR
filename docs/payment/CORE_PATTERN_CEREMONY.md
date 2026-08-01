@@ -31,6 +31,17 @@ It is Type=oneshot, RemainAfterExit=yes, directly executes
 /usr/share/apport/apport --start and --stop, and does not consult
 /etc/default/apport.
 
+The same reviewed host generation also contains the exact root:root mode 0644
+`/usr/lib/systemd/system/apport-coredump-hook@.service` (787 bytes, SHA-256
+`fdabfbd44847bd34d03efd9cc52d847d3dbaffec96e13cd413a40b35acc39a00`)
+and
+`/usr/lib/systemd/system/systemd-coredump@.service.d/apport-coredump-hook.conf`
+(49 bytes, SHA-256
+`d025d2395f1d5f0e9fc183b39db11dd5f121740fd818fc2333ed5ca4a39dbfaa`).
+The latter has `OnSuccess=apport-coredump-hook@%i.service`, so proving only the
+legacy `apport.service` path would leave a second crash-handler activation
+edge.
+
 V1 called stock systemctl stop. A SIGKILL after Apport's last stop write and
 before JavaScript restored the safe pipe left native core dumps enabled. V1
 also used a /run lock, bound only one sysctl, had no reboot lineage, and could
@@ -106,6 +117,16 @@ not import the handler's Python module graph. A rollback approval authorizes
 restoring the exact top-level handler configuration but is not an attestation
 of every module that a later boot may import.
 
+Apply additionally installs fixed root-owned `/dev/null` masks for
+`apport-coredump-hook@.service`, `systemd-coredump@.service`, and
+`systemd-coredump.socket`. It requires exact D-Bus unit-file state `masked`, no
+loaded concrete template instance, no queued job, no alias or dependency edge,
+and a complete absence closure for the `systemd-coredump` package, binary,
+vendor service/socket and configuration roots. Rollback removes these three
+masks only after synchronously repeating the package/path/vendor/static-load-
+path proof around a fenced runtime snapshot. It never invokes `systemctl stop`
+to make a loaded handler disappear; any loaded instance or job fails closed.
+
 The candidate persistent policy has exact safety-first bytes:
 
     kernel.core_pattern=|/usr/bin/false
@@ -148,8 +169,10 @@ The canonical schema-v2 plan binds:
 
 - original plan boot ID, machine ID digest, Noble OS bytes, systemd 255 version;
 - exact Node, executor source, /usr/bin/false, systemctl version probe, busctl,
-  content-addressed renameat2 helper, and maintenance-lock helper binaries;
-- official Noble source URL/archive/handler hashes and exact unit bytes;
+  `/usr/bin/dpkg-query`, content-addressed renameat2 helper, and maintenance-lock
+  helper binaries;
+- official Noble source URL/archive/handler hashes, exact unit bytes, and exact
+  coredump hook unit/drop-in bytes and metadata;
 - the exact installed Noble handler path, bytes, size, ownership, mode, and
   one-link metadata even though the ceremony never executes it;
 - all three live sysctl preimages and candidates;
@@ -169,6 +192,9 @@ The canonical schema-v2 plan binds:
   `ExecCondition` gates, early guard,
   persistent policy, and every fixed symlink/file quarantine or prepared temp,
   lock, pending, receipt, and rollback-receipt path;
+- the fixed ordered three-mask coredump generation plus absence of every
+  reviewed `systemd-coredump` package/path generation; receipts bind both the
+  masks and the pinned vendor closure;
 - /var/crash directory device, inode, uid, gid, mode 3777, and sorted empty
   entry observation.
 
@@ -188,7 +214,8 @@ publish an approval/mode/boot/plan/source-bound lease, install and manager-reloa
 three inert boot controls, and only then publish preflight:
 
 1. a `sysinit.target` guard ordered before `systemd-sysctl.service`,
-   `apport.service`, and `sysinit.target`, which writes all three safe values.
+   `apport.service`, all three protected coredump unit names, and
+   `sysinit.target`, which writes all three safe values.
    It is a non-retaining oneshot: after a reboot run it becomes inactive/dead,
    so removal plus manager reload can garbage-collect the unit;
 2. an Apport `ExecCondition` that blocks activation whenever preflight exists;
@@ -214,7 +241,8 @@ pending, then removes preflight (the terminal boot transition), removes and
 manager-reloads the exact gates, and releases the lease last. A visible
 rollback receipt whose preflight survived a reboot re-establishes the approved
 rollback sysctls before cleanup. Apply retains the safe policy, credential
-closure, and mask; rollback restores the exact stable preimage.
+closure, Apport mask and all three coredump masks; rollback restores the exact
+stable preimage only after the coredump absence closure is re-proved.
 
 Pending and preflight updates carry an integer generation plus the SHA-256 of
 their exact predecessor. Exchange replay accepts only a direct predecessor or
@@ -263,8 +291,9 @@ won the race, it exchanges that generation back and fails closed instead of
 overwriting it. Removal first renames to fixed quarantine, verifies approved
 identity, and restores a raced generation before refusing.
 
-The Apport enablement and mask symlinks and guard enablement symlink use fixed
-same-directory no-clobber quarantines. Install/removal replay handles both
+The Apport enablement, Apport/coredump mask symlinks and guard enablement
+symlink use distinct fixed same-directory no-clobber quarantines.
+Install/removal replay handles both
 names linked to the same symlink inode, either name alone, and every
 link/unlink/verify/parent-fsync boundary. Quarantine-to-live symlink recovery
 uses a no-clobber hard link and reclassifies `EEXIST`, never a replacing rename.
@@ -280,6 +309,11 @@ validated durable lease; unknown contents remain rejected. Unexpected targets,
 bytes, or inodes are rejected or restored. Root can always subvert a root
 process after checks; the contract closes ordinary package-maintenance races
 and power-loss replay, not malicious root.
+
+The coredump masks have the same boundary: they constrain systemd activation,
+non-root callers and cooperative package maintenance. A malicious UID 0 can
+remove them or execute a pinned handler directly and remains part of the
+trusted host-administrator boundary. The ceremony does not claim otherwise.
 
 ## Receipt publication and exact outcomes
 
@@ -448,7 +482,9 @@ comparing it; this paragraph is a template, not approval:
 > `[PLAN_SHA256]`, executor `[SOURCE_SHA256]`, lock helper
 > `[LOCK_HELPER_SHA256]`, and exchange helper `[EXCHANGE_HELPER_SHA256]`.
 > I accept loss of native core diagnostics and Apport collection for all host
-> processes, replacement of all three Apport sysctls, retention of existing
+> processes, replacement of all three Apport sysctls, installation of the
+> three reviewed coredump unit masks, the fact that those masks do not constrain
+> malicious root/direct execution, retention of existing
 > crash/journal history, manager reload, incomplete-boot sysctl skip/guard, and
 > point-in-time privileged-maintenance limits. This does not approve a
 > reboot, history deletion, service activation, deployment, routing, or funds.

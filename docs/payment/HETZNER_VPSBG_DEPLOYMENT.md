@@ -711,6 +711,14 @@ that handler's canonical root-owned bytes and metadata into the trusted-command
 evidence. A default systemd-coredump or apport pipe is not accepted as
 non-persistent evidence.
 
+The separate core-pattern ceremony also pins the Noble coredump hook/drop-in,
+masks `apport-coredump-hook@.service`, `systemd-coredump@.service`, and
+`systemd-coredump.socket`, and requires the `systemd-coredump` package/path and
+loaded-instance/job closure to be absent. The live deployment preflight must
+also prove both hook artifacts have the exact `apport` dpkg ownership output;
+this is source/test coverage until a fresh host plan and explicit host-global
+approval are materialized and run.
+
 The code does not by itself clear this P1 blocker. Before public activation,
 the exact rendered Linux host must prove both units active, the volatile
 directory `0750`, all four sockets `0660` with the source-fair UID/GID, exact

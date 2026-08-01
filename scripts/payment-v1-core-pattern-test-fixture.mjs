@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import {
   APPORT_ENABLEMENT_PATH,
   APPORT_ENABLEMENT_TARGET,
+  APPORT_COREDUMP_HOOK_DROPIN_PATH,
+  APPORT_COREDUMP_HOOK_UNIT_PATH,
   APPORT_GATE_DIRECTORY,
   APPORT_GATE_PATH,
   APPORT_HANDLER_PATH,
@@ -13,10 +15,13 @@ import {
   APPORT_UNIT,
   APPORT_UNIT_PATH,
   CEREMONY_KIND,
+  COREDUMP_ADMIN_MASKS,
   EXECUTOR_PATH,
   GUARD_ENABLEMENT_PATH,
   GUARD_UNIT_PATH,
   NOBLE_APPORT_ARCHIVE_SHA256,
+  NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES,
+  NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES,
   NOBLE_APPORT_HANDLER_SOURCE_SHA256,
   NOBLE_APPORT_SOURCE_URL,
   NOBLE_APPORT_UNIT_BYTES,
@@ -33,6 +38,7 @@ import {
   SYSTEMD_SYSCTL_ENABLEMENT_PATH,
   SYSTEMD_SYSCTL_ENABLEMENT_TARGET,
   SYSTEMD_SYSCTL_UNIT_PATH,
+  SYSTEMD_COREDUMP_ABSENT_PATHS,
   TARGET_CORE_PATTERN,
   TARGET_SYSCTLS,
   canonicalJson,
@@ -110,6 +116,9 @@ export function fixturePlan() {
         target: APPORT_MASK_TARGET,
         uid: 0,
       },
+      coredump_admin_masks: COREDUMP_ADMIN_MASKS.map(function ({ gid, path, target, uid }) {
+        return { gid, path, target, uid };
+      }),
       guard_enablement: {
         gid: 0,
         path: GUARD_ENABLEMENT_PATH,
@@ -150,6 +159,7 @@ export function fixturePlan() {
     ceremony_id: ceremonyId,
     executor: {
       busctl: executable("/usr/bin/busctl", "busctl"),
+      dpkg_query: executable("/usr/bin/dpkg-query", "dpkg-query"),
       exchange_helper: executable(
         "/opt/bitcoinpir/payment-v1-rename-exchange/" + hash("exchange\n") +
           "/payment-v1-rename-exchange",
@@ -173,6 +183,16 @@ export function fixturePlan() {
     kind: CEREMONY_KIND,
     official_noble_apport: {
       archive_sha256: NOBLE_APPORT_ARCHIVE_SHA256,
+      coredump_hook_dropin: embeddedPin(
+        APPORT_COREDUMP_HOOK_DROPIN_PATH,
+        NOBLE_APPORT_COREDUMP_HOOK_DROPIN_BYTES,
+        "0644",
+      ),
+      coredump_hook_unit: embeddedPin(
+        APPORT_COREDUMP_HOOK_UNIT_PATH,
+        NOBLE_APPORT_COREDUMP_HOOK_UNIT_BYTES,
+        "0644",
+      ),
       handler: {
         gid: 0,
         mode: "0755",
@@ -222,6 +242,9 @@ export function fixturePlan() {
         uid: 0,
       },
       crash_entries: [],
+      coredump_admin_masks: COREDUMP_ADMIN_MASKS.map(function ({ name, path }) {
+        return { name, path, state: "absent" };
+      }),
       guard_state: "absent",
       persistent_policy_state: "absent",
       preflight_state: "absent",
@@ -236,6 +259,10 @@ export function fixturePlan() {
         ),
       }],
       sysctls: { ...APPORT_SYSCTLS },
+      systemd_coredump_absence: {
+        absent_paths: Array.from(SYSTEMD_COREDUMP_ABSENT_PATHS),
+        package_state: "absent",
+      },
     },
     rollback_policy: "fresh-receipt-bound-approval-with-reboot-lineage-v2",
     schema_version: 2,
@@ -639,10 +666,42 @@ export class FakeOps {
     this.after("ensure-apport-mask");
   }
 
+  async ensureCoreDumpMasks(links) {
+    this.before("ensure-coredump-admin-masks");
+    this.state.coredump_admin_masks = COREDUMP_ADMIN_MASKS.map(function (reviewed, index) {
+      return {
+        link: structuredClone(links[index]),
+        name: reviewed.name,
+        state: "present",
+      };
+    });
+    this.after("ensure-coredump-admin-masks");
+  }
+
   async removeApportMask() {
     this.before("remove-apport-mask");
     this.state.apport_mask = { path: APPORT_MASK_PATH, state: "absent" };
     this.after("remove-apport-mask");
+  }
+
+  async removeCoreDumpMasks() {
+    this.before("reprove-coredump-absence-closure");
+    assert.deepEqual(
+      this.state.coredump_vendor_closure.systemd_coredump_absence,
+      this.plan.preimage.systemd_coredump_absence,
+    );
+    assert.equal(
+      this.state.coredump_admin_masks.every(function (entry) {
+        return entry.state === "present";
+      }),
+      true,
+    );
+    this.after("reprove-coredump-absence-closure");
+    this.before("remove-coredump-admin-masks");
+    this.state.coredump_admin_masks = COREDUMP_ADMIN_MASKS.map(function ({ name, path }) {
+      return { name, path, state: "absent" };
+    });
+    this.after("remove-coredump-admin-masks");
   }
 
   simulateReboot() {

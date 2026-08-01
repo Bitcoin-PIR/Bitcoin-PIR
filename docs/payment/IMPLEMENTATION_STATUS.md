@@ -830,8 +830,16 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 ## Implemented but not production-activated
 
 - [x] The core-pattern ceremony v2 binds all three Noble Apport sysctls,
-      official handler and unit bytes/metadata/semantics and the exact
-      enablement symlink. It separates stable configuration from accepted
+      official handler/unit bytes/metadata/semantics, the exact coredump hook
+      unit/drop-in generations and the exact enablement symlink. Apply installs
+      three fixed root-owned `/dev/null` masks for the Apport coredump hook and
+      systemd-coredump service/socket names. It requires exact D-Bus `masked`
+      state, rejects loaded template instances/jobs/foreign edges, and proves
+      the `systemd-coredump` package, binary, vendor service/socket and config
+      roots absent. Rollback removes those masks only after repeating that
+      absence closure inside the mutator. These masks constrain systemd and
+      non-root activation, not malicious UID 0 or direct handler execution.
+      It separates stable configuration from accepted
       settled active/exited or inactive/dead observation; rejects matching
       sysctl globs/negative exclusions, quoted/escaped foreign action
       dependencies, load-path overrides, reverse Wants and implicit socket/path
