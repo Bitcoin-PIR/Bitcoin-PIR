@@ -1152,7 +1152,7 @@ test("CLN guard and cross-UID isolation reject topology regressions", () => {
     [
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
       (text) => text.replace(
-        "InaccessiblePaths=/srv/lightning /srv/bitcoin /run/bitcoinpir-source-fair-edge\n",
+        "InaccessiblePaths=-/srv/lightning -/srv/bitcoin -/run/bitcoinpir-source-fair-edge\n",
         "",
       ),
       /InaccessiblePaths/,

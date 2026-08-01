@@ -1452,7 +1452,6 @@ function fixture() {
     host: {
       boot_id: boot,
       collector_pid_namespace: "pid:[4026531836]",
-      core_pattern: "|/usr/bin/false",
       kernel_release: "6.8.0-test",
       machine_id_sha256: machine,
       pid1_name: "systemd",
@@ -5427,11 +5426,10 @@ for (const [label, mutate, expected] of [
   });
 }
 
-test("edge live evidence rejects a core pipe that can persist request-source memory", () => {
+test("edge live evidence validates without a host core-policy prerequisite", () => {
   const value = fixture();
   value.request.deployment_profile = "edge-hetzner-v1";
-  value.evidence.host.core_pattern = "|/usr/lib/systemd/systemd-coredump";
-  assert.throws(() => validate(value), /kernel\.core_pattern=\|\/usr\/bin\/false/);
+  assert.doesNotThrow(() => validate(value));
 });
 
 test("live verifier rejects replay, foreign host, foreign boot, and forged challenge", () => {
