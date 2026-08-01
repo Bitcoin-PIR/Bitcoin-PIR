@@ -1204,10 +1204,14 @@ fn systemd_notify_to_v1(
         SocketAddrUnix::new(notify_socket)
             .map_err(|_| PreflightFailureV1::new(check, "invalid-notify-socket"))?
     };
+    #[cfg(target_os = "linux")]
+    let socket_flags = SocketFlags::CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let socket_flags = SocketFlags::empty();
     let socket = socket_with(
         AddressFamily::UNIX,
         SocketType::DGRAM,
-        SocketFlags::CLOEXEC,
+        socket_flags,
         None,
     )
     .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
