@@ -96,6 +96,10 @@ const PUBLISHER_GATE = join(
   SCRIPT_DIRECTORY,
   "payment-v1-publisher-netns-gate.mjs",
 );
+const DIRECTORY_PUBLIC_HAPROXY_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-directory-public-haproxy-artifact-gate.mjs",
+);
 const UINT64_MAX_DECIMAL = "18446744073709551615";
 assert.equal(
   REVIEWED_SYSTEMD_VERSION,
@@ -885,7 +889,7 @@ test("runtime collector reads credentials only from the systemd Service interfac
   assert.doesNotMatch(collector, /systemctl/);
 });
 
-test("runtime evidence release keeps the exact four-script and builtin import closure", () => {
+test("runtime evidence release keeps the exact five-script and builtin import closure", () => {
   assertReviewedModuleClosure(readFileSync(COLLECTOR, "utf8"), [
     "./payment-v1-publisher-netns-gate.mjs",
     "./payment-v1-rendered-artifact-gate.mjs",
@@ -898,6 +902,7 @@ test("runtime evidence release keeps the exact four-script and builtin import cl
   ], COLLECTOR);
   assertReviewedModuleClosure(readFileSync(RENDERED_GATE, "utf8"), [
     "./payment-v1-deployment-template-gate.mjs",
+    "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
     "./payment-v1-publisher-netns-gate.mjs",
     "node:crypto",
     "node:fs",
@@ -906,6 +911,7 @@ test("runtime evidence release keeps the exact four-script and builtin import cl
     "node:url",
   ], RENDERED_GATE);
   assertReviewedModuleClosure(readFileSync(TEMPLATE_GATE, "utf8"), [
+    "./payment-v1-directory-public-haproxy-artifact-gate.mjs",
     "./payment-v1-publisher-netns-gate.mjs",
     "node:crypto",
     "node:fs",
@@ -918,6 +924,11 @@ test("runtime evidence release keeps the exact four-script and builtin import cl
     "node:path",
     "node:url",
   ], PUBLISHER_GATE);
+  assertReviewedModuleClosure(
+    readFileSync(DIRECTORY_PUBLIC_HAPROXY_GATE, "utf8"),
+    ["node:crypto", "node:fs", "node:path", "node:url"],
+    DIRECTORY_PUBLIC_HAPROXY_GATE,
+  );
 });
 
 test("runtime evidence release rejects alternate JavaScript module loaders", () => {
