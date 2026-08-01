@@ -425,6 +425,7 @@ for path in \
   /etc/bitcoinpir \
   /etc/bitcoinpir/payment-v1 \
   /etc/bitcoinpir/payment-v1/publisher-netns \
+  /usr/local/libexec \
   /usr/local/libexec/bitcoinpir; do
   ensure_test_directory "$path"
 done
