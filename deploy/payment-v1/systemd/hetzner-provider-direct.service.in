@@ -68,7 +68,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/provider-direct
 ReadWritePaths=/var/lib/bitcoinpir-provider-direct-payment-v1
-InaccessiblePaths=/run/bitcoinpir-source-fair-edge
+InaccessiblePaths=-/run/bitcoinpir-source-fair-edge
 
 # The current policy may use only Free open-best-effort, Free proof of work,
 # provider-local Free anonymous tickets, and direct BOLT11 receipts. This
