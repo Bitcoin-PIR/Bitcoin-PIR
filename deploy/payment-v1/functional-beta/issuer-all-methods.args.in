@@ -1,0 +1,28 @@
+# BitcoinPIR Payment V1 Hetzner functional-beta payment-issuer arguments.
+#
+# This is an argument fragment for `payment-issuer serve-cln`, not an
+# executable script. Render every @...@ placeholder before use.
+
+--bind 127.0.0.1:5610
+--max-connections 128
+--allow-origin @BITCOINPIR_WEB_ORIGIN@
+--store /var/lib/bitcoinpir-payment-issuer-functional-beta/issuer.sqlite3
+--rollback-authority /var/lib/bitcoinpir-payment-issuer-functional-beta/rollback.sqlite3
+--allow-local-rollback-authority-dev
+--quote-delegation /etc/bitcoinpir/payment-v1/functional-beta/issuer/quote-delegation.bin
+--quote-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/quote-signing.key
+--credential-derivation-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/credential-derivation.key
+--service-policy /etc/bitcoinpir/payment-v1/functional-beta/issuer/service-policy.bin=@POLICY_PUBKEY_HEX@
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-signing.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat.key
+--arc-key @ARC_KEY_ID_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental.key
+--allow-experimental-arc
+--clearing-authorization /etc/bitcoinpir/payment-v1/functional-beta/issuer/provider-clearing-authorization.bin
+--clearing-approval /etc/bitcoinpir/payment-v1/functional-beta/issuer/provider-clearing-approval.bin
+--clearing-provider-request-verifying-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/provider-request-verifying.key
+--issuer-settlement-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/issuer-settlement-signing.key
+--redeem-response-derivation-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/redeem-response-derivation.key
+--cln-rpc-socket @CLN_RPC_SOCKET@
+--cln-rpc-expected-uid @CLN_RPC_UID@
+--cln-rpc-expected-gid @CLN_RPC_GID@
+--cln-rpc-timeout-seconds 10
