@@ -1501,8 +1501,40 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
     },
     publication_time_firewall_binding: {
       activation_blocked: true,
+      activation_blocker_condition_path:
+        "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+      continuous_checks: [
+        "reject-any-nftables-generation-event",
+        "reject-xtables-lock-inode-drift",
+      ],
+      continuous_generation_guard_implemented: true,
+      graceful_stop_barriers: [
+        "require-empty-nftables-event-queue",
+        "require-stable-xtables-lock-inode",
+      ],
+      guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
       implemented: false,
+      initial_live_semantic_lineage: {
+        binds_boot_id: false,
+        binds_owner_invocation_id: false,
+        binds_publication_approval: false,
+        binds_rule_summary: false,
+        implemented: false,
+        required_before_owner_ready: true,
+      },
+      lifecycle_scope: "publisher-netns-owner-lifetime",
+      missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
       point_in_time_evidence_only: true,
+      pre_ready_barriers: [
+        "open-host-netns-nftables-multicast-before-network-setup",
+        "hold-root-single-link-xtables-lock",
+        "require-empty-nftables-event-queue",
+        "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
+      ],
+      privileged_mutation_boundary: "non-adversarial-root-maintenance",
+      semantic_pre_post_evidence_required: true,
+      state_machine:
+        "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
     },
     publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
   });
@@ -1552,12 +1584,12 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
   const guardedBytes = readFileSync(publisherTemplatePath, "utf8");
   assert.match(
     guardedBytes,
-    /^ConditionPathExists=\/etc\/bitcoinpir\/payment-v1\/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED$/mu,
+    /^BindsTo=bitcoinpir-payment-v1-publisher-netns\.service$/mu,
   );
   writeFileSync(
     publisherTemplatePath,
     guardedBytes.replace(
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED\n",
+      "BindsTo=bitcoinpir-payment-v1-publisher-netns.service\n",
       "",
     ),
   );
@@ -1566,7 +1598,28 @@ test("directory publisher namespace profile renders, verifies, and emits its clo
   ).source_sha256 = hashFile(publisherTemplatePath);
   assert.throws(
     () => renderFixture(missingPublicationGuard),
-    /must retain the exact global and profile-specific activation conditions/u,
+    /BindsTo must equal|Unit keys must equal/u,
+  );
+
+  const unblockedMissingLineage = makePublisherNetnsFixture(t);
+  const networkPolicyTemplate =
+    "deploy/payment-v1/network/directory-publisher-network-policy.json.in";
+  const networkPolicyPath = join(
+    unblockedMissingLineage.sourceRoot,
+    networkPolicyTemplate,
+  );
+  const networkPolicyBytes = readFileSync(networkPolicyPath, "utf8");
+  assert.match(networkPolicyBytes, /"activation_blocked": true/u);
+  writeFileSync(
+    networkPolicyPath,
+    networkPolicyBytes.replace('"activation_blocked": true', '"activation_blocked": false'),
+  );
+  unblockedMissingLineage.plan.rendered_artifacts.find(
+    ({ source_path: sourcePath }) => sourcePath === networkPolicyTemplate,
+  ).source_sha256 = hashFile(networkPolicyPath);
+  assert.throws(
+    () => renderFixture(unblockedMissingLineage),
+    /closed V1 policy/u,
   );
 
   for (const artifact of fixture.plan.rendered_artifacts) {

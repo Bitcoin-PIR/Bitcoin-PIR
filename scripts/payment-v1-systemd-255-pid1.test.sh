@@ -84,5 +84,9 @@ docker exec \
   --env BITCOINPIR_DISPOSABLE_SYSTEMD_TEST=1 \
   "$container" \
   /work/scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+docker exec \
+  --env BITCOINPIR_DISPOSABLE_SYSTEMD_TEST=1 \
+  "$container" \
+  /bin/sh /work/scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
 
-echo "systemd-255-pid1=PASS version=255.4-1ubuntu8.15 oneshot=executed failed-recovery=pre-and-post-ready"
+echo "systemd-255-pid1=PASS version=255.4-1ubuntu8.15 oneshot=executed failed-recovery=pre-and-post-ready firewall-guard=pre-in-flight-post"

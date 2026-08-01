@@ -9,7 +9,7 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED
-ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED
 
 [Service]
@@ -70,6 +70,7 @@ InaccessiblePaths=-/etc/bitcoinpir/payment-v1/directory-publisher/keys -/var/lib
 
 # The account can read only already-signed artifacts. No signing key argument,
 # key path, proxy, default route, Unix socket, retry or [Install] section exists.
-# The firewall-generation guard sentinel is intentionally unavailable in this
-# slice: point-in-time post-state evidence is not permission to create it. A
-# failed or partial publish is reconciled manually using the exact frozen set.
+# The BindsTo namespace owner holds the reviewed continuous host
+# firewall-generation guard. Publication remains blocked until a separate
+# implementation revalidates live firewall semantics after that guard starts
+# and binds owner InvocationID, boot, rule digest and publication approval.

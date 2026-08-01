@@ -484,16 +484,24 @@ installation. Use the separate plan and at-most-one-hour approval in
 `PUBLISHER_NETNS_CEREMONY.md` to start only the exact namespace unit and obtain
 an owner-only receipt. Bind that receipt into the integrated-existing-Caddy
 overlay plan before any Caddy change. Do not start the publisher and do not
-create `PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED`: the current firewall
-snapshot is point-in-time evidence only.
+create `PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED`. The exact namespace owner
+opens the host nftables event subscription before topology setup, holds the
+standard xtables lock and fails on any event or lock-inode drift. The publisher
+must retain its exact `BindsTo=` edge to that owner. However, the current owner
+does not re-collect live UFW/raw/nft semantics after acquiring the guard or bind
+that digest to its InvocationID, boot and publication approval. The checked-in
+policy therefore remains `activation_blocked=true`.
 
 Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
 the independently pinned native launcher, its approved seven-entry manifest and
 the complete recursive descriptor-pinned Node ELF closure;
-direct Node invocation is not a production ceremony. If the continuous
-publication-interval firewall guard is absent, the terminal state is
-namespace-only: neither the publisher service nor any Nostr publication may
-start, even when the namespace receipt is valid.
+direct Node invocation is not a production ceremony. Until an independently
+reviewed pre-READY live semantic-lineage implementation replaces the blocker,
+the terminal state is namespace-only. Likewise, if the continuous guard
+cannot subscribe to host nftables notifications, cannot take the exact
+root-owned single-link `/run/xtables.lock`, observes a queued event, or is not
+the same active namespace-owner generation, neither the publisher service nor
+any Nostr publication may start, even when an older namespace receipt is valid.
 
 Rollback order is the reverse trust order: stop the publisher, restore the
 exact Caddy overlay preimage, then use a distinct receipt-bound rollback

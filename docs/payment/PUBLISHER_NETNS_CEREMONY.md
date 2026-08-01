@@ -84,9 +84,11 @@ no-follow regular executable pinned and invoked by descriptor.
 
 All five activation sentinels are external authorization records. This
 ceremony verifies their complete inode/metadata/content pins but never creates,
-removes or changes them. The currently missing
-`PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED` sentinel remains a separate
-publisher-start blocker and must not be fabricated from point-in-time evidence.
+removes or changes them. The separate
+`PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED` publication condition is
+intentionally unavailable. The continuous owner guard exists, but the required
+owner-pre-READY live semantic lineage does not; never fabricate that condition
+from point-in-time evidence.
 
 ## Firewall evidence
 
@@ -108,8 +110,15 @@ Installing that staged file as
 The ceremony re-parses and semantically validates the exact pinned bytes before
 and after namespace start. It also verifies both host forwarding sysctls are
 zero and both routing tables contain only the connected `10.203.0.0/30` route.
-It does not install a rule or claim the point-in-time snapshot stayed unchanged
-during a later publication.
+It does not install a rule. The owner opens the host nftables multicast monitor
+and takes `/run/xtables.lock` before namespace mutation; it reaches READY only
+after a final stop/firewall/child/topology barrier and retains the lock/monitor
+until owner exit. This closes generation drift after subscription, but does not
+prove that the earlier evidence file equals the live generation at subscription
+time. Publication stays blocked until live semantics are re-collected after the
+lock/subscription and bound to owner InvocationID, boot, rule digest and the
+publication approval before READY. Planned UFW/iptables/nftables maintenance
+must stop and deauthorize the owner first.
 
 The captured UFW base/before chains deliberately include Ubuntu's stateful
 `RELATED,ESTABLISHED` accept exception. Every IPv4/IPv6 INPUT/FORWARD before
@@ -317,9 +326,11 @@ drift fails before the lock or systemd mutation.
     receipt and this exact namespace receipt, and prove the namespace ceremony
     occurred on the same hardened Caddy generation, before any Caddy change.
     The ceremony itself does not modify or reload Caddy.
-11. Only after the integrated overlay, fresh edge/runtime evidence, a reviewed
-    firewall-generation guard and a distinct publication approval may the
-    one-shot publisher be considered. This ceremony grants no Nostr write.
+11. Even after the integrated overlay and fresh edge/runtime evidence, the
+    one-shot publisher remains blocked. A separately reviewed implementation
+    must close owner-pre-READY live firewall semantic lineage and remove the
+    policy blocker before a distinct publication approval may be considered.
+    This ceremony grants no Nostr write.
 
 The Caddy dependency is intentionally one-way: Caddy has only `Wants=` and
 `After=` toward the namespace. Namespace teardown cannot stop the shared Caddy
@@ -513,7 +524,11 @@ pending-job/topology refusal, fixed reset argv, lost-reset-response recovery
 and dedicated receipt replay.
 Privileged disposable-Linux tests execute pinned command descriptors across a
 real network namespace and exercise the native helper's setup, monitoring,
-fault injection and exact cleanup.
+fault injection and exact cleanup. They also require exclusive xtables-lock
+ownership, inject a direct nftables generation change, and require owner
+failure before exact cleanup. The exact systemd-255 PID-1 test proves guard
+failure before READY, during publisher execution and after retained oneshot
+success.
 The native launcher harness also proves that a tampered imported module,
 malicious `NODE_OPTIONS` and an `LD_PRELOAD` constructor are rejected before
 any payload can execute.
@@ -525,8 +540,9 @@ Passing them does not remove these deployment gates:
 
 - reviewed/merged source and exact target-specific installed pins;
 - explicit approval to mutate the Hetzner host and to start this exact unit;
-- exact target UFW/nft evidence and the still-unimplemented continuous or
-  pre/post publication firewall-generation guard;
+- exact target UFW/nft evidence, an available root-owned single-link
+  `/run/xtables.lock`, and no concurrent firewall manager during namespace
+  activation;
 - approved private publisher SNI/SAN, integrated-Caddy overlay receipt and
   stopped/fresh edge evidence;
 - independently verified absence of the production publisher signing key from

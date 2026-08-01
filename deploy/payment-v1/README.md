@@ -206,9 +206,10 @@ The templates divide responsibilities as follows:
   `--centralized-single-relay` CLI mode. Relay selection, the one private
   SNI/certificate SAN, integrated-Caddy transaction coverage, exact UFW
   input/forward denial and a publication-interval firewall-generation binding
-  remain activation blockers. The last sentinel is intentionally unavailable:
-  the current before/after runtime snapshots are point-in-time evidence and
-  cannot authorize publication; see `network/README.md`.
+  remain activation blockers. The continuous owner monitor is implemented, but
+  `PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED` is intentionally unavailable:
+  no post-lock/pre-READY live semantic digest is yet bound to owner InvocationID,
+  boot and publication approval; see `network/README.md`.
 - `systemd/payment-v1-public-edge.service.in` runs pinned stock Caddy and binds
   its lifecycle to the source-fair unit. It clears client headers, carries the
   source only in PROXY v2 over those Unix sockets, and has no source-header

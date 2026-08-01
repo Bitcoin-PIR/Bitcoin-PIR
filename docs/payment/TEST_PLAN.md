@@ -1023,7 +1023,18 @@ remain separate acceptance gates.
   descriptor execution of the exact approved inode inside a real network
   namespace. The native helper harness injects crashes around namespace mount,
   veth creation/move and cleanup, then proves exact recovery plus fail-closed
-  monitoring for link/default-route drift and unknown fixed-name preimages;
+  monitoring for link/default-route drift and unknown fixed-name preimages. It
+  also proves that the owner takes the standard xtables lock before READY,
+  fails on a second-link identity drift and exits nonzero after a direct
+  isolated nftables generation mutation. A Unix-datagram test barrier causes a
+  real nft mutation deterministically after client-ready and before the final
+  parent stop/firewall/child/topology barrier; the owner must exit nonzero and
+  emit no READY. No Boolean firewall-failure simulation satisfies this case;
+- the exact systemd-255 PID-1 harness models the publisher's real
+  `Requires`/`After`/`BindsTo` relationship: guard failure before READY prevents
+  publisher start, in-flight failure terminates publication before its commit
+  marker, and post-success failure deauthorizes the retained oneshot while
+  preserving its immutable receipt for explicit reconciliation;
 - a disposable Ubuntu 24.04 `CAP_NET_ADMIN` firewall test installs the exact
   UFW policy, reloads it, captures UFW/raw/nft state twice and requires the
   semantic gate to accept both generations; the launcher container proves a

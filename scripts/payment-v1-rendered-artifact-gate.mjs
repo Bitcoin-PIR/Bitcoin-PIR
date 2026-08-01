@@ -25,7 +25,11 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
-import { validatePublisherNamespaceOwnerUnitV1 } from
+import {
+  validatePublisherNamespaceOwnerUnitV1,
+  validatePublisherNetworkPolicy,
+  validatePublisherUnitV1,
+} from
   "./payment-v1-publisher-netns-gate.mjs";
 
 import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
@@ -2140,7 +2144,7 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
@@ -3512,6 +3516,10 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       uid: specification.uid,
     });
     if (catalog.artifactClass === "systemd-unit") {
+      if (specification.source_path ===
+          "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in") {
+        validatePublisherUnitV1(renderedText, plan.placeholders);
+      }
       const parsed = parseSystemdUnit(
         renderedText,
         `rendered unit ${specification.target_path}`,
@@ -3537,6 +3545,13 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       });
     } else if (catalog.artifactClass === "systemd-auxiliary-unit") {
       validatePublisherNamespaceOwnerUnitV1(renderedText);
+    }
+    if (specification.source_path ===
+        "deploy/payment-v1/network/directory-publisher-network-policy.json.in") {
+      validatePublisherNetworkPolicy(
+        renderedText,
+        plan.placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST,
+      );
     }
     for (const reference of configManagedReferences(specification.source_path, renderedText, plan)) {
       initialReferences.add(reference);
@@ -4139,8 +4154,40 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       },
       publication_time_firewall_binding: {
         activation_blocked: true,
+        activation_blocker_condition_path:
+          "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+        continuous_checks: [
+          "reject-any-nftables-generation-event",
+          "reject-xtables-lock-inode-drift",
+        ],
+        continuous_generation_guard_implemented: true,
+        graceful_stop_barriers: [
+          "require-empty-nftables-event-queue",
+          "require-stable-xtables-lock-inode",
+        ],
+        guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
         implemented: false,
+        initial_live_semantic_lineage: {
+          binds_boot_id: false,
+          binds_owner_invocation_id: false,
+          binds_publication_approval: false,
+          binds_rule_summary: false,
+          implemented: false,
+          required_before_owner_ready: true,
+        },
+        lifecycle_scope: "publisher-netns-owner-lifetime",
+        missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
         point_in_time_evidence_only: true,
+        pre_ready_barriers: [
+          "open-host-netns-nftables-multicast-before-network-setup",
+          "hold-root-single-link-xtables-lock",
+          "require-empty-nftables-event-queue",
+          "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
+        ],
+        privileged_mutation_boundary: "non-adversarial-root-maintenance",
+        semantic_pre_post_evidence_required: true,
+        state_machine:
+          "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
       },
       publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
     };

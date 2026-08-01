@@ -163,7 +163,7 @@ function validateHelperSource(source) {
   const preprocessorDigest = createHash("sha256")
     .update(preprocessorSurface, "utf8")
     .digest("hex");
-  if (preprocessorDigest !== "b6357233c1336bc83ff33fd62723b5f247bcbc29161b6a19610cd9567129caac") {
+  if (preprocessorDigest !== "20b62ffc988ceadfe79842d79f713f1d47df4d9228754b45a1ebad418c71a73a") {
     fail(`${label} preprocessor surface drifted from the reviewed include/macro/branch set`);
   }
   for (const exact of [
@@ -193,6 +193,9 @@ function validateHelperSource(source) {
     "PR_SET_PDEATHSIG", "SYS_capset", "SECCOMP_MODE_FILTER",
     "SECCOMP_RET_KILL_PROCESS", "PR_SET_NO_NEW_PRIVS",
     "wait_for_client_monitor_ready", "publisher-sandbox-self-test",
+    "NETLINK_NETFILTER", "NFNLGRP_NFTABLES", '"xtables.lock"',
+    "LOCK_EX | LOCK_NB", "nftables_generation_is_quiet",
+    "xtables_lock_guard_is_held", "wait_for_test_pre_ready_nft_mutation",
     "publisher sandbox /run is not a private read-only tmpfs",
     "publisher sandbox private /run exposes a host runtime entry",
   ]) {
@@ -332,6 +335,12 @@ function validateHelperSource(source) {
     fail(`${label} must close the inert kernel-fallback interface allowlist`);
   }
   const run = source.indexOf("static int run_service(void)");
+  const firewallMonitor = source.indexOf(
+    "open_nftables_generation_monitor()", run);
+  const xtablesLock = source.indexOf("open_xtables_lock_guard(&xtables_guard)", run);
+  const preSetupQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", xtablesLock);
+  const setupTransaction = source.indexOf("setup_transaction(", preSetupQuiet);
   const child = source.indexOf("if (monitor_child == 0)", run);
   const childDrop = source.indexOf("drop_capabilities()", child);
   const childSandbox = source.indexOf("install_monitor_seccomp()", childDrop);
@@ -340,15 +349,52 @@ function validateHelperSource(source) {
   const parent = source.indexOf("close(monitor_ready_pipe[1]);", childReady);
   const parentDrop = source.indexOf("drop_capabilities()", parent);
   const parentSandbox = source.indexOf("install_monitor_seccomp()", parentDrop);
+  const parentFirewallQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", parentSandbox);
+  const parentFirewallLock = source.indexOf(
+    "xtables_lock_guard_is_held(&xtables_guard)", parentFirewallQuiet);
   const parentFirstCheck = source.indexOf(
-    "verify_host_topology(host_nl, &topology, true)", parentSandbox);
+    "verify_host_topology(host_nl, &topology, true)", parentFirewallLock);
   const monitorReady = source.indexOf("wait_for_client_monitor_ready(", parentFirstCheck);
+  const deterministicMutationBarrier = source.indexOf(
+    "wait_for_test_pre_ready_nft_mutation(&test_pre_ready_barrier)", monitorReady);
+  const finalStopBarrier = source.indexOf("stop_requested ||", deterministicMutationBarrier);
+  const finalFirewallQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", finalStopBarrier);
+  const finalFirewallLock = source.indexOf(
+    "xtables_lock_guard_is_held(&xtables_guard)", finalFirewallQuiet);
+  const finalChildBarrier = source.indexOf("final_waited != 0", finalFirewallLock);
+  const finalTopologyBarrier = source.indexOf(
+    "verify_host_topology(host_nl, &topology, true)", finalChildBarrier);
+  const finalIpv6Barrier = source.indexOf(
+    "monitor_fd_is_one(host_ipv6_fd)", finalTopologyBarrier);
   const readiness = source.indexOf("notify_ready(&notifier)", run);
-  if (!(run >= 0 && run < child && child < childDrop && childDrop < childSandbox &&
+  const readinessCalls = source.match(/notify_ready\(&notifier\)/gu) ?? [];
+  const monitorLoop = source.indexOf("while (!stop_requested)", readiness);
+  const continuousQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", monitorLoop);
+  const continuousLock = source.indexOf(
+    "xtables_lock_guard_is_held(&xtables_guard)", continuousQuiet);
+  const gracefulQuiet = source.indexOf(
+    "nftables_generation_is_quiet(firewall_monitor_fd)", continuousLock);
+  const gracefulLock = source.indexOf(
+    "xtables_lock_guard_is_held(&xtables_guard)", gracefulQuiet);
+  if (!(run >= 0 && run < firewallMonitor && firewallMonitor < xtablesLock &&
+      xtablesLock < preSetupQuiet && preSetupQuiet < setupTransaction &&
+      setupTransaction < child && child < childDrop && childDrop < childSandbox &&
       childSandbox < childFirstCheck && childFirstCheck < childReady && childReady < parent &&
-      parent < parentDrop && parentDrop < parentSandbox && parentSandbox < parentFirstCheck &&
-      parentFirstCheck < monitorReady && monitorReady < readiness)) {
-    fail(`${label} must notify READY only after both sandboxed monitors complete first checks`);
+      parent < parentDrop && parentDrop < parentSandbox &&
+      parentSandbox < parentFirewallQuiet && parentFirewallQuiet < parentFirewallLock &&
+      parentFirewallLock < parentFirstCheck &&
+      parentFirstCheck < monitorReady && monitorReady < deterministicMutationBarrier &&
+      deterministicMutationBarrier < finalStopBarrier &&
+      finalStopBarrier < finalFirewallQuiet && finalFirewallQuiet < finalFirewallLock &&
+      finalFirewallLock < finalChildBarrier && finalChildBarrier < finalTopologyBarrier &&
+      finalTopologyBarrier < finalIpv6Barrier && finalIpv6Barrier < readiness &&
+      readinessCalls.length === 1 && readiness < monitorLoop &&
+      monitorLoop < continuousQuiet && continuousQuiet < continuousLock &&
+      continuousLock < gracefulQuiet && gracefulQuiet < gracefulLock)) {
+    fail(`${label} must seal firewall before setup, repeat the full stop/firewall/child/topology barrier immediately before READY, and retain continuous plus graceful-stop checks`);
   }
 }
 
@@ -463,8 +509,72 @@ export function validatePublisherCaddyDropIn(text) {
   reject(text, /^\[Service\]$/mu, `${label} must not alter the target service sandbox`);
 }
 
-function validatePublisherUnit(unit) {
+export function validatePublisherUnitV1(unitInput, concretePlaceholders = {}) {
   const label = "one-shot publisher unit";
+  const adminDigests = [...unitInput.matchAll(
+    /\/opt\/bitcoinpir\/bpir-admin\/([^/\s]+)\/bpir-admin/gu,
+  )].map((match) => match[1]);
+  const helperDigests = [...unitInput.matchAll(
+    /\/opt\/bitcoinpir\/publisher-netns\/([^/\s]+)\/payment-v1-publisher-netns/gu,
+  )].map((match) => match[1]);
+  if (
+    adminDigests.length < 1 || new Set(adminDigests).size !== 1 ||
+    helperDigests.length < 1 || new Set(helperDigests).size !== 1
+  ) {
+    fail(`${label} must use one admin and one namespace-helper content address`);
+  }
+  const adminDigest = adminDigests[0];
+  const helperDigest = helperDigests[0];
+  for (const [digest, placeholder] of [
+    [adminDigest, "@BPIR_ADMIN_SHA256@"],
+    [helperDigest, "@PUBLISHER_NETNS_HELPER_SHA256@"],
+  ]) {
+    if (digest !== placeholder && !/^[0-9a-f]{64}$/u.test(digest)) {
+      fail(`${label} content address is malformed`);
+    }
+  }
+  let unit = unitInput
+    .replaceAll(
+      `/opt/bitcoinpir/bpir-admin/${adminDigest}/bpir-admin`,
+      "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin",
+    )
+    .replaceAll(
+      `/opt/bitcoinpir/publisher-netns/${helperDigest}/payment-v1-publisher-netns`,
+      "/opt/bitcoinpir/publisher-netns/@PUBLISHER_NETNS_HELPER_SHA256@/payment-v1-publisher-netns",
+    );
+  const concreteFragments = [
+    ["CHECKPOINT_ARTIFACT", (value) => [
+      `/var/lib/bitcoinpir-directory-publisher/artifacts/${value}`,
+      "/var/lib/bitcoinpir-directory-publisher/artifacts/@CHECKPOINT_ARTIFACT@",
+    ]],
+    ["DIRECTORY_PUBLISHER_HTTPS_HOST", (value) => [
+      `wss://${value}`,
+      "wss://@DIRECTORY_PUBLISHER_HTTPS_HOST@",
+    ]],
+    ["DIRECTORY_PUBLISHER_PUBKEY_HEX", (value) => [
+      `--directory-pubkey-hex ${value}`,
+      "--directory-pubkey-hex @DIRECTORY_PUBLISHER_PUBKEY_HEX@",
+    ]],
+    ["DIRECTORY_PUBLISH_NOW_UNIX", (value) => [
+      `--now-unix ${value}`,
+      "--now-unix @DIRECTORY_PUBLISH_NOW_UNIX@",
+    ]],
+    ["PROVIDER_0_ENTRY_ARTIFACT", (value) => [
+      `/var/lib/bitcoinpir-directory-publisher/artifacts/${value}`,
+      "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_0_ENTRY_ARTIFACT@",
+    ]],
+    ["PROVIDER_1_ENTRY_ARTIFACT", (value) => [
+      `/var/lib/bitcoinpir-directory-publisher/artifacts/${value}`,
+      "/var/lib/bitcoinpir-directory-publisher/artifacts/@PROVIDER_1_ENTRY_ARTIFACT@",
+    ]],
+  ];
+  for (const [key, fragments] of concreteFragments) {
+    const value = concretePlaceholders[key];
+    if (value !== undefined) {
+      const [rendered, template] = fragments(String(value));
+      unit = unit.replaceAll(rendered, template);
+    }
+  }
   validateNoInstall(unit, label);
   exactSectionKeys(unit, "Unit", [
     "Description", "Requires", "BindsTo", "After", "ConditionPathExists",
@@ -483,6 +593,15 @@ function validatePublisherUnit(unit) {
     "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
     "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow",
     "ReadOnlyPaths", "ReadWritePaths", "InaccessiblePaths", "TemporaryFileSystem",
+  ], label);
+  exactValues(unit, "Requires", [
+    "bitcoinpir-payment-v1-publisher-netns.service bitcoinpir-payment-v1-source-fair-edge.service bhtm-caddy.service bitcoinpir-directory-relay.service",
+  ], label);
+  exactValues(unit, "BindsTo", [
+    "bitcoinpir-payment-v1-publisher-netns.service",
+  ], label);
+  exactValues(unit, "After", [
+    "bitcoinpir-payment-v1-publisher-netns.service bitcoinpir-payment-v1-source-fair-edge.service bhtm-caddy.service bitcoinpir-directory-relay.service",
   ], label);
   exactValues(unit, "Type", ["oneshot"], label);
   exactValues(unit, "RemainAfterExit", ["true"], label);
@@ -517,14 +636,15 @@ function validatePublisherUnit(unit) {
     "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256",
     `${helper} publisher-sandbox-self-test`,
   ], label);
-  for (const sentinel of [
-    "ACTIVATION-APPROVED", "RELAY-SELECTION-RESOLVED",
-    "DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
-    "PUBLISHER-NETNS-ACTIVATION-APPROVED", "PUBLISHER-SNI-SAN-APPROVED",
-    "PUBLISHER-FIREWALL-GENERATION-GUARD-IMPLEMENTED",
-    "DIRECTORY-PUBLICATION-APPROVED",
-  ]) requireOnce(unit,
-    `ConditionPathExists=/etc/bitcoinpir/payment-v1/${sentinel}`, label);
+  exactValues(unit, "ConditionPathExists", [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
+  ], label);
   const starts = directiveValues(unit, "ExecStart");
   if (starts.length !== 1) fail(`${label} must have one ExecStart`);
   const command = starts[0];
@@ -647,10 +767,42 @@ export function validatePublisherNetworkPolicy(
     },
     publication_time_firewall_binding: {
       activation_blocked: true,
+      activation_blocker_condition_path:
+        "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+      continuous_checks: [
+        "reject-any-nftables-generation-event",
+        "reject-xtables-lock-inode-drift",
+      ],
+      continuous_generation_guard_implemented: true,
+      graceful_stop_barriers: [
+        "require-empty-nftables-event-queue",
+        "require-stable-xtables-lock-inode",
+      ],
+      guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
       implemented: false,
+      initial_live_semantic_lineage: {
+        binds_boot_id: false,
+        binds_owner_invocation_id: false,
+        binds_publication_approval: false,
+        binds_rule_summary: false,
+        implemented: false,
+        required_before_owner_ready: true,
+      },
+      lifecycle_scope: "publisher-netns-owner-lifetime",
+      missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
       point_in_time_evidence_only: true,
+      pre_ready_barriers: [
+        "open-host-netns-nftables-multicast-before-network-setup",
+        "hold-root-single-link-xtables-lock",
+        "require-empty-nftables-event-queue",
+        "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
+      ],
+      privileged_mutation_boundary: "non-adversarial-root-maintenance",
+      semantic_pre_post_evidence_required: true,
+      state_machine:
+        "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
     },
-    schema_version: 1,
+    schema_version: 2,
   };
   if (canonical(policy) !== canonical(expected)) {
     fail("publisher network policy must equal the closed V1 policy");
@@ -911,7 +1063,7 @@ export function validatePublisherNetnsTree(root) {
   validateHelperSource(values.get("scripts/payment-v1-publisher-netns.c"));
   validatePublisherNamespaceOwnerUnitV1(values.get(
     "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"));
-  validatePublisherUnit(values.get(
+  validatePublisherUnitV1(values.get(
     "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in"));
   validatePublisherCaddyDropIn(values.get(
     "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in"));
