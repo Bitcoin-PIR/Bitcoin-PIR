@@ -13,9 +13,22 @@
 --quote-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/quote-signing.key
 --credential-derivation-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/credential-derivation.key
 --service-policy /etc/bitcoinpir/payment-v1/functional-beta/issuer/service-policy.bin=@POLICY_PUBKEY_HEX@
---receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-signing.key
---bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat.key
---arc-key @ARC_KEY_ID_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental.key
+# Keep the direct-receipt, BAT and ARC key lineages separate for every scope.
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-dpf-evaluate-job-v1.key
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-harmony-hint-bundle-v1.key
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-harmony-query-job-v1.key
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-onion-evaluate-job-v1.key
+--receipt-signing-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/direct-receipt-tee-oram-query-v1.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat-dpf-evaluate-job-v1.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat-harmony-hint-bundle-v1.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat-harmony-query-job-v1.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat-onion-evaluate-job-v1.key
+--bat-key /etc/bitcoinpir/payment-v1/functional-beta/issuer/cashu-bat-tee-oram-query-v1.key
+--arc-key @ARC_KEY_ID_DPF_EVALUATE_JOB_V1_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental-dpf-evaluate-job-v1.key
+--arc-key @ARC_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental-harmony-hint-bundle-v1.key
+--arc-key @ARC_KEY_ID_HARMONY_QUERY_JOB_V1_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental-harmony-query-job-v1.key
+--arc-key @ARC_KEY_ID_ONION_EVALUATE_JOB_V1_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental-onion-evaluate-job-v1.key
+--arc-key @ARC_KEY_ID_TEE_ORAM_QUERY_V1_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/issuer/arc-experimental-tee-oram-query-v1.key
 --allow-experimental-arc
 --clearing-authorization /etc/bitcoinpir/payment-v1/functional-beta/issuer/provider-clearing-authorization.bin
 --clearing-approval /etc/bitcoinpir/payment-v1/functional-beta/issuer/provider-clearing-approval.bin
