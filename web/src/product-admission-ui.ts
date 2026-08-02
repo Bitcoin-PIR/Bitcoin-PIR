@@ -97,7 +97,7 @@ export class ProductAdmissionPanelV1 {
     notice.dataset.admissionNotice = 'true';
     notice.setAttribute('role', 'status');
     notice.setAttribute('aria-live', 'polite');
-    notice.textContent = 'Commercial admission is not configured; queries fail closed.';
+    notice.textContent = 'Query access is not configured; queries are blocked.';
     options.root.appendChild(notice);
 
     if (options.transportCompatibilityNotice) {
@@ -169,8 +169,10 @@ export class ProductAdmissionPanelV1 {
     }
     this.renderUnavailable(
       options.length === 0
-        ? 'Commercial admission is not configured. Load a complete trusted bootstrap before querying.'
-        : 'First strictly verify the first provider and select its exact offer. The second role will then be enabled; payment remains disabled.',
+        ? 'Query access is not configured. Load a complete trusted bootstrap before querying.'
+        : this.options.roles.length > 1
+          ? 'Verify the first provider’s identity, software, and database, then select its exact offer. The second role will then be enabled; payment remains disabled.'
+          : 'Verify the provider’s identity, software, and database, then select its exact offer.',
     );
   }
 
@@ -204,7 +206,7 @@ export class ProductAdmissionPanelV1 {
     this.render(controller.snapshot());
   }
 
-  detach(message = 'Commercial admission is not configured; queries fail closed.'): void {
+  detach(message = 'Query access is not configured; queries are blocked.'): void {
     this.controller = null;
     this.snapshot = null;
     this.busy = false;
@@ -223,15 +225,17 @@ export class ProductAdmissionPanelV1 {
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
             : snapshot?.legs.length === 1 && canBootstrapNextProviderV1(snapshot)
-              ? 'First exact offer is locked. Strictly verify the independent second provider before any capability acquisition or payment.'
+              ? 'First exact offer is locked. Verify the independent second provider before any capability acquisition or payment.'
               : snapshot?.legs.length === 2 && !credentialActionsReadyV1(snapshot)
-                ? 'Both providers are strictly verified. Select the remaining exact signed offer before acquiring a capability or authorizing either provider.'
+                ? 'Both providers are verified. Select the remaining exact signed offer before acquiring a capability or authorizing either provider.'
                 : snapshot?.legs.length === 2 && !snapshot.legs.every((leg) => leg.status === 'authorized'
                   || leg.status === 'cached-resource-ready')
                   ? 'Both exact offers are selected. Complete any capability acquisition and authorize each provider independently.'
               : snapshot?.legs.length === 1
                 ? 'Select the first provider exact signed offer before connecting the second.'
-                : 'Strictly verify and authorize the first independent provider.');
+                : this.options.roles.length > 1
+                  ? 'Verify and authorize the first independent provider.'
+                  : 'Verify and authorize the provider.');
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
@@ -488,11 +492,11 @@ export class ProductAdmissionPanelV1 {
       row.identity.textContent = row.provider.value
         ? `Trusted bootstrap: ${abbreviate(row.provider.value)}`
         : 'Provider identity: not selected';
-      row.offer.replaceChildren(optionElement('', 'Strict policy required'));
+      row.offer.replaceChildren(optionElement('', 'Signed policy required'));
       row.offer.disabled = true;
       row.terms.textContent = 'Scope/offer: unavailable';
       row.warning.textContent = 'Privacy: no payment method selected';
-      row.status.textContent = 'Admission: blocked';
+      row.status.textContent = 'Query access: blocked';
       row.actions.replaceChildren();
     }
   }
@@ -505,19 +509,19 @@ export function publicAdmissionError(error: unknown): string {
 
 function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
   switch (code) {
-    case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
+    case 'commercial-admission-unconfigured': return 'Query access is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
-    case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
+    case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy query access is disabled.';
     case 'query-shape-unavailable': return 'The exact backend planner demand is unavailable; no offer or capability may be used.';
     case 'entitlement-limits-insufficient': return 'The signed entitlement is below the backend planner’s known demand; no payment or capability was used.';
-    case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
+    case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart provider verification.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';
     case 'lightning-payee-untrusted': return 'BOLT11 is blocked because no independent expected-payee key is trusted.';
     case 'bolt11-recovery-required': return 'The invoice response may have been lost. Resume the encrypted recovery; do not create another invoice.';
     case 'capability-inventory-empty': return 'No exact capability is available. Import or purchase one before authorization.';
     case 'ambiguous-capability-spend': return 'Capability spend is ambiguous. It will not be retried automatically.';
     case 'resource-failed-after-authorization': return 'Authorization succeeded but the resource failed. It will not retry automatically.';
-    default: return 'Admission operation failed without exposing secret material.';
+    default: return 'Provider verification operation failed without exposing secret material.';
   }
 }
 

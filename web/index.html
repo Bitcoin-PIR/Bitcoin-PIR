@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Uyhpfvv5Fv64fQ0Zuw0AtenA264gybeTSNeNAGwvoho=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-wo7QXNt1ZMCqPCBnOpvh/faVj1GF+RJ1/yQDn5lXBOA=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -802,7 +802,7 @@
         .verification-dialog-close:hover { color: var(--ink); background: var(--sunken); }
         .verification-dialog-body { padding: 18px; overflow-y: auto; max-height: calc(100vh - 96px); }
 
-        /* Commercial admission is a compact, query-local gate. It follows the
+        /* Provider verification is a compact, query-local gate. It follows the
            existing dense form language instead of becoming a second dashboard. */
         .admission-config {
             margin-top: 12px;
@@ -899,7 +899,7 @@
                     </button>
                 </div>
                 <details class="admission-config" id="admissionConfig">
-                    <summary>Commercial admission trust configuration</summary>
+                    <summary>Provider verification trust configuration</summary>
                     <div class="admission-config-grid">
                         <label for="admissionBootstrapJson">Trusted bootstrap JSON (advanced replacement: endpoint, provider/policy/operator keys, server/binary/measurement/database pins, exact issuer/network/Lightning-payee trust)</label>
                         <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="A functional-beta trusted bootstrap is bundled for this page load. Paste a complete replacement only when intentionally changing trust."></textarea>
@@ -1021,9 +1021,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="dpfAdmissionPanel" class="product-admission-panel" aria-label="DPF provider admission"></div>
+                            <div id="dpfAdmissionPanel" class="product-admission-panel" aria-label="DPF provider verification"></div>
                             <div style="margin-top: 10px;">
-                                <button id="queryBtn" class="btn accent" style="width: 100%;">Select Server 0, then begin strict admission</button>
+                                <button id="queryBtn" class="btn accent" style="width: 100%;">Select Server 0, then verify it</button>
                             </div>
                         </div>
 
@@ -1208,7 +1208,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="op-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="opAdmissionPanel" class="product-admission-panel" aria-label="OnionPIR provider admission"></div>
+                            <div id="opAdmissionPanel" class="product-admission-panel" aria-label="OnionPIR provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="op-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1380,7 +1380,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="hp-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="hpAdmissionPanel" class="product-admission-panel" aria-label="HarmonyPIR provider admission"></div>
+                            <div id="hpAdmissionPanel" class="product-admission-panel" aria-label="HarmonyPIR provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="hp-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1540,7 +1540,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 <button id="oram-connectBtn" class="btn">Connect</button>
                                 <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                             </div>
-                            <div id="oramAdmissionPanel" class="product-admission-panel" aria-label="ORAM provider admission"></div>
+                            <div id="oramAdmissionPanel" class="product-admission-panel" aria-label="ORAM provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="oram-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1771,7 +1771,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const legs = snapshot?.legs ?? [];
                 if (!snapshot) {
                     button.disabled = false;
-                    button.textContent = 'Select Server 0, then begin strict admission';
+                    button.textContent = 'Select Server 0, then verify it';
                     return;
                 }
                 if (snapshot.phase === 'querying') {
@@ -1805,7 +1805,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     return;
                 }
                 button.disabled = false;
-                button.textContent = 'Select Server 0, then begin strict admission';
+                button.textContent = 'Select Server 0, then verify it';
                 return;
             }
             if (button.disabled) return;
@@ -1818,7 +1818,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'Verify independent second provider'
                 : snapshot?.phase === 'selecting'
                     ? 'Query blocked · authorize current provider'
-                    : 'Start strict admission';
+                    : 'Verify provider';
         }
 
         function allDirectoryEntries() {
@@ -1854,7 +1854,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } catch {
                 productTrustedBootstrap = null;
                 renderTrustedProviderOptions();
-                status.textContent = 'Bundled functional-beta trusted bootstrap is invalid; commercial admission remains fail closed.';
+                status.textContent = 'Bundled functional-beta trusted bootstrap is invalid; query access remains blocked.';
                 return;
             }
             renderTrustedProviderOptions();
@@ -1893,7 +1893,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         function selectedAdmissionProviders(kind) {
-            if (!productTrustedBootstrap) throw new Error('commercial admission is unconfigured');
+            if (!productTrustedBootstrap) throw new Error('query access is unconfigured');
             const ids = admissionPanels[kind].selectedProviderIds();
             const selected = Object.fromEntries(Object.entries(ids).map(([role, id]) => [role, providerById(id)]));
             const values = Object.values(selected);
@@ -1904,7 +1904,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         function selectedAdmissionProvider(kind, role) {
-            if (!productTrustedBootstrap) throw new Error('commercial admission is unconfigured');
+            if (!productTrustedBootstrap) throw new Error('query access is unconfigured');
             return providerById(admissionPanels[kind].freezeProviderSelection(role));
         }
 
@@ -1948,7 +1948,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        async function closeAdmissionAttempt(kind, message = 'Start a new strict admission attempt.') {
+        async function closeAdmissionAttempt(kind, message = 'Start a new provider verification setup.') {
             const controller = admissionControllers[kind];
             admissionControllers[kind] = null;
             if (controller) await controller.close().catch(() => {});
@@ -2041,14 +2041,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 ? 'Applying replacement trusted bootstrap; admission is temporarily fail closed.'
                 : 'Rejecting invalid trusted bootstrap; admission is temporarily fail closed.';
             await closeAllAdmissionAttempts(parsed
-                ? 'Trusted bootstrap changed; start a new strict admission attempt.'
-                : 'Invalid trusted bootstrap; strict admission attempts were closed.');
+                ? 'Trusted bootstrap changed; start a new provider verification setup.'
+                : 'Invalid trusted bootstrap; provider verification attempts were closed.');
             if (!directoryRefreshIntentGuard.isCurrent(
                 applyIntent,
                 currentDirectoryRefreshInput(),
             )) return;
             if (!parsed) {
-                status.textContent = 'Rejected invalid trusted bootstrap; commercial admission remains fail closed.';
+                status.textContent = 'Rejected invalid trusted bootstrap; query access remains blocked.';
                 return;
             }
             productTrustedBootstrap = parsed;
@@ -2355,7 +2355,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const staged = await prepareIndependentProductLeg(kind, role, vault);
             if (admissionControllers[kind] !== controller) {
                 await staged.close();
-                throw new Error('strict admission was invalidated while provider bootstrap was in flight');
+                throw new Error('provider verification was invalidated while bootstrap was in flight');
             }
             return staged;
         }
@@ -2464,10 +2464,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 try {
                     controller = await prepareProductAdmission(kind);
                 } catch (error) {
-                    await closeAdmissionAttempt(kind, 'Strict admission failed; inputs are editable again.');
+                    await closeAdmissionAttempt(kind, 'Provider verification failed; inputs are editable again.');
                     throw error;
                 }
-                log(`${kind}: strict verification and signed policy complete; select and authorize each exact offer.`, 'success');
+                log(`${kind}: provider verification and signed policy complete; select and authorize each exact offer.`, 'success');
                 return;
             }
             const snapshot = controller.snapshot();
@@ -2483,7 +2483,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 await requireFreshDirectoryTrustForSecurityTransition();
                 installPreparedProductQueryShapes(kind, controller);
                 admissionPanels[kind].render(controller.snapshot());
-                log(`${kind}: both providers and tree-tops strictly verified; capabilities may now be acquired or authorized independently.`, 'success');
+                log(`${kind}: both providers and tree-tops verified; capabilities may now be acquired or authorized independently.`, 'success');
                 return;
             }
             if (!controller.canQuery()) {
@@ -2498,7 +2498,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     query,
                 );
             } finally {
-                await closeAdmissionAttempt(kind, 'Previous one-query connection closed. Start a new strict admission attempt.');
+                await closeAdmissionAttempt(kind, 'Previous one-query connection closed. Start a new provider verification setup.');
             }
         }
 
@@ -3501,7 +3501,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function connectDpfLeg(provider, serverIndex) {
             if (!provider?.endpoint || (serverIndex !== 0 && serverIndex !== 1)) {
-                throw new Error('DPF commercial admission requires one complete trusted provider bootstrap per leg');
+                throw new Error('DPF query access requires one complete trusted provider bootstrap per leg');
             }
             const previous = dpfAdmissionProviders[serverIndex];
             if (previous && previous.providerIdHex !== provider.providerIdHex) {
@@ -3928,7 +3928,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function planSync() {
-            log('Sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            log('Sync is disabled in query-access V1 because it can issue multiple queries.', 'error');
             return;
 
             const parsed = parseScriptInputs('scriptPubkeys');
@@ -3992,7 +3992,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function executeSync() {
-            log('Sync execution is disabled in commercial admission V1.', 'error');
+            log('Sync execution is disabled in query-access V1.', 'error');
             return;
             if (!pendingSync || !client || !client.isConnected()) return;
             const { plan, lines, scriptHashes } = pendingSync;
@@ -4383,7 +4383,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function opConnect(provider) {
             if (!provider?.endpoint) {
-                throw new Error('OnionPIR commercial admission requires a complete trusted provider bootstrap');
+                throw new Error('OnionPIR query access requires a complete trusted provider bootstrap');
             }
             const serverUrl = provider.endpoint;
             document.getElementById('op-serverUrl').value = serverUrl;
@@ -4455,7 +4455,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // ─── OnionPIR sync flow (mirrors DPF) ─────────────────────────────
         async function opPlanSync() {
-            log('OnionPIR sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            log('OnionPIR sync is disabled in query-access V1 because it can issue multiple queries.', 'error');
             return;
 
             const parsed = parseOpScriptInputs();
@@ -4543,7 +4543,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function opExecuteSync() {
-            log('OnionPIR sync execution is disabled in commercial admission V1.', 'error');
+            log('OnionPIR sync execution is disabled in query-access V1.', 'error');
             return;
             if (!opPendingSync || !opClient || !opClient.isConnected()) return;
             const { plan, lines, scriptHashes } = opPendingSync;
@@ -4811,7 +4811,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (admissionControllers.onion) {
                 await closeAdmissionAttempt(
                     'onion',
-                    'Database selection changed; start a new strict admission attempt.',
+                    'Database selection changed; start a new provider verification setup.',
                 );
                 log('OnionPIR: database change closed the exact admission before any query spend', 'info');
                 return;
@@ -4937,7 +4937,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (newDbId === hpClient.getDbId()) return;
             hpClient.setDbId(newDbId);
             hpHintsLoaded = false;
-            await closeAdmissionAttempt('harmony', 'Database changed; start a new strict admission attempt.');
+            await closeAdmissionAttempt('harmony', 'Database changed; start a new provider verification setup.');
             log(`HarmonyPIR: db_id=${newDbId} selected; old policy, grant, and hint binding invalidated.`, 'info');
         }
 
@@ -5257,12 +5257,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpPlanSync() {
-            log('HarmonyPIR sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            log('HarmonyPIR sync is disabled in query-access V1 because it can issue multiple queries.', 'error');
             return;
             if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please wait.', 'error'); return; }
             if (!hpClient || !hpHintsLoaded) {
                 log('HarmonyPIR: Auto-connecting...', 'info');
-                throw new Error('automatic Harmony reconnect is disabled for commercial admission');
+                throw new Error('automatic Harmony reconnect is disabled for query access');
                 if (!hpClient || !hpHintsLoaded) {
                     log('HarmonyPIR: Connection or hint download failed.', 'error');
                     return;
@@ -5327,7 +5327,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpExecuteSync() {
-            log('HarmonyPIR sync execution is disabled in commercial admission V1.', 'error');
+            log('HarmonyPIR sync execution is disabled in query-access V1.', 'error');
             return;
             if (!hpPendingSync || !hpClient || !hpHintsLoaded) return;
             const { plan, lines, scriptHashes } = hpPendingSync;
@@ -5769,7 +5769,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
             hpCurrentPrp = newPrp;
             const names = ['HMR12', 'FastPRP'];
-            await closeAdmissionAttempt('harmony', 'PRP backend changed; start a new strict admission attempt.');
+            await closeAdmissionAttempt('harmony', 'PRP backend changed; start a new provider verification setup.');
             if (hpClient) hpDisconnect(true, true);
             log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}; live policy/grants invalidated.`, 'info');
         });
@@ -5899,7 +5899,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function oramConnect(provider) {
             if (!provider?.endpoint) {
-                throw new Error('ORAM commercial admission requires a complete trusted provider bootstrap');
+                throw new Error('ORAM query access requires a complete trusted provider bootstrap');
             }
             const serverUrl = provider.endpoint;
             document.getElementById('oram-serverUrl').value = serverUrl;
@@ -6179,7 +6179,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (admissionControllers.oram) {
                 await closeAdmissionAttempt(
                     'oram',
-                    'Database selection changed; start a new strict admission attempt.',
+                    'Database selection changed; start a new provider verification setup.',
                 );
                 log('ORAM: database change closed the exact admission before any query spend', 'info');
                 return;
