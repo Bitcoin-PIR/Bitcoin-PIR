@@ -97,7 +97,7 @@ export class ProductAdmissionPanelV1 {
     notice.dataset.admissionNotice = 'true';
     notice.setAttribute('role', 'status');
     notice.setAttribute('aria-live', 'polite');
-    notice.textContent = 'Commercial admission 未配置；查询会 fail closed。';
+    notice.textContent = 'Commercial admission is not configured; queries fail closed.';
     options.root.appendChild(notice);
 
     if (options.transportCompatibilityNotice) {
@@ -169,8 +169,8 @@ export class ProductAdmissionPanelV1 {
     }
     this.renderUnavailable(
       options.length === 0
-        ? 'Commercial admission 未配置；导入完整 trusted bootstrap 后才能查询。'
-        : '先严格验证第一个 provider 并选择其精确 offer；随后启用第二个角色，付款仍保持禁用。',
+        ? 'Commercial admission is not configured. Load a complete trusted bootstrap before querying.'
+        : 'First strictly verify the first provider and select its exact offer. The second role will then be enabled; payment remains disabled.',
     );
   }
 
@@ -204,7 +204,7 @@ export class ProductAdmissionPanelV1 {
     this.render(controller.snapshot());
   }
 
-  detach(message = 'Commercial admission 未配置；查询会 fail closed。'): void {
+  detach(message = 'Commercial admission is not configured; queries fail closed.'): void {
     this.controller = null;
     this.snapshot = null;
     this.busy = false;
@@ -600,7 +600,7 @@ function statusLabel(
   if (leg.status === 'failed') return 'Admission: failed closed';
   if (selected && (selected.offer.authorization === 'cashu-bat'
       || selected.offer.authorization === 'arc-experimental') && leg.inventory === 0) {
-    return `Inventory: 0 · 需先导入/购买 capability${selected.offer.authorization === 'arc-experimental' ? ' · EXPERIMENTAL' : ''}`;
+    return `Inventory: 0 · import or acquire a capability first${selected.offer.authorization === 'arc-experimental' ? ' · EXPERIMENTAL' : ''}`;
   }
   if (leg.inventory !== null) return `Inventory: ${leg.inventory} exact capability record(s)`;
   return `Admission: ${leg.status}`;
