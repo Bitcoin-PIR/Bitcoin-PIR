@@ -386,9 +386,14 @@ BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
-    --test payment_v1_shared_issuer_process_e2e \
-    shared_issuer_real_process_tls_e2e -- --exact
+    --test payment_v1_shared_issuer_process_e2e
 ```
+
+The same process-test target also covers one strict provider whose single DPF
+scope offers both 4-bit Free-PoW and shared-issuer BAT. Free-PoW must complete
+a real DPF request with zero issuer redemption rows; after issuer restart the
+BAT must redeem exactly once, without passing provider-local `--service-bat-key`
+or `--service-arc-key` material to `unified_server`.
 
 It launches a real `payment-issuer`, a redeem/balance-only private WebPKI TLS edge, one
 real shared-BAT `unified_server`, and an independently selected Free/Open peer.
