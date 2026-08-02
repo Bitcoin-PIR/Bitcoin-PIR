@@ -5960,7 +5960,12 @@ trait ServiceResponseBudgetV1 {
     fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String>;
 }
 
-const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 32;
+// The authenticated bucket-tree-top preflight is deliberately available
+// before service admission.  Production tree-top responses are sent in
+// 256 KiB transport chunks, so one main-db response needs about 35 WebSocket
+// messages in addition to the small strict-bootstrap responses.  Keep this
+// physical-frame limit comfortably above that bounded pre-admission flow.
+const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 128;
 const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
 type PreAuthDeadlineFutureV1 =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -11957,7 +11962,28 @@ async fn main() {
                             msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                             msg.push(RESP_BUCKET_MERKLE_TREE_TOPS);
                             msg.extend_from_slice(tops);
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
+                            // Tree-top blobs for the live main database are
+                            // larger than a browser-safe WebSocket frame.
+                            // All current SDK transports reassemble the
+                            // shared CHUNK_MAGIC envelope, so use it here
+                            // unconditionally rather than allowing a large
+                            // single-frame write to stall until the
+                            // pre-authorization deadline.
+                            if let Err(error) = send_resp_chunked(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                msg,
+                                true,
+                            )
+                            .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] bucket Merkle tree-tops send error: {}",
+                                    peer,
+                                    error
+                                );
+                                break;
+                            }
                             unsafe_debug_log!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
                         } else {
                             let err = Response::Error(format!("db {} has no bucket merkle tree-tops", db_id));
@@ -13179,6 +13205,30 @@ mod service_admission_dispatch_tests {
         );
         assert!(sink.pre_auth_egress_is_terminal());
         assert!(sink.inner.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bucket_tree_top_preflight_budget_carries_live_main_sized_chunked_response() {
+        // The functional-beta main DB tree-top blob is 9,155,384 bytes.
+        // Keep the pre-admission envelope test tied to the response shape
+        // that browser strict verification must receive before authorization.
+        const LIVE_MAIN_TREE_TOP_BYTES: usize = 9_155_384;
+        let mut sink = test_sink(0);
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_BUCKET_MERKLE_TREE_TOPS);
+
+        send_resp_chunked(&mut sink, None, vec![0; LIVE_MAIN_TREE_TOP_BYTES + 5], true)
+            .await
+            .expect("chunked main tree-top preflight must fit its fixed budget");
+
+        let expected_chunks = (LIVE_MAIN_TREE_TOP_BYTES + 5).div_ceil(CHUNK_SIZE);
+        assert_eq!(sink.inner.messages.len(), expected_chunks);
+        assert!(
+            expected_chunks > 32,
+            "the old frame budget cannot carry this flow"
+        );
+        assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
+        assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
     }
 
     #[tokio::test]
