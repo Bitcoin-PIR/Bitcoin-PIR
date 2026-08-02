@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-wo7QXNt1ZMCqPCBnOpvh/faVj1GF+RJ1/yQDn5lXBOA=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-7/ijyE29NEP9JpRaQ4D3Fh9yYlMoeOmX07SJH9Pobjs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1797,7 +1797,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     }
                     if (!legs.every(isAdmissionAuthorized)) {
                         button.disabled = true;
-                        button.textContent = 'Complete capability acquisition and authorize both providers in the panels';
+                        button.textContent = 'Request Free access or authorize Premium access in both panels';
                         return;
                     }
                     button.disabled = false;

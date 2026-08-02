@@ -56,7 +56,7 @@
       ]
     },
     {
-      "label": "Provider 2 functional beta Free DPF",
+      "label": "Provider 2 functional beta",
       "endpoint": "wss://provider2-beta.65-21-91-217.sslip.io",
       "providerIdHex": "83076521322104abbceca115f119c953c84561a29922e7ce444b7097ffc5f5d7",
       "policySigningKeyHex": "c2e0598b34804d1b3c60b4b636bccd861b93cfa55671e27787f0eab50d9dbf8e",

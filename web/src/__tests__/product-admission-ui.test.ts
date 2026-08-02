@@ -3,12 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   canBootstrapNextProviderV1,
   credentialActionsReadyV1,
+  offerChoiceLabelForOfferV1,
   pairAuthorizationReadyV1,
+  partitionOfferOptionsForDisplayV1,
   privacyLabelForOfferV1,
   retainedCapabilityLabelV1,
   retainedRecoveryLabelV1,
 } from '../product-admission-ui.js';
-import type { ProductAdmissionSnapshotV1 } from '../product-admission-controller.js';
+import type {
+  ProductAdmissionSnapshotV1,
+  ProductOfferOptionV1,
+} from '../product-admission-controller.js';
 import type { ServiceOfferViewV1 } from '../sdk-bridge.js';
 
 function offer(overrides: Partial<ServiceOfferViewV1>): ServiceOfferViewV1 {
@@ -34,6 +39,48 @@ function offer(overrides: Partial<ServiceOfferViewV1>): ServiceOfferViewV1 {
 }
 
 describe('signed offer privacy wording', () => {
+  it('labels free capacity and premium authorization methods distinctly', () => {
+    const free = offerChoiceLabelForOfferV1({ offer: offer({}) } as ProductOfferOptionV1);
+    const bolt11 = offerChoiceLabelForOfferV1({ offer: offer({
+      acquisition: 'bolt11',
+      authorization: 'bolt11-direct-receipt',
+      freeMode: 'not-free',
+      price: { kind: 'msat', amount: '1000' },
+    }) } as ProductOfferOptionV1);
+    const bat = offerChoiceLabelForOfferV1({ offer: offer({
+      acquisition: 'bolt11',
+      authorization: 'cashu-bat',
+      freeMode: 'not-free',
+      price: { kind: 'msat', amount: '1000' },
+    }) } as ProductOfferOptionV1);
+    const arc = offerChoiceLabelForOfferV1({ offer: offer({
+      acquisition: 'bolt11',
+      authorization: 'arc-experimental',
+      freeMode: 'not-free',
+      price: { kind: 'msat', amount: '1000' },
+    }) } as ProductOfferOptionV1);
+
+    expect(free).toMatch(/Free access.*best effort, may queue.*no charge/i);
+    expect(bolt11).toMatch(/Premium access.*BOLT11 direct receipt.*1000 msat/i);
+    expect(bat).toMatch(/Premium access.*Cashu BAT.*acquire with BOLT11/i);
+    expect(arc).toMatch(/Premium access.*ARC.*EXPERIMENTAL.*acquire with BOLT11/i);
+  });
+
+  it('puts Free offers before Premium offers without dropping either exact offer', () => {
+    const free = { offer: offer({ offerId: 11 }) } as ProductOfferOptionV1;
+    const premium = { offer: offer({
+      offerId: 12,
+      acquisition: 'bolt11',
+      authorization: 'cashu-bat',
+      freeMode: 'not-free',
+      price: { kind: 'msat', amount: '1000' },
+    }) } as ProductOfferOptionV1;
+
+    const grouped = partitionOfferOptionsForDisplayV1([premium, free]);
+    expect(grouped.free).toEqual([free]);
+    expect(grouped.premium).toEqual([premium]);
+  });
+
   it('warns that a direct BOLT11 receipt is payment-to-spend linkable', () => {
     expect(privacyLabelForOfferV1(offer({
       acquisition: 'bolt11',
@@ -250,6 +297,47 @@ describe('staged provider UI ordering', () => {
     }];
     expect(pairAuthorizationReadyV1(snapshot)).toBe(false);
     snapshot.legs[1].inventory = 1;
+    expect(pairAuthorizationReadyV1(snapshot)).toBe(true);
+  });
+
+  it('allows a Free access choice on both providers without Premium inventory', () => {
+    const snapshot = stagedSnapshot(['ready', 'ready'], [true, true]);
+    snapshot.legs[0].offers = [{
+      scopeIdHex: snapshot.legs[0].selected!.scopeIdHex,
+      offerId: snapshot.legs[0].selected!.offerId,
+      scope: {
+        scopeIdHex: snapshot.legs[0].selected!.scopeIdHex,
+        backend: 'dpf-pir',
+        workload: 'dpf-query',
+        protocolVersion: 1,
+        operationProfile: 1,
+        entitlementProfile: 1,
+        dataset: { kind: 'manifest-root', rootHex: '5a'.repeat(32) },
+        limits: {
+          maxLogicalInputs: 1,
+          maxFrames: 64,
+          maxRequestBytes: '1048576',
+          maxResponseBytes: '2097152',
+          maxWallTimeMs: 30_000,
+          maxConcurrentSockets: 1,
+          maxHintGroups: 0,
+          maxWorkUnits: '10000',
+        },
+        offers: [],
+      },
+      offer: offer({}),
+    }];
+    snapshot.legs[1].offers = [{
+      ...snapshot.legs[0].offers[0],
+      scopeIdHex: snapshot.legs[1].selected!.scopeIdHex,
+      offerId: snapshot.legs[1].selected!.offerId,
+      scope: {
+        ...snapshot.legs[0].offers[0].scope,
+        scopeIdHex: snapshot.legs[1].selected!.scopeIdHex,
+      },
+      offer: offer({ offerId: snapshot.legs[1].selected!.offerId }),
+    }];
+
     expect(pairAuthorizationReadyV1(snapshot)).toBe(true);
   });
 });
