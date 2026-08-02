@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "acef5f68c44147b2acd4616fc8c9403d32aa9652f827844bf369129816cee743",
+    "db54be40180c511459f2b2f58658669abcc5d0fc4d731d0394ca9ef907e0942d",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
@@ -2318,47 +2318,33 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
   const execLines = measuredShellLogicalLines(text, label).filter((line) =>
     /^exec\s+"\$UNIFIED_SERVER"(?:\s|$)/u.test(line),
   );
-  if (execLines.length !== 1) {
-    fail(`${label} must contain exactly one final exec for $UNIFIED_SERVER`);
-  }
-  const tokens = execLines[0].split(/\s+/u);
+  const dpfOnlyExecLines = execLines.filter(
+    (line) => !line.includes("--direct-oram-db"),
+  );
+  const directOramExecLines = execLines.filter((line) =>
+    line.includes("--direct-oram-db"),
+  );
   if (
-    tokens[0] !== "exec" ||
-    tokens[1] !== '"$UNIFIED_SERVER"' ||
-    tokens.at(-1) !== "2>&1"
+    execLines.length !== 2 ||
+    dpfOnlyExecLines.length !== 1 ||
+    directOramExecLines.length !== 1
   ) {
-    fail(`${label} must use the reviewed exec prefix and final 2>&1`);
+    fail(`${label} must contain exactly one db0 DPF-only and one Direct ORAM fallback exec`);
   }
-  const argv = tokens.slice(2, -1);
-  const paymentStart = argv.indexOf("--require-service-auth-v1");
+  if (!/^VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1$/mu.test(text)) {
+    fail(`${label} must keep the reviewed DPF-only functional-beta switch enabled`);
+  }
+  const dpfOnlyExec = dpfOnlyExecLines[0];
+  const dpfOnlyBranchOffset = text.indexOf(
+    'if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then',
+  );
+  const directOramBootstrapOffset = text.indexOf('[ -x "$ORAMCTL" ] || fatal');
   if (
-    paymentStart < 2 ||
-    argv.lastIndexOf("--require-service-auth-v1") !== paymentStart ||
-    argv[paymentStart - 2] !== "--identity-server-id" ||
-    argv[paymentStart - 1] !== "pir2"
+    dpfOnlyBranchOffset < 0 ||
+    directOramBootstrapOffset < 0 ||
+    directOramBootstrapOffset < dpfOnlyBranchOffset
   ) {
-    fail(`${label} must begin immediately after --identity-server-id pir2`);
-  }
-  for (const value of argv.slice(0, paymentStart)) {
-    if (
-      value.startsWith("--service-") ||
-      value === "--allow-experimental-arc"
-    ) {
-      fail(`${label} must keep all payment options in the final payment suffix`);
-    }
-  }
-
-  const command = execLines[0];
-  rejectPattern(command, /@[A-Z][A-Z0-9_]*@/u, label, "placeholder value");
-  for (const [pattern, description] of [
-    [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy digest"],
-    [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
-    [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
-    [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
-    [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "provider-local Cashu material"],
-    [/(?:^|\s)--(?:arc-key|cashu-keyset)(?:\s|=)/u, "issuer key material"],
-  ]) {
-    rejectPattern(command, pattern, label, description);
+    fail(`${label} must start the DPF-only path before Direct ORAM bootstrap`);
   }
 
   const expected = [
@@ -2381,23 +2367,66 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ["--service-max-concurrent-online-v2full-auth", "0"],
     ["--service-pre-auth-timeout-ms", "60000"],
   ];
-  let cursor = paymentStart;
-  for (const [flag, expectedValue] of expected) {
-    if (argv[cursor] !== flag) {
-      fail(`${label} must contain ${flag} exactly once and in canonical order`);
+  for (const [profile, command] of [
+    ["db0 DPF-only", dpfOnlyExec],
+    ["Direct ORAM fallback", directOramExecLines[0]],
+  ]) {
+    const profileLabel = `${label} ${profile}`;
+    const tokens = command.split(/\s+/u);
+    if (
+      tokens[0] !== "exec" ||
+      tokens[1] !== '"$UNIFIED_SERVER"' ||
+      tokens.at(-1) !== "2>&1"
+    ) {
+      fail(`${profileLabel} must use the reviewed exec prefix and final 2>&1`);
     }
-    cursor += 1;
-    if (expectedValue === null) continue;
-    const actual = argv[cursor];
-    if (expectedValue === "public-hex") {
-      requireMeasuredPublicHex(actual, flag, label);
-    } else if (actual !== expectedValue) {
-      fail(`${label} ${flag} must equal ${expectedValue}`);
+    const argv = tokens.slice(2, -1);
+    const paymentStart = argv.indexOf("--require-service-auth-v1");
+    if (
+      paymentStart < 2 ||
+      argv.lastIndexOf("--require-service-auth-v1") !== paymentStart ||
+      argv[paymentStart - 2] !== "--identity-server-id" ||
+      argv[paymentStart - 1] !== "pir2"
+    ) {
+      fail(`${profileLabel} must begin immediately after --identity-server-id pir2`);
     }
-    cursor += 1;
-  }
-  if (cursor !== argv.length) {
-    fail(`${label} contains an unreviewed, duplicate, or positional argv value`);
+    for (const value of argv.slice(0, paymentStart)) {
+      if (
+        value.startsWith("--service-") ||
+        value === "--allow-experimental-arc"
+      ) {
+        fail(`${profileLabel} must keep all payment options in the final payment suffix`);
+      }
+    }
+    rejectPattern(command, /@[A-Z][A-Z0-9_]*@/u, profileLabel, "placeholder value");
+    for (const [pattern, description] of [
+      [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy digest"],
+      [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
+      [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
+      [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
+      [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "provider-local Cashu material"],
+      [/(?:^|\s)--(?:arc-key|cashu-keyset)(?:\s|=)/u, "issuer key material"],
+    ]) {
+      rejectPattern(command, pattern, profileLabel, description);
+    }
+    let cursor = paymentStart;
+    for (const [flag, expectedValue] of expected) {
+      if (argv[cursor] !== flag) {
+        fail(`${profileLabel} must contain ${flag} exactly once and in canonical order`);
+      }
+      cursor += 1;
+      if (expectedValue === null) continue;
+      const actual = argv[cursor];
+      if (expectedValue === "public-hex") {
+        requireMeasuredPublicHex(actual, flag, profileLabel);
+      } else if (actual !== expectedValue) {
+        fail(`${profileLabel} ${flag} must equal ${expectedValue}`);
+      }
+      cursor += 1;
+    }
+    if (cursor !== argv.length) {
+      fail(`${profileLabel} contains an unreviewed, duplicate, or positional argv value`);
+    }
   }
 }
 
