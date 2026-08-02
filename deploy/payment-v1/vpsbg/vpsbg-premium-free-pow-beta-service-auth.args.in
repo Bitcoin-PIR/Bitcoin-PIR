@@ -28,4 +28,5 @@
 --allow-experimental-arc
 --service-max-concurrent-auth 4
 --service-max-concurrent-online-v2full-auth 2
+--connection-idle-timeout-ms 300000
 --service-pre-auth-timeout-ms 300000

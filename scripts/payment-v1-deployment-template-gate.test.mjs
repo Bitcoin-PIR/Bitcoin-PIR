@@ -662,6 +662,14 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
       expected,
     );
   }
+
+  const idleLine = "        --connection-idle-timeout-ms 300000 \\";
+  const missingIdleTimeout = measuredRun.replace(idleLine + "\n", "");
+  assert.notEqual(missingIdleTimeout, measuredRun);
+  assert.throws(
+    () => validateVpsbgPremiumFreePowMeasuredFinalExec(missingIdleTimeout),
+    /must contain --connection-idle-timeout-ms exactly once and in canonical order/,
+  );
 });
 
 test("systemd resets, duplicate CLI overrides, and secret argv fail closed", () => {

@@ -370,6 +370,7 @@ if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
         --allow-experimental-arc \
         --service-max-concurrent-auth 4 \
         --service-max-concurrent-online-v2full-auth 0 \
+        --connection-idle-timeout-ms 300000 \
         --service-pre-auth-timeout-ms 300000 \
         2>&1
 fi
@@ -480,6 +481,7 @@ exec "$UNIFIED_SERVER" \
     --allow-experimental-arc \
     --service-max-concurrent-auth 4 \
     --service-max-concurrent-online-v2full-auth 0 \
+    --connection-idle-timeout-ms 300000 \
     --service-pre-auth-timeout-ms 300000 \
     2>&1
 # --identity-* (operator-signed identity / REQ_ANNOUNCE): a measured fallback
