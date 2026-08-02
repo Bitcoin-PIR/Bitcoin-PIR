@@ -219,11 +219,16 @@ export class ProductAdmissionPanelV1 {
     if (notice) {
       notice.textContent = this.publicError
         ?? (snapshot?.phase === 'ready-to-query'
-          ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
+          ? 'All exact provider roles are authorized. The next action sends one query to every required provider role.'
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
             : snapshot?.legs.length === 1 && canBootstrapNextProviderV1(snapshot)
-              ? 'First exact offer is locked. Strictly verify the independent second provider before any payment.'
+              ? 'First exact offer is locked. Strictly verify the independent second provider before any capability acquisition or payment.'
+              : snapshot?.legs.length === 2 && !credentialActionsReadyV1(snapshot)
+                ? 'Both providers are strictly verified. Select the remaining exact signed offer before acquiring a capability or authorizing either provider.'
+                : snapshot?.legs.length === 2 && !snapshot.legs.every((leg) => leg.status === 'authorized'
+                  || leg.status === 'cached-resource-ready')
+                  ? 'Both exact offers are selected. Complete any capability acquisition and authorize each provider independently.'
               : snapshot?.legs.length === 1
                 ? 'Select the first provider exact signed offer before connecting the second.'
                 : 'Strictly verify and authorize the first independent provider.');
