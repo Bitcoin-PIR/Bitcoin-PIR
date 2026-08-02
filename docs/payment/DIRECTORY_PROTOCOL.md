@@ -114,9 +114,12 @@ shard complete; a timeout, `CLOSED`, disconnect, or missing `EOSE` leaves that
 relay's shard unusable rather than accepting a partial catalog.
 
 The V1 browser adapter defaults to `strict-multi-relay`: it opens two to eight
-distinct exact `wss://host[:nondefault-port]` origins, sends all 16
-Rust-generated `REQ` filters to each,
-and forwards raw `EVENT` envelopes unchanged to the strict Rust/WASM verifier.
+distinct exact `wss://host[:nondefault-port]` origins, obtains all 16
+Rust-generated semantic `REQ` filters, validates every fixed field, then
+re-encodes their exact relay-profile field order before sending them to each
+relay. This re-encoding is required because the JSON bridge may sort map
+members even though the relay profile fixes the `authors`, `kinds`, `#s` order.
+It forwards raw `EVENT` envelopes unchanged to the strict Rust/WASM verifier.
 A relay contributes a view only after every subscription reaches `EOSE`; at
 least two complete views are required, and one failed member of an exact
 two-origin configuration never causes fallback to centralized mode. With more

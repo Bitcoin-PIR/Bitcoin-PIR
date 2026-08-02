@@ -21,7 +21,11 @@ vi.mock('../sdk-bridge.js', () => ({
       Array.from({ length: 16 }, (_, shard) => [
         'REQ',
         `bitcoinpir-directory-v1-shard-${shard.toString(16)}`,
-        { authors: ['11'.repeat(32)], kinds: [30078] },
+        {
+          '#s': [`bitcoinpir-service-directory-shard-v1:${shard.toString(16)}`],
+          authors: ['11'.repeat(32)],
+          kinds: [30078],
+        },
       ]),
     ),
     WasmDirectoryCatalogCandidateV1: {
@@ -147,6 +151,15 @@ describe('Nostr directory relay transport', () => {
     expect(sockets).toHaveLength(2);
     expect(sockets.every((socket) =>
       socket.sent.filter((message) => JSON.parse(message)[0] === 'REQ').length === 16)).toBe(true);
+    expect(sockets[0].sent[0]).toBe(JSON.stringify([
+      'REQ',
+      'bitcoinpir-directory-v1-shard-0',
+      {
+        authors: [directoryPubkey],
+        kinds: [30078],
+        '#s': ['bitcoinpir-service-directory-shard-v1:0'],
+      },
+    ]));
     const call = mocks.verifyStrictRelayEventBatch.mock.calls[0] as unknown as [Uint8Array];
     const batch = JSON.parse(new TextDecoder().decode(call[0]));
     expect(batch.directoryMode).toBe('strict-multi-relay');
