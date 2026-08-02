@@ -591,6 +591,14 @@ export class BatchPirClientAdapter {
       );
       this.assertLegOwner(serverIndex, owner);
       this.installedProofsByLeg[serverIndex] = installedProofs;
+      if (serverIndex === 0) {
+        for (const installed of installedProofs) {
+          // The first provider's signed policy is bound to this locally
+          // verified root before its independently selected peer exists.
+          // Capability use and queries remain blocked on pair preflight.
+          this.recordDatabaseProofStatus(installed.pin.dbId, installed.status);
+        }
+      }
       this.strictLegReady[serverIndex] = this.isStrictVerification();
 
       if (this.strictLegReady[0] && this.strictLegReady[1]) {

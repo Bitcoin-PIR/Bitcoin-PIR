@@ -289,7 +289,15 @@ function parseDatabasePin(value: unknown, providerIndex: number, pinIndex: numbe
     'onionSuperRootHex', 'paramsHashHex', 'builderBinarySha256Hex',
   ] as const;
   for (const field of hex32Fields) {
-    nonzeroHex(`database pin ${pinIndex} ${field}`, value[field], 64);
+    // A full snapshot beginning at height zero has no predecessor block. The
+    // production DB-proof format represents that explicit sentinel with 32
+    // zero bytes; all other trust anchors remain non-zero.
+    if (field === 'fromBlockHashHex'
+        && value.buildKind === 'snapshot' && value.fromHeight === 0) {
+      fixedHex(`database pin ${pinIndex} ${field}`, value[field], 64);
+    } else {
+      nonzeroHex(`database pin ${pinIndex} ${field}`, value[field], 64);
+    }
   }
   nonzeroHex(`database pin ${pinIndex} networkMagicHex`, value.networkMagicHex, 8);
   boundedText(`database pin ${pinIndex} builderGitCommit`, value.builderGitCommit, 1, 128);
@@ -333,9 +341,16 @@ function trustedWebSocketOrigin(endpoint: string): string {
 }
 
 function nonzeroHex(field: string, value: unknown, length: number): string {
-  if (typeof value !== 'string' || value.length !== length
-      || !/^[0-9a-f]+$/.test(value) || /^0+$/.test(value)) {
+  const hex = fixedHex(field, value, length);
+  if (/^0+$/.test(hex)) {
     throw new Error(`${field} must be non-zero lowercase hex of length ${length}`);
+  }
+  return hex;
+}
+
+function fixedHex(field: string, value: unknown, length: number): string {
+  if (typeof value !== 'string' || value.length !== length || !/^[0-9a-f]+$/.test(value)) {
+    throw new Error(`${field} must be lowercase hex of length ${length}`);
   }
   return value;
 }

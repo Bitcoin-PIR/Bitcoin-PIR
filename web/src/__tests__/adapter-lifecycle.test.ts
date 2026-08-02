@@ -54,7 +54,12 @@ function fakeAnnouncement(
 }
 
 function fakeInstalledProof(dbId = 0): any {
-  const proof = { dbId, muhashHex: 'aa'.repeat(32), bucketSuperRootHex: 'bb'.repeat(32) };
+  const proof = {
+    dbId,
+    manifestRootHex: 'cc'.repeat(32),
+    muhashHex: 'aa'.repeat(32),
+    bucketSuperRootHex: 'bb'.repeat(32),
+  };
   return {
     pin: { dbId },
     proof,
@@ -193,6 +198,66 @@ function strictHarmonyPair(client: any): HarmonyPirClientAdapter {
 describe('adapter WASM lifecycle', () => {
   beforeEach(() => {
     policyFree.mockClear();
+  });
+
+  it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      expectedArkFingerprint: null,
+      expectedServer0Pin: { binarySha256Hex: BINARY_0 },
+      expectedServer0Id: 'pir1',
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+      databaseProofPins: [{ dbId: 0 } as any],
+    });
+    const dpfState = dpf as any;
+    const preflightDatabase = vi.fn(async () => {});
+    dpfState.ws0 = { connect: vi.fn(async () => {}), disconnect: vi.fn() };
+    dpfState.wasmClient = {
+      connectServer: vi.fn(async () => {}),
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+      fetchCatalogFromServer: vi.fn(async () => ({
+        toJson: () => ({
+          databases: [{
+            dbId: 0,
+            dbType: 0,
+            name: 'test',
+            baseHeight: 0,
+            height: 0,
+            indexBins: 1,
+            chunkBins: 1,
+            indexK: 1,
+            chunkK: 1,
+            tagSeed: 0,
+            dpfNIndex: 1,
+            dpfNChunk: 1,
+            hasBucketMerkle: true,
+          }],
+        }),
+        free: vi.fn(),
+      })),
+      preflightDatabase,
+    };
+    dpfState.secureChannelLegs = [true, false];
+    dpf.attestation.server0 = {
+      state: 'verified', sevStatus: 'reportDataMatch', pinStatus: 'match',
+    };
+    vi.spyOn(dpfState, 'attestAndUpgradeLeg').mockResolvedValue(undefined);
+    vi.spyOn(dpfState, 'verifyConfiguredDatabaseProofsForLeg')
+      .mockResolvedValue([fakeInstalledProof()]);
+
+    await dpf.connectLeg(0);
+
+    expect(dpf.getDatabaseProofStatus(0)).toMatchObject({
+      state: 'verified', proof: { manifestRootHex: 'cc'.repeat(32) },
+    });
+    expect(preflightDatabase).not.toHaveBeenCalled();
+    expect(dpf.isConnected()).toBe(false);
+    expect(() => dpf.serviceAdmissionPort(0, 0).authorize(
+      {} as any, new Uint8Array(32), 0, new Uint8Array(),
+    )).toThrow('requires prepared strict admission');
   });
 
   it('exposes one canonical zero-network product planner contract', () => {
