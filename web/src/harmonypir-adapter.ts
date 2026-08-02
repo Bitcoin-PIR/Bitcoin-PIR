@@ -362,6 +362,20 @@ export class HarmonyPirClientAdapter {
   }
 
   /**
+   * Install the selected peer's AMD ARK pin before its staged attestation.
+   *
+   * A Harmony pair may start with a non-SEV hint provider and then select a
+   * measured query provider. Reusing the first connection must not leave the
+   * query role with a deliberately-null ARK fingerprint.
+   */
+  setExpectedArkFingerprint(expectedArkFingerprint: Uint8Array | null): void {
+    if (expectedArkFingerprint !== null && expectedArkFingerprint.length !== 32) {
+      throw new Error('expected ARK fingerprint must be exactly 32 bytes');
+    }
+    this.config.expectedArkFingerprint = expectedArkFingerprint?.slice() ?? null;
+  }
+
+  /**
    * Strictly verify one independently priced role. Its signed policy may be
    * displayed before the peer is selected; capability and hint acquisition,
    * plus real PIR queries, wait for both roles and the pair preflight.

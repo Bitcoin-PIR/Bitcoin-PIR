@@ -220,6 +220,26 @@ describe('adapter WASM lifecycle', () => {
     );
   });
 
+  it('installs the selected peer ARK before staged Harmony attestation', () => {
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://pir1.invalid',
+      queryServerUrl: 'wss://pir2.invalid',
+      strictVerification: true,
+      expectedArkFingerprint: null,
+    });
+    const peerArk = new Uint8Array(32).fill(0x6d);
+
+    adapter.setExpectedArkFingerprint(peerArk);
+    peerArk.fill(0);
+
+    expect((adapter as any).config.expectedArkFingerprint).toEqual(
+      new Uint8Array(32).fill(0x6d),
+    );
+    expect(() => adapter.setExpectedArkFingerprint(new Uint8Array(31))).toThrow(
+      'exactly 32 bytes',
+    );
+  });
+
   it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {
     const dpf = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',

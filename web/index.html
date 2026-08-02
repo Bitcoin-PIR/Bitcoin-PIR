@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Dz+RiRXNZOWlzlhTq9gKhfrz7ZcskqrC6+HwnRhN0Nw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-KpWETpSKHK/l+LlA49R8vpgxqR+FiXTTH0QqGYtbcNY=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -5023,11 +5023,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!provider?.endpoint || (providerIndex !== 0 && providerIndex !== 1)) {
                 throw new Error('HarmonyPIR requires one complete trusted bootstrap per role');
             }
+            let selectedPairArkFingerprint = null;
             if (providerIndex === 1) {
                 const hintProvider = harmonyAdmissionProviders[0];
                 if (!hintProvider) throw new Error('Harmony hint role must finish before query role selection');
                 assertIndependentProviderDialPairV1(hintProvider, provider);
-                sharedArkFingerprint(hintProvider, provider);
+                selectedPairArkFingerprint = sharedArkFingerprint(hintProvider, provider);
                 sharedDatabasePins(hintProvider, provider);
             }
             document.getElementById(
@@ -5047,6 +5048,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
             let candidate = hpClient;
+            if (providerIndex === 1) {
+                // Keep the verified hint connection, but install the query
+                // provider's ARK pin before its measured attestation begins.
+                candidate?.setExpectedArkFingerprint(selectedPairArkFingerprint);
+            }
             try {
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Connecting...';

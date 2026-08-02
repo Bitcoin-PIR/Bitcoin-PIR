@@ -124,6 +124,23 @@ describe('strict PIR result release', () => {
     expect(blocked).toBeGreaterThan(advance);
   });
 
+  it('installs the query provider ARK pin before staged Harmony verification', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const connect = html.slice(
+      html.indexOf('async function hpConnectLeg'),
+      html.indexOf('function hpDisconnect'),
+    );
+    const pairArk = connect.indexOf('selectedPairArkFingerprint = sharedArkFingerprint');
+    const installArk = connect.indexOf(
+      'candidate?.setExpectedArkFingerprint(selectedPairArkFingerprint)',
+      pairArk,
+    );
+    const connectQuery = connect.indexOf('await candidate.connectLeg(providerIndex)', installArk);
+    expect(pairArk).toBeGreaterThanOrEqual(0);
+    expect(installArk).toBeGreaterThan(pairArk);
+    expect(connectQuery).toBeGreaterThan(installArk);
+  });
+
   it('freezes planner demand before offer selection and recomputes it at execution', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const prepare = html.slice(
