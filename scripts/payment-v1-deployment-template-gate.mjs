@@ -2342,6 +2342,8 @@ function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
   for (const expected of [
     'backend = "dpf-pir-v1"',
     'workload = "dpf-evaluate-job-v1"',
+    'kind = "manifest-root"',
+    'root_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"',
     'free_mode = "proof-of-work"',
     'free_pow_difficulty_bits = @VPSBG_FREE_POW_DIFFICULTY_BITS@',
     'authorization = "cashu-bat"',
@@ -2367,6 +2369,8 @@ function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
     'authorization = "bolt11-direct-receipt"',
     'authorization = "cashu-ecash"',
     'verification = "standard-cashu-mint-online"',
+    'kind = "class"',
+    'kind = "catalog-epoch"',
   ]) {
     if (active.includes(forbidden)) fail(`${label} contains unsupported ${forbidden}`);
   }

@@ -575,6 +575,21 @@ test("VPSBG premium beta remains a separate stateful shared-issuer profile", () 
       /must contain authorization = "arc-experimental"/,
     );
   });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => text.replace(
+        'kind = "manifest-root"\nroot_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"',
+        'kind = "class"\nclass_id = 1',
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must contain kind = "manifest-root"/,
+    );
+  });
 });
 
 test("systemd resets, duplicate CLI overrides, and secret argv fail closed", () => {

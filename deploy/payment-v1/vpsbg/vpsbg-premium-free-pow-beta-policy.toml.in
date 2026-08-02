@@ -21,8 +21,11 @@ operation_profile = @VPSBG_DPF_OPERATION_PROFILE@
 entitlement_profile = @VPSBG_DPF_ENTITLEMENT_PROFILE@
 
 [scopes.dataset]
-kind = "class"
-class_id = @VPSBG_DATASET_CLASS_ID@
+# Tier 3 strict admission resolves each database by its exact MANIFEST.toml
+# hash. This initial offer is deliberately db0-only; add a separately priced
+# scope and fresh BAT/ARC bindings before ever admitting db1.
+kind = "manifest-root"
+root_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1

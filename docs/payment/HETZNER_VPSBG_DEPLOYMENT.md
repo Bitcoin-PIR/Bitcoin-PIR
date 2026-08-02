@@ -679,11 +679,19 @@ activation actions and require separate approval.
 `deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in`
 and its matching policy TOML prepare a different measured image. They must
 never be merged with the storeless fragment above. The beta has exactly one
-initial DPF query scope with three independently selected offers:
+initial DPF db0 scope, bound to the exact db0 `MANIFEST.toml` root, with three
+independently selected offers:
 
 - local `FreeV1` proof of work;
 - stable `cashu-bat` with `shared-issuer-online`; and
 - explicitly experimental `arc-experimental` with `shared-issuer-online`.
+
+The value for that root must be recomputed from the actual strict DPF database
+proof sidecar immediately before rendering the policy; it is not the separate
+attestation `manifest_roots` value. The read-only db0 value observed on
+2026-08-02 was
+`0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec`, but
+that observation is a deployment input, not a timeless pin.
 
 The browser buys BAT or ARC capabilities from the Hetzner issuer after it has
 verified the VPSBG provider. It sends only the opaque capability to VPSBG. For
@@ -716,9 +724,10 @@ all VPSBG-specific issuer-clearing artifacts, and add their matching policy,
 BAT/ARC keys and clearing records to the Hetzner issuer. The measured final
 run script receives the rendered argument list verbatim. Changing any of those
 arguments requires another UKI and the normal portal upload/reboot plus client
-measurement-pin update. The initial scope deliberately excludes Standard Cashu
-eCash, direct BOLT11 receipt, Harmony hint/query, Onion and TEE-ORAM; each needs
-its own later workload policy and, where applicable, its own price.
+measurement-pin update. The initial scope deliberately excludes db1, Standard
+Cashu eCash, direct BOLT11 receipt, Harmony hint/query, Onion and TEE-ORAM;
+each needs its own later workload policy and, where applicable, its own price
+and capability binding.
 
 ## Rendering and preflight
 
