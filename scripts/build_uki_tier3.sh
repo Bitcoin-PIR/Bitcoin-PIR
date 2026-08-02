@@ -286,6 +286,25 @@ if [ -n "$MISSING_MODS" ]; then
 fi
 echo "SEV modules confirmed in initramfs: $REQUIRED_SEV_MODS"
 
+# A measured identity key is optional, but when supplied it must retain the
+# exact private-parent permissions required by unified_server's private-file
+# loader.  Otherwise the guest can attest and serve an encrypted channel while
+# silently disabling REQ_ANNOUNCE at startup.
+if [ -n "${BPIR_TIER3_IDENTITY_KEY:-}" ] || [ -n "${BPIR_TIER3_IDENTITY_CERT:-}" ]; then
+    IDENTITY_INITRD_ITEMS=(
+        'drwx------[[:space:]]+.*etc/bitcoinpir/identity$'
+        '-rw-------[[:space:]]+.*etc/bitcoinpir/identity/server\.key$'
+        '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/identity/server\.cert$'
+    )
+    for expected in "${IDENTITY_INITRD_ITEMS[@]}"; do
+        if ! grep -Eq "$expected" <<< "$INITRD_LISTING"; then
+            echo "ERROR: measured identity item missing or has unsafe mode: $expected" >&2
+            exit 1
+        fi
+    done
+    echo "measured identity confirmed in initramfs (private parent + key + cert)"
+fi
+
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1
 #                                 from the initramfs, bypassing dracut /init.

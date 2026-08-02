@@ -89,6 +89,11 @@ install() {
             return 1
         fi
         inst_dir /etc/bitcoinpir/identity
+        # `unified_server` deliberately rejects a private key whose final
+        # parent is not an exact root-owned 0700 directory.  `inst_dir`
+        # defaults to 0755, which would otherwise disable REQ_ANNOUNCE at
+        # boot even though the key itself is 0600.
+        chmod 0700 "$initdir/etc/bitcoinpir/identity"
         inst_simple "$identity_key" /etc/bitcoinpir/identity/server.key
         inst_simple "$identity_cert" /etc/bitcoinpir/identity/server.cert
         chmod 0600 "$initdir/etc/bitcoinpir/identity/server.key"
