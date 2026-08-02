@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "78f3c35e7253ba74135a4a515b8c7eea1b7f278c896de8769e7f7118c0a59c4d",
+    "87db8a202e5e5366aba5fdda28b13d07a177e5fa24f0eea6b3975517f62b4c7c",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
@@ -2347,10 +2347,16 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
   ) {
     fail(`${label} must start the DPF-only path before Direct ORAM bootstrap`);
   }
+  const statePolicyPath = `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/service-policy.bin`;
+  requireText(
+    text,
+    `SERVICE_POLICY_PATH=${statePolicyPath}\nif [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then\n    SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin\nfi`,
+    label,
+  );
 
   const expected = [
     ["--require-service-auth-v1", null],
-    ["--service-policy", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/service-policy.bin`],
+    ["--service-policy", '"$SERVICE_POLICY_PATH"'],
     ["--service-provider-id-hex", "public-hex"],
     ["--service-policy-key-hex", "public-hex"],
     ["--service-store", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/provider.sqlite3`],
@@ -2491,17 +2497,46 @@ function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
   if ((mode & 0o111) !== 0) {
     fail(`${label} must remain non-executable`);
   }
-  if (active.filter((line) => line === "[[scopes]]").length !== 1) {
-    fail(`${label} must declare exactly one initial scope`);
+  const scopeBlocks = active.join("\n").split(/^\[\[scopes\]\]$/mu).slice(1);
+  if (scopeBlocks.length !== 2) {
+    fail(`${label} must declare exactly DPF and Harmony-query scopes`);
   }
-  if (active.filter((line) => line === "[[scopes.offers]]").length !== 3) {
-    fail(`${label} must declare exactly Free-PoW, BAT and ARC offers`);
+  if (active.filter((line) => line === "[[scopes.offers]]").length !== 4) {
+    fail(`${label} must declare DPF Free-PoW, BAT and ARC plus Harmony Free-PoW offers`);
+  }
+  const dpfScope = scopeBlocks.filter((scope) =>
+    scope.includes('workload = "dpf-evaluate-job-v1"')
+  );
+  const harmonyQueryScope = scopeBlocks.filter((scope) =>
+    scope.includes('workload = "harmony-query-job-v1"')
+  );
+  if (dpfScope.length !== 1 || harmonyQueryScope.length !== 1) {
+    fail(`${label} must declare one DPF scope and one Harmony-query scope`);
+  }
+  const dpf = dpfScope[0];
+  const harmony = harmonyQueryScope[0];
+  if ((dpf.match(/^\[\[scopes\.offers\]\]$/gmu) ?? []).length !== 3) {
+    fail(`${label} must retain exactly DPF Free-PoW, BAT and ARC offers`);
+  }
+  if ((harmony.match(/^\[\[scopes\.offers\]\]$/gmu) ?? []).length !== 1) {
+    fail(`${label} must contain exactly one Harmony-query Free-PoW offer`);
+  }
+  for (const expected of [
+    "policy_epoch = 2",
+  ]) {
+    if (!active.includes(expected)) fail(`${label} must contain ${expected}`);
   }
   for (const expected of [
     'backend = "dpf-pir-v1"',
     'workload = "dpf-evaluate-job-v1"',
+    "protocol_version = 1",
+    "operation_profile = @VPSBG_DPF_OPERATION_PROFILE@",
+    "entitlement_profile = @VPSBG_DPF_ENTITLEMENT_PROFILE@",
     'kind = "manifest-root"',
     'root_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"',
+    "offer_id = 101",
+    "offer_id = 102",
+    "offer_id = 103",
     'free_mode = "proof-of-work"',
     'free_pow_difficulty_bits = @VPSBG_FREE_POW_DIFFICULTY_BITS@',
     'authorization = "cashu-bat"',
@@ -2512,12 +2547,57 @@ function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
     'credential_binding_path = "bindings/dpf-evaluate-job-v1/cashu-bat.bin"',
     'credential_binding_path = "bindings/dpf-evaluate-job-v1/arc-experimental.bin"',
   ]) {
-    if (!active.includes(expected)) fail(`${label} must contain ${expected}`);
+    if (!dpf.includes(expected)) fail(`${label} DPF scope must contain ${expected}`);
+  }
+  for (const expected of [
+    'backend = "harmony-pir-v2"',
+    'workload = "harmony-query-job-v1"',
+    "protocol_version = 2",
+    "operation_profile = @VPSBG_HARMONY_QUERY_OPERATION_PROFILE@",
+    "entitlement_profile = @VPSBG_HARMONY_QUERY_ENTITLEMENT_PROFILE@",
+    'kind = "manifest-root"',
+    'root_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"',
+    "max_logical_inputs = @VPSBG_HARMONY_QUERY_MAX_LOGICAL_INPUTS@",
+    "max_frames = @VPSBG_HARMONY_QUERY_MAX_FRAMES@",
+    "max_request_bytes = @VPSBG_HARMONY_QUERY_MAX_REQUEST_BYTES@",
+    "max_response_bytes = @VPSBG_HARMONY_QUERY_MAX_RESPONSE_BYTES@",
+    "max_wall_time_ms = @VPSBG_HARMONY_QUERY_MAX_WALL_TIME_MS@",
+    "max_concurrent_sockets = @VPSBG_HARMONY_QUERY_MAX_CONCURRENT_SOCKETS@",
+    "max_hint_groups = @VPSBG_HARMONY_QUERY_MAX_HINT_GROUPS@",
+    "max_work_units = @VPSBG_HARMONY_QUERY_MAX_WORK_UNITS@",
+    "offer_id = 104",
+    'acquisition = "free"',
+    'free_mode = "proof-of-work"',
+    "free_pow_difficulty_bits = @VPSBG_FREE_POW_DIFFICULTY_BITS@",
+    'authorization = "free"',
+    'verification = "provider-local"',
+    'deployment_status = "stable"',
+    "credential_count = 1",
+    "credential_presentation_limit = 1",
+    "privacy_leakage_bits = 0",
+    'kind = "free"',
+  ]) {
+    if (!harmony.includes(expected)) fail(`${label} Harmony scope must contain ${expected}`);
+  }
+  for (const forbidden of [
+    'authorization = "cashu-bat"',
+    'authorization = "arc-experimental"',
+    'verification = "shared-issuer-online"',
+    "issuer_id_hex =",
+    "key_id_hex =",
+    "credential_binding_path =",
+    "endpoint =",
+    "invoice_expiry_seconds =",
+    "claim_window_seconds =",
+  ]) {
+    if (harmony.includes(forbidden)) {
+      fail(`${label} Harmony scope must not contain premium issuer or credential material`);
+    }
   }
   if (active.filter((line) => line === 'verification = "shared-issuer-online"').length !== 2) {
     fail(`${label} must make BAT and ARC shared-issuer-online only`);
   }
-  if (active.filter((line) => line === "priority_class = 1").length !== 3) {
+  if (active.filter((line) => line === "priority_class = 1").length !== 4) {
     fail(`${label} must make no QoS/priority claim`);
   }
   if (active.filter((line) => line === "privacy_leakage_bits = 28").length !== 2) {

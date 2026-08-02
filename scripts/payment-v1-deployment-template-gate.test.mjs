@@ -588,7 +588,40 @@ test("VPSBG premium beta remains a separate stateful shared-issuer profile", () 
     );
     assert.throws(
       () => validateDeploymentTree(root),
-      /must contain kind = "manifest-root"/,
+      /DPF scope must contain kind = "manifest-root"/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => text.replace(
+        'workload = "harmony-query-job-v1"',
+        'workload = "harmony-hint-bundle-v1"',
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must declare one DPF scope and one Harmony-query scope/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => {
+        const harmonyStart = text.indexOf('workload = "harmony-query-job-v1"');
+        return `${text.slice(0, harmonyStart)}${text.slice(harmonyStart).replace(
+          'authorization = "free"',
+          'authorization = "free"\nauthorization = "cashu-bat"',
+        )}`;
+      },
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /Harmony scope must not contain premium issuer or credential material/,
     );
   });
 });

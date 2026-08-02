@@ -680,13 +680,14 @@ activation actions and require separate approval.
 
 `deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in`
 and its matching policy TOML prepare a different measured image. They must
-never be merged with the storeless fragment above. The beta has exactly one
-initial DPF db0 scope, bound to the exact db0 `MANIFEST.toml` root, with three
-independently selected offers:
+never be merged with the storeless fragment above. The beta has two independent
+scopes, both bound to the exact db0 `MANIFEST.toml` root:
 
-- local `FreeV1` proof of work;
-- stable `cashu-bat` with `shared-issuer-online`; and
-- explicitly experimental `arc-experimental` with `shared-issuer-online`.
+- DPF evaluation has local `FreeV1` proof of work, stable `cashu-bat` with
+  `shared-issuer-online`, and explicitly experimental `arc-experimental` with
+  `shared-issuer-online`.
+- Harmony query execution has only local `FreeV1` proof of work. It does not
+  reuse the DPF BAT or ARC entitlement, binding or price.
 
 The value for that root must be recomputed from the actual strict DPF database
 proof sidecar immediately before rendering the policy; it is not the separate
@@ -728,10 +729,12 @@ SQLite files, provider clearing key and redeem-idempotency key before the UKI
 boots. It must not contain issuer settlement material, BAT/ARC private keys,
 Lightning state, invoices or payment hashes. Changing a policy argument or
 public binding requires another UKI and the normal portal upload/reboot plus
-client measurement-pin update. The initial scope deliberately excludes db1,
-Standard Cashu eCash, direct BOLT11 receipt, Harmony hint/query, Onion and
+client measurement-pin update. The initial policy deliberately excludes db1,
+Standard Cashu eCash, direct BOLT11 receipt, Harmony hints, Onion and
 TEE-ORAM; each needs its own later workload policy and, where applicable, its
-own price and capability binding.
+own price and capability binding. Harmony query is already an independent
+Free-PoW-only scope and must not be treated as an entitlement for Harmony hint
+generation.
 
 ## Rendering and preflight
 
