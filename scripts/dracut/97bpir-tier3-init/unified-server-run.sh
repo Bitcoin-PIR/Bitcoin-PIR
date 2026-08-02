@@ -54,6 +54,16 @@ UNIFIED_SERVER=/usr/local/bin/unified_server
 if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unified_server ]; then
     UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
 fi
+
+# The functional-beta policy embedded below advertises only db0 DPF-PIR.
+# Do not hold that usable path behind the separate Direct-ORAM ceremony: the
+# currently mounted db0 proof is V1 and deliberately lacks the typed
+# `direct_oram` data required by the newer Direct-ORAM bootstrap.  Direct ORAM
+# remains below as an explicit future path once a new attested full-build has
+# supplied that evidence; changing this constant requires a new measured UKI
+# review and release.
+VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1
+
 ORAM_BOOT_ROOT=/home/pir/data/.oram-boot
 ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
 ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
@@ -320,8 +330,41 @@ verify_direct_oram_publish() {
     echo "[unified-server-run] verified published $db_label direct ORAM paths" >&2
 }
 
-[ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
+if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
+    echo "[unified-server-run] starting VPSBG db0 DPF-only functional beta; Direct ORAM is not advertised" >&2
+    exec "$UNIFIED_SERVER" \
+        --port 8091 \
+        --role secondary \
+        --serve-queries \
+        --config /home/pir/data/databases.toml \
+        --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
+        --vcek-dir /home/pir/data/vcek \
+        --identity-key-path /home/pir/data/pir2-identity.key \
+        --identity-cert-path /home/pir/data/pir2.cert \
+        --identity-server-id pir2 \
+        --require-service-auth-v1 \
+        --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
+        --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
+        --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+        --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
+        --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
+        --allow-local-service-rollback-authority-dev \
+        --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
+        --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
+        --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
+        --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
+        --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
+        --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
+        --service-shared-minimum-authorization-epoch 1 \
+        --allow-experimental-arc \
+        --service-max-concurrent-auth 4 \
+        --service-max-concurrent-online-v2full-auth 0 \
+        --service-pre-auth-timeout-ms 60000 \
+        2>&1
+fi
+
+[ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
 for stale_staging in "$ORAM_BOOT_ROOT"/staging.*; do
