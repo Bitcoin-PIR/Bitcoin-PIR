@@ -23,7 +23,7 @@ describe('bundled functional-beta trusted bootstrap', () => {
       '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      'b5f559816fe655507f37d57259cb3c1a162c8670971c1c30e079904e9e2c7ccd988b2b69080a3672048c75e46e236afa',
+      'cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897',
     );
     expect(() => assertIndependentProviderDialPairV1(
       parsed.providers[0],

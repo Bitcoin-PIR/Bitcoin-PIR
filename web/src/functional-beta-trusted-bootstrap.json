@@ -56,7 +56,7 @@
       ]
     },
     {
-      "label": "VPSBG DPF Payment V1 provider",
+      "label": "VPSBG Payment V1 provider",
       "endpoint": "wss://weikeng2.bitcoinpir.org",
       "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
       "policySigningKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
@@ -64,7 +64,7 @@
       "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
         "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
-        "measurementHex": "b5f559816fe655507f37d57259cb3c1a162c8670971c1c30e079904e9e2c7ccd988b2b69080a3672048c75e46e236afa"
+        "measurementHex": "cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897"
       },
       "hardwareAttestation": "required",
       "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",

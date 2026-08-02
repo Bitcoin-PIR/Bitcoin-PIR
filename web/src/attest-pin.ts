@@ -126,20 +126,20 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 DPF-only Payment V1 beta UKI,
- * pinned 2026-08-02. Built from BitcoinPIR commit 7f1db108 and archived on
- * Hetzner before the measured-boot API rollout. This endpoint deliberately
- * serves the verified DPF path only; it does not advertise direct ORAM.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
+ * 2026-08-02 after adding the independently priced Harmony query Free scope.
+ * It serves verified DPF and Harmony-query workloads; it does not advertise
+ * direct ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT captured from the live Tier 3 deploy after uploading the
-  // archived DPF-only UKI with the embedded identity material, then
+  // patched DPF + Harmony-query UKI with the embedded identity material, then
   // validating REPORT_DATA plus the AMD chain.
   measurementHex:
-    'b5f559816fe655507f37d57259cb3c1a162c8670971c1c30e079904e9e2c7ccd988b2b69080a3672048c75e46e236afa',
+    'cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897',
   binarySha256Hex:
     'ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF-only Payment V1 beta)',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta)',
 };
 
 /**
