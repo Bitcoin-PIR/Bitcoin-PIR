@@ -126,32 +126,24 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-07-24.
- * Built by `scripts/build_uki_tier3.sh` on VPSBG and archived on Hetzner:
- * VPSBG kernel 7.0.0-28 + the ORAM-enabled `unified_server`
- * binary baked into the initramfs.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 DPF-only Payment V1 beta UKI,
+ * pinned 2026-08-02. Built from BitcoinPIR commit 7f1db108 and archived on
+ * Hetzner before the measured-boot API rollout. This endpoint deliberately
+ * serves the verified DPF path only; it does not advertise direct ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 ORAM + database-proof-v2 UKI — 2026-07-24. The measured startup
-  // script and unified_server binary are both built from BitcoinPIR commit
-  // 81dd96d442d39200fee7e6c97f5c308f38126756. unified_server dual-serves
-  // v1/v2 DB proofs and direct ORAM lookup
-  // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
-  // no OnionPIR) plus `--identity-*` (operator-signed identity,
-  // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
-  // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
-  // UKI sha256 `34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681`
-  // (SEV-SNP REPORT_DATA binding verified on
-  // real hardware).
+  // MEASUREMENT captured from the live Tier 3 deploy after uploading the
+  // archived DPF-only UKI and validating REPORT_DATA plus the AMD chain.
   measurementHex:
-    'd7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245',
+    '3564465a167bcc8d406041f296ecce12749a151bebc996371ebbea35b3947ad85011d99777562ff8b53bfd314846de21',
   binarySha256Hex:
-    'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
+    'ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF-only Payment V1 beta)',
 };
 
 /**
- * weikeng1.bitcoinpir.org — Hetzner i7-8700, Intel chip, NO SEV-SNP.
+ * weikeng1.bitcoinpir.org — Hetzner Payment V1 provider, Intel host, NO
+ * SEV-SNP. The public endpoint is independently keyed and pinned below.
  * No MEASUREMENT to pin (no SEV report). binary_sha256 IS pinnable —
  * the value isn't hardware-backed without SEV, but pinning still
  * detects accidental drift between what the operator claims is
@@ -159,15 +151,11 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Bumped 2026-07-24: pir1 redeployed from BitcoinPIR commit
-  // 81dd96d442d39200fee7e6c97f5c308f38126756. Both runtime services
-  // dual-serve database proofs v1/v2 while retaining the durable,
-  // non-blocking HarmonyPIR V2 hint pool.
-  // Both Hetzner systemd services use this binary. This remains independent
-  // from the pir2 Tier 3 UKI measurement pin.
+  // The public Payment V1 provider uses the independently deployed
+  // d23b5841 build. This remains independent from the VPSBG Tier 3 pin.
   binarySha256Hex:
-    'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e',
-  description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
+    'd23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8',
+  description: 'weikeng1.bitcoinpir.org (Hetzner Payment V1 provider, no SEV)',
 };
 
 /**
