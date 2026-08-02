@@ -64,7 +64,7 @@
       "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
         "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
-        "measurementHex": "97e314a4f8f281a59736894d707c43f95aa5be9877c5e6c47d0e497fde9a4b66b1df3cf24b4ae9ae2856c18cd555900f"
+        "measurementHex": "b5f559816fe655507f37d57259cb3c1a162c8670971c1c30e079904e9e2c7ccd988b2b69080a3672048c75e46e236afa"
       },
       "hardwareAttestation": "required",
       "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",
