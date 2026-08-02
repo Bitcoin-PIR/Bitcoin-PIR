@@ -222,13 +222,21 @@ The templates divide responsibilities as follows:
   Nostr signature and pinned directory key remain the publication authority.
   Both units require a separate publisher-private-ingress sentinel. Rollback
   authorities do not use this public HAProxy.
-- `vpsbg/vpsbg-free-pow-service-auth.args.in` is the only VPSBG change described
-  by this directory. It lists the enforced Payment V1 arguments that a reviewed
-  UKI rebuild would append to the existing query-only provider's final exec. It
-  deliberately omits that measured script's ORAM build/verification, identity,
-  database, attestation and cloudflared logic so it cannot be mistaken for a
-  standalone replacement. It does not add an issuer, relay, mint, Lightning
-  node, Cashu/ARC key, or rollback-authority process to VPSBG.
+- `vpsbg/vpsbg-free-pow-service-auth.args.in` is the immutable storeless
+  Free-PoW-only VPSBG profile. It lists the enforced Payment V1 arguments that
+  a reviewed UKI rebuild would append to the existing query-only provider's
+  final exec. It deliberately omits that measured script's ORAM
+  build/verification, identity, database, attestation and cloudflared logic so
+  it cannot be mistaken for a standalone replacement. It does not add an
+  issuer, relay, mint, Lightning node, Cashu/ARC key, or rollback-authority
+  process to VPSBG.
+- `vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in` and its policy TOML
+  are a separate stateful functional-beta profile. They offer local Free-PoW,
+  online shared-issuer Cashu BAT, and explicitly experimental shared-issuer
+  ARC. The Hetzner issuer remains the BAT/ARC validator and Lightning boundary;
+  VPSBG holds neither Lightning nor issuer private keys. This profile must
+  never be appended to the storeless fragment or described as a production
+  rollback boundary.
 
 Production templates use only remote rollback authorities. Issuer and rollback
 authority application listeners remain on loopback behind separately reviewed,

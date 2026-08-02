@@ -79,6 +79,9 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
 export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/README.md",
   "deploy/payment-v1/functional-beta/README.md",
+  "deploy/payment-v1/functional-beta/bitcoinpir-payment-issuer-functional-beta.service.in",
+  "deploy/payment-v1/functional-beta/bitcoinpir-provider-functional-beta.service.in",
+  "deploy/payment-v1/functional-beta/hetzner-existing-caddy.fragment.in",
   "deploy/payment-v1/functional-beta/issuer-all-methods.args.in",
   "deploy/payment-v1/functional-beta/provider-all-methods.args.in",
   "deploy/payment-v1/functional-beta/service-policy.toml.in",
@@ -121,6 +124,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
   "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
   "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
+  "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in",
+  "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
   "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",
   "scripts/payment-v1-publisher-netns.c",
   "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs",
@@ -2262,6 +2267,111 @@ function validateVpsbgFreePow(text, mode) {
   }
 }
 
+function activeArgumentText(text) {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .join(" ");
+}
+
+function validateVpsbgPremiumFreePowBeta(text, mode) {
+  const label = "VPSBG Premium + Free-PoW beta argument fragment";
+  requireText(text, "not a run script", label);
+  requireText(text, "alternative to vpsbg-free-pow-service-auth.args.in", label);
+  requireText(text, "Hetzner keeps Lightning, Cashu BAT and ARC private", label);
+  rejectPattern(text, /^\s*#!+/m, label, "shebang");
+  rejectPattern(text, /^\s*exec(?:\s|$)/m, label, "exec command");
+  const active = activeArgumentText(text);
+  for (const [pattern, description] of [
+    [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy pin"],
+    [/(?:^|\s)--service-retained-policy(?:\s|=)/u, "retained policy"],
+    [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
+    [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
+    [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
+    [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "standard Cashu material"],
+    [/(?:^|\s)--service-free-ip-key(?:\s|=)/u, "Free IP key"],
+    [/(?:^|\s)--service-trust-direct-peer-ip(?:\s|$)/u, "direct peer IP trust"],
+    [/(?:^|\s)--require-(?:arc|cashu)(?:\s|$)/u, "legacy admission gate"],
+    [/(?:^|\s)--(?:arc-key|cashu-keyset)(?:\s|=)/u, "legacy issuer/keyset material"],
+  ]) {
+    rejectPattern(active, pattern, label, description);
+  }
+  validateExactCommand(
+    active,
+    [],
+    [
+      ["--require-service-auth-v1", null],
+      ["--service-policy", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin"],
+      ["--service-provider-id-hex", "@VPSBG_PREMIUM_PROVIDER_ID_HEX@"],
+      ["--service-policy-key-hex", "@VPSBG_PREMIUM_POLICY_PUBKEY_HEX@"],
+      ["--service-store", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3"],
+      ["--service-rollback-authority", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3"],
+      ["--allow-local-service-rollback-authority-dev", null],
+      ["--service-shared-authorization", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin"],
+      ["--service-shared-issuer-approval", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin"],
+      ["--service-shared-operator-key-hex", "@HETZNER_ISSUER_OPERATOR_PUBKEY_HEX@"],
+      ["--service-shared-issuer-settlement-key-hex", "@HETZNER_ISSUER_SETTLEMENT_PUBKEY_HEX@"],
+      ["--service-shared-clearing-key", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key"],
+      ["--service-shared-idempotency-key", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key"],
+      ["--service-shared-minimum-authorization-epoch", "1"],
+      ["--allow-experimental-arc", null],
+      ["--service-max-concurrent-auth", "4"],
+      ["--service-max-concurrent-online-v2full-auth", "2"],
+      ["--service-pre-auth-timeout-ms", "60000"],
+    ],
+    label,
+  );
+  if ((mode & 0o111) !== 0) {
+    fail(`${label} must remain non-executable`);
+  }
+}
+
+function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
+  const label = "VPSBG Premium + Free-PoW beta policy template";
+  const active = activeTemplateLines(text, label);
+  if ((mode & 0o111) !== 0) {
+    fail(`${label} must remain non-executable`);
+  }
+  if (active.filter((line) => line === "[[scopes]]").length !== 1) {
+    fail(`${label} must declare exactly one initial scope`);
+  }
+  if (active.filter((line) => line === "[[scopes.offers]]").length !== 3) {
+    fail(`${label} must declare exactly Free-PoW, BAT and ARC offers`);
+  }
+  for (const expected of [
+    'backend = "dpf-pir-v1"',
+    'workload = "dpf-evaluate-job-v1"',
+    'free_mode = "proof-of-work"',
+    'free_pow_difficulty_bits = @VPSBG_FREE_POW_DIFFICULTY_BITS@',
+    'authorization = "cashu-bat"',
+    'authorization = "arc-experimental"',
+    'deployment_status = "experimental"',
+    'issuer_id_hex = "@HETZNER_ISSUER_ID_HEX@"',
+    'endpoint = "@HETZNER_ISSUER_ORIGIN@"',
+    'credential_binding_path = "bindings/dpf-evaluate-job-v1/cashu-bat.bin"',
+    'credential_binding_path = "bindings/dpf-evaluate-job-v1/arc-experimental.bin"',
+  ]) {
+    if (!active.includes(expected)) fail(`${label} must contain ${expected}`);
+  }
+  if (active.filter((line) => line === 'verification = "shared-issuer-online"').length !== 2) {
+    fail(`${label} must make BAT and ARC shared-issuer-online only`);
+  }
+  if (active.filter((line) => line === "priority_class = 1").length !== 3) {
+    fail(`${label} must make no QoS/priority claim`);
+  }
+  if (active.filter((line) => line === "privacy_leakage_bits = 28").length !== 2) {
+    fail(`${label} must disclose issuer issuance/redemption/provider leakage`);
+  }
+  for (const forbidden of [
+    'authorization = "bolt11-direct-receipt"',
+    'authorization = "cashu-ecash"',
+    'verification = "standard-cashu-mint-online"',
+  ]) {
+    if (active.includes(forbidden)) fail(`${label} contains unsupported ${forbidden}`);
+  }
+}
+
 function parseScalar(raw, lineNumber) {
   if (/^"[^"\r\n]*"$/.test(raw)) {
     return raw.slice(1, -1);
@@ -2510,6 +2620,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".service.in") &&
       !rel.endsWith(".args.in") &&
       !rel.endsWith(".Caddyfile.in") &&
+      !rel.endsWith(".fragment.in") &&
       !rel.endsWith(".cfg.in") &&
       !rel.endsWith(".conf.in") &&
       !rel.endsWith(".json.in") &&
@@ -2843,6 +2954,16 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
   );
   validateVpsbgFreePow(vpsbg.text, vpsbg.stat.mode);
+  const vpsbgPremium = readRequired(
+    root,
+    "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in",
+  );
+  validateVpsbgPremiumFreePowBeta(vpsbgPremium.text, vpsbgPremium.stat.mode);
+  const vpsbgPremiumPolicy = readRequired(
+    root,
+    "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+  );
+  validateVpsbgPremiumFreePowBetaPolicy(vpsbgPremiumPolicy.text, vpsbgPremiumPolicy.stat.mode);
   const deploymentDoc = readRequired(
     root,
     "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",
@@ -2853,6 +2974,7 @@ export function validateDeploymentTree(rootInput) {
     "exact protocol digest argument and the script that supplies it MUST be",
     "requires a new measured UKI",
     "opens no ProviderStore or rollback authority",
+    "VPSBG Premium + Free-PoW functional beta",
   ]) {
     requireText(deploymentDoc.text, required, "Hetzner/VPSBG deployment document");
   }
