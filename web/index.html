@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-cXarfqKGbu9RX9FnlwKjP3RVaxZdvK1bSGoEyUxX9eA=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-hlmB5tsTQbSMqxFR/jCgEeOGIhOjkDXhNjFXm/BZ8WA=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -3516,7 +3516,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const first = dpfAdmissionProviders[0];
                 if (!first) throw new Error('DPF server 0 must finish before server 1 is selected');
                 assertIndependentProviderDialPairV1(first, provider);
-                sharedArkFingerprint(first, provider);
+                // Server 0 may intentionally be a NoSEV, binary-pinned
+                // provider. Apply the selected pair's ARK before attesting
+                // Server 1 so its SEV-SNP chain cannot be silently skipped.
+                client?.setExpectedArkFingerprint(sharedArkFingerprint(first, provider));
                 sharedDatabasePins(first, provider);
             }
             document.getElementById(serverIndex === 0 ? 'server0Url' : 'server1Url').value = provider.endpoint;

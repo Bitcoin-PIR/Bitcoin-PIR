@@ -55,6 +55,16 @@ if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unifie
     UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
 fi
 
+# Prefer an explicitly measured identity pair when one is present. The
+# persistent data-mount fallback remains for existing Tier 3 deployments.
+# The selected cert is signed for the public Payment V1 stable server ID.
+IDENTITY_KEY_PATH=/home/pir/data/pir2-identity.key
+IDENTITY_CERT_PATH=/home/pir/data/pir2.cert
+if [ -r /etc/bitcoinpir/identity/server.key ] && [ -r /etc/bitcoinpir/identity/server.cert ]; then
+    IDENTITY_KEY_PATH=/etc/bitcoinpir/identity/server.key
+    IDENTITY_CERT_PATH=/etc/bitcoinpir/identity/server.cert
+fi
+
 # The functional-beta policy embedded below advertises only db0 DPF-PIR.
 # Do not hold that usable path behind the separate Direct-ORAM ceremony: the
 # currently mounted db0 proof is V1 and deliberately lacks the typed
@@ -340,9 +350,9 @@ if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
         --config /home/pir/data/databases.toml \
         --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
         --vcek-dir /home/pir/data/vcek \
-        --identity-key-path /home/pir/data/pir2-identity.key \
-        --identity-cert-path /home/pir/data/pir2.cert \
-        --identity-server-id pir2 \
+        --identity-key-path "$IDENTITY_KEY_PATH" \
+        --identity-cert-path "$IDENTITY_CERT_PATH" \
+        --identity-server-id pir2-vpsbg-dpf-v1 \
         --require-service-auth-v1 \
         --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
         --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
@@ -450,9 +460,9 @@ exec "$UNIFIED_SERVER" \
     --direct-oram-auth-store \
     --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \
-    --identity-key-path /home/pir/data/pir2-identity.key \
-    --identity-cert-path /home/pir/data/pir2.cert \
-    --identity-server-id pir2 \
+    --identity-key-path "$IDENTITY_KEY_PATH" \
+    --identity-cert-path "$IDENTITY_CERT_PATH" \
+    --identity-server-id pir2-vpsbg-dpf-v1 \
     --require-service-auth-v1 \
     --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
     --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
@@ -472,10 +482,7 @@ exec "$UNIFIED_SERVER" \
     --service-max-concurrent-online-v2full-auth 0 \
     --service-pre-auth-timeout-ms 60000 \
     2>&1
-# --identity-* (operator-signed identity / REQ_ANNOUNCE): key + cert live
-# in the bind-mounted rootfs /home/pir/data — NOT baked into the measured
-# initramfs (only this run script + the binary are measured). Missing or
-# inconsistent files are non-fatal (unified_server logs "Identity
-# announce: DISABLED" and serves everything else), so this is safe to ship
-# ahead of provisioning the files. server_id MUST be "pir2" to match the
-# operator-signed cert.
+# --identity-* (operator-signed identity / REQ_ANNOUNCE): a measured fallback
+# may be supplied at UKI build time; otherwise the bind-mounted rootfs paths
+# remain valid. The operator signing key is never embedded. The certificate
+# server_id MUST remain pir2-vpsbg-dpf-v1, matching the public bootstrap.

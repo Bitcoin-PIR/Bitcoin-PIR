@@ -507,6 +507,21 @@ export class BatchPirClientAdapter {
   }
 
   /**
+   * Update the AMD ARK trust root before connecting a newly selected peer.
+   *
+   * The staged DPF UI permits a NoSEV, binary-pinned first provider. Once a
+   * SEV-SNP peer is selected, its independently pinned ARK must become active
+   * on the already-created client before that peer is attested. This avoids
+   * recreating (and losing) the already verified first-leg connection.
+   */
+  setExpectedArkFingerprint(expectedArkFingerprint: Uint8Array | null): void {
+    if (expectedArkFingerprint !== null && expectedArkFingerprint.length !== 32) {
+      throw new Error('expected ARK fingerprint must be exactly 32 bytes');
+    }
+    this.config.expectedArkFingerprint = expectedArkFingerprint?.slice() ?? null;
+  }
+
+  /**
    * Establish and strictly verify one provider transport. The first leg may
    * expose its signed policy and other read-only session metadata; capability
    * use and queries wait for the independently selected second leg and pair

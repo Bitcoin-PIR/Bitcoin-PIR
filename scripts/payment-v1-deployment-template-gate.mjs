@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "db54be40180c511459f2b2f58658669abcc5d0fc4d731d0394ca9ef907e0942d",
+    "923007711678d21afbdaa8010c99546ce57f3d8430d61718cf6568ddcce5279e",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
@@ -2386,9 +2386,9 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
       paymentStart < 2 ||
       argv.lastIndexOf("--require-service-auth-v1") !== paymentStart ||
       argv[paymentStart - 2] !== "--identity-server-id" ||
-      argv[paymentStart - 1] !== "pir2"
+      argv[paymentStart - 1] !== "pir2-vpsbg-dpf-v1"
     ) {
-      fail(`${profileLabel} must begin immediately after --identity-server-id pir2`);
+      fail(`${profileLabel} must begin immediately after --identity-server-id pir2-vpsbg-dpf-v1`);
     }
     for (const value of argv.slice(0, paymentStart)) {
       if (

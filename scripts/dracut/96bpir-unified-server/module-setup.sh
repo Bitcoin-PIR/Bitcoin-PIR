@@ -41,6 +41,8 @@ install() {
     local bin=${BPIR_UNIFIED_SERVER_BIN:-${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}}
     local oramctl=${BPIR_ORAMCTL_BIN:-${ORAMCTL:-/home/pir/bitcoin-pir/oram/target/release/oramctl}}
     local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
+    local identity_key=${BPIR_TIER3_IDENTITY_KEY:-}
+    local identity_cert=${BPIR_TIER3_IDENTITY_CERT:-}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
@@ -66,4 +68,30 @@ install() {
     inst "$oramctl" /usr/local/bin/oramctl
     inst_simple "$bhtm_from_leaf_proof" \
         /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
+
+    # Optional measured fallback for the server identity. Tier 3 normally
+    # reads identity material from the mutable data mount. A fresh rootfs can
+    # lack that pair, which leaves REQ_ANNOUNCE disabled even while attestation
+    # and the secure channel succeed. When both explicit build inputs are
+    # supplied, place only the server key + public certificate in the UKI;
+    # never the operator signing key.
+    if [ -n "$identity_key" ] || [ -n "$identity_cert" ]; then
+        if [ -z "$identity_key" ] || [ -z "$identity_cert" ]; then
+            derror "bpir-unified-server: BPIR_TIER3_IDENTITY_KEY and BPIR_TIER3_IDENTITY_CERT must be supplied together"
+            return 1
+        fi
+        if [ ! -r "$identity_key" ] || [ ! -r "$identity_cert" ]; then
+            derror "bpir-unified-server: measured identity input is not readable"
+            return 1
+        fi
+        if [ "$(wc -c < "$identity_key")" -ne 32 ]; then
+            derror "bpir-unified-server: measured identity key must be exactly 32 bytes"
+            return 1
+        fi
+        inst_dir /etc/bitcoinpir/identity
+        inst_simple "$identity_key" /etc/bitcoinpir/identity/server.key
+        inst_simple "$identity_cert" /etc/bitcoinpir/identity/server.cert
+        chmod 0600 "$initdir/etc/bitcoinpir/identity/server.key"
+        chmod 0644 "$initdir/etc/bitcoinpir/identity/server.cert"
+    fi
 }

@@ -200,6 +200,26 @@ describe('adapter WASM lifecycle', () => {
     policyFree.mockClear();
   });
 
+  it('installs the selected peer ARK before its staged attestation', () => {
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+      expectedArkFingerprint: null,
+    });
+    const peerArk = new Uint8Array(32).fill(0x7e);
+
+    adapter.setExpectedArkFingerprint(peerArk);
+    peerArk.fill(0);
+
+    expect((adapter as any).config.expectedArkFingerprint).toEqual(
+      new Uint8Array(32).fill(0x7e),
+    );
+    expect(() => adapter.setExpectedArkFingerprint(new Uint8Array(31))).toThrow(
+      'exactly 32 bytes',
+    );
+  });
+
   it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {
     const dpf = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',
