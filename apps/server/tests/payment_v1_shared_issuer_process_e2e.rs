@@ -38,18 +38,21 @@ use pir_runtime_core::protocol::{BatchQuery, Request, Response};
 use pir_sdk_client::attest::{attest_with_eph_binding, SevStatus};
 use pir_sdk_client::channel::{establish, SecureChannelTransport};
 use pir_sdk_client::{
-    dangerous_unpaired_authorize_service_operation_v1, fetch_verified_service_policy_v1,
-    AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1, WsConnection,
+    dangerous_unpaired_authorize_service_operation_v1,
+    dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
+    request_pow_challenge_v1, AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1,
+    WsConnection,
 };
 use pir_service_protocol::{
-    derive_bat_key_id_v1, derive_issuer_id, derive_provider_id, AcquisitionMethod,
-    AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId, BitcoinPirCashuBatProofV1,
-    Bolt11QuoteKeyDelegationV1, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1,
-    CredentialUnitV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
-    FreeAuthorizationProofV1, FreeModeV1, IssuerClearingApprovalV1, LightningNetworkV1,
-    OperationStartV1, PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationV1,
-    ProviderRedeemEnvelopeV1, ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1,
-    ServiceScopePolicyV1, ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
+    derive_bat_key_id_v1, derive_issuer_id, derive_provider_id, pow_solution_meets_difficulty_v1,
+    AcquisitionMethod, AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId,
+    BitcoinPirCashuBatProofV1, Bolt11QuoteKeyDelegationV1, CredentialKeyBindingClaimsV1,
+    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1,
+    IssuerClearingApprovalV1, LightningNetworkV1, OperationStartV1, PowChallengeResponseV1,
+    PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1,
+    ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1,
+    ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
 };
 use pir_service_store::{
     ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions as ProviderStoreOptions,
@@ -73,6 +76,8 @@ use zeroize::Zeroizing;
 
 const SHARED_OFFER_ID: u32 = 61;
 const FREE_OFFER_ID: u32 = 62;
+const FREE_POW_OFFER_ID: u32 = 63;
+const FREE_POW_DIFFICULTY_BITS: u8 = 4;
 const OPERATION_PROFILE: u16 = 41;
 const ENTITLEMENT_PROFILE: u16 = 401;
 const TINY_BINS_PER_TABLE: usize = 128;
@@ -92,6 +97,7 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProviderMethod {
     SharedIssuerBat,
+    SharedIssuerBatWithFreePow,
     FreeOpen,
 }
 
@@ -125,13 +131,15 @@ struct ProviderFixture {
 impl ProviderFixture {
     fn proof(&self) -> AuthorizationProofV1 {
         match self.method {
-            ProviderMethod::SharedIssuerBat => AuthorizationProofV1::BitcoinPirCashuBat(
-                self.shared
-                    .as_ref()
-                    .expect("shared provider config")
-                    .proof
-                    .clone(),
-            ),
+            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
+                AuthorizationProofV1::BitcoinPirCashuBat(
+                    self.shared
+                        .as_ref()
+                        .expect("shared provider config")
+                        .proof
+                        .clone(),
+                )
+            }
             ProviderMethod::FreeOpen => {
                 AuthorizationProofV1::Free(FreeAuthorizationProofV1::OpenBestEffort)
             }
@@ -140,7 +148,9 @@ impl ProviderFixture {
 
     fn offer_id(&self) -> u32 {
         match self.method {
-            ProviderMethod::SharedIssuerBat => SHARED_OFFER_ID,
+            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
+                SHARED_OFFER_ID
+            }
             ProviderMethod::FreeOpen => FREE_OFFER_ID,
         }
     }
@@ -253,7 +263,7 @@ impl RedeemTranscriptDigests {
 }
 
 #[test]
-#[ignore = "spawned only by shared_issuer_real_process_tls_e2e"]
+#[ignore = "spawned only by shared-issuer process E2E tests"]
 fn shared_issuer_tls_edge_subprocess() {
     if env::var_os(TLS_EDGE_HELPER_MARKER).is_none() {
         return;
@@ -552,6 +562,111 @@ async fn shared_issuer_real_process_tls_e2e() {
     assert_issuer_ledger(&issuer, &paid, &[&wrong_ca, &wrong_pin, &offline]);
 }
 
+/// A provider may publish a local Free-PoW offer alongside a shared-issuer
+/// Cashu BAT offer for the exact same DPF scope.  The former must never call
+/// the issuer; the latter must still redeem through the issuer even though the
+/// provider has no provider-local BAT or ARC key material.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_issuer_free_pow_and_bat_share_one_strict_policy_scope_e2e() {
+    let root = tempfile::tempdir().expect("shared-issuer plus Free-PoW process test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
+    let tls = install_tls_material(root.path());
+
+    let issuer_port = unused_loopback_port();
+    let edge_port = distinct_unused_port(&[issuer_port]);
+    let redeem_endpoint = format!("https://localhost:{edge_port}");
+    let issuer = build_issuer_material(root.path(), unix_now());
+    let provider = build_provider(
+        root.path(),
+        20,
+        ProviderMethod::SharedIssuerBatWithFreePow,
+        manifest_root,
+        &issuer,
+        &redeem_endpoint,
+        vec![test_leaf_spki_sha256()],
+        unix_now(),
+    );
+
+    let policy_bytes = fs::read(&provider.policy_path).expect("read combined provider policy");
+    let policy = ServicePolicyV1::decode(&policy_bytes).expect("decode combined provider policy");
+    assert_eq!(
+        policy.scopes.len(),
+        1,
+        "combined policy must have one scope"
+    );
+    assert_eq!(policy.scopes[0].scope.scope_id(), provider.scope_id);
+    assert_eq!(
+        policy.scopes[0]
+            .offers
+            .iter()
+            .map(|offer| offer.offer_id)
+            .collect::<Vec<_>>(),
+        vec![SHARED_OFFER_ID, FREE_POW_OFFER_ID],
+        "the same signed scope must offer both premium BAT and Free-PoW"
+    );
+
+    init_issuer_store(&issuer);
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &[&provider]);
+    let forward_counter = root.path().join("combined-tls-edge-forwarded.log");
+    let transcript_path = root.path().join("combined-tls-edge-transcript-digests.bin");
+    write_private_file(&forward_counter, b"");
+    write_private_file(&transcript_path, b"");
+    let tls_edge = spawn_tls_edge(
+        root.path(),
+        edge_port,
+        issuer_port,
+        &tls,
+        &forward_counter,
+        &transcript_path,
+        None,
+    );
+    let provider_port = distinct_unused_port(&[issuer_port, edge_port]);
+    let provider_server = spawn_provider(
+        root.path(),
+        &db_path,
+        &provider,
+        provider_port,
+        0,
+        Some(&tls.root),
+    );
+
+    exercise_free_pow_grant_and_dpf(provider_port, &provider, manifest_root)
+        .await
+        .expect("Free-PoW offer in the combined policy must authorize one real DPF query");
+    assert_eq!(
+        forwarded_request_count(&forward_counter),
+        0,
+        "Free-PoW must not contact the shared issuer"
+    );
+
+    // Stop only the issuer to inspect its durable inventory, then restart it
+    // against the same store before presenting the premium BAT on the already
+    // running strict provider.
+    let (free_issuer_stdout, free_issuer_stderr) = payment_issuer.stop();
+    assert_issuer_log(&free_issuer_stdout, &free_issuer_stderr, &provider);
+    assert_issuer_redemption_inventory(&issuer, 0);
+    let payment_issuer = spawn_payment_issuer(root.path(), issuer_port, &issuer, &[&provider]);
+
+    exercise_grant_and_dpf(provider_port, &provider, manifest_root)
+        .await
+        .expect("shared-issuer BAT in the combined policy must authorize one real DPF query");
+    assert_eq!(
+        forwarded_request_count(&forward_counter),
+        1,
+        "only the premium BAT must reach the issuer redeem endpoint"
+    );
+
+    let (provider_stdout, provider_stderr) = provider_server.stop();
+    assert_server_log(&provider_stdout, &provider_stderr, provider_port, &provider);
+    assert_provider_spend_inventory(&provider, 1);
+    let (edge_stdout, edge_stderr) = tls_edge.stop();
+    let (issuer_stdout, issuer_stderr) = payment_issuer.stop();
+    assert_payment_material_absent(&edge_stdout, &edge_stderr, &[&provider]);
+    assert_issuer_log(&issuer_stdout, &issuer_stderr, &provider);
+    assert_issuer_ledger(&issuer, &provider, &[]);
+}
+
 fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
     let binary = required_payment_issuer_binary();
     let admin_binary = required_bpir_admin_binary();
@@ -689,8 +804,8 @@ fn build_provider(
     };
     let scope_id = scope.scope_id();
 
-    let (offer, shared) = match method {
-        ProviderMethod::SharedIssuerBat => {
+    let (mut offers, shared) = match method {
+        ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
             assert!(redeem_endpoint.starts_with("https://localhost:"));
             assert!(!redeem_pins.is_empty());
             let denomination_public_key = issuer.bat_keyring.denomination_public_keys()[0];
@@ -885,7 +1000,7 @@ fn build_provider(
             )
             .expect("self-verified CLI clearing approval");
             (
-                offer,
+                vec![offer],
                 Some(SharedProviderConfig {
                     authorization_epoch: 1,
                     authorization_path,
@@ -905,7 +1020,7 @@ fn build_provider(
             assert!(redeem_endpoint.is_empty());
             assert!(redeem_pins.is_empty());
             (
-                ServiceOfferV1 {
+                vec![ServiceOfferV1 {
                     offer_id: FREE_OFFER_ID,
                     acquisition: AcquisitionMethod::FreeV1,
                     free_mode: FreeModeV1::OpenBestEffort,
@@ -930,11 +1045,39 @@ fn build_provider(
                     credential_presentation_limit: 1,
                     privacy_leakage: PrivacyLeakageV1::from_bits(PrivacyLeakageV1::KNOWN_MASK)
                         .expect("known Free privacy flags"),
-                },
+                }],
                 None,
             )
         }
     };
+
+    if method == ProviderMethod::SharedIssuerBatWithFreePow {
+        offers.push(ServiceOfferV1 {
+            offer_id: FREE_POW_OFFER_ID,
+            acquisition: AcquisitionMethod::FreeV1,
+            free_mode: FreeModeV1::ProofOfWork,
+            free_quota: 0,
+            free_window_seconds: 0,
+            free_pow_difficulty_bits: FREE_POW_DIFFICULTY_BITS,
+            priority_class: 1,
+            authorization: AuthScheme::FreeV1,
+            verification: VerificationMode::ProviderLocal,
+            deployment_status: DeploymentStatus::Stable,
+            price: PriceV1::Free,
+            issuer_id: [0; 32],
+            key_id: Vec::new(),
+            credential_binding: None,
+            cashu_mint_manifest: None,
+            endpoint: String::new(),
+            invoice_expiry_seconds: 0,
+            claim_window_seconds: 0,
+            minimum_credential_validity_seconds: 60,
+            retired_policy_grace_seconds: 0,
+            credential_count: 1,
+            credential_presentation_limit: 1,
+            privacy_leakage: PrivacyLeakageV1::NONE,
+        });
+    }
 
     let policy = ServicePolicyV1::sign(
         provider_id,
@@ -954,7 +1097,7 @@ fn build_provider(
                 max_hint_groups: 0,
                 max_work_units: 2,
             },
-            offers: vec![offer],
+            offers,
         }],
         &policy_signing_key,
     )
@@ -1341,6 +1484,14 @@ fn spawn_provider(
     } else {
         assert!(test_root.is_none());
     }
+    if fixture.method == ProviderMethod::SharedIssuerBatWithFreePow {
+        assert!(
+            !args.iter().any(|arg| {
+                arg == "--service-bat-key" || arg == "--service-arc-key"
+            }),
+            "combined shared-issuer/Free-PoW process test must not pass provider-local BAT or ARC keys"
+        );
+    }
 
     let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
         .args(args)
@@ -1450,6 +1601,71 @@ async fn exercise_grant_and_dpf(
         other => {
             return Err(format!(
                 "authorized DPF frame did not reach handler: {other:?}"
+            ))
+        }
+    }
+    secure.close().await.map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn exercise_free_pow_grant_and_dpf(
+    port: u16,
+    fixture: &ProviderFixture,
+    manifest_root: [u8; 32],
+) -> Result<(), String> {
+    let request = valid_tiny_dpf_request();
+    let (mut secure, accepted) =
+        open_verified_session(port, fixture, manifest_root, &request).await;
+    let operation = OperationStartV1::DpfQuery { db_id: 0 };
+    let challenge = request_pow_challenge_v1(
+        &mut secure,
+        &accepted,
+        fixture.scope_id,
+        FREE_POW_OFFER_ID,
+        operation.clone(),
+        unix_now(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if challenge.difficulty_bits != FREE_POW_DIFFICULTY_BITS {
+        return Err(format!(
+            "combined Free-PoW challenge used {} bits instead of {FREE_POW_DIFFICULTY_BITS}",
+            challenge.difficulty_bits
+        ));
+    }
+    let solution = solve_pow(&challenge);
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &fixture.scope_id,
+        FREE_POW_OFFER_ID,
+        &solution.encode().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let grant = dangerous_unpaired_authorize_service_operation_v1(
+        &mut secure,
+        &accepted,
+        fixture.scope_id,
+        FREE_POW_OFFER_ID,
+        operation,
+        proof,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if grant.scope_id != fixture.scope_id || grant.enforced_profile != ENTITLEMENT_PROFILE {
+        return Err("Free-PoW AUTH grant did not bind the selected scope/profile".to_owned());
+    }
+    let response = secure
+        .roundtrip(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    match Response::decode(&response).map_err(|error| error.to_string())? {
+        Response::IndexBatch(result)
+            if result.results.len() == 1
+                && result.results[0].len() == 2
+                && result.results[0].iter().all(|item| item.len() == 52) => {}
+        other => {
+            return Err(format!(
+                "Free-PoW authorized DPF frame did not reach handler: {other:?}"
             ))
         }
     }
@@ -1569,6 +1785,21 @@ fn valid_tiny_dpf_request() -> Vec<u8> {
     .encode()
 }
 
+fn solve_pow(challenge: &PowChallengeResponseV1) -> FreePowProofV1 {
+    for nonce in 0..=u64::MAX {
+        let solution = FreePowProofV1 {
+            challenge_id: challenge.challenge_id,
+            nonce,
+        };
+        if pow_solution_meets_difficulty_v1(challenge, &solution)
+            .expect("test Free-PoW challenge must be valid")
+        {
+            return solution;
+        }
+    }
+    unreachable!("bounded test Free-PoW difficulty has a solution")
+}
+
 fn expect_error_response(response: &[u8], needle: &str) {
     match Response::decode(response).expect("decode runtime response") {
         Response::Error(message) => assert!(
@@ -1627,6 +1858,29 @@ fn assert_provider_spend_inventory(fixture: &ProviderFixture, expected: u64) {
         .expect("provider operational inventory");
     assert_eq!(inventory.spent_capability_rows, expected);
     assert_eq!(inventory.observed_spend_commit_seq, expected);
+}
+
+fn assert_issuer_redemption_inventory(issuer: &IssuerMaterial, expected: u64) {
+    let rollback = SqliteIssuerRollbackFloorAuthorityV1::open_existing(
+        &issuer.rollback_path,
+        IssuerStoreOptions::default().busy_timeout,
+    )
+    .expect("open issuer rollback floor for redemption inventory");
+    let store = IssuerStore::open_existing(
+        &issuer.store_path,
+        issuer.issuer_id,
+        LightningNetworkV1::Regtest,
+        IssuerStoreOptions::default(),
+        Arc::new(rollback),
+    )
+    .expect("open issuer store for redemption inventory");
+    assert_eq!(
+        store
+            .operational_inventory()
+            .expect("issuer operational inventory")
+            .redemption_rows,
+        expected
+    );
 }
 
 fn assert_issuer_ledger(

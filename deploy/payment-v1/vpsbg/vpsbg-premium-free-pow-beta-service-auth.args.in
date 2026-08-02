@@ -1,0 +1,31 @@
+# BitcoinPIR VPSBG Payment V1 functional-beta argument fragment; not a run script.
+# Render and merge these arguments into the final unified_server exec in a
+# separately approved measured Tier 3 UKI rebuild. Never execute, source, or
+# install this file by itself.
+#
+# This is an alternative to vpsbg-free-pow-service-auth.args.in, not an
+# extension of it. It deliberately leaves the storeless Free-PoW profile so
+# that the same provider can offer local Free-PoW and Hetzner shared-issuer
+# Premium capabilities. Hetzner keeps Lightning, Cashu BAT and ARC private
+# material; VPSBG keeps only its provider state and clearing credentials.
+
+--require-service-auth-v1
+--service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin
+--service-provider-id-hex @VPSBG_PREMIUM_PROVIDER_ID_HEX@
+--service-policy-key-hex @VPSBG_PREMIUM_POLICY_PUBKEY_HEX@
+--service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3
+--service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3
+--allow-local-service-rollback-authority-dev
+--service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin
+--service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin
+# This is the VPSBG provider operator key bound into the clearing authorization,
+# not an issuer operator key.
+--service-shared-operator-key-hex @VPSBG_OPERATOR_PUBKEY_HEX@
+--service-shared-issuer-settlement-key-hex @HETZNER_ISSUER_SETTLEMENT_PUBKEY_HEX@
+--service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key
+--service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key
+--service-shared-minimum-authorization-epoch 1
+--allow-experimental-arc
+--service-max-concurrent-auth 4
+--service-max-concurrent-online-v2full-auth 2
+--service-pre-auth-timeout-ms 60000

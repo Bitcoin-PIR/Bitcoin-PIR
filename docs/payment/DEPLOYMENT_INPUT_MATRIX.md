@@ -96,6 +96,17 @@ fresh attestation measurement and client pin migration. No ProviderStore,
 rollback client, retained policy, Free-IP state or payment/credential input is
 valid in this profile.
 
+`vpsbg-premium-free-pow-beta` is a separate functional-beta UKI preparation,
+not an exception to that storeless rule. It uses a fresh VPSBG provider
+identity, exact db0 manifest-root scope, local ProviderStore and local beta
+rollback floor, then redeems VPSBG-specific Cashu BAT and experimental ARC
+capabilities online at the
+Hetzner issuer. Its required inputs include the provider clearing key,
+idempotency key, issuer approval/authorization and a signed DPF-only policy;
+it deliberately excludes Lightning, issuer private keys, BAT mint scalars,
+ARC private keys and Standard Cashu custody material from VPSBG. The profile
+requires a new UKI/upload/reboot and is not a mainnet production profile.
+
 ## 4. Non-secret input register
 
 The following values are safe to review as public or operational metadata, but

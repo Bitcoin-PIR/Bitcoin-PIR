@@ -377,8 +377,7 @@ BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
-    --test payment_v1_shared_issuer_process_e2e \
-    shared_issuer_real_process_tls_e2e -- --exact
+    --test payment_v1_shared_issuer_process_e2e
 cargo clippy --locked --offline \
   -p runtime \
   --features shared-issuer-process-e2e \

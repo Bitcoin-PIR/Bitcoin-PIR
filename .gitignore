@@ -79,6 +79,10 @@ deploy/payment-v1/edge/*
 !deploy/payment-v1/edge/directory-public-haproxy.cfg.in
 !deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in
 !deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in
+!deploy/payment-v1/vpsbg/
+!deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in
+!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in
+!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in
 !deploy/payment-v1/systemd/
 deploy/payment-v1/systemd/*
 !deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in

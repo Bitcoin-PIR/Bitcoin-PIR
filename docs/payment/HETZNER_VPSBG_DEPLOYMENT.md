@@ -674,6 +674,61 @@ previous known-good UKI, portal upload, reboot, fresh SEV-SNP measurement,
 binary hash, attestation verification and client pin update. Those are remote
 activation actions and require separate approval.
 
+## VPSBG Premium + Free-PoW functional beta
+
+`deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in`
+and its matching policy TOML prepare a different measured image. They must
+never be merged with the storeless fragment above. The beta has exactly one
+initial DPF db0 scope, bound to the exact db0 `MANIFEST.toml` root, with three
+independently selected offers:
+
+- local `FreeV1` proof of work;
+- stable `cashu-bat` with `shared-issuer-online`; and
+- explicitly experimental `arc-experimental` with `shared-issuer-online`.
+
+The value for that root must be recomputed from the actual strict DPF database
+proof sidecar immediately before rendering the policy; it is not the separate
+attestation `manifest_roots` value. The read-only db0 value observed on
+2026-08-02 was
+`0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec`, but
+that observation is a deployment input, not a timeless pin.
+
+The browser buys BAT or ARC capabilities from the Hetzner issuer after it has
+verified the VPSBG provider. It sends only the opaque capability to VPSBG. For
+Premium authorization, VPSBG performs an authenticated redeem against the
+Hetzner issuer; the issuer verifies/consumes the capability and credits the
+VPSBG provider ledger before VPSBG grants the costly query. VPSBG never
+receives a BOLT11 invoice, payment hash, Lightning wallet key, BAT mint scalar,
+or ARC secret verification key. The issuer does observe the VPSBG provider,
+scope, capability and redemption time; this beta does not claim to remove that
+timing correlation.
+
+The profile intentionally has state, so it needs a fresh VPSBG provider ID,
+policy key, `ProviderStore`, local functional-beta rollback floor, clearing
+signing key, redeem-idempotency key, clearing authorization and issuer
+approval. It must not reuse any P1/P2 provider state, BAT/ARC lineage,
+clearing credential, provider ID or policy binding. The corresponding Hetzner
+issuer update adds those VPSBG-specific artifacts alongside its existing
+providers; it does not move issuer or Lightning state into VPSBG.
+
+This is a functional-beta route, not a production rollback profile: it uses
+the explicit local rollback-development flag to avoid introducing another
+authority host into the first VPSBG premium test. It still fails closed if the
+store, issuer redeem, policy verification, strict channel or query verification
+fails. There is no automatic retry of a capability after an ambiguous redeem
+or query outcome.
+
+Before a UKI build, render and sign the policy, initialize the two local SQLite
+files under `/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/`, generate
+all VPSBG-specific issuer-clearing artifacts, and add their matching policy,
+BAT/ARC keys and clearing records to the Hetzner issuer. The measured final
+run script receives the rendered argument list verbatim. Changing any of those
+arguments requires another UKI and the normal portal upload/reboot plus client
+measurement-pin update. The initial scope deliberately excludes db1, Standard
+Cashu eCash, direct BOLT11 receipt, Harmony hint/query, Onion and TEE-ORAM;
+each needs its own later workload policy and, where applicable, its own price
+and capability binding.
+
 ## Rendering and preflight
 
 ### P1 activation blocker: live source-fair evidence

@@ -528,6 +528,70 @@ test("VPSBG fragment remains service-auth-only, exact-pinned and storeless Free-
   });
 });
 
+test("VPSBG premium beta remains a separate stateful shared-issuer profile", () => {
+  const argsPath = "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in";
+  for (const [line, expected] of [
+    ["--service-storeless-free-pow-policy-digest-hex deadbeef", /storeless policy pin/],
+    ["--service-bat-key /home/pir/data/bat.key", /provider-local BAT key/],
+    ["--service-remote-rollback-authority-config /home/pir/data/authority.toml", /remote rollback authority/],
+  ]) {
+    withFixture((root) => {
+      mutate(root, argsPath, (text) => `${text}\n${line}\n`);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(root, argsPath, (text) => text.replace("--allow-experimental-arc\n", ""));
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must contain --allow-experimental-arc exactly once and in canonical order/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => text.replace(
+        'verification = "shared-issuer-online"',
+        'verification = "provider-local"',
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must make BAT and ARC shared-issuer-online only/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => text.replace('authorization = "arc-experimental"', 'authorization = "cashu-ecash"'),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must contain authorization = "arc-experimental"/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
+      (text) => text.replace(
+        'kind = "manifest-root"\nroot_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"',
+        'kind = "class"\nclass_id = 1',
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must contain kind = "manifest-root"/,
+    );
+  });
+});
+
 test("systemd resets, duplicate CLI overrides, and secret argv fail closed", () => {
   withFixture((root) => {
     mutate(
