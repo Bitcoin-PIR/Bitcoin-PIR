@@ -126,12 +126,12 @@ export class ProductAdmissionPanelV1 {
       const identity = textLine('admission-provider-identity', 'Provider identity: not selected');
       const offer = document.createElement('select');
       offer.className = 'select admission-offer-select';
-      offer.setAttribute('aria-label', `${role.label} exact signed service offer`);
+      offer.setAttribute('aria-label', `${role.label} Free or Premium exact signed service offer`);
       offer.disabled = true;
       offer.addEventListener('change', () => void this.handleOfferSelection(role.role, offer.value));
       const terms = textLine('admission-provider-terms', 'Scope/offer: unavailable');
-      const warning = textLine('admission-provider-warning', 'Privacy: no payment method selected');
-      const status = textLine('admission-provider-status', 'Admission: blocked');
+      const warning = textLine('admission-provider-warning', 'Access: select Free or Premium');
+      const status = textLine('admission-provider-status', 'Query access: blocked');
       status.setAttribute('role', 'status');
       status.setAttribute('aria-live', 'polite');
       const actions = document.createElement('div');
@@ -171,8 +171,8 @@ export class ProductAdmissionPanelV1 {
       options.length === 0
         ? 'Query access is not configured. Load a complete trusted bootstrap before querying.'
         : this.options.roles.length > 1
-          ? 'Verify the first provider’s identity, software, and database, then select its exact offer. The second role will then be enabled; payment remains disabled.'
-          : 'Verify the provider’s identity, software, and database, then select its exact offer.',
+          ? 'Verify the first provider’s identity, software, and database, then select Free or Premium access. The second role will then be enabled; Premium authorization remains disabled.'
+          : 'Verify the provider’s identity, software, and database, then select Free or Premium access.',
     );
   }
 
@@ -225,14 +225,14 @@ export class ProductAdmissionPanelV1 {
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
             : snapshot?.legs.length === 1 && canBootstrapNextProviderV1(snapshot)
-              ? 'First exact offer is locked. Verify the independent second provider before any capability acquisition or payment.'
+              ? 'First exact offer is locked. Verify the independent second provider before any Premium acquisition or payment.'
               : snapshot?.legs.length === 2 && !credentialActionsReadyV1(snapshot)
-                ? 'Both providers are verified. Select the remaining exact signed offer before acquiring a capability or authorizing either provider.'
+                ? 'Both providers are verified. Choose Free access on each provider for best-effort capacity, or select a Premium method before authorization.'
                 : snapshot?.legs.length === 2 && !snapshot.legs.every((leg) => leg.status === 'authorized'
                   || leg.status === 'cached-resource-ready')
-                  ? 'Both exact offers are selected. Complete any capability acquisition and authorize each provider independently.'
-              : snapshot?.legs.length === 1
-                ? 'Select the first provider exact signed offer before connecting the second.'
+                  ? 'Both access methods are selected. Request Free access directly, or complete the selected Premium authorization for each provider independently.'
+                : snapshot?.legs.length === 1
+                ? 'Select the first provider Free or Premium method before connecting the second.'
                 : this.options.roles.length > 1
                   ? 'Verify and authorize the first independent provider.'
                   : 'Verify and authorize the provider.');
@@ -272,13 +272,18 @@ export class ProductAdmissionPanelV1 {
           acquisitionContext: leg.retainedSelected.acquisitionContext,
         }))
       : leg.selected ? choiceValue(leg.selected.scopeIdHex, leg.selected.offerId) : '';
-    row.offer.replaceChildren(optionElement('', 'Select exact signed offer…'));
-    for (const option of leg.offers) {
-      row.offer.appendChild(optionElement(
-        choiceValue(option.scopeIdHex, option.offerId),
-        offerLabel(option),
-      ));
-    }
+    row.offer.replaceChildren(optionElement('', 'Select Free or Premium access…'));
+    const groupedOffers = partitionOfferOptionsForDisplayV1(leg.offers);
+    appendOfferGroup(
+      row.offer,
+      'Free access · best effort, may queue or rate-limit',
+      groupedOffers.free,
+    );
+    appendOfferGroup(
+      row.offer,
+      'Premium access · authorization required',
+      groupedOffers.premium,
+    );
     for (const capability of leg.retainedCapabilities) {
       row.offer.appendChild(optionElement(
         retainedChoiceValue(capability),
@@ -301,11 +306,11 @@ export class ProductAdmissionPanelV1 {
       (option) => choiceValue(option.scopeIdHex, option.offerId) === selectedValue,
       );
     row.terms.textContent = selected
-      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${priceLabel(selected)} · ${limitsLabel(selected)}`
-      : 'Scope/offer: selection required';
+      ? `${leg.retainedSelected ? 'Retained signed terms' : 'Scope'} ${abbreviate(selected.scopeIdHex)} · ${selected.scope.workload} · ${accessTermsLabel(selected.offer)} · ${limitsLabel(selected)}`
+      : 'Scope/offer: choose Free or Premium access';
     row.warning.textContent = selected
       ? privacyLabelForOfferV1(selected.offer)
-      : 'Privacy: no payment method selected';
+      : 'Access: no Free or Premium method selected';
     row.warning.classList.toggle(
       'experimental',
       selected?.offer.authorization === 'arc-experimental',
@@ -341,12 +346,12 @@ export class ProductAdmissionPanelV1 {
       invoice.value = leg.invoice;
       invoice.setAttribute('aria-label', `${leg.label} BOLT11 invoice`);
       container.appendChild(invoice);
-      container.appendChild(actionButton('Copy invoice', () => void copyText(invoice.value)));
-      container.appendChild(actionButton('Check payment', () => this.runAction(
+      container.appendChild(actionButton('Copy BOLT11 invoice', () => void copyText(invoice.value)));
+      container.appendChild(actionButton('Check Premium payment', () => this.runAction(
         () => this.controller!.pollBolt11(leg.role),
       )));
       if (leg.status === 'payment-settled') {
-        container.appendChild(actionButton('Claim capability', () => this.runAction(
+        container.appendChild(actionButton('Claim Premium capability', () => this.runAction(
           () => this.controller!.claimBolt11(leg.role),
         )));
       }
@@ -354,13 +359,13 @@ export class ProductAdmissionPanelV1 {
     }
 
     if (leg.recoveryIds.length > 0) {
-      container.appendChild(actionButton('Resume encrypted invoice recovery', () => this.runAction(
+      container.appendChild(actionButton('Resume encrypted Premium invoice recovery', () => this.runAction(
         () => this.controller!.resumeBolt11(leg.role, leg.recoveryIds[0]),
       )));
     }
 
     if (!retained && selected.offer.acquisition === 'bolt11') {
-      container.appendChild(actionButton('Create BOLT11 invoice', () => this.runAction(
+      container.appendChild(actionButton('Create Premium BOLT11 invoice', () => this.runAction(
         () => this.controller!.startBolt11(leg.role),
       )));
     }
@@ -374,7 +379,7 @@ export class ProductAdmissionPanelV1 {
       token.spellcheck = false;
       token.setAttribute('aria-label', `${leg.label} standard Cashu token`);
       container.appendChild(token);
-      container.appendChild(actionButton('Import Cashu token', async () => {
+      container.appendChild(actionButton('Import Premium Cashu token', async () => {
         const value = token.value;
         token.value = '';
         await this.runAction(() => this.controller!.importStandardCashu(leg.role, value));
@@ -386,7 +391,9 @@ export class ProductAdmissionPanelV1 {
         && (!retained || (leg.inventory ?? 0) > 0)
         && (authorizationReady || selected.scope.workload === 'harmony-hint')) {
       container.appendChild(actionButton(
-        selected.scope.workload === 'harmony-hint' ? 'Use cache or authorize hint' : 'Authorize once',
+        selected.scope.workload === 'harmony-hint'
+          ? `Use cache or ${selected.offer.authorization === 'free' ? 'request Free access' : 'authorize Premium access'}`
+          : selected.offer.authorization === 'free' ? 'Request Free access' : 'Authorize Premium access',
         () => this.runAction(() => this.controller!.authorize(leg.role)),
       ));
     }
@@ -445,7 +452,7 @@ export class ProductAdmissionPanelV1 {
 
   private invalidatePreparedAttempt(): void {
     if (!this.controller) return;
-    this.publicError = 'Provider selection changed. Cancel this connection and start a new strict attempt.';
+    this.publicError = 'Provider selection changed. Cancel this connection and start provider verification again.';
     this.render();
   }
 
@@ -470,11 +477,11 @@ export class ProductAdmissionPanelV1 {
       : 'Complete previous provider first'));
     row.offer.disabled = true;
     row.terms.textContent = available
-      ? 'Scope/offer: connect this provider next'
-      : 'Scope/offer: waiting for previous provider';
-    row.warning.textContent = 'Privacy: this provider has not been contacted';
+      ? 'Scope/offer: connect this provider to load Free and Premium methods'
+      : 'Scope/offer: waiting for the previous provider';
+    row.warning.textContent = 'Access: this provider has not been contacted';
     row.warning.classList.remove('experimental');
-    row.status.textContent = available ? 'Admission: ready for strict bootstrap' : 'Admission: waiting';
+    row.status.textContent = available ? 'Query access: ready for provider verification' : 'Query access: waiting';
     row.status.className = 'admission-provider-status status-strict-bootstrap-pending';
     row.actions.replaceChildren();
   }
@@ -495,7 +502,7 @@ export class ProductAdmissionPanelV1 {
       row.offer.replaceChildren(optionElement('', 'Signed policy required'));
       row.offer.disabled = true;
       row.terms.textContent = 'Scope/offer: unavailable';
-      row.warning.textContent = 'Privacy: no payment method selected';
+      row.warning.textContent = 'Access: no Free or Premium method selected';
       row.status.textContent = 'Query access: blocked';
       row.actions.replaceChildren();
     }
@@ -525,18 +532,71 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
   }
 }
 
-function offerLabel(option: ProductOfferOptionV1): string {
+function appendOfferGroup(
+  select: HTMLSelectElement,
+  label: string,
+  offers: ProductOfferOptionV1[],
+): void {
+  if (offers.length === 0) return;
+  const group = document.createElement('optgroup');
+  group.label = label;
+  for (const option of offers) {
+    group.appendChild(optionElement(
+      choiceValue(option.scopeIdHex, option.offerId),
+      offerChoiceLabelForOfferV1(option),
+    ));
+  }
+  select.appendChild(group);
+}
+
+export function partitionOfferOptionsForDisplayV1(options: ProductOfferOptionV1[]): {
+  free: ProductOfferOptionV1[];
+  premium: ProductOfferOptionV1[];
+} {
+  return {
+    free: options.filter((option) => option.offer.authorization === 'free'),
+    premium: options.filter((option) => option.offer.authorization !== 'free'),
+  };
+}
+
+export function offerChoiceLabelForOfferV1(option: ProductOfferOptionV1): string {
   const offer = option.offer;
-  const method = offer.authorization === 'free'
-    ? `Free/${offer.freeMode}`
-    : offer.authorization === 'arc-experimental'
-      ? 'ARC EXPERIMENTAL'
-      : offer.authorization;
-  return `#${offer.offerId} · ${method} · ${priceLabel(option)}`;
+  if (offer.authorization === 'free') {
+    return `#${offer.offerId} · Free access · ${freeAccessModeLabel(offer.freeMode)} · no charge`;
+  }
+  return `#${offer.offerId} · Premium access · ${premiumMethodLabel(offer)} · ${priceLabel(option)}`;
+}
+
+function accessTermsLabel(offer: ProductOfferOptionV1['offer']): string {
+  return offer.authorization === 'free'
+    ? `Free access · ${freeAccessModeLabel(offer.freeMode)} · no payment required`
+    : `Premium access · ${premiumMethodLabel(offer)} · authorization required · ${priceLabelForOffer(offer)}`;
+}
+
+function freeAccessModeLabel(offerFreeMode: ProductOfferOptionV1['offer']['freeMode']): string {
+  switch (offerFreeMode) {
+    case 'open-best-effort': return 'best effort, may queue';
+    case 'ip-rate-limited': return 'rate limited, may queue';
+    case 'proof-of-work': return 'one-shot proof of work, may queue';
+    case 'anonymous-ticket': return 'anonymous ticket, may queue';
+    default: return 'provider-defined free policy';
+  }
+}
+
+function premiumMethodLabel(offer: ProductOfferOptionV1['offer']): string {
+  if (offer.authorization === 'bolt11-direct-receipt') return 'BOLT11 direct receipt';
+  if (offer.authorization === 'cashu-bat') return 'Cashu BAT · acquire with BOLT11';
+  if (offer.authorization === 'cashu-ecash') return 'Cashu eCash';
+  if (offer.authorization === 'arc-experimental') return 'ARC · EXPERIMENTAL · acquire with BOLT11';
+  return offer.authorization;
 }
 
 function priceLabel(option: ProductOfferOptionV1): string {
-  const price = option.offer.price;
+  return priceLabelForOffer(option.offer);
+}
+
+function priceLabelForOffer(offer: ProductOfferOptionV1['offer']): string {
+  const price = offer.price;
   if (price.kind === 'free') return 'free';
   return price.kind === 'msat'
     ? `${price.amount} msat`
@@ -601,18 +661,24 @@ function statusLabel(
   leg: ProductAdmissionLegSnapshotV1,
   selected: ProductOfferOptionV1 | undefined,
 ): string {
-  if (leg.status === 'ambiguous-spend') return 'Admission: ambiguous spend — no retry';
-  if (leg.status === 'authorized') return 'Admission: authorized for one query';
-  if (leg.status === 'cached-resource-ready') return 'Admission: exact verified hint cache hit — no hint purchase';
+  const access = selected?.offer.authorization === 'free' ? 'Free access' : 'Premium access';
+  if (leg.status === 'ambiguous-spend') return 'Query access: ambiguous spend — no retry';
+  if (leg.status === 'authorized') return selected?.offer.authorization === 'free'
+    ? 'Free access: ready for one query'
+    : `${access}: authorized for one query`;
+  if (leg.status === 'cached-resource-ready') return `${access}: exact verified hint cache hit — no hint purchase`;
   if (leg.status === 'invoice-open') return `Invoice: open${leg.invoiceExpiresAtUnix ? ` · expires ${leg.invoiceExpiresAtUnix}` : ''}`;
   if (leg.status === 'payment-settled') return 'Invoice: payment settled · claim required';
-  if (leg.status === 'failed') return 'Admission: failed closed';
+  if (leg.status === 'failed') return 'Query access: failed closed';
   if (selected && (selected.offer.authorization === 'cashu-bat'
       || selected.offer.authorization === 'arc-experimental') && leg.inventory === 0) {
     return `Inventory: 0 · import or acquire a capability first${selected.offer.authorization === 'arc-experimental' ? ' · EXPERIMENTAL' : ''}`;
   }
+  if (selected?.offer.authorization === 'free') {
+    return `Free access: selected · ${freeAccessModeLabel(selected.offer.freeMode)}`;
+  }
   if (leg.inventory !== null) return `Inventory: ${leg.inventory} exact capability record(s)`;
-  return `Admission: ${leg.status}`;
+  return `Query access: ${leg.status}`;
 }
 
 function actionButton(label: string, action: () => void | Promise<void>): HTMLButtonElement {
