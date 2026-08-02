@@ -1924,10 +1924,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         function sharedArkFingerprint(first, second) {
-            const left = first.expectedArkFingerprintHex ?? '';
-            const right = second.expectedArkFingerprintHex ?? '';
-            if (left !== right) throw new Error('the selected pair requires different ARK roots unsupported by one adapter session');
-            return providerArkFingerprintV1(first);
+            const left = first.expectedArkFingerprintHex ?? null;
+            const right = second.expectedArkFingerprintHex ?? null;
+            if (left !== null && right !== null && left !== right) {
+                throw new Error('the selected pair requires different ARK roots unsupported by one adapter session');
+            }
+            // A non-SEV provider has no ARK to pin. Passing the other leg's
+            // pinned root is safe: the adapter only invokes AMD chain
+            // validation for a leg that actually supplies a VCEK chain.
+            return providerArkFingerprintV1(left !== null ? first : second);
         }
 
         async function admissionVault() {

@@ -3,8 +3,8 @@
   "network": "signet",
   "providers": [
     {
-      "label": "Provider 1 functional beta",
-      "endpoint": "wss://provider-beta.65-21-91-217.sslip.io",
+      "label": "Hetzner Payment V1 provider",
+      "endpoint": "wss://weikeng1.bitcoinpir.org",
       "providerIdHex": "9110aee8843ff4eaa60eb5e2f36345cef03c779c08becbfe76f4cc0400fc0eb0",
       "policySigningKeyHex": "6528d01b64275834460fd2c6f1d8b2df1374ea62ed0204ea2429adcc70246a93",
       "operatorSigningKeyHex": "d506c8630f13f31f0648228857c268d17996d600ed7169e091c88aadb5ecb2d4",
@@ -56,17 +56,26 @@
       ]
     },
     {
-      "label": "Provider 2 functional beta",
-      "endpoint": "wss://provider2-beta.65-21-91-217.sslip.io",
-      "providerIdHex": "83076521322104abbceca115f119c953c84561a29922e7ce444b7097ffc5f5d7",
-      "policySigningKeyHex": "c2e0598b34804d1b3c60b4b636bccd861b93cfa55671e27787f0eab50d9dbf8e",
-      "operatorSigningKeyHex": "5590cce35dc49fcde96b724899aef54487d9a43ec234815503723a5179e56d07",
-      "stableServerId": "pir2-payment-beta",
+      "label": "VPSBG DPF Payment V1 provider",
+      "endpoint": "wss://weikeng2.bitcoinpir.org",
+      "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+      "policySigningKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
+      "operatorSigningKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
+      "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
-        "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
+        "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
+        "measurementHex": "3564465a167bcc8d406041f296ecce12749a151bebc996371ebbea35b3947ad85011d99777562ff8b53bfd314846de21"
       },
-      "hardwareAttestation": "unavailable-accepted",
-      "lightningPayeeTrust": [],
+      "hardwareAttestation": "required",
+      "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",
+      "lightningPayeeTrust": [
+        {
+          "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",
+          "issuerOrigin": "https://issuer-beta.65-21-91-217.sslip.io",
+          "network": "signet",
+          "expectedPayeePubkeyHex": "03d56b422257245d2c170393fe0242f8fd5668b12034fe9d059579951e19162232"
+        }
+      ],
       "databaseProofPins": [
         {
           "dbId": 0,
