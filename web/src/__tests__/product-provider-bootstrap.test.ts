@@ -221,3 +221,18 @@ describe('exact Lightning payee bootstrap', () => {
     )).toThrow(/non-zero lowercase hex/);
   });
 });
+
+describe('database proof bootstrap anchors', () => {
+  it('accepts the explicit zero predecessor only for a height-zero snapshot', () => {
+    const initialSnapshot = {
+      ...databaseProofPin,
+      fromHeight: 0,
+      fromBlockHashHex: '00'.repeat(32),
+    };
+    expect(parseProvider({ databaseProofPins: [initialSnapshot] }).databaseProofPins[0]
+      .fromBlockHashHex).toBe(initialSnapshot.fromBlockHashHex);
+    expect(() => parseProvider({
+      databaseProofPins: [{ ...initialSnapshot, fromHeight: 1 }],
+    })).toThrow(/fromBlockHashHex must be non-zero/);
+  });
+});

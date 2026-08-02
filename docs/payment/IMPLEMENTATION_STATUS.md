@@ -1,9 +1,30 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-07-30. This document describes repository code and local
-tests, not a production deployment. “Implemented” means that a code path exists;
-“tested” names the boundary actually exercised. It does not mean that an
-operator has activated the path with real money or public infrastructure.
+Status snapshot: 2026-08-02. This document describes repository code, focused
+tests, and the current functional-beta evidence; it is not a mainnet-production
+readiness claim. “Implemented” means that a code path exists; “tested” names
+the boundary actually exercised. It does not mean that an operator has
+activated the path with real money.
+
+## Functional-beta update
+
+- A centrally curated, explicitly degraded single-relay directory has published
+  and read back signed catalog events. A browser completed a continuous,
+  directory-selected Free query across two independently selected providers
+  while retaining the normal strict identity, binary, database, preflight, and
+  result-verification path.
+- The browser and server now support bounded chunking/reassembly of a large
+  strict Merkle tree-top preflight response. The server performs the payment
+  admission check before the expensive query work, and the browser keeps the
+  live proof-root binding when deriving that admission scope.
+- Free, direct BOLT11 receipt, standard Cashu eCash, Cashu BAT, and
+  experimental ARC have targeted integration coverage. ARC remains
+  experimental and is not a cryptographically reviewed production claim.
+- Direct BOLT11 has a deployed, policy-bound Signet quote smoke path, but this
+  snapshot does **not** claim an actual paid Signet settlement. A funded
+  Signet-wallet exercise and user manual acceptance remain the next external
+  acceptance steps. No mainnet funds or production Cashu mint operation are
+  implied by this status.
 
 ## Frozen protocol decisions
 

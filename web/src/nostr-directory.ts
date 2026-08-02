@@ -157,7 +157,10 @@ export async function refreshNostrDirectoryV1(
   );
   const directoryPubkey = hexToBytes(directoryPubkeyHex);
   const sdk = requireSdkWasm();
-  const requests = parseReqMessages(sdk.directoryFullCatalogReqJsonV1(directoryPubkey));
+  const requests = parseReqMessages(
+    sdk.directoryFullCatalogReqJsonV1(directoryPubkey),
+    directoryPubkeyHex,
+  );
   const timeoutMs = options.timeoutMs ?? 10_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 60_000) {
     throw new Error('directory relay timeout must be between 10 and 60000 ms');
@@ -333,7 +336,7 @@ async function collectCompleteRelayV1(
   });
 }
 
-function parseReqMessages(json: string): string[] {
+function parseReqMessages(json: string, pinnedDirectoryPubkeyHex: string): string[] {
   let values: unknown;
   try {
     values = JSON.parse(json);
@@ -343,13 +346,59 @@ function parseReqMessages(json: string): string[] {
   if (!Array.isArray(values) || values.length !== SHARD_COUNT) {
     throw new Error('directory refresh requires exactly 16 Rust-generated REQ messages');
   }
-  const requests = values.map((value) => JSON.stringify(value));
+  const requests = values.map((value, shard) => canonicalCatalogReqMessage(
+    value,
+    shard,
+    pinnedDirectoryPubkeyHex,
+  ));
   const ids = requests.map(subscriptionIdFromReq);
   if (new Set(ids).size !== SHARD_COUNT
       || ids.some((id, shard) => id !== `${DIRECTORY_SUBSCRIPTION_PREFIX}${shard.toString(16)}`)) {
     throw new Error('directory REQ subscriptions do not cover all ordered shards');
   }
   return requests;
+}
+
+/**
+ * `serde_json::Value` canonicalizes object members lexicographically when the
+ * WASM export wraps its 16 wire records in a JSON array. The relay's strict
+ * NIP-01 profile instead fixes the catalog-filter member order as
+ * `authors`, `kinds`, then `#s`. Reconstruct the exact record only after
+ * checking every Rust-provided semantic field; never serialize the parsed
+ * object directly.
+ */
+function canonicalCatalogReqMessage(
+  value: unknown,
+  shard: number,
+  pinnedDirectoryPubkeyHex: string,
+): string {
+  if (!Array.isArray(value) || value.length !== 3 || value[0] !== 'REQ'
+      || typeof value[1] !== 'string' || typeof value[2] !== 'object'
+      || value[2] === null || Array.isArray(value[2])) {
+    throw new Error('WASM returned an invalid directory REQ message');
+  }
+  const subscription = value[1];
+  const expectedSubscription = `${DIRECTORY_SUBSCRIPTION_PREFIX}${shard.toString(16)}`;
+  const filter = value[2] as Record<string, unknown>;
+  const authors = filter.authors;
+  const kinds = filter.kinds;
+  const shardTags = filter['#s'];
+  const filterKeys = Object.keys(filter).sort();
+  const expectedShardTag = `bitcoinpir-service-directory-shard-v1:${shard.toString(16)}`;
+  if (subscription !== expectedSubscription
+      || filterKeys.length !== 3 || filterKeys.join(',') !== '#s,authors,kinds'
+      || !Array.isArray(authors) || authors.length !== 1
+      || authors[0] !== pinnedDirectoryPubkeyHex
+      || !Array.isArray(kinds) || kinds.length !== 1 || kinds[0] !== 30078
+      || !Array.isArray(shardTags) || shardTags.length !== 1
+      || shardTags[0] !== expectedShardTag) {
+    throw new Error('WASM returned an invalid directory REQ message');
+  }
+  return JSON.stringify([
+    'REQ',
+    subscription,
+    { authors: [pinnedDirectoryPubkeyHex], kinds: [30078], '#s': [expectedShardTag] },
+  ]);
 }
 
 function subscriptionIdFromReq(request: string): string {

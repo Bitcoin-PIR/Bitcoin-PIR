@@ -79,6 +79,8 @@ pub mod strict_pair;
 mod transport;
 mod verified_query;
 mod verified_roots;
+#[cfg(any(target_arch = "wasm32", test))]
+mod wasm_chunk;
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
 

@@ -367,6 +367,7 @@ dependencies = [
  "pir-service-protocol",
  "pir-service-store",
  "pir-strict-https",
+ "rand_core 0.6.4",
  "rustix",
  "rustls",
  "serde",

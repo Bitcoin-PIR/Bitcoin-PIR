@@ -82,6 +82,7 @@ use pir_cashu_client::{
     ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305RecoveryCipherV1,
     StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
 };
+use pir_db_attest::{BuildKind, ProofBundle};
 use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
     SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
@@ -4418,6 +4419,68 @@ impl UnifiedServerData {
         }
     }
 
+    /// Return the strict proof dataset identifier used by Payment V1
+    /// admission for a loaded database.
+    ///
+    /// Strict clients bind DPF/Harmony to `REQ_GET_DB_PROOF` and OnionPIR to
+    /// `REQ_GET_DB_PROOF_V2`; both derive this value from the selected proof
+    /// sidecar's `server-db/MANIFEST.toml`.  That roots-only evidence manifest
+    /// is deliberately distinct from the server-loadable database manifest.
+    /// A selected sidecar must therefore verify internally *and* agree with
+    /// the loaded database's anchors and Merkle commitment before it can
+    /// replace the legacy local manifest root.  A present but malformed or
+    /// mismatched sidecar fails closed; only a genuinely absent sidecar keeps
+    /// legacy catalog compatibility.
+    fn service_dataset_binding_root_v1(
+        &self,
+        database: &MappedDatabase,
+        db_id: u8,
+        backend: ServiceBackendIdV1,
+    ) -> Option<[u8; 32]> {
+        let proof = match backend {
+            ServiceBackendIdV1::DpfPirV1 | ServiceBackendIdV1::HarmonyPirV2 => {
+                database.db_proof.as_ref()
+            }
+            ServiceBackendIdV1::OnionPirV1 => database.db_proof_v2.as_ref(),
+            // A roots-only proof does not certify the typed direct-ORAM
+            // manifest, so TEE-ORAM remains bound to the local verified
+            // server-loadable manifest root.
+            ServiceBackendIdV1::TeeOramV1 => return database.manifest_root,
+        };
+        match proof {
+            Some(proof) => {
+                let binding = verified_service_proof_binding_v1(proof, db_id)?;
+                self.service_proof_binding_matches_loaded_db_v1(database, db_id, backend, &binding)
+                    .then_some(binding.dataset_root)
+            }
+            None => database.manifest_root,
+        }
+    }
+
+    fn service_proof_binding_matches_loaded_db_v1(
+        &self,
+        database: &MappedDatabase,
+        db_id: u8,
+        backend: ServiceBackendIdV1,
+        binding: &VerifiedServiceProofBindingV1,
+    ) -> bool {
+        if !service_proof_binding_matches_loaded_db_metadata_v1(database, binding) {
+            return false;
+        }
+        let onion_root = self.onionpir_merkle_for(db_id).and_then(|info| {
+            hex::decode(&info.super_root_hex)
+                .ok()
+                .and_then(|root| (root.len() == 32).then_some(root))
+        });
+        service_proof_binding_matches_backend_commitment_v1(
+            backend,
+            database.has_bucket_merkle(),
+            database.bucket_merkle_root.as_deref(),
+            onion_root.as_deref(),
+            binding,
+        )
+    }
+
     /// Resolve an untrusted operation from actual loaded state plus the exact
     /// activated provider policy. Multiple matching scopes fail closed: the
     /// wire request is not allowed to choose an operation profile indirectly.
@@ -4436,9 +4499,9 @@ impl UnifiedServerData {
             | OperationStartV1::OnionSession { db_id }
             | OperationStartV1::TeeOramQuery { db_id } => *db_id,
         };
-        let database = self.state.get_db(db_id)?;
-        let root = database.manifest_root?;
         let (backend, workload) = operation.required_service();
+        let database = self.state.get_db(db_id)?;
+        let root = self.service_dataset_binding_root_v1(database, db_id, backend)?;
         let protocol_version = match backend {
             ServiceBackendIdV1::HarmonyPirV2 => 2,
             ServiceBackendIdV1::DpfPirV1
@@ -4494,7 +4557,9 @@ impl UnifiedServerData {
                             let Ok(db_id) = u8::try_from(index) else {
                                 return false;
                             };
-                            if database.manifest_root != Some(root) {
+                            if self.service_dataset_binding_root_v1(database, db_id, scope.backend)
+                                != Some(root)
+                            {
                                 return false;
                             }
                             match (scope.backend, scope.workload) {
@@ -4546,6 +4611,236 @@ impl UnifiedServerData {
             }
         }
         Ok(())
+    }
+}
+
+/// Proof material which is internally consistent and can be compared with a
+/// locally loaded database.  It intentionally carries no claim that the
+/// provider has performed the browser's full external attestation trust-chain
+/// verification; strict clients retain that responsibility.
+struct VerifiedServiceProofBindingV1 {
+    dataset_root: [u8; 32],
+    evidence: pir_db_attest::BuildEvidence,
+}
+
+fn verified_service_proof_binding_v1(
+    proof: &DatabaseProofBundle,
+    db_id: u8,
+) -> Option<VerifiedServiceProofBindingV1> {
+    if proof.db_id != db_id || proof.server_db_manifest_toml.is_empty() {
+        return None;
+    }
+    let verified = ProofBundle {
+        build_evidence: proof.build_evidence.clone(),
+        root_bundle_payload: proof.root_bundle_payload.clone(),
+        sev_snp_report: proof.sev_snp_report.clone(),
+        database_manifest_sha256: proof.database_manifest_sha256.clone(),
+        all_artifacts_manifest_sha256: proof.all_artifacts_manifest_sha256.clone(),
+        server_db_manifest_toml: proof.server_db_manifest_toml.clone(),
+    }
+    .verify()
+    .ok()?;
+    Some(VerifiedServiceProofBindingV1 {
+        dataset_root: pir_core::merkle::sha256(&proof.server_db_manifest_toml),
+        evidence: verified.evidence,
+    })
+}
+
+fn service_proof_binding_matches_loaded_db_metadata_v1(
+    database: &MappedDatabase,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    service_proof_binding_matches_loaded_metadata_v1(
+        database.manifest_root.is_some(),
+        &database.descriptor,
+        database.index.bins_per_table,
+        database.chunk.bins_per_table,
+        database.index.anchor,
+        database.chunk.anchor,
+        binding,
+    )
+}
+
+fn service_proof_binding_matches_loaded_metadata_v1(
+    manifest_verified: bool,
+    descriptor: &DatabaseDescriptor,
+    index_bins: usize,
+    chunk_bins: usize,
+    index_anchor: Option<pir_core::cuckoo::HeaderAnchor>,
+    chunk_anchor: Option<pir_core::cuckoo::HeaderAnchor>,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    if !manifest_verified
+        || index_bins != binding.evidence.index_bins_per_table as usize
+        || chunk_bins != binding.evidence.chunk_bins_per_table as usize
+    {
+        return false;
+    }
+    let expected_anchor = match binding.evidence.build_kind {
+        BuildKind::Snapshot => {
+            if descriptor.db_type != DatabaseType::Full
+                || descriptor.base_height != binding.evidence.from_anchor.height
+                || descriptor.height != binding.evidence.anchor.height
+            {
+                return false;
+            }
+            pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+                block_hash: binding.evidence.anchor.block_hash,
+                block_height: binding.evidence.anchor.height,
+            })
+        }
+        BuildKind::Delta => {
+            if descriptor.db_type != DatabaseType::Delta
+                || descriptor.base_height != binding.evidence.from_anchor.height
+                || descriptor.height != binding.evidence.anchor.height
+            {
+                return false;
+            }
+            pir_core::cuckoo::HeaderAnchor::Delta(pir_core::seeds::DeltaAnchor {
+                from: pir_core::seeds::ChainAnchor {
+                    block_hash: binding.evidence.from_anchor.block_hash,
+                    block_height: binding.evidence.from_anchor.height,
+                },
+                to: pir_core::seeds::ChainAnchor {
+                    block_hash: binding.evidence.anchor.block_hash,
+                    block_height: binding.evidence.anchor.height,
+                },
+            })
+        }
+    };
+    index_anchor == Some(expected_anchor) && chunk_anchor == Some(expected_anchor)
+}
+
+fn service_proof_binding_matches_backend_commitment_v1(
+    backend: ServiceBackendIdV1,
+    has_bucket_merkle: bool,
+    bucket_super_root: Option<&[u8]>,
+    onion_super_root: Option<&[u8]>,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    match backend {
+        ServiceBackendIdV1::DpfPirV1 | ServiceBackendIdV1::HarmonyPirV2 => {
+            has_bucket_merkle
+                && bucket_super_root == Some(binding.evidence.bucket_super_root.as_slice())
+        }
+        ServiceBackendIdV1::OnionPirV1 => {
+            onion_super_root == Some(binding.evidence.onion_super_root.as_slice())
+        }
+        ServiceBackendIdV1::TeeOramV1 => false,
+    }
+}
+
+#[cfg(test)]
+mod service_dataset_binding_tests {
+    use super::*;
+
+    fn retained_proof() -> DatabaseProofBundle {
+        let proof_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../web/src/__tests__/fixtures/oram-source-proof-v1-leaked/proofs/oram-source/mainnet_948454/db",
+        );
+        DatabaseProofBundle {
+            db_id: 0,
+            build_evidence: std::fs::read(proof_dir.join("build-evidence.bin")).unwrap(),
+            root_bundle_payload: std::fs::read(proof_dir.join("root-bundle-payload.bin")).unwrap(),
+            sev_snp_report: std::fs::read(proof_dir.join("build-evidence.sev-snp-report.bin"))
+                .unwrap(),
+            database_manifest_sha256: std::fs::read(proof_dir.join("database.manifest.sha256"))
+                .unwrap(),
+            all_artifacts_manifest_sha256: std::fs::read(
+                proof_dir.join("all-artifacts.manifest.sha256"),
+            )
+            .unwrap(),
+            server_db_manifest_toml: std::fs::read(proof_dir.join("server-db/MANIFEST.toml"))
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn strict_proof_binding_requires_a_complete_verified_bundle() {
+        let proof = retained_proof();
+        let binding = verified_service_proof_binding_v1(&proof, 0).unwrap();
+        assert_eq!(
+            hex::encode(binding.dataset_root),
+            "0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec"
+        );
+        assert_eq!(
+            hex::encode(binding.evidence.bucket_super_root),
+            "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b"
+        );
+        assert_eq!(
+            hex::encode(binding.evidence.onion_super_root),
+            "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4"
+        );
+        let mut malformed = proof;
+        malformed.server_db_manifest_toml[0] ^= 1;
+        assert!(verified_service_proof_binding_v1(&malformed, 0).is_none());
+    }
+
+    #[test]
+    fn strict_proof_binding_rejects_wrong_loaded_anchor_or_commitment() {
+        let binding = verified_service_proof_binding_v1(&retained_proof(), 0).unwrap();
+        let descriptor = DatabaseDescriptor {
+            name: "fixture".to_owned(),
+            db_type: DatabaseType::Full,
+            base_height: binding.evidence.from_anchor.height,
+            height: binding.evidence.anchor.height,
+            index_params: INDEX_PARAMS.clone(),
+            chunk_params: CHUNK_PARAMS.clone(),
+        };
+        let anchor = pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+            block_hash: binding.evidence.anchor.block_hash,
+            block_height: binding.evidence.anchor.height,
+        });
+        assert!(service_proof_binding_matches_loaded_metadata_v1(
+            true,
+            &descriptor,
+            binding.evidence.index_bins_per_table as usize,
+            binding.evidence.chunk_bins_per_table as usize,
+            Some(anchor),
+            Some(anchor),
+            &binding,
+        ));
+        let wrong_anchor = pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+            block_hash: [0x55; 32],
+            block_height: binding.evidence.anchor.height,
+        });
+        assert!(!service_proof_binding_matches_loaded_metadata_v1(
+            true,
+            &descriptor,
+            binding.evidence.index_bins_per_table as usize,
+            binding.evidence.chunk_bins_per_table as usize,
+            Some(wrong_anchor),
+            Some(wrong_anchor),
+            &binding,
+        ));
+        assert!(service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::DpfPirV1,
+            true,
+            Some(binding.evidence.bucket_super_root.as_slice()),
+            None,
+            &binding,
+        ));
+        assert!(!service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::DpfPirV1,
+            true,
+            Some(&[0u8; 32]),
+            None,
+            &binding,
+        ));
+        assert!(service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::OnionPirV1,
+            false,
+            None,
+            Some(binding.evidence.onion_super_root.as_slice()),
+            &binding,
+        ));
+        assert!(!service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::OnionPirV1,
+            false,
+            None,
+            Some(&[0u8; 32]),
+            &binding,
+        ));
     }
 }
 
@@ -5665,7 +5960,12 @@ trait ServiceResponseBudgetV1 {
     fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String>;
 }
 
-const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 32;
+// The authenticated bucket-tree-top preflight is deliberately available
+// before service admission.  Production tree-top responses are sent in
+// 256 KiB transport chunks, so one main-db response needs about 35 WebSocket
+// messages in addition to the small strict-bootstrap responses.  Keep this
+// physical-frame limit comfortably above that bounded pre-admission flow.
+const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 128;
 const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
 type PreAuthDeadlineFutureV1 =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -11662,7 +11962,28 @@ async fn main() {
                             msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                             msg.push(RESP_BUCKET_MERKLE_TREE_TOPS);
                             msg.extend_from_slice(tops);
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
+                            // Tree-top blobs for the live main database are
+                            // larger than a browser-safe WebSocket frame.
+                            // All current SDK transports reassemble the
+                            // shared CHUNK_MAGIC envelope, so use it here
+                            // unconditionally rather than allowing a large
+                            // single-frame write to stall until the
+                            // pre-authorization deadline.
+                            if let Err(error) = send_resp_chunked(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                msg,
+                                true,
+                            )
+                            .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] bucket Merkle tree-tops send error: {}",
+                                    peer,
+                                    error
+                                );
+                                break;
+                            }
                             unsafe_debug_log!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
                         } else {
                             let err = Response::Error(format!("db {} has no bucket merkle tree-tops", db_id));
@@ -12884,6 +13205,30 @@ mod service_admission_dispatch_tests {
         );
         assert!(sink.pre_auth_egress_is_terminal());
         assert!(sink.inner.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bucket_tree_top_preflight_budget_carries_live_main_sized_chunked_response() {
+        // The functional-beta main DB tree-top blob is 9,155,384 bytes.
+        // Keep the pre-admission envelope test tied to the response shape
+        // that browser strict verification must receive before authorization.
+        const LIVE_MAIN_TREE_TOP_BYTES: usize = 9_155_384;
+        let mut sink = test_sink(0);
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_BUCKET_MERKLE_TREE_TOPS);
+
+        send_resp_chunked(&mut sink, None, vec![0; LIVE_MAIN_TREE_TOP_BYTES + 5], true)
+            .await
+            .expect("chunked main tree-top preflight must fit its fixed budget");
+
+        let expected_chunks = (LIVE_MAIN_TREE_TOP_BYTES + 5).div_ceil(CHUNK_SIZE);
+        assert_eq!(sink.inner.messages.len(), expected_chunks);
+        assert!(
+            expected_chunks > 32,
+            "the old frame budget cannot carry this flow"
+        );
+        assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
+        assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
     }
 
     #[tokio::test]
