@@ -18,6 +18,7 @@ import {
   REQUIRED_PREPARATION_FILES,
   validateDeploymentTree,
   validateRelaySelection,
+  validateVpsbgPremiumFreePowMeasuredFinalExec,
 } from "./payment-v1-deployment-template-gate.mjs";
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -590,6 +591,77 @@ test("VPSBG premium beta remains a separate stateful shared-issuer profile", () 
       /must contain kind = "manifest-root"/,
     );
   });
+});
+
+test("VPSBG measured final exec fixes the premium suffix while accepting rendered public keys", () => {
+  const measuredRunPath =
+    "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";
+  const measuredRun = readFileSync(join(REPOSITORY, measuredRunPath), "utf8");
+  assert.doesNotThrow(() =>
+    validateVpsbgPremiumFreePowMeasuredFinalExec(measuredRun),
+  );
+
+  const alternatePublicValue = "a".repeat(64);
+  const alternateRun = measuredRun.replace(
+    "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+    alternatePublicValue,
+  );
+  assert.notEqual(alternateRun, measuredRun);
+  assert.doesNotThrow(() =>
+    validateVpsbgPremiumFreePowMeasuredFinalExec(alternateRun),
+  );
+});
+
+test("VPSBG measured final exec rejects placeholders and forbidden payment material", () => {
+  const measuredRunPath =
+    "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";
+  const measuredRun = readFileSync(join(REPOSITORY, measuredRunPath), "utf8");
+
+  const placeholder = measuredRun.replace(
+    "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+    "@VPSBG_PREMIUM_PROVIDER_ID_HEX@",
+  );
+  assert.throws(
+    () => validateVpsbgPremiumFreePowMeasuredFinalExec(placeholder),
+    /placeholder value/,
+  );
+
+  const suffixEnd = [
+    "    --service-pre-auth-timeout-ms 60000 \\",
+    "    2>&1",
+  ].join("\n");
+  for (const [line, expected] of [
+    [
+      "--service-storeless-free-pow-policy-digest-hex deadbeef",
+      /storeless policy digest/,
+    ],
+    [
+      "--service-remote-rollback-authority-config /home/pir/data/payment-v1/remote.toml",
+      /remote rollback authority/,
+    ],
+    [
+      "--service-bat-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/bat.key",
+      /provider-local BAT key/,
+    ],
+    [
+      "--service-arc-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/arc.key",
+      /provider-local ARC key/,
+    ],
+  ]) {
+    const mutated = measuredRun.replace(
+      suffixEnd,
+      [
+        "    --service-pre-auth-timeout-ms 60000 \\",
+        "    " + line + " \\",
+        "    2>&1",
+      ].join("\n"),
+    );
+    assert.notEqual(mutated, measuredRun);
+    assert.throws(
+      () => validateVpsbgPremiumFreePowMeasuredFinalExec(mutated),
+      expected,
+    );
+  }
 });
 
 test("systemd resets, duplicate CLI overrides, and secret argv fail closed", () => {
