@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "923007711678d21afbdaa8010c99546ce57f3d8430d61718cf6568ddcce5279e",
+    "d8647dd6fbc6b7d955c74db85edfa79b34de6071e1e6d77efff5f3b3c61404a2",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
@@ -2263,7 +2263,7 @@ function validateVpsbgFreePow(text, mode) {
       ["--service-policy-key-hex", "@VPSBG_POLICY_PUBKEY_HEX@"],
       ["--service-storeless-free-pow-policy-digest-hex", "@VPSBG_FREE_POW_POLICY_DIGEST_HEX@"],
       ["--service-max-concurrent-auth", "16"],
-      ["--service-pre-auth-timeout-ms", "60000"],
+      ["--service-pre-auth-timeout-ms", "300000"],
     ],
     label,
   );
@@ -2365,7 +2365,7 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ["--allow-experimental-arc", null],
     ["--service-max-concurrent-auth", "4"],
     ["--service-max-concurrent-online-v2full-auth", "0"],
-    ["--service-pre-auth-timeout-ms", "60000"],
+    ["--service-pre-auth-timeout-ms", "300000"],
   ];
   for (const [profile, command] of [
     ["db0 DPF-only", dpfOnlyExec],
@@ -2473,7 +2473,7 @@ function validateVpsbgPremiumFreePowBeta(text, mode) {
       ["--allow-experimental-arc", null],
       ["--service-max-concurrent-auth", "4"],
       ["--service-max-concurrent-online-v2full-auth", "2"],
-      ["--service-pre-auth-timeout-ms", "60000"],
+      ["--service-pre-auth-timeout-ms", "300000"],
     ],
     label,
   );

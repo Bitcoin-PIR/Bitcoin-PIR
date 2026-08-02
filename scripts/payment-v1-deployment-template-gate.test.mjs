@@ -627,7 +627,7 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
   );
 
   const suffixEnd = [
-    "    --service-pre-auth-timeout-ms 60000 \\",
+    "    --service-pre-auth-timeout-ms 300000 \\",
     "    2>&1",
   ].join("\n");
   for (const [line, expected] of [
@@ -651,7 +651,7 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
     const mutated = measuredRun.replace(
       suffixEnd,
       [
-        "    --service-pre-auth-timeout-ms 60000 \\",
+        "    --service-pre-auth-timeout-ms 300000 \\",
         "    " + line + " \\",
         "    2>&1",
       ].join("\n"),

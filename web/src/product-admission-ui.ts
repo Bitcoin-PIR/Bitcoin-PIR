@@ -528,7 +528,7 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
     case 'capability-inventory-empty': return 'No exact capability is available. Import or purchase one before authorization.';
     case 'ambiguous-capability-spend': return 'Capability spend is ambiguous. It will not be retried automatically.';
     case 'resource-failed-after-authorization': return 'Authorization succeeded but the resource failed. It will not retry automatically.';
-    default: return 'Provider verification operation failed without exposing secret material.';
+    default: return 'Free or Premium access could not be granted on the verified connection. Start a new provider verification attempt.';
   }
 }
 

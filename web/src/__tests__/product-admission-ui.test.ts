@@ -7,6 +7,7 @@ import {
   pairAuthorizationReadyV1,
   partitionOfferOptionsForDisplayV1,
   privacyLabelForOfferV1,
+  publicAdmissionError,
   retainedCapabilityLabelV1,
   retainedRecoveryLabelV1,
 } from '../product-admission-ui.js';
@@ -113,6 +114,14 @@ describe('signed offer privacy wording', () => {
       deploymentStatus: 'experimental', arcVerificationKeyFingerprintHex: '91'.repeat(32),
       privacyLeakageBits: (1 << 2) | (1 << 5),
     }))).toMatch(/EXPERIMENTAL ARC.*not independently reviewed/i);
+  });
+});
+
+describe('admission failure wording', () => {
+  it('does not mislabel a post-verification access failure as a verification failure', () => {
+    expect(publicAdmissionError(new Error('connection closed'))).toBe(
+      'Free or Premium access could not be granted on the verified connection. Start a new provider verification attempt.',
+    );
   });
 });
 
