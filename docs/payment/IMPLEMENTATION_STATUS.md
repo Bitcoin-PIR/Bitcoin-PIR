@@ -26,6 +26,12 @@ activated the path with real money.
 - Free, direct BOLT11 receipt, standard Cashu eCash, Cashu BAT, and
   experimental ARC have targeted integration coverage. ARC remains
   experimental and is not a cryptographically reviewed production claim.
+- The final no-funds method evidence is current-tree and explicit: the fake
+  issuer covers BOLT11 receipt lifecycle/recovery, the two-provider Chromium
+  harness covers Cashu BAT and experimental ARC (3/3), and the exact CDK
+  0.17.3 fakewallet script covers standard `cashuB` browser import, two-provider
+  admission, NUT-03/NUT-07 custody transition and cleanup. None of these runs
+  used a public mint, a real Lightning node or real funds.
 - Direct BOLT11 has completed one bounded, policy-bound Signet smoke: the
   client verified the provider, paid a Signet invoice through an isolated
   payer, observed issuer settlement, claimed a provider-bound direct receipt,
@@ -1257,12 +1263,20 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       validity, single-link regular-file shape, effective-user ownership,
       mode-0600 file and mode-0700 final-parent boundary were checked without
       disclosing the secret or copying it into this repository.
-- [ ] The production directory key has not been backed up, copied to a host or
-      used to sign/publish a production catalog. No production deployment,
-      remote-server operation, database migration or real-money operation has
-      been performed. Each still requires its explicit deployment ceremony and
-      approval boundary.
-- [ ] No user manual acceptance test has been performed.
+- [x] The owner-local directory key signed and published the current
+      **functional-beta** catalog to the deployed Hetzner relay.  The key was
+      not copied into this repository or a provider, and no backup ceremony is
+      claimed here.  The catalog selects the Hetzner and VPSBG providers
+      independently; the browser verified the catalog and completed a Free
+      two-provider DPF query through the normal strict-verification path.
+- [x] Hetzner hosts the public directory relay and beta issuer surface; the
+      current VPSBG measured runtime exposes its separately signed Free-PoW,
+      Cashu BAT and experimental ARC offers.  The current Hetzner provider
+      exposes its own Free, direct-BOLT11, standard-Cashu, BAT and experimental
+      ARC offers.  This is a functional-beta deployment, not a mainnet-money
+      launch: no real Lightning payment, external Cashu mint settlement or
+      provider payout was performed for this evidence.
+- [ ] No explicit user manual-acceptance sign-off has been recorded yet.
 
 ## Production release blockers and gates
 
@@ -1430,9 +1444,11 @@ accepts that the issuer can correlate provider, scope and timing across both
 redemption streams. Different blind capabilities remove a direct token join;
 they do not remove common-infrastructure traffic analysis.
 
-## Production guard
+## Functional-beta deployment guard
 
-Production deployment, remote-server operations, production-catalog
-public-relay publication, external mint access and real Lightning funds are
-outside the completed work. They require a fresh, explicit user approval
-immediately before execution.
+The 2026-08-02 functional-beta deployment and catalog publication were
+explicitly authorized and completed.  Its public relay and provider endpoints
+are evidence for the bounded beta only.  Real Lightning funds, an external
+value-bearing Cashu mint, provider payouts, a directory-key backup ceremony,
+and any change to the deployed topology remain separate operations requiring
+fresh approval immediately before execution.
