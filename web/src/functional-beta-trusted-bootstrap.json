@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "network": "signet",
+  "providers": [
+    {
+      "label": "Provider 1 functional beta",
+      "endpoint": "wss://provider-beta.65-21-91-217.sslip.io",
+      "providerIdHex": "9110aee8843ff4eaa60eb5e2f36345cef03c779c08becbfe76f4cc0400fc0eb0",
+      "policySigningKeyHex": "6528d01b64275834460fd2c6f1d8b2df1374ea62ed0204ea2429adcc70246a93",
+      "operatorSigningKeyHex": "d506c8630f13f31f0648228857c268d17996d600ed7169e091c88aadb5ecb2d4",
+      "stableServerId": "pir1-payment-beta",
+      "serverPin": {
+        "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
+      },
+      "hardwareAttestation": "unavailable-accepted",
+      "lightningPayeeTrust": [
+        {
+          "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",
+          "issuerOrigin": "https://issuer-beta.65-21-91-217.sslip.io",
+          "network": "signet",
+          "expectedPayeePubkeyHex": "03d56b422257245d2c170393fe0242f8fd5668b12034fe9d059579951e19162232"
+        }
+      ],
+      "databaseProofPins": [
+        {
+          "dbId": 0,
+          "buildKind": "snapshot",
+          "fromHeight": 0,
+          "height": 948454,
+          "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+          "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+          "paramsHashHex": "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
+          "builderGitCommit": "b692aec18b9c20ac92cb9fe22588e96ff96ad27d"
+        },
+        {
+          "dbId": 1,
+          "buildKind": "delta",
+          "fromHeight": 940611,
+          "height": 948454,
+          "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+          "fromMuhashHex": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+          "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
+          "paramsHashHex": "2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a",
+          "builderGitCommit": "01e8db91d76037cd5562fce85c40e832ad156431"
+        }
+      ]
+    },
+    {
+      "label": "Provider 2 functional beta Free DPF",
+      "endpoint": "wss://provider2-beta.65-21-91-217.sslip.io",
+      "providerIdHex": "83076521322104abbceca115f119c953c84561a29922e7ce444b7097ffc5f5d7",
+      "policySigningKeyHex": "c2e0598b34804d1b3c60b4b636bccd861b93cfa55671e27787f0eab50d9dbf8e",
+      "operatorSigningKeyHex": "5590cce35dc49fcde96b724899aef54487d9a43ec234815503723a5179e56d07",
+      "stableServerId": "pir2-payment-beta",
+      "serverPin": {
+        "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
+      },
+      "hardwareAttestation": "unavailable-accepted",
+      "lightningPayeeTrust": [],
+      "databaseProofPins": [
+        {
+          "dbId": 0,
+          "buildKind": "snapshot",
+          "fromHeight": 0,
+          "height": 948454,
+          "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+          "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+          "paramsHashHex": "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
+          "builderGitCommit": "b692aec18b9c20ac92cb9fe22588e96ff96ad27d"
+        },
+        {
+          "dbId": 1,
+          "buildKind": "delta",
+          "fromHeight": 940611,
+          "height": 948454,
+          "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+          "fromMuhashHex": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+          "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
+          "paramsHashHex": "2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a",
+          "builderGitCommit": "01e8db91d76037cd5562fce85c40e832ad156431"
+        }
+      ]
+    }
+  ]
+}

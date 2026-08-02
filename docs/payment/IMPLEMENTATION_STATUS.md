@@ -13,6 +13,12 @@ activated the path with real money.
   directory-selected Free query across two independently selected providers
   while retaining the normal strict identity, binary, database, preflight, and
   result-verification path.
+- The functional-beta web bundle carries the reviewed two-provider trusted
+  bootstrap needed to begin strict admission. It is parsed only into page
+  memory, remains independently authoritative over directory discovery, and
+  can be explicitly replaced for an intentional trust change. The bundled
+  directory defaults visibly identify the current single-relay mode as
+  degraded.
 - The browser and server now support bounded chunking/reassembly of a large
   strict Merkle tree-top preflight response. The server performs the payment
   admission check before the expensive query work, and the browser keeps the

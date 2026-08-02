@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-AESrzJ6GX5DheGIv/LUDtWeGqgxbeewHdZua9hKsM2U=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-f6AcJoMBgTGpz3gm0fT5LYpEtwzwc1TlzRE8XvGHyHg=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -901,21 +901,21 @@
                 <details class="admission-config" id="admissionConfig">
                     <summary>Commercial admission trust configuration</summary>
                     <div class="admission-config-grid">
-                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (endpoint, provider/policy/operator keys, server/binary/measurement/database pins, exact issuer/network/Lightning-payee trust)</label>
-                        <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="No production trust bootstrap is bundled. Paste a complete V1 bootstrap for this page load only."></textarea>
+                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (advanced replacement: endpoint, provider/policy/operator keys, server/binary/measurement/database pins, exact issuer/network/Lightning-payee trust)</label>
+                        <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="A functional-beta trusted bootstrap is bundled for this page load. Paste a complete replacement only when intentionally changing trust."></textarea>
                         <div class="admission-config-actions">
-                            <button type="button" id="admissionApplyBootstrap" class="btn">Apply in memory</button>
-                            <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Commercial admission unconfigured; all queries fail closed.</span>
+                            <button type="button" id="admissionApplyBootstrap" class="btn">Apply replacement in memory</button>
+                            <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Bundled functional-beta bootstrap is loading; queries fail closed until it completes.</span>
                         </div>
                         <label for="admissionDirectoryMode">Assurance mode for the next directory refresh (changing it clears current directory trust)</label>
                         <select id="admissionDirectoryMode" class="input">
-                            <option value="strict-multi-relay" selected>Strict multi-relay (2–8 distinct WSS origins)</option>
-                            <option value="centralized-single-relay">Centralized single relay — degraded, no relay cross-check</option>
+                            <option value="strict-multi-relay">Strict multi-relay (2–8 distinct WSS origins)</option>
+                            <option value="centralized-single-relay" selected>Centralized single relay — degraded, no relay cross-check</option>
                         </select>
-                        <label for="admissionDirectoryRelays">Optional Nostr directory relays (one wss:// URL per line; explicit refresh only)</label>
-                        <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false"></textarea>
+                        <label for="admissionDirectoryRelays">Nostr directory relays (one wss:// URL per line; explicit refresh only)</label>
+                        <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false">wss://directory.65-21-91-217.sslip.io</textarea>
                         <label for="admissionDirectoryKey">Pinned directory Nostr x-only secp256k1 public key (64 lowercase hex; independent bootstrap)</label>
-                        <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false">
+                        <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false" value="0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c">
                         <div class="admission-config-actions">
                             <button type="button" id="admissionRefreshDirectory" class="btn ghost">Refresh directory now</button>
                             <span>Centralized mode requires exactly one relay and is visibly degraded. Relay data remains signed discovery metadata; live identity, binary, attestation, database and result verification still fail closed.</span>
@@ -1645,6 +1645,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
+        import FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP from './src/functional-beta-trusted-bootstrap.json';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
@@ -1791,6 +1792,22 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 source: matchingDirectoryEntry(provider) ? 'directory' : 'manual',
             }));
             Object.values(admissionPanels).forEach(panel => panel.setProviderOptions(choices));
+        }
+
+        function loadBundledFunctionalBetaTrustedBootstrap() {
+            const status = document.getElementById('admissionConfigStatus');
+            try {
+                productTrustedBootstrap = parseProductTrustedBootstrapV1(
+                    JSON.stringify(FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP),
+                );
+            } catch {
+                productTrustedBootstrap = null;
+                renderTrustedProviderOptions();
+                status.textContent = 'Bundled functional-beta trusted bootstrap is invalid; commercial admission remains fail closed.';
+                return;
+            }
+            renderTrustedProviderOptions();
+            status.textContent = `${productTrustedBootstrap.providers.length} bundled functional-beta trusted provider(s) loaded in memory; no connection was made.`;
         }
 
         function providerById(providerIdHex) {
@@ -2073,7 +2090,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         });
 
-        renderTrustedProviderOptions();
+        loadBundledFunctionalBetaTrustedBootstrap();
 
         function validateQueryInputBeforeAdmission(kind) {
             const textareaId = {
