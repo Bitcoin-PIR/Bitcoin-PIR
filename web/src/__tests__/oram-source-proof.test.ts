@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-  PIR2_TIER3_PIN,
 } from '../attest-pin.js';
 import {
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
@@ -21,6 +20,12 @@ const legacyFixtureRoot = new URL(
   import.meta.url,
 );
 const LEGACY_V1_MANIFEST_PATH = '/proofs/oram-source/mainnet_948454.json';
+// This forensic fixture documents the superseded ORAM deployment. It must not
+// follow the current DPF-only VPSBG runtime pin.
+const LEGACY_V1_PIR2_BINARY_SHA256 =
+  'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e';
+const LEGACY_V1_PIR2_MEASUREMENT_HEX =
+  'd7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245';
 
 async function publicArtifactLoader(path: string): Promise<Uint8Array> {
   const clean = path.startsWith('/') ? path.slice(1) : path;
@@ -65,10 +70,10 @@ describe('ORAM source-binding proof', () => {
       'strict-source-bound-boot-regeneration-live-on-pir2',
     );
     expect(status.manifest?.liveDeployment.pir2BinarySha256).toBe(
-      PIR2_TIER3_PIN.binarySha256Hex,
+      LEGACY_V1_PIR2_BINARY_SHA256,
     );
     expect(status.manifest?.liveDeployment.pir2MeasurementHex).toBe(
-      PIR2_TIER3_PIN.measurementHex,
+      LEGACY_V1_PIR2_MEASUREMENT_HEX,
     );
     expect(status.manifest?.liveDeployment.pir2UkiSha256).toBe(
       '34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681',
