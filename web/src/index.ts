@@ -408,7 +408,11 @@ export type {
   ProductTrustedBootstrapV1,
   ProductTrustedProviderV1,
 } from './product-provider-bootstrap.js';
-export type { HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
+export {
+  resourceBindingToHarmonyHintCacheBindingV1,
+  type HarmonyHintCacheBindingV1,
+  type HarmonyHintResourceBindingV1,
+} from './harmonypir_hint_db.js';
 export type {
   DirectoryRelayModeV1,
   DirectoryProviderTrustMaterialV1,

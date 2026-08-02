@@ -38,6 +38,27 @@ export interface HarmonyHintCacheBindingV1 {
   prpBackend: number;
 }
 
+/** Generic product resources call their backend-specific variant `variant`.
+ * Harmony hint persistence names that same value `prpBackend` so it is part
+ * of the exact cache key. Keep this conversion explicit at the boundary. */
+export interface HarmonyHintResourceBindingV1
+  extends Omit<HarmonyHintCacheBindingV1, 'prpBackend'> {
+  variant: number;
+}
+
+export function resourceBindingToHarmonyHintCacheBindingV1(
+  binding: HarmonyHintResourceBindingV1,
+): HarmonyHintCacheBindingV1 {
+  return {
+    providerIdHex: binding.providerIdHex,
+    policyDigestHex: binding.policyDigestHex,
+    scopeIdHex: binding.scopeIdHex,
+    offerId: binding.offerId,
+    datasetIdHex: binding.datasetIdHex,
+    prpBackend: binding.variant,
+  };
+}
+
 /** Stored IndexedDB record containing a complete main+sibling hint bundle. */
 export interface StoredHints {
   cacheKey: string;
