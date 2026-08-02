@@ -133,9 +133,10 @@ export interface ServerAttestPin {
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT captured from the live Tier 3 deploy after uploading the
-  // archived DPF-only UKI and validating REPORT_DATA plus the AMD chain.
+  // archived DPF-only UKI with the embedded identity material, then
+  // validating REPORT_DATA plus the AMD chain.
   measurementHex:
-    '3564465a167bcc8d406041f296ecce12749a151bebc996371ebbea35b3947ad85011d99777562ff8b53bfd314846de21',
+    '5c792bce144224aad1ce00c51fd119dd43da128ea63bcc1c3694d15b063d51b754fa7d228de01c3f45337b67e8624ea4',
   binarySha256Hex:
     'ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4',
   description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF-only Payment V1 beta)',
