@@ -43,6 +43,8 @@ enum DirectoryArtifactCommand {
     Assertion(AssertionArgs),
     /// Build one signed NIP-01 EVENT message for a provider entry.
     Entry(EntryArgs),
+    /// Retire one provider ID without advertising an operator assertion or offers.
+    Tombstone(TombstoneArgs),
     /// Build one signed checkpoint EVENT for each of the 16 coarse shards.
     Checkpoints(CheckpointArgs),
     /// Publish already-signed EVENT artifacts unchanged to every relay.
@@ -128,6 +130,35 @@ struct EntryArgs {
 }
 
 #[derive(Args, Debug)]
+struct TombstoneArgs {
+    /// Retired provider ID as 32-byte lowercase hexadecimal.
+    #[arg(long)]
+    provider_id_hex: String,
+    #[arg(long)]
+    directory_signing_key: PathBuf,
+    /// Additional x-only secp256k1 role key which the directory key must not equal.
+    #[arg(long = "reserved-xonly-pubkey-hex")]
+    reserved_xonly_pubkey_hex: Vec<String>,
+    #[arg(long)]
+    directory_sequence: u64,
+    #[arg(long)]
+    directory_valid_until: u64,
+    #[arg(long, value_enum, default_value = "unavailable")]
+    health_class: HealthClassArg,
+    /// Unix seconds floored to the directory's five-minute health bucket.
+    #[arg(long)]
+    health_observed_bucket: u64,
+    #[arg(long)]
+    created_at: u64,
+    #[arg(long)]
+    now_unix: u64,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Debug)]
 struct CheckpointArgs {
     /// One NIP-01 ["EVENT", event] entry artifact. Repeat for every provider.
     #[arg(long = "entry-event")]
@@ -158,6 +189,7 @@ pub async fn run(args: DirectoryArtifactArgs) -> Result<(), String> {
     match args.command {
         DirectoryArtifactCommand::Assertion(args) => build_assertion(args),
         DirectoryArtifactCommand::Entry(args) => build_entry(args),
+        DirectoryArtifactCommand::Tombstone(args) => build_tombstone(args),
         DirectoryArtifactCommand::Checkpoints(args) => build_checkpoints(args),
         DirectoryArtifactCommand::Publish(args) => crate::directory_publish::run(args).await,
     }
@@ -331,6 +363,57 @@ fn build_entry(args: EntryArgs) -> Result<(), String> {
     let reparsed = parse_event_message(&message, "generated directory entry EVENT")?;
     if reparsed != event_json {
         return Err("NIP-01 EVENT envelope self-check changed the event".to_owned());
+    }
+    write_atomic_private(&args.out, &message, args.force)?;
+    println!(
+        "directory_pubkey_xonly={}",
+        hex::encode(publisher.public_key())
+    );
+    println!("provider_id={}", hex::encode(entry.provider_id()));
+    println!("event_id={}", hex::encode(event.id()));
+    println!("shard={:x}", verified.shard());
+    Ok(())
+}
+
+fn build_tombstone(args: TombstoneArgs) -> Result<(), String> {
+    require_nonzero_time(args.now_unix)?;
+    if args.created_at == 0 || args.created_at > args.now_unix {
+        return Err("--created-at must be non-zero and no later than --now-unix".to_owned());
+    }
+    let provider_id = decode_lower_fixed_hex::<32>(&args.provider_id_hex, "provider ID")?;
+    let reserved = decode_reserved_xonly_keys(&args.reserved_xonly_pubkey_hex)?;
+    let publisher = load_directory_key(&args.directory_signing_key, &[], &reserved)?;
+    let entry = DirectoryEntryV1::new_tombstone(
+        provider_id,
+        args.directory_sequence,
+        args.directory_valid_until,
+        DirectoryHealthV1 {
+            class: args.health_class.into(),
+            observed_bucket: args.health_observed_bucket,
+        },
+        args.now_unix,
+    )
+    .map_err(|error| format!("directory tombstone validation failed: {error}"))?;
+    let auxiliary_randomness = fresh_auxiliary_randomness()?;
+    let event = publisher
+        .sign_entry_event(&entry, args.created_at, &auxiliary_randomness)
+        .map_err(|error| format!("directory tombstone EVENT signing failed: {error}"))?;
+    let event_json = event
+        .to_json_bytes()
+        .map_err(|error| format!("directory tombstone EVENT encoding failed: {error}"))?;
+    let verified =
+        verify_directory_entry_event_v1(&event_json, publisher.public_key(), args.now_unix)
+            .map_err(|error| {
+                format!("directory tombstone EVENT self-verification failed: {error}")
+            })?;
+    if verified.discovery_entry() != &entry {
+        return Err("directory tombstone EVENT self-check changed the entry".to_owned());
+    }
+    let message = event
+        .to_event_message_json_bytes()
+        .map_err(|error| format!("directory tombstone EVENT envelope failed: {error}"))?;
+    if parse_event_message(&message, "generated directory tombstone EVENT")? != event_json {
+        return Err("directory tombstone EVENT envelope changed the event".to_owned());
     }
     write_atomic_private(&args.out, &message, args.force)?;
     println!(
@@ -1062,6 +1145,7 @@ mod tests {
     use super::*;
     use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
+    use pir_directory_nostr::DirectoryEntryStatusV1;
     use pir_service_protocol::{
         AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, DatasetBindingV1,
         DeploymentStatus, EntitlementLimitsV1, FreeModeV1, PriceV1, PrivacyLeakageV1,
@@ -1249,6 +1333,63 @@ mod tests {
                     0o600
                 );
             }
+        }
+    }
+
+    #[test]
+    fn tombstone_and_checkpoint_roundtrip_offline() {
+        let directory = private_tempdir().unwrap();
+        let directory_key_path = directory.path().join("directory.key");
+        let tombstone_path = directory.path().join("tombstone.event.json");
+        let checkpoints_path = directory.path().join("checkpoints.json");
+        write_key(&directory_key_path, [0x55; 32]);
+
+        build_tombstone(TombstoneArgs {
+            provider_id_hex: hex::encode([0x91; 32]),
+            directory_signing_key: directory_key_path.clone(),
+            reserved_xonly_pubkey_hex: Vec::new(),
+            directory_sequence: 3,
+            directory_valid_until: 2_400,
+            health_class: HealthClassArg::Unavailable,
+            health_observed_bucket: NOW,
+            created_at: NOW,
+            now_unix: NOW,
+            out: tombstone_path.clone(),
+            force: false,
+        })
+        .unwrap();
+
+        let publisher = DirectoryPublisherKeyV1::from_secret_bytes([0x55; 32]).unwrap();
+        let tombstone_json =
+            parse_event_message(&fs::read(&tombstone_path).unwrap(), "test tombstone").unwrap();
+        let verified =
+            verify_directory_entry_event_v1(&tombstone_json, publisher.public_key(), NOW).unwrap();
+        assert_eq!(
+            verified.discovery_entry().status(),
+            DirectoryEntryStatusV1::Tombstone
+        );
+        assert!(verified.discovery_entry().operator_assertion().is_none());
+
+        build_checkpoints(CheckpointArgs {
+            entry_events: vec![tombstone_path.clone()],
+            directory_signing_key: directory_key_path,
+            reserved_xonly_pubkey_hex: Vec::new(),
+            checkpoint_epoch: 14,
+            not_before: 1_000,
+            valid_until: 2_400,
+            created_at: NOW,
+            now_unix: NOW,
+            out: checkpoints_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let bundle: Vec<Box<RawValue>> =
+            serde_json::from_slice(&fs::read(&checkpoints_path).unwrap()).unwrap();
+        assert_eq!(bundle.len(), 16);
+        for message in bundle {
+            let event_json =
+                parse_event_message(message.get().as_bytes(), "test checkpoint").unwrap();
+            verify_directory_checkpoint_event_v1(&event_json, publisher.public_key(), NOW).unwrap();
         }
     }
 

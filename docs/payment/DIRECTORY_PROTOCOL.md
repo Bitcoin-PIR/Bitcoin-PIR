@@ -515,6 +515,26 @@ bpir-admin directory-artifact entry \
   --out pir-a.entry.event.json
 ```
 
+If a provider is replaced by a different provider ID, publish a tombstone for
+the retired ID at the next directory sequence. A tombstone contains neither an
+operator assertion nor catalog hints, so it cannot advertise the retired
+provider. Include it with the active entries when rebuilding the complete
+checkpoint set; this keeps an addressable relay's returned entry set exactly
+bound to the new checkpoint.
+
+```sh
+bpir-admin directory-artifact tombstone \
+  --provider-id-hex "$RETIRED_PROVIDER_ID" \
+  --directory-signing-key directory-nostr.key \
+  --directory-sequence "$NEXT_SEQUENCE" \
+  --directory-valid-until "$VALID_UNTIL" \
+  --health-class unavailable \
+  --health-observed-bucket "$FLOORED_NOW" \
+  --created-at "$NOW" \
+  --now-unix "$NOW" \
+  --out retired-provider.tombstone.event.json
+```
+
 Finally build a complete checkpoint set. Pass every current active or
 tombstone entry exactly once. The output is one JSON array containing exactly
 16 independently signed NIP-01 `["EVENT", event]` messages, including empty
