@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-f6AcJoMBgTGpz3gm0fT5LYpEtwzwc1TlzRE8XvGHyHg=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Uyhpfvv5Fv64fQ0Zuw0AtenA264gybeTSNeNAGwvoho=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1023,7 +1023,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             </div>
                             <div id="dpfAdmissionPanel" class="product-admission-panel" aria-label="DPF provider admission"></div>
                             <div style="margin-top: 10px;">
-                                <button id="queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
+                                <button id="queryBtn" class="btn accent" style="width: 100%;">Select Server 0, then begin strict admission</button>
                             </div>
                         </div>
 
@@ -1755,9 +1755,60 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }),
         };
 
+        function hasExactAdmissionSelection(leg) {
+            return leg?.selected != null || leg?.retainedSelected != null;
+        }
+
+        function isAdmissionAuthorized(leg) {
+            return leg?.status === 'authorized' || leg?.status === 'cached-resource-ready';
+        }
+
         function updateAdmissionQueryButton(id, snapshot) {
             const button = document.getElementById(id);
-            if (!button || button.disabled) return;
+            if (!button) return;
+            if (button.dataset.admissionActionInFlight === 'true') return;
+            if (id === 'queryBtn') {
+                const legs = snapshot?.legs ?? [];
+                if (!snapshot) {
+                    button.disabled = false;
+                    button.textContent = 'Select Server 0, then begin strict admission';
+                    return;
+                }
+                if (snapshot.phase === 'querying') {
+                    button.disabled = true;
+                    button.textContent = 'Two-server query in progress…';
+                    return;
+                }
+                if (legs.length === 1) {
+                    if (!hasExactAdmissionSelection(legs[0])) {
+                        button.disabled = true;
+                        button.textContent = 'Select Server 0 exact offer in the panel';
+                        return;
+                    }
+                    button.disabled = false;
+                    button.textContent = 'Verify independent Server 1';
+                    return;
+                }
+                if (legs.length === 2) {
+                    if (!legs.every(hasExactAdmissionSelection)) {
+                        button.disabled = true;
+                        button.textContent = 'Select Server 1 exact offer in the panel';
+                        return;
+                    }
+                    if (!legs.every(isAdmissionAuthorized)) {
+                        button.disabled = true;
+                        button.textContent = 'Complete capability acquisition and authorize both providers in the panels';
+                        return;
+                    }
+                    button.disabled = false;
+                    button.textContent = 'Send two-server verified query';
+                    return;
+                }
+                button.disabled = false;
+                button.textContent = 'Select Server 0, then begin strict admission';
+                return;
+            }
+            if (button.disabled) return;
             const firstReady = snapshot?.legs.length === 1
                 && (snapshot.legs[0].status === 'authorized'
                     || snapshot.legs[0].status === 'cached-resource-ready');
@@ -3822,12 +3873,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const button = document.getElementById('queryBtn');
             if (button.disabled) return;
             button.disabled = true;
+            button.dataset.admissionActionInFlight = 'true';
             button.textContent = 'Querying…';
             try {
                 await runProductAdmissionQuery('dpf', queryUtxos);
             } catch (error) {
                 log(`DPF admission: ${publicAdmissionError(error)}`, 'error');
             } finally {
+                delete button.dataset.admissionActionInFlight;
                 button.disabled = false;
                 admissionPanels.dpf.render(admissionControllers.dpf?.snapshot() ?? null);
                 updateAdmissionQueryButton('queryBtn', admissionControllers.dpf?.snapshot() ?? null);
