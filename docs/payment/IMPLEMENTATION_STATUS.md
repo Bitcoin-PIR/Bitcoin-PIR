@@ -20,11 +20,13 @@ activated the path with real money.
 - Free, direct BOLT11 receipt, standard Cashu eCash, Cashu BAT, and
   experimental ARC have targeted integration coverage. ARC remains
   experimental and is not a cryptographically reviewed production claim.
-- Direct BOLT11 has a deployed, policy-bound Signet quote smoke path, but this
-  snapshot does **not** claim an actual paid Signet settlement. A funded
-  Signet-wallet exercise and user manual acceptance remain the next external
-  acceptance steps. No mainnet funds or production Cashu mint operation are
-  implied by this status.
+- Direct BOLT11 has completed one bounded, policy-bound Signet smoke: the
+  client verified the provider, paid a Signet invoice through an isolated
+  payer, observed issuer settlement, claimed a provider-bound direct receipt,
+  and received pre-query admission. That smoke deliberately sent no PIR query
+  and retained no invoice or capability fixture. User manual acceptance remains
+  the next external acceptance step. No mainnet funds or production Cashu mint
+  operation are implied by this status.
 
 ## Frozen protocol decisions
 
