@@ -19,6 +19,9 @@ describe('bundled functional-beta trusted bootstrap', () => {
       'wss://weikeng2.bitcoinpir.org',
     ]);
     expect(parsed.providers[1].hardwareAttestation).toBe('required');
+    expect(parsed.providers[1].operatorSigningKeyHex).toBe(
+      '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
+    );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
       'b5f559816fe655507f37d57259cb3c1a162c8670971c1c30e079904e9e2c7ccd988b2b69080a3672048c75e46e236afa',
     );

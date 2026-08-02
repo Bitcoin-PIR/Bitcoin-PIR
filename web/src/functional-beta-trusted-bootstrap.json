@@ -60,7 +60,7 @@
       "endpoint": "wss://weikeng2.bitcoinpir.org",
       "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
       "policySigningKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
-      "operatorSigningKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
+      "operatorSigningKeyHex": "256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a",
       "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
         "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
