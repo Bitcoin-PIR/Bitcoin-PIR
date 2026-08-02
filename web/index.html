@@ -1809,13 +1809,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 return;
             }
             if (button.disabled) return;
-            const firstReady = snapshot?.legs.length === 1
-                && (snapshot.legs[0].status === 'authorized'
-                    || snapshot.legs[0].status === 'cached-resource-ready');
+            // An independent pair must establish and select both exact
+            // provider scopes before either payment or authorization is
+            // permitted.  In particular, a selected Harmony hint offer is
+            // deliberately only "ready", not authorized, while the query
+            // provider is being verified.
+            const firstReady = snapshot?.topology === 'independent-pair'
+                && snapshot.legs.length === 1
+                && hasExactAdmissionSelection(snapshot.legs[0]);
             button.textContent = snapshot?.phase === 'ready-to-query'
                 ? 'Run one verified query'
                 : firstReady
-                    ? 'Verify independent second provider'
+                    ? id === 'hp-queryBtn'
+                        ? 'Verify independent Query provider'
+                        : 'Verify independent second provider'
                 : snapshot?.phase === 'selecting'
                     ? 'Query blocked · authorize current provider'
                     : 'Verify provider';

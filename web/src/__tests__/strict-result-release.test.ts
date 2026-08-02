@@ -100,6 +100,30 @@ describe('strict PIR result release', () => {
     );
   });
 
+  it('lets a selected Harmony hint advance to the independent query provider before authorization', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const buttonState = html.slice(
+      html.indexOf('function updateAdmissionQueryButton'),
+      html.indexOf('function allDirectoryEntries'),
+    );
+    const firstIndependentSelection = buttonState.indexOf(
+      "snapshot?.topology === 'independent-pair'",
+    );
+    const selectedOffer = buttonState.indexOf(
+      'hasExactAdmissionSelection(snapshot.legs[0])',
+      firstIndependentSelection,
+    );
+    const advance = buttonState.indexOf(
+      "'Verify independent Query provider'",
+      selectedOffer,
+    );
+    const blocked = buttonState.indexOf("'Query blocked · authorize current provider'", advance);
+    expect(firstIndependentSelection).toBeGreaterThanOrEqual(0);
+    expect(selectedOffer).toBeGreaterThan(firstIndependentSelection);
+    expect(advance).toBeGreaterThan(selectedOffer);
+    expect(blocked).toBeGreaterThan(advance);
+  });
+
   it('freezes planner demand before offer selection and recomputes it at execution', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const prepare = html.slice(
