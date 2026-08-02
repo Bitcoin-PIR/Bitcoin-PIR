@@ -2310,7 +2310,7 @@ function validateVpsbgPremiumFreePowBeta(text, mode) {
       ["--allow-local-service-rollback-authority-dev", null],
       ["--service-shared-authorization", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin"],
       ["--service-shared-issuer-approval", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin"],
-      ["--service-shared-operator-key-hex", "@HETZNER_ISSUER_OPERATOR_PUBKEY_HEX@"],
+      ["--service-shared-operator-key-hex", "@VPSBG_OPERATOR_PUBKEY_HEX@"],
       ["--service-shared-issuer-settlement-key-hex", "@HETZNER_ISSUER_SETTLEMENT_PUBKEY_HEX@"],
       ["--service-shared-clearing-key", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key"],
       ["--service-shared-idempotency-key", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key"],
