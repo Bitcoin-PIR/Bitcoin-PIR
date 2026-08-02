@@ -4,7 +4,9 @@
 # Lives at /etc/sv/unified_server/run inside the initramfs. runsvdir
 # starts this; runit restarts on exit (1s default backoff).
 #
-# Flags mirror deploy/systemd/pir-vpsbg.service:
+# Base topology flags mirror deploy/systemd/pir-vpsbg.service. The measured
+# Payment V1 suffix below is intentionally VPSBG-specific: it enables the
+# db0-only Free-PoW + Hetzner shared-issuer BAT/ARC functional beta.
 #   --port 8091
 #   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
 #   --serve-queries    (pir2 is queries-only per the production topology
@@ -386,6 +388,8 @@ verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" del
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 trap - EXIT
 
+# VPSBG is query-only and has no Harmony V2 hint pool, so the measured
+# invocation keeps online V2Full authorization disabled (limit 0).
 exec "$UNIFIED_SERVER" \
     --port 8091 \
     --role secondary \
@@ -406,6 +410,24 @@ exec "$UNIFIED_SERVER" \
     --identity-key-path /home/pir/data/pir2-identity.key \
     --identity-cert-path /home/pir/data/pir2.cert \
     --identity-server-id pir2 \
+    --require-service-auth-v1 \
+    --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
+    --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
+    --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+    --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
+    --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
+    --allow-local-service-rollback-authority-dev \
+    --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
+    --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
+    --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
+    --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
+    --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
+    --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
+    --service-shared-minimum-authorization-epoch 1 \
+    --allow-experimental-arc \
+    --service-max-concurrent-auth 4 \
+    --service-max-concurrent-online-v2full-auth 0 \
+    --service-pre-auth-timeout-ms 60000 \
     2>&1
 # --identity-* (operator-signed identity / REQ_ANNOUNCE): key + cert live
 # in the bind-mounted rootfs /home/pir/data — NOT baked into the measured

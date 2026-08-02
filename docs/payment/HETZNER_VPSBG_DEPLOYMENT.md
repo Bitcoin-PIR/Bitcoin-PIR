@@ -103,19 +103,21 @@ add client certificate/key custody and real-handshake tests atomically.
 
 ## Frozen active-service boundary
 
-This preparation does not modify or replace:
+The preparation leaves the following active definitions unchanged:
 
 - `deploy/systemd/pir-primary.service`;
 - `deploy/systemd/pir-secondary.service`;
 - `deploy/systemd/pir-vpsbg.service`;
 - `deploy/systemd/dev-issuer.service`;
 - `deploy/systemd/cloudflared.service`; or
-- `scripts/dracut/97bpir-tier3-init/unified-server-run.sh`.
+- `scripts/dracut/97bpir-tier3-init/unified-server-run.sh`, except for the
+  separately reviewed VPSBG Premium + Free-PoW measured suffix described below.
 
-The deployment-template gate pins the SHA-256 of each file. It also verifies
-that none of those active definitions contains Payment V1 enforcement flags.
-This makes the preparation PR unable to activate charging by changing an old
-unit in place.
+The deployment-template gate pins the SHA-256 of each file. It rejects Payment
+V1 enforcement flags in every other active definition and, for the measured
+VPSBG run script, validates the complete fixed payment suffix after checking
+the file hash. This makes the activation an explicit UKI-bound change rather
+than an accidental old-unit mutation.
 
 All files below `deploy/payment-v1/` are inputs. Systemd templates use the
 `.service.in` suffix, omit `[Install]`, and require both the global activation
@@ -718,16 +720,18 @@ store, issuer redeem, policy verification, strict channel or query verification
 fails. There is no automatic retry of a capability after an ambiguous redeem
 or query outcome.
 
-Before a UKI build, render and sign the policy, initialize the two local SQLite
-files under `/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/`, generate
-all VPSBG-specific issuer-clearing artifacts, and add their matching policy,
-BAT/ARC keys and clearing records to the Hetzner issuer. The measured final
-run script receives the rendered argument list verbatim. Changing any of those
-arguments requires another UKI and the normal portal upload/reboot plus client
-measurement-pin update. The initial scope deliberately excludes db1, Standard
-Cashu eCash, direct BOLT11 receipt, Harmony hint/query, Onion and TEE-ORAM;
-each needs its own later workload policy and, where applicable, its own price
-and capability binding.
+The initial VPSBG ceremony fixes one public provider ID and policy key in the
+measured suffix; all mutable artifacts live below
+`/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/`. This directory must
+contain the signed policy, both clearing artifacts, provider store and rollback
+SQLite files, provider clearing key and redeem-idempotency key before the UKI
+boots. It must not contain issuer settlement material, BAT/ARC private keys,
+Lightning state, invoices or payment hashes. Changing a policy argument or
+public binding requires another UKI and the normal portal upload/reboot plus
+client measurement-pin update. The initial scope deliberately excludes db1,
+Standard Cashu eCash, direct BOLT11 receipt, Harmony hint/query, Onion and
+TEE-ORAM; each needs its own later workload policy and, where applicable, its
+own price and capability binding.
 
 ## Rendering and preflight
 

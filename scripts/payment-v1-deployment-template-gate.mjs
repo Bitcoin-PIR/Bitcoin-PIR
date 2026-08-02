@@ -26,8 +26,13 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "4f23190c44b03b326403cb5b68633e462024018e5404a2ed91c7e408072b6799",
+    "acef5f68c44147b2acd4616fc8c9403d32aa9652f827844bf369129816cee743",
 });
+
+const VPSBG_MEASURED_RUN_PATH =
+  "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";
+const VPSBG_PREMIUM_FREE_POW_STATE_ROOT =
+  "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta";
 
 export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/edge/directory-public-haproxy.cfg.in":
@@ -2275,6 +2280,127 @@ function activeArgumentText(text) {
     .join(" ");
 }
 
+function measuredShellLogicalLines(text, label) {
+  const lines = [];
+  let pending = "";
+  for (const original of text.split(/\r?\n/u)) {
+    const trimmed = original.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const continued = original.trimEnd().endsWith("\\");
+    const fragment = continued
+      ? original.trimEnd().slice(0, -1).trim()
+      : original.trim();
+    pending = pending === "" ? fragment : `${pending} ${fragment}`;
+    if (!continued) {
+      lines.push(pending);
+      pending = "";
+    }
+  }
+  if (pending !== "") fail(`${label} ends with an unterminated continuation`);
+  return lines;
+}
+
+function requireMeasuredPublicHex(value, flag, label) {
+  if (!/^[0-9a-f]{64}$/u.test(value) || /^0{64}$/u.test(value)) {
+    fail(`${label} ${flag} must contain a non-placeholder 64-hex public value`);
+  }
+}
+
+/**
+ * Validate the measured final `unified_server` argv once the VPSBG Premium +
+ * Free-PoW profile replaces the inert runit baseline.  The caller first pins
+ * the whole script hash, so this intentionally focuses on the payment suffix:
+ * the fixed state paths and argument order must not drift while the four
+ * public identifiers are rendered during the deployment ceremony.
+ */
+export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
+  const label = "VPSBG Premium + Free-PoW measured final exec";
+  const execLines = measuredShellLogicalLines(text, label).filter((line) =>
+    /^exec\s+"\$UNIFIED_SERVER"(?:\s|$)/u.test(line),
+  );
+  if (execLines.length !== 1) {
+    fail(`${label} must contain exactly one final exec for $UNIFIED_SERVER`);
+  }
+  const tokens = execLines[0].split(/\s+/u);
+  if (
+    tokens[0] !== "exec" ||
+    tokens[1] !== '"$UNIFIED_SERVER"' ||
+    tokens.at(-1) !== "2>&1"
+  ) {
+    fail(`${label} must use the reviewed exec prefix and final 2>&1`);
+  }
+  const argv = tokens.slice(2, -1);
+  const paymentStart = argv.indexOf("--require-service-auth-v1");
+  if (
+    paymentStart < 2 ||
+    argv.lastIndexOf("--require-service-auth-v1") !== paymentStart ||
+    argv[paymentStart - 2] !== "--identity-server-id" ||
+    argv[paymentStart - 1] !== "pir2"
+  ) {
+    fail(`${label} must begin immediately after --identity-server-id pir2`);
+  }
+  for (const value of argv.slice(0, paymentStart)) {
+    if (
+      value.startsWith("--service-") ||
+      value === "--allow-experimental-arc"
+    ) {
+      fail(`${label} must keep all payment options in the final payment suffix`);
+    }
+  }
+
+  const command = execLines[0];
+  rejectPattern(command, /@[A-Z][A-Z0-9_]*@/u, label, "placeholder value");
+  for (const [pattern, description] of [
+    [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy digest"],
+    [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
+    [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
+    [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
+    [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "provider-local Cashu material"],
+    [/(?:^|\s)--(?:arc-key|cashu-keyset)(?:\s|=)/u, "issuer key material"],
+  ]) {
+    rejectPattern(command, pattern, label, description);
+  }
+
+  const expected = [
+    ["--require-service-auth-v1", null],
+    ["--service-policy", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/service-policy.bin`],
+    ["--service-provider-id-hex", "public-hex"],
+    ["--service-policy-key-hex", "public-hex"],
+    ["--service-store", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/provider.sqlite3`],
+    ["--service-rollback-authority", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/rollback.sqlite3`],
+    ["--allow-local-service-rollback-authority-dev", null],
+    ["--service-shared-authorization", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-authorization.bin`],
+    ["--service-shared-issuer-approval", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-approval.bin`],
+    ["--service-shared-operator-key-hex", "public-hex"],
+    ["--service-shared-issuer-settlement-key-hex", "public-hex"],
+    ["--service-shared-clearing-key", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/provider-clearing-signing.key`],
+    ["--service-shared-idempotency-key", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-redeem-idempotency.key`],
+    ["--service-shared-minimum-authorization-epoch", "1"],
+    ["--allow-experimental-arc", null],
+    ["--service-max-concurrent-auth", "4"],
+    ["--service-max-concurrent-online-v2full-auth", "0"],
+    ["--service-pre-auth-timeout-ms", "60000"],
+  ];
+  let cursor = paymentStart;
+  for (const [flag, expectedValue] of expected) {
+    if (argv[cursor] !== flag) {
+      fail(`${label} must contain ${flag} exactly once and in canonical order`);
+    }
+    cursor += 1;
+    if (expectedValue === null) continue;
+    const actual = argv[cursor];
+    if (expectedValue === "public-hex") {
+      requireMeasuredPublicHex(actual, flag, label);
+    } else if (actual !== expectedValue) {
+      fail(`${label} ${flag} must equal ${expectedValue}`);
+    }
+    cursor += 1;
+  }
+  if (cursor !== argv.length) {
+    fail(`${label} contains an unreviewed, duplicate, or positional argv value`);
+  }
+}
+
 function validateVpsbgPremiumFreePowBeta(text, mode) {
   const label = "VPSBG Premium + Free-PoW beta argument fragment";
   requireText(text, "not a run script", label);
@@ -2647,6 +2773,13 @@ function validateActiveBaselines(root) {
     const actual = sha256File(absolute);
     if (actual !== expected) {
       fail(`active deployment file changed outside this slice: ${relativePath}`);
+    }
+    if (
+      relativePath === VPSBG_MEASURED_RUN_PATH &&
+      /^\s*--require-service-auth-v1(?:\s|$)/mu.test(text)
+    ) {
+      validateVpsbgPremiumFreePowMeasuredFinalExec(text);
+      continue;
     }
     rejectPattern(
       text,
