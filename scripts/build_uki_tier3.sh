@@ -297,7 +297,7 @@ if [ -n "${BPIR_TIER3_IDENTITY_KEY:-}" ] || [ -n "${BPIR_TIER3_IDENTITY_CERT:-}"
         '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/identity/server\.cert$'
     )
     for expected in "${IDENTITY_INITRD_ITEMS[@]}"; do
-        if ! grep -Eq "$expected" <<< "$INITRD_LISTING"; then
+        if ! grep -Eq -- "$expected" <<< "$INITRD_LISTING"; then
             echo "ERROR: measured identity item missing or has unsafe mode: $expected" >&2
             exit 1
         fi
