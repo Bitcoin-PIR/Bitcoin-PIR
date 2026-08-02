@@ -6,7 +6,9 @@
 #
 # Base topology flags mirror deploy/systemd/pir-vpsbg.service. The measured
 # Payment V1 suffix below is intentionally VPSBG-specific: it enables the
-# db0-only Free-PoW + Hetzner shared-issuer BAT/ARC functional beta.
+# db0 Free-PoW + Hetzner shared-issuer BAT/ARC functional beta, with an
+# independently served Harmony query scope when its signed policy advertises
+# one.
 #   --port 8091
 #   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
 #   --serve-queries    (pir2 is queries-only per the production topology
@@ -65,8 +67,16 @@ if [ -r /etc/bitcoinpir/identity/server.key ] && [ -r /etc/bitcoinpir/identity/s
     IDENTITY_CERT_PATH=/etc/bitcoinpir/identity/server.cert
 fi
 
-# The functional-beta policy embedded below advertises only db0 DPF-PIR.
-# Do not hold that usable path behind the separate Direct-ORAM ceremony: the
+# Existing deployments load their signed policy from the mutable data mount.
+# A release may instead embed the same public policy in the UKI so its exact
+# Free offer set changes atomically with the attested runtime.  Issuer keys,
+# payment bindings, stores, and databases remain on the data mount.
+SERVICE_POLICY_PATH=/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin
+if [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then
+    SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
+fi
+
+# Do not hold the usable db0 query path behind the separate Direct-ORAM ceremony: the
 # currently mounted db0 proof is V1 and deliberately lacks the typed
 # `direct_oram` data required by the newer Direct-ORAM bootstrap.  Direct ORAM
 # remains below as an explicit future path once a new attested full-build has
@@ -342,7 +352,7 @@ verify_direct_oram_publish() {
 
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
 if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
-    echo "[unified-server-run] starting VPSBG db0 DPF-only functional beta; Direct ORAM is not advertised" >&2
+    echo "[unified-server-run] starting VPSBG db0 functional beta; Direct ORAM is not advertised" >&2
     exec "$UNIFIED_SERVER" \
         --port 8091 \
         --role secondary \
@@ -354,7 +364,7 @@ if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
         --identity-cert-path "$IDENTITY_CERT_PATH" \
         --identity-server-id pir2-vpsbg-dpf-v1 \
         --require-service-auth-v1 \
-        --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
+        --service-policy "$SERVICE_POLICY_PATH" \
         --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
         --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
         --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
@@ -465,7 +475,7 @@ exec "$UNIFIED_SERVER" \
     --identity-cert-path "$IDENTITY_CERT_PATH" \
     --identity-server-id pir2-vpsbg-dpf-v1 \
     --require-service-auth-v1 \
-    --service-policy /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin \
+    --service-policy "$SERVICE_POLICY_PATH" \
     --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
     --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
     --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \

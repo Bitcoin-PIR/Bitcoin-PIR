@@ -43,6 +43,7 @@ install() {
     local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
     local identity_key=${BPIR_TIER3_IDENTITY_KEY:-}
     local identity_cert=${BPIR_TIER3_IDENTITY_CERT:-}
+    local service_policy=${BPIR_TIER3_SERVICE_POLICY:-}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
@@ -98,5 +99,20 @@ install() {
         inst_simple "$identity_cert" /etc/bitcoinpir/identity/server.cert
         chmod 0600 "$initdir/etc/bitcoinpir/identity/server.key"
         chmod 0644 "$initdir/etc/bitcoinpir/identity/server.cert"
+    fi
+
+    # A Tier 3 release can bind a public, signed admission policy to the
+    # measured image without putting issuer, payment, or identity secrets in
+    # it.  The runner keeps its historical rootfs policy fallback for existing
+    # deployments; this optional copy is for releases that must atomically
+    # change the attested runtime and its advertised Free scopes.
+    if [ -n "$service_policy" ]; then
+        if [ ! -r "$service_policy" ]; then
+            derror "bpir-unified-server: BPIR_TIER3_SERVICE_POLICY is not readable"
+            return 1
+        fi
+        inst_dir /etc/bitcoinpir/payment
+        inst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin
+        chmod 0644 "$initdir/etc/bitcoinpir/payment/service-policy.bin"
     fi
 }
