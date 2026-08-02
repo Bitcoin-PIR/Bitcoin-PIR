@@ -20,7 +20,7 @@ describe('bundled functional-beta trusted bootstrap', () => {
     ]);
     expect(parsed.providers[1].hardwareAttestation).toBe('required');
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      '5c792bce144224aad1ce00c51fd119dd43da128ea63bcc1c3694d15b063d51b754fa7d228de01c3f45337b67e8624ea4',
+      'd9a292da5cfb76511726c215bfde1b52b4e1ecb986a403bd8fbc56b526bfbb474ba861cd0f83ba1ae91a0279d59b09ae',
     );
     expect(() => assertIndependentProviderDialPairV1(
       parsed.providers[0],
