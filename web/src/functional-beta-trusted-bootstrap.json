@@ -13,6 +13,11 @@
         "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
       },
       "hardwareAttestation": "unavailable-accepted",
+      "supportedWorkloads": [
+        "dpf-query",
+        "harmony-hint",
+        "onion-session"
+      ],
       "lightningPayeeTrust": [
         {
           "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",
@@ -68,6 +73,11 @@
       },
       "hardwareAttestation": "required",
       "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",
+      "supportedWorkloads": [
+        "dpf-query",
+        "harmony-query",
+        "tee-oram-query"
+      ],
       "lightningPayeeTrust": [
         {
           "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",

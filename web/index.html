@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-b8TG95QxjM4somz6wyvUYDWyB/lSvJGD5R+mrKDaIt8=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-a55CCVP4KsKQ2sVjnZ1OFNER96NPzLtsBqUvyjNNrMo=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -835,8 +835,14 @@
         .admission-notice {
             margin: 0; padding: 8px 10px; border-left: 3px solid var(--warn);
             background: var(--sunken); color: var(--ink-mute); font-size: 11.5px;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
         }
         .admission-notice.error { border-left-color: var(--err); color: var(--err); }
+        .admission-notice > button { flex: 0 0 auto; white-space: nowrap; }
+        .product-admission-panel[data-admission-mode="simple"] .admission-provider-row,
+        .product-admission-panel[data-admission-mode="simple"] .admission-shared-infrastructure {
+            display: none;
+        }
         .admission-transport-boundary {
             margin: 6px 0 10px;
             color: var(--ink-mute);
@@ -915,12 +921,12 @@
                 </div>
                 <label class="admission-simple-mode" for="simpleAdmissionMode">
                     <input type="checkbox" id="simpleAdmissionMode" checked>
-                    <span><strong>Simple mode.</strong> Strictly verify the trusted servers, choose signed Free access, authorize each required role, and run one query automatically. Paid, ambiguous, or unavailable paths stop for review.</span>
+                    <span><strong>Simple mode (recommended).</strong> Click Query and the trusted server roles, signed Free access, and strict verification run automatically. You will only be asked to review a problem.</span>
                 </label>
                 <details class="admission-config" id="admissionConfig">
                     <summary>Provider verification trust configuration</summary>
                     <div class="admission-config-grid">
-                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (advanced replacement: endpoint, provider/policy/operator keys, server/binary/measurement/database pins, exact issuer/network/Lightning-payee trust)</label>
+                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (advanced replacement: endpoint, provider/policy/operator keys, server/binary/measurement/database pins, explicit product-role workloads, exact issuer/network/Lightning-payee trust)</label>
                         <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="A functional-beta trusted bootstrap is bundled for this page load. Paste a complete replacement only when intentionally changing trust."></textarea>
                         <div class="admission-config-actions">
                             <button type="button" id="admissionApplyBootstrap" class="btn">Apply replacement in memory</button>
@@ -1663,7 +1669,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
         import FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP from './src/functional-beta-trusted-bootstrap.json';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -1745,31 +1751,35 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             dpf: new ProductAdmissionPanelV1({
                 root: document.getElementById('dpfAdmissionPanel'),
                 roles: [
-                    { role: 'server0', label: 'Server 0 · DPF query' },
-                    { role: 'server1', label: 'Server 1 · DPF query' },
+                    { role: 'server0', label: 'Server 0 · DPF query', workload: 'dpf-query' },
+                    { role: 'server1', label: 'Server 1 · DPF query', workload: 'dpf-query' },
                 ],
                 beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
+                onRequestAdvancedMode: requestAdvancedAdmissionMode,
                 onStateChange: snapshot => updateAdmissionQueryButton('queryBtn', snapshot),
             }),
             onion: new ProductAdmissionPanelV1({
                 root: document.getElementById('opAdmissionPanel'),
-                roles: [{ role: 'onion', label: 'Onion provider' }],
+                roles: [{ role: 'onion', label: 'Onion provider', workload: 'onion-session' }],
                 beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
+                onRequestAdvancedMode: requestAdvancedAdmissionMode,
                 onStateChange: snapshot => updateAdmissionQueryButton('op-queryBtn', snapshot),
             }),
             harmony: new ProductAdmissionPanelV1({
                 root: document.getElementById('hpAdmissionPanel'),
                 roles: [
-                    { role: 'hint', label: 'Hint provider · large one-time hint workload' },
-                    { role: 'query', label: 'Query provider · per-query workload' },
+                    { role: 'hint', label: 'Hint provider · large one-time hint workload', workload: 'harmony-hint' },
+                    { role: 'query', label: 'Query provider · per-query workload', workload: 'harmony-query' },
                 ],
                 beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
+                onRequestAdvancedMode: requestAdvancedAdmissionMode,
                 onStateChange: snapshot => updateAdmissionQueryButton('hp-queryBtn', snapshot),
             }),
             oram: new ProductAdmissionPanelV1({
                 root: document.getElementById('oramAdmissionPanel'),
-                roles: [{ role: 'oram', label: 'ORAM provider' }],
+                roles: [{ role: 'oram', label: 'ORAM provider', workload: 'tee-oram-query' }],
                 beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
+                onRequestAdvancedMode: requestAdvancedAdmissionMode,
                 onStateChange: snapshot => updateAdmissionQueryButton('oram-queryBtn', snapshot),
             }),
         };
@@ -1779,19 +1789,28 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return checkbox instanceof HTMLInputElement && checkbox.checked;
         }
 
+        function requestAdvancedAdmissionMode() {
+            const checkbox = document.getElementById('simpleAdmissionMode');
+            if (!(checkbox instanceof HTMLInputElement) || !checkbox.checked) return;
+            checkbox.checked = false;
+            checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
         function defaultProviderIdsForKind(kind) {
             const providers = productTrustedBootstrap?.providers ?? [];
-            const roles = {
-                dpf: ['server0', 'server1'],
-                harmony: ['hint', 'query'],
-                onion: ['onion'],
-                oram: ['oram'],
+            const routes = {
+                dpf: [
+                    ['server0', 'dpf-query'],
+                    ['server1', 'dpf-query'],
+                ],
+                harmony: [
+                    ['hint', 'harmony-hint'],
+                    ['query', 'harmony-query'],
+                ],
+                onion: [['onion', 'onion-session']],
+                oram: [['oram', 'tee-oram-query']],
             }[kind] ?? [];
-            if (providers.length < roles.length) return {};
-            return Object.fromEntries(roles.map((role, index) => [
-                role,
-                providers[index].providerIdHex,
-            ]));
+            return defaultProviderIdsForAdmissionRoutesV1(providers, routes);
         }
 
         function hasExactAdmissionSelection(leg) {
@@ -1903,8 +1922,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 providerIdHex: provider.providerIdHex,
                 label: provider.label,
                 source: matchingDirectoryEntry(provider) ? 'directory' : 'manual',
+                supportedWorkloads: provider.supportedWorkloads,
             }));
             Object.entries(admissionPanels).forEach(([kind, panel]) => {
+                panel.setSimpleMode(simpleAdmissionEnabled());
                 panel.setProviderOptions(choices);
                 if (simpleAdmissionEnabled()) {
                     panel.setDefaultProviderIds(defaultProviderIdsForKind(kind));
@@ -2581,6 +2602,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     controller = await prepareProductAdmission(kind);
                 } catch (error) {
                     await closeAdmissionAttempt(kind, 'Provider verification failed; inputs are editable again.');
+                    admissionPanels[kind].setPublicError(publicAdmissionError(error));
                     throw error;
                 }
                 if (simpleAdmissionEnabled()) {
