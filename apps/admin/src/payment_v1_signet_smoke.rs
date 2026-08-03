@@ -422,6 +422,12 @@ struct BatSecretV1 {
     blinding_scalar: Zeroizing<[u8; 32]>,
 }
 
+type IssuanceItemsV1 = (
+    CredentialIssuanceRequestItemsV1,
+    Option<Vec<BatSecretV1>>,
+    Option<pir_arc_adapter::PendingArcCredentialRequestV1>,
+);
+
 fn build_issuance_items(
     method: PaidMethodV1,
     binding: &pir_service_protocol::CredentialKeyBindingV1,
@@ -429,14 +435,7 @@ fn build_issuance_items(
     scope_id: &[u8; 32],
     offer: &pir_service_protocol::ServiceOfferV1,
     now_unix: u64,
-) -> Result<
-    (
-        CredentialIssuanceRequestItemsV1,
-        Option<Vec<BatSecretV1>>,
-        Option<pir_arc_adapter::PendingArcCredentialRequestV1>,
-    ),
-    String,
-> {
+) -> Result<IssuanceItemsV1, String> {
     match method {
         PaidMethodV1::DirectReceipt => Ok((
             CredentialIssuanceRequestItemsV1::DirectPaidReceipt,
