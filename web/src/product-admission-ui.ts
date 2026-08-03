@@ -11,17 +11,20 @@ import {
   type ProductRetainedCapabilitySelectorV1,
   type ProductRetainedRecoveryOptionV1,
 } from './product-admission-controller.js';
+import type { ProductAdmissionWorkloadV1 } from './product-provider-bootstrap.js';
 import type { RetainedServiceRedemptionViewV1 } from './sdk-bridge.js';
 
 export interface ProductProviderChoiceV1 {
   providerIdHex: string;
   label: string;
   source: 'directory' | 'manual';
+  supportedWorkloads: readonly ProductAdmissionWorkloadV1[];
 }
 
 export interface ProductAdmissionPanelRoleV1 {
   role: string;
   label: string;
+  workload: ProductAdmissionWorkloadV1;
 }
 
 export interface ProductAdmissionPanelOptionsV1 {
@@ -31,6 +34,8 @@ export interface ProductAdmissionPanelOptionsV1 {
   transportCompatibilityNotice?: string;
   /** Fresh fail-closed trust check before offer/payment/token/auth transitions. */
   beforeSecurityTransition?: () => void | Promise<void>;
+  /** Offer an explicit escape hatch only when simple mode needs review. */
+  onRequestAdvancedMode?: () => void;
   onStateChange?: (snapshot: ProductAdmissionSnapshotV1 | null) => void;
 }
 
@@ -91,9 +96,11 @@ export class ProductAdmissionPanelV1 {
   private automationNotice: string | null = null;
   private unavailableNotice = 'Query access is not configured; queries are blocked.';
   private busy = false;
+  private simpleMode = false;
 
   constructor(private readonly options: ProductAdmissionPanelOptionsV1) {
     options.root.replaceChildren();
+    options.root.dataset.admissionMode = 'advanced';
     const notice = document.createElement('p');
     notice.className = 'admission-notice';
     notice.dataset.admissionNotice = 'true';
@@ -158,16 +165,24 @@ export class ProductAdmissionPanelV1 {
   }
 
   setProviderOptions(options: ProductProviderChoiceV1[]): void {
-    for (const row of this.rows.values()) {
+    for (const role of this.options.roles) {
+      const row = this.rows.get(role.role);
+      if (!row) continue;
+      const matchingOptions = options.filter((provider) =>
+        provider.supportedWorkloads.includes(role.workload));
       const previous = row.provider.value;
       row.provider.replaceChildren(optionElement('', 'Select trusted provider…'));
-      for (const provider of options) {
+      for (const provider of matchingOptions) {
         const suffix = provider.source === 'directory' ? ' · verified directory' : ' · manual';
         row.provider.appendChild(optionElement(provider.providerIdHex, provider.label + suffix));
       }
-      if (options.some((candidate) => candidate.providerIdHex === previous)) {
+      if (matchingOptions.some((candidate) => candidate.providerIdHex === previous)) {
         row.provider.value = previous;
       }
+    }
+    if (this.simpleMode) {
+      this.renderSimpleAvailability(options.length > 0);
+      return;
     }
     this.renderUnavailable(
       options.length === 0
@@ -180,7 +195,10 @@ export class ProductAdmissionPanelV1 {
 
   /** Apply simple-mode defaults without overwriting an explicit selection. */
   setDefaultProviderIds(defaults: Record<string, string>): void {
-    if (Object.keys(defaults).length === 0) return;
+    if (Object.keys(defaults).length === 0) {
+      if (this.simpleMode) this.renderSimpleAvailability(false);
+      return;
+    }
     for (const [role, providerIdHex] of Object.entries(defaults)) {
       const row = this.rows.get(role);
       if (!row || row.provider.value || !providerIdHex) continue;
@@ -188,9 +206,26 @@ export class ProductAdmissionPanelV1 {
         row.provider.value = providerIdHex;
       }
     }
-    this.renderUnavailable(
-      'Simple mode will use the selected trusted provider defaults and signed Free access when available.',
-    );
+    if (this.simpleMode) {
+      this.renderSimpleAvailability(true);
+    } else {
+      this.renderUnavailable(
+        'Simple mode defaults are available only while Simple mode is enabled.',
+      );
+    }
+  }
+
+  setSimpleMode(enabled: boolean): void {
+    if (this.simpleMode === enabled) return;
+    this.simpleMode = enabled;
+    this.options.root.dataset.admissionMode = enabled ? 'simple' : 'advanced';
+    if (enabled && !this.publicError && !this.controller) {
+      this.automationNotice = 'Simple mode is ready. Click the query button; trusted roles, Free access, and strict verification run automatically.';
+    } else if (!enabled && this.automationNotice?.startsWith('Simple mode')) {
+      this.automationNotice = null;
+    }
+    this.render();
+    this.options.onStateChange?.(this.snapshot);
   }
 
   selectedProviderIds(): Record<string, string> {
@@ -250,9 +285,11 @@ export class ProductAdmissionPanelV1 {
     this.snapshot = snapshot;
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
-      notice.textContent = this.publicError
+      const message = this.publicError
         ?? this.automationNotice
-        ?? (snapshot?.phase === 'ready-to-query'
+        ?? (this.simpleMode
+          ? 'Simple mode is ready. Click the query button; trusted roles, Free access, and strict verification run automatically.'
+          : snapshot?.phase === 'ready-to-query'
           ? 'All exact provider roles are authorized. The next action sends one query to every required provider role.'
           : snapshot?.phase === 'querying'
             ? 'One authorized PIR query is in flight; it will not be retried automatically.'
@@ -268,6 +305,12 @@ export class ProductAdmissionPanelV1 {
                 : this.options.roles.length > 1
                   ? 'Verify and authorize the first independent provider.'
                   : 'Verify and authorize the provider.');
+      notice.replaceChildren(document.createTextNode(message));
+      if (this.simpleMode && this.publicError && this.options.onRequestAdvancedMode) {
+        notice.appendChild(actionButton('Open advanced setup', () => {
+          this.options.onRequestAdvancedMode?.();
+        }));
+      }
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
@@ -520,6 +563,10 @@ export class ProductAdmissionPanelV1 {
 
   private renderUnavailable(message: string): void {
     this.unavailableNotice = message;
+    if (this.simpleMode) {
+      this.renderSimpleAvailability(this.hasCompleteSimpleRouting());
+      return;
+    }
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = message;
@@ -539,6 +586,19 @@ export class ProductAdmissionPanelV1 {
       row.status.textContent = 'Query access: blocked';
       row.actions.replaceChildren();
     }
+  }
+
+  private renderSimpleAvailability(hasTrustedBootstrap: boolean): void {
+    if (!hasTrustedBootstrap) {
+      this.automationNotice = 'Simple mode is waiting for the trusted server routing table; no provider role is shown until it is complete.';
+    } else if (!this.publicError && !this.controller) {
+      this.automationNotice = 'Simple mode is ready. Click the query button; trusted roles, Free access, and strict verification run automatically.';
+    }
+    this.render();
+  }
+
+  private hasCompleteSimpleRouting(): boolean {
+    return Array.from(this.rows.values()).every((row) => row.provider.options.length > 1);
   }
 }
 

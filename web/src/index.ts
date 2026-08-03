@@ -395,6 +395,7 @@ export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export {
   assertIndependentProviderDialPairV1,
+  defaultProviderIdsForAdmissionRoutesV1,
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
@@ -402,9 +403,12 @@ export {
   providerArkFingerprintV1,
   providerLightningPayeeTrustV1,
   providerOperatorKeyV1,
+  providerSupportsWorkloadV1,
 } from './product-provider-bootstrap.js';
 export type {
   ProductLightningPayeeTrustV1,
+  ProductAdmissionWorkloadV1,
+  ProductAdmissionRouteV1,
   ProductTrustedBootstrapV1,
   ProductTrustedProviderV1,
 } from './product-provider-bootstrap.js';

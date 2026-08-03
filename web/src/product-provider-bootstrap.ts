@@ -11,6 +11,20 @@ import type { ServiceOfferViewV1 } from './sdk-bridge.js';
 
 const MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1 = 64;
 
+/**
+ * Workloads that can be routed to one provider role before a connection is
+ * opened. This is an operator-published routing allowlist, not a capability
+ * grant: the live signed service policy remains the final authority.
+ */
+export type ProductAdmissionWorkloadV1 =
+  | 'dpf-query'
+  | 'harmony-hint'
+  | 'harmony-query'
+  | 'onion-session'
+  | 'tee-oram-query';
+
+export type ProductAdmissionRouteV1 = readonly [role: string, workload: ProductAdmissionWorkloadV1];
+
 export interface ProductLightningPayeeTrustV1 {
   /** Exact issuer identity committed by the signed service offer. */
   issuerIdHex: string;
@@ -33,6 +47,8 @@ export interface ProductTrustedProviderV1 {
   /** Explicitly records why a missing hardware measurement is accepted. */
   hardwareAttestation: 'required' | 'unavailable-accepted';
   expectedArkFingerprintHex?: string;
+  /** Explicit pre-connection workload routing; absence is rejected. */
+  supportedWorkloads: readonly ProductAdmissionWorkloadV1[];
   databaseProofPins: DatabaseProofPin[];
   /** Independent exact-offer payment trust; the Nostr directory does not supply this. */
   lightningPayeeTrust: ProductLightningPayeeTrustV1[];
@@ -173,6 +189,34 @@ export function providerArkFingerprintV1(
     : null;
 }
 
+export function providerSupportsWorkloadV1(
+  provider: Pick<ProductTrustedProviderV1, 'supportedWorkloads'>,
+  workload: ProductAdmissionWorkloadV1,
+): boolean {
+  return provider.supportedWorkloads.includes(workload);
+}
+
+/**
+ * Pick deterministic defaults only from the explicitly declared workload
+ * routes. A provider cannot fill two independent roles in one pair.
+ */
+export function defaultProviderIdsForAdmissionRoutesV1(
+  providers: readonly Pick<ProductTrustedProviderV1, 'providerIdHex' | 'supportedWorkloads'>[],
+  routes: readonly ProductAdmissionRouteV1[],
+): Record<string, string> {
+  const selected = new Set<string>();
+  const defaults: Record<string, string> = {};
+  for (const [role, workload] of routes) {
+    const provider = providers.find((candidate) =>
+      !selected.has(candidate.providerIdHex)
+      && providerSupportsWorkloadV1(candidate, workload));
+    if (!provider) return {};
+    selected.add(provider.providerIdHex);
+    defaults[role] = provider.providerIdHex;
+  }
+  return defaults;
+}
+
 function parseProvider(value: unknown, index: number): ProductTrustedProviderV1 {
   if (!isRecord(value)) throw new Error(`provider ${index} must be an object`);
   const label = boundedText(`provider ${index} label`, value.label, 1, 80);
@@ -213,6 +257,18 @@ function parseProvider(value: unknown, index: number): ProductTrustedProviderV1 
   if (value.hardwareAttestation === 'required' && !expectedArkFingerprintHex) {
     throw new Error(`provider ${index} requires an independently pinned ARK fingerprint`);
   }
+  if (!Array.isArray(value.supportedWorkloads)
+      || value.supportedWorkloads.length === 0
+      || value.supportedWorkloads.length > 8) {
+    throw new Error(`provider ${index} must declare supported workloads`);
+  }
+  const supportedWorkloads = value.supportedWorkloads.map((workload, workloadIndex) => {
+    if (!isProductAdmissionWorkload(workload)) {
+      throw new Error(`provider ${index} workload ${workloadIndex} is invalid`);
+    }
+    return workload;
+  });
+  requireUnique(supportedWorkloads, `provider ${index} supported workload`);
   if (!Array.isArray(value.databaseProofPins) || value.databaseProofPins.length === 0) {
     throw new Error(`provider ${index} requires database proof pins`);
   }
@@ -248,6 +304,7 @@ function parseProvider(value: unknown, index: number): ProductTrustedProviderV1 
     serverPin: { binarySha256Hex, measurementHex, description: label },
     hardwareAttestation: value.hardwareAttestation,
     expectedArkFingerprintHex,
+    supportedWorkloads,
     databaseProofPins,
     lightningPayeeTrust,
   };
@@ -377,6 +434,14 @@ function requireUnique(values: string[], label: string): void {
 
 function isNetwork(value: unknown): value is LightningNetworkNameV1 {
   return value === 'bitcoin' || value === 'testnet' || value === 'signet' || value === 'regtest';
+}
+
+function isProductAdmissionWorkload(value: unknown): value is ProductAdmissionWorkloadV1 {
+  return value === 'dpf-query'
+    || value === 'harmony-hint'
+    || value === 'harmony-query'
+    || value === 'onion-session'
+    || value === 'tee-oram-query';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

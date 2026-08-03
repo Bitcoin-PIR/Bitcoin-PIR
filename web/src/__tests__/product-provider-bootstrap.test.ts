@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertIndependentProviderDialPairV1,
+  defaultProviderIdsForAdmissionRoutesV1,
   expectedLightningPayeeForOfferV1,
   parseProductTrustedBootstrapV1,
   providerLightningPayeeTrustV1,
@@ -48,6 +49,7 @@ function bootstrapProvider() {
     stableServerId: 'pir0',
     serverPin: { binarySha256Hex: '24'.repeat(32) },
     hardwareAttestation: 'unavailable-accepted',
+    supportedWorkloads: ['dpf-query', 'harmony-hint'],
     databaseProofPins: [databaseProofPin],
     lightningPayeeTrust: [{
       issuerIdHex: ISSUER_ID,
@@ -126,6 +128,31 @@ describe('pre-dial provider independence', () => {
     const second = provider('02', 'wss://pir1.example');
     second[field] = first[field];
     expect(() => assertIndependentProviderDialPairV1(first, second)).toThrow(reason);
+  });
+});
+
+describe('explicit product role routing', () => {
+  it('routes Harmony hint/query and ORAM to their declared providers', () => {
+    const providers = [
+      { providerIdHex: '01', supportedWorkloads: ['dpf-query', 'harmony-hint', 'onion-session'] as const },
+      { providerIdHex: '02', supportedWorkloads: ['dpf-query', 'harmony-query', 'tee-oram-query'] as const },
+    ];
+    expect(defaultProviderIdsForAdmissionRoutesV1(providers, [
+      ['hint', 'harmony-hint'],
+      ['query', 'harmony-query'],
+    ])).toEqual({ hint: '01', query: '02' });
+    expect(defaultProviderIdsForAdmissionRoutesV1(providers, [
+      ['onion', 'onion-session'],
+    ])).toEqual({ onion: '01' });
+    expect(defaultProviderIdsForAdmissionRoutesV1(providers, [
+      ['oram', 'tee-oram-query'],
+    ])).toEqual({ oram: '02' });
+  });
+
+  it('fails closed when a fixed role has no declared provider', () => {
+    expect(defaultProviderIdsForAdmissionRoutesV1([
+      { providerIdHex: '01', supportedWorkloads: ['dpf-query'] },
+    ], [['query', 'harmony-query']])).toEqual({});
   });
 });
 
