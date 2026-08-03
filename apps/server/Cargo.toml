@@ -67,7 +67,10 @@ standard-cashu-process-e2e = ["pir-strict-https/test-only-webpki-root"]
 # the exact Standard-Cashu private-root injection surface so `unified_server`
 # has only one test-only WebPKI escape hatch; `pir-strict-https` rejects that
 # hook in release builds.
-shared-issuer-process-e2e = ["standard-cashu-process-e2e"]
+shared-issuer-process-e2e = [
+  "standard-cashu-process-e2e",
+  "pir-provider-clearing-client/test-only-webpki-root",
+]
 # Privacy-dangerous query-detail logging for local tests only. The build script
 # rejects this feature outside Cargo's debug profile; normal dev/release
 # binaries do not compile or recognize its CLI switch.
@@ -84,6 +87,7 @@ pir-runtime-core = { path = "../../crates/protocol/runtime" }
 pir-service-protocol = { path = "../../crates/protocol/service" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
 pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
+pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
 pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
@@ -106,12 +110,12 @@ futures-util = "0.3"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b", optional = true }
+bitcoinpir-oram = { path = "../../vendor/bitcoinpir-oram", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
-pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-issuer-store = { path = "../../crates/payment/issuer-store" }
 pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }

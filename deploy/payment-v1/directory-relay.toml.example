@@ -4,19 +4,28 @@
 # or 0600 below /etc/bitcoinpir/payment-v1/directory-relay.
 
 profile = "bitcoinpir-directory-relay-v1"
-listen = "127.0.0.1:8080"
+public_listen = "127.0.0.1:8080"
+publisher_listen = "127.0.0.1:8081"
 database = "/var/lib/bitcoinpir-directory-relay/relay.sqlite3"
-directory_pubkey_hex = "@DIRECTORY_PUBLISHER_PUBKEY_HEX@"
+directory_pubkey_hex = "0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c"
 
 # These are relay abuse/capacity limits, not commercial policy. The cumulative
 # connection budget intentionally does not permit count and event-size maxima
-# to be saturated simultaneously. The supplied stock-Caddy edge is not
-# source-aware; a reviewed non-persistent source-fair boundary remains an
-# activation prerequisite.
-max_connections = 64
+# to be saturated simultaneously. Public reads and private signed writes have
+# exact reservations whose sums equal every global cap, so neither lane can
+# occupy the other's connection, operation, rate, or egress allocation.
+max_connections = 52
+max_public_connections = 48
+max_publisher_connections = 4
 max_in_flight_operations = 8
+max_public_in_flight_operations = 6
+max_publisher_in_flight_operations = 2
 max_operations_per_second = 64
+max_public_operations_per_second = 48
+max_publisher_operations_per_second = 16
 max_egress_bytes_per_second = 16777216
+max_public_egress_bytes_per_second = 12582912
+max_publisher_egress_bytes_per_second = 4194304
 max_egress_bytes_per_connection = 67108864
 
 # max_archive_bytes counts immutable event_json BLOB bytes, not SQLite/WAL/index

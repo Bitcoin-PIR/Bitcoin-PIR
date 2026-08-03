@@ -4,6 +4,9 @@ Description=BitcoinPIR Hetzner Payment V1 provider (template only)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED
+ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED
+ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED
 
 [Service]
 Type=simple
@@ -78,6 +81,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/provider
 ReadWritePaths=/var/lib/bitcoinpir-provider-payment-v1
+InaccessiblePaths=-/run/bitcoinpir-source-fair-edge
 
 # The signed policy may use direct receipts, provider-local BAT, Standard Cashu
 # and the approved shared issuer. Runtime method-coverage validation rejects

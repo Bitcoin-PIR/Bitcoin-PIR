@@ -1,31 +1,44 @@
-# Live read-only Signet preflight; never install this .in file directly.
+# Live read-only Signet preflight lease; never install this .in file directly.
 [Unit]
-Description=BitcoinPIR Hetzner live Core Lightning preflight (template only)
+Description=BitcoinPIR Hetzner live Core Lightning preflight lease (template only)
 Requires=bitcoinpir-core-lightning.service
 BindsTo=bitcoinpir-core-lightning.service
 After=bitcoinpir-core-lightning.service
-Before=bitcoinpir-payment-issuer.service
+Before=bitcoinpir-cln-rpc-guard.service bitcoinpir-payment-issuer.service
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED
+ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
 
 [Service]
-Type=oneshot
+Type=notify
+NotifyAccess=main
 User=bitcoinpir-lightning-preflight
 Group=bitcoinpir-lightning-preflight
 SupplementaryGroups=bitcoinpir-cln-guard bitcoinpir-bitcoin-rpc
 UMask=0077
+StateDirectory=bitcoinpir-lightning-preflight
+StateDirectoryMode=0700
+RuntimeDirectory=bitcoinpir-lightning-preflight
+RuntimeDirectoryMode=0700
+ExecStartPre=+/usr/bin/unlink -- /run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved
 ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256
-ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256
-ExecStart=/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight \
+ExecStart=/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight-supervisor \
     --config /etc/bitcoinpir/payment-v1/lightning/preflight.toml \
     --config-protected-parent /etc/bitcoinpir/payment-v1/lightning \
-    --config-expected-uid @PREFLIGHT_UID@ \
-    --config-expected-gid @PREFLIGHT_GID@
-RemainAfterExit=yes
-TimeoutStartSec=60
+    --config-expected-uid 0 \
+    --config-expected-gid @PREFLIGHT_GID@ \
+    --config-reader-expected-uid @PREFLIGHT_UID@
+Restart=no
+WatchdogSec=90
+TimeoutStartSec=120
+TimeoutStopSec=30
 NoNewPrivileges=true
 PrivateDevices=true
 PrivateTmp=true
@@ -48,7 +61,15 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
-ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+# The config must pin /usr/bin/busctl to @BUSCTL_SHA256@.
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /var/lib/bitcoinpir-lightning-preflight /run/systemd/units /usr/bin/busctl /usr/bin/unlink /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+# The approval parent is root:root 0700: only the privileged one-shot unlink
+# can write there; the long-running preflight process remains excluded by DAC.
+ReadWritePaths=/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals
 
-# There is intentionally no [Install] section. A successful oneshot is a
-# prerequisite of the issuer service, not authorization for funds or deploy.
+# There is intentionally no [Install] section. Type=notify with Restart=no
+# plus the consumed root-only approval token make every CLN generation require
+# an explicit fresh supervisor ceremony. The guard and issuer are BindsTo this
+# lease process and stop on any failed renew. CLN-LOADER-MAPS-APPROVED must not
+# be provisioned until a separately reviewed evidence-schema change binds the
+# running lightningd maps, inode and digest to the selected private libpq.

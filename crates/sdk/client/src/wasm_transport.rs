@@ -64,6 +64,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use crate::transport::PirTransport;
+use crate::wasm_chunk::{ReassemblyResult, WasmChunkReassembler};
 use async_trait::async_trait;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
@@ -471,28 +472,40 @@ impl PirTransport for WasmWebSocketTransport {
             return Ok(record);
         }
 
-        // The `next()` future resolves when the next callback-pushed
-        // `IncomingFrame` lands on the channel — could be a message,
-        // error, or close.
-        match self.rx.next().await {
-            Some(IncomingFrame::Binary(bytes)) => {
-                // `fire_bytes_received` fires once per WS message
-                // (matching the wire-level observer count), not per
-                // record — so a coalesced batch still reports its full
-                // size on the message that delivered it.
-                self.fire_bytes_received(bytes.len());
-                self.recv_buf = bytes;
-                take_record_from_buf(&mut self.recv_buf)?.ok_or_else(|| {
-                    PirError::Protocol(
-                        "recv: WS message shorter than one length-prefixed record".into(),
-                    )
-                })
+        // One logical PIR record may arrive as several application-level
+        // CHUNK_MAGIC WebSocket messages. Reassemble below the secure-channel
+        // wrapper so it still receives one complete sealed record, exactly as
+        // it does through the native `WsConnection` transport.
+        let mut chunks = WasmChunkReassembler::default();
+        loop {
+            // The `next()` future resolves when the next callback-pushed
+            // `IncomingFrame` lands on the channel — could be a message,
+            // error, or close.
+            match self.rx.next().await {
+                Some(IncomingFrame::Binary(bytes)) => match chunks.push(bytes)? {
+                    ReassemblyResult::Pending => continue,
+                    ReassemblyResult::Complete(message) => {
+                        // Match native `WsConnection`: account for the complete
+                        // logical message after any chunk-envelope reassembly.
+                        self.fire_bytes_received(message.len());
+                        self.recv_buf = message;
+                        return take_record_from_buf(&mut self.recv_buf)?.ok_or_else(|| {
+                            PirError::Protocol(
+                                "recv: WS message shorter than one length-prefixed record".into(),
+                            )
+                        });
+                    }
+                },
+                Some(IncomingFrame::Error(msg)) => return Err(PirError::ConnectionFailed(msg)),
+                Some(IncomingFrame::Closed(reason)) => {
+                    return Err(PirError::ConnectionClosed(reason))
+                }
+                None => {
+                    return Err(PirError::ConnectionClosed(
+                        "WebSocket receiver dropped".into(),
+                    ))
+                }
             }
-            Some(IncomingFrame::Error(msg)) => Err(PirError::ConnectionFailed(msg)),
-            Some(IncomingFrame::Closed(reason)) => Err(PirError::ConnectionClosed(reason)),
-            None => Err(PirError::ConnectionClosed(
-                "WebSocket receiver dropped".into(),
-            )),
         }
     }
 

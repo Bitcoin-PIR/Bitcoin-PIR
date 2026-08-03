@@ -24,10 +24,25 @@ payout mode or target, fee, or intent-TTL flag. The store's legacy non-zero
 payout-target column receives one fixed domain-separated disabled sentinel,
 never operator or request input. The issuer settlement signing key remains
 required for redeem and balance signatures. Retained settlement verifying keys
-remain optional because exact committed redeem/approval replay after signing-key
-rotation also needs them; they are not payout-only keys. Production TLS, node
+remain optional because exact committed issuer-side replay and verification
+after signing-key rotation may need them; they are not payout-only keys. This
+does not give `unified_server` retained clearing authorizations: the shipped
+provider runtime loads one authorization/approval and cannot recover an
+outcome-unknown old redeem after replacing it. V1 operators must drain and
+reconcile shared-issuer admission before such a rotation. Production TLS, node
 custody, payout execution, real-funds activation and remote deployment remain
 separate approval gates.
+
+Each `--clearing-authorization` and `--clearing-approval` pair must have one
+same-position `--clearing-provider-request-verifying-key` file containing a raw
+32-byte Ed25519 public key. Startup rejects a missing/invalid key and rejects
+reuse among the provider request, provider clearing, provider operator and
+current/retained issuer settlement roles. Ledger-only balance requests continue to use the
+authorized clearing key; the request key is registered separately for future
+payout recovery/status compatibility and is never replaced by a schema filler.
+Generate the signed artifacts with the two independent, self-verifying
+`bpir-admin payment-artifact clearing-*` ceremonies documented in
+`docs/payment/OFFLINE_OPERATOR_TOOLING.md`.
 
 `init-store`, `check-store`, and every available serving mode require exactly
 one floor boundary:

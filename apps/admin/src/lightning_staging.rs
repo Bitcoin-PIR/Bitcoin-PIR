@@ -13,6 +13,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,6 +41,17 @@ const MAX_SCB_BYTES_V1: usize = 4096;
 const MAX_CORE_COOKIE_BYTES_V1: u64 = 256;
 const MIN_ROUTE_LIQUIDITY_MSAT_V1: u64 = 100_000;
 const MAX_ROUTE_LIQUIDITY_MSAT_V1: u64 = 100_000_000;
+const BACKUP_RECEIPT_STATE_DIRECTORY_V1: &str = "/var/lib/bitcoinpir-lightning-preflight";
+const BACKUP_RECEIPT_PATH_V1: &str = "/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml";
+const CLN_SYSTEMD_INVOCATION_PARENT_V1: &str = "/run/systemd/units";
+const CLN_SYSTEMD_INVOCATION_LINK_NAME_V1: &str = "invocation:bitcoinpir-core-lightning.service";
+const PREFLIGHT_LEASE_SCHEMA_V1: u32 = 1;
+const PREFLIGHT_LEASE_STATE_DIRECTORY_V1: &str = "/run/bitcoinpir-lightning-preflight";
+const PREFLIGHT_LEASE_PATH_V1: &str = "/run/bitcoinpir-lightning-preflight/lease.toml";
+const PREFLIGHT_LEASE_REFRESH_SECONDS_V1: u64 = 20;
+const PREFLIGHT_LEASE_VALIDITY_SECONDS_V1: u64 = 180;
+const PREFLIGHT_WATCHDOG_USEC_V1: u64 = 90 * 1_000_000;
+const PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1: u64 = 55;
 
 #[derive(Args, Debug)]
 pub struct LightningStagingArgs {
@@ -48,8 +61,14 @@ pub struct LightningStagingArgs {
 
 #[derive(Subcommand, Debug)]
 enum LightningStagingCommand {
+    /// Validate one fresh, unfunded zero-channel node before any channel mutation.
+    #[command(name = "bootstrap-preflight")]
+    BootstrapPreflight(LightningStagingPreflightArgs),
     /// Validate one local payer, router or issuer node without changing it.
     Preflight(LightningStagingPreflightArgs),
+    /// Continuously renew a short lease bound to one exact CLN systemd invocation.
+    #[command(name = "preflight-supervisor")]
+    PreflightSupervisor(LightningStagingPreflightArgs),
     /// Record a fresh local assertion after external backups were restore-checked.
     #[command(name = "record-backup-receipt")]
     RecordBackupReceipt(LightningStagingRecordBackupReceiptArgs),
@@ -57,34 +76,40 @@ enum LightningStagingCommand {
 
 #[derive(Args, Debug)]
 struct LightningStagingPreflightArgs {
-    /// Absolute path to the owner-controlled, non-secret TOML configuration.
+    /// Absolute path to the root-owned, non-secret TOML configuration.
     #[arg(long)]
     config: PathBuf,
     /// Trusted directory boundary containing the config (not read from it).
     #[arg(long)]
     config_protected_parent: PathBuf,
-    /// Exact owner UID required for the config and protected subtree.
+    /// Exact owner UID required for the config; V1 requires root (0).
     #[arg(long)]
     config_expected_uid: u32,
-    /// Exact owner GID required for the config and protected subtree.
+    /// Exact service-reader GID required for the config.
     #[arg(long)]
     config_expected_gid: u32,
+    /// Exact non-root EUID under which the config reader must execute.
+    #[arg(long)]
+    config_reader_expected_uid: u32,
 }
 
 #[derive(Args, Debug)]
 struct LightningStagingRecordBackupReceiptArgs {
-    /// Absolute path to the owner-controlled, non-secret TOML configuration.
+    /// Absolute path to the root-owned, non-secret TOML configuration.
     #[arg(long)]
     config: PathBuf,
     /// Trusted directory boundary containing the config (not read from it).
     #[arg(long)]
     config_protected_parent: PathBuf,
-    /// Exact owner UID required for the config and protected subtree.
+    /// Exact owner UID required for the config; V1 requires root (0).
     #[arg(long)]
     config_expected_uid: u32,
-    /// Exact owner GID required for the config and protected subtree.
+    /// Exact service-reader GID required for the config.
     #[arg(long)]
     config_expected_gid: u32,
+    /// Exact non-root EUID under which the config reader must execute.
+    #[arg(long)]
+    config_reader_expected_uid: u32,
     /// Assert that the node identity secret's offline backup was restore-checked.
     #[arg(
         long,
@@ -132,7 +157,14 @@ struct LightningStagingConfigV1 {
     minimum_route_liquidity_msat: u64,
     bitcoin: BitcoinConfigV1,
     lightning: LightningConfigV1,
+    systemd: SystemdConfigV1,
     backup: BackupConfigV1,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SystemdConfigV1 {
+    busctl: PinnedBinaryV1,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -171,8 +203,10 @@ enum CoreRpcCookieAccessPolicyV1 {
     #[default]
     SameUidOwnerOnly,
     /// Split-UID layout: a short-lived preflight unit traverses an exact
-    /// bitcoind-owner/cookie-group mode-0710 directory and reads a 0640 cookie.
-    CrossUidSharedGroup,
+    /// bitcoind-owner/cookie-group mode-2710 setgid directory and reads a 0640
+    /// cookie. The explicit policy name prevents an old mode-0710 config from
+    /// silently acquiring the new directory-inheritance semantics.
+    CrossUidSetgidSharedGroup,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -271,6 +305,31 @@ struct BackupReceiptV1 {
     staticbackup_digest_hex: String,
     identity_secret_backup_confirmed: bool,
     channel_state_backup_confirmed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PreflightLeaseV1 {
+    schema_version: u32,
+    cln_invocation_id: String,
+    checked_at_unix: u64,
+    valid_until_unix: u64,
+}
+
+#[derive(Debug)]
+struct PreflightSupervisorRoundSuccessV1 {
+    preflight: PreflightSuccessV1,
+    invocation_id: String,
+    committed_at_unix: u64,
+    backup_age_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BusctlBooleanPropertyV1 {
+    #[serde(rename = "type")]
+    signature: String,
+    data: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -440,15 +499,25 @@ struct ClnGetInfoV1 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClnPluginListV1 {
     command: String,
     plugins: Vec<ClnPluginV1>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 struct ClnPluginV1 {
     name: String,
     active: bool,
+    dynamic: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClnListFundsV1 {
+    outputs: Vec<serde::de::IgnoredAny>,
+    channels: Vec<serde::de::IgnoredAny>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -508,11 +577,40 @@ struct PreflightSnapshotV1 {
     cln_version: String,
     cln_network: String,
     cln_blockheight: u64,
-    plugins: Vec<(String, bool)>,
+    plugins: Vec<ClnPluginV1>,
     peer_channels: Vec<ClnPeerChannelV1>,
     gossip_channels: Vec<ClnGossipChannelV1>,
     scb_digest: [u8; 32],
     scb_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct BootstrapPreflightSnapshotV1 {
+    core_version: u64,
+    core_subversion: String,
+    core_chain: String,
+    core_blocks: u64,
+    core_headers: u64,
+    core_ibd: bool,
+    signet_challenge: Option<String>,
+    genesis_hash: String,
+    cln_id: String,
+    cln_version: String,
+    cln_network: String,
+    cln_blockheight: u64,
+    plugins: Vec<ClnPluginV1>,
+    peer_channel_count: usize,
+    onchain_output_count: usize,
+    funding_channel_count: usize,
+    scb_count: usize,
+}
+
+#[derive(Debug)]
+struct BootstrapPreflightSuccessV1 {
+    role: StagingRoleV1,
+    bitcoin_height: u64,
+    cln_height: u64,
+    plugin_count: usize,
 }
 
 #[derive(Debug)]
@@ -523,6 +621,7 @@ struct PreflightSuccessV1 {
     peer_channel_count: usize,
     plugin_count: usize,
     backup_age_seconds: u64,
+    backup_receipt_recorded_at_unix: u64,
 }
 
 #[derive(Debug)]
@@ -534,13 +633,22 @@ struct BackupReceiptSuccessV1 {
 
 pub async fn run(args: LightningStagingArgs) -> Result<(), PreflightFailureV1> {
     match args.command {
+        LightningStagingCommand::BootstrapPreflight(args) => {
+            let config = load_validated_preflight_config_v1(&args)?;
+            let mut runner = SystemCommandRunnerV1;
+            let success = run_bootstrap_preflight_v1(&config, &mut runner).await?;
+            println!(
+                "schema_version=1 phase=bootstrap role={} bitcoin_height={} cln_height={} peer_channels=0 onchain_outputs=0 funding_channels=0 staticbackup_entries=0 active_allowed_plugins={} result=PASS",
+                success.role.label(),
+                success.bitcoin_height,
+                success.cln_height,
+                success.plugin_count
+            );
+            Ok(())
+        }
         LightningStagingCommand::Preflight(args) => {
-            let bytes = read_protected_config_v1(&args)?;
-            let config = parse_config_v1(&bytes)?;
-            let now_unix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| PreflightFailureV1::new("clock", "before-unix-epoch"))?
-                .as_secs();
+            let config = load_validated_preflight_config_v1(&args)?;
+            let now_unix = unix_time_now_v1()?;
             let mut runner = SystemCommandRunnerV1;
             let success = run_preflight_v1(&config, now_unix, &mut runner).await?;
             println!(
@@ -554,18 +662,29 @@ pub async fn run(args: LightningStagingArgs) -> Result<(), PreflightFailureV1> {
             );
             Ok(())
         }
+        LightningStagingCommand::PreflightSupervisor(args) => {
+            run_preflight_supervisor_v1(&args).await
+        }
         LightningStagingCommand::RecordBackupReceipt(args) => {
             let bytes = read_protected_config_at_v1(
                 &args.config,
                 &args.config_protected_parent,
                 args.config_expected_uid,
                 args.config_expected_gid,
+                args.config_reader_expected_uid,
             )?;
             let config = parse_config_v1(&bytes)?;
-            let now_unix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| PreflightFailureV1::new("clock", "before-unix-epoch"))?
-                .as_secs();
+            validate_backup_receipt_state_contract_v1(
+                &config,
+                args.config_expected_gid,
+                args.config_reader_expected_uid,
+            )?;
+            validate_protected_config_runtime_group_set_v1(
+                &config,
+                args.config_expected_gid,
+                args.config_reader_expected_uid,
+            )?;
+            let now_unix = unix_time_now_v1()?;
             let mut runner = SystemCommandRunnerV1;
             let success = run_backup_receipt_ceremony_v1(
                 &config,
@@ -586,10 +705,581 @@ pub async fn run(args: LightningStagingArgs) -> Result<(), PreflightFailureV1> {
     }
 }
 
+fn unix_time_now_v1() -> Result<u64, PreflightFailureV1> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| PreflightFailureV1::new("clock", "before-unix-epoch"))
+        .map(|duration| duration.as_secs())
+}
+
+fn load_validated_preflight_config_v1(
+    args: &LightningStagingPreflightArgs,
+) -> Result<LightningStagingConfigV1, PreflightFailureV1> {
+    let bytes = read_protected_config_v1(args)?;
+    let config = parse_config_v1(&bytes)?;
+    validate_backup_receipt_state_contract_v1(
+        &config,
+        args.config_expected_gid,
+        args.config_reader_expected_uid,
+    )?;
+    validate_protected_config_runtime_group_set_v1(
+        &config,
+        args.config_expected_gid,
+        args.config_reader_expected_uid,
+    )?;
+    Ok(config)
+}
+
+async fn run_preflight_supervisor_v1(
+    args: &LightningStagingPreflightArgs,
+) -> Result<(), PreflightFailureV1> {
+    let result = run_preflight_supervisor_loop_v1(args).await;
+    if result.is_err() {
+        remove_preflight_lease_best_effort_v1();
+    }
+    result
+}
+
+async fn run_preflight_supervisor_loop_v1(
+    args: &LightningStagingPreflightArgs,
+) -> Result<(), PreflightFailureV1> {
+    validate_systemd_supervisor_environment_v1()?;
+    let mut bound_invocation_id: Option<String> = None;
+    let mut last_committed_at_unix: Option<u64> = None;
+
+    loop {
+        // One cooperative async deadline covers the complete renewal,
+        // including the
+        // manager watchdog check, all RPCs, generation recheck and durable
+        // lease commit. A blocking fsync is bounded by systemd rather than
+        // Tokio's cooperative timeout: TimeoutStartSec covers the first round,
+        // and the watchdog covers steady-state renewals. There is
+        // deliberately no watchdog notification inside this future: a partial
+        // or wedged round can never extend systemd's liveness window.
+        let round = timeout(
+            Duration::from_secs(PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1),
+            run_preflight_supervisor_round_v1(
+                args,
+                bound_invocation_id.as_deref(),
+                last_committed_at_unix,
+            ),
+        )
+        .await
+        .map_err(|_| PreflightFailureV1::new("lease.round", "deadline-exceeded"))??;
+
+        if bound_invocation_id.is_none() {
+            systemd_notify_v1(b"READY=1\nWATCHDOG=1\nSTATUS=CLN preflight lease active")?;
+            println!(
+                "schema_version=1 phase=supervisor role={} bitcoin_height={} cln_height={} active_public_peer_channels={} active_allowed_plugins={} backup_age_seconds={} lease_validity_seconds={} result=PASS",
+                round.preflight.role.label(),
+                round.preflight.bitcoin_height,
+                round.preflight.cln_height,
+                round.preflight.peer_channel_count,
+                round.preflight.plugin_count,
+                round.backup_age_seconds,
+                PREFLIGHT_LEASE_VALIDITY_SECONDS_V1,
+            );
+            bound_invocation_id = Some(round.invocation_id);
+        } else {
+            systemd_notify_v1(b"WATCHDOG=1\nSTATUS=CLN preflight lease active")?;
+        }
+        last_committed_at_unix = Some(round.committed_at_unix);
+
+        tokio::time::sleep(Duration::from_secs(PREFLIGHT_LEASE_REFRESH_SECONDS_V1)).await;
+    }
+}
+
+async fn run_preflight_supervisor_round_v1(
+    args: &LightningStagingPreflightArgs,
+    bound_invocation_id: Option<&str>,
+    last_committed_at_unix: Option<u64>,
+) -> Result<PreflightSupervisorRoundSuccessV1, PreflightFailureV1> {
+    // Re-open and re-validate all static configuration and runtime identities
+    // on every renewal. A prior successful pass never authorizes a later
+    // generation of the config, CLN or systemd manager policy.
+    let config = load_validated_preflight_config_v1(args)?;
+    let mut runner = SystemCommandRunnerV1;
+    validate_systemd_service_watchdogs_enabled_v1(&config, &mut runner).await?;
+    let invocation_before = read_cln_systemd_invocation_id_v1()?;
+    if let Some(expected) = bound_invocation_id {
+        validate_cln_invocation_binding_v1(Some(expected), &invocation_before, &invocation_before)?;
+    }
+
+    let checked_at_unix = unix_time_now_v1()?;
+    let success = run_preflight_v1(&config, checked_at_unix, &mut runner).await?;
+    let invocation_after = read_cln_systemd_invocation_id_v1()?;
+    validate_cln_invocation_binding_v1(bound_invocation_id, &invocation_before, &invocation_after)?;
+
+    let committed_at_unix = unix_time_now_v1()?;
+    validate_lease_clock_v1(checked_at_unix, committed_at_unix, last_committed_at_unix)?;
+    let backup_age_seconds = validate_backup_receipt_age_v1(
+        success.backup_receipt_recorded_at_unix,
+        config.backup.max_age_seconds,
+        committed_at_unix,
+    )?;
+    let lease = PreflightLeaseV1 {
+        schema_version: PREFLIGHT_LEASE_SCHEMA_V1,
+        cln_invocation_id: invocation_after.clone(),
+        checked_at_unix: committed_at_unix,
+        valid_until_unix: committed_at_unix
+            .checked_add(PREFLIGHT_LEASE_VALIDITY_SECONDS_V1)
+            .ok_or_else(|| PreflightFailureV1::new("lease.clock", "timestamp-overflow"))?,
+    };
+    write_preflight_lease_v1(args, &lease)?;
+
+    Ok(PreflightSupervisorRoundSuccessV1 {
+        preflight: success,
+        invocation_id: invocation_after,
+        committed_at_unix,
+        backup_age_seconds,
+    })
+}
+
+fn parse_systemd_service_watchdogs_property_v1(bytes: &[u8]) -> Result<(), PreflightFailureV1> {
+    let check = "systemd.service-watchdogs";
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err(PreflightFailureV1::new(check, "invalid-manager-property"));
+    }
+    let property: BusctlBooleanPropertyV1 = serde_json::from_slice(bytes)
+        .map_err(|_| PreflightFailureV1::new(check, "invalid-manager-property"))?;
+    if property.signature != "b" {
+        return Err(PreflightFailureV1::new(check, "invalid-manager-property"));
+    }
+    if !property.data {
+        return Err(PreflightFailureV1::new(check, "manager-disabled"));
+    }
+    Ok(())
+}
+
+async fn query_systemd_service_watchdogs_enabled_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<(), PreflightFailureV1> {
+    let output = runner
+        .execute(CommandRequestV1 {
+            program: config.systemd.busctl.path.clone(),
+            args: [
+                "--system",
+                "--json=short",
+                "get-property",
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+                "ServiceWatchdogs",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            timeout: Duration::from_secs(config.command_timeout_seconds),
+        })
+        .await
+        .map_err(|failure| PreflightFailureV1::new("systemd.service-watchdogs", failure.label()))?;
+    parse_systemd_service_watchdogs_property_v1(&output)
+}
+
+async fn validate_systemd_service_watchdogs_enabled_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<(), PreflightFailureV1> {
+    validate_systemd_busctl_config_v1(config)?;
+    validate_pinned_binary_v1(&config.systemd.busctl, "binary.busctl")?;
+    query_systemd_service_watchdogs_enabled_v1(config, runner).await
+}
+
+fn validate_systemd_busctl_config_v1(
+    config: &LightningStagingConfigV1,
+) -> Result<(), PreflightFailureV1> {
+    if config.systemd.busctl.path != Path::new("/usr/bin/busctl")
+        || config.systemd.busctl.protected_parent != Path::new("/usr/bin")
+        || config.systemd.busctl.expected_uid != 0
+        || config.systemd.busctl.expected_gid != 0
+    {
+        return Err(PreflightFailureV1::new(
+            "config.systemd-busctl",
+            "invalid-binary-boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lease_clock_v1(
+    checked_at_unix: u64,
+    committed_at_unix: u64,
+    previous_committed_at_unix: Option<u64>,
+) -> Result<(), PreflightFailureV1> {
+    if checked_at_unix == 0
+        || committed_at_unix < checked_at_unix
+        || previous_committed_at_unix.is_some_and(|previous| committed_at_unix <= previous)
+    {
+        return Err(PreflightFailureV1::new("lease.clock", "clock-regressed"));
+    }
+    Ok(())
+}
+
+fn validate_cln_invocation_binding_v1(
+    expected: Option<&str>,
+    before: &str,
+    after: &str,
+) -> Result<(), PreflightFailureV1> {
+    let check = "systemd.cln-invocation";
+    validate_cln_invocation_id_v1(before)?;
+    validate_cln_invocation_id_v1(after)?;
+    if before != after || expected.is_some_and(|value| value != before) {
+        return Err(PreflightFailureV1::new(check, "generation-changed"));
+    }
+    Ok(())
+}
+
+fn validate_cln_invocation_id_v1(value: &str) -> Result<(), PreflightFailureV1> {
+    let check = "systemd.cln-invocation";
+    if value.len() != 32
+        || !value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        || value.bytes().all(|byte| byte == b'0')
+        || value.bytes().all(|byte| byte == b'f')
+    {
+        return Err(PreflightFailureV1::new(check, "invalid-invocation-id"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SystemdInvocationLinkSnapshotV1 {
+    device: u128,
+    inode: u128,
+    mode: u64,
+    size: i128,
+    uid: u32,
+    gid: u32,
+    links: u128,
+    modified_seconds: i128,
+    modified_nanoseconds: i128,
+    changed_seconds: i128,
+    changed_nanoseconds: i128,
+}
+
+#[cfg(unix)]
+fn systemd_invocation_link_snapshot_v1(stat: &rustix::fs::Stat) -> SystemdInvocationLinkSnapshotV1 {
+    SystemdInvocationLinkSnapshotV1 {
+        device: stat.st_dev as u128,
+        inode: stat.st_ino as u128,
+        mode: stat.st_mode as u64,
+        size: stat.st_size as i128,
+        uid: stat.st_uid,
+        gid: stat.st_gid,
+        links: stat.st_nlink as u128,
+        modified_seconds: stat.st_mtime as i128,
+        modified_nanoseconds: stat.st_mtime_nsec as i128,
+        changed_seconds: stat.st_ctime as i128,
+        changed_nanoseconds: stat.st_ctime_nsec as i128,
+    }
+}
+
+#[cfg(unix)]
+fn validate_systemd_invocation_link_snapshot_v1(
+    snapshot: SystemdInvocationLinkSnapshotV1,
+) -> Result<(), PreflightFailureV1> {
+    use rustix::fs::FileType;
+
+    if !FileType::from_raw_mode(snapshot.mode as _).is_symlink()
+        || snapshot.uid != 0
+        || snapshot.gid != 0
+        || snapshot.links != 1
+        || snapshot.size != 32
+    {
+        return Err(PreflightFailureV1::new(
+            "systemd.cln-invocation",
+            "unsafe-invocation-link",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_cln_systemd_invocation_id_v1() -> Result<String, PreflightFailureV1> {
+    use rustix::fs::{self as rustix_fs, AtFlags};
+
+    let check = "systemd.cln-invocation";
+    let parent =
+        open_protected_config_parent_v1(Path::new(CLN_SYSTEMD_INVOCATION_PARENT_V1), check)?;
+    let before = rustix_fs::statat(
+        &parent,
+        CLN_SYSTEMD_INVOCATION_LINK_NAME_V1,
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "invocation-link-unavailable"))?;
+    let before = systemd_invocation_link_snapshot_v1(&before);
+    validate_systemd_invocation_link_snapshot_v1(before)?;
+
+    let target = rustix_fs::readlinkat(
+        &parent,
+        CLN_SYSTEMD_INVOCATION_LINK_NAME_V1,
+        Vec::with_capacity(33),
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "invocation-link-unavailable"))?;
+
+    let after = rustix_fs::statat(
+        &parent,
+        CLN_SYSTEMD_INVOCATION_LINK_NAME_V1,
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "invocation-link-unavailable"))?;
+    let after = systemd_invocation_link_snapshot_v1(&after);
+    validate_systemd_invocation_link_snapshot_v1(after)?;
+    if before != after {
+        return Err(PreflightFailureV1::new(check, "generation-changed"));
+    }
+
+    let invocation_id = std::str::from_utf8(target.as_bytes())
+        .map_err(|_| PreflightFailureV1::new(check, "invalid-invocation-id"))?
+        .to_owned();
+    validate_cln_invocation_id_v1(&invocation_id)?;
+    Ok(invocation_id)
+}
+
+#[cfg(not(unix))]
+fn read_cln_systemd_invocation_id_v1() -> Result<String, PreflightFailureV1> {
+    Err(PreflightFailureV1::new(
+        "systemd.cln-invocation",
+        "unsupported-platform",
+    ))
+}
+
+fn preflight_lease_file_config_v1(args: &LightningStagingPreflightArgs) -> BackupConfigV1 {
+    BackupConfigV1 {
+        receipt: PathBuf::from(PREFLIGHT_LEASE_PATH_V1),
+        protected_parent: PathBuf::from(PREFLIGHT_LEASE_STATE_DIRECTORY_V1),
+        expected_uid: args.config_reader_expected_uid,
+        expected_gid: args.config_expected_gid,
+        max_age_seconds: PREFLIGHT_LEASE_VALIDITY_SECONDS_V1,
+    }
+}
+
+fn write_preflight_lease_v1(
+    args: &LightningStagingPreflightArgs,
+    lease: &PreflightLeaseV1,
+) -> Result<(), PreflightFailureV1> {
+    validate_preflight_lease_v1(lease)?;
+    let mut bytes = toml::to_string(lease)
+        .map_err(|_| PreflightFailureV1::new("lease.file", "serialize-failed"))?
+        .into_bytes();
+    let parsed: PreflightLeaseV1 = toml::from_str(
+        std::str::from_utf8(&bytes)
+            .map_err(|_| PreflightFailureV1::new("lease.file", "self-check-failed"))?,
+    )
+    .map_err(|_| PreflightFailureV1::new("lease.file", "self-check-failed"))?;
+    if parsed != *lease {
+        return Err(PreflightFailureV1::new("lease.file", "self-check-failed"));
+    }
+    let result = write_atomic_backup_receipt_v1(&preflight_lease_file_config_v1(args), &bytes)
+        .map_err(|_| PreflightFailureV1::new("lease.file", "write-failed"));
+    bytes.fill(0);
+    result
+}
+
+fn validate_preflight_lease_v1(lease: &PreflightLeaseV1) -> Result<(), PreflightFailureV1> {
+    validate_cln_invocation_id_v1(&lease.cln_invocation_id)?;
+    if lease.schema_version != PREFLIGHT_LEASE_SCHEMA_V1
+        || lease.checked_at_unix == 0
+        || lease.valid_until_unix
+            != lease
+                .checked_at_unix
+                .checked_add(PREFLIGHT_LEASE_VALIDITY_SECONDS_V1)
+                .ok_or_else(|| PreflightFailureV1::new("lease.clock", "timestamp-overflow"))?
+    {
+        return Err(PreflightFailureV1::new("lease.file", "invalid-lease"));
+    }
+    Ok(())
+}
+
+fn remove_preflight_lease_best_effort_v1() {
+    let _ = std::fs::remove_file(PREFLIGHT_LEASE_PATH_V1);
+}
+
+#[cfg(unix)]
+fn validate_systemd_supervisor_environment_values_v1(
+    watchdog_usec: Option<&std::ffi::OsStr>,
+    watchdog_pid: Option<&std::ffi::OsStr>,
+    notify_socket: Option<&std::ffi::OsStr>,
+    current_pid: u32,
+) -> Result<(), PreflightFailureV1> {
+    let check = "systemd.watchdog";
+    let watchdog_usec = watchdog_usec
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| PreflightFailureV1::new(check, "invalid-watchdog-environment"))?;
+    if watchdog_usec != PREFLIGHT_WATCHDOG_USEC_V1 {
+        return Err(PreflightFailureV1::new(
+            check,
+            "invalid-watchdog-environment",
+        ));
+    }
+    if let Some(value) = watchdog_pid {
+        let pid = value
+            .to_str()
+            .ok_or_else(|| PreflightFailureV1::new(check, "invalid-watchdog-environment"))?
+            .parse::<u32>()
+            .map_err(|_| PreflightFailureV1::new(check, "invalid-watchdog-environment"))?;
+        if pid != current_pid {
+            return Err(PreflightFailureV1::new(
+                check,
+                "invalid-watchdog-environment",
+            ));
+        }
+    }
+    let notify_socket = notify_socket
+        .ok_or_else(|| PreflightFailureV1::new("systemd.notify", "notify-socket-unavailable"))?;
+    let socket_bytes = notify_socket.as_bytes();
+    if socket_bytes.len() < 2
+        || !matches!(socket_bytes[0], b'/' | b'@')
+        || socket_bytes.contains(&0)
+    {
+        return Err(PreflightFailureV1::new(
+            "systemd.notify",
+            "invalid-notify-socket",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_systemd_supervisor_environment_values_v1(
+    _watchdog_usec: Option<&std::ffi::OsStr>,
+    _watchdog_pid: Option<&std::ffi::OsStr>,
+    _notify_socket: Option<&std::ffi::OsStr>,
+    _current_pid: u32,
+) -> Result<(), PreflightFailureV1> {
+    Err(PreflightFailureV1::new(
+        "systemd.watchdog",
+        "unsupported-platform",
+    ))
+}
+
+fn validate_systemd_supervisor_environment_v1() -> Result<(), PreflightFailureV1> {
+    let watchdog_usec = std::env::var_os("WATCHDOG_USEC");
+    let watchdog_pid = std::env::var_os("WATCHDOG_PID");
+    let notify_socket = std::env::var_os("NOTIFY_SOCKET");
+    validate_systemd_supervisor_environment_values_v1(
+        watchdog_usec.as_deref(),
+        watchdog_pid.as_deref(),
+        notify_socket.as_deref(),
+        std::process::id(),
+    )
+}
+
+#[cfg(unix)]
+fn systemd_notify_to_v1(
+    notify_socket: &std::ffi::OsStr,
+    message: &[u8],
+) -> Result<(), PreflightFailureV1> {
+    use rustix::net::{
+        sendto, socket_with, AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
+    };
+
+    let check = "systemd.notify";
+    if message.is_empty() || message.len() > 512 || message.contains(&0) {
+        return Err(PreflightFailureV1::new(check, "invalid-notification"));
+    }
+    let socket_bytes = notify_socket.as_bytes();
+    if socket_bytes.is_empty() {
+        return Err(PreflightFailureV1::new(check, "notify-socket-unavailable"));
+    }
+    let address = if socket_bytes[0] == b'@' {
+        #[cfg(target_os = "linux")]
+        {
+            SocketAddrUnix::new_abstract_name(&socket_bytes[1..])
+                .map_err(|_| PreflightFailureV1::new(check, "invalid-notify-socket"))?
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(PreflightFailureV1::new(check, "invalid-notify-socket"));
+        }
+    } else {
+        if socket_bytes[0] != b'/' {
+            return Err(PreflightFailureV1::new(check, "invalid-notify-socket"));
+        }
+        SocketAddrUnix::new(notify_socket)
+            .map_err(|_| PreflightFailureV1::new(check, "invalid-notify-socket"))?
+    };
+    #[cfg(target_os = "linux")]
+    let socket_flags = SocketFlags::CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let socket_flags = SocketFlags::empty();
+    let socket = socket_with(
+        AddressFamily::UNIX,
+        SocketType::DGRAM,
+        socket_flags,
+        None,
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
+    let sent = sendto(&socket, message, SendFlags::empty(), &address)
+        .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
+    if sent != message.len() {
+        return Err(PreflightFailureV1::new(check, "notify-failed"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn systemd_notify_to_v1(
+    _notify_socket: &std::ffi::OsStr,
+    _message: &[u8],
+) -> Result<(), PreflightFailureV1> {
+    Err(PreflightFailureV1::new(
+        "systemd.notify",
+        "unsupported-platform",
+    ))
+}
+
+fn systemd_notify_v1(message: &[u8]) -> Result<(), PreflightFailureV1> {
+    let notify_socket = std::env::var_os("NOTIFY_SOCKET")
+        .ok_or_else(|| PreflightFailureV1::new("systemd.notify", "notify-socket-unavailable"))?;
+    systemd_notify_to_v1(&notify_socket, message)
+}
+
+async fn run_bootstrap_preflight_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<BootstrapPreflightSuccessV1, PreflightFailureV1> {
+    let ids = validate_static_config_v1(config)?;
+    validate_core_rpc_cookie_v1(&config.bitcoin.rpc_cookie)?;
+    validate_pinned_binary_v1(&config.bitcoin.daemon, "binary.bitcoin-daemon")?;
+    validate_pinned_binary_v1(&config.bitcoin.cli, "binary.bitcoin-cli")?;
+    validate_pinned_binary_v1(&config.lightning.daemon, "binary.lightningd")?;
+    validate_pinned_binary_v1(&config.lightning.cli, "binary.lightning-cli")?;
+    for plugin in &config.lightning.allowed_plugins {
+        validate_pinned_plugin_v1(plugin)?;
+    }
+    validate_protected_socket_v1(&config.lightning)?;
+    let snapshot = collect_bootstrap_snapshot_v1(config, runner).await?;
+    validate_bootstrap_snapshot_v1(config, &ids, &snapshot)
+}
+
 fn parse_config_v1(bytes: &[u8]) -> Result<LightningStagingConfigV1, PreflightFailureV1> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| PreflightFailureV1::new("config.parse", "invalid-utf8"))?;
     toml::from_str(text).map_err(|_| PreflightFailureV1::new("config.parse", "invalid-toml"))
+}
+
+fn validate_backup_receipt_state_contract_v1(
+    config: &LightningStagingConfigV1,
+    config_expected_gid: u32,
+    config_reader_expected_uid: u32,
+) -> Result<(), PreflightFailureV1> {
+    let check = "config.backup-state";
+    if config.backup.protected_parent != Path::new(BACKUP_RECEIPT_STATE_DIRECTORY_V1)
+        || config.backup.receipt != Path::new(BACKUP_RECEIPT_PATH_V1)
+        || config.backup.expected_uid != config_reader_expected_uid
+        || config.backup.expected_gid != config_expected_gid
+        || config_reader_expected_uid == 0
+        || config_expected_gid == 0
+    {
+        return Err(PreflightFailureV1::new(check, "invalid-state-boundary"));
+    }
+    Ok(())
 }
 
 async fn run_preflight_v1<R: CommandRunnerV1>(
@@ -780,6 +1470,7 @@ fn validate_static_config_v1(
     )?;
     validate_lightning_rpc_access_policy_v1(&config.lightning)?;
     validate_preflight_identity_separation_v1(config)?;
+    validate_systemd_busctl_config_v1(config)?;
     validate_absolute_utf8_path_v1(&config.backup.receipt, "config.backup-receipt")?;
     validate_absolute_utf8_path_v1(&config.backup.protected_parent, "config.backup-parent")?;
     Ok(ids)
@@ -795,10 +1486,10 @@ fn validate_core_rpc_cookie_access_policy_v1(
             check,
             "cross-uid-fields-with-same-uid-policy",
         )),
-        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, None) => {
+        (CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup, None) => {
             Err(PreflightFailureV1::new(check, "missing-cross-uid-fields"))
         }
-        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, Some(cross_uid)) => {
+        (CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup, Some(cross_uid)) => {
             if cross_uid.protected_parent_expected_uid != 0
                 || cross_uid.protected_parent_expected_gid != 0
                 || cross_uid.preflight_expected_uid == 0
@@ -822,7 +1513,7 @@ fn validate_preflight_identity_separation_v1(
     let check = "config.preflight-identities";
     let core_preflight_uid = match config.bitcoin.rpc_cookie.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => config.bitcoin.rpc_cookie.expected_uid,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
             config
                 .bitcoin
                 .rpc_cookie
@@ -848,7 +1539,8 @@ fn validate_preflight_identity_separation_v1(
     if core_preflight_uid != lightning_preflight_uid {
         return Err(PreflightFailureV1::new(check, "preflight-uid-conflict"));
     }
-    if config.bitcoin.rpc_cookie.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+    if config.bitcoin.rpc_cookie.access_policy
+        == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
         && (config.bitcoin.rpc_cookie.expected_uid == config.lightning.expected_uid
             || config.bitcoin.rpc_cookie.expected_gid == config.lightning.expected_gid)
     {
@@ -1117,7 +1809,196 @@ fn read_protected_config_v1(
         &args.config_protected_parent,
         args.config_expected_uid,
         args.config_expected_gid,
+        args.config_reader_expected_uid,
     )
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProtectedConfigRuntimeIdentityV1 {
+    effective_uid: u32,
+    effective_gid: u32,
+    supplementary_gids: BTreeSet<u32>,
+}
+
+#[cfg(unix)]
+fn current_protected_config_runtime_identity_v1(
+    check: &'static str,
+) -> Result<ProtectedConfigRuntimeIdentityV1, PreflightFailureV1> {
+    let supplementary_gids = rustix::process::getgroups()
+        .map_err(|_| PreflightFailureV1::new(check, "group-list-unavailable"))?
+        .into_iter()
+        .map(|gid| gid.as_raw())
+        .collect();
+    Ok(ProtectedConfigRuntimeIdentityV1 {
+        effective_uid: rustix::process::geteuid().as_raw(),
+        effective_gid: rustix::process::getegid().as_raw(),
+        supplementary_gids,
+    })
+}
+
+#[cfg(unix)]
+fn validate_protected_config_runtime_identity_v1(
+    config_expected_uid: u32,
+    config_expected_gid: u32,
+    config_reader_expected_uid: u32,
+    runtime: &ProtectedConfigRuntimeIdentityV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    // V1 has one production shape: immutable root-owned configuration made
+    // readable to exactly one non-root service group. The reader identity is
+    // pinned separately from the file owner so neither can be substituted for
+    // the other at the command line.
+    if config_expected_uid != 0 || config_expected_gid == 0 || config_reader_expected_uid == 0 {
+        return Err(PreflightFailureV1::new(check, "invalid-access-policy"));
+    }
+    if runtime.effective_uid != config_reader_expected_uid {
+        return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+    }
+    if runtime.effective_gid != config_expected_gid
+        && !runtime.supplementary_gids.contains(&config_expected_gid)
+    {
+        return Err(PreflightFailureV1::new(check, "shared-group-missing"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_protected_config_runtime_group_set_for_identity_v1(
+    config: &LightningStagingConfigV1,
+    config_expected_gid: u32,
+    config_reader_expected_uid: u32,
+    runtime: &ProtectedConfigRuntimeIdentityV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    if runtime.effective_uid != config_reader_expected_uid {
+        return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+    }
+    let mut expected = BTreeSet::from([config_expected_gid]);
+    if config.bitcoin.rpc_cookie.access_policy
+        == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
+    {
+        expected.insert(config.bitcoin.rpc_cookie.expected_gid);
+    }
+    if config.lightning.rpc_access_policy == LightningRpcAccessPolicyV1::CrossUidSharedGroup {
+        expected.insert(config.lightning.expected_gid);
+    }
+    let mut actual = runtime.supplementary_gids.clone();
+    actual.insert(runtime.effective_gid);
+    if actual != expected {
+        return Err(PreflightFailureV1::new(check, "runtime-group-set-mismatch"));
+    }
+    Ok(())
+}
+
+fn validate_protected_config_runtime_group_set_v1(
+    config: &LightningStagingConfigV1,
+    config_expected_gid: u32,
+    config_reader_expected_uid: u32,
+) -> Result<(), PreflightFailureV1> {
+    let check = "config.reader-groups";
+    #[cfg(unix)]
+    {
+        let runtime = current_protected_config_runtime_identity_v1(check)?;
+        validate_protected_config_runtime_group_set_for_identity_v1(
+            config,
+            config_expected_gid,
+            config_reader_expected_uid,
+            &runtime,
+            check,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (config, config_expected_gid, config_reader_expected_uid);
+        Err(PreflightFailureV1::new(check, "unsupported-platform"))
+    }
+}
+
+#[cfg(unix)]
+fn validate_protected_config_parent_metadata_v1(
+    metadata: &std::fs::Metadata,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mode = metadata.permissions().mode() & 0o7777;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != 0
+        || mode & 0o022 != 0
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-protected-parent"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_protected_config_file_metadata_v1(
+    metadata: &std::fs::Metadata,
+    config_expected_uid: u32,
+    config_expected_gid: u32,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mode = metadata.permissions().mode() & 0o7777;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != config_expected_uid
+        || metadata.gid() != config_expected_gid
+        || mode != 0o440
+        || metadata.nlink() != 1
+        || metadata.len() > MAX_CONFIG_BYTES_V1
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-metadata"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_protected_config_parent_v1(
+    path: &Path,
+    check: &'static str,
+) -> Result<File, PreflightFailureV1> {
+    use rustix::fs::{self as rustix_fs, Mode, OFlags};
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let root = rustix_fs::open("/", flags, Mode::empty())
+        .map_err(|_| PreflightFailureV1::new(check, "open-ancestor-failed"))?;
+    let mut current = File::from(root);
+    validate_protected_config_parent_metadata_v1(
+        &current
+            .metadata()
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?,
+        check,
+    )?;
+    pir_private_files::reject_extended_acl_v1(&current, "preflight config ancestor")
+        .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-acl"))?;
+
+    for component in path.components() {
+        let name = match component {
+            Component::RootDir => continue,
+            Component::Normal(name) => name,
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(PreflightFailureV1::new(
+                    check,
+                    "invalid-protected-parent-layout",
+                ));
+            }
+        };
+        let next = rustix_fs::openat(&current, name, flags, Mode::empty())
+            .map_err(|_| PreflightFailureV1::new(check, "open-ancestor-failed"))?;
+        let next = File::from(next);
+        validate_protected_config_parent_metadata_v1(
+            &next
+                .metadata()
+                .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?,
+            check,
+        )?;
+        pir_private_files::reject_extended_acl_v1(&next, "preflight config ancestor")
+            .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-acl"))?;
+        current = next;
+    }
+    Ok(current)
 }
 
 fn read_protected_config_at_v1(
@@ -1125,32 +2006,124 @@ fn read_protected_config_at_v1(
     config_protected_parent: &Path,
     config_expected_uid: u32,
     config_expected_gid: u32,
+    config_reader_expected_uid: u32,
 ) -> Result<Vec<u8>, PreflightFailureV1> {
     let check = "config.file";
     validate_absolute_utf8_path_v1(config, check)?;
     validate_absolute_utf8_path_v1(config_protected_parent, check)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        validate_protected_tree_v1(
-            config_protected_parent,
-            config,
+        use rustix::fs::{self as rustix_fs, Mode, OFlags};
+        use std::os::unix::fs::MetadataExt;
+
+        let runtime = current_protected_config_runtime_identity_v1(check)?;
+        validate_protected_config_runtime_identity_v1(
             config_expected_uid,
             config_expected_gid,
-            true,
+            config_reader_expected_uid,
+            &runtime,
             check,
         )?;
-        let metadata = std::fs::symlink_metadata(config)
-            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-        let mode = metadata.permissions().mode() & 0o777;
-        if metadata.uid() != config_expected_uid
-            || metadata.gid() != config_expected_gid
-            || mode != 0o600
-            || metadata.len() > MAX_CONFIG_BYTES_V1
-        {
-            return Err(PreflightFailureV1::new(check, "unsafe-metadata"));
+        if config.parent() != Some(config_protected_parent) {
+            return Err(PreflightFailureV1::new(check, "invalid-config-layout"));
         }
-        read_bounded_regular_file_v1(config, MAX_CONFIG_BYTES_V1, check)
+        for path in [config_protected_parent, config] {
+            let canonical = std::fs::canonicalize(path)
+                .map_err(|_| PreflightFailureV1::new(check, "canonicalize-failed"))?;
+            if canonical != path {
+                return Err(PreflightFailureV1::new(check, "non-canonical-path"));
+            }
+        }
+
+        let parent_before = std::fs::symlink_metadata(config_protected_parent)
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_protected_config_parent_metadata_v1(&parent_before, check)?;
+        let named_before = std::fs::symlink_metadata(config)
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_protected_config_file_metadata_v1(
+            &named_before,
+            config_expected_uid,
+            config_expected_gid,
+            check,
+        )?;
+
+        let parent_file = open_protected_config_parent_v1(config_protected_parent, check)?;
+        let parent_opened = parent_file
+            .metadata()
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_same_file_v1(&parent_before, &parent_opened, check)?;
+        validate_protected_config_parent_metadata_v1(&parent_opened, check)?;
+        pir_private_files::reject_extended_acl_v1(&parent_file, "preflight config parent")
+            .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-acl"))?;
+
+        let config_name = config
+            .file_name()
+            .ok_or_else(|| PreflightFailureV1::new(check, "invalid-config-layout"))?;
+        let fd = rustix_fs::openat(
+            &parent_file,
+            config_name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| PreflightFailureV1::new(check, "open-failed"))?;
+        let mut file = File::from(fd);
+        let opened_before = file
+            .metadata()
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_same_file_v1(&named_before, &opened_before, check)?;
+        if named_before.nlink() != opened_before.nlink() {
+            return Err(PreflightFailureV1::new(check, "file-changed"));
+        }
+        validate_protected_config_file_metadata_v1(
+            &opened_before,
+            config_expected_uid,
+            config_expected_gid,
+            check,
+        )?;
+        pir_private_files::reject_extended_acl_v1(&file, "preflight config")
+            .map_err(|_| PreflightFailureV1::new(check, "unsafe-config-acl"))?;
+
+        let read_limit = MAX_CONFIG_BYTES_V1 + 1;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(read_limit as usize));
+        file.by_ref()
+            .take(read_limit)
+            .read_to_end(&mut bytes)
+            .map_err(|_| PreflightFailureV1::new(check, "read-failed"))?;
+        if bytes.len() as u64 > MAX_CONFIG_BYTES_V1 || bytes.len() as u64 != opened_before.len() {
+            return Err(PreflightFailureV1::new(check, "size-changed"));
+        }
+
+        let opened_after = file
+            .metadata()
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_same_file_v1(&opened_before, &opened_after, check)?;
+        validate_protected_config_file_metadata_v1(
+            &opened_after,
+            config_expected_uid,
+            config_expected_gid,
+            check,
+        )?;
+        pir_private_files::reject_extended_acl_v1(&file, "preflight config")
+            .map_err(|_| PreflightFailureV1::new(check, "unsafe-config-acl"))?;
+
+        let named_after = std::fs::symlink_metadata(config)
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        let parent_after = std::fs::symlink_metadata(config_protected_parent)
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_same_file_v1(&named_before, &named_after, check)?;
+        validate_same_file_v1(&named_after, &opened_after, check)?;
+        validate_same_file_v1(&parent_before, &parent_after, check)?;
+        if named_after.nlink() != 1 {
+            return Err(PreflightFailureV1::new(check, "file-changed"));
+        }
+        validate_protected_config_parent_metadata_v1(&parent_after, check)?;
+        validate_protected_config_file_metadata_v1(
+            &named_after,
+            config_expected_uid,
+            config_expected_gid,
+            check,
+        )?;
+        Ok(std::mem::take(&mut *bytes))
     }
     #[cfg(not(unix))]
     {
@@ -1159,6 +2132,7 @@ fn read_protected_config_at_v1(
             config_protected_parent,
             config_expected_uid,
             config_expected_gid,
+            config_reader_expected_uid,
         );
         Err(PreflightFailureV1::new(check, "unsupported-platform"))
     }
@@ -1228,7 +2202,7 @@ fn validate_core_rpc_cookie_runtime_identity_v1(
                 return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
             }
         }
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
             let cross_uid = config
                 .cross_uid_access
                 .as_ref()
@@ -1295,7 +2269,7 @@ fn validate_core_rpc_cookie_file_metadata_v1(
 ) -> Result<(), PreflightFailureV1> {
     let expected_mode = match config.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o600,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o640,
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => 0o640,
     };
     if metadata.kind != CoreRpcCookieBoundaryKindV1::RegularFile
         || metadata.uid != config.expected_uid
@@ -1318,7 +2292,7 @@ fn validate_core_rpc_cookie_boundary_metadata_v1(
     cookie: CoreRpcCookieBoundaryMetadataV1,
     check: &'static str,
 ) -> Result<(), PreflightFailureV1> {
-    if config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup {
+    if config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup {
         let cross_uid = config
             .cross_uid_access
             .as_ref()
@@ -1333,7 +2307,7 @@ fn validate_core_rpc_cookie_boundary_metadata_v1(
     }
     let expected_final_mode = match config.access_policy {
         CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o700,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o710,
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => 0o2710,
     };
     if final_parent.kind != CoreRpcCookieBoundaryKindV1::Directory
         || final_parent.uid != config.expected_uid
@@ -1365,7 +2339,7 @@ fn validate_canonical_core_rpc_cookie_layout_v1(
         || !components
             .iter()
             .all(|component| matches!(component, Component::Normal(_)))
-        || (config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+        || (config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
             && components.len() != 2)
     {
         return Err(PreflightFailureV1::new(check, "invalid-cookie-layout"));
@@ -1424,16 +2398,24 @@ fn validate_core_rpc_cookie_namespace_v1(
         core_rpc_cookie_boundary_metadata_v1(cookie),
         check,
     )?;
-    let shared_gid = match config.access_policy {
-        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => None,
-        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => Some(config.expected_gid),
-    };
-    let checked_path = pir_private_files::prepare_private_unix_socket_parent_v1(
-        &config.path,
-        config.expected_uid,
-        shared_gid,
-        "Core RPC cookie",
-    )
+    let checked_path = match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => {
+            pir_private_files::prepare_private_unix_socket_parent_v1(
+                &config.path,
+                config.expected_uid,
+                None,
+                "Core RPC cookie",
+            )
+        }
+        CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup => {
+            pir_private_files::prepare_private_setgid_group_file_parent_v1(
+                &config.path,
+                config.expected_uid,
+                config.expected_gid,
+                "Core RPC cookie",
+            )
+        }
+    }
     .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-boundary"))?;
     if checked_path != config.path || config.path.parent() != Some(final_parent) {
         return Err(PreflightFailureV1::new(check, "path-changed"));
@@ -2044,6 +3026,14 @@ fn read_protected_receipt_v1(config: &BackupConfigV1) -> Result<Vec<u8>, Preflig
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let state_directory_metadata = std::fs::symlink_metadata(&config.protected_parent)
+            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+        validate_backup_receipt_state_directory_metadata_v1(
+            &state_directory_metadata,
+            config,
+            check,
+            "unsafe-protected-parent",
+        )?;
         validate_protected_tree_v1(
             &config.protected_parent,
             &config.receipt,
@@ -2054,7 +3044,7 @@ fn read_protected_receipt_v1(config: &BackupConfigV1) -> Result<Vec<u8>, Preflig
         )?;
         let metadata = std::fs::symlink_metadata(&config.receipt)
             .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-        let mode = metadata.permissions().mode() & 0o777;
+        let mode = metadata.permissions().mode() & 0o7777;
         if metadata.uid() != config.expected_uid
             || metadata.gid() != config.expected_gid
             || mode != 0o600
@@ -2069,6 +3059,26 @@ fn read_protected_receipt_v1(config: &BackupConfigV1) -> Result<Vec<u8>, Preflig
         let _ = config;
         Err(PreflightFailureV1::new(check, "unsupported-platform"))
     }
+}
+
+#[cfg(unix)]
+fn validate_backup_receipt_state_directory_metadata_v1(
+    metadata: &std::fs::Metadata,
+    config: &BackupConfigV1,
+    check: &'static str,
+    reason: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != config.expected_uid
+        || metadata.gid() != config.expected_gid
+        || metadata.permissions().mode() & 0o7777 != 0o700
+    {
+        return Err(PreflightFailureV1::new(check, reason));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -2126,7 +3136,7 @@ fn inspect_backup_receipt_target_v1(
     if !FileType::from_raw_mode(stat.st_mode).is_file()
         || stat.st_uid != config.expected_uid
         || stat.st_gid != config.expected_gid
-        || stat.st_mode & 0o777 != 0o600
+        || stat.st_mode & 0o7777 != 0o600
         || stat.st_size < 0
         || stat.st_size as u64 > MAX_RECEIPT_BYTES_V1
     {
@@ -2140,7 +3150,7 @@ fn open_backup_receipt_parent_v1(
     config: &BackupConfigV1,
 ) -> Result<(File, OsString, PathBuf), PreflightFailureV1> {
     use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::MetadataExt;
 
     let check = "backup.receipt-file";
     validate_absolute_utf8_path_v1(&config.protected_parent, check)?;
@@ -2179,15 +3189,12 @@ fn open_backup_receipt_parent_v1(
     }
     let metadata = std::fs::symlink_metadata(&target_parent)
         .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-    let mode = metadata.permissions().mode() & 0o777;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || metadata.uid() != config.expected_uid
-        || metadata.gid() != config.expected_gid
-        || mode & 0o022 != 0
-    {
-        return Err(PreflightFailureV1::new(check, "unsafe-output-parent"));
-    }
+    validate_backup_receipt_state_directory_metadata_v1(
+        &metadata,
+        config,
+        check,
+        "unsafe-output-parent",
+    )?;
     let fd = rustix_fs::open(
         &target_parent,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -2199,7 +3206,7 @@ fn open_backup_receipt_parent_v1(
     if !FileType::from_raw_mode(opened.st_mode).is_dir()
         || opened.st_uid != config.expected_uid
         || opened.st_gid != config.expected_gid
-        || opened.st_mode & 0o022 != 0
+        || opened.st_mode & 0o7777 != 0o700
         || opened.st_dev as u128 != metadata.dev() as u128
         || opened.st_ino as u128 != metadata.ino() as u128
     {
@@ -2215,22 +3222,24 @@ fn validate_opened_backup_parent_still_named_v1(
     config: &BackupConfigV1,
 ) -> Result<(), PreflightFailureV1> {
     use rustix::fs::{self as rustix_fs, FileType};
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::MetadataExt;
 
     let check = "backup.receipt-file";
     let named = std::fs::symlink_metadata(target_parent)
         .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
     let opened = rustix_fs::fstat(parent)
         .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-    if named.file_type().is_symlink()
-        || !named.is_dir()
+    if validate_backup_receipt_state_directory_metadata_v1(
+        &named,
+        config,
+        check,
+        "output-parent-changed",
+    )
+    .is_err()
         || !FileType::from_raw_mode(opened.st_mode).is_dir()
-        || named.uid() != config.expected_uid
-        || named.gid() != config.expected_gid
-        || named.permissions().mode() & 0o022 != 0
         || opened.st_uid != config.expected_uid
         || opened.st_gid != config.expected_gid
-        || opened.st_mode & 0o022 != 0
+        || opened.st_mode & 0o7777 != 0o700
         || opened.st_dev as u128 != named.dev() as u128
         || opened.st_ino as u128 != named.ino() as u128
     {
@@ -2244,7 +3253,7 @@ fn write_atomic_backup_receipt_v1(
     config: &BackupConfigV1,
     bytes: &[u8],
 ) -> Result<(), PreflightFailureV1> {
-    write_atomic_backup_receipt_with_hook_v1(config, bytes, || Ok(()))
+    write_atomic_backup_receipt_with_hook_v1(config, bytes, |_| Ok(()))
 }
 
 #[cfg(unix)]
@@ -2267,7 +3276,7 @@ fn write_atomic_backup_receipt_with_hook_v1<F>(
     before_commit: F,
 ) -> Result<(), PreflightFailureV1>
 where
-    F: FnOnce() -> Result<(), PreflightFailureV1>,
+    F: FnOnce(&File) -> Result<(), PreflightFailureV1>,
 {
     use rustix::fs::{
         self as rustix_fs, AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags,
@@ -2311,7 +3320,7 @@ where
             if !FileType::from_raw_mode(stat.st_mode).is_file()
                 || stat.st_uid != config.expected_uid
                 || stat.st_gid != config.expected_gid
-                || stat.st_mode & 0o777 != 0o600
+                || stat.st_mode & 0o7777 != 0o600
                 || stat.st_size as i128 != bytes.len() as i128
             {
                 return Err(PreflightFailureV1::new(check, "unsafe-temporary"));
@@ -2325,7 +3334,7 @@ where
             if current != before {
                 return Err(PreflightFailureV1::new(check, "target-changed"));
             }
-            before_commit()?;
+            before_commit(&parent)?;
             // Atomic namespace commit point. Before this call every error removes
             // the temporary and preserves the prior receipt. A following parent
             // fsync can still report an outcome-unknown durability failure; the
@@ -2370,6 +3379,107 @@ fn write_atomic_backup_receipt_v1(
         "backup.receipt-file",
         "unsupported-platform",
     ))
+}
+
+async fn collect_bootstrap_snapshot_v1<R: CommandRunnerV1>(
+    config: &LightningStagingConfigV1,
+    runner: &mut R,
+) -> Result<BootstrapPreflightSnapshotV1, PreflightFailureV1> {
+    let command_timeout = Duration::from_secs(config.command_timeout_seconds);
+    let network: CoreNetworkInfoV1 = run_core_json_v1(
+        runner,
+        config,
+        "rpc.core.getnetworkinfo",
+        &["getnetworkinfo"],
+        command_timeout,
+    )
+    .await?;
+    let chain: CoreChainInfoV1 = run_core_json_v1(
+        runner,
+        config,
+        "rpc.core.getblockchaininfo",
+        &["getblockchaininfo"],
+        command_timeout,
+    )
+    .await?;
+    let genesis_bytes = run_core_bytes_v1(
+        runner,
+        config,
+        "rpc.core.getblockhash",
+        &["getblockhash", "0"],
+        command_timeout,
+    )
+    .await?;
+    let genesis_hash = std::str::from_utf8(&genesis_bytes)
+        .map_err(|_| PreflightFailureV1::new("rpc.core.getblockhash", "invalid-utf8"))?
+        .trim()
+        .to_ascii_lowercase();
+
+    let getinfo: ClnGetInfoV1 = run_cln_json_v1(
+        runner,
+        config,
+        "rpc.cln.getinfo",
+        &["getinfo"],
+        command_timeout,
+    )
+    .await?;
+    let plugin_list: ClnPluginListV1 = run_cln_json_v1(
+        runner,
+        config,
+        "rpc.cln.plugin-list",
+        &["plugin", "list"],
+        command_timeout,
+    )
+    .await?;
+    let peer_channels: ClnPeerChannelsV1 = run_cln_json_v1(
+        runner,
+        config,
+        "rpc.cln.listpeerchannels",
+        &["listpeerchannels"],
+        command_timeout,
+    )
+    .await?;
+    let funds: ClnListFundsV1 = run_cln_json_v1(
+        runner,
+        config,
+        "rpc.cln.listfunds",
+        &["listfunds"],
+        command_timeout,
+    )
+    .await?;
+    let (_, scb_count) = run_cln_staticbackup_allow_empty_v1(
+        runner,
+        config,
+        "rpc.cln.staticbackup",
+        &["staticbackup"],
+        command_timeout,
+    )
+    .await?;
+    if plugin_list.command != "list" {
+        return Err(PreflightFailureV1::new(
+            "rpc.cln.plugin-list",
+            "unexpected-response",
+        ));
+    }
+    Ok(BootstrapPreflightSnapshotV1 {
+        core_version: network.version,
+        core_subversion: network.subversion,
+        core_chain: chain.chain,
+        core_blocks: chain.blocks,
+        core_headers: chain.headers,
+        core_ibd: chain.initialblockdownload,
+        signet_challenge: chain.signet_challenge,
+        genesis_hash,
+        cln_id: getinfo.id,
+        cln_version: getinfo.version,
+        cln_network: getinfo.network,
+        cln_blockheight: getinfo.blockheight,
+        plugins: plugin_list.plugins,
+        peer_channel_count: peer_channels.channels.len(),
+        onchain_output_count: funds.outputs.len(),
+        funding_channel_count: funds.channels.len(),
+        scb_count,
+    })
 }
 
 async fn collect_snapshot_v1<R: CommandRunnerV1>(
@@ -2477,11 +3587,7 @@ async fn collect_snapshot_v1<R: CommandRunnerV1>(
         cln_version: getinfo.version,
         cln_network: getinfo.network,
         cln_blockheight: getinfo.blockheight,
-        plugins: plugin_list
-            .plugins
-            .into_iter()
-            .map(|plugin| (plugin.name, plugin.active))
-            .collect(),
+        plugins: plugin_list.plugins,
         peer_channels: peer_channels.channels,
         gossip_channels,
         scb_digest,
@@ -2557,6 +3663,29 @@ async fn run_cln_staticbackup_v1<R: CommandRunnerV1>(
     tail: &[&str],
     command_timeout: Duration,
 ) -> Result<([u8; 32], usize), PreflightFailureV1> {
+    run_cln_staticbackup_with_empty_policy_v1(runner, config, check, tail, command_timeout, false)
+        .await
+}
+
+async fn run_cln_staticbackup_allow_empty_v1<R: CommandRunnerV1>(
+    runner: &mut R,
+    config: &LightningStagingConfigV1,
+    check: &'static str,
+    tail: &[&str],
+    command_timeout: Duration,
+) -> Result<([u8; 32], usize), PreflightFailureV1> {
+    run_cln_staticbackup_with_empty_policy_v1(runner, config, check, tail, command_timeout, true)
+        .await
+}
+
+async fn run_cln_staticbackup_with_empty_policy_v1<R: CommandRunnerV1>(
+    runner: &mut R,
+    config: &LightningStagingConfigV1,
+    check: &'static str,
+    tail: &[&str],
+    command_timeout: Duration,
+    allow_empty: bool,
+) -> Result<([u8; 32], usize), PreflightFailureV1> {
     let bytes = Zeroizing::new(
         run_cln_bytes_owned_v1(
             runner,
@@ -2576,7 +3705,11 @@ async fn run_cln_staticbackup_v1<R: CommandRunnerV1>(
     }
     let staticbackup: ClnStaticBackupV1<'_> = serde_json::from_slice(bytes.as_slice())
         .map_err(|_| PreflightFailureV1::new(check, "invalid-json"))?;
-    digest_staticbackup_v1(&staticbackup.scb)
+    if allow_empty {
+        digest_staticbackup_with_empty_policy_v1(&staticbackup.scb, true)
+    } else {
+        digest_staticbackup_v1(&staticbackup.scb)
+    }
 }
 
 async fn run_cln_bytes_owned_v1<R: CommandRunnerV1>(
@@ -2610,7 +3743,14 @@ async fn run_cln_bytes_owned_v1<R: CommandRunnerV1>(
 fn digest_staticbackup_v1<S: AsRef<str>>(
     encoded_entries: &[S],
 ) -> Result<([u8; 32], usize), PreflightFailureV1> {
-    if encoded_entries.is_empty() || encoded_entries.len() > MAX_SCB_COUNT_V1 {
+    digest_staticbackup_with_empty_policy_v1(encoded_entries, false)
+}
+
+fn digest_staticbackup_with_empty_policy_v1<S: AsRef<str>>(
+    encoded_entries: &[S],
+    allow_empty: bool,
+) -> Result<([u8; 32], usize), PreflightFailureV1> {
+    if (!allow_empty && encoded_entries.is_empty()) || encoded_entries.len() > MAX_SCB_COUNT_V1 {
         return Err(PreflightFailureV1::new(
             "lightning.staticbackup",
             "invalid-entry-count",
@@ -2663,13 +3803,27 @@ fn digest_staticbackup_v1<S: AsRef<str>>(
     Ok((hasher.finalize().into(), entries.len()))
 }
 
-fn validate_snapshot_v1(
+struct RuntimeSnapshotViewV1<'a> {
+    core_version: u64,
+    core_subversion: &'a str,
+    core_chain: &'a str,
+    core_blocks: u64,
+    core_headers: u64,
+    core_ibd: bool,
+    signet_challenge: Option<&'a str>,
+    genesis_hash: &'a str,
+    cln_id: &'a str,
+    cln_version: &'a str,
+    cln_network: &'a str,
+    cln_blockheight: u64,
+    plugins: &'a [ClnPluginV1],
+}
+
+fn validate_runtime_snapshot_v1(
     config: &LightningStagingConfigV1,
     ids: &NodeIdsV1,
-    snapshot: &PreflightSnapshotV1,
-    receipt: &BackupReceiptV1,
-    now_unix: u64,
-) -> Result<PreflightSuccessV1, PreflightFailureV1> {
+    snapshot: RuntimeSnapshotViewV1<'_>,
+) -> Result<(), PreflightFailureV1> {
     if snapshot.core_version < MINIMUM_CORE_VERSION_V1 {
         return Err(PreflightFailureV1::new("core.version", "below-minimum"));
     }
@@ -2684,7 +3838,6 @@ fn validate_snapshot_v1(
     }
     if !snapshot
         .signet_challenge
-        .as_deref()
         .is_some_and(|challenge| challenge.eq_ignore_ascii_case(DEFAULT_SIGNET_CHALLENGE_V1))
     {
         return Err(PreflightFailureV1::new(
@@ -2704,7 +3857,7 @@ fn validate_snapshot_v1(
     {
         return Err(PreflightFailureV1::new("core.sync", "not-synced"));
     }
-    let cln_id = normalize_node_id_v1(&snapshot.cln_id)
+    let cln_id = normalize_node_id_v1(snapshot.cln_id)
         .map_err(|_| PreflightFailureV1::new("lightning.identity", "invalid-node-id"))?;
     if cln_id != ids.own(config.role) {
         return Err(PreflightFailureV1::new(
@@ -2727,7 +3880,85 @@ fn validate_snapshot_v1(
             "height-mismatch",
         ));
     }
-    validate_plugins_v1(config, &snapshot.plugins)?;
+    validate_plugins_v1(config, snapshot.plugins)
+}
+
+fn validate_bootstrap_snapshot_v1(
+    config: &LightningStagingConfigV1,
+    ids: &NodeIdsV1,
+    snapshot: &BootstrapPreflightSnapshotV1,
+) -> Result<BootstrapPreflightSuccessV1, PreflightFailureV1> {
+    validate_runtime_snapshot_v1(
+        config,
+        ids,
+        RuntimeSnapshotViewV1 {
+            core_version: snapshot.core_version,
+            core_subversion: &snapshot.core_subversion,
+            core_chain: &snapshot.core_chain,
+            core_blocks: snapshot.core_blocks,
+            core_headers: snapshot.core_headers,
+            core_ibd: snapshot.core_ibd,
+            signet_challenge: snapshot.signet_challenge.as_deref(),
+            genesis_hash: &snapshot.genesis_hash,
+            cln_id: &snapshot.cln_id,
+            cln_version: &snapshot.cln_version,
+            cln_network: &snapshot.cln_network,
+            cln_blockheight: snapshot.cln_blockheight,
+            plugins: &snapshot.plugins,
+        },
+    )?;
+    if snapshot.peer_channel_count != 0 {
+        return Err(PreflightFailureV1::new(
+            "lightning.bootstrap",
+            "existing-peer-channels",
+        ));
+    }
+    if snapshot.onchain_output_count != 0 || snapshot.funding_channel_count != 0 {
+        return Err(PreflightFailureV1::new(
+            "lightning.bootstrap",
+            "existing-wallet-funds",
+        ));
+    }
+    if snapshot.scb_count != 0 {
+        return Err(PreflightFailureV1::new(
+            "lightning.bootstrap",
+            "existing-staticbackup",
+        ));
+    }
+    Ok(BootstrapPreflightSuccessV1 {
+        role: config.role,
+        bitcoin_height: snapshot.core_blocks,
+        cln_height: snapshot.cln_blockheight,
+        plugin_count: snapshot.plugins.len(),
+    })
+}
+
+fn validate_snapshot_v1(
+    config: &LightningStagingConfigV1,
+    ids: &NodeIdsV1,
+    snapshot: &PreflightSnapshotV1,
+    receipt: &BackupReceiptV1,
+    now_unix: u64,
+) -> Result<PreflightSuccessV1, PreflightFailureV1> {
+    validate_runtime_snapshot_v1(
+        config,
+        ids,
+        RuntimeSnapshotViewV1 {
+            core_version: snapshot.core_version,
+            core_subversion: &snapshot.core_subversion,
+            core_chain: &snapshot.core_chain,
+            core_blocks: snapshot.core_blocks,
+            core_headers: snapshot.core_headers,
+            core_ibd: snapshot.core_ibd,
+            signet_challenge: snapshot.signet_challenge.as_deref(),
+            genesis_hash: &snapshot.genesis_hash,
+            cln_id: &snapshot.cln_id,
+            cln_version: &snapshot.cln_version,
+            cln_network: &snapshot.cln_network,
+            cln_blockheight: snapshot.cln_blockheight,
+            plugins: &snapshot.plugins,
+        },
+    )?;
     let required_peers = validate_peer_channels_v1(
         config.role,
         ids,
@@ -2750,12 +3981,13 @@ fn validate_snapshot_v1(
         peer_channel_count: required_peers,
         plugin_count: snapshot.plugins.len(),
         backup_age_seconds,
+        backup_receipt_recorded_at_unix: receipt.recorded_at_unix,
     })
 }
 
 fn validate_plugins_v1(
     config: &LightningStagingConfigV1,
-    actual: &[(String, bool)],
+    actual: &[ClnPluginV1],
 ) -> Result<(), PreflightFailureV1> {
     if actual.len() > MAX_PLUGIN_COUNT_V1 {
         return Err(PreflightFailureV1::new(
@@ -2770,8 +4002,12 @@ fn validate_plugins_v1(
         .map(|plugin| plugin.name.as_str())
         .collect();
     let mut observed = BTreeMap::new();
-    for (name, active) in actual {
-        if name.len() > 4096 || observed.insert(name.as_str(), *active).is_some() {
+    for plugin in actual {
+        if plugin.name.len() > 4096
+            || observed
+                .insert(plugin.name.as_str(), (plugin.active, plugin.dynamic))
+                .is_some()
+        {
             return Err(PreflightFailureV1::new(
                 "lightning.plugins",
                 "invalid-plugin-list",
@@ -2784,7 +4020,13 @@ fn validate_plugins_v1(
             "allowlist-mismatch",
         ));
     }
-    if observed.values().any(|active| !active) {
+    if observed.values().any(|(_, dynamic)| *dynamic) {
+        return Err(PreflightFailureV1::new(
+            "lightning.plugins",
+            "plugin-dynamic",
+        ));
+    }
+    if observed.values().any(|(active, _)| !active) {
         return Err(PreflightFailureV1::new(
             "lightning.plugins",
             "plugin-inactive",
@@ -2933,10 +4175,22 @@ fn validate_backup_receipt_v1(
             "staticbackup-mismatch",
         ));
     }
+    validate_backup_receipt_age_v1(
+        receipt.recorded_at_unix,
+        config.backup.max_age_seconds,
+        now_unix,
+    )
+}
+
+fn validate_backup_receipt_age_v1(
+    recorded_at_unix: u64,
+    max_age_seconds: u64,
+    now_unix: u64,
+) -> Result<u64, PreflightFailureV1> {
     let age = now_unix
-        .checked_sub(receipt.recorded_at_unix)
+        .checked_sub(recorded_at_unix)
         .ok_or_else(|| PreflightFailureV1::new("backup.receipt", "future-timestamp"))?;
-    if age > config.backup.max_age_seconds {
+    if age > max_age_seconds {
         return Err(PreflightFailureV1::new("backup.receipt", "stale-receipt"));
     }
     Ok(age)
@@ -3027,6 +4281,15 @@ mod tests {
                     expected_gid: 0,
                 }],
             },
+            systemd: SystemdConfigV1 {
+                busctl: PinnedBinaryV1 {
+                    path: PathBuf::from("/usr/bin/busctl"),
+                    protected_parent: PathBuf::from("/usr/bin"),
+                    sha256_hex: hex::encode([6u8; 32]),
+                    expected_uid: 0,
+                    expected_gid: 0,
+                },
+            },
             backup: BackupConfigV1 {
                 receipt: PathBuf::from("/srv/bitcoinpir-backup/receipt.toml"),
                 protected_parent: PathBuf::from("/srv/bitcoinpir-backup"),
@@ -3054,7 +4317,8 @@ mod tests {
 
     fn fully_cross_uid_config(role: StagingRoleV1) -> LightningStagingConfigV1 {
         let mut value = cross_uid_config(role);
-        value.bitcoin.rpc_cookie.access_policy = CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+        value.bitcoin.rpc_cookie.access_policy =
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup;
         value.bitcoin.rpc_cookie.cross_uid_access = Some(CoreRpcCookieCrossUidAccessV1 {
             preflight_expected_uid: 1001,
             protected_parent_expected_uid: 0,
@@ -3133,6 +4397,14 @@ mod tests {
         }
     }
 
+    fn plugin(name: &str, active: bool, dynamic: bool) -> ClnPluginV1 {
+        ClnPluginV1 {
+            name: name.to_owned(),
+            active,
+            dynamic,
+        }
+    }
+
     fn gossip(left: &str, right: &str, scid: &str) -> Vec<ClnGossipChannelV1> {
         vec![
             ClnGossipChannelV1 {
@@ -3178,11 +4450,38 @@ mod tests {
             cln_version: "v26.06.6".to_owned(),
             cln_network: "signet".to_owned(),
             cln_blockheight: 999,
-            plugins: vec![(PLUGIN.to_owned(), true)],
+            plugins: vec![plugin(PLUGIN, true, false)],
             peer_channels,
             gossip_channels,
             scb_digest: [9u8; 32],
             scb_count: ids.required_peers(role).len(),
+        }
+    }
+
+    fn bootstrap_snapshot(role: StagingRoleV1) -> BootstrapPreflightSnapshotV1 {
+        let ids = NodeIdsV1 {
+            payer: PAYER.to_owned(),
+            router: ROUTER.to_owned(),
+            issuer: ISSUER.to_owned(),
+        };
+        BootstrapPreflightSnapshotV1 {
+            core_version: 290_000,
+            core_subversion: "/Satoshi:29.0.0/".to_owned(),
+            core_chain: "signet".to_owned(),
+            core_blocks: 1000,
+            core_headers: 1000,
+            core_ibd: false,
+            signet_challenge: Some(DEFAULT_SIGNET_CHALLENGE_V1.to_owned()),
+            genesis_hash: DEFAULT_SIGNET_GENESIS_V1.to_owned(),
+            cln_id: ids.own(role).to_owned(),
+            cln_version: "v26.06.6".to_owned(),
+            cln_network: "signet".to_owned(),
+            cln_blockheight: 999,
+            plugins: vec![plugin(PLUGIN, true, false)],
+            peer_channel_count: 0,
+            onchain_output_count: 0,
+            funding_channel_count: 0,
+            scb_count: 0,
         }
     }
 
@@ -3220,6 +4519,147 @@ mod tests {
         ] {
             let result = validate(&config(role), &snapshot(role), &receipt(role)).unwrap();
             assert_eq!(result.role, role);
+        }
+    }
+
+    #[test]
+    fn bootstrap_accepts_all_roles_only_before_any_channel_state_exists() {
+        for role in [
+            StagingRoleV1::Payer,
+            StagingRoleV1::Router,
+            StagingRoleV1::Issuer,
+        ] {
+            let config = config(role);
+            let ids = validate_static_config_v1(&config).unwrap();
+            let success =
+                validate_bootstrap_snapshot_v1(&config, &ids, &bootstrap_snapshot(role)).unwrap();
+            assert_eq!(success.role, role);
+
+            let mut with_peer = bootstrap_snapshot(role);
+            with_peer.peer_channel_count = 1;
+            assert_eq!(
+                validate_bootstrap_snapshot_v1(&config, &ids, &with_peer)
+                    .unwrap_err()
+                    .reason,
+                "existing-peer-channels"
+            );
+
+            let mut with_scb = bootstrap_snapshot(role);
+            with_scb.scb_count = 1;
+            assert_eq!(
+                validate_bootstrap_snapshot_v1(&config, &ids, &with_scb)
+                    .unwrap_err()
+                    .reason,
+                "existing-staticbackup"
+            );
+
+            let mut with_outputs = bootstrap_snapshot(role);
+            with_outputs.onchain_output_count = 1;
+            assert_eq!(
+                validate_bootstrap_snapshot_v1(&config, &ids, &with_outputs)
+                    .unwrap_err()
+                    .reason,
+                "existing-wallet-funds"
+            );
+
+            let mut with_funding_channel = bootstrap_snapshot(role);
+            with_funding_channel.funding_channel_count = 1;
+            assert_eq!(
+                validate_bootstrap_snapshot_v1(&config, &ids, &with_funding_channel)
+                    .unwrap_err()
+                    .reason,
+                "existing-wallet-funds"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_reuses_the_strict_runtime_trust_checks() {
+        let config = config(StagingRoleV1::Issuer);
+        let ids = validate_static_config_v1(&config).unwrap();
+
+        let mut wrong_challenge = bootstrap_snapshot(StagingRoleV1::Issuer);
+        wrong_challenge.signet_challenge = Some("00".repeat(32));
+        assert_eq!(
+            validate_bootstrap_snapshot_v1(&config, &ids, &wrong_challenge)
+                .unwrap_err()
+                .check,
+            "core.signet-challenge"
+        );
+
+        let mut wrong_identity = bootstrap_snapshot(StagingRoleV1::Issuer);
+        wrong_identity.cln_id = PAYER.to_owned();
+        assert_eq!(
+            validate_bootstrap_snapshot_v1(&config, &ids, &wrong_identity)
+                .unwrap_err()
+                .check,
+            "lightning.identity"
+        );
+
+        let mut unexpected_plugin = bootstrap_snapshot(StagingRoleV1::Issuer);
+        unexpected_plugin
+            .plugins
+            .push(plugin("/tmp/untrusted", true, false));
+        assert_eq!(
+            validate_bootstrap_snapshot_v1(&config, &ids, &unexpected_plugin)
+                .unwrap_err()
+                .check,
+            "lightning.plugins"
+        );
+    }
+
+    #[test]
+    fn cln_plugin_list_requires_static_plugins_and_a_closed_item_shape() {
+        let config = config(StagingRoleV1::Issuer);
+        let valid: ClnPluginListV1 = serde_json::from_value(serde_json::json!({
+            "command": "list",
+            "plugins": [{"name": PLUGIN, "active": true, "dynamic": false}]
+        }))
+        .unwrap();
+        validate_plugins_v1(&config, &valid.plugins).unwrap();
+
+        let dynamic: ClnPluginListV1 = serde_json::from_value(serde_json::json!({
+            "command": "list",
+            "plugins": [{"name": PLUGIN, "active": true, "dynamic": true}]
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_plugins_v1(&config, &dynamic.plugins)
+                .unwrap_err()
+                .reason,
+            "plugin-dynamic"
+        );
+
+        for malformed in [
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true}]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "dynamic": false}]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{
+                    "name": PLUGIN,
+                    "active": true,
+                    "dynamic": false,
+                    "autostart": true
+                }]
+            }),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true, "dynamic": "false"}]
+            }),
+            serde_json::json!({"command": "list", "plugins": [PLUGIN]}),
+            serde_json::json!({
+                "command": "list",
+                "plugins": [{"name": PLUGIN, "active": true, "dynamic": false}],
+                "unknown_top_level": true
+            }),
+        ] {
+            assert!(serde_json::from_value::<ClnPluginListV1>(malformed).is_err());
         }
     }
 
@@ -3283,6 +4723,7 @@ mod tests {
             HeightLag,
             UnexpectedPlugin,
             InactivePlugin,
+            DynamicPlugin,
             PrivateChannel,
             DisconnectedChannel,
             MissingLiquidity,
@@ -3304,6 +4745,7 @@ mod tests {
             (Mutation::HeightLag, "lightning.height"),
             (Mutation::UnexpectedPlugin, "lightning.plugins"),
             (Mutation::InactivePlugin, "lightning.plugins"),
+            (Mutation::DynamicPlugin, "lightning.plugins"),
             (Mutation::PrivateChannel, "lightning.peer-channels"),
             (Mutation::DisconnectedChannel, "lightning.peer-channels"),
             (Mutation::MissingLiquidity, "lightning.liquidity"),
@@ -3328,9 +4770,10 @@ mod tests {
                 Mutation::WrongClnNetwork => snapshot.cln_network = "testnet4".to_owned(),
                 Mutation::HeightLag => snapshot.cln_blockheight = 900,
                 Mutation::UnexpectedPlugin => {
-                    snapshot.plugins.push(("/tmp/unknown".to_owned(), true));
+                    snapshot.plugins.push(plugin("/tmp/unknown", true, false));
                 }
-                Mutation::InactivePlugin => snapshot.plugins[0].1 = false,
+                Mutation::InactivePlugin => snapshot.plugins[0].active = false,
+                Mutation::DynamicPlugin => snapshot.plugins[0].dynamic = true,
                 Mutation::PrivateChannel => snapshot.peer_channels[0].private = Some(true),
                 Mutation::DisconnectedChannel => {
                     snapshot.peer_channels[0].peer_connected = false;
@@ -3363,6 +4806,16 @@ mod tests {
         assert_eq!(first, second);
         let error = digest_staticbackup_v1(&["0102".to_owned(), "0102".to_owned()]).unwrap_err();
         assert_eq!(error.reason, "duplicate-entry");
+        assert_eq!(
+            digest_staticbackup_v1::<String>(&[]).unwrap_err().reason,
+            "invalid-entry-count"
+        );
+        assert_eq!(
+            digest_staticbackup_with_empty_policy_v1::<String>(&[], true)
+                .unwrap()
+                .1,
+            0
+        );
     }
 
     #[test]
@@ -3480,7 +4933,7 @@ mod tests {
 
         let mut missing_fields = legacy.clone();
         missing_fields.bitcoin.rpc_cookie.access_policy =
-            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup;
         assert_eq!(
             validate_static_config_v1(&missing_fields)
                 .unwrap_err()
@@ -3648,7 +5101,7 @@ mod tests {
             kind: CoreRpcCookieBoundaryKindV1::Directory,
             uid: cookie_config.expected_uid,
             gid: cookie_config.expected_gid,
-            mode: 0o710,
+            mode: 0o2710,
             nlink: 2,
             size: 0,
         };
@@ -3718,7 +5171,25 @@ mod tests {
             (
                 protected_parent,
                 CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o710,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
                     mode: 0o711,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o3710,
                     ..final_parent
                 },
                 cookie,
@@ -4139,7 +5610,7 @@ mod tests {
         let parsed = toml::from_str::<LightningStagingConfigV1>(template).unwrap();
         assert_eq!(
             parsed.bitcoin.rpc_cookie.access_policy,
-            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+            CoreRpcCookieAccessPolicyV1::CrossUidSetgidSharedGroup
         );
         assert_eq!(parsed.bitcoin.rpc_cookie.expected_uid, 990);
         assert_eq!(parsed.bitcoin.rpc_cookie.expected_gid, 994);
@@ -4168,6 +5639,14 @@ mod tests {
                 .client_expected_uid,
             995
         );
+        assert_eq!(
+            parsed.backup.protected_parent,
+            Path::new(BACKUP_RECEIPT_STATE_DIRECTORY_V1)
+        );
+        assert_eq!(parsed.backup.receipt, Path::new(BACKUP_RECEIPT_PATH_V1));
+        assert_eq!(parsed.backup.expected_uid, 995);
+        assert_eq!(parsed.backup.expected_gid, 995);
+        validate_backup_receipt_state_contract_v1(&parsed, 995, 995).unwrap();
         let mut legacy_template = String::new();
         let mut skipping_cross_uid_table = false;
         for line in template.lines() {
@@ -4227,13 +5706,73 @@ mod tests {
         assert!(
             toml::from_str::<LightningStagingConfigV1>(&with_unknown_core_cross_uid_field).is_err()
         );
+        let with_obsolete_core_cookie_policy = template.replace(
+            "access_policy = \"cross-uid-setgid-shared-group\"",
+            "access_policy = \"cross-uid-shared-group\"",
+        );
+        assert!(
+            toml::from_str::<LightningStagingConfigV1>(&with_obsolete_core_cookie_policy).is_err()
+        );
         let with_unknown_backup_field = format!("{template}\nunexpected = true\n");
         assert!(toml::from_str::<LightningStagingConfigV1>(&with_unknown_backup_field).is_err());
     }
 
+    #[test]
+    fn backup_receipt_state_contract_rejects_path_or_preflight_identity_substitution() {
+        let template =
+            include_str!("../../../docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example");
+        let parsed = toml::from_str::<LightningStagingConfigV1>(template).unwrap();
+
+        let mut wrong_parent = parsed.clone();
+        wrong_parent.backup.protected_parent = PathBuf::from("/var/lib/other-preflight");
+        assert_eq!(
+            validate_backup_receipt_state_contract_v1(&wrong_parent, 995, 995)
+                .unwrap_err()
+                .reason,
+            "invalid-state-boundary"
+        );
+
+        let mut wrong_receipt = parsed.clone();
+        wrong_receipt.backup.receipt =
+            PathBuf::from("/var/lib/bitcoinpir-lightning-preflight/alternate-receipt.toml");
+        assert_eq!(
+            validate_backup_receipt_state_contract_v1(&wrong_receipt, 995, 995)
+                .unwrap_err()
+                .reason,
+            "invalid-state-boundary"
+        );
+
+        for (config_gid, reader_uid) in [(996, 995), (995, 996), (0, 995), (995, 0)] {
+            assert_eq!(
+                validate_backup_receipt_state_contract_v1(&parsed, config_gid, reader_uid)
+                    .unwrap_err()
+                    .reason,
+                "invalid-state-boundary"
+            );
+        }
+
+        let mut wrong_owner = parsed.clone();
+        wrong_owner.backup.expected_uid = 996;
+        assert_eq!(
+            validate_backup_receipt_state_contract_v1(&wrong_owner, 995, 995)
+                .unwrap_err()
+                .reason,
+            "invalid-state-boundary"
+        );
+
+        let mut wrong_group = parsed;
+        wrong_group.backup.expected_gid = 996;
+        assert_eq!(
+            validate_backup_receipt_state_contract_v1(&wrong_group, 995, 995)
+                .unwrap_err()
+                .reason,
+            "invalid-state-boundary"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn executable_config_and_cookie_reject_unsafe_permissions() {
+    fn executable_and_cookie_reject_unsafe_permissions() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let directory = tempfile::tempdir().unwrap();
@@ -4251,20 +5790,6 @@ mod tests {
             expected_gid: metadata.gid(),
         };
         validate_pinned_binary_v1(&binary, "binary.test").unwrap();
-
-        let config_path = directory.path().join("preflight.toml");
-        std::fs::write(&config_path, b"schema_version=1\n").unwrap();
-        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let args = LightningStagingPreflightArgs {
-            config: config_path,
-            config_protected_parent: directory.path().to_path_buf(),
-            config_expected_uid: metadata.uid(),
-            config_expected_gid: metadata.gid(),
-        };
-        assert_eq!(
-            read_protected_config_v1(&args).unwrap(),
-            b"schema_version=1\n"
-        );
 
         let cookie_parent = std::fs::canonicalize(directory.path()).unwrap();
         let cookie_path = cookie_parent.join(".cookie");
@@ -4303,14 +5828,375 @@ mod tests {
             "unsafe-protected-parent"
         );
         assert_eq!(
-            read_protected_config_v1(&args).unwrap_err().reason,
-            "unsafe-protected-parent"
-        );
-        assert_eq!(
             validate_core_rpc_cookie_v1(&cookie_config)
                 .unwrap_err()
                 .reason,
             "unsafe-protected-parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_config_identity_contract_requires_root_owner_and_the_pinned_reader_group() {
+        const READER_UID: u32 = 60_001;
+        const READER_PRIMARY_GID: u32 = 60_002;
+        const CONFIG_GID: u32 = 60_003;
+
+        let supplementary_reader = ProtectedConfigRuntimeIdentityV1 {
+            effective_uid: READER_UID,
+            effective_gid: READER_PRIMARY_GID,
+            supplementary_gids: BTreeSet::from([CONFIG_GID]),
+        };
+        validate_protected_config_runtime_identity_v1(
+            0,
+            CONFIG_GID,
+            READER_UID,
+            &supplementary_reader,
+            "test.config",
+        )
+        .unwrap();
+
+        let effective_group_reader = ProtectedConfigRuntimeIdentityV1 {
+            effective_gid: CONFIG_GID,
+            supplementary_gids: BTreeSet::new(),
+            ..supplementary_reader.clone()
+        };
+        validate_protected_config_runtime_identity_v1(
+            0,
+            CONFIG_GID,
+            READER_UID,
+            &effective_group_reader,
+            "test.config",
+        )
+        .unwrap();
+
+        let wrong_reader = ProtectedConfigRuntimeIdentityV1 {
+            effective_uid: READER_UID + 1,
+            ..supplementary_reader.clone()
+        };
+        assert_eq!(
+            validate_protected_config_runtime_identity_v1(
+                0,
+                CONFIG_GID,
+                READER_UID,
+                &wrong_reader,
+                "test.config",
+            )
+            .unwrap_err()
+            .reason,
+            "runtime-uid-mismatch"
+        );
+
+        let missing_group = ProtectedConfigRuntimeIdentityV1 {
+            supplementary_gids: BTreeSet::new(),
+            ..supplementary_reader.clone()
+        };
+        assert_eq!(
+            validate_protected_config_runtime_identity_v1(
+                0,
+                CONFIG_GID,
+                READER_UID,
+                &missing_group,
+                "test.config",
+            )
+            .unwrap_err()
+            .reason,
+            "shared-group-missing"
+        );
+
+        for (owner, group, reader) in [
+            (READER_UID, CONFIG_GID, READER_UID),
+            (0, 0, READER_UID),
+            (0, CONFIG_GID, 0),
+        ] {
+            assert_eq!(
+                validate_protected_config_runtime_identity_v1(
+                    owner,
+                    group,
+                    reader,
+                    &supplementary_reader,
+                    "test.config",
+                )
+                .unwrap_err()
+                .reason,
+                "invalid-access-policy"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_config_runtime_group_set_rejects_missing_and_extra_groups() {
+        let config: LightningStagingConfigV1 = toml::from_str(include_str!(
+            "../../../docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example"
+        ))
+        .unwrap();
+        let exact = ProtectedConfigRuntimeIdentityV1 {
+            effective_uid: 995,
+            effective_gid: 995,
+            supplementary_gids: BTreeSet::from([993, 994]),
+        };
+        validate_protected_config_runtime_group_set_for_identity_v1(
+            &config,
+            995,
+            995,
+            &exact,
+            "test.config-groups",
+        )
+        .unwrap();
+
+        for supplementary_gids in [BTreeSet::from([993]), BTreeSet::from([993, 994, 996])] {
+            let runtime = ProtectedConfigRuntimeIdentityV1 {
+                supplementary_gids,
+                ..exact.clone()
+            };
+            assert_eq!(
+                validate_protected_config_runtime_group_set_for_identity_v1(
+                    &config,
+                    995,
+                    995,
+                    &runtime,
+                    "test.config-groups",
+                )
+                .unwrap_err()
+                .reason,
+                "runtime-group-set-mismatch"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_config_cross_uid_linux_child() {
+        if let Ok(uid) = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_UID") {
+            use rustix::process::{Gid, Uid};
+            let uid = uid.parse::<u32>().unwrap();
+            let gid = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_GID")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap();
+            let groups = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_GROUPS").unwrap();
+            let groups = if groups.is_empty() {
+                Vec::new()
+            } else {
+                groups
+                    .split(',')
+                    .map(|group| Gid::from_raw(group.parse::<u32>().unwrap()))
+                    .collect()
+            };
+            rustix::thread::set_thread_groups(&groups).unwrap();
+            rustix::thread::set_thread_gid(Gid::from_raw(gid)).unwrap();
+            rustix::thread::set_thread_uid(Uid::from_raw(uid)).unwrap();
+        }
+        let Ok(config_path) = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_PATH") else {
+            return;
+        };
+        let protected_parent = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_PARENT").unwrap();
+        let expected = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_EXPECT").unwrap();
+        let result = read_protected_config_at_v1(
+            Path::new(&config_path),
+            Path::new(&protected_parent),
+            0,
+            60_003,
+            60_001,
+        );
+        if expected == "PASS" {
+            assert_eq!(result.unwrap(), b"schema_version=1\n");
+        } else {
+            assert_eq!(result.unwrap_err().reason, expected);
+        }
+        if let Ok(group_expected) = std::env::var("BPIR_CONFIG_CONTRACT_CHILD_GROUP_SET_EXPECT") {
+            let mut config: LightningStagingConfigV1 = toml::from_str(include_str!(
+                "../../../docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example"
+            ))
+            .unwrap();
+            config.bitcoin.rpc_cookie.expected_gid = 60_004;
+            config.lightning.expected_gid = 60_005;
+            let runtime =
+                current_protected_config_runtime_identity_v1("test.config-groups").unwrap();
+            let result = validate_protected_config_runtime_group_set_for_identity_v1(
+                &config,
+                60_003,
+                60_001,
+                &runtime,
+                "test.config-groups",
+            );
+            if group_expected == "PASS" {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err().reason, group_expected);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_config_real_linux_uid_gid_and_mode_contract() {
+        use rustix::fs::chown;
+        use rustix::process::{Gid, Uid};
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command as StdCommand;
+
+        const READER_UID: u32 = 60_001;
+        const READER_PRIMARY_GID: u32 = 60_002;
+        const CONFIG_GID: u32 = 60_003;
+        const COOKIE_GID: u32 = 60_004;
+        const LIGHTNING_GID: u32 = 60_005;
+        const EXTRA_GID: u32 = 60_006;
+
+        // The cross-UID subprocess setup needs privilege. Ordinary developer
+        // runs still exercise the pure identity test above; the pinned Linux
+        // root/container gate exercises real kernel DAC and credential state.
+        if !rustix::process::geteuid().is_root() {
+            assert!(
+                std::env::var_os("BPIR_REQUIRE_ROOT_CREDENTIAL_TEST").is_none(),
+                "the explicit Linux root credential gate did not run as root"
+            );
+            return;
+        }
+
+        let directory = tempfile::Builder::new()
+            .prefix("bitcoinpir-config-contract-")
+            .tempdir_in("/run")
+            .unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ancestor = std::fs::canonicalize(directory.path()).unwrap();
+        let parent = ancestor.join("config");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let parent = std::fs::canonicalize(parent).unwrap();
+        let config_path = parent.join("preflight.toml");
+        std::fs::write(&config_path, b"schema_version=1\n").unwrap();
+        chown(
+            &config_path,
+            Some(Uid::ROOT),
+            Some(Gid::from_raw(CONFIG_GID)),
+        )
+        .unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o440)).unwrap();
+
+        let run_child = |uid: u32,
+                         gid: u32,
+                         groups: &[u32],
+                         expected: &str,
+                         group_set_expected: Option<&str>| {
+            let mut command = StdCommand::new(std::env::current_exe().unwrap());
+            command
+                .arg("--exact")
+                .arg("lightning_staging::tests::protected_config_cross_uid_linux_child")
+                .arg("--nocapture")
+                .env("BPIR_CONFIG_CONTRACT_CHILD_PATH", &config_path)
+                .env("BPIR_CONFIG_CONTRACT_CHILD_PARENT", &parent)
+                .env("BPIR_CONFIG_CONTRACT_CHILD_EXPECT", expected)
+                .env("BPIR_CONFIG_CONTRACT_CHILD_UID", uid.to_string())
+                .env("BPIR_CONFIG_CONTRACT_CHILD_GID", gid.to_string())
+                .env(
+                    "BPIR_CONFIG_CONTRACT_CHILD_GROUPS",
+                    groups
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            if let Some(group_set_expected) = group_set_expected {
+                command.env(
+                    "BPIR_CONFIG_CONTRACT_CHILD_GROUP_SET_EXPECT",
+                    group_set_expected,
+                );
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "cross-UID child failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        };
+
+        run_child(READER_UID, READER_PRIMARY_GID, &[CONFIG_GID], "PASS", None);
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "PASS",
+            Some("PASS"),
+        );
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID],
+            "PASS",
+            Some("runtime-group-set-mismatch"),
+        );
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID, EXTRA_GID],
+            "PASS",
+            Some("runtime-group-set-mismatch"),
+        );
+        run_child(
+            READER_UID,
+            READER_PRIMARY_GID,
+            &[],
+            "shared-group-missing",
+            None,
+        );
+        run_child(
+            READER_UID + 1,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "runtime-uid-mismatch",
+            None,
+        );
+
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "unsafe-metadata",
+            None,
+        );
+
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o440)).unwrap();
+        chown(
+            &config_path,
+            Some(Uid::from_raw(READER_UID)),
+            Some(Gid::from_raw(CONFIG_GID)),
+        )
+        .unwrap();
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "unsafe-metadata",
+            None,
+        );
+
+        chown(
+            &config_path,
+            Some(Uid::ROOT),
+            Some(Gid::from_raw(CONFIG_GID)),
+        )
+        .unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o775)).unwrap();
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "unsafe-protected-parent",
+            None,
+        );
+
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&ancestor, std::fs::Permissions::from_mode(0o775)).unwrap();
+        run_child(
+            READER_UID,
+            CONFIG_GID,
+            &[COOKIE_GID, LIGHTNING_GID],
+            "unsafe-protected-parent",
+            None,
         );
     }
 
@@ -4653,6 +6539,94 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn backup_receipt_state_directory_requires_exact_mode_0700() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let parent_metadata = std::fs::metadata(directory.path()).unwrap();
+        let receipt_path = directory.path().join("backup-receipt.toml");
+        let receipt_bytes = toml::to_string(&receipt(StagingRoleV1::Payer)).unwrap();
+        std::fs::write(&receipt_path, receipt_bytes.as_bytes()).unwrap();
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let backup = BackupConfigV1 {
+            receipt: receipt_path,
+            protected_parent: directory.path().to_path_buf(),
+            expected_uid: parent_metadata.uid(),
+            expected_gid: parent_metadata.gid(),
+            max_age_seconds: 3600,
+        };
+
+        assert_eq!(
+            read_protected_receipt_v1(&backup).unwrap_err().reason,
+            "unsafe-protected-parent"
+        );
+        assert_eq!(
+            write_atomic_backup_receipt_v1(&backup, receipt_bytes.as_bytes())
+                .unwrap_err()
+                .reason,
+            "unsafe-output-parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_receipt_unlock_releases_a_flock_while_duplicate_fd_remains_open() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let parent_metadata = std::fs::metadata(directory.path()).unwrap();
+        let receipt_path = directory.path().join("backup-receipt.toml");
+        let backup = BackupConfigV1 {
+            receipt: receipt_path.clone(),
+            protected_parent: directory.path().to_path_buf(),
+            expected_uid: parent_metadata.uid(),
+            expected_gid: parent_metadata.gid(),
+            max_age_seconds: 3600,
+        };
+        let first = toml::to_string(&receipt(StagingRoleV1::Payer)).unwrap();
+        let second = toml::to_string(&BackupReceiptV1 {
+            recorded_at_unix: NOW + 1,
+            ..receipt(StagingRoleV1::Payer)
+        })
+        .unwrap();
+        let mut duplicate_parent = None;
+
+        let first_result =
+            write_atomic_backup_receipt_with_hook_v1(&backup, first.as_bytes(), |parent| {
+                duplicate_parent = Some(
+                    rustix::io::dup(parent)
+                        .map_err(|_| PreflightFailureV1::new("backup.test", "dup-failed"))?,
+                );
+                Ok(())
+            });
+
+        // The duplicate still references the locked directory's original open
+        // file description. Dropping only the writer's descriptor would leave
+        // that flock held; its explicit LOCK_UN must make this second write pass.
+        let second_result = if first_result.is_ok() && duplicate_parent.is_some() {
+            Some(write_atomic_backup_receipt_v1(&backup, second.as_bytes()))
+        } else {
+            None
+        };
+
+        assert!(
+            first_result.is_ok(),
+            "first receipt write failed: {first_result:?}"
+        );
+        let duplicate_parent = duplicate_parent.expect("duplicate parent descriptor must exist");
+        let second_result = second_result.expect("duplicate parent descriptor must exist");
+        assert!(
+            second_result.is_ok(),
+            "explicit unlock did not release the shared flock: {second_result:?}",
+        );
+        drop(duplicate_parent);
+        assert_eq!(std::fs::read_to_string(receipt_path).unwrap(), second);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn backup_receipt_atomic_commit_preserves_old_file_and_removes_temporary_on_failure() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -4676,7 +6650,7 @@ mod tests {
         })
         .unwrap();
 
-        let error = write_atomic_backup_receipt_with_hook_v1(&backup, new.as_bytes(), || {
+        let error = write_atomic_backup_receipt_with_hook_v1(&backup, new.as_bytes(), |_| {
             Err(PreflightFailureV1::new("backup.test", "injected-failure"))
         })
         .unwrap_err();
@@ -4715,6 +6689,72 @@ mod tests {
         .unwrap();
         write_atomic_backup_receipt_v1(&backup, newest.as_bytes()).unwrap();
         assert_eq!(std::fs::read_to_string(&receipt_path).unwrap(), newest);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_command_layer_is_fixed_read_only_and_skips_gossip() {
+        let config = config(StagingRoleV1::Payer);
+        let plugin_json = serde_json::json!({
+            "command": "list",
+            "plugins": [{"name": PLUGIN, "active": true, "dynamic": false}]
+        });
+        let mut runner = FakeRunnerV1 {
+            responses: VecDeque::from(vec![
+                serde_json::to_vec(&serde_json::json!({"version": 290000, "subversion": "/Satoshi:29.0.0/"})).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"chain": "signet", "blocks": 1000, "headers": 1000, "initialblockdownload": false, "signet_challenge": DEFAULT_SIGNET_CHALLENGE_V1})).unwrap(),
+                format!("{DEFAULT_SIGNET_GENESIS_V1}\n").into_bytes(),
+                serde_json::to_vec(&serde_json::json!({"id": PAYER, "version": "v26.06.6", "network": "signet", "blockheight": 1000})).unwrap(),
+                serde_json::to_vec(&plugin_json).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"channels": []})).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"outputs": [], "channels": []})).unwrap(),
+                serde_json::to_vec(&serde_json::json!({"scb": []})).unwrap(),
+            ]),
+            commands: Vec::new(),
+        };
+        let snapshot = collect_bootstrap_snapshot_v1(&config, &mut runner)
+            .await
+            .unwrap();
+        let ids = validate_static_config_v1(&config).unwrap();
+        validate_bootstrap_snapshot_v1(&config, &ids, &snapshot).unwrap();
+        assert!(runner.responses.is_empty());
+
+        let core = PathBuf::from("/opt/bitcoinpir/bin/bitcoin-cli");
+        let cln = PathBuf::from("/opt/bitcoinpir/bin/lightning-cli");
+        let core_base = [
+            "-signet",
+            "-datadir=/srv/bitcoin",
+            "-rpcconnect=127.0.0.1",
+            "-rpcport=38332",
+            "-rpccookiefile=/srv/bitcoin/signet/.cookie",
+            "-rpcuser=",
+            "-rpcpassword=",
+        ];
+        let cln_base = [
+            "--network=signet",
+            "--rpc-file=/srv/lightning/signet/lightning-rpc",
+            "--notifications=none",
+        ];
+        let command = |program: &Path, base: &[&str], tail: &[&str]| CapturedCommandV1 {
+            program: program.to_path_buf(),
+            args: base
+                .iter()
+                .chain(tail.iter())
+                .map(|value| (*value).to_owned())
+                .collect(),
+        };
+        assert_eq!(
+            runner.commands,
+            vec![
+                command(&core, &core_base, &["getnetworkinfo"]),
+                command(&core, &core_base, &["getblockchaininfo"]),
+                command(&core, &core_base, &["getblockhash", "0"]),
+                command(&cln, &cln_base, &["getinfo"]),
+                command(&cln, &cln_base, &["plugin", "list"]),
+                command(&cln, &cln_base, &["listpeerchannels"]),
+                command(&cln, &cln_base, &["listfunds"]),
+                command(&cln, &cln_base, &["staticbackup"]),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -4808,5 +6848,371 @@ mod tests {
                 command(&cln, &cln_base, &["staticbackup"]),
             ]
         );
+    }
+
+    #[test]
+    fn cln_invocation_id_and_generation_binding_are_closed() {
+        const FIRST: &str = "0123456789abcdef0123456789abcdef";
+        const SECOND: &str = "1123456789abcdef0123456789abcdef";
+
+        validate_cln_invocation_id_v1(FIRST).unwrap();
+        validate_cln_invocation_binding_v1(None, FIRST, FIRST).unwrap();
+        validate_cln_invocation_binding_v1(Some(FIRST), FIRST, FIRST).unwrap();
+
+        for invalid in [
+            "",
+            "0123456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF",
+            "00000000000000000000000000000000",
+            "ffffffffffffffffffffffffffffffff",
+            "0123456789abcdef0123456789abcdeg",
+            "/123456789abcdef0123456789abcdef",
+        ] {
+            assert_eq!(
+                validate_cln_invocation_id_v1(invalid).unwrap_err().reason,
+                "invalid-invocation-id"
+            );
+        }
+
+        for error in [
+            validate_cln_invocation_binding_v1(None, FIRST, SECOND).unwrap_err(),
+            validate_cln_invocation_binding_v1(Some(SECOND), FIRST, FIRST).unwrap_err(),
+        ] {
+            assert_eq!(error.check, "systemd.cln-invocation");
+            assert_eq!(error.reason, "generation-changed");
+            assert!(!error.to_string().contains(FIRST));
+            assert!(!error.to_string().contains(SECOND));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_invocation_mapping_requires_one_root_owned_fixed_size_symlink() {
+        let valid = SystemdInvocationLinkSnapshotV1 {
+            device: 1,
+            inode: 2,
+            mode: 0o120777,
+            size: 32,
+            uid: 0,
+            gid: 0,
+            links: 1,
+            modified_seconds: 3,
+            modified_nanoseconds: 4,
+            changed_seconds: 5,
+            changed_nanoseconds: 6,
+        };
+        validate_systemd_invocation_link_snapshot_v1(valid).unwrap();
+        for invalid in [
+            SystemdInvocationLinkSnapshotV1 {
+                mode: 0o100444,
+                ..valid
+            },
+            SystemdInvocationLinkSnapshotV1 { size: 31, ..valid },
+            SystemdInvocationLinkSnapshotV1 { uid: 1, ..valid },
+            SystemdInvocationLinkSnapshotV1 { gid: 1, ..valid },
+            SystemdInvocationLinkSnapshotV1 { links: 2, ..valid },
+        ] {
+            assert_eq!(
+                validate_systemd_invocation_link_snapshot_v1(invalid)
+                    .unwrap_err()
+                    .reason,
+                "unsafe-invocation-link"
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_lease_has_one_exact_short_lifetime_and_generation() {
+        // Source/render gates independently pin both downstream services to a
+        // 30-second stop bound. Keep an additional full minute beyond the
+        // watchdog plus that worst-case propagation window.
+        const {
+            assert!(PREFLIGHT_WATCHDOG_USEC_V1 % 1_000_000 == 0);
+            assert!(
+                PREFLIGHT_LEASE_REFRESH_SECONDS_V1 + PREFLIGHT_RENEWAL_ROUND_TIMEOUT_SECONDS_V1
+                    < PREFLIGHT_WATCHDOG_USEC_V1 / 1_000_000
+            );
+            assert!(
+                PREFLIGHT_LEASE_VALIDITY_SECONDS_V1
+                    >= PREFLIGHT_WATCHDOG_USEC_V1 / 1_000_000 + 30 + 60
+            );
+        }
+        let valid = PreflightLeaseV1 {
+            schema_version: PREFLIGHT_LEASE_SCHEMA_V1,
+            cln_invocation_id: "0123456789abcdef0123456789abcdef".to_owned(),
+            checked_at_unix: NOW,
+            valid_until_unix: NOW + PREFLIGHT_LEASE_VALIDITY_SECONDS_V1,
+        };
+        validate_preflight_lease_v1(&valid).unwrap();
+        let encoded = toml::to_string(&valid).unwrap();
+        assert_eq!(toml::from_str::<PreflightLeaseV1>(&encoded).unwrap(), valid);
+
+        let invalid = [
+            PreflightLeaseV1 {
+                schema_version: 2,
+                ..valid.clone()
+            },
+            PreflightLeaseV1 {
+                checked_at_unix: 0,
+                valid_until_unix: PREFLIGHT_LEASE_VALIDITY_SECONDS_V1,
+                ..valid.clone()
+            },
+            PreflightLeaseV1 {
+                valid_until_unix: NOW + PREFLIGHT_LEASE_VALIDITY_SECONDS_V1 - 1,
+                ..valid.clone()
+            },
+            PreflightLeaseV1 {
+                cln_invocation_id: "0".repeat(32),
+                ..valid
+            },
+        ];
+        for lease in invalid {
+            assert!(validate_preflight_lease_v1(&lease).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_manager_watchdog_check_uses_exact_typed_busctl_request() {
+        let payer_config = config(StagingRoleV1::Payer);
+        let mut runner = FakeRunnerV1 {
+            responses: VecDeque::from(vec![br#"{"type":"b","data":true}"#.to_vec()]),
+            commands: Vec::new(),
+        };
+        query_systemd_service_watchdogs_enabled_v1(&payer_config, &mut runner)
+            .await
+            .unwrap();
+        assert_eq!(
+            runner.commands,
+            vec![CapturedCommandV1 {
+                program: PathBuf::from("/usr/bin/busctl"),
+                args: vec![
+                    "--system".to_owned(),
+                    "--json=short".to_owned(),
+                    "get-property".to_owned(),
+                    "org.freedesktop.systemd1".to_owned(),
+                    "/org/freedesktop/systemd1".to_owned(),
+                    "org.freedesktop.systemd1.Manager".to_owned(),
+                    "ServiceWatchdogs".to_owned(),
+                ],
+            }]
+        );
+
+        for (body, reason) in [
+            (
+                br#"{"type":"b","data":false}"#.as_slice(),
+                "manager-disabled",
+            ),
+            (
+                br#"{"type":"u","data":1}"#.as_slice(),
+                "invalid-manager-property",
+            ),
+            (
+                br#"{"type":"b","data":true,"extra":0}"#.as_slice(),
+                "invalid-manager-property",
+            ),
+            (b"not-json".as_slice(), "invalid-manager-property"),
+        ] {
+            assert_eq!(
+                parse_systemd_service_watchdogs_property_v1(body)
+                    .unwrap_err()
+                    .reason,
+                reason
+            );
+        }
+
+        let invalid_boundaries = [
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.path = PathBuf::from("/usr/local/bin/busctl");
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.protected_parent = PathBuf::from("/usr");
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.expected_uid = 1;
+                value
+            },
+            {
+                let mut value = config(StagingRoleV1::Payer);
+                value.systemd.busctl.expected_gid = 1;
+                value
+            },
+        ];
+        for invalid in invalid_boundaries {
+            let failure = validate_systemd_busctl_config_v1(&invalid).unwrap_err();
+            assert_eq!(failure.check, "config.systemd-busctl");
+            assert_eq!(failure.reason, "invalid-binary-boundary");
+        }
+    }
+
+    #[test]
+    fn preflight_lease_clock_must_advance_across_renewals() {
+        validate_lease_clock_v1(NOW, NOW, None).unwrap();
+        validate_lease_clock_v1(NOW + 1, NOW + 2, Some(NOW)).unwrap();
+
+        for error in [
+            validate_lease_clock_v1(0, NOW, None).unwrap_err(),
+            validate_lease_clock_v1(NOW + 1, NOW, None).unwrap_err(),
+            validate_lease_clock_v1(NOW, NOW, Some(NOW)).unwrap_err(),
+            validate_lease_clock_v1(NOW, NOW - 1, Some(NOW)).unwrap_err(),
+        ] {
+            assert_eq!(error.check, "lease.clock");
+            assert_eq!(error.reason, "clock-regressed");
+        }
+    }
+
+    #[test]
+    fn backup_receipt_age_is_rechecked_at_lease_commit_time() {
+        assert_eq!(
+            validate_backup_receipt_age_v1(NOW - 30, 30, NOW).unwrap(),
+            30
+        );
+        assert_eq!(
+            validate_backup_receipt_age_v1(NOW - 30, 30, NOW + 1)
+                .unwrap_err()
+                .reason,
+            "stale-receipt"
+        );
+        assert_eq!(
+            validate_backup_receipt_age_v1(NOW + 1, 30, NOW)
+                .unwrap_err()
+                .reason,
+            "future-timestamp"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_environment_requires_exact_watchdog_pid_and_notify_address() {
+        const CURRENT_PID: u32 = 4_242;
+        let usec = PREFLIGHT_WATCHDOG_USEC_V1.to_string();
+        let pid = CURRENT_PID.to_string();
+        validate_systemd_supervisor_environment_values_v1(
+            Some(std::ffi::OsStr::new(&usec)),
+            None,
+            Some(std::ffi::OsStr::new("/run/systemd/notify")),
+            CURRENT_PID,
+        )
+        .unwrap();
+        validate_systemd_supervisor_environment_values_v1(
+            Some(std::ffi::OsStr::new(&usec)),
+            Some(std::ffi::OsStr::new(&pid)),
+            Some(std::ffi::OsStr::new("@systemd-notify")),
+            CURRENT_PID,
+        )
+        .unwrap();
+
+        for error in [
+            validate_systemd_supervisor_environment_values_v1(
+                None,
+                None,
+                Some(std::ffi::OsStr::new("/run/systemd/notify")),
+                CURRENT_PID,
+            )
+            .unwrap_err(),
+            validate_systemd_supervisor_environment_values_v1(
+                Some(std::ffi::OsStr::new("0")),
+                None,
+                Some(std::ffi::OsStr::new("/run/systemd/notify")),
+                CURRENT_PID,
+            )
+            .unwrap_err(),
+            validate_systemd_supervisor_environment_values_v1(
+                Some(std::ffi::OsStr::new(&usec)),
+                Some(std::ffi::OsStr::new("4243")),
+                Some(std::ffi::OsStr::new("/run/systemd/notify")),
+                CURRENT_PID,
+            )
+            .unwrap_err(),
+        ] {
+            assert_eq!(error.check, "systemd.watchdog");
+            assert_eq!(error.reason, "invalid-watchdog-environment");
+        }
+        for notify_socket in [None, Some(""), Some("relative.sock"), Some("@")] {
+            let error = validate_systemd_supervisor_environment_values_v1(
+                Some(std::ffi::OsStr::new(&usec)),
+                None,
+                notify_socket.map(std::ffi::OsStr::new),
+                CURRENT_PID,
+            )
+            .unwrap_err();
+            assert_eq!(error.check, "systemd.notify");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_notify_uses_one_bounded_unix_datagram() {
+        use std::os::unix::net::UnixDatagram;
+
+        let directory = tempfile::Builder::new()
+            .prefix("bpir-notify-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket_path = directory.path().join("notify.sock");
+        let receiver = UnixDatagram::bind(&socket_path).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let expected = b"READY=1\nWATCHDOG=1\nSTATUS=test";
+        systemd_notify_to_v1(socket_path.as_os_str(), expected).unwrap();
+        let mut received = [0u8; 128];
+        let count = receiver.recv(&mut received).unwrap();
+        assert_eq!(&received[..count], expected);
+
+        for invalid in [b"".as_slice(), &[0u8][..], &[b'x'; 513][..]] {
+            assert_eq!(
+                systemd_notify_to_v1(socket_path.as_os_str(), invalid)
+                    .unwrap_err()
+                    .reason,
+                "invalid-notification"
+            );
+        }
+        assert_eq!(
+            systemd_notify_to_v1(std::ffi::OsStr::new("relative.sock"), b"READY=1")
+                .unwrap_err()
+                .reason,
+            "invalid-notify-socket"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_notify_supports_linux_abstract_socket() {
+        use rustix::net::{
+            bind, recvfrom, socket_with, AddressFamily, RecvFlags, SocketAddrUnix, SocketFlags,
+            SocketType,
+        };
+        use std::mem::MaybeUninit;
+        use std::os::unix::ffi::OsStringExt;
+
+        let mut nonce = [0u8; 8];
+        getrandom::getrandom(&mut nonce).unwrap();
+        let name = format!("bpir-notify-{}-{}", std::process::id(), hex::encode(nonce));
+        let address = SocketAddrUnix::new_abstract_name(name.as_bytes()).unwrap();
+        let receiver = socket_with(
+            AddressFamily::UNIX,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&receiver, &address).unwrap();
+
+        let mut notify_name = vec![b'@'];
+        notify_name.extend_from_slice(name.as_bytes());
+        let notify_name = std::ffi::OsString::from_vec(notify_name);
+        let expected = b"READY=1\nWATCHDOG=1";
+        systemd_notify_to_v1(&notify_name, expected).unwrap();
+
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 128];
+        let ((received, _unused), full_length, _) =
+            recvfrom(&receiver, &mut buffer[..], RecvFlags::empty()).unwrap();
+        assert_eq!(full_length, expected.len());
+        assert_eq!(received, expected);
     }
 }

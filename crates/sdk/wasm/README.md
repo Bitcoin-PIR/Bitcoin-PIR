@@ -117,8 +117,9 @@ Client methods (both `Dpf` and `Harmony`):
 - `fetchCatalog(): Promise<WasmDatabaseCatalog>`
 - `sync(scriptHashes, lastHeight?): Promise<WasmSyncResult>`
 - `queryBatch(scriptHashes, dbId): Promise<WasmQueryResult[]>`
-- `queryBatchRaw(scriptHashes, dbId)` — skip inline Merkle verify
-- `verifyMerkleBatch(results, dbId)` — run the network Merkle verifier
+- `queryBatchVerified(scriptHashes, dbId)` — all-or-nothing inspector query;
+  native code binds outputs to the exact input order and finishes Merkle
+  verification before any result handle is exposed
 - `serverUrls(): [string, string]`
 - `onStateChange(cb)` — push `ConnectionState` transitions to JS
 - `syncWithProgress(scriptHashes, lastHeight?, onEvent)` — progress events
@@ -177,7 +178,15 @@ TypeScript type signatures.
   of 20 throws `Error`.
 - **`WasmQueryResult` JSON** — `toJson()` returns a plain object with
   hex-encoded `txid` / `binContent` / `rawChunkData` fields; symmetric
-  `fromJson(obj)` parses the round-trip shape for split-verify workflows.
+  `fromJson(obj)` parses the round-trip shape for data interchange only. It
+  does not establish authenticity or admit a result into the browser query
+  path; imported (and newly constructed) results always expose
+  `merkleVerified === false`, even if the JSON claims otherwise, and
+  `mergeDelta()` always drops verification authority. DPF/Harmony verification
+  is atomic inside `queryBatchVerified()`; its positive status comes from an
+  opaque native result and is kept outside the deserializable payload. Plain
+  JSON query/sync output always emits `merkleVerified === false`; retain the
+  `WasmQueryResult` handle when provenance is required.
 - **All byte counts are `bigint`** (`u64` on the Rust side) to survive
   multi-PB session totals safely above `Number.MAX_SAFE_INTEGER`.
 

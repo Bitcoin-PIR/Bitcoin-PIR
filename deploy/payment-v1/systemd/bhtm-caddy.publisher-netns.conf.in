@@ -1,0 +1,9 @@
+# Reviewed drop-in for the pre-existing bhtm-caddy.service. Do not install alone.
+[Unit]
+Wants=bitcoinpir-payment-v1-publisher-netns.service
+After=bitcoinpir-payment-v1-publisher-netns.service
+
+# This dependency is intentionally one-way. Caddy asks systemd to prepare the
+# private bind before Caddy starts, but namespace teardown must never propagate
+# a stop to the shared Caddy process. A missing bind still fails a new Caddy
+# start closed; an already-running Caddy keeps its unrelated public listeners.

@@ -67,6 +67,39 @@ LOCAL_PLAN_*.md
 # Deployment artifacts (local configs, secrets, notes, SSH known_hosts)
 deploy/
 
+# Reviewed, secret-free Payment V1 templates are source files, not rendered
+# deployment artifacts. Re-open only their exact paths so a new profile cannot
+# pass local tests while silently disappearing from a commit.
+!deploy/
+deploy/*
+!deploy/payment-v1/
+deploy/payment-v1/*
+!deploy/payment-v1/edge/
+deploy/payment-v1/edge/*
+!deploy/payment-v1/edge/directory-public-haproxy.cfg.in
+!deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in
+!deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in
+!deploy/payment-v1/vpsbg/
+!deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in
+!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in
+!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in
+!deploy/payment-v1/systemd/
+deploy/payment-v1/systemd/*
+!deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in
+!deploy/payment-v1/systemd/hetzner-provider-direct.service.in
+!deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in
+!deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in
+!deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in
+!deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in
+!deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in
+!deploy/payment-v1/network/
+deploy/payment-v1/network/*
+!deploy/payment-v1/network/README.md
+!deploy/payment-v1/network/directory-publisher-hosts.conf.in
+!deploy/payment-v1/network/directory-publisher-network-policy.json.in
+!deploy/payment-v1/network/directory-publisher-resolv.conf.in
+!deploy/payment-v1/network/directory-publisher-nsswitch.conf.in
+
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any
 # referenced file (Cargo.lock, build/*.rs, src/target/*.rs, .DS_Store,

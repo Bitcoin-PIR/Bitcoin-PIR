@@ -215,6 +215,10 @@ allocate_loopback_port
 readonly ROUTER_CLN_PORT="$ALLOCATED_PORT"
 allocate_loopback_port
 readonly PAYER_CLN_PORT="$ALLOCATED_PORT"
+allocate_loopback_port
+readonly REGTEST_WEB_PORT="$ALLOCATED_PORT"
+allocate_loopback_port
+readonly JOINED_WEB_PORT="$ALLOCATED_PORT"
 
 process_is_live() {
   local pid="$1"
@@ -582,6 +586,8 @@ export BITCOINPIR_PAYMENT_CLN_RPC_SOCKET="$ISSUER_RPC_SOCKET"
 export BITCOINPIR_PAYMENT_CLN_PAYEE_PUBKEY="$ISSUER_NODE_ID"
 export BITCOINPIR_PAYMENT_CLN_PAYER_DIR="$PAYER_CLN_DIR"
 export BITCOINPIR_PAYMENT_CLN_CLI="$LIGHTNING_CLI"
+export BITCOINPIR_PAYMENT_CLN_REGTEST_WEB_PORT="$REGTEST_WEB_PORT"
+export BITCOINPIR_PAYMENT_CLN_JOINED_WEB_PORT="$JOINED_WEB_PORT"
 export CARGO_NET_OFFLINE=true
 export NO_PROXY=127.0.0.1,localhost
 export no_proxy=127.0.0.1,localhost

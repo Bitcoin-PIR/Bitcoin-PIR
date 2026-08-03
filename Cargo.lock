@@ -276,13 +276,13 @@ dependencies = [
 [[package]]
 name = "bitcoinpir-oram"
 version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/oram.git?rev=cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b#cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b"
 dependencies = [
  "bincode",
  "chacha20poly1305",
  "clap",
  "hex",
  "memmap2",
+ "pir-db-attest",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",
@@ -290,6 +290,7 @@ dependencies = [
  "sha2",
  "subtle",
  "thiserror 1.0.69",
+ "toml",
  "zeroize",
 ]
 
@@ -366,6 +367,7 @@ dependencies = [
  "pir-service-protocol",
  "pir-service-store",
  "pir-strict-https",
+ "rand_core 0.6.4",
  "rustix",
  "rustls",
  "serde",
@@ -2666,9 +2668,9 @@ dependencies = [
 [[package]]
 name = "rootbundle"
 version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/attested-builder.git?rev=80ad9b185760d2e36fd24baef50dd3030af8e94f#80ad9b185760d2e36fd24baef50dd3030af8e94f"
 dependencies = [
  "ed25519-dalek",
+ "hex",
  "sha2",
 ]
 
@@ -2729,6 +2731,7 @@ dependencies = [
  "pir-provider-clearing-client",
  "pir-rollback-authority-client",
  "pir-runtime-core",
+ "pir-sdk",
  "pir-sdk-client",
  "pir-service-protocol",
  "pir-service-store",

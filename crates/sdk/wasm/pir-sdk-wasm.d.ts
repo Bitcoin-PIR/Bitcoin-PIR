@@ -152,6 +152,8 @@ export interface QueryResultJson {
   entries: UtxoEntryJson[];
   isWhale: boolean;
   totalBalance: number;
+  /** Accepted for compatibility but ignored by fromJson(). */
+  merkleVerified?: boolean;
 }
 
 /**
@@ -161,7 +163,8 @@ export class WasmQueryResult {
   constructor();
 
   /**
-   * Create from JSON.
+   * Create from JSON data. The result is always unverified, even when the
+   * input claims `merkleVerified: true`.
    */
   static fromJson(json: QueryResultJson): WasmQueryResult;
 
@@ -179,6 +182,11 @@ export class WasmQueryResult {
    * Whether this is a whale address.
    */
   readonly isWhale: boolean;
+
+  /**
+   * Native release verdict. Constructor/fromJson handles always return false.
+   */
+  readonly merkleVerified: boolean;
 
   /**
    * Get entry at index as JSON.

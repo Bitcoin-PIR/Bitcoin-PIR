@@ -1,0 +1,40 @@
+# BitcoinPIR Payment V1 Hetzner functional-beta provider arguments.
+#
+# This is an argument fragment, not an executable script. Render every @...@
+# placeholder before appending it to unified_server's ordinary database,
+# identity, bind, role, and workload arguments.
+
+--require-service-auth-v1
+--service-policy /etc/bitcoinpir/payment-v1/functional-beta/provider/service-policy.bin
+--service-provider-id-hex @PROVIDER_ID_HEX@
+--service-policy-key-hex @POLICY_PUBKEY_HEX@
+--service-store /var/lib/bitcoinpir-provider-functional-beta/provider.sqlite3
+--service-rollback-authority /var/lib/bitcoinpir-provider-functional-beta/rollback.sqlite3
+--allow-local-service-rollback-authority-dev
+
+# These two provider-local adapters let the signed policy select either a
+# provider-operated BAT/ARC service or the shared-issuer routes below.
+--service-bat-key /etc/bitcoinpir/payment-v1/functional-beta/provider/cashu-bat.key
+--service-arc-key @ARC_KEY_ID_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/provider/arc-experimental.key
+--allow-experimental-arc
+
+# Standard Cashu eCash is an independent mint-online route.
+--service-cashu-recovery-key 1=/etc/bitcoinpir/payment-v1/functional-beta/provider/cashu-recovery-epoch-1.key
+--service-cashu-recovery-active-epoch 1
+--service-cashu-custody-key 1=/etc/bitcoinpir/payment-v1/functional-beta/provider/cashu-custody-epoch-1.key
+--service-cashu-custody-active-epoch 1
+--service-cashu-exposure-limit @CASHU_MINT_ID_HEX@:sat:@CASHU_MAX_UNSETTLED_VALUE@:@CASHU_MAX_UNSETTLED_NOTES@
+
+# Shared issuer redemption is the preferred first-beta route for BAT and ARC:
+# the issuer validates/redeems the ticket and credits this provider's ledger.
+--service-shared-authorization /etc/bitcoinpir/payment-v1/functional-beta/provider/shared-clearing-authorization.bin
+--service-shared-issuer-approval /etc/bitcoinpir/payment-v1/functional-beta/provider/shared-clearing-approval.bin
+--service-shared-operator-key-hex @OPERATOR_PUBKEY_HEX@
+--service-shared-issuer-settlement-key-hex @ISSUER_SETTLEMENT_PUBKEY_HEX@
+--service-shared-clearing-key /etc/bitcoinpir/payment-v1/functional-beta/provider/provider-clearing-signing.key
+--service-shared-idempotency-key /etc/bitcoinpir/payment-v1/functional-beta/provider/shared-redeem-idempotency.key
+--service-shared-minimum-authorization-epoch 1
+
+--service-max-concurrent-auth 16
+--service-max-concurrent-online-v2full-auth 4
+--service-pre-auth-timeout-ms 60000

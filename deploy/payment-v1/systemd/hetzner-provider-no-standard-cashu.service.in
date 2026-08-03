@@ -1,0 +1,88 @@
+# BitcoinPIR Payment V1 deployment template; non-activating until reviewed and rendered.
+[Unit]
+Description=BitcoinPIR Hetzner Payment V1 provider without Standard Cashu (template only)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED
+ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED
+ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-provider-nocashu
+Group=bitcoinpir-provider-nocashu
+UMask=0077
+StateDirectory=bitcoinpir-provider-nocashu-payment-v1
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-provider-nocashu-payment-v1
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/unified-server/@UNIFIED_SERVER_SHA256@/unified_server
+ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/unified-server.sha256
+ExecStart=/opt/bitcoinpir/unified-server/@UNIFIED_SERVER_SHA256@/unified_server \
+    --bind-address 127.0.0.1 \
+    --port 8191 \
+    --role primary \
+    --serve-hints \
+    --serve-queries \
+    --pool-size 8 \
+    --pool-dir /var/lib/bitcoinpir-provider-nocashu-payment-v1/hint-pool \
+    --config /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/databases.toml \
+    --identity-key-path /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-identity.key \
+    --identity-cert-path /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-identity.cert \
+    --identity-server-id @HETZNER_PROVIDER_SERVER_ID@ \
+    --require-service-auth-v1 \
+    --service-policy /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/service-policy.bin \
+    --service-provider-id-hex @HETZNER_PROVIDER_ID_HEX@ \
+    --service-policy-key-hex @HETZNER_POLICY_PUBKEY_HEX@ \
+    --service-store /var/lib/bitcoinpir-provider-nocashu-payment-v1/provider.sqlite3 \
+    --service-remote-rollback-authority-config /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-authority.toml \
+    --service-bat-key /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/cashu-bat.key \
+    --service-shared-authorization /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-clearing-authorization.bin \
+    --service-shared-issuer-approval /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-clearing-approval.bin \
+    --service-shared-operator-key-hex @HETZNER_OPERATOR_PUBKEY_HEX@ \
+    --service-shared-issuer-settlement-key-hex @ISSUER_SETTLEMENT_PUBKEY_HEX@ \
+    --service-shared-clearing-key /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/provider-clearing-signing.key \
+    --service-shared-idempotency-key /etc/bitcoinpir/payment-v1/provider-no-standard-cashu/shared-redeem-idempotency.key \
+    --service-shared-minimum-authorization-epoch @SHARED_MINIMUM_AUTHORIZATION_EPOCH@ \
+    --max-connections 128 \
+    --service-max-concurrent-auth 16 \
+    --service-max-concurrent-online-v2full-auth 4 \
+    --websocket-handshake-timeout-ms 10000 \
+    --connection-idle-timeout-ms 30000 \
+    --service-pre-auth-timeout-ms 60000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/provider-no-standard-cashu
+ReadWritePaths=/var/lib/bitcoinpir-provider-nocashu-payment-v1
+InaccessiblePaths=-/run/bitcoinpir-source-fair-edge
+
+# The one signed current policy must omit Standard Cashu eCash. This checked-in
+# zero-retained profile rejects retained-policy flags and payloads; current
+# method coverage therefore closes the only configured routes and this profile
+# deliberately provides no recovery, custody or exposure material.
+# Provider-local BAT and the approved shared issuer remain available; ARC
+# remains deliberately unavailable.
+# There is intentionally no [Install] section. Rendering, provisioning the
+# activation sentinel, and starting the unit are separate approved actions.

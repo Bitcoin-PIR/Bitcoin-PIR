@@ -5,8 +5,9 @@ After=network-online.target @BITCOIND_SYSTEMD_UNIT@
 Wants=network-online.target
 Requires=@BITCOIND_SYSTEMD_UNIT@
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
-ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 
 [Service]
 Type=simple
@@ -17,11 +18,14 @@ UMask=0077
 RuntimeDirectory=bitcoinpir-core-lightning
 RuntimeDirectoryMode=0700
 WorkingDirectory=/srv/lightning/@LIGHTNING_NETWORK@
+Environment=LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@
 ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256
+ExecStartPre=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf --test-daemons-only --offline
 ExecStartPre=/usr/local/libexec/bitcoinpir/verify-lightning-layout
 ExecStart=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf
 Restart=on-failure
@@ -49,8 +53,16 @@ SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+# The root-owned base plugin placeholder is a required tmpfiles/runtime-evidence
+# input. No '-' prefix is permitted: an absent path must fail namespace setup.
+InaccessiblePaths=/srv/lightning/plugins
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/ /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/
 ReadWritePaths=/srv/lightning/@LIGHTNING_NETWORK@ /run/bitcoinpir-core-lightning
 
-# There is intentionally no [Install] section. Identity creation, backup,
-# preflight, funding and service start are separately approved actions.
+# There is intentionally no [Install] section. This daemon may start only
+# after the identity secret has been restored in isolation and matched to its
+# reviewed node ID. It deliberately does not require the later channel/data
+# backup, issuer-activation or CLN-loader-maps sentinels: those can be produced
+# only after this daemon has started and channels have been staged, and a
+# no-funds daemon generation must run before its loader maps can be collected.
+# The guard, live preflight and issuer retain those later gates.

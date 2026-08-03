@@ -86,7 +86,10 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
 31. Proof-level Cashu DLEQ fields and wallet blinding scalars never cross the
     PIR wire. Standard Cashu imports are normalized before authorization.
 32. Accepted policy, credential-keyset, Cashu-manifest, clearing-authorization,
-    and directory epochs have durable monotonic rollback floors.
+    and directory epochs have durable monotonic rollback floors. The only
+    provider-policy exception is the measured storeless Free-PoW profile in
+    invariant 71: its exact complete signed policy digest is the immutable
+    floor for one UKI measurement.
 33. Blind clearing commits to one issuer-approved settlement keyset and its
     recovery horizon before the provider reveals blinded outputs.
 34. A quote intent binds the exact issuer-root-signed quote-key delegation,
@@ -137,9 +140,11 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     signature and exact lowercase canonical encoding, reject amountless/zero
     invoices and simnet, and obtain the payee from `n` or signature recovery.
     Caller-asserted invoice facts are never a fallback.
-42. Both provider and issuer databases are checked against an authority stored
-    outside the SQLite backup domain. A missing or lower restore floor fails
-    closed; an operator cannot resume from a stale internally consistent copy.
+42. Every stateful provider database and every issuer database is checked
+    against an authority stored outside the SQLite backup domain. A missing or
+    lower restore floor fails closed; an operator cannot resume from a stale
+    internally consistent copy. Invariant 71's exact-pinned Free-PoW profile is
+    stateless and must not create either database.
 43. Directory clients retain monotonic per-provider state and compare signed
     catalog checkpoints across configured relays. A same-sequence fork is a
     split-view failure; silent first-seen-wins behavior is forbidden.
@@ -316,6 +321,27 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     old instance and rotate either the per-provider idempotency secret or the
     clearing authorization digest/epoch before serving; an empty local-claim set
     MUST NOT be paired with that old replay history.
+70. DPF and Harmony retained-policy redemption is never exposed under an
+    ordinary one-sided SDK name. Rust and WASM low-level entry points are
+    explicitly named `dangerous_unpaired_*` / `dangerousUnpaired*`; using one
+    verifies only that provider's secure-channel, database and retained-policy
+    binding. Product code must first freeze the independently selected DPF
+    server pair or Harmony hint/query payment context. This rule does not apply
+    to the genuinely single-provider Onion and TEE-ORAM backends.
+71. Storeless service admission is permitted only for a nonempty canonical
+    signed policy with no empty scope and only provider-local
+    `FreeV1`/`ProofOfWork`/zero-price offers with no issuer, key, credential,
+    Cashu manifest, endpoint, retained grace or privacy-leakage field. Startup
+    requires the exact nonzero domain-separated digest of the complete signed
+    policy and rejects every ProviderStore, rollback authority, retained policy,
+    Free-IP quota/key, payment/Cashu/BAT/ARC/shared-issuer, legacy credential or
+    test-root input. The digest argument and provider/policy-key pins MUST be in
+    the measured UKI. Each challenge is random, single-outstanding,
+    connection-local, short-lived and bound to the secure-channel exporter plus
+    exact provider/policy/scope/offer/operation. A policy-byte change, including
+    renewal or difficulty/limit change, requires a new UKI measurement and
+    client pin update; expiry or mismatch fails closed without a stateful or
+    legacy fallback.
 
 ## TLS revocation residual
 
@@ -334,6 +360,14 @@ overlap supports certificate-key rotation at the same origin, but it is not a
 multi-origin migration mechanism. The old origin must remain the signed offer
 origin and stay available until every retained-policy redemption grace window
 has ended; otherwise those older capabilities intentionally fail closed.
+
+The provider runtime likewise has no retained shared-authorization keyring:
+`SharedIssuerAdmissionCommitterV1` receives one authorization, approval key and
+issuer settlement key. Retained settlement keys at the issuer or in
+`ProviderLedgerBalanceClientV1` do not recover an in-flight provider redeem
+after one of those bindings rotates. Operators must drain/reconcile pending
+redeems before rotation or explicitly accept fail-closed manual recovery risk;
+V1 makes no cross-authorization/key-rotation recovery claim.
 
 Standard-Cashu custody likewise retains the exact manifest digest and pins
 that authorized the swap. Before a planned mint leaf-key change, operators
@@ -425,6 +459,13 @@ Lightning does not itself reveal the Bitcoin address queried unless the
 application, logs, browser storage, or timing joins the payment to the PIR
 operation. The architecture's token separation reduces that application join;
 it cannot eliminate global timing analysis.
+
+The browser's independent trust bootstrap binds Lightning payees per exact
+signed `(issuer ID, canonical HTTPS issuer origin, network)` tuple. The PIR
+provider WebSocket origin is a separate trust field and is never substituted
+for the issuer origin. Provider-wide payee wildcards, duplicate tuples,
+credential-bearing issuer URLs, and BOLT11 offers without exactly one match
+fail closed. Free and Cashu-acquired offers carry no Lightning payee context.
 
 ## Process-memory handling boundary
 

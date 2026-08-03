@@ -267,7 +267,18 @@ export {
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
+  VerifiedSingleProviderRetainedOfferV1,
 } from './service-admission.js';
+export {
+  assertProductQueryShapeFitsScopeV1,
+  canonicalProductQueryShapeV1,
+  canonicalServiceEntitlementLimitsV1,
+  intersectHomogeneousEntitlementLimitsV1,
+} from './service-entitlement.js';
+export type {
+  ProductQueryShapeV1,
+  ProductQueryShapesByRoleV1,
+} from './service-entitlement.js';
 export { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
 export type {
   IndependentProviderSelectionOptionsV1,
@@ -276,6 +287,11 @@ export type {
 export type {
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
+  IndependentProviderAdmissionSelectionV1,
+  IndependentRetainedProviderAdmissionSelectionV1,
+  IndependentProviderPairAdmissionSelectionV1,
+  SingleProviderAdmissionSelectionV1,
+  SingleRetainedProviderAdmissionSelectionV1,
   ProviderPairBolt11AcquisitionOptionsV1,
   ProviderPairSideV1,
   ServiceAdmissionPortV1,
@@ -309,8 +325,12 @@ export type {
   ResumeBolt11AcquisitionV1,
 } from './service-acquisition.js';
 
-// Complete multi-relay Nostr directory refresh and durable rollback storage.
-export { DirectoryRollbackVaultV1 } from './directory-vault.js';
+// Explicit strict-multi or centralized/degraded Nostr directory refresh and
+// durable rollback storage. Centralized mode never activates implicitly.
+export {
+  assertSelectableDirectoryCatalogFreshV1,
+  DirectoryRollbackVaultV1,
+} from './directory-vault.js';
 export type {
   DirectoryDiscoveryEntryJsonV1,
   SelectableDirectoryCatalogV1,
@@ -322,6 +342,19 @@ export {
   directoryProviderTrustMaterialV1,
   refreshNostrDirectoryV1,
 } from './nostr-directory.js';
+export {
+  directoryRefreshFailureStateV1,
+} from './directory-refresh-status.js';
+export { DirectoryRefreshIntentGuardV1 } from './directory-refresh-intent.js';
+export type {
+  DirectoryRefreshInputV1,
+  DirectoryRefreshIntentV1,
+} from './directory-refresh-intent.js';
+export { trustedNowUnixV1 } from './trusted-time.js';
+export type {
+  DirectoryRefreshFailureStateV1,
+  RetainedDirectoryCatalogAssuranceV1,
+} from './directory-refresh-status.js';
 
 // Product application admission lifecycle. These controllers contain no
 // address/query payloads and never persist payment material in localStorage.
@@ -346,6 +379,9 @@ export type {
   ProductStrictLegBootstrapV1,
 } from './product-admission-controller.js';
 export {
+  canBootstrapNextProviderV1,
+  credentialActionsReadyV1,
+  pairAuthorizationReadyV1,
   ProductAdmissionPanelV1,
   privacyLabelForOfferV1,
   publicAdmissionError,
@@ -358,19 +394,27 @@ export type {
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export {
+  assertIndependentProviderDialPairV1,
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
+  expectedLightningPayeeForOfferV1,
   providerArkFingerprintV1,
-  providerExpectedPayeeV1,
+  providerLightningPayeeTrustV1,
   providerOperatorKeyV1,
 } from './product-provider-bootstrap.js';
 export type {
+  ProductLightningPayeeTrustV1,
   ProductTrustedBootstrapV1,
   ProductTrustedProviderV1,
 } from './product-provider-bootstrap.js';
-export type { HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
+export {
+  resourceBindingToHarmonyHintCacheBindingV1,
+  type HarmonyHintCacheBindingV1,
+  type HarmonyHintResourceBindingV1,
+} from './harmonypir_hint_db.js';
 export type {
+  DirectoryRelayModeV1,
   DirectoryProviderTrustMaterialV1,
   DirectoryWebSocketV1,
   NostrDirectoryRefreshOptionsV1,
@@ -390,3 +434,4 @@ export {
   CASHU_POINT_BYTES,
 } from './payment-client.js';
 export type { CashuKeyset, PresentResult } from './payment-client.js';
+export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';

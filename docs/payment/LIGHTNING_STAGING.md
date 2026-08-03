@@ -1,7 +1,31 @@
 # Lightning staging strategy
 
-Status: deployment design as of 2026-07-27. This document does not authorize
-mainnet funds or remote production changes.
+Status: deployment design as of 2026-07-29. This document does not authorize a
+remote-host change, persistent Signet identity/wallet/channel, faucet/test-coin
+use, mainnet funds or production-key operation.
+
+## Deployment-phase mapping
+
+- **Source merge** keeps disposable local regtest and exact-head CI green.
+- **Private no-funds** may validate any approved issuer plan and payload
+  entirely offline, but remote installation/start in this phase is edge-only.
+  It must not install/start CLN or collect issuer fresh-live evidence: CLN
+  startup creates persistent identity/wallet state under `/srv/lightning/signet`,
+  which requires the separate Public-Signet custody approval. No public traffic
+  is accepted.
+- **Public Signet** creates staging-only persistent identities, wallets and
+  channels and may acquire test coins, but only under separate approvals for
+  remote mutation, persistent custody, faucet/test-coin handling and any public
+  ingress or Nostr publication.
+- **Production mainnet** is blocked on current source. The implemented
+  deployment preflight is default-Signet-specific; no reviewed mainnet
+  preflight or render profile exists.
+
+No approval in one phase implies another. Use
+[DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) for non-secret network,
+binary, identity and custody inputs and
+[render-plan-skeletons/](render-plan-skeletons/) for fail-closed plan shapes.
+Neither file authorizes execution or may contain wallet/key material.
 
 ## Decision
 
@@ -48,6 +72,11 @@ Testnet5 as a replacement after sustained Testnet4 difficulty-exception
 exploitation made that network hard to use. Testnet3 likewise must not be used
 for a new deployment.
 
+Protocol support for the `bitcoin` discriminant is not mainnet deployment
+readiness. The only implemented deployment preflight below requires default
+Signet constants and `network=signet`; it must fail on mainnet. Do not edit a
+Signet config or bypass this probe to create a mainnet profile.
+
 ## Network identity must be explicit
 
 BOLT11 human-readable prefixes are `lnbc` for mainnet, `lntb` for Bitcoin
@@ -92,26 +121,30 @@ The Core RPC cookie has an access policy independent of the CLN socket
 policy. Omitting `bitcoin.rpc_cookie.access_policy` preserves schema V1's
 `same-uid-owner-only` layout: the preflight EUID must equal the bitcoind UID,
 the final cookie directory is exact mode 0700, and the single-link cookie is
-exact mode 0600. `cross-uid-shared-group` requires the separate
+exact mode 0600. `cross-uid-setgid-shared-group` requires the separate
 `bitcoin.rpc_cookie.cross_uid_access` table, a root:root mode-0755 broad
 parent (normally `/srv/bitcoin`), exactly one directly nested
-bitcoind-UID/cookie-GID mode-0710 network directory, and a
+bitcoind-UID/cookie-GID mode-2710 setgid network directory, and a
 bitcoind-UID/cookie-GID mode-0640 cookie with link count one. The preflight
 must run under its separately pinned EUID and have that cookie GID as its
 effective or supplementary group. Configure bitcoind with
 `rpccookieperms=group` and the cookie-only group so it creates the required
-0640 file; the preflight never changes ownership or permissions. Bitcoin
+0640 file. Bitcoind keeps its separate primary group and does not receive the
+cookie group; the setgid directory supplies the cookie's group inheritance.
+The preflight never changes ownership or permissions. The obsolete
+`cross-uid-shared-group` cookie-policy spelling and its mode-0710 directory
+shape are rejected rather than silently reinterpreted. Bitcoin
 Core documents that cookie read access is a powerful RPC trust boundary and
 supports `owner`, `group`, or `all` via
 [`rpccookieperms`](https://github.com/bitcoin/bitcoin/blob/master/src/init.cpp).
 
 The cookie group must be different from the native CLN RPC group. CLN requires
-the cookie group for its bcli plugin; only CLN and the short-lived, read-only
-preflight unit receive it. The long-lived payment issuer and CLN RPC guard must
+the cookie group for its bcli plugin; only CLN and the dedicated read-only
+preflight supervisor receive it. The long-lived payment issuer and CLN RPC guard must
 never list the cookie group in `Group=`, `SupplementaryGroups=`, container
 membership, `/etc/group` membership, ACLs, or an interactive login. Grant it
 to CLN and with unit-scoped `SupplementaryGroups=bitcoinpir-bitcoin-rpc` on the
-one-shot preflight service; do not add the preflight or issuer account
+preflight lease service; do not add the preflight or issuer account
 persistently to that group. Activation evidence must inspect rendered units
 and the live issuer, guard, preflight and CLN processes' `Groups:` sets.
 Otherwise issuer or guard compromise could gain the much larger Bitcoin Core
@@ -134,6 +167,13 @@ layout. If CLN is already split-UID while Core names a different bitcoind UID,
 the two required preflight EUIDs conflict and static validation fails; the
 operator must add the explicit Core cross-UID table rather than obtaining an
 implicit policy downgrade.
+
+The CLN plugin snapshot is also closed: every `plugin list` item must contain
+exactly `name`, `active` and `dynamic` with the expected JSON types. The
+observed path set must equal the pinned executable allowlist, every plugin must
+be active, and every plugin must report `dynamic=false`. Missing or unknown
+item fields, duplicate or unexpected paths, dynamically managed plugins and
+response-shape drift all fail closed.
 
 The CLN adapter's timeout is one process-local monotonic budget covering
 socket metadata validation, connect, complete request write and complete
@@ -179,30 +219,176 @@ cryptographic CLN peer authentication. After any application byte is written, ti
 oversize, framing or JSON failure is outcome-unknown and recovery must use the
 same durable label/request rather than a new idempotency identity.
 
+## Phased identity and channel activation
+
+CLN startup and issuer activation are deliberately separate phases. Requiring
+a channel-backup restore receipt before the first CLN start would be circular:
+the node must run before its node ID can be checked and before any channel
+recovery material exists. The checked-in units therefore use these gates:
+
+1. The Core Lightning unit requires the global deployment approval, the
+   Signet-staging approval, the Lightning-custody approval and the identity-
+   restore approval. It does **not** require issuer activation or channel-
+   backup restore approval.
+2. With no funding and before any peer/channel mutation, run
+   `bpir-admin lightning-staging bootstrap-preflight` against each payer,
+   router and issuer. It requires the exact default-Signet chain/genesis,
+   configured node ID and CLN version, pinned binaries/plugins, bounded height
+   lag, protected Core cookie/CLN socket, zero `listpeerchannels` entries, zero
+   `listfunds` outputs/channels and an empty `staticbackup`. It makes only eight
+   read-only RPC calls and does not read the later backup receipt or query
+   gossip.
+3. Record the three resulting public node IDs and compare them with both the
+   offline `lightning-hsmtool getnodeid` result and the independently reviewed
+   configuration. Identity generation or restore must be interactive: mnemonic
+   words or HSM passphrases must never enter argv, environment variables,
+   command logs, this repository or deployment receipts.
+4. Only after that zero-channel bootstrap result may the separately approved
+   Signet faucet/funding and channel ceremony proceed. After every channel
+   mutation, export and restore-test current channel recovery material and take
+   a supported datastore backup/restore rehearsal.
+5. Keep the core unit running without funds long enough for a separately
+   reviewed runtime-evidence schema to bind its selected libpq path, inode and
+   digest to `/proc/<MainPID>/maps` and record host ABI approval. The core unit
+   deliberately omits `CLN-LOADER-MAPS-APPROVED` so this evidence can be
+   collected.
+6. Only after that schema PR and evidence approval may
+   `CLN-LOADER-MAPS-APPROVED` be provisioned. The RPC guard, full `preflight`
+   and issuer units require it in addition to issuer-activation and
+   channel-backup-restore approvals. Until then the sentinel must remain absent.
+   Full preflight then checks exact channels, directional liquidity, gossip and
+   the fresh receipt.
+
+`bootstrap-preflight` is a one-way phase gate, not a recovery mode. It fails if
+any peer-channel, wallet-output, funded-channel or SCB entry already exists and
+must never be used to waive a full preflight after funding or channels exist.
+Before the first daemon start, the rendered layout gate also requires the
+restored native 32-byte `hsm_secret` with exact owner and mode `0400`; an absent
+secret cannot trigger CLN's implicit identity generation. Mnemonic containers
+and encrypted-HSM startup are outside this V1 Signet profile. The approval
+sentinel files are operator decisions, not cryptographic backup proof; source
+preparation does not create them.
+
 ## Read-only deployment preflight
 
-Run `bpir-admin lightning-staging preflight --config <absolute TOML path>
---config-protected-parent <absolute directory> --config-expected-uid <uid>
---config-expected-gid <gid>` on each payer, router and issuer host before an
-acceptance run. The config must be a mode-`0600` regular file below that
-owner-controlled, non-group/world-writable directory boundary. These trust
+This command is a **default-Signet preflight only**. A mainnet deployment needs
+a separately versioned implementation with mainnet-specific chain/network,
+peer/bootstrap, custody, amount/risk and negative-test policy, followed by
+security review. User approval alone cannot fill that missing code boundary.
+
+Before funding, run `bpir-admin lightning-staging bootstrap-preflight --config
+<absolute TOML path> --config-protected-parent <absolute directory>
+--config-expected-uid 0 --config-expected-gid <preflight gid>
+--config-reader-expected-uid <preflight uid>`. After channels and
+restore evidence exist, run `bpir-admin lightning-staging preflight --config
+<absolute TOML path>
+--config-protected-parent <absolute directory> --config-expected-uid 0
+--config-expected-gid <preflight gid> --config-reader-expected-uid
+<preflight uid>` on each payer, router and issuer host before an acceptance
+run. The config must be a root-owned, preflight-group-owned mode-`0440`
+single-link regular file directly below a canonical root-owned,
+non-group/world-writable directory boundary. Every ancestor from `/` to that
+boundary is opened component-by-component with `O_NOFOLLOW` and must also be
+root-owned with no group/other write bit; a root-owned file below `/tmp` is
+therefore rejected rather than relying on sticky-directory semantics. These trust
 arguments are deliberately outside the config, so an untrusted config cannot
 declare itself trusted. Start from
 `docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example`. The command is a
 fixed, read-only probe: it calls only Core `getnetworkinfo`,
 `getblockchaininfo`, `getblockhash 0` and CLN `getinfo`, `plugin list`,
-`listpeerchannels`, source-filtered `listchannels`, and `staticbackup`. It has
-no bootstrap, wallet, address, faucet, channel mutation, payment, SSH or remote
+`listpeerchannels`, `listfunds`, source-filtered `listchannels`, and
+`staticbackup`. The bootstrap form calls `listfunds`, requires it and
+`staticbackup` to be empty, and does not read a backup receipt or call
+`listchannels`. Neither form has an address, faucet, channel mutation, payment,
+SSH or remote
 execution path.
 
-The `--config-expected-uid` and `--config-expected-gid` arguments always pin
-the protected TOML file and are neither the Core-cookie nor CLN-socket
+The production issuer unit does not use a successful `preflight` invocation as
+a permanent latch. It runs `preflight-supervisor` as a systemd `Type=notify`
+service. Before sending `READY=1`, the supervisor reads the root-owned
+`/run/systemd/units/invocation:bitcoinpir-core-lightning.service` symlink,
+requires its target to be one canonical non-zero 128-bit lowercase invocation
+ID, completes the full preflight, reads the symlink again, and requires the
+generation to be unchanged. It then atomically writes a private mode-`0600`
+lease at `/run/bitcoinpir-lightning-preflight/lease.toml`. The lease names only
+the CLN invocation ID and its check/expiry timestamps; it contains no invoice,
+payment hash, node ID, channel state, balance, capability or query data.
+
+The supervisor renews after a 20-second sleep and every lease is valid for
+exactly 180 seconds. A cooperative 55-second aggregate async deadline covers
+each whole renewal, so the 20-second sleep plus the maximum asynchronous round
+leaves 15 seconds before the 90-second watchdog. Blocking filesystem calls are
+bounded by systemd rather than Tokio's cooperative timeout: the exact
+`TimeoutStartSec=120` covers the first pre-`READY` round, and the watchdog
+covers steady-state renewals. Each
+renewal first verifies the exact pinned `/usr/bin/busctl` and
+the manager's typed `ServiceWatchdogs=true`, then reopens and revalidates the protected static config,
+complete runtime group set, binaries/plugins, Core/CLN state, backup receipt
+and the CLN invocation mapping before and after the checks. `WatchdogSec=90`
+closes a hung renewal before the lease can expire. The guard and issuer each
+have a 30-second stop bound, leaving roughly 60 seconds of additional margin
+between worst-case watchdog-plus-stop propagation and lease expiry. The
+supervisor feeds that watchdog only after a completed renewal, never before
+starting one.
+Immediately before lease commit it reads wall time again and rechecks the
+already-validated backup receipt age, so a forward clock step during RPC probes
+cannot extend a newly stale receipt into another lease.
+Any mismatch, RPC/config/filesystem/clock/notify/write
+failure, CLN restart, or expired watchdog makes the supervisor fail; it never
+automatically restarts. Both the RPC guard and issuer `BindsTo=` the supervisor,
+so they stop rather than continuing under a stale result. The guard also
+`Requires=` and starts after the first `READY=1`, and the issuer starts only
+after both. A lease file by itself is never authorization: the active exact
+supervisor generation and systemd dependency graph are mandatory. Recovery is
+an explicit operator review and service start, not an automatic retry. Each new
+preflight and guard generation additionally consumes its own root:root
+mode-`0600` token below the root-only
+`/run/bitcoinpir-lightning-operator-approvals` directory; there is no issuer
+token. This keeps an explicit CLN restart from resetting either downstream
+deadman without a fresh ceremony.
+
+Target-host live evidence reads the manager's typed D-Bus `After`, `Before`,
+`BindsTo` and `Requires` arrays, initial/final typed
+`ServiceWatchdogs`, `ExecStartEx`, `ExecStartPreEx`, `WatchdogUSec` and
+`WatchdogTimestampMonotonic`, and requires every relationship rendered from
+the reviewed units to remain present; implicit systemd dependencies are
+allowed. Each watchdog property pass records the immediately following boot
+uptime, rejects future or 90-second-stale timestamps, and permits only
+nondecreasing timestamps between passes. It also requires the typed
+`TimeoutStopUSec` to equal each rendered
+`TimeoutStopSec`, and repeats both snapshots in the final lightweight sealing
+pass. Therefore an installed new unit with a stale, not-yet-reloaded manager
+definition cannot satisfy activation evidence.
+
+The typed `t` values are canonical decimal strings parsed directly from raw
+busctl JSON integers, never JavaScript numbers. The active preflight's scalar
+`WatchdogUSec=1min 30s` must pair with typed `90000000` and a fresh nonzero
+typed monotonic timestamp. Ordinary active units instead require scalar and
+typed zero; never-run inactive evidence requires scalar `infinity`, typed
+uint64 max (`18446744073709551615`) and timestamp zero. Cross-lifecycle pairs,
+rounded unsafe integers and the old numeric evidence shape fail closed.
+
+The runtime request and host are also bound to the exact first line
+`systemd 255 (255.4-1ubuntu8.15)`. Typed start/pre-start commands must match the
+rendered path, argv and flags exactly; `ExecStart` is never privileged, while
+only the exact guard and preflight generation-token unlink precommands carry
+the `privileged` flag. Printable command records remain strict redundancy and
+must show the live start under `MainPID` and every pre-start completed with
+zero status.
+
+The config owner is fixed to UID 0 in V1. `--config-expected-gid` pins the
+dedicated read-only service group and `--config-reader-expected-uid` pins the
+actual non-root EUID; the reader must have that GID as its effective or a
+supplementary group. After the trusted config is parsed, the process's complete
+effective-plus-supplementary GID set must equal exactly the config-reader GID
+plus the configured cross-UID Bitcoin-cookie and CLN-RPC groups. Missing and
+extra groups both fail closed. These values are neither the Core-cookie nor CLN-socket
 owner/group. For the published cross-UID example, run the command as the
-dedicated preflight UID with both unit-scoped `bitcoinpir-bitcoin-rpc` and
-`bitcoinpir-cln-guard` groups, while using the config owner's UID/GID for those CLI
-arguments. `bitcoin.rpc_cookie.expected_uid/gid` remain the bitcoind UID and
+dedicated preflight UID with its config group plus both unit-scoped
+`bitcoinpir-bitcoin-rpc` and `bitcoinpir-cln-guard` groups.
+`bitcoin.rpc_cookie.expected_uid/gid` remain the bitcoind UID and
 cookie-only GID; `lightning.expected_uid/gid` remain the CLN UID and its
-different shared group GID. The short-lived preflight EUID is configured
+different shared group GID. The dedicated preflight EUID is configured
 independently in both cross-UID tables and must agree. None of these identity
 sets may be substituted for another.
 
@@ -217,7 +403,7 @@ following before emitting one bounded `result=PASS` line:
   EUID, a mode-0700 final directory and a mode-0600 single-link cookie.
   Cross-UID mode requires the exact preflight EUID plus effective or
   supplementary cookie-only GID, root:root 0755 on the broad parent, exactly
-  one bitcoind-UID/cookie-GID 0710 network directory below it, and a
+  one bitcoind-UID/cookie-GID setgid 2710 network directory below it, and a
   bitcoind-UID/cookie-GID 0640 single-link cookie. The cookie path is canonical
   and `O_NOFOLLOW`-opened, its parents and ACL policy are checked, and the same
   descriptor's identity/size plus two matching bounded content reads and the
@@ -229,7 +415,8 @@ following before emitting one bounded `result=PASS` line:
 - Core v29+, exact configured subversion, `chain=signet`, the exact default
   challenge and genesis, `initialblockdownload=false`, and bounded header lag;
 - exact CLN role identity, version, `network=signet`, height lag and an exact
-  active plugin allowlist whose executable hashes are also pinned;
+  active, `dynamic=false` plugin allowlist whose executable hashes are also
+  pinned; the plugin response and each item have closed JSON shapes;
 - a canonical `lightning-rpc` path with no symlinked component, exact runtime
   EUID and (for cross-UID) effective/supplementary shared-group membership.
   Same-UID staging requires an owner/GID-pinned non-writable tree, exact 0700
@@ -267,14 +454,20 @@ buffer, compiler-generated copies, allocator behavior, and subprocess, kernel
 or OS buffers remain residual P2 exposure outside those owned allocations.
 
 After the external backup and restore drill, create or refresh that receipt
-with the narrowly scoped local ceremony (run as the configured receipt owner):
+with the narrowly scoped local ceremony. Before the first ceremony, deployment
+must provision `/var/lib/bitcoinpir-lightning-preflight` as the exact preflight
+UID/GID at mode `0700`; systemd's matching `StateDirectory=` contract maintains
+that boundary for later unit starts. Run the ceremony as that exact preflight
+UID with the same config, CLN-guard and Bitcoin-cookie supplementary groups as
+the preflight unit and no additional groups:
 
 ```text
 bpir-admin lightning-staging record-backup-receipt \
-  --config /absolute/path/preflight.toml \
-  --config-protected-parent /absolute/trusted/config-parent \
-  --config-expected-uid 995 \
+  --config /etc/bitcoinpir/payment-v1/lightning/preflight.toml \
+  --config-protected-parent /etc/bitcoinpir/payment-v1/lightning \
+  --config-expected-uid 0 \
   --config-expected-gid 995 \
+  --config-reader-expected-uid 995 \
   --acknowledge-identity-secret-offline-backup-restore-checked \
   --acknowledge-channel-state-recovery-backup-restore-checked
 ```
@@ -289,15 +482,27 @@ well as the configured CLN version and `network=signet`. It uses the local
 system clock; there is no operator-supplied timestamp option.
 
 The ceremony never prints or writes SCB bytes. It writes only the strict
-non-secret digest receipt to `backup.receipt`: a random same-directory temporary
-regular file is forced to mode `0600`, written and synced, then atomically
-renamed over the prior receipt. The command takes a nonblocking advisory lock on
-the opened parent directory, uses no-replace semantics for a previously absent
-target, and snapshots/rechecks an existing target before replacement. Every
-reported error occurs before this commit point,
-removes a temporary created by this invocation and leaves the prior valid
-receipt untouched. A power loss can leave either the old or new complete
-receipt depending on filesystem durability; it cannot justify accepting a
+non-secret digest receipt to `backup.receipt`, which production config places
+at `/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml` under the
+preflight-owned systemd `StateDirectory` (directory mode `0700`, receipt mode
+`0600`). V1 `bpir-admin` hard-pins that exact directory and receipt path and
+requires the configured receipt UID/GID to equal the trusted preflight reader
+UID/config-reader GID supplied on the command line; alternate writable state
+locations or identities fail closed. The receipt is dynamic state and
+therefore is not a rendered `/etc` payload and has no static checksum manifest.
+A random same-directory temporary regular file is forced to mode `0600`,
+written and synced, then atomically renamed over the prior receipt. The command
+takes a nonblocking advisory lock on the opened parent directory, uses
+no-replace semantics for a previously absent target, and snapshots/rechecks an
+existing target before replacement. Errors before the atomic rename remove a
+temporary created by this invocation and leave the prior valid receipt
+untouched. An error reported by the parent-directory `fsync` or explicit
+unlock happens **after** the namespace commit and therefore has an
+outcome-unknown result: the old or new complete receipt may be named and its
+durability is not established. The operator must inspect the exact protected
+target and rerun the restore-check ceremony; do not assume the old receipt
+survived and do not synthesize a second receipt. A power loss has the same
+old-or-new complete-file boundary. None of these cases can justify accepting a
 partial receipt, and the next preflight still fails closed if the receipt is
 missing, stale or mismatched.
 
@@ -314,6 +519,38 @@ artifacts and each node's self-report. They do not attest either running daemon
 process image. The service manager must therefore use the same canonical
 pinned daemon paths; process-executable evidence remains a deployment and
 manual-acceptance gate.
+
+For the pinned v26.06.6 Ubuntu 24.04 runtime, `lightningd` also requires the
+reviewed private `libpq.so.5`. Its separate one-entry manifest and
+digest-equals-file root permit no other loader object, and the systemd unit
+permits exactly one literal `LD_LIBRARY_PATH` selecting that root. This keeps
+the upstream CLN archive identity separate from the Ubuntu library identity.
+These checks prove only the selected private deployment leaf and its configured
+search directory. The leaf still resolves libssl, libcrypto, GSSAPI, LDAP and
+libc from the reviewed host ABI, and the current runtime-evidence schema does
+not inspect process maps. Production activation is blocked until target
+evidence binds the selected path, inode and digest to `/proc/<MainPID>/maps`,
+rejects a system, alternate, deleted or injected libpq mapping, and records
+approval of the host ABI dependencies. The core unit omits
+`CLN-LOADER-MAPS-APPROVED` only so a no-funds generation can supply that
+evidence; the preflight, guard and issuer units require it. Do not create the
+sentinel before the separately reviewed evidence-schema PR exists and passes.
+
+That release also contains a deterministic `clear-plugins` NULL dereference
+when later config variables are still unparsed. The production profile never
+uses it. Its bundle carries the exact 27 built-in plugin files in the official
+`libexec/c-lightning/plugins` directory, installs the 25 disallowed members as
+root-owned non-executable `0444`, and has one exact `disable-plugin` line for
+each basename. Only `bcli` and `chanbackup` are `0555`. Live preflight requires
+both to be active and non-dynamic and rejects any third plugin. A root-owned
+`0555` tmpfiles/runtime-evidence placeholder makes `/srv/lightning/plugins`,
+CLN's real base scan path, a required non-ignore-missing systemd mask. The
+pre-start layout verifier must not test that already-masked base path as absent;
+it separately requires only the non-default network-local lookalike to remain
+absent. `--test-daemons-only` exits
+before plugin initialization and final config parsing, so deployment evidence
+must also include a complete isolated no-funds start; the early probe is not a
+substitute.
 
 This preflight deliberately does not call `getpeerinfo`. Its
 `spendable_msat`/`receivable_msat` checks are CLN estimates that can change with
@@ -341,7 +578,9 @@ Before opening a persistent channel, operators must accept and rehearse:
 - an updated `emergency.recover` after channel changes;
 - supported live CLN database replication appropriate to the selected
   datastore/plugin, or a file backup taken only while `lightningd` is stopped;
-- separate custody for any HSM-secret encryption passphrase; and
+- separate custody for any offline-backup encryption passphrase (the V1 live
+  file remains the exact native 32-byte, mode-`0400` format and does not enable
+  `--encrypted-hsm`); and
 - restore/failover without reverting channel state.
 
 Never copy a running CLN SQLite file as a backup. A stale or inconsistent
@@ -361,13 +600,19 @@ correlation boundary: it can observe the GitHub identity, IP, node public key,
 invoice and timing. Use only disposable identities and synthetic Payment V1
 scopes.
 
-For default-signet staging, first create payer, router and issuer addresses on
-the approved staging hosts. A minimal routing smoke can start with roughly
+For default-signet staging, only after the separate persistent-Signet and
+faucet/test-coin approvals, create payer, router and issuer addresses on the
+approved staging hosts. A visible public Signet Lightning graph is optional
+interoperability evidence, not a routing, liquidity or availability dependency;
+the acceptance topology remains the three explicitly connected nodes below. A
+minimal routing smoke can start with roughly
 25,000 signet sats each for payer and router and two roughly 20,000-sat
-announced channels. This is above the pinned CLN version's 10,000-sat minimum
-effective capacity and leaves a small on-chain fee margin; keep invoices at
-1--100 sats and do not use this minimal topology for destructive recovery
-drills. The preferred fault/close/restart allocation remains about 150,000 sats
+announced channels. The 20,000-sat size is a conservative BitcoinPIR staging
+policy, not a Core Lightning protocol minimum: the pinned `fundchannel` RPC
+accepts amounts down to its current 546-sat dust floor. This budget leaves only
+a small on-chain fee and usable-liquidity margin; keep invoices at 1--100 sats
+and do not use this minimal topology for destructive recovery drills. The
+preferred fault/close/restart allocation remains about 150,000 sats
 each for payer and router, each funding a roughly 100,000-sat outbound channel.
 An additional 50,000 issuer sats is optional on-chain closing/recovery-test
 margin; receiving the two-hop payment does not require it and it does not
@@ -395,12 +640,16 @@ used in any public-test-network experiment.
    wire carries only the signed receipt, but the provider-operated payment
    service intentionally can link invoice to receipt serial; the UI and policy
    must label that method `DIRECT_PAYMENT_TO_SPEND`.
-5. A tightly capped mainnet canary remains a separate approval after staging;
-   public test networks cannot prove production wallet coverage or routing.
+5. Do not run a mainnet canary on the current source. After staging, first
+   implement and review the missing mainnet preflight/profile and its negative
+   tests; then obtain independent approvals for remote production mutation,
+   production-key installation/use and real funds. Public test networks cannot
+   prove production wallet coverage or routing.
 
 ## Primary references
 
 - [Core Lightning configuration and networks](https://docs.corelightning.org/docs/configuration)
+- [Core Lightning `fundchannel` amount and readiness semantics](https://docs.corelightning.org/reference/fundchannel)
 - [Core Lightning local regtest example](https://github.com/ElementsProject/lightning)
 - [Core Lightning chain parameters](https://github.com/ElementsProject/lightning/blob/master/bitcoin/chainparams.c)
 - [BOLT11 payment encoding](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md)

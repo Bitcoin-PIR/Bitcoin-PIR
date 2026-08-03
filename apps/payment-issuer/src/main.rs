@@ -310,6 +310,12 @@ struct ServeCommonArgs {
     /// Repeat one matching issuer approval, in the same order as authorization.
     #[arg(long = "clearing-approval")]
     clearing_approvals: Vec<PathBuf>,
+    /// Repeat one raw 32-byte provider-request Ed25519 verifying key, in the
+    /// same order as authorization. This key is reserved for payout
+    /// recovery/status and MUST differ from the provider clearing key even in
+    /// production ledger-only mode.
+    #[arg(long = "clearing-provider-request-verifying-key")]
+    clearing_provider_request_verifying_keys: Vec<PathBuf>,
     /// Issuer Ed25519 settlement signing key; required when clearing is enabled.
     #[arg(long)]
     issuer_settlement_signing_key: Option<PathBuf>,
@@ -1753,6 +1759,7 @@ fn load_ledger_clearing(
 ) -> Result<Option<SharedIssuerClearingServiceV1>, String> {
     let any_configured = !args.clearing_authorizations.is_empty()
         || !args.clearing_approvals.is_empty()
+        || !args.clearing_provider_request_verifying_keys.is_empty()
         || args.issuer_settlement_signing_key.is_some()
         || !args.retained_issuer_settlement_verifying_keys.is_empty()
         || args.redeem_response_derivation_key.is_some();
@@ -1761,9 +1768,10 @@ fn load_ledger_clearing(
     }
     if args.clearing_authorizations.is_empty()
         || args.clearing_authorizations.len() != args.clearing_approvals.len()
+        || args.clearing_authorizations.len() != args.clearing_provider_request_verifying_keys.len()
     {
         return Err(
-            "clearing requires the same non-zero number of --clearing-authorization and --clearing-approval files"
+            "clearing requires the same non-zero number of --clearing-authorization, --clearing-approval and --clearing-provider-request-verifying-key files"
                 .to_owned(),
         );
     }
@@ -1804,6 +1812,7 @@ fn load_ledger_clearing(
         authorization: ProviderClearingAuthorizationV1,
         approval: IssuerClearingApprovalV1,
         operator_key: VerifyingKey,
+        provider_request_verifying_key: [u8; 32],
     }
 
     let identity = store
@@ -1811,10 +1820,11 @@ fn load_ledger_clearing(
         .map_err(|error| format!("read issuer identity failed: {error}"))?;
     let mut prepared = Vec::with_capacity(args.clearing_authorizations.len());
     let mut seen_providers = BTreeMap::new();
-    for (authorization_path, approval_path) in args
+    for ((authorization_path, approval_path), provider_request_key_path) in args
         .clearing_authorizations
         .iter()
         .zip(&args.clearing_approvals)
+        .zip(&args.clearing_provider_request_verifying_keys)
     {
         let authorization_bytes = read_public_file(
             authorization_path,
@@ -1859,6 +1869,22 @@ fn load_ledger_clearing(
         }
         let operator_key = VerifyingKey::from_bytes(&authorization.operator_verifying_key)
             .map_err(|_| "provider operator key is invalid".to_owned())?;
+        let provider_request_key_bytes = read_public_file(
+            provider_request_key_path,
+            32,
+            "provider request verifying key",
+        )?;
+        let provider_request_verifying_key: [u8; 32] = provider_request_key_bytes
+            .try_into()
+            .map_err(|_| "provider request verifying key must be 32 bytes".to_owned())?;
+        VerifyingKey::from_bytes(&provider_request_verifying_key)
+            .map_err(|_| "provider request verifying key is invalid".to_owned())?;
+        validate_clearing_role_key_separation_v1(
+            &authorization,
+            &provider_request_verifying_key,
+            &settlement_verifying_key,
+            &retained_settlement_verifying_keys,
+        )?;
         authorization
             .verify_for(
                 &authorization.claims.provider_id,
@@ -1905,6 +1931,7 @@ fn load_ledger_clearing(
             authorization,
             approval,
             operator_key,
+            provider_request_verifying_key,
         });
     }
 
@@ -1923,11 +1950,11 @@ fn load_ledger_clearing(
                 registration_epoch: claims.authorization_epoch,
                 provider_id: claims.provider_id,
                 settlement_account_id: claims.settlement_account_id,
-                provider_request_verifying_key: claims.clearing_verifying_key,
-                // The schema predates ledger-only mode and requires a non-zero
-                // target. Production has no target CLI: this domain-separated
-                // constant is a non-routable schema sentinel, never request
-                // input and never interpreted while the service is ledger-only.
+                provider_request_verifying_key: provider.provider_request_verifying_key,
+                // The schema requires a non-zero target. Production has no
+                // target CLI: this domain-separated constant is a non-routable
+                // schema sentinel, never request input and never interpreted
+                // while the service is ledger-only.
                 payout_target_id: LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
                 not_before: claims.not_before,
                 not_after: claims.not_after,
@@ -1962,6 +1989,38 @@ fn load_ledger_clearing(
     )
     .map(Some)
     .map_err(|error| format!("build shared issuer clearing service failed: {error}"))
+}
+
+fn validate_clearing_role_key_separation_v1(
+    authorization: &ProviderClearingAuthorizationV1,
+    provider_request_verifying_key: &[u8; 32],
+    issuer_settlement_verifying_key: &VerifyingKey,
+    retained_issuer_settlement_verifying_keys: &[VerifyingKey],
+) -> Result<(), String> {
+    let settlement_key = issuer_settlement_verifying_key.to_bytes();
+    let clearing_key = authorization.claims.clearing_verifying_key;
+    let operator_key = authorization.operator_verifying_key;
+    let mut settlement_lineage = std::collections::BTreeSet::from([settlement_key]);
+    if *provider_request_verifying_key == authorization.claims.clearing_verifying_key
+        || *provider_request_verifying_key == operator_key
+        || *provider_request_verifying_key == settlement_key
+        || clearing_key == operator_key
+        || clearing_key == settlement_key
+        || operator_key == settlement_key
+        || retained_issuer_settlement_verifying_keys.iter().any(|key| {
+            let bytes = key.to_bytes();
+            bytes == *provider_request_verifying_key
+                || bytes == clearing_key
+                || bytes == operator_key
+                || !settlement_lineage.insert(bytes)
+        })
+    {
+        return Err(
+            "provider request, provider clearing, provider operator and issuer settlement key lineage must be distinct"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 struct ConnectionCountGuard(Arc<AtomicUsize>);
@@ -3173,6 +3232,70 @@ mod tests {
                 now_unix_override: Some(now_unix_override),
                 test_only_payout_http,
             })
+        }
+    }
+
+    #[test]
+    fn production_clearing_registration_requires_four_distinct_key_roles() {
+        let fixture = SettlementHttpFixture::new();
+        let settlement = SigningKey::from_bytes(&SETTLEMENT_HTTP_SIGNING_KEY).verifying_key();
+        let provider_request = SigningKey::from_bytes(&SETTLEMENT_HTTP_PROVIDER_REQUEST_KEY)
+            .verifying_key()
+            .to_bytes();
+        validate_clearing_role_key_separation_v1(
+            &fixture.authorization,
+            &provider_request,
+            &settlement,
+            &[],
+        )
+        .expect("four distinct key roles");
+        for reused in [
+            fixture.authorization.claims.clearing_verifying_key,
+            fixture.authorization.operator_verifying_key,
+            settlement.to_bytes(),
+        ] {
+            assert!(validate_clearing_role_key_separation_v1(
+                &fixture.authorization,
+                &reused,
+                &settlement,
+                &[],
+            )
+            .is_err());
+        }
+        let mut collapsed = fixture.authorization.clone();
+        collapsed.claims.clearing_verifying_key = collapsed.operator_verifying_key;
+        assert!(validate_clearing_role_key_separation_v1(
+            &collapsed,
+            &provider_request,
+            &settlement,
+            &[],
+        )
+        .is_err());
+        let operator_as_settlement =
+            VerifyingKey::from_bytes(&fixture.authorization.operator_verifying_key)
+                .expect("operator verifying key");
+        assert!(validate_clearing_role_key_separation_v1(
+            &fixture.authorization,
+            &provider_request,
+            &operator_as_settlement,
+            &[],
+        )
+        .is_err());
+
+        for reused in [
+            provider_request,
+            fixture.authorization.claims.clearing_verifying_key,
+            fixture.authorization.operator_verifying_key,
+            settlement.to_bytes(),
+        ] {
+            let retained = [VerifyingKey::from_bytes(&reused).expect("retained verifying key")];
+            assert!(validate_clearing_role_key_separation_v1(
+                &fixture.authorization,
+                &provider_request,
+                &settlement,
+                &retained,
+            )
+            .is_err());
         }
     }
 

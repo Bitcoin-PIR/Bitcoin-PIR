@@ -42,8 +42,9 @@ export interface UtxoEntry {
  *   2. **Sync / merge metadata** (`startChunkId`, `numChunks`, `numRounds`,
  *      `rawChunkData`, `scriptHash`, `merkleVerified`, `merkleRootHex`).
  *   3. **Per-bucket bin-Merkle inspector state** (everything from
- *      `indexPbcGroup` onwards). Populated at query time and consumed by
- *      `verifyMerkleBatch`; the UI also renders these for the audit panel.
+ *      `indexPbcGroup` onwards). DPF/Harmony return this only after their
+ *      native atomic query verifier succeeds; the UI may render it for the
+ *      audit panel. OnionPIR retains its separate browser verification flow.
  *
  * OnionPIR's "per-bin Merkle" branch uses the separate `merkleIndexRoot`,
  * `merkleDataRoot`, `indexBinHash`, etc. fields. They coexist with the DPF
@@ -62,7 +63,7 @@ export interface QueryResult {
   merkleVerified?: boolean;
   /** Merkle root hash hex (from server, for display) */
   merkleRootHex?: string;
-  /** Raw chunk data (kept for Merkle verification) */
+  /** Raw chunk data retained for verified sync/merge metadata and audit UI */
   rawChunkData?: Uint8Array;
   /** Script hash used for this query */
   scriptHash?: Uint8Array;
@@ -117,6 +118,12 @@ export interface QueryResult {
   verifiedDbId?: number;
   verifiedOnionRootHex?: string;
   verificationGeneration?: number;
+  /**
+   * Opaque, client-owned result handle. While true, user-facing fields are
+   * deliberately blank and may only be released by the same live client's
+   * one-shot inclusion verifier.
+   */
+  verificationPending?: true;
 }
 
 // ─── Connection state ───────────────────────────────────────────────────────

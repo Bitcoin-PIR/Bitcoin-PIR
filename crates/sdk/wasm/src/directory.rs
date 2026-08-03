@@ -39,6 +39,8 @@ const MAX_RELAY_EVENTS_V1: usize =
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RelayBatchInputV1 {
     version: u8,
+    #[serde(default)]
+    directory_mode: DirectoryRelayModeV1,
     relays: Vec<RelayInputV1>,
 }
 
@@ -47,6 +49,30 @@ struct RelayBatchInputV1 {
 struct RelayInputV1 {
     relay_id: u32,
     event_messages: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum DirectoryRelayModeV1 {
+    #[default]
+    StrictMultiRelay,
+    CentralizedSingleRelay,
+}
+
+impl DirectoryRelayModeV1 {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::StrictMultiRelay => "strict-multi-relay",
+            Self::CentralizedSingleRelay => "centralized-single-relay",
+        }
+    }
+
+    const fn assurance(self) -> &'static str {
+        match self {
+            Self::StrictMultiRelay => "multi-origin-split-view-compared",
+            Self::CentralizedSingleRelay => "centralized-degraded-no-relay-cross-check",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +177,12 @@ struct CheckpointTransitionV1 {
 struct SelectableCatalogV1 {
     version: u8,
     directory_pubkey_hex: String,
+    directory_mode: &'static str,
+    directory_assurance: &'static str,
+    /// Conservative expiry across every authenticated checkpoint and entry,
+    /// including tombstones. Browsers must recheck this immediately before
+    /// any security-sensitive use; durable acceptance does not extend validity.
+    catalog_valid_until_unix: String,
     shards: Vec<SelectableShardV1>,
 }
 
@@ -160,6 +192,7 @@ struct SelectableShardV1 {
     shard: u8,
     checkpoint_epoch: String,
     checkpoint_root_hex: String,
+    checkpoint_valid_until_unix: String,
     entries: Vec<SelectableEntryV1>,
 }
 
@@ -183,6 +216,7 @@ struct SelectableEntryV1 {
 #[wasm_bindgen]
 pub struct WasmDirectoryCatalogCandidateV1 {
     directory_pubkey: [u8; 32],
+    directory_mode: DirectoryRelayModeV1,
     shards: Vec<VerifiedRelayShardV1>,
     prepared: Option<PreparedCatalogV1>,
     selectable_catalog_json: Option<String>,
@@ -190,23 +224,45 @@ pub struct WasmDirectoryCatalogCandidateV1 {
 
 #[wasm_bindgen]
 impl WasmDirectoryCatalogCandidateV1 {
-    /// Authenticate at least two complete relay views, enforce all 16 shards,
-    /// and reject same-epoch checkpoint root/event forks.
-    #[wasm_bindgen(js_name = verifyRelayCatalogs)]
-    pub fn verify_relay_catalogs(
+    /// Authenticate a strict two-to-eight-view event batch, enforce all 16
+    /// shards, and reject same-epoch checkpoint root/event forks.
+    ///
+    /// This transport-neutral layer cannot prove URL origins or EOSE receipt.
+    /// Before calling it, the Web adapter MUST validate exact credential-free
+    /// origin-only WSS URLs and include only views whose 16 subscriptions all
+    /// reached EOSE. This API never accepts or downgrades to centralized mode.
+    #[wasm_bindgen(js_name = verifyStrictRelayEventBatch)]
+    pub fn verify_strict_relay_event_batch(
         relay_batch_json: &[u8],
         pinned_directory_pubkey: &[u8],
         now_unix: u64,
     ) -> Result<WasmDirectoryCatalogCandidateV1, JsError> {
-        let directory_pubkey = fixed_nonzero_32(pinned_directory_pubkey, "directory pubkey")?;
-        let shards = verify_relay_batch_v1(relay_batch_json, &directory_pubkey, now_unix)
-            .map_err(|error| JsError::new(&error))?;
-        Ok(Self {
-            directory_pubkey,
-            shards,
-            prepared: None,
-            selectable_catalog_json: None,
-        })
+        Self::verify_for_mode(
+            relay_batch_json,
+            pinned_directory_pubkey,
+            now_unix,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+    }
+
+    /// Authenticate exactly one explicitly centralized relay event batch.
+    ///
+    /// The transport adapter MUST first validate one exact credential-free
+    /// origin-only WSS URL and complete EOSE for all 16 subscriptions. The
+    /// result is degraded because no relay split-view/outage cross-check is
+    /// possible; event, rollback and live-provider verification stay strict.
+    #[wasm_bindgen(js_name = verifyCentralizedSingleRelayEventBatch)]
+    pub fn verify_centralized_single_relay_event_batch(
+        relay_batch_json: &[u8],
+        pinned_directory_pubkey: &[u8],
+        now_unix: u64,
+    ) -> Result<WasmDirectoryCatalogCandidateV1, JsError> {
+        Self::verify_for_mode(
+            relay_batch_json,
+            pinned_directory_pubkey,
+            now_unix,
+            DirectoryRelayModeV1::CentralizedSingleRelay,
+        )
     }
 
     /// Exact rollback keys needed for this refresh. No provider pair, query,
@@ -419,6 +475,7 @@ impl WasmDirectoryCatalogCandidateV1 {
         }
 
         let mut selectable_shards = Vec::with_capacity(DIRECTORY_SHARD_COUNT_V1 as usize);
+        let mut catalog_valid_until_unix = u64::MAX;
         for shard in 0..DIRECTORY_SHARD_COUNT_V1 {
             let checkpoint = persisted_checkpoints[usize::from(shard)]
                 .as_ref()
@@ -426,6 +483,16 @@ impl WasmDirectoryCatalogCandidateV1 {
             let entries = &persisted_entries_by_shard[usize::from(shard)];
             let catalog =
                 bind_persisted_directory_shard_catalog_v1(checkpoint, entries).map_err(js_error)?;
+            catalog_valid_until_unix =
+                catalog_valid_until_unix.min(checkpoint.verified().checkpoint().valid_until());
+            for persisted in catalog.entries() {
+                catalog_valid_until_unix = catalog_valid_until_unix.min(
+                    persisted
+                        .verified()
+                        .discovery_entry()
+                        .directory_valid_until(),
+                );
+            }
             let mut selectable_entries = Vec::new();
             for persisted in catalog.active_entries() {
                 let verified = persisted.verified();
@@ -462,13 +529,24 @@ impl WasmDirectoryCatalogCandidateV1 {
                     .checkpoint_epoch()
                     .to_string(),
                 checkpoint_root_hex: hex::encode(checkpoint.verified().checkpoint().catalog_root()),
+                checkpoint_valid_until_unix: checkpoint
+                    .verified()
+                    .checkpoint()
+                    .valid_until()
+                    .to_string(),
                 entries: selectable_entries,
             });
+        }
+        if catalog_valid_until_unix == u64::MAX {
+            return Err(JsError::new("durable catalog has no authenticated expiry"));
         }
         self.selectable_catalog_json = Some(
             serde_json::to_string(&SelectableCatalogV1 {
                 version: 1,
                 directory_pubkey_hex: hex::encode(self.directory_pubkey),
+                directory_mode: self.directory_mode.name(),
+                directory_assurance: self.directory_mode.assurance(),
+                catalog_valid_until_unix: catalog_valid_until_unix.to_string(),
                 shards: selectable_shards,
             })
             .map_err(js_error)?,
@@ -481,6 +559,27 @@ impl WasmDirectoryCatalogCandidateV1 {
         self.selectable_catalog_json
             .clone()
             .ok_or_else(|| JsError::new("directory catalog is not durably accepted"))
+    }
+}
+
+impl WasmDirectoryCatalogCandidateV1 {
+    fn verify_for_mode(
+        relay_batch_json: &[u8],
+        pinned_directory_pubkey: &[u8],
+        now_unix: u64,
+        expected_mode: DirectoryRelayModeV1,
+    ) -> Result<Self, JsError> {
+        let directory_pubkey = fixed_nonzero_32(pinned_directory_pubkey, "directory pubkey")?;
+        let shards =
+            verify_relay_batch_v1(relay_batch_json, &directory_pubkey, now_unix, expected_mode)
+                .map_err(|error| JsError::new(&error))?;
+        Ok(Self {
+            directory_pubkey,
+            directory_mode: expected_mode,
+            shards,
+            prepared: None,
+            selectable_catalog_json: None,
+        })
     }
 }
 
@@ -503,6 +602,7 @@ fn verify_relay_batch_v1(
     relay_batch_json: &[u8],
     directory_pubkey: &[u8; 32],
     now_unix: u64,
+    expected_mode: DirectoryRelayModeV1,
 ) -> Result<Vec<VerifiedRelayShardV1>, String> {
     if relay_batch_json.is_empty()
         || relay_batch_json.len() > MAX_RELAY_BATCH_BYTES_V1
@@ -512,8 +612,26 @@ fn verify_relay_batch_v1(
     }
     let input: RelayBatchInputV1 =
         serde_json::from_slice(relay_batch_json).map_err(|_| "invalid relay batch JSON")?;
-    if input.version != 1 || input.relays.len() < 2 || input.relays.len() > MAX_RELAY_COUNT_V1 {
-        return Err("directory refresh requires two to eight complete relays".to_owned());
+    if input.version != 1 || input.directory_mode != expected_mode {
+        return Err(
+            "directory relay mode is unsupported or does not match the selected verifier API"
+                .to_owned(),
+        );
+    }
+    match expected_mode {
+        DirectoryRelayModeV1::StrictMultiRelay
+            if input.relays.len() < 2 || input.relays.len() > MAX_RELAY_COUNT_V1 =>
+        {
+            return Err(
+                "strict directory refresh requires two to eight complete relays".to_owned(),
+            );
+        }
+        DirectoryRelayModeV1::CentralizedSingleRelay if input.relays.len() != 1 => {
+            return Err(
+                "centralized single-relay refresh requires exactly one complete relay".to_owned(),
+            );
+        }
+        _ => {}
     }
     let mut relay_ids = BTreeSet::new();
     let mut relays = Vec::with_capacity(input.relays.len());
@@ -836,6 +954,7 @@ mod tests {
     fn relay_batch(first: Vec<String>, second: Vec<String>) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "version": 1,
+            "directoryMode": "strict-multi-relay",
             "relays": [
                 { "relayId": 0, "eventMessages": first },
                 { "relayId": 1, "eventMessages": second }
@@ -844,16 +963,129 @@ mod tests {
         .unwrap()
     }
 
+    fn centralized_relay_batch(messages: Vec<String>) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "directoryMode": "centralized-single-relay",
+            "relays": [{ "relayId": 0, "eventMessages": messages }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn centralized_single_relay_requires_explicit_mode_and_verifier_selection() {
+        let publisher = DirectoryPublisherKeyV1::from_secret_bytes([40; 32]).unwrap();
+        let messages = empty_catalog_messages(&publisher, 6);
+        let implicit_strict_one = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "relays": [{ "relayId": 0, "eventMessages": messages.clone() }]
+        }))
+        .unwrap();
+        let error = verify_relay_batch_v1(
+            &implicit_strict_one,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap_err();
+        assert!(error.contains("two to eight"));
+
+        let centralized = centralized_relay_batch(messages.clone());
+        let shards = verify_relay_batch_v1(
+            &centralized,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::CentralizedSingleRelay,
+        )
+        .unwrap();
+        assert_eq!(shards.len(), usize::from(DIRECTORY_SHARD_COUNT_V1));
+        assert_eq!(
+            DirectoryRelayModeV1::CentralizedSingleRelay.assurance(),
+            "centralized-degraded-no-relay-cross-check"
+        );
+        let wrong_api = verify_relay_batch_v1(
+            &centralized,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap_err();
+        assert!(wrong_api.contains("does not match"));
+
+        let centralized_two = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "directoryMode": "centralized-single-relay",
+            "relays": [
+                { "relayId": 0, "eventMessages": messages.clone() },
+                { "relayId": 1, "eventMessages": messages }
+            ]
+        }))
+        .unwrap();
+        let error = verify_relay_batch_v1(
+            &centralized_two,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::CentralizedSingleRelay,
+        )
+        .unwrap_err();
+        assert!(error.contains("exactly one"));
+
+        let zero = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "directoryMode": "strict-multi-relay",
+            "relays": []
+        }))
+        .unwrap();
+        assert!(verify_relay_batch_v1(
+            &zero,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap_err()
+        .contains("two to eight"));
+
+        let nine_relays = (0..9)
+            .map(|relay_id| {
+                serde_json::json!({
+                    "relayId": relay_id,
+                    "eventMessages": []
+                })
+            })
+            .collect::<Vec<_>>();
+        let nine = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "directoryMode": "strict-multi-relay",
+            "relays": nine_relays
+        }))
+        .unwrap();
+        assert!(verify_relay_batch_v1(
+            &nine,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap_err()
+        .contains("two to eight"));
+    }
+
     #[test]
     fn complete_two_relay_catalog_stays_withheld_until_durable_ack_and_restarts() {
         let publisher = DirectoryPublisherKeyV1::from_secret_bytes([41; 32]).unwrap();
         let messages = empty_catalog_messages(&publisher, 7);
         let batch = relay_batch(messages.clone(), messages.clone());
-        let shards = verify_relay_batch_v1(&batch, publisher.public_key(), NOW).unwrap();
+        let shards = verify_relay_batch_v1(
+            &batch,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap();
         assert_eq!(shards.len(), 16);
 
         let mut candidate = WasmDirectoryCatalogCandidateV1 {
             directory_pubkey: *publisher.public_key(),
+            directory_mode: DirectoryRelayModeV1::StrictMultiRelay,
             shards,
             prepared: None,
             selectable_catalog_json: None,
@@ -888,10 +1120,28 @@ mod tests {
         let selectable: serde_json::Value =
             serde_json::from_str(&candidate.selectable_catalog_json().unwrap()).unwrap();
         assert_eq!(selectable["shards"].as_array().unwrap().len(), 16);
+        assert_eq!(selectable["directoryMode"], "strict-multi-relay");
+        assert_eq!(
+            selectable["directoryAssurance"],
+            "multi-origin-split-view-compared"
+        );
+        assert_eq!(selectable["catalogValidUntilUnix"], "2500");
+        assert!(selectable["shards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|shard| shard["checkpointValidUntilUnix"] == "2500"));
 
-        let restart_shards = verify_relay_batch_v1(&batch, publisher.public_key(), NOW).unwrap();
+        let restart_shards = verify_relay_batch_v1(
+            &batch,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap();
         let mut restart = WasmDirectoryCatalogCandidateV1 {
             directory_pubkey: *publisher.public_key(),
+            directory_mode: DirectoryRelayModeV1::StrictMultiRelay,
             shards: restart_shards,
             prepared: None,
             selectable_catalog_json: None,
@@ -947,8 +1197,13 @@ mod tests {
         second[2] = event_message(&checkpoint_event, 2);
         second.push(event_message(&entry_event, 2));
 
-        let error = verify_relay_batch_v1(&relay_batch(first, second), publisher.public_key(), NOW)
-            .unwrap_err();
+        let error = verify_relay_batch_v1(
+            &relay_batch(first, second),
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap_err();
         assert!(error.contains("split view"));
     }
 
@@ -986,29 +1241,59 @@ mod tests {
         .unwrap();
         let entry_event = publisher.sign_entry_event(&entry, NOW, &[46; 32]).unwrap();
         let shard = coarse_shard_for_provider_v1(entry.provider_id());
-        let checkpoint = DirectoryCatalogCheckpointV1::new(
-            shard,
-            12,
-            1_000,
-            2_500,
-            vec![DirectoryCheckpointEntryV1 {
-                provider_id: *entry.provider_id(),
-                directory_sequence: entry.directory_sequence(),
-                event_id: *entry_event.id(),
-            }],
+        let mut tombstone_provider_id = [0x77; 32];
+        tombstone_provider_id[0] = shard << 4;
+        if tombstone_provider_id == *entry.provider_id() {
+            tombstone_provider_id[31] ^= 1;
+        }
+        let tombstone = DirectoryEntryV1::new_tombstone(
+            tombstone_provider_id,
+            1,
+            2_300,
+            DirectoryHealthV1 {
+                class: DirectoryHealthClassV1::Unavailable,
+                observed_bucket: NOW,
+            },
             NOW,
         )
         .unwrap();
+        let tombstone_event = publisher
+            .sign_entry_event(&tombstone, NOW, &[48; 32])
+            .unwrap();
+        let mut checkpoint_entries = vec![
+            DirectoryCheckpointEntryV1 {
+                provider_id: *entry.provider_id(),
+                directory_sequence: entry.directory_sequence(),
+                event_id: *entry_event.id(),
+            },
+            DirectoryCheckpointEntryV1 {
+                provider_id: tombstone_provider_id,
+                directory_sequence: tombstone.directory_sequence(),
+                event_id: *tombstone_event.id(),
+            },
+        ];
+        checkpoint_entries.sort_by_key(|candidate| candidate.provider_id);
+        let checkpoint =
+            DirectoryCatalogCheckpointV1::new(shard, 12, 1_000, 2_500, checkpoint_entries, NOW)
+                .unwrap();
         let checkpoint_event = publisher
             .sign_checkpoint_event(&checkpoint, NOW, &[47; 32])
             .unwrap();
         let mut messages = empty_catalog_messages(&publisher, 12);
         messages[usize::from(shard)] = event_message(&checkpoint_event, shard);
         messages.push(event_message(&entry_event, shard));
+        messages.push(event_message(&tombstone_event, shard));
         let batch = relay_batch(messages.clone(), messages);
-        let shards = verify_relay_batch_v1(&batch, publisher.public_key(), NOW).unwrap();
+        let shards = verify_relay_batch_v1(
+            &batch,
+            publisher.public_key(),
+            NOW,
+            DirectoryRelayModeV1::StrictMultiRelay,
+        )
+        .unwrap();
         let mut candidate = WasmDirectoryCatalogCandidateV1 {
             directory_pubkey: *publisher.public_key(),
+            directory_mode: DirectoryRelayModeV1::StrictMultiRelay,
             shards,
             prepared: None,
             selectable_catalog_json: None,
@@ -1047,6 +1332,14 @@ mod tests {
             .unwrap();
         let catalog: serde_json::Value =
             serde_json::from_str(&candidate.selectable_catalog_json().unwrap()).unwrap();
+        assert_eq!(catalog["catalogValidUntilUnix"], "2300");
+        assert_eq!(
+            catalog["shards"][usize::from(shard)]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+        );
         let selected = &catalog["shards"][usize::from(shard)]["entries"][0];
         assert_eq!(
             selected["operatorPubkeyEd25519Hex"],

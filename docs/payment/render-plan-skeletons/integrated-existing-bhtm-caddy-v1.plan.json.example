@@ -1,0 +1,147 @@
+{
+  "deployment_id": "replace-integrated-existing-bhtm-caddy-v1",
+  "deployment_profile": "integrated-existing-bhtm-caddy-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/integrated-caddy/payment-v1-rename-exchange",
+      "target_path": "/opt/bitcoinpir/payment-v1-rename-exchange/INVALID-REPLACE-WITH-OVERLAY-EXCHANGE-SHA256/payment-v1-rename-exchange",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/integrated-caddy/rename-exchange.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256",
+      "uid": 0
+    },
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/source-fair-edge/haproxy",
+      "target_path": "/opt/bitcoinpir/haproxy/INVALID-REPLACE-WITH-HAPROXY-SHA256/haproxy",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/source-fair-edge/haproxy.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256",
+      "uid": 0
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/source-fair-edge/source-fair-config.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "DIRECTORY_PUBLISHER_CLIENT_IP": "INVALID_REPLACE_WITH_PRIVATE_CLIENT_IP",
+    "DIRECTORY_PUBLISHER_HTTPS_HOST": "INVALID_REPLACE_WITH_PUBLISHER_HOST",
+    "DIRECTORY_PUBLISHER_PRIVATE_BIND": "INVALID_REPLACE_WITH_PUBLISHER_PRIVATE_BIND_IP",
+    "DIRECTORY_RELAY_WSS_HOST": "INVALID_REPLACE_WITH_DIRECTORY_HOST",
+    "HAPROXY_SHA256": "INVALID_REPLACE_WITH_HAPROXY_SHA256",
+    "OVERLAY_EXCHANGE_SHA256": "INVALID_REPLACE_WITH_OVERLAY_EXCHANGE_SHA256",
+    "PAYMENT_ISSUER_HTTPS_HOST": "INVALID_REPLACE_WITH_ISSUER_HOST",
+    "PROVIDER_WSS_HOST": "INVALID_REPLACE_WITH_PROVIDER_HOST",
+    "PUBLIC_HTTPS_BIND": "INVALID_REPLACE_WITH_PUBLIC_BIND_IP"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+      "uid": 0
+    },
+    {
+      "gid": 52902,
+      "mode": "0440",
+      "source_path": "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-caddy-admin-uds-gate.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-caddy-admin-uds-probe.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-caddy-admin-uds-transaction.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "scripts/payment-v1-publisher-netns-schema.mjs",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+      "uid": 0
+    }
+  ],
+  "schema_version": 2,
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)",
+  "service_identities": [
+    {
+      "gid": 52902,
+      "group_name": "bitcoinpir-source-fair-edge",
+      "uid": 52902,
+      "unit_name": "bitcoinpir-payment-v1-source-fair-edge.service",
+      "user_name": "bitcoinpir-source-fair-edge"
+    }
+  ]
+}

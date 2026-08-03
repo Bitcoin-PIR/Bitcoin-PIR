@@ -11,6 +11,7 @@ bpir_srv_dir='/srv'
 bpir_lightning_base='/srv/lightning'
 bpir_lightning_dir="${bpir_lightning_base}/${bpir_lightning_network}"
 bpir_lightning_socket="${bpir_lightning_dir}/lightning-rpc"
+bpir_hsm_secret="${bpir_lightning_dir}/hsm_secret"
 
 bpir_fail() {
     echo 'lightning-layout-preflight=FAIL' >&2
@@ -30,9 +31,20 @@ esac
 [ "$(/usr/bin/stat -c '%u:%g:%a' -- "${bpir_lightning_base}")" = '0:0:755' ] || bpir_fail
 [ "$(/usr/bin/stat -c '%u:%g:%a' -- "${bpir_lightning_dir}")" = "${bpir_lightning_uid}:${bpir_lightning_gid}:710" ] || bpir_fail
 
+# V1 deliberately accepts only CLN's native 32-byte live seed. Requiring the
+# restored owner-read-only inode before lightningd starts prevents an absent
+# secret from silently creating a different node identity. Mnemonic containers
+# and encrypted-HSM startup need a separate non-interactive custody design and
+# are not accepted by this Signet profile.
+[ -f "${bpir_hsm_secret}" ] && [ ! -L "${bpir_hsm_secret}" ] || bpir_fail
+[ "$(/usr/bin/stat -c '%u:%g:%a:%s' -- "${bpir_hsm_secret}")" = "${bpir_lightning_uid}:${bpir_lightning_gid}:400:32" ] || bpir_fail
+
 # Explicit --conf means these are ignored by CLN, but rejecting them keeps the
 # trust boundary legible and prevents accidental future fallback to implicit
-# configuration or dynamic plugins.
+# configuration or dynamic plugins. Do not test the required
+# /srv/lightning/plugins placeholder here: systemd masks that path before this
+# ExecStartPre runs. Tmpfiles and runtime evidence validate the placeholder's
+# root:root 0555 host metadata; this loop rejects only unmasked lookalikes.
 for bpir_forbidden in \
     "${bpir_lightning_base}/config" \
     "${bpir_lightning_dir}/config" \

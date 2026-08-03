@@ -38,9 +38,16 @@ function usage() {
   node scripts/payment-v1-nostr-readback.mjs \\
     --artifact directory-checkpoints.json \\
     --relay wss://relay-one.example \\
-    --relay wss://relay-two.example/nostr \\
+    --relay wss://relay-two.example:8443 \\
     --expected-set-digest-hex LOWERCASE_SHA256_FROM_PUBLISH \\
     [--timeout-ms 30000]
+
+  # Explicit centralized/degraded mode accepts exactly one relay:
+  node scripts/payment-v1-nostr-readback.mjs \\
+    --artifact directory-checkpoints.json \\
+    --relay wss://relay-one.example \\
+    --centralized-single-relay \\
+    --expected-set-digest-hex LOWERCASE_SHA256_FROM_PUBLISH
 
 Reads one canonical EVENT artifact or one exact 16-checkpoint array per
 --artifact, requests those public event IDs with standard NIP-01 REQ filters,
@@ -54,12 +61,20 @@ function parseArgs(argv) {
     relays: [],
     expectedSetDigest: undefined,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    centralizedSingleRelay: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     if (option === "--help" || option === "-h") {
       console.log(usage());
       process.exit(0);
+    }
+    if (option === "--centralized-single-relay") {
+      if (result.centralizedSingleRelay) {
+        throw new Error("duplicate-centralized-single-relay-option");
+      }
+      result.centralizedSingleRelay = true;
+      continue;
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -84,8 +99,12 @@ function parseArgs(argv) {
   if (result.artifacts.length === 0) {
     throw new Error("missing-artifact");
   }
-  if (result.relays.length < 2 || result.relays.length > 8) {
-    throw new Error("relay-count-out-of-range");
+  if (result.centralizedSingleRelay) {
+    if (result.relays.length !== 1) {
+      throw new Error("centralized-single-relay-requires-exactly-one-relay");
+    }
+  } else if (result.relays.length < 2 || result.relays.length > 8) {
+    throw new Error("strict-relay-count-out-of-range");
   }
   if (result.timeoutMs < MIN_TIMEOUT_MS || result.timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error("timeout-out-of-range");
@@ -97,7 +116,7 @@ function parseArgs(argv) {
   const urls = new Set();
   const targets = [];
   for (const relay of result.relays) {
-    const target = parseCanonicalPublicWssEndpoint(relay);
+    const target = parseCanonicalPublicWssOrigin(relay);
     if (urls.has(target.url) || hosts.has(target.host)) {
       throw new Error("relay-hostnames-must-be-distinct");
     }
@@ -109,7 +128,7 @@ function parseArgs(argv) {
   return result;
 }
 
-function parseCanonicalPublicWssEndpoint(endpoint) {
+function parseCanonicalPublicWssOrigin(endpoint) {
   if (
     typeof endpoint !== "string" ||
     endpoint.length > 512 ||
@@ -127,9 +146,7 @@ function parseCanonicalPublicWssEndpoint(endpoint) {
   ) {
     throw new Error("relay-must-be-canonical-public-wss");
   }
-  const slash = rest.indexOf("/");
-  const authority = slash === -1 ? rest : rest.slice(0, slash);
-  const path = slash === -1 ? "" : rest.slice(slash + 1);
+  const authority = rest;
   if (
     authority.length === 0 ||
     authority.startsWith("[") ||
@@ -171,17 +188,6 @@ function parseCanonicalPublicWssEndpoint(endpoint) {
     ) {
       throw new Error("relay-must-be-canonical-public-wss");
     }
-  }
-  if (
-    path.length !== 0 &&
-    (path.startsWith("/") ||
-      path.endsWith("/") ||
-      path.includes("//") ||
-      path.includes("%") ||
-      !/^[A-Za-z0-9._~/-]+$/.test(path) ||
-      path.split("/").some((segment) => segment === "." || segment === ".."))
-  ) {
-    throw new Error("relay-must-be-canonical-public-wss");
   }
   return { url: endpoint, host };
 }
@@ -539,16 +545,22 @@ async function main() {
   }
 
   let failures = 0;
+  const directoryMode = args.centralizedSingleRelay
+    ? "centralized-single-relay"
+    : "strict-multi-relay";
+  const assurance = args.centralizedSingleRelay
+    ? "centralized-degraded-no-relay-cross-check"
+    : "multi-origin-split-view-capable";
   for (const relay of args.relays) {
     try {
       await readRelay(relay.url, expected, args.timeoutMs);
       console.log(
-        `relay_host=${relay.host} event_count=${expected.size} event_set_digest_hex=${args.expectedSetDigest} result=ok`,
+        `relay_host=${relay.host} event_count=${expected.size} event_set_digest_hex=${args.expectedSetDigest} directory_mode=${directoryMode} assurance=${assurance} result=ok`,
       );
     } catch (error) {
       failures += 1;
       console.error(
-        `relay_host=${relay.host} event_count=${expected.size} event_set_digest_hex=${args.expectedSetDigest} result=${error.message}`,
+        `relay_host=${relay.host} event_count=${expected.size} event_set_digest_hex=${args.expectedSetDigest} directory_mode=${directoryMode} assurance=${assurance} result=${error.message}`,
       );
     }
   }

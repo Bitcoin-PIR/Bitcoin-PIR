@@ -6,8 +6,12 @@ Wants=network-online.target
 Requires=bitcoinpir-core-lightning.service bitcoinpir-cln-rpc-guard.service bitcoinpir-lightning-preflight.service
 BindsTo=bitcoinpir-core-lightning.service bitcoinpir-cln-rpc-guard.service bitcoinpir-lightning-preflight.service
 ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
 ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED
 
 [Service]
 Type=simple
@@ -42,6 +46,7 @@ ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer 
     --bat-key /etc/bitcoinpir/payment-v1/issuer/cashu-bat.key \
     --clearing-authorization /etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin \
     --clearing-approval /etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin \
+    --clearing-provider-request-verifying-key /etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key \
     --issuer-settlement-signing-key /etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key \
     --redeem-response-derivation-key /etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key \
     --cln-rpc-socket /run/bitcoinpir-cln-rpc-guard/issuer/issuer-rpc \
@@ -73,9 +78,11 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/issuer /run/bitcoinpir-cln-rpc-guard/issuer /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@
 ReadWritePaths=/var/lib/bitcoinpir-payment-issuer
-InaccessiblePaths=/srv/lightning /srv/bitcoin
+InaccessiblePaths=-/srv/lightning -/srv/bitcoin -/run/bitcoinpir-source-fair-edge
 
 # Clearing is part of payment-issuer serve-cln; no separate clearing daemon is
 # installed. There is intentionally no [Install] section. The final unit name
 # is bitcoinpir-payment-issuer.service; it is bound to the exact CLN unit, its
 # method guard, and the successful live preflight, so none may be bypassed.
+# CLN-LOADER-MAPS-APPROVED must remain absent until the separately reviewed
+# loader maps/inode evidence schema exists and has produced approved evidence.

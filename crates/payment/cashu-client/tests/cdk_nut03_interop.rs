@@ -2,11 +2,13 @@
 //!
 //! This test is intentionally ignored. The repository runner starts a
 //! loopback-only fake-wallet mint and passes owner-only fixture files. The
-//! signed manifest still contains a synthetic HTTPS identity; this test-only
-//! transport maps only that exact identity to the validated loopback process.
-//! The exact canonical spend must first have been emitted by Chromium through
-//! the checked-in generated JS/WASM package. This provider-side test process
-//! then routes it through the real admission gate, standard-Cashu committer,
+//! signed manifest contains the same private-CA HTTPS identity used by the
+//! real-provider process test; this test-only transport maps only that exact
+//! identity to the validated loopback process. Chromium spends the first of
+//! two independently minted notes through the real provider. This test keeps
+//! the second note for the native custody lifecycle, while independently
+//! validating Chromium's canonical first spend against the same policy. It
+//! then routes only the second spend through the real admission gate, standard-Cashu committer,
 //! production ProviderStore adapter/schema, and a test-only SQLite rollback
 //! floor. The floor is durable across reopen but is not an independent
 //! production rollback boundary. It proves replay rejection, consumed NUT-03
@@ -48,17 +50,7 @@ use pir_service_store::{
     ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
-
-const SYNTHETIC_MINT_ENDPOINT: &str = "https://cdk-loopback.invalid";
-
-fn synthetic_leaf_spki_sha256() -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"BitcoinPIR/payment-v1/test-only-cdk-loopback-leaf-spki/v1\0");
-    hasher.update(SYNTHETIC_MINT_ENDPOINT.as_bytes());
-    hasher.finalize().into()
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,15 +71,18 @@ struct CdkKeysetV1 {
 
 struct CurlLoopbackTransportV1 {
     actual_endpoint: String,
+    signed_endpoint: String,
     swap_calls: AtomicUsize,
     check_state_calls: AtomicUsize,
 }
 
 impl CurlLoopbackTransportV1 {
-    fn new(actual_endpoint: String) -> Self {
+    fn new(actual_endpoint: String, signed_endpoint: String) -> Self {
         validate_loopback_endpoint(&actual_endpoint);
+        validate_signed_endpoint(&signed_endpoint);
         Self {
             actual_endpoint,
+            signed_endpoint,
             swap_calls: AtomicUsize::new(0),
             check_state_calls: AtomicUsize::new(0),
         }
@@ -110,7 +105,7 @@ impl CashuMintTransportV1 for CurlLoopbackTransportV1 {
         request_json: &[u8],
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        if trust.mint_endpoint() != SYNTHETIC_MINT_ENDPOINT {
+        if trust.mint_endpoint() != self.signed_endpoint {
             return Err(transport_failure(CashuMintTransportFailureKindV1::Network));
         }
         if route == CashuMintRouteV1::Swap {
@@ -174,6 +169,8 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     let keys_bytes = read_owner_only_bytes("BITCOINPIR_CDK_KEYS_FILE");
     let actual_endpoint =
         std::env::var("BITCOINPIR_CDK_MINT_ENDPOINT").expect("BITCOINPIR_CDK_MINT_ENDPOINT");
+    let signed_endpoint = std::env::var("BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT")
+        .expect("BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT");
     let expected_amount = std::env::var("BITCOINPIR_CDK_EXPECTED_AMOUNT")
         .expect("BITCOINPIR_CDK_EXPECTED_AMOUNT")
         .parse::<u64>()
@@ -223,9 +220,10 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         browser_spend_bytes.as_slice(),
         "Chromium output must be canonical provider wire bytes"
     );
-    assert_eq!(
+    assert_eq!(browser_spend.total_amount().unwrap(), expected_amount);
+    assert_ne!(
         browser_spend, spend,
-        "generated WASM and the provider must resolve the exact same CDK proofs"
+        "browser/provider and native-custody legs must use independent CDK notes"
     );
 
     let policy_bytes = read_owner_only_bytes("BITCOINPIR_CDK_POLICY_FILE");
@@ -262,18 +260,28 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         .cashu_mint_manifest
         .as_ref()
         .expect("verified offer carries a standard-Cashu manifest");
-    assert_eq!(manifest.mint_endpoint, SYNTHETIC_MINT_ENDPOINT);
-    assert_eq!(
-        manifest.leaf_spki_sha256_pins,
-        vec![synthetic_leaf_spki_sha256()]
+    assert_eq!(manifest.mint_endpoint, signed_endpoint);
+    let expected_leaf_pin = read_fixed_hex_environment::<32>(
+        "BITCOINPIR_CDK_SIGNED_MINT_LEAF_SPKI_SHA256_HEX",
+        "signed mint leaf SPKI SHA-256 pin",
     );
+    assert_eq!(manifest.leaf_spki_sha256_pins, vec![expected_leaf_pin]);
     assert_eq!(manifest.unit, "sat");
     assert_eq!(manifest.accepted_input_keysets, vec![keyset.clone()]);
     assert_eq!(manifest.active_output_keyset, keyset);
     check_standard_cashu_spend_for_offer(&browser_spend, &verified_offer, now_unix)
         .expect("browser canonical spend matches the independently verified provider offer");
+    check_standard_cashu_spend_for_offer(&spend, &verified_offer, now_unix)
+        .expect("independent native token matches the same verified provider offer");
 
     let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("make native custody fixture root owner-only");
+    }
     let store_path = directory.path().join("provider-store.sqlite");
     let rollback_path = directory.path().join("provider-rollback.sqlite");
     let rollback = Arc::new(
@@ -287,7 +295,7 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         Arc::clone(&rollback) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
-    let transport = CurlLoopbackTransportV1::new(actual_endpoint);
+    let transport = CurlLoopbackTransportV1::new(actual_endpoint, signed_endpoint);
     let recovery = ChaCha20Poly1305RecoveryCipherV1::new(1, [(1, [0x41; 32])]).unwrap();
     let custody = ChaCha20Poly1305CustodyCipherV1::new(1, [(1, [0x42; 32])]).unwrap();
     let operation = OperationStartV1::DpfQuery { db_id: 7 };
@@ -298,7 +306,7 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         scheme: verified_offer.offer().authorization,
         key_id: verified_offer.offer().key_id.clone(),
         operation: operation.clone(),
-        proof: AuthorizationProofV1::StandardCashu(browser_spend.clone())
+        proof: AuthorizationProofV1::StandardCashu(spend.clone())
             .encode_for(
                 verified_offer.offer().authorization,
                 verified_offer.offer().free_mode,
@@ -421,7 +429,7 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     assert_real_cdk_inputs_are_spent_once(
         &transport,
         CashuMintTrustV1::from_manifest(manifest).unwrap(),
-        &browser_spend,
+        &spend,
     );
     assert_eq!(transport.check_state_calls(), 1);
 
@@ -787,6 +795,17 @@ fn validate_loopback_endpoint(endpoint: &str) {
     );
 }
 
+fn validate_signed_endpoint(endpoint: &str) {
+    let port = endpoint
+        .strip_prefix("https://localhost:")
+        .and_then(|value| value.parse::<u16>().ok())
+        .expect("test transport accepts only https://localhost:<port> signed identities");
+    assert!(
+        port >= 1_024,
+        "test transport requires an unprivileged signed endpoint"
+    );
+}
+
 fn transport_failure(kind: CashuMintTransportFailureKindV1) -> CashuMintTransportFailureV1 {
     CashuMintTransportFailureV1::ambiguous(kind, None)
 }
@@ -810,6 +829,14 @@ fn test_only_loopback_transport_rejects_non_loopback_actual_endpoints() {
         "http://127.0.0.1:5000/path",
     ] {
         assert!(std::panic::catch_unwind(|| validate_loopback_endpoint(endpoint)).is_err());
+    }
+    for endpoint in [
+        "http://localhost:5000",
+        "https://127.0.0.1:5000",
+        "https://localhost:80",
+        "https://localhost:5000/path",
+    ] {
+        assert!(std::panic::catch_unwind(|| validate_signed_endpoint(endpoint)).is_err());
     }
 }
 

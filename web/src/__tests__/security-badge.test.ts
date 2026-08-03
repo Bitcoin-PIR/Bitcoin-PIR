@@ -108,7 +108,10 @@ describe('pre-verification security badge rendering', () => {
     expect(scriptPolicy).not.toContain("'unsafe-inline'");
     expect(scriptPolicy).not.toContain("'unsafe-eval'");
     expect(scriptPolicy).toContain("'wasm-unsafe-eval'");
-    expect(html).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
+    const markupWithoutExecutableBlocks = html
+      .replace(/<script(?:\s[^>]*)?>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style(?:\s[^>]*)?>[\s\S]*?<\/style>/gi, '');
+    expect(markupWithoutExecutableBlocks).not.toMatch(/\son[a-z0-9_-]+\s*=/i);
 
     const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
     expect(inlineScripts).toHaveLength(3);
@@ -116,6 +119,102 @@ describe('pre-verification security badge rendering', () => {
       const digest = createHash('sha256').update(match[1]).digest('base64');
       expect(scriptPolicy).toContain(`'sha256-${digest}'`);
     }
+  });
+
+  it('invalidates directory refresh and clears old trust before bootstrap replacement awaits', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const handlerStart = html.indexOf(
+      "document.getElementById('admissionApplyBootstrap').addEventListener",
+    );
+    const handlerEnd = html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+      handlerStart,
+    );
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    const handler = html.slice(handlerStart, handlerEnd);
+    const invalidate = handler.indexOf('directoryRefreshIntentGuard.replaceBootstrap();');
+    const clearBootstrap = handler.indexOf('productTrustedBootstrap = null;');
+    const clearDirectory = handler.indexOf('verifiedDirectoryCatalog = null;', clearBootstrap);
+    const render = handler.indexOf('renderTrustedProviderOptions();', clearDirectory);
+    const close = handler.indexOf('await closeAllAdmissionAttempts(', render);
+    const generationCheck = handler.indexOf('directoryRefreshIntentGuard.isCurrent(', close);
+    expect(invalidate).toBeGreaterThanOrEqual(0);
+    expect(clearBootstrap).toBeGreaterThan(invalidate);
+    expect(clearDirectory).toBeGreaterThan(clearBootstrap);
+    expect(render).toBeGreaterThan(clearDirectory);
+    expect(close).toBeGreaterThan(render);
+    expect(generationCheck).toBeGreaterThan(close);
+  });
+
+  it('synchronously invalidates directory trust for mode, relay, or key input changes', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const handlerStart = html.indexOf('function beginDirectoryTrustInvalidation');
+    const handlerEnd = html.indexOf("document.getElementById('admissionApplyBootstrap')", handlerStart);
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    const handler = html.slice(handlerStart, handlerEnd);
+    const invalidate = handler.indexOf('directoryRefreshIntentGuard.invalidateInput();');
+    const clear = handler.indexOf('verifiedDirectoryCatalog = null;', invalidate);
+    const render = handler.indexOf('renderTrustedProviderOptions();', clear);
+    const close = handler.indexOf('return closeAllAdmissionAttempts(message);', render);
+    expect(invalidate).toBeGreaterThanOrEqual(0);
+    expect(clear).toBeGreaterThan(invalidate);
+    expect(render).toBeGreaterThan(clear);
+    expect(close).toBeGreaterThan(render);
+
+    const listeners = html.slice(handlerEnd, html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+      handlerEnd,
+    ));
+    expect(listeners).toContain("'change', () => invalidateDirectoryRefreshInput('mode')");
+    expect(listeners).toContain("'input', () => invalidateDirectoryRefreshInput('relay set')");
+    expect(listeners).toContain("'input', () => invalidateDirectoryRefreshInput('publisher key')");
+  });
+
+  it('checks the complete immutable intent before activating a CAS result', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const start = html.indexOf(
+      "document.getElementById('admissionRefreshDirectory').addEventListener",
+    );
+    const end = html.indexOf('renderTrustedProviderOptions();', start + 1);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const handler = html.slice(start, html.indexOf('function validateQueryInputBeforeAdmission', start));
+    const accepted = handler.indexOf('const candidateDirectoryCatalog = await');
+    const intentCheck = handler.indexOf('directoryRefreshIntentGuard.isCurrent(', accepted);
+    const freshCheck = handler.indexOf(
+      'assertSelectableDirectoryCatalogFreshV1(candidateDirectoryCatalog);',
+      intentCheck,
+    );
+    const activate = handler.indexOf(
+      'verifiedDirectoryCatalog = candidateDirectoryCatalog;',
+      freshCheck,
+    );
+    expect(accepted).toBeGreaterThanOrEqual(0);
+    expect(intentCheck).toBeGreaterThan(accepted);
+    expect(freshCheck).toBeGreaterThan(intentCheck);
+    expect(activate).toBeGreaterThan(freshCheck);
+  });
+
+  it('rechecks directory freshness before every panel security transition and query', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    expect(html.match(/beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition/g))
+      .toHaveLength(4);
+    const ui = readFileSync(new URL('../product-admission-ui.ts', import.meta.url), 'utf8');
+    const freshness = ui.indexOf('await this.options.beforeSecurityTransition?.();');
+    const action = ui.indexOf('const snapshot = await action();', freshness);
+    expect(freshness).toBeGreaterThanOrEqual(0);
+    expect(action).toBeGreaterThan(freshness);
+    const query = html.indexOf('async function runProductAdmissionQuery');
+    const queryFreshness = html.indexOf(
+      'await requireFreshDirectoryTrustForSecurityTransition();',
+      query,
+    );
+    const execute = html.indexOf('await controller.executeQuery(', queryFreshness);
+    expect(query).toBeGreaterThanOrEqual(0);
+    expect(queryFreshness).toBeGreaterThan(query);
+    expect(execute).toBeGreaterThan(queryFreshness);
   });
 
   it('ships an OnionPIR loader that does not require unsafe-eval', () => {

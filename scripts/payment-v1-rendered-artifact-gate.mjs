@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -25,12 +25,25 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  validatePublisherNamespaceOwnerUnitV1,
+  validatePublisherNetworkPolicy,
+  validatePublisherUnitV1,
+} from
+  "./payment-v1-publisher-netns-gate.mjs";
+import { validateBuildManifestV1 } from
+  "./payment-v1-directory-public-haproxy-artifact-gate.mjs";
 
-const PLAN_SCHEMA_VERSION = 1;
-const MANIFEST_SCHEMA_VERSION = 1;
-const EVIDENCE_SCHEMA_VERSION = 1;
+import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
+
+const PLAN_SCHEMA_VERSION = 2;
+const MANIFEST_SCHEMA_VERSION = 2;
+const EVIDENCE_SCHEMA_VERSION = 9;
 export const RUNTIME_COLLECTOR =
-  "bitcoinpir-payment-v1-linux-runtime-evidence-v1";
+  "bitcoinpir-payment-v1-linux-runtime-evidence-v9";
+export const REVIEWED_SYSTEMD_VERSION =
+  "systemd 255 (255.4-1ubuntu8.15)";
+export const REVIEWED_SYSTEMD_MANAGER_VERSION = "255.4-1ubuntu8.15";
 
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
@@ -38,22 +51,36 @@ const MAX_PAYLOAD_BYTES = 512 * 1024 * 1024;
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 4096;
 const MAX_PATH_COMPONENTS = 24;
-const EMPTY_SHA256 =
-  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const DIRECTORY_RELAY_SELECTION_SOURCE =
+  "deploy/payment-v1/relay-selection.toml.example";
+
+export const SERVICE_IDENTITY_MIN = 1;
+export const SERVICE_IDENTITY_MAX = 60_000;
+export const SYSTEMD_DYNAMIC_ID_MIN = 61_184;
+export const SYSTEMD_DYNAMIC_ID_MAX = 65_519;
+export const NOBODY_ID = 65_534;
 
 const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "AmbientCapabilities",
+  "BindReadOnlyPaths",
   "CapabilityBoundingSet",
   "Group",
   "IPAddressAllow",
   "IPAddressDeny",
   "InaccessiblePaths",
+  "LimitCORE",
   "LimitNOFILE",
   "LockPersonality",
+  "MemoryMax",
+  "MemorySwapMax",
   "MemoryDenyWriteExecute",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -61,6 +88,7 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -75,13 +103,19 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "RuntimeDirectoryMode",
   "StateDirectory",
   "StateDirectoryMode",
+  "StandardError",
+  "StandardOutput",
   "SupplementaryGroups",
   "SystemCallArchitectures",
+  "TasksMax",
+  "TemporaryFileSystem",
   "TimeoutStartSec",
   "TimeoutStopSec",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
+  "WatchdogSec",
   "WorkingDirectory",
 ]);
 
@@ -91,8 +125,16 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "BindsTo",
   "ConditionPathExists",
   "Description",
+  "PartOf",
   "Requires",
   "Wants",
+]);
+
+const SYSTEMD_RUNTIME_RELATION_KEYS = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Requires",
 ]);
 
 const SYSTEMD_SERVICE_KEYS = Object.freeze([
@@ -103,10 +145,49 @@ const SYSTEMD_SERVICE_KEYS = Object.freeze([
 ]);
 
 const PROFILE_CATALOG = Object.freeze({
+  "directory-relay-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/directory-relay.toml.example",
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    // The existing root Caddy process is deliberately not represented as a
+    // bundle-owned systemd unit. This profile closes and proves the HAProxy
+    // half of the composite overlay. The separate integrated-Caddy overlay
+    // plan binds the mutable Caddy preimage, managed block, unit, binary,
+    // process generation, TLS inputs, transaction, rollback and health proof.
+    templates: Object.freeze([
+      "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+      "scripts/payment-v1-caddy-admin-uds-gate.mjs",
+      "scripts/payment-v1-caddy-admin-uds-probe.mjs",
+      "scripts/payment-v1-caddy-admin-uds-transaction.mjs",
+      "scripts/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs",
+      "scripts/payment-v1-publisher-netns-schema.mjs",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-directory-public-v1": Object.freeze({
+    // This profile renders only the isolated public-directory edge assets.
+    // It deliberately retains absent source-ready and generation-guard
+    // sentinels; rendering is not activation approval.
+    templates: Object.freeze([
+      "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in",
+      "deploy/payment-v1/edge/directory-public-haproxy.cfg.in",
+      "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
+      "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
+      "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
+      "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs",
+    ]),
+  }),
   "edge-hetzner-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
-      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
+      "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
+      "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
     ]),
   }),
   "edge-rollback-authority-v1": Object.freeze({
@@ -126,9 +207,30 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
     ]),
   }),
+  "directory-publisher-netns-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+    ]),
+  }),
   "provider-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/systemd/hetzner-provider.service.in",
+    ]),
+  }),
+  "provider-no-standard-cashu-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+    ]),
+  }),
+  "provider-direct-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
     ]),
   }),
   "rollback-authority-v1": Object.freeze({
@@ -140,8 +242,64 @@ const PROFILE_CATALOG = Object.freeze({
 
 const MANAGED_FILE_PREFIXES = Object.freeze([
   "/etc/bitcoinpir/payment-v1/",
+  "/etc/netns/bpir-directory-publisher/",
   "/opt/bitcoinpir/",
   "/usr/local/libexec/bitcoinpir/",
+  "/var/lib/bitcoinpir-directory-publisher/artifacts/",
+]);
+
+const CLN_ACTIVE_PLUGIN_NAMES_V26066 = Object.freeze(["bcli", "chanbackup"]);
+const CLN_INERT_PLUGIN_NAMES_V26066 = Object.freeze([
+  "autoclean",
+  "bookkeeper",
+  "cln-askrene",
+  "cln-bip353",
+  "cln-bwatch",
+  "cln-currencyrate",
+  "cln-grpc",
+  "cln-lsps-client",
+  "cln-lsps-service",
+  "cln-renepay",
+  "cln-xpay",
+  "clnrest",
+  "commando",
+  "exposesecret",
+  "funder",
+  "keysend",
+  "offers",
+  "pay",
+  "recklessrpc",
+  "recover",
+  "spenderp",
+  "sql",
+  "topology",
+  "txprepare",
+  "wss-proxy",
+]);
+const CLN_PLUGIN_NAMES_V26066 = Object.freeze([
+  ...CLN_ACTIVE_PLUGIN_NAMES_V26066,
+  ...CLN_INERT_PLUGIN_NAMES_V26066,
+].sort(asciiCompare));
+
+// This is the exact selected deployment-file closure from the independently approved
+// official v26.06.6 archive. Disabled built-ins remain present at their
+// compiled path but are installed non-executable; this avoids both the
+// clear-plugins NULL dereference and noisy missing-built-in startup behavior.
+const REQUIRED_CLN_BUNDLE_PATHS_V26066 = Object.freeze([
+  "bin/lightning-cli",
+  "bin/lightning-hsmtool",
+  "bin/lightningd",
+  "libexec/c-lightning/lightning_channeld",
+  "libexec/c-lightning/lightning_closingd",
+  "libexec/c-lightning/lightning_connectd",
+  "libexec/c-lightning/lightning_gossip_compactd",
+  "libexec/c-lightning/lightning_gossipd",
+  "libexec/c-lightning/lightning_hsmd",
+  "libexec/c-lightning/lightning_onchaind",
+  "libexec/c-lightning/lightning_openingd",
+  ...CLN_PLUGIN_NAMES_V26066.map(
+    (name) => `libexec/c-lightning/plugins/${name}`,
+  ),
 ]);
 
 const REQUIRED_SYSTEMD_HARDENING = Object.freeze({
@@ -169,7 +327,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "BindReadOnlyPaths",
   "CapabilityBoundingSet",
   "ConditionResult",
-  "Conditions",
+  "ControlGroup",
   "DropInPaths",
   "Environment",
   "EnvironmentFiles",
@@ -185,14 +343,25 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "IPAddressDeny",
   "InaccessiblePaths",
   "InvocationID",
-  "LoadCredential",
+  "LimitCORE",
+  "LimitCORESoft",
+  "LimitNOFILE",
+  "LimitNOFILESoft",
   "LoadState",
   "LockPersonality",
   "MainPID",
   "MemoryDenyWriteExecute",
+  "MemoryMax",
+  "MemorySwapCurrent",
+  "MemorySwapMax",
+  "NeedDaemonReload",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
+  "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
+  "ProcSubset",
   "ProtectClock",
   "ProtectControlGroups",
   "ProtectHome",
@@ -200,6 +369,7 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "ProtectKernelLogs",
   "ProtectKernelModules",
   "ProtectKernelTunables",
+  "ProtectProc",
   "ProtectSystem",
   "ReadOnlyPaths",
   "ReadWritePaths",
@@ -212,17 +382,187 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "Result",
   "RootDirectory",
   "RootImage",
-  "SetCredential",
+  "StandardError",
+  "StandardOutput",
+  "StateDirectory",
+  "StateDirectoryMode",
   "SubState",
   "SupplementaryGroups",
   "SystemCallArchitectures",
+  "TasksMax",
+  "TemporaryFileSystem",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
+  "WatchdogUSec",
   "WorkingDirectory",
 ]);
 
+// Conditions is an `a(sbbsi)` D-Bus property. systemctl 255 renders it as
+// `[unprintable]`, so the root collector must read it through busctl's strict
+// JSON mode instead of pretending it is one of the scalar show properties.
+export const RUNTIME_BUSCTL_UNIT_PROPERTIES = Object.freeze([
+  "After",
+  "Before",
+  "BindsTo",
+  "Conditions",
+  "Requires",
+]);
+export const RUNTIME_BUSCTL_SERVICE_PROPERTIES = Object.freeze([
+  "ExecStartEx",
+  "ExecStartPreEx",
+  "ImportCredential",
+  "LoadCredential",
+  "LoadCredentialEncrypted",
+  "SetCredential",
+  "SetCredentialEncrypted",
+  "TimeoutStopUSec",
+  "WatchdogTimestampMonotonic",
+  "WatchdogUSec",
+]);
+export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
+  "ServiceWatchdogs",
+  "Version",
+]);
+
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/hosts",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/netns/bpir-directory-publisher/resolv.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in": {
+    artifactClass: "systemd-dropin",
+    targetPath:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in": {
+    artifactClass: "systemd-dropin",
+    targetPath:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-directory-public-edge.conf",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/directory-public.managed.Caddyfile",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/edge/directory-public-haproxy.cfg.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg",
+    modes: ["0400", "0440", "0600", "0640"],
+    rootOwned: false,
+  },
+  "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.json",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-directory-public-haproxy-artifact-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in": {
+    artifactClass: "systemd-auxiliary-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
+    artifactClass: "config",
+    targetPath:
+      "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/managed.Caddyfile",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-gate.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-probe.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-caddy-admin-uds-transaction.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-transaction.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
+  "scripts/payment-v1-publisher-netns-schema.mjs": {
+    artifactClass: "executable-config",
+    targetPath:
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+    modes: ["0555"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-core-lightning.service",
@@ -253,9 +593,33 @@ const TEMPLATE_CATALOG = Object.freeze({
     modes: ["0644"],
     rootOwned: true,
   },
+  "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/hetzner-provider-direct.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-provider-direct.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/payment-v1-edge.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-payment-v1-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-public-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
     modes: ["0644"],
     rootOwned: true,
   },
@@ -280,6 +644,12 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
+    modes: ["0400", "0440", "0600", "0640"],
+    rootOwned: false,
+  },
+  "deploy/payment-v1/edge/source-fair-haproxy.cfg.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg",
     modes: ["0400", "0440", "0600", "0640"],
     rootOwned: false,
   },
@@ -310,7 +680,7 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/directory-relay.toml.example": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
-    modes: ["0400", "0440", "0600"],
+    modes: ["0400"],
     rootOwned: false,
   },
 });
@@ -319,25 +689,39 @@ const HEX64_PLACEHOLDERS = new Set([
   "AUTHORITY_PUBKEY_HEX",
   "BITCOIN_CORE_BUNDLE_SHA256",
   "BPIR_ADMIN_SHA256",
+  "BUSCTL_SHA256",
   "CADDY_SHA256",
   "CASHU_MINT_ID_HEX",
   "CLN_BUNDLE_SHA256",
+  "CLN_LIBPQ_SHA256",
   "CLN_RPC_GUARD_SHA256",
   "DIRECTORY_PUBLISHER_PUBKEY_HEX",
+  "HAPROXY_SHA256",
+  "OVERLAY_EXCHANGE_SHA256",
   "HETZNER_OPERATOR_PUBKEY_HEX",
   "HETZNER_POLICY_PUBKEY_HEX",
   "HETZNER_PROVIDER_ID_HEX",
   "ISSUER_SETTLEMENT_PUBKEY_HEX",
   "PAYMENT_ISSUER_SHA256",
+  "PUBLISHER_NETNS_HELPER_SHA256",
   "ROLLBACK_AUTHORITY_SHA256",
   "UNIFIED_SERVER_SHA256",
 ]);
 
 const DNS_HOST_PLACEHOLDERS = new Set([
+  "DIRECTORY_PUBLISHER_HTTPS_HOST",
   "DIRECTORY_RELAY_WSS_HOST",
   "PAYMENT_ISSUER_HTTPS_HOST",
   "PROVIDER_WSS_HOST",
   "ROLLBACK_AUTHORITY_HTTPS_HOST",
+]);
+
+const IP_ADDRESS_PLACEHOLDERS = new Set([
+  "DIRECTORY_PUBLISHER_CLIENT_IP",
+  "DIRECTORY_PUBLISHER_PRIVATE_BIND",
+  "PUBLIC_HTTPS_BIND",
+  "ROLLBACK_AUTHORITY_CLIENT_IP",
+  "ROLLBACK_AUTHORITY_PRIVATE_BIND",
 ]);
 
 const UID_GID_PLACEHOLDERS = new Set([
@@ -359,6 +743,7 @@ const POSITIVE_SERVICE_VALUE_PLACEHOLDERS = new Set([
 const ALL_PLACEHOLDER_NAMES = new Set([
   ...HEX64_PLACEHOLDERS,
   ...DNS_HOST_PLACEHOLDERS,
+  ...IP_ADDRESS_PLACEHOLDERS,
   ...UID_GID_PLACEHOLDERS,
   ...POSITIVE_SERVICE_VALUE_PLACEHOLDERS,
   "BITCOIND_SYSTEMD_UNIT",
@@ -370,9 +755,12 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   "CLN_GUARD_MAX_INVOICES_PER_RUNTIME",
   "CLN_P2P_ANNOUNCE_ADDR",
   "CLN_P2P_BIND_ADDR",
-  "EDGE_CADDYFILE",
   "HETZNER_PROVIDER_SERVER_ID",
   "LIGHTNING_NETWORK",
+  "CHECKPOINT_ARTIFACT",
+  "DIRECTORY_PUBLISH_NOW_UNIX",
+  "PROVIDER_0_ENTRY_ARTIFACT",
+  "PROVIDER_1_ENTRY_ARTIFACT",
 ]);
 
 function fail(message) {
@@ -576,6 +964,20 @@ export function canonicalJson(value) {
   return `${canonicalize(value)}\n`;
 }
 
+export function computeDirectoryPublishArgvSha256V1(argv) {
+  validateStringArray(argv, "directory publication argv", {
+    maxItems: 256,
+    maxLength: 4096,
+  });
+  if (argv.length < 1 || argv.some((value) => value.length < 1)) {
+    fail("directory publication argv must be bounded and non-empty");
+  }
+  return createHash("sha256")
+    .update(Buffer.from("bitcoinpir-directory-publish-argv-v1\0", "utf8"))
+    .update(Buffer.from(canonicalJson(argv), "utf8"))
+    .digest("hex");
+}
+
 export function computeApprovedPlanSha256(plan) {
   return sha256(Buffer.from(canonicalJson(plan)));
 }
@@ -646,6 +1048,9 @@ function safeRelativePath(value, label) {
   ) {
     fail(`${label} must be a bounded portable relative path`);
   }
+  if (/INVALID(?:_|-)REPLACE/u.test(value)) {
+    fail(`${label} retains an invalid replacement marker`);
+  }
   const components = value.split("/");
   if (components.some((component) => component === "" || component === "." || component === "..")) {
     fail(`${label} contains an empty, dot, or parent component`);
@@ -715,6 +1120,21 @@ function validateUidGid(value, label, { allowRoot = true } = {}) {
   }
 }
 
+export function validateServiceIdentityId(value, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < SERVICE_IDENTITY_MIN ||
+    value > SERVICE_IDENTITY_MAX
+  ) {
+    fail(
+      `${label} must be a static service uid/gid in ` +
+      `[${SERVICE_IDENTITY_MIN}, ${SERVICE_IDENTITY_MAX}], outside systemd DynamicUser ` +
+      `[${SYSTEMD_DYNAMIC_ID_MIN}, ${SYSTEMD_DYNAMIC_ID_MAX}] and nobody ${NOBODY_ID}`,
+    );
+  }
+  return value;
+}
+
 function validateSafeAscii(value, label, maxLength = 256) {
   if (
     typeof value !== "string" ||
@@ -778,6 +1198,22 @@ function parseHostPort(value, label, { announce = false } = {}) {
   }
 }
 
+function isPrivateNumericAddress(value) {
+  if (isIP(value) === 4) {
+    const [first, second] = value.split(".").map(Number);
+    return (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+  if (isIP(value) === 6) {
+    const canonical = value.toLowerCase();
+    return canonical.startsWith("fc") || canonical.startsWith("fd");
+  }
+  return false;
+}
+
 function validatePlaceholderValue(name, value) {
   const label = `placeholder ${name}`;
   if (!ALL_PLACEHOLDER_NAMES.has(name)) fail(`${label} is not in the closed-world schema`);
@@ -790,8 +1226,32 @@ function validatePlaceholderValue(name, value) {
     validateDnsHost(value, label);
     return;
   }
+  if (IP_ADDRESS_PLACEHOLDERS.has(name)) {
+    validateSafeAscii(value, label, 45);
+    if (isIP(value) === 0 || ["0.0.0.0", "127.0.0.1", "::", "::1"].includes(value)) {
+      fail(`${label} must be one concrete non-loopback numeric address`);
+    }
+    if (
+      new Set([
+        "DIRECTORY_PUBLISHER_CLIENT_IP",
+        "DIRECTORY_PUBLISHER_PRIVATE_BIND",
+        "ROLLBACK_AUTHORITY_CLIENT_IP",
+        "ROLLBACK_AUTHORITY_PRIVATE_BIND",
+      ]).has(name) &&
+      !isPrivateNumericAddress(value)
+    ) {
+      fail(`${label} must be an RFC1918 IPv4 or ULA IPv6 private address`);
+    }
+    return;
+  }
   if (UID_GID_PLACEHOLDERS.has(name)) {
-    parseUnsignedDecimal(value, label, 1n, 4_294_967_294n);
+    parseUnsignedDecimal(
+      value,
+      label,
+      BigInt(SERVICE_IDENTITY_MIN),
+      BigInt(SERVICE_IDENTITY_MAX),
+    );
+    validateServiceIdentityId(Number(value), label);
     return;
   }
   if (POSITIVE_SERVICE_VALUE_PLACEHOLDERS.has(name)) {
@@ -831,11 +1291,6 @@ function validatePlaceholderValue(name, value) {
     case "CLN_P2P_BIND_ADDR":
       parseHostPort(value, label);
       return;
-    case "EDGE_CADDYFILE":
-      if (!["hetzner-public.Caddyfile", "rollback-authority.Caddyfile"].includes(value)) {
-        fail(`${label} is not a reviewed edge Caddyfile basename`);
-      }
-      return;
     case "HETZNER_PROVIDER_SERVER_ID":
       if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u.test(value)) {
         fail(`${label} must be a bounded lowercase server-id slug`);
@@ -843,6 +1298,16 @@ function validatePlaceholderValue(name, value) {
       return;
     case "LIGHTNING_NETWORK":
       if (value !== "signet") fail(`${label} must equal signet for Payment V1 staging`);
+      return;
+    case "DIRECTORY_PUBLISH_NOW_UNIX":
+      parseUnsignedDecimal(value, label, 1n, 9_007_199_254_740_991n);
+      return;
+    case "CHECKPOINT_ARTIFACT":
+    case "PROVIDER_0_ENTRY_ARTIFACT":
+    case "PROVIDER_1_ENTRY_ARTIFACT":
+      if (!/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u.test(value)) {
+        fail(`${label} must be one bounded lowercase artifact basename`);
+      }
       return;
     default:
       fail(`${label} has no validator`);
@@ -857,6 +1322,11 @@ function expectedPayloadClass(targetPath) {
     return "binary";
   }
   const name = basename(targetPath).toLowerCase();
+  // The Rust remote-rollback loader treats the TOML itself as private
+  // deployment material: it must be owned by the service effective UID at
+  // 0400/0600.
+  // Keep that stronger contract even though the filename has a .toml suffix.
+  if (name === "remote-rollback-authority.toml") return "secret";
   if (name.endsWith(".sha256")) return "hash-manifest";
   if (
     name.endsWith(".key") ||
@@ -872,6 +1342,14 @@ function expectedPayloadClass(targetPath) {
     return "policy";
   }
   return "config";
+}
+
+function isClnInertPluginTargetV26066(targetPath) {
+  const match =
+    /^\/opt\/bitcoinpir\/core-lightning\/[0-9a-f]{64}\/libexec\/c-lightning\/plugins\/([a-z0-9-]+)$/u.exec(
+      targetPath,
+    );
+  return match !== null && CLN_INERT_PLUGIN_NAMES_V26066.includes(match[1]);
 }
 
 function validatePrivateReadableMetadata(artifact, label) {
@@ -892,8 +1370,12 @@ function validatePayloadMetadata(artifact, label) {
   }
   switch (artifact.class) {
     case "binary":
-      if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0555") {
-        fail(`${label} binary must be immutable root:root mode 0555`);
+      if (isClnInertPluginTargetV26066(artifact.target_path)) {
+        if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0444") {
+          fail(`${label} disabled CLN plugin must be immutable root:root mode 0444`);
+        }
+      } else if (artifact.uid !== 0 || artifact.gid !== 0 || artifact.mode !== "0555") {
+        fail(`${label} executable binary must be immutable root:root mode 0555`);
       }
       break;
     case "hash-manifest":
@@ -932,16 +1414,43 @@ function validateRenderedMetadata(artifact, catalog, label) {
 
 function secretConsumerUnit(deploymentProfile, targetPath) {
   const mappings = {
-    "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
+    "directory-relay-v1": [[
+      "/etc/bitcoinpir/payment-v1/directory-relay/",
+      "bitcoinpir-directory-relay.service",
+    ]],
+    "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-public-edge.service"]],
     "edge-rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
     "issuer-lightning-signet-v1": [
       ["/etc/bitcoinpir/payment-v1/issuer/", "bitcoinpir-payment-issuer.service"],
       ["/etc/bitcoinpir/payment-v1/lightning/", "bitcoinpir-core-lightning.service"],
     ],
     "provider-v1": [["/etc/bitcoinpir/payment-v1/provider/", "bitcoinpir-provider.service"]],
+    "provider-no-standard-cashu-v1": [[
+      "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/",
+      "bitcoinpir-provider-no-standard-cashu.service",
+    ]],
+    "provider-direct-v1": [[
+      "/etc/bitcoinpir/payment-v1/provider-direct/",
+      "bitcoinpir-provider-direct.service",
+    ]],
     "rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/rollback-authority/", "bitcoinpir-rollback-authority.service"]],
   };
   return mappings[deploymentProfile]?.find(([prefix]) => targetPath.startsWith(prefix))?.[1];
+}
+
+function privateLoaderConsumerUnit(deploymentProfile, artifact) {
+  if (artifact.artifact_class === "secret") {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  if (
+    deploymentProfile === "directory-relay-v1" &&
+    artifact.artifact_class === "config" &&
+    artifact.target_path ===
+      "/etc/bitcoinpir/payment-v1/directory-relay/config.toml"
+  ) {
+    return secretConsumerUnit(deploymentProfile, artifact.target_path);
+  }
+  return undefined;
 }
 
 function validateSecretOwnerBindings(plan) {
@@ -962,7 +1471,344 @@ function validateSecretOwnerBindings(plan) {
   }
 }
 
+function remoteRollbackPathsForProfile(profile) {
+  const roots = {
+    "issuer-lightning-signet-v1": "/etc/bitcoinpir/payment-v1/issuer",
+    "provider-v1": "/etc/bitcoinpir/payment-v1/provider",
+    "provider-no-standard-cashu-v1":
+      "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
+    "provider-direct-v1": "/etc/bitcoinpir/payment-v1/provider-direct",
+  };
+  const root = roots[profile];
+  if (!root) return null;
+  return Object.freeze({
+    config: `${root}/remote-rollback-authority.toml`,
+    signingSeed: `${root}/remote-rollback-client-signing.seed`,
+    valueRoot: `${root}/remote-rollback-value-root.key`,
+  });
+}
+
+function validateRemoteRollbackPayloadMetadata(plan) {
+  const paths = remoteRollbackPathsForProfile(plan.deployment_profile);
+  if (!paths) return;
+  const artifacts = new Map(
+    plan.payload_artifacts.map((artifact) => [artifact.target_path, artifact]),
+  );
+  for (const [role, targetPath] of Object.entries(paths)) {
+    const artifact = artifacts.get(targetPath);
+    if (!artifact) {
+      fail(`${plan.deployment_profile} remote rollback ${role} payload is missing`);
+    }
+    if (artifact.class !== "secret") {
+      fail(
+        `${plan.deployment_profile} remote rollback ${role} must use the owner-only secret artifact class`,
+      );
+    }
+  }
+}
+
+function validateProviderPayloadClosure(plan) {
+  const profile = plan.deployment_profile;
+  if (!new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(profile)) {
+    return;
+  }
+  const direct = profile === "provider-direct-v1";
+  const noStandardCashu = profile !== "provider-v1";
+  const root = profile === "provider-v1"
+    ? "/etc/bitcoinpir/payment-v1/provider"
+    : direct
+      ? "/etc/bitcoinpir/payment-v1/provider-direct"
+      : "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu";
+  if (plan.payload_artifacts.some((artifact) =>
+    /(?:^|[-_.])retained(?:[-_.]|$)/u.test(basename(artifact.source_path)) ||
+    /(?:^|[-_.])retained(?:[-_.]|$)/u.test(basename(artifact.target_path)))) {
+    fail(`${profile} is a zero-retained closed profile and must not include retained-policy payload material`);
+  }
+  const remote = remoteRollbackPathsForProfile(profile);
+  const expected = new Set([
+    ...(!direct ? [
+      `${root}/cashu-bat.key`,
+      `${root}/provider-clearing-signing.key`,
+      `${root}/shared-clearing-approval.bin`,
+      `${root}/shared-clearing-authorization.bin`,
+      `${root}/shared-redeem-idempotency.key`,
+    ] : []),
+    ...(!noStandardCashu ? [
+      `${root}/cashu-custody-epoch-1.key`,
+      `${root}/cashu-recovery-epoch-1.key`,
+    ] : []),
+    `${root}/databases.toml`,
+    `${root}/provider-identity.cert`,
+    `${root}/provider-identity.key`,
+    remote.config,
+    remote.signingSeed,
+    remote.valueRoot,
+    `${root}/service-policy.bin`,
+    `${root}/unified-server.sha256`,
+    `/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`,
+  ]);
+  assertSameStringSet(
+    new Set(plan.payload_artifacts.map((artifact) => artifact.target_path)),
+    expected,
+    `${profile} payload targets`,
+  );
+  if (
+    noStandardCashu &&
+    Object.keys(plan.placeholders).some((name) => name.startsWith("CASHU_"))
+  ) {
+    fail(`${profile} must not declare Standard Cashu placeholders`);
+  }
+}
+
+function relaySelectionFromSource(sourceRoot, plan, profileLabel) {
+  const sourcePath = resolveUnder(
+    sourceRoot,
+    DIRECTORY_RELAY_SELECTION_SOURCE,
+    `${profileLabel} relay selection source`,
+  );
+  const bytes = readRegularSingleLinkFile(
+    sourcePath,
+    `${profileLabel} relay selection source`,
+    MAX_TEMPLATE_BYTES,
+  );
+  const digest = sha256(bytes);
+  if (digest !== plan.relay_selection_sha256) {
+    fail(`${profileLabel} relay selection source hash does not match the approved render plan`);
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail(`${profileLabel} relay selection source is not valid UTF-8`);
+  }
+  return validateRelaySelection(text);
+}
+
+function validateXOnlyPublisherPubkey(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value) || /^0{64}$/u.test(value)) {
+    fail(`${label} must be a non-zero lowercase 32-byte hex key`);
+  }
+  try {
+    const key = createECDH("secp256k1");
+    key.setPublicKey(Buffer.from(`02${value}`, "hex"));
+  } catch {
+    fail(`${label} must be a valid secp256k1 x-only key`);
+  }
+  return value;
+}
+
+function directoryPublisherRelayBinding(plan, selection) {
+  if (plan.deployment_profile !== "directory-publisher-netns-v1") return undefined;
+  if (selection?.status !== "RESOLVED") {
+    fail("directory-publisher-netns-v1 requires a RESOLVED relay selection");
+  }
+  if (selection.directoryMode !== "centralized-single-relay") {
+    fail("directory-publisher-netns-v1 requires directory_mode=centralized-single-relay");
+  }
+  if (selection.publisherPubkey !== plan.placeholders.DIRECTORY_PUBLISHER_PUBKEY_HEX) {
+    fail(
+      "directory-publisher-netns-v1 publisher key placeholder does not match relay selection publisher_pubkey_hex",
+    );
+  }
+  return {
+    directory_mode: selection.directoryMode,
+    publisher_pubkey_hex: selection.publisherPubkey,
+    relay_origin: `wss://${plan.placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST}`,
+    selection_sha256: plan.relay_selection_sha256,
+    source_path: DIRECTORY_RELAY_SELECTION_SOURCE,
+    status: selection.status,
+  };
+}
+
+function validateDirectoryPublisherRelayBinding(binding, label) {
+  exactKeys(
+    binding,
+    [
+      "directory_mode",
+      "publisher_pubkey_hex",
+      "relay_origin",
+      "selection_sha256",
+      "source_path",
+      "status",
+    ],
+    label,
+  );
+  if (binding.status !== "RESOLVED") fail(`${label}.status must equal RESOLVED`);
+  if (binding.directory_mode !== "centralized-single-relay") {
+    fail(`${label}.directory_mode must equal centralized-single-relay`);
+  }
+  if (binding.source_path !== DIRECTORY_RELAY_SELECTION_SOURCE) {
+    fail(`${label}.source_path must equal ${DIRECTORY_RELAY_SELECTION_SOURCE}`);
+  }
+  validateSha256(binding.selection_sha256, `${label}.selection_sha256`);
+  validateXOnlyPublisherPubkey(
+    binding.publisher_pubkey_hex,
+    `${label}.publisher_pubkey_hex`,
+  );
+  if (
+    typeof binding.relay_origin !== "string" ||
+    !binding.relay_origin.startsWith("wss://")
+  ) {
+    fail(`${label}.relay_origin must be one canonical credential-free wss://host origin`);
+  }
+  const host = binding.relay_origin.slice("wss://".length);
+  validateDnsHost(host, `${label}.relay_origin host`);
+  if (binding.relay_origin !== `wss://${host}`) {
+    fail(`${label}.relay_origin must be one canonical credential-free wss://host origin`);
+  }
+}
+
+function validateDirectoryRelayPayloadClosure({
+  artifacts,
+  fileBytes,
+  plan,
+  runtimeUnits,
+  selection,
+}) {
+  if (plan.deployment_profile !== "directory-relay-v1") return;
+  const payloads = artifacts.filter((artifact) => artifact.source_kind === "payload");
+  if (selection.status === "UNRESOLVED") {
+    if (payloads.length !== 0) {
+      fail("unresolved directory-relay-v1 must not contain payload artifacts");
+    }
+    return;
+  }
+
+  const binaryTarget =
+    `/opt/bitcoinpir/directory-relay/${selection.binarySha256}/` +
+    "bitcoinpir-directory-relay";
+  const binaryManifestTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256";
+  const configManifestTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256";
+  const configTarget =
+    "/etc/bitcoinpir/payment-v1/directory-relay/config.toml";
+  assertSameStringSet(
+    new Set(payloads.map((artifact) => artifact.target_path)),
+    new Set([binaryManifestTarget, configManifestTarget, binaryTarget]),
+    "resolved directory-relay-v1 payload targets",
+  );
+
+  const byTarget = new Map(artifacts.map((artifact) => [artifact.target_path, artifact]));
+  const binary = byTarget.get(binaryTarget);
+  if (
+    binary?.artifact_class !== "binary" ||
+    binary.rendered_sha256 !== selection.binarySha256 ||
+    binary.uid !== 0 ||
+    binary.gid !== 0 ||
+    binary.mode !== "0555"
+  ) {
+    fail("resolved directory relay binary is not the selected root-owned content-addressed executable");
+  }
+  const config = byTarget.get(configTarget);
+  if (
+    config?.artifact_class !== "config" ||
+    config.rendered_sha256 !== selection.configSha256 ||
+    config.uid !== 52951 ||
+    config.gid !== 52952 ||
+    config.mode !== "0400"
+  ) {
+    fail("resolved directory relay config does not match the selection and owner-only loader binding");
+  }
+
+  for (const [manifestTarget, dependencyTarget, dependencySha256] of [
+    [binaryManifestTarget, binaryTarget, selection.binarySha256],
+    [configManifestTarget, configTarget, selection.configSha256],
+  ]) {
+    const manifest = byTarget.get(manifestTarget);
+    if (
+      manifest?.artifact_class !== "hash-manifest" ||
+      manifest.uid !== 0 ||
+      manifest.gid !== 0 ||
+      manifest.mode !== "0444"
+    ) {
+      fail(`resolved directory relay hash manifest metadata is invalid: ${manifestTarget}`);
+    }
+    const entries = parseHashManifest(
+      fileBytes.get(manifest.bundle_path),
+      `resolved directory relay hash manifest ${manifestTarget}`,
+    );
+    if (
+      entries.length !== 1 ||
+      entries[0].target_path !== dependencyTarget ||
+      entries[0].sha256 !== dependencySha256
+    ) {
+      fail(`resolved directory relay hash manifest does not bind exactly ${dependencyTarget}`);
+    }
+  }
+
+  if (runtimeUnits.length !== 1) {
+    fail("resolved directory-relay-v1 must contain exactly one runtime unit");
+  }
+  const unit = runtimeUnits[0];
+  const expectedExecStart =
+    `${binaryTarget} --config ${configTarget}`;
+  if (
+    canonicalize(unit.exec_start) !== canonicalize([expectedExecStart]) ||
+    canonicalize(unit.exec_start_pre) !== canonicalize([
+      `/usr/bin/sha256sum --check --strict ${binaryManifestTarget}`,
+      `/usr/bin/sha256sum --check --strict ${configManifestTarget}`,
+    ])
+  ) {
+    fail("resolved directory relay unit does not execute and preflight the selected artifact closure");
+  }
+}
+
+function validateIssuerLightningPreflightPayloadContract(plan) {
+  if (plan.deployment_profile !== "issuer-lightning-signet-v1") return;
+  const preflightPath = "/etc/bitcoinpir/payment-v1/lightning/preflight.toml";
+  const preflight = plan.payload_artifacts.find(
+    (artifact) => artifact.target_path === preflightPath,
+  );
+  if (!preflight) {
+    fail("issuer Lightning profile is missing its static preflight config");
+  }
+  if (
+    preflight.class !== "config" ||
+    preflight.uid !== 0 ||
+    preflight.gid !== Number(plan.placeholders.PREFLIGHT_GID) ||
+    preflight.mode !== "0440"
+  ) {
+    fail(
+      "issuer Lightning preflight config must be root:PREFLIGHT_GID mode 0440",
+    );
+  }
+  if (
+    plan.payload_artifacts.some((artifact) =>
+      /(?:^|\/)backup-receipt(?:\.|$)/u.test(artifact.target_path),
+    )
+  ) {
+    fail(
+      "issuer Lightning backup receipt is dynamic StateDirectory data, not a rendered payload or hash manifest",
+    );
+  }
+}
+
+function validateDirectoryRelayConfigOwnerBinding(document) {
+  if (document.deployment_profile !== "directory-relay-v1") return;
+  const identities = document.service_identities ?? [];
+  if (
+    identities.length !== 1 ||
+    identities[0].unit_name !== "bitcoinpir-directory-relay.service" ||
+    identities[0].uid !== 52951 ||
+    identities[0].gid !== 52952
+  ) {
+    fail("directory-relay-v1 must bind the reviewed relay UID 52951 and GID 52952");
+  }
+  const artifacts = document.rendered_artifacts ?? document.artifacts ?? [];
+  const config = artifacts.find(
+    (artifact) => artifact.target_path === "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
+  );
+  if (!config || config.uid !== 52951 || config.gid !== 52952 || config.mode !== "0400") {
+    fail("directory-relay-v1 config must be relay-owned UID 52951 GID 52952 mode 0400");
+  }
+}
+
 function validatePlan(plan) {
+  if (!isPlainObject(plan)) fail("render plan must be an object");
+  const directoryRelay = plan.deployment_profile === "directory-relay-v1";
+  const directoryPublisher =
+    plan.deployment_profile === "directory-publisher-netns-v1";
   exactKeys(
     plan,
     [
@@ -973,11 +1819,18 @@ function validatePlan(plan) {
       "rendered_artifacts",
       "schema_version",
       "service_identities",
+      "systemd_version",
+      ...(directoryRelay || directoryPublisher
+        ? ["relay_selection_sha256"]
+        : []),
     ],
     "render plan",
   );
   if (plan.schema_version !== PLAN_SCHEMA_VERSION) {
     fail(`render plan schema_version must equal ${PLAN_SCHEMA_VERSION}`);
+  }
+  if (plan.systemd_version !== REVIEWED_SYSTEMD_VERSION) {
+    fail(`render plan systemd_version must equal ${REVIEWED_SYSTEMD_VERSION}`);
   }
   if (
     typeof plan.deployment_id !== "string" ||
@@ -985,9 +1838,18 @@ function validatePlan(plan) {
   ) {
     fail("render plan deployment_id must be a bounded lowercase slug");
   }
+  if (plan.deployment_id.startsWith("replace-")) {
+    fail("render plan deployment_id retains the repository example marker");
+  }
   if (typeof plan.deployment_profile !== "string" || !PROFILE_CATALOG[plan.deployment_profile]) {
     fail(
       `render plan deployment_profile must be one of ${JSON.stringify(Object.keys(PROFILE_CATALOG).sort(asciiCompare))}`,
+    );
+  }
+  if (directoryRelay || directoryPublisher) {
+    validateSha256(
+      plan.relay_selection_sha256,
+      "render plan relay_selection_sha256",
     );
   }
   if (!isPlainObject(plan.placeholders)) fail("render plan placeholders must be an object");
@@ -1015,9 +1877,8 @@ function validatePlan(plan) {
         fail(`${label}.${key} is not a reviewed BitcoinPIR NSS name`);
       }
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must bind a non-root service identity`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(plan.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("render plan service_identities must be unique and bytewise sorted by unit_name");
     }
@@ -1070,7 +1931,13 @@ function validatePlan(plan) {
         ? ["/opt/bitcoinpir/", "/usr/local/libexec/bitcoinpir/"]
         : artifact.class === "policy"
           ? ["/etc/bitcoinpir/payment-v1/", "/home/pir/data/payment-v1/"]
-          : ["/etc/bitcoinpir/payment-v1/"];
+          : [
+              "/etc/bitcoinpir/payment-v1/",
+              ...(plan.deployment_profile === "directory-publisher-netns-v1" &&
+              artifact.class === "config"
+                ? ["/var/lib/bitcoinpir-directory-publisher/artifacts/"]
+                : []),
+            ];
     if (!prefixes.some((prefix) => artifact.target_path.startsWith(prefix))) {
       fail(`${label}.target_path is outside the reviewed ${artifact.class} prefixes`);
     }
@@ -1081,11 +1948,38 @@ function validatePlan(plan) {
     targets.add(artifact.target_path);
   }
 
-  validateSecretOwnerBindings(plan);
-
-
   const expectedTemplates = PROFILE_CATALOG[plan.deployment_profile].templates;
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
+  validateProviderPayloadClosure(plan);
+  validateIssuerLightningPreflightPayloadContract(plan);
+  validateRemoteRollbackPayloadMetadata(plan);
+  validateDirectoryRelayConfigOwnerBinding(plan);
+  validateSecretOwnerBindings(plan);
+}
+
+function remoteRollbackConfigManagedReferences(profile, targetPath, bytes) {
+  const paths = remoteRollbackPathsForProfile(profile);
+  if (!paths || targetPath !== paths.config) return [];
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail(`${profile} remote rollback config is not valid UTF-8`);
+  }
+  if (/\r|\0/u.test(text)) {
+    fail(`${profile} remote rollback config must use canonical LF text`);
+  }
+  for (const [key, expected] of [
+    ["client_signing_seed_path", paths.signingSeed],
+    ["value_root_key_path", paths.valueRoot],
+  ]) {
+    const exactLine = `${key} = "${expected}"`;
+    const occurrences = text.split("\n").filter((line) => line.includes(key));
+    if (canonicalize(occurrences) !== canonicalize([exactLine])) {
+      fail(`${profile} remote rollback config must bind exact ${key}=${expected}`);
+    }
+  }
+  return [paths.signingSeed, paths.valueRoot];
 }
 
 function extractPlaceholders(text) {
@@ -1125,7 +2019,7 @@ function managedReferencesFromCommand(command, label) {
   return references;
 }
 
-function parseSystemdUnit(text, label) {
+function parseSystemdUnit(text, label, deploymentProfile) {
   if (/^\s*\[Install\]\s*$/imu.test(text)) fail(`${label} contains forbidden [Install]`);
   if (/%/u.test(text)) fail(`${label} contains a forbidden systemd percent specifier`);
   if (/\$/u.test(text)) fail(`${label} contains forbidden systemd variable expansion`);
@@ -1165,6 +2059,13 @@ function parseSystemdUnit(text, label) {
     if (!allowedKeys.includes(key)) {
       fail(`${label} contains closed-world forbidden directive ${section}.${key}=`);
     }
+    if (
+      section === "Service" &&
+      ["BindReadOnlyPaths", "NetworkNamespacePath", "PrivateMounts", "UnsetEnvironment"].includes(key) &&
+      deploymentProfile !== "directory-publisher-netns-v1"
+    ) {
+      fail(`${label} contains closed-world forbidden directive ${section}.${key}= for this profile`);
+    }
     if (value === "" && !["AmbientCapabilities", "CapabilityBoundingSet"].includes(key)) {
       fail(`${label} contains a forbidden empty ${key}= reset`);
     }
@@ -1173,7 +2074,7 @@ function parseSystemdUnit(text, label) {
       values.length > 0 &&
       !(
         (section === "Unit" && key === "ConditionPathExists") ||
-        (section === "Service" && key === "ExecStartPre")
+        (section === "Service" && ["BindReadOnlyPaths", "ExecStartPre"].includes(key))
       )
     ) {
       fail(`${label} repeats single-valued directive ${section}.${key}=`);
@@ -1187,6 +2088,32 @@ function parseSystemdUnit(text, label) {
   const service = sections.get("Service");
   const unit = sections.get("Unit");
   const execStart = service.get("ExecStart") ?? [];
+  const rawExecStartPre = service.get("ExecStartPre") ?? [];
+  const parseExecCommand = (command, index, key, { allowPrivileged }) => {
+    const privileged = allowPrivileged && command.startsWith("+");
+    const normalized = privileged ? command.slice(1) : command;
+    if (
+      normalized === "" ||
+      !normalized.startsWith("/") ||
+      /^[!:@-]/u.test(normalized) ||
+      /["'`$;&|<>\r\n\0]/u.test(normalized)
+    ) {
+      fail(`${label} ${key}[${index}] uses an unreviewed command prefix or syntax`);
+    }
+    const argv = normalized.split(/\s+/u);
+    if (argv.some((argument) => argument === "" || argument.length > 4096)) {
+      fail(`${label} ${key}[${index}] has malformed argv`);
+    }
+    return {
+      argv,
+      flags: privileged ? ["privileged"] : [],
+      path: argv[0],
+    };
+  };
+  const execStartEx = execStart.map((command, index) =>
+    parseExecCommand(command, index, "ExecStart", { allowPrivileged: false }));
+  const execStartPreEx = rawExecStartPre.map((command, index) =>
+    parseExecCommand(command, index, "ExecStartPre", { allowPrivileged: true }));
   if (execStart.length !== 1) fail(`${label} must have exactly one effective ExecStart`);
   const conditions = [...unit.entries()]
     .filter(([key]) => key.startsWith("Condition"))
@@ -1226,10 +2153,24 @@ function parseSystemdUnit(text, label) {
       fail(`${label} ${key} contains an unreviewed capability`);
     }
   }
+  const unitDependencies = Object.create(null);
+  for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+    const names = (unit.get(key) ?? [])
+      .flatMap((value) => value.split(/\s+/u))
+      .filter((value) => value !== "")
+      .sort(asciiCompare);
+    if (
+      names.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name)) ||
+      new Set(names).size !== names.length
+    ) {
+      fail(`${label} has malformed or duplicate ${key}= dependencies`);
+    }
+    unitDependencies[key] = names;
+  }
   const managedReferences = new Set();
   for (const [key, commands] of [
     ["ExecStart", execStart],
-    ["ExecStartPre", service.get("ExecStartPre") ?? []],
+    ["ExecStartPre", execStartPreEx.map(({ argv }) => argv.join(" "))],
   ]) {
     for (const [index, command] of commands.entries()) {
       for (const reference of managedReferencesFromCommand(
@@ -1245,13 +2186,433 @@ function parseSystemdUnit(text, label) {
     environment,
     environment_files: [],
     exec_start: [...execStart],
-    exec_start_pre: [...(service.get("ExecStartPre") ?? [])],
+    exec_start_ex: execStartEx,
+    exec_start_pre: execStartPreEx.map(({ argv }) => argv.join(" ")),
+    exec_start_pre_ex: execStartPreEx,
     hardening,
     managed_references: [...managedReferences].sort(asciiCompare),
+    unit_dependencies: unitDependencies,
   };
 }
 
-function validateProfileUnitPolicy(deploymentProfile, fragmentPath, hardening, label) {
+const PROFILE_UNIT_CONDITIONS = Object.freeze({
+  "directory-publisher-netns-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLICATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-SNI-SAN-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
+  "directory-relay-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-directory-relay.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
+  "integrated-existing-bhtm-caddy-directory-public-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-SOURCE-READY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLIC-EDGE-GENERATION-GUARD-IMPLEMENTED",
+    ]),
+  }),
+  "edge-hetzner-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    ]),
+  }),
+  "edge-rollback-authority-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-payment-v1-edge.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "issuer-lightning-signet-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+      "ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
+    ]),
+    "/etc/systemd/system/bitcoinpir-core-lightning.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-lightning-preflight.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+      "ConditionPathExists=/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
+    ]),
+    "/etc/systemd/system/bitcoinpir-payment-issuer.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/CLN-LOADER-MAPS-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-ISSUER-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
+    ]),
+  }),
+  "provider-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "provider-no-standard-cashu-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "provider-direct-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-provider-direct.service": Object.freeze([
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+      "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+    ]),
+  }),
+  "rollback-authority-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-rollback-authority.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
+    ]),
+  }),
+});
+
+export function isResolvedDirectoryRelayRuntimeRequest(request) {
+  if (
+    request?.deployment_profile !== "directory-relay-v1" ||
+    !Array.isArray(request.units) ||
+    request.units.length !== 1
+  ) {
+    return false;
+  }
+  const unit = request.units[0];
+  const command = unit?.exec_start?.[0];
+  const match =
+    /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay --config \/etc\/bitcoinpir\/payment-v1\/directory-relay\/config\.toml$/u.exec(
+      command ?? "",
+    );
+  return (
+    unit.unit_name === "bitcoinpir-directory-relay.service" &&
+    unit.fragment_path === "/etc/systemd/system/bitcoinpir-directory-relay.service" &&
+    unit.exec_start.length === 1 &&
+    match !== null &&
+    canonicalize(unit.exec_start_pre ?? []) === canonicalize([
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+    ]) &&
+    canonicalize(unit.conditions ?? []) === canonicalize([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED",
+    ]) &&
+    canonicalize(unit.hardening?.Restart ?? []) === canonicalize(["on-failure"]) &&
+    canonicalize(unit.hardening?.RestartSec ?? []) === canonicalize(["5"]) &&
+    canonicalize(unit.hardening?.ProcSubset ?? []) === canonicalize(["pid"]) &&
+    canonicalize(unit.hardening?.ProtectProc ?? []) === canonicalize(["invisible"])
+  );
+}
+
+function validateProfileUnitPolicy(
+  deploymentProfile,
+  fragmentPath,
+  conditions,
+  environment,
+  hardening,
+  execStart,
+  execStartPre,
+  execStartPreEx,
+  label,
+) {
+  const expectedConditions = PROFILE_UNIT_CONDITIONS[deploymentProfile]?.[fragmentPath];
+  if (!expectedConditions) {
+    fail(`${label} has no closed profile-specific activation-condition policy`);
+  }
+  if (canonicalize(conditions) !== canonicalize([...expectedConditions].sort(asciiCompare))) {
+    fail(`${label} must retain the exact global and profile-specific activation conditions`);
+  }
+  const approvalConsumer =
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    new Set([
+      "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service",
+      "/etc/systemd/system/bitcoinpir-lightning-preflight.service",
+    ]).has(fragmentPath);
+  if (!approvalConsumer && execStartPreEx.some((command) => command.flags.length !== 0)) {
+    fail(`${label} contains closed-world forbidden directive: privileged ExecStartPre flags`);
+  }
+  if (
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    fragmentPath === "/etc/systemd/system/bitcoinpir-core-lightning.service"
+  ) {
+    const commandMatch =
+      /^(\/opt\/bitcoinpir\/core-lightning\/[0-9a-f]{64})\/bin\/lightningd --conf=\/etc\/bitcoinpir\/payment-v1\/lightning\/lightningd\.conf$/u.exec(
+        execStart[0] ?? "",
+      );
+    if (commandMatch === null) {
+      fail(`${label} must execute lightningd from one content-addressed CLN root`);
+    }
+    const loaderMatch =
+      /^LD_LIBRARY_PATH=(\/opt\/bitcoinpir\/core-lightning-libpq\/[0-9a-f]{64})$/u.exec(
+        environment[0] ?? "",
+      );
+    if (environment.length !== 1 || loaderMatch === null) {
+      fail(`${label} must expose only the selected content-addressed libpq root`);
+    }
+    const readOnlyTokens = (hardening.ReadOnlyPaths ?? []).flatMap((value) =>
+      value.split(/\s+/u),
+    );
+    const bitcoinRoots = readOnlyTokens.filter((value) =>
+      /^\/opt\/bitcoinpir\/bitcoin-core\/[0-9a-f]{64}\/$/u.test(value),
+    );
+    if (
+      bitcoinRoots.length !== 1 ||
+      canonicalize(readOnlyTokens) !== canonicalize([
+        "/etc/bitcoinpir/payment-v1/lightning",
+        `${commandMatch[1]}/`,
+        `${loaderMatch[1]}/`,
+        bitcoinRoots[0],
+      ])
+    ) {
+      fail(`${label} must mount exactly its config, CLN, libpq and Bitcoin Core roots read-only`);
+    }
+    if (
+      canonicalize(hardening.InaccessiblePaths ?? []) !==
+      canonicalize(["/srv/lightning/plugins"])
+    ) {
+      fail(`${label} must fail closed unless it can mask the exact CLN base plugin directory`);
+    }
+  }
+  if (deploymentProfile === "directory-relay-v1") {
+    const blocked =
+      canonicalize(execStart) === canonicalize(["/usr/bin/false"]) &&
+      canonicalize(execStartPre) === canonicalize([]);
+    const commandMatch =
+      /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay --config \/etc\/bitcoinpir\/payment-v1\/directory-relay\/config\.toml$/u.exec(
+        execStart[0] ?? "",
+      );
+    const resolved =
+      execStart.length === 1 &&
+      commandMatch !== null &&
+      canonicalize(execStartPre) === canonicalize([
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256",
+        "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-relay/config.sha256",
+      ]);
+    if (!blocked && !resolved) {
+      fail(`${label} directory-relay-v1 must be either the exact blocked unit or exact resolved unit`);
+    }
+    for (const [key, expected] of [
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "4096"],
+      ["MemoryMax", "536870912"],
+      ["MemorySwapMax", "0"],
+      ["TasksMax", "128"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
+      ["Restart", resolved ? "on-failure" : "no"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep directory-relay-v1 ${key}=${expected}`);
+      }
+    }
+    if (resolved) {
+      if (canonicalize(hardening.RestartSec ?? []) !== canonicalize(["5"])) {
+        fail(`${label} must keep resolved directory-relay-v1 RestartSec=5`);
+      }
+      const binaryRoot = dirname(execStart[0].split(" ", 1)[0]);
+      if (
+        canonicalize(hardening.ReadOnlyPaths ?? []) !== canonicalize([
+          `/etc/bitcoinpir/payment-v1/directory-relay ${binaryRoot}`,
+        ])
+      ) {
+        fail(`${label} must bind resolved directory-relay-v1 read-only config and binary roots`);
+      }
+    } else if (hardening.RestartSec !== undefined) {
+      fail(`${label} blocked directory-relay-v1 must not configure RestartSec`);
+    }
+  }
+  if (
+    deploymentProfile ===
+      "integrated-existing-bhtm-caddy-directory-public-v1" &&
+    fragmentPath ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service"
+  ) {
+    for (const [key, expected] of [
+      ["Type", "exec"],
+      ["Restart", "no"],
+      ["LimitCORE", "0"],
+      ["LimitNOFILE", "512"],
+      ["MemoryMax", "134217728"],
+      ["MemorySwapMax", "0"],
+      ["TasksMax", "64"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["ProtectClock", "true"],
+      ["ProtectHostname", "true"],
+      ["ProtectProc", "invisible"],
+      ["ProcSubset", "pid"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep directory-public ${key}=${expected}`);
+      }
+    }
+    if (hardening.RestartSec !== undefined || hardening.NotifyAccess !== undefined) {
+      fail(`${label} must not configure restart delay or notify semantics`);
+    }
+    const commandMatch =
+      /^(\/opt\/bitcoinpir\/haproxy\/[0-9a-f]{64}\/haproxy) -W -db -q -f \/etc\/bitcoinpir\/payment-v1\/directory-public-edge\/haproxy\.cfg$/u.exec(
+        execStart[0] ?? "",
+      );
+    if (execStart.length !== 1 || commandMatch === null) {
+      fail(`${label} must execute the static-compatible HAProxy master-worker command`);
+    }
+    const selectedBinary = commandMatch[1];
+    const expectedPreflight = [
+      `/usr/bin/test -x ${selectedBinary}`,
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256",
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256",
+      `${selectedBinary} -c -q -f /etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg`,
+    ];
+    if (canonicalize(execStartPre) !== canonicalize(expectedPreflight)) {
+      fail(`${label} must preflight the exact directory-public artifact closure`);
+    }
+  }
+  const privateRequestEdge =
+    (deploymentProfile === "integrated-existing-bhtm-caddy-v1" &&
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service") ||
+    (deploymentProfile === "edge-hetzner-v1" &&
+      new Set([
+        "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
+        "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
+      ]).has(fragmentPath)) ||
+    (deploymentProfile === "edge-rollback-authority-v1" &&
+      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-edge.service") ||
+    (deploymentProfile ===
+      "integrated-existing-bhtm-caddy-directory-public-v1" &&
+      fragmentPath ===
+        "/etc/systemd/system/bitcoinpir-payment-v1-directory-public-edge.service");
+  if (privateRequestEdge) {
+    for (const [key, expected] of [
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["LimitCORE", "0"],
+      ["MemorySwapMax", "0"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected} so request-source state cannot persist`);
+      }
+    }
+  }
+  if (
+    deploymentProfile === "directory-publisher-netns-v1" &&
+    fragmentPath ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"
+  ) {
+    for (const [key, expected] of [
+      ["Type", "oneshot"],
+      ["RemainAfterExit", "true"],
+      ["StateDirectory", "bitcoinpir-directory-publication"],
+      ["StateDirectoryMode", "0700"],
+      ["Restart", "no"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["NetworkNamespacePath", "/run/netns/bpir-directory-publisher"],
+      ["IPAddressDeny", "any"],
+      ["IPAddressAllow", "10.203.0.1"],
+      ["RestrictAddressFamilies", "AF_INET"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    if (
+      canonicalize(hardening.CapabilityBoundingSet ?? []) !== canonicalize([""]) ||
+      canonicalize(hardening.AmbientCapabilities ?? []) !== canonicalize([""])
+    ) {
+      fail(`${label} must keep an empty capability set`);
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize(["/var/lib/bitcoinpir-directory-publication"])
+    ) {
+      fail(`${label} must expose only its dedicated publication receipt StateDirectory as writable`);
+    }
+    if (
+      canonicalize(hardening.TemporaryFileSystem ?? []) !== canonicalize(["/run:ro"]) ||
+      !(hardening.ReadOnlyPaths?.[0] ?? "").split(/\s+/u).some((path) =>
+        /^\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/?$/u.test(path))
+    ) {
+      fail(`${label} must replace /run with a private read-only tmpfs and bind the sandbox probe helper read-only`);
+    }
+    const command = execStart.join("\n");
+    if (
+      /(?:signing|private|secret)[-_]key|--force|--validate-only/iu.test(command) ||
+      !command.includes(" directory-artifact publish ") ||
+      (command.match(/ --relay /gu) ?? []).length !== 1 ||
+      (command.match(/ --centralized-single-relay(?: |$)/gu) ?? []).length !== 1 ||
+      (command.match(/ --artifact /gu) ?? []).length !== 3 ||
+      (command.match(/ --artifact-manifest /gu) ?? []).length !== 1 ||
+      (command.match(/ --receipt-directory /gu) ?? []).length !== 1
+    ) {
+      fail(`${label} must remain one no-key, three-artifact, explicitly centralized publication`);
+    }
+  }
   if (
     deploymentProfile === "issuer-lightning-signet-v1" &&
     fragmentPath === "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service"
@@ -1262,15 +2623,164 @@ function validateProfileUnitPolicy(deploymentProfile, fragmentPath, hardening, l
     if (hardening.RestartSec !== undefined) {
       fail(`${label} must not configure RestartSec for the non-restarting CLN guard`);
     }
+    const expectedApproval = {
+      argv: [
+        "/usr/bin/unlink",
+        "--",
+        "/run/bitcoinpir-lightning-operator-approvals/guard-generation-approved",
+      ],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    };
+    if (canonicalize(execStartPreEx[0]) !== canonicalize(expectedApproval)) {
+      fail(`${label} must consume the exact privileged guard approval token first`);
+    }
+    if (execStartPreEx.slice(1).some((command) => command.flags.length !== 0)) {
+      fail(`${label} grants privileged ExecStartPre flags beyond the approval unlink`);
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize([
+        "/run/bitcoinpir-cln-rpc-guard /run/bitcoinpir-lightning-operator-approvals",
+      ])
+    ) {
+      fail(`${label} must expose only guard state and the root-only approval parent as writable`);
+    }
   }
   if (
-    deploymentProfile === "provider-v1" &&
-    fragmentPath === "/etc/systemd/system/bitcoinpir-provider.service"
+    deploymentProfile === "issuer-lightning-signet-v1" &&
+    fragmentPath === "/etc/systemd/system/bitcoinpir-lightning-preflight.service"
+  ) {
+    const expectedApproval = {
+      argv: [
+        "/usr/bin/unlink",
+        "--",
+        "/run/bitcoinpir-lightning-operator-approvals/preflight-generation-approved",
+      ],
+      flags: ["privileged"],
+      path: "/usr/bin/unlink",
+    };
+    if (canonicalize(execStartPreEx[0]) !== canonicalize(expectedApproval)) {
+      fail(`${label} must consume the exact privileged preflight approval token first`);
+    }
+    if (execStartPreEx.slice(1).some((command) => command.flags.length !== 0)) {
+      fail(`${label} grants privileged ExecStartPre flags beyond the approval unlink`);
+    }
+    for (const [key, expected] of [
+      ["StateDirectory", "bitcoinpir-lightning-preflight"],
+      ["StateDirectoryMode", "0700"],
+      ["RuntimeDirectory", "bitcoinpir-lightning-preflight"],
+      ["RuntimeDirectoryMode", "0700"],
+      ["Type", "notify"],
+      ["NotifyAccess", "main"],
+      ["Restart", "no"],
+      ["WatchdogSec", "90"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    // The exact source template gate owns the full content-addressed path
+    // closure. The rendered/runtime gate independently pins the dynamic
+    // receipt StateDirectory and systemd invocation mapping as read-only.
+    // The main process can write only its volatile lease RuntimeDirectory;
+    // the second namespace write path is a root:root 0700 parent used solely
+    // by the exact privileged one-shot unlink.
+    const readOnlyTokens = (hardening.ReadOnlyPaths ?? []).flatMap((value) =>
+      value.split(/\s+/u),
+    );
+    if (!readOnlyTokens.includes("/var/lib/bitcoinpir-lightning-preflight")) {
+      fail(`${label} must mount the preflight StateDirectory read-only`);
+    }
+    if (!readOnlyTokens.includes("/run/systemd/units")) {
+      fail(`${label} must mount the systemd invocation map read-only`);
+    }
+    for (const commandPath of ["/usr/bin/busctl", "/usr/bin/unlink"]) {
+      if (!readOnlyTokens.includes(commandPath)) {
+        fail(`${label} must mount ${commandPath} read-only`);
+      }
+    }
+    if (
+      canonicalize(hardening.ReadWritePaths ?? []) !==
+      canonicalize([
+        "/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals",
+      ])
+    ) {
+      fail(`${label} must expose only lease state and the root-only approval parent as writable`);
+    }
+    const command = execStart[0] ?? "";
+    if (!command.includes("lightning-staging preflight-supervisor")) {
+      fail(`${label} must run the invocation-bound preflight supervisor`);
+    }
+    for (const exactArgument of [
+      "--config /etc/bitcoinpir/payment-v1/lightning/preflight.toml",
+      "--config-protected-parent /etc/bitcoinpir/payment-v1/lightning",
+      "--config-expected-uid 0",
+    ]) {
+      if (!command.includes(exactArgument)) {
+        fail(`${label} must keep ${exactArgument}`);
+      }
+    }
+    for (const requiredArgument of [
+      "--config-expected-gid",
+      "--config-reader-expected-uid",
+    ]) {
+      if (!new RegExp(`(?:^|\\s)${requiredArgument} [1-9][0-9]*(?:\\s|$)`, "u").test(command)) {
+        fail(`${label} must pin a non-root ${requiredArgument} value`);
+      }
+    }
+  }
+  if (
+    new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(deploymentProfile) &&
+    new Set([
+      "/etc/systemd/system/bitcoinpir-provider.service",
+      "/etc/systemd/system/bitcoinpir-provider-no-standard-cashu.service",
+      "/etc/systemd/system/bitcoinpir-provider-direct.service",
+    ]).has(fragmentPath)
   ) {
     for (const key of ["PrivateDevices", "ProtectClock", "ProtectHostname"]) {
       if (canonicalize(hardening[key] ?? []) !== canonicalize(["true"])) {
         fail(`${label} must keep provider ${key}=true`);
       }
+    }
+  }
+  if (
+    new Set(["provider-v1", "provider-no-standard-cashu-v1", "provider-direct-v1"]).has(
+      deploymentProfile,
+    )
+  ) {
+    const command = execStart.join("\n");
+    if (/--service-retained-policy(?:\s|=|$)/u.test(command)) {
+      fail(
+        `${label} is a zero-retained closed profile and must not configure --service-retained-policy`,
+      );
+    }
+    if (
+      /--service-(?:arc-key|free-ip-key|trust-direct-peer-ip)(?:\s|=|$)|--allow-experimental-arc(?:\s|=|$)|--require-arc(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must keep production ARC and Free-IP adapters unavailable`);
+    }
+  }
+  if (deploymentProfile === "provider-no-standard-cashu-v1") {
+    const command = execStart.join("\n");
+    if (
+      /--service-cashu-(?:recovery-key|recovery-active-epoch|custody-key|custody-active-epoch|exposure-limit)(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must not configure Standard Cashu custody, recovery or exposure material`);
+    }
+  }
+  if (deploymentProfile === "provider-direct-v1") {
+    const command = execStart.join("\n");
+    if (
+      /--service-(?:bat-key|cashu-[a-z-]+|shared-[a-z-]+)(?:\s|=|$)|--require-cashu(?:\s|=|$)|--cashu-keyset(?:\s|=|$)/u.test(
+        command,
+      )
+    ) {
+      fail(`${label} must keep BAT, Standard Cashu, shared issuer, ARC and Free-IP adapters unavailable`);
     }
   }
 }
@@ -1306,7 +2816,22 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
         fail(`issuer service identity does not match its externally approved UID/GID placeholders: ${unit.unit_name}`);
       }
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered runtime unit");
   }
+}
+
+function validatePreflightConfigReaderIdentity(unit, identity, label) {
+  if (unit.unit_name !== "bitcoinpir-lightning-preflight.service") return;
+  const tokens = (unit.exec_start?.[0] ?? "").trim().split(/\s+/u);
+  const exactArgument = (flag, expected) => {
+    const indexes = tokens.flatMap((token, index) => token === flag ? [index] : []);
+    if (indexes.length !== 1 || tokens[indexes[0] + 1] !== String(expected)) {
+      fail(`${label} ${unit.unit_name} must bind ${flag} to ${expected}`);
+    }
+  };
+  exactArgument("--config-expected-uid", 0);
+  exactArgument("--config-expected-gid", identity.gid);
+  exactArgument("--config-reader-expected-uid", identity.uid);
 }
 
 function artifactBundlePath(targetPath) {
@@ -1321,7 +2846,314 @@ function hashBindingClass(artifactClass) {
   return "config";
 }
 
-function configManagedReferences(sourcePath, text) {
+const ADMIN_GATE_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash } from "node:crypto";',
+  'import { readFileSync } from "node:fs";',
+  'import { pathToFileURL } from "node:url";',
+  "",
+  "",
+].join("\n");
+
+const ADMIN_PROBE_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash } from "node:crypto";',
+  'import { readFileSync } from "node:fs";',
+  'import { request } from "node:http";',
+  "",
+  "const MAX_GATE_SOURCE_BYTES = 8 * 1024 * 1024;",
+  "const expectedGateSha256 = process.env.BPIR_ADMIN_GATE_SHA256;",
+  'if (!/^[0-9a-f]{64}$/u.test(expectedGateSha256 ?? "")) {',
+  '  throw new Error("BPIR_ADMIN_GATE_SHA256 must be one lowercase SHA-256 digest");',
+  "}",
+  "const gateChunks = [];",
+  "let gateSize = 0;",
+  "for await (const chunk of process.stdin) {",
+  "  gateSize += chunk.length;",
+  "  if (gateSize > MAX_GATE_SOURCE_BYTES) {",
+  "    throw new Error(`admin gate source exceeded ${MAX_GATE_SOURCE_BYTES} bytes`);",
+  "  }",
+  "  gateChunks.push(chunk);",
+  "}",
+  'if (gateSize === 0) throw new Error("admin gate source stdin was empty");',
+  "const gateSource = Buffer.concat(gateChunks);",
+  'const observedGateSha256 = createHash("sha256").update(gateSource).digest("hex");',
+  "if (observedGateSha256 !== expectedGateSha256) {",
+  '  throw new Error("admin gate source stdin did not match BPIR_ADMIN_GATE_SHA256");',
+  "}",
+  'new TextDecoder("utf-8", { fatal: true }).decode(gateSource);',
+  "const {",
+  "  MAX_ADAPTED_JSON_BYTES,",
+  "  canonicalizeAdaptedCaddyJson,",
+  "  sha256,",
+  '} = await import(`data:text/javascript;base64,${gateSource.toString("base64")}`);',
+  "if (",
+  "  !Number.isSafeInteger(MAX_ADAPTED_JSON_BYTES) ||",
+  "  MAX_ADAPTED_JSON_BYTES < 1 ||",
+  '  typeof canonicalizeAdaptedCaddyJson !== "function" ||',
+  '  typeof sha256 !== "function"',
+  ") {",
+  '  throw new Error("admin gate source did not export the exact probe interface");',
+  "}",
+  "",
+  "",
+].join("\n");
+
+const EXACT_REVIEWED_JAVASCRIPT_SHA256 = Object.freeze({
+  adminGate: "85f64dc3f922372fe7e37619b888080dd1d6f7063c7d871fbd35cf384fd3bbd6",
+  adminProbe: "088b8f37272ebd1ccd0c5d762ea35040481c648538640aca4542c85613a4f17c",
+  adminTransaction: "cf206b723c3c5d3962b4e98a6273421ecb2d5f57b40b62114596849897488885",
+  overlayGate: "2e7d03b58e1205ca5732bfed12833246a9d01a466ba4180b00c6164345dbd073",
+  overlayTransaction: "1034ad1888b2730fda039bee401e60cda5d656995faf474885c9b6d24572c360",
+  publisherNetnsSchema: "e222d1f297da268e1c8095fc8317d14ba4ef7253bd01d320f5c383e04554293c",
+});
+
+const OVERLAY_TRANSACTION_IMPORT_HEADER = [
+  "#!/usr/bin/env node",
+  "",
+  'import { createHash, randomBytes } from "node:crypto";',
+  'import { spawnSync } from "node:child_process";',
+  "import {",
+  "  closeSync,",
+  "  constants,",
+  "  fchmodSync,",
+  "  fchownSync,",
+  "  fstatSync,",
+  "  fsyncSync,",
+  "  lstatSync,",
+  "  mkdirSync,",
+  "  openSync,",
+  "  readFileSync,",
+  "  readdirSync,",
+  "  renameSync,",
+  "  rmdirSync,",
+  "  unlinkSync,",
+  "  writeFileSync,",
+  '} from "node:fs";',
+  'import tls from "node:tls";',
+  'import { connect as netConnect } from "node:net";',
+  'import { basename, dirname, isAbsolute, resolve } from "node:path";',
+  'import { fileURLToPath, pathToFileURL } from "node:url";',
+  "",
+  "import {",
+  "  OVERLAY_COLLECTOR,",
+  "  OVERLAY_RECEIPT_SCHEMA_VERSION,",
+  "  PUBLISHER_NETNS_DROPIN_PATH,",
+  "  buildOverlayCandidateFromRendered,",
+  "  canonicalJson,",
+  "  computeApprovedOverlayPlanSha256,",
+  "  parseStrictJson,",
+  "  validateOverlayPlan,",
+  "  validateOverlayPreparedContext,",
+  "  validateOverlayReceipt,",
+  '} from "./payment-v1-integrated-caddy-overlay-gate.mjs";',
+  "import {",
+  "  ADMIN_DIRECTORY,",
+  "  ADMIN_DIAL,",
+  "  ADMIN_LISTEN,",
+  "  ADMIN_SOCKET,",
+  "  DAC_BOUNDARY,",
+  "  canonicalJson as canonicalAdminUdsJson,",
+  "  canonicalizeAdaptedCaddyJson,",
+  "  computeApprovedPlanSha256 as computeApprovedAdminUdsPlanSha256,",
+  "  validateCommittedReceipt as validateAdminUdsCommittedReceipt,",
+  "  validatePublisherNetnsDropInBytes,",
+  '} from "./payment-v1-caddy-admin-uds-gate.mjs";',
+  "import {",
+  "  PUBLISHER_NETNS_CEREMONY_KIND,",
+  "  PUBLISHER_NETNS_RECEIPT_KIND,",
+  "  computePublisherNetnsPlanSha256V2,",
+  "  validatePublisherNetnsPlanV2,",
+  "  validatePublisherNetnsReceiptV2,",
+  '} from "./payment-v1-publisher-netns-schema.mjs";',
+  "",
+  "",
+].join("\n");
+
+function requireClosedJavaScriptImportHeader(text, expectedHeader, label) {
+  if (!text.startsWith(expectedHeader)) {
+    fail(`${label} does not have its exact reviewed import header`);
+  }
+}
+
+function requireExactReviewedJavaScript(text, expectedSha256, label) {
+  if (sha256(Buffer.from(text, "utf8")) !== expectedSha256) {
+    fail(`${label} does not equal its exact reviewed source`);
+  }
+}
+
+function normalizedOverlayTransactionSource(text, expectedHelperSha256) {
+  if (!/^[0-9a-f]{64}$/u.test(expectedHelperSha256 ?? "")) {
+    fail("rendered integrated-Caddy transaction executor lacks the exact plan helper digest");
+  }
+  let replacements = 0;
+  let observedHelperSha256;
+  const normalized = text.replace(
+    /\/opt\/bitcoinpir\/payment-v1-rename-exchange\/([0-9a-f]{64})\/payment-v1-rename-exchange/gu,
+    (_match, digest) => {
+      replacements += 1;
+      observedHelperSha256 = digest;
+      return "/opt/bitcoinpir/payment-v1-rename-exchange/@OVERLAY_EXCHANGE_SHA256@/payment-v1-rename-exchange";
+    },
+  );
+  if (replacements !== 1) {
+    fail("rendered integrated-Caddy transaction executor does not have one exact helper substitution");
+  }
+  if (observedHelperSha256 !== expectedHelperSha256) {
+    fail("rendered integrated-Caddy transaction executor helper digest differs from the render plan");
+  }
+  return normalized;
+}
+
+function configManagedReferences(sourcePath, text, plan) {
+  if (
+    sourcePath ===
+    "deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in"
+  ) {
+    const manifest = parseStrictJson(
+      text,
+      "rendered directory-public HAProxy build manifest",
+    );
+    const artifactSha256 = validateBuildManifestV1(manifest);
+    if (artifactSha256 !== plan.placeholders.HAPROXY_SHA256) {
+      fail("rendered directory-public HAProxy build manifest differs from the selected binary");
+    }
+    return [`/opt/bitcoinpir/haproxy/${artifactSha256}/haproxy`];
+  }
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-gate.mjs") {
+    requireClosedJavaScriptImportHeader(
+      text,
+      ADMIN_GATE_IMPORT_HEADER,
+      "rendered Caddy admin UDS gate",
+    );
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminGate,
+      "rendered Caddy admin UDS gate",
+    );
+    return [];
+  }
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-probe.mjs") {
+    requireClosedJavaScriptImportHeader(
+      text,
+      ADMIN_PROBE_IMPORT_HEADER,
+      "rendered Caddy admin UDS probe",
+    );
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminProbe,
+      "rendered Caddy admin UDS probe",
+    );
+    return [
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+    ];
+  }
+  if (sourcePath === "scripts/payment-v1-caddy-admin-uds-transaction.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.adminTransaction,
+      "rendered Caddy admin UDS cold transaction executor",
+    );
+    return [
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-probe.mjs",
+    ];
+  }
+  if (sourcePath === "scripts/payment-v1-integrated-caddy-overlay-gate.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.overlayGate,
+      "rendered integrated-Caddy overlay gate",
+    );
+    return [];
+  }
+  if (sourcePath === "scripts/payment-v1-publisher-netns-schema.mjs") {
+    requireExactReviewedJavaScript(
+      text,
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.publisherNetnsSchema,
+      "rendered publisher-netns shared schema validator",
+    );
+    return [];
+  }
+  if (
+    sourcePath ===
+    "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"
+  ) {
+    const binary = text.match(
+      /\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/payment-v1-publisher-netns/u,
+    )?.[0];
+    const manifest =
+      "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256";
+    if (binary === undefined || !text.includes(manifest)) {
+      fail("rendered publisher namespace owner does not close its helper dependencies");
+    }
+    return [binary, manifest].sort(asciiCompare);
+  }
+  if (
+    sourcePath ===
+    "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs"
+  ) {
+    requireClosedJavaScriptImportHeader(
+      text,
+      OVERLAY_TRANSACTION_IMPORT_HEADER,
+      "rendered integrated-Caddy transaction executor",
+    );
+    requireExactReviewedJavaScript(
+      normalizedOverlayTransactionSource(
+        text,
+        plan.placeholders.OVERLAY_EXCHANGE_SHA256,
+      ),
+      EXACT_REVIEWED_JAVASCRIPT_SHA256.overlayTransaction,
+      "rendered integrated-Caddy transaction executor",
+    );
+    if (/@OVERLAY_EXCHANGE_SHA256@/u.test(text)) {
+      fail("rendered integrated-Caddy transaction executor retains its helper placeholder");
+    }
+    const binary = text.match(
+      /"(\/opt\/bitcoinpir\/payment-v1-rename-exchange\/[0-9a-f]{64}\/payment-v1-rename-exchange)"/u,
+    )?.[1];
+    const manifest = text.match(
+      /"(\/etc\/bitcoinpir\/payment-v1\/integrated-existing-bhtm-caddy\/rename-exchange\.sha256)"/u,
+    )?.[1];
+    if (binary === undefined || manifest === undefined) {
+      fail("rendered integrated-Caddy transaction executor does not close its exchange helper dependencies");
+    }
+    const expectedBinary =
+      `/opt/bitcoinpir/payment-v1-rename-exchange/${plan.placeholders.OVERLAY_EXCHANGE_SHA256}/payment-v1-rename-exchange`;
+    if (binary !== expectedBinary) {
+      fail("rendered integrated-Caddy transaction executor helper path differs from the render plan");
+    }
+    return [
+      manifest,
+      binary,
+      "/usr/local/libexec/bitcoinpir/payment-v1-caddy-admin-uds-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs",
+    ].sort(asciiCompare);
+  }
+  const edgeReferences = {
+    "deploy/payment-v1/edge/hetzner-public.Caddyfile.in": [
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
+      "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
+    ],
+    "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": [
+      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt",
+      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
+    ],
+  };
+  if (edgeReferences[sourcePath]) {
+    const expected = new Set(edgeReferences[sourcePath]);
+    const observed = new Set();
+    for (const match of text.matchAll(/\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+/gu)) {
+      if (match[0].startsWith("/etc/bitcoinpir/payment-v1/edge/")) observed.add(match[0]);
+    }
+    if (canonicalize([...observed].sort(asciiCompare)) !== canonicalize([...expected].sort(asciiCompare))) {
+      fail(`rendered ${sourcePath} must reference exactly its reviewed TLS files`);
+    }
+    return [...observed].sort(asciiCompare);
+  }
   if (sourcePath !== "deploy/payment-v1/lightning/lightningd.conf.in") return [];
   const references = new Set();
   for (const original of text.split("\n")) {
@@ -1340,6 +3172,50 @@ function configManagedReferences(sourcePath, text) {
   return [...references].sort(asciiCompare);
 }
 
+function validateIssuerPreflightSystemdPin(targetPath, bytes, plan) {
+  if (
+    plan.deployment_profile !== "issuer-lightning-signet-v1" ||
+    targetPath !== "/etc/bitcoinpir/payment-v1/lightning/preflight.toml"
+  ) return;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail("issuer preflight config must be UTF-8");
+  }
+  const sections = [];
+  let current;
+  for (const [index, original] of text.split(/\r?\n/u).entries()) {
+    const line = original.replace(/\s+#.*$/u, "").trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const header = /^\[([A-Za-z0-9_.-]+)\]$/u.exec(line);
+    if (header) {
+      current = header[1];
+      if (current === "systemd.busctl") sections.push([]);
+      continue;
+    }
+    if (current === "systemd.busctl") {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*\s*=\s*.+$/u.test(line)) {
+        fail(`issuer preflight systemd.busctl line ${index + 1} is malformed`);
+      }
+      sections.at(-1).push(line.replace(/\s*=\s*/u, "="));
+    }
+  }
+  if (sections.length !== 1) {
+    fail("issuer preflight config must contain exactly one [systemd.busctl] table");
+  }
+  const expected = [
+    "path=\"/usr/bin/busctl\"",
+    "protected_parent=\"/usr/bin\"",
+    `sha256_hex=\"${plan.placeholders.BUSCTL_SHA256}\"`,
+    "expected_uid=0",
+    "expected_gid=0",
+  ].sort(asciiCompare);
+  if (canonicalize([...sections[0]].sort(asciiCompare)) !== canonicalize(expected)) {
+    fail("issuer preflight config must bind the exact render-plan BUSCTL_SHA256 and root binary boundary");
+  }
+}
+
 function parseTmpfilesDirectories(sourcePath, text) {
   if (sourcePath !== "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in") return [];
   const directories = [];
@@ -1356,10 +3232,20 @@ function parseTmpfilesDirectories(sourcePath, text) {
       fail(`rendered ${sourcePath} line ${index + 1} is outside the closed tmpfiles schema`);
     }
     const targetPath = safeTargetPath(fields[1], `rendered ${sourcePath} directory`);
-    if (!targetPath.startsWith("/run/bitcoinpir-cln-rpc-guard")) {
+    if (
+      !targetPath.startsWith("/run/bitcoinpir-cln-rpc-guard") &&
+      targetPath !== "/run/bitcoinpir-lightning-operator-approvals" &&
+      targetPath !== "/srv/lightning/plugins"
+    ) {
       fail(`rendered ${sourcePath} has an unreviewed runtime directory`);
     }
-    validateMode(fields[2], ["0710"], `rendered ${sourcePath} directory`);
+    const approvalDirectory = targetPath === "/run/bitcoinpir-lightning-operator-approvals";
+    const clnBasePluginDirectory = targetPath === "/srv/lightning/plugins";
+    validateMode(
+      fields[2],
+      approvalDirectory ? ["0700"] : clnBasePluginDirectory ? ["0555"] : ["0710"],
+      `rendered ${sourcePath} directory`,
+    );
     for (const [field, label] of [[fields[3], "user"], [fields[4], "group"]]) {
       if (!/^[a-z_][a-z0-9_-]{0,31}$/u.test(field)) {
         fail(`rendered ${sourcePath} tmpfiles ${label} is not one literal NSS name`);
@@ -1371,9 +3257,15 @@ function parseTmpfilesDirectories(sourcePath, text) {
       target_path: targetPath,
       user_name: fields[3],
     });
+    if (
+      (approvalDirectory || clnBasePluginDirectory) &&
+      (fields[3] !== "root" || fields[4] !== "root")
+    ) {
+      fail(`rendered ${sourcePath} protected directory must retain its exact root ownership`);
+    }
   }
   directories.sort((left, right) => asciiCompare(left.target_path, right.target_path));
-  if (directories.length !== 2) fail(`rendered ${sourcePath} must define exactly two directories`);
+  if (directories.length !== 4) fail(`rendered ${sourcePath} must define exactly four directories`);
   return directories;
 }
 
@@ -1414,11 +3306,68 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
   };
   switch (manifestPath) {
+    case "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256":
+      oneExact(
+        `/opt/bitcoinpir/publisher-netns/${plan.placeholders.PUBLISHER_NETNS_HELPER_SHA256}/payment-v1-publisher-netns`,
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256":
+      oneExact(`/opt/bitcoinpir/bpir-admin/${plan.placeholders.BPIR_ADMIN_SHA256}/bpir-admin`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256": {
+      const expected = [
+        plan.placeholders.PROVIDER_0_ENTRY_ARTIFACT,
+        plan.placeholders.PROVIDER_1_ENTRY_ARTIFACT,
+        plan.placeholders.CHECKPOINT_ARTIFACT,
+      ].map((name) => `/var/lib/bitcoinpir-directory-publisher/artifacts/${name}`).sort(asciiCompare);
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind exactly the three frozen signed artifacts`);
+      }
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256": {
+      const expected = [
+        "/etc/netns/bpir-directory-publisher/hosts",
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+        "/etc/netns/bpir-directory-publisher/nsswitch.conf",
+        "/etc/netns/bpir-directory-publisher/resolv.conf",
+      ].sort(asciiCompare);
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind the four exact network inputs`);
+      }
+      return;
+    }
     case "/etc/bitcoinpir/payment-v1/edge/caddy.sha256":
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
     case "/etc/bitcoinpir/payment-v1/edge/edge-config.sha256":
-      oneExact(`/etc/bitcoinpir/payment-v1/edge/${plan.placeholders.EDGE_CADDYFILE}`);
+      oneExact(
+        plan.deployment_profile === "edge-hetzner-v1"
+          ? "/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile"
+          : "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256":
+      oneExact(`/opt/bitcoinpir/haproxy/${plan.placeholders.HAPROXY_SHA256}/haproxy`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/source-fair-edge/source-fair-config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.cfg");
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.sha256":
+      oneExact(`/opt/bitcoinpir/haproxy/${plan.placeholders.HAPROXY_SHA256}/haproxy`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/directory-public-config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy.cfg");
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.sha256":
+      oneExact(
+        "/etc/bitcoinpir/payment-v1/directory-public-edge/haproxy-build-manifest.json",
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/integrated-existing-bhtm-caddy/rename-exchange.sha256":
+      oneExact(
+        `/opt/bitcoinpir/payment-v1-rename-exchange/${plan.placeholders.OVERLAY_EXCHANGE_SHA256}/payment-v1-rename-exchange`,
+      );
       return;
     case "/etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256":
       oneExact(`/opt/bitcoinpir/payment-issuer/${plan.placeholders.PAYMENT_ISSUER_SHA256}/payment-issuer`);
@@ -1438,28 +3387,23 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/lightning/preflight.toml");
       return;
-    case "/etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256":
-      if (
-        entries.length !== 1 ||
-        !/^\/etc\/bitcoinpir\/payment-v1\/lightning\/backup-receipt\.(?:bin|json|toml)$/u.test(
-          entries[0].target_path,
-        )
-      ) {
-        fail(`hash manifest ${manifestPath} must bind one reviewed backup-receipt artifact`);
-      }
-      return;
     case "/etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256": {
       const prefix = `/opt/bitcoinpir/core-lightning/${plan.placeholders.CLN_BUNDLE_SHA256}/`;
-      if (entries.length < 3 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
+      if (entries.some((entry) => !entry.target_path.startsWith(prefix))) {
         fail(`hash manifest ${manifestPath} must remain inside the selected CLN bundle`);
       }
-      for (const required of ["bin/lightningd", "plugins/bcli", "plugins/chanbackup"]) {
-        if (!entries.some((entry) => entry.target_path === `${prefix}${required}`)) {
-          fail(`hash manifest ${manifestPath} is missing ${required}`);
-        }
-      }
+      assertSameStringSet(
+        entries.map((entry) => entry.target_path),
+        REQUIRED_CLN_BUNDLE_PATHS_V26066.map((required) => `${prefix}${required}`),
+        `hash manifest ${manifestPath} targets`,
+      );
       return;
     }
+    case "/etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256":
+      oneExact(
+        `/opt/bitcoinpir/core-lightning-libpq/${plan.placeholders.CLN_LIBPQ_SHA256}/libpq.so.5`,
+      );
+      return;
     case "/etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256": {
       const prefix = `/opt/bitcoinpir/bitcoin-core/${plan.placeholders.BITCOIN_CORE_BUNDLE_SHA256}/`;
       if (entries.length < 1 || entries.some((entry) => !entry.target_path.startsWith(prefix))) {
@@ -1472,6 +3416,27 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
     case "/etc/bitcoinpir/payment-v1/provider/unified-server.sha256":
       oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/unified-server.sha256":
+      oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/provider-direct/unified-server.sha256":
+      oneExact(`/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-relay/binary.sha256": {
+      const binaries = plan.payload_artifacts.filter((artifact) =>
+        artifact.class === "binary" &&
+        /^\/opt\/bitcoinpir\/directory-relay\/[0-9a-f]{64}\/bitcoinpir-directory-relay$/u.test(
+          artifact.target_path,
+        ));
+      if (binaries.length !== 1) {
+        fail(`hash manifest ${manifestPath} requires one content-addressed directory relay binary`);
+      }
+      oneExact(binaries[0].target_path);
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256":
+      oneExact("/etc/bitcoinpir/payment-v1/directory-relay/config.toml");
       return;
     case "/etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256":
       oneExact(`/opt/bitcoinpir/rollback-authority/${plan.placeholders.ROLLBACK_AUTHORITY_SHA256}/rollback-authority`);
@@ -1521,8 +3486,22 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
 
   const pathChecks = [
     ["CADDY_SHA256", "/opt/bitcoinpir/caddy/", "/caddy", true],
+    ["HAPROXY_SHA256", "/opt/bitcoinpir/haproxy/", "/haproxy", true],
+    [
+      "OVERLAY_EXCHANGE_SHA256",
+      "/opt/bitcoinpir/payment-v1-rename-exchange/",
+      "/payment-v1-rename-exchange",
+      true,
+    ],
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
+    ["CLN_LIBPQ_SHA256", "/opt/bitcoinpir/core-lightning-libpq/", "/libpq.so.5", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
+    [
+      "PUBLISHER_NETNS_HELPER_SHA256",
+      "/opt/bitcoinpir/publisher-netns/",
+      "/payment-v1-publisher-netns",
+      true,
+    ],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
     ["UNIFIED_SERVER_SHA256", "/opt/bitcoinpir/unified-server/", "/unified_server", true],
     ["ROLLBACK_AUTHORITY_SHA256", "/opt/bitcoinpir/rollback-authority/", "/rollback-authority", true],
@@ -1539,12 +3518,33 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
       fail(`${placeholder} must equal the selected single-file binary digest`);
     }
   }
+  if (plan.deployment_profile === "directory-relay-v1") {
+    for (const artifact of plan.payload_artifacts.filter((entry) => entry.class === "binary")) {
+      const match =
+        /^\/opt\/bitcoinpir\/directory-relay\/([0-9a-f]{64})\/bitcoinpir-directory-relay$/u.exec(
+          artifact.target_path,
+        );
+      if (!match || artifact.expected_sha256 !== match[1]) {
+        fail("directory relay binary target digest must equal its exact payload digest");
+      }
+    }
+  }
 }
 
 function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   const canonicalSourceRoot = requireCanonicalRoot(sourceRoot, "source root");
   const canonicalInputRoot = requireCanonicalRoot(inputRoot, "payload input root");
   validatePlan(plan);
+  const relaySelection =
+    new Set(["directory-relay-v1", "directory-publisher-netns-v1"]).has(
+      plan.deployment_profile,
+    )
+      ? relaySelectionFromSource(
+          canonicalSourceRoot,
+          plan,
+          plan.deployment_profile,
+        )
+      : undefined;
   const approvedPlanDigest = requireApprovedPlan(plan, approvedPlanSha256);
 
   const selectedTemplates = [];
@@ -1583,15 +3583,27 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   for (const name of requiredPlaceholders) validatePlaceholderValue(name, plan.placeholders[name]);
   if (
     plan.deployment_profile === "edge-hetzner-v1" &&
-    plan.placeholders.EDGE_CADDYFILE !== "hetzner-public.Caddyfile"
+    new Set([
+      plan.placeholders.PUBLIC_HTTPS_BIND,
+      plan.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND,
+      plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP,
+    ]).size !== 3
   ) {
-    fail("edge-hetzner-v1 must select hetzner-public.Caddyfile");
+    fail("edge-hetzner-v1 public, publisher-private bind, and publisher-client roles must use distinct addresses");
+  }
+  if (
+    plan.deployment_profile === "edge-hetzner-v1" &&
+    isIP(plan.placeholders.DIRECTORY_PUBLISHER_PRIVATE_BIND) !==
+      isIP(plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP)
+  ) {
+    fail("edge-hetzner-v1 publisher private bind and client addresses must use the same IP family");
   }
   if (
     plan.deployment_profile === "edge-rollback-authority-v1" &&
-    plan.placeholders.EDGE_CADDYFILE !== "rollback-authority.Caddyfile"
+    plan.placeholders.ROLLBACK_AUTHORITY_PRIVATE_BIND ===
+      plan.placeholders.ROLLBACK_AUTHORITY_CLIENT_IP
   ) {
-    fail("edge-rollback-authority-v1 must select rollback-authority.Caddyfile");
+    fail("rollback-authority private bind and sole-client addresses must differ");
   }
   if (plan.deployment_profile === "issuer-lightning-signet-v1") {
     const uidValues = ["ISSUER_UID", "LIGHTNING_UID", "CLN_GUARD_UID", "PREFLIGHT_UID"].map(
@@ -1611,6 +3623,10 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   ) {
     fail("CLN guard invoice burst must not exceed its per-minute rate");
   }
+  const publisherRelayBinding = directoryPublisherRelayBinding(
+    plan,
+    relaySelection,
+  );
 
   const artifacts = [];
   const fileBytes = new Map();
@@ -1642,11 +3658,24 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       uid: specification.uid,
     });
     if (catalog.artifactClass === "systemd-unit") {
-      const parsed = parseSystemdUnit(renderedText, `rendered unit ${specification.target_path}`);
+      if (specification.source_path ===
+          "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in") {
+        validatePublisherUnitV1(renderedText, plan.placeholders);
+      }
+      const parsed = parseSystemdUnit(
+        renderedText,
+        `rendered unit ${specification.target_path}`,
+        plan.deployment_profile,
+      );
       validateProfileUnitPolicy(
         plan.deployment_profile,
         specification.target_path,
+        parsed.conditions,
+        parsed.environment,
         parsed.hardening,
+        parsed.exec_start,
+        parsed.exec_start_pre,
+        parsed.exec_start_pre_ex,
         `rendered unit ${specification.target_path}`,
       );
       for (const reference of parsed.managed_references) initialReferences.add(reference);
@@ -1656,8 +3685,17 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         fragment_path: specification.target_path,
         unit_name: basename(specification.target_path),
       });
+    } else if (catalog.artifactClass === "systemd-auxiliary-unit") {
+      validatePublisherNamespaceOwnerUnitV1(renderedText);
     }
-    for (const reference of configManagedReferences(specification.source_path, renderedText)) {
+    if (specification.source_path ===
+        "deploy/payment-v1/network/directory-publisher-network-policy.json.in") {
+      validatePublisherNetworkPolicy(
+        renderedText,
+        plan.placeholders.DIRECTORY_PUBLISHER_HTTPS_HOST,
+      );
+    }
+    for (const reference of configManagedReferences(specification.source_path, renderedText, plan)) {
       initialReferences.add(reference);
     }
     tmpfilesDirectories.push(...parseTmpfilesDirectories(specification.source_path, renderedText));
@@ -1678,6 +3716,18 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     if (sourceSha256 !== specification.expected_sha256) {
       fail(`payload source hash mismatch for ${specification.source_path}`);
     }
+    validateIssuerPreflightSystemdPin(
+      specification.target_path,
+      sourceBytes,
+      plan,
+    );
+    for (const reference of remoteRollbackConfigManagedReferences(
+      plan.deployment_profile,
+      specification.target_path,
+      sourceBytes,
+    )) {
+      initialReferences.add(reference);
+    }
     const bundlePath = artifactBundlePath(specification.target_path);
     fileBytes.set(bundlePath, sourceBytes);
     artifacts.push({
@@ -1697,6 +3747,13 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   artifacts.sort((left, right) => asciiCompare(left.target_path, right.target_path));
   runtimeUnits.sort((left, right) => asciiCompare(left.unit_name, right.unit_name));
   validateRuntimeServiceIdentities(plan, runtimeUnits);
+  validateDirectoryRelayPayloadClosure({
+    artifacts,
+    fileBytes,
+    plan,
+    runtimeUnits,
+    selection: relaySelection,
+  });
   enforceDependencyClosure({ artifacts, fileBytes, initialReferences, plan });
   const hashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
   for (const artifact of artifacts) {
@@ -1712,12 +3769,16 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
     approved_plan_sha256: approvedPlanDigest,
     deployment_id: plan.deployment_id,
     deployment_profile: plan.deployment_profile,
+    ...(publisherRelayBinding === undefined
+      ? {}
+      : { directory_relay_selection: publisherRelayBinding }),
     hash_bindings: hashBindings,
     placeholder_commitment_sha256: sha256(Buffer.from(canonicalJson(plan.placeholders))),
     plan_sha256: approvedPlanDigest,
     runtime_units: runtimeUnits,
     schema_version: MANIFEST_SCHEMA_VERSION,
     service_identities: plan.service_identities,
+    systemd_version: plan.systemd_version,
     tmpfiles_directories: tmpfilesDirectories,
   };
   const manifestBytes = Buffer.from(canonicalJson(manifest));
@@ -1739,6 +3800,8 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
 
 export function runtimeRequestFromManifest(manifest, manifestSha256) {
   validateSha256(manifestSha256, "manifest SHA-256");
+  const directoryPublisher =
+    manifest?.deployment_profile === "directory-publisher-netns-v1";
   exactKeys(
     manifest,
     [
@@ -1746,12 +3809,14 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "artifacts",
       "deployment_id",
       "deployment_profile",
+      ...(directoryPublisher ? ["directory_relay_selection"] : []),
       "hash_bindings",
       "placeholder_commitment_sha256",
       "plan_sha256",
       "runtime_units",
       "schema_version",
       "service_identities",
+      "systemd_version",
       "tmpfiles_directories",
     ],
     "rendered manifest",
@@ -1759,12 +3824,21 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
   if (manifest.schema_version !== MANIFEST_SCHEMA_VERSION) {
     fail(`rendered manifest schema_version must equal ${MANIFEST_SCHEMA_VERSION}`);
   }
+  if (manifest.systemd_version !== REVIEWED_SYSTEMD_VERSION) {
+    fail(`rendered manifest systemd_version must equal ${REVIEWED_SYSTEMD_VERSION}`);
+  }
   validateSha256(manifest.approved_plan_sha256, "rendered manifest approved plan SHA-256");
   if (manifest.plan_sha256 !== manifest.approved_plan_sha256) {
     fail("rendered manifest plan digest is not the externally approved digest");
   }
   if (!PROFILE_CATALOG[manifest.deployment_profile]) {
     fail("rendered manifest deployment profile is not reviewed");
+  }
+  if (directoryPublisher) {
+    validateDirectoryPublisherRelayBinding(
+      manifest.directory_relay_selection,
+      "rendered manifest directory_relay_selection",
+    );
   }
   if (!Array.isArray(manifest.service_identities) || manifest.service_identities.length < 1 || manifest.service_identities.length > 32) {
     fail("rendered manifest service_identities must be a bounded non-empty array");
@@ -1776,9 +3850,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["group_name", "user_name"]) {
       if (!/^bitcoinpir-[a-z0-9-]+$/u.test(identity[key])) fail(`${label}.${key} is malformed`);
     }
-    validateUidGid(identity.uid, `${label}.uid`);
-    validateUidGid(identity.gid, `${label}.gid`);
-    if (identity.uid === 0 || identity.gid === 0) fail(`${label} must be non-root`);
+    validateServiceIdentityId(identity.uid, `${label}.uid`);
+    validateServiceIdentityId(identity.gid, `${label}.gid`);
     if (index > 0 && asciiCompare(manifest.service_identities[index - 1].unit_name, identity.unit_name) >= 0) {
       fail("rendered manifest service_identities must be unique and bytewise sorted");
     }
@@ -1829,6 +3902,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "hash-manifest",
       "policy",
       "secret",
+      "systemd-auxiliary-unit",
+      "systemd-dropin",
       "systemd-unit",
     ].includes(artifact.artifact_class)) {
       fail(`${label}.artifact_class is not reviewed`);
@@ -1854,6 +3929,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       fail("rendered manifest artifacts must be unique bytewise ASCII sorted targets");
     }
   }
+  validateDirectoryRelayConfigOwnerBinding(manifest);
   const expectedHashBindings = { binary: [], config: [], hash_manifest: [], policy: [], secret: [] };
   for (const artifact of manifest.artifacts) {
     expectedHashBindings[hashBindingClass(artifact.artifact_class)].push({
@@ -1878,9 +3954,12 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         "environment",
         "environment_files",
         "exec_start",
+        "exec_start_ex",
         "exec_start_pre",
+        "exec_start_pre_ex",
         "fragment_path",
         "hardening",
+        "unit_dependencies",
         "unit_name",
       ],
       label,
@@ -1904,6 +3983,30 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     for (const key of ["environment", "environment_files", "exec_start_pre"]) {
       validateStringArray(unit[key], `${label}.${key}`, { maxItems: 64, maxLength: 8192 });
     }
+    for (const [typedKey, textKey] of [
+      ["exec_start_ex", "exec_start"],
+      ["exec_start_pre_ex", "exec_start_pre"],
+    ]) {
+      if (!Array.isArray(unit[typedKey]) || unit[typedKey].length !== unit[textKey].length) {
+        fail(`${label}.${typedKey} must exactly cover ${textKey}`);
+      }
+      for (const [commandIndex, command] of unit[typedKey].entries()) {
+        const commandLabel = `${label}.${typedKey}[${commandIndex}]`;
+        exactKeys(command, ["argv", "flags", "path"], commandLabel);
+        validateStringArray(command.argv, `${commandLabel}.argv`, { maxItems: 256, maxLength: 4096 });
+        validateStringArray(command.flags, `${commandLabel}.flags`, { maxItems: 1, maxLength: 32 });
+        safeTargetPath(command.path, `${commandLabel}.path`);
+        if (
+          command.argv.length < 1 ||
+          command.argv[0] !== command.path ||
+          !command.flags.every((flag) => flag === "privileged") ||
+          (typedKey === "exec_start_ex" && command.flags.length !== 0) ||
+          canonicalize(command.argv.join(" ")) !== canonicalize(unit[textKey][commandIndex])
+        ) {
+          fail(`${commandLabel} is not canonical`);
+        }
+      }
+    }
     if (unit.environment_files.length !== 0) fail(`${label}.environment_files must be empty`);
     if (!isPlainObject(unit.hardening)) fail(`${label}.hardening must be an object`);
     for (const [key, values] of Object.entries(unit.hardening)) {
@@ -1915,10 +4018,30 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
         fail(`${label}.hardening.${key} is weaker than the reviewed baseline`);
       }
     }
+    exactKeys(unit.unit_dependencies, SYSTEMD_RUNTIME_RELATION_KEYS, `${label}.unit_dependencies`);
+    for (const key of SYSTEMD_RUNTIME_RELATION_KEYS) {
+      validateStringArray(unit.unit_dependencies[key], `${label}.unit_dependencies.${key}`, {
+        maxItems: 64,
+        maxLength: 320,
+      });
+      const sorted = [...unit.unit_dependencies[key]].sort(asciiCompare);
+      if (
+        canonicalize(sorted) !== canonicalize(unit.unit_dependencies[key]) ||
+        new Set(sorted).size !== sorted.length ||
+        sorted.some((name) => !/^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.[A-Za-z0-9_-]{1,32}$/u.test(name))
+      ) {
+        fail(`${label}.unit_dependencies.${key} is not a canonical unit-name set`);
+      }
+    }
     validateProfileUnitPolicy(
       manifest.deployment_profile,
       unit.fragment_path,
+      unit.conditions,
+      unit.environment,
       unit.hardening,
+      unit.exec_start,
+      unit.exec_start_pre,
+      unit.exec_start_pre_ex,
       label,
     );
   }
@@ -1937,6 +4060,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     ) {
       fail(`rendered manifest service identity does not match User=/Group=: ${unit.unit_name}`);
     }
+    validatePreflightConfigReaderIdentity(unit, identity, "rendered manifest runtime unit");
   }
   validateSecretOwnerBindings(manifest);
   const systemdArtifactTargets = manifest.artifacts
@@ -1953,40 +4077,310 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     const label = `rendered manifest tmpfiles_directories[${index}]`;
     exactKeys(directory, ["group_name", "mode", "target_path", "user_name"], label);
     safeTargetPath(directory.target_path, `${label}.target_path`);
-    validateMode(directory.mode, ["0710"], label);
+    const approvalDirectory = directory.target_path ===
+      "/run/bitcoinpir-lightning-operator-approvals";
+    const clnBasePluginDirectory = directory.target_path === "/srv/lightning/plugins";
+    validateMode(
+      directory.mode,
+      approvalDirectory ? ["0700"] : clnBasePluginDirectory ? ["0555"] : ["0710"],
+      label,
+    );
     for (const key of ["group_name", "user_name"]) {
       if (!/^[a-z_][a-z0-9_-]{0,31}$/u.test(directory[key])) {
         fail(`${label}.${key} is not a literal NSS name`);
       }
     }
+    if (
+      (approvalDirectory || clnBasePluginDirectory) &&
+      (directory.user_name !== "root" || directory.group_name !== "root")
+    ) {
+      fail(`${label} protected directory must retain its exact root ownership`);
+    }
   }
+  if (manifest.deployment_profile === "issuer-lightning-signet-v1") {
+    const expectedTmpfilesDirectories = [
+      {
+        group_name: "bitcoinpir-issuer",
+        mode: "0710",
+        target_path: "/run/bitcoinpir-cln-rpc-guard",
+        user_name: "bitcoinpir-cln-rpc-guard",
+      },
+      {
+        group_name: "bitcoinpir-issuer",
+        mode: "0710",
+        target_path: "/run/bitcoinpir-cln-rpc-guard/issuer",
+        user_name: "bitcoinpir-cln-rpc-guard",
+      },
+      {
+        group_name: "root",
+        mode: "0700",
+        target_path: "/run/bitcoinpir-lightning-operator-approvals",
+        user_name: "root",
+      },
+      {
+        group_name: "root",
+        mode: "0555",
+        target_path: "/srv/lightning/plugins",
+        user_name: "root",
+      },
+    ];
+    if (
+      canonicalJson(manifest.tmpfiles_directories) !==
+      canonicalJson(expectedTmpfilesDirectories)
+    ) {
+      fail("issuer Lightning tmpfiles directories must equal the exact protected host layout");
+    }
+  }
+  const auxiliaryUnitPaths = manifest.artifacts
+    .filter((artifact) => artifact.artifact_class === "systemd-auxiliary-unit")
+    .map((artifact) => artifact.target_path);
   const systemdAnalyzeArgv = [
     "/usr/bin/systemd-analyze",
     "verify",
-    ...manifest.runtime_units.map((unit) => unit.fragment_path),
+    ...[...manifest.runtime_units.map((unit) => unit.fragment_path), ...auxiliaryUnitPaths]
+      .sort(asciiCompare),
   ];
   const secretFiles = manifest.artifacts
-    .filter((artifact) => artifact.artifact_class === "secret")
     .map((artifact) => ({
-      consumer_unit_name: secretConsumerUnit(manifest.deployment_profile, artifact.target_path),
+      artifact,
+      consumerUnitName: privateLoaderConsumerUnit(
+        manifest.deployment_profile,
+        artifact,
+      ),
+    }))
+    .filter(({ consumerUnitName }) => consumerUnitName !== undefined)
+    .map(({ artifact, consumerUnitName }) => ({
+      consumer_unit_name: consumerUnitName,
       gid: artifact.gid,
       mode: artifact.mode,
       target_path: artifact.target_path,
       uid: artifact.uid,
     }));
+  const runtimePaths = [];
+  if (
+    new Set([
+      "edge-hetzner-v1",
+      "integrated-existing-bhtm-caddy-v1",
+    ]).has(manifest.deployment_profile)
+  ) {
+    const sourceFairIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === "bitcoinpir-payment-v1-source-fair-edge.service",
+    );
+    if (!sourceFairIdentity) {
+      fail("Hetzner source-fair runtime request is missing its service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: sourceFairIdentity.gid,
+      mode: "0750",
+      target_path: "/run/bitcoinpir-source-fair-edge",
+      uid: sourceFairIdentity.uid,
+    });
+    for (const name of [
+      "directory-public.sock",
+      "directory-publisher.sock",
+      "issuer.sock",
+      "provider.sock",
+    ]) {
+      runtimePaths.push({
+        file_type: "socket",
+        gid: sourceFairIdentity.gid,
+        mode: "0660",
+        target_path: `/run/bitcoinpir-source-fair-edge/${name}`,
+        uid: sourceFairIdentity.uid,
+      });
+    }
+  }
+  if (
+    manifest.deployment_profile ===
+    "integrated-existing-bhtm-caddy-directory-public-v1"
+  ) {
+    const identity = manifest.service_identities.find(
+      (entry) =>
+        entry.unit_name ===
+        "bitcoinpir-payment-v1-directory-public-edge.service",
+    );
+    if (!identity) {
+      fail("directory-public edge runtime request is missing its service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: identity.gid,
+      mode: "0750",
+      target_path: "/run/bitcoinpir-directory-public-edge",
+      uid: identity.uid,
+    });
+    runtimePaths.push({
+      file_type: "socket",
+      gid: identity.gid,
+      mode: "0660",
+      target_path:
+        "/run/bitcoinpir-directory-public-edge/directory-public.sock",
+      uid: identity.uid,
+    });
+  }
+  if (manifest.deployment_profile === "edge-rollback-authority-v1") {
+    const edgeIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === "bitcoinpir-payment-v1-edge.service",
+    );
+    if (!edgeIdentity) {
+      fail("rollback-authority edge runtime request is missing its service identity");
+    }
+    runtimePaths.push({
+      file_type: "directory",
+      gid: edgeIdentity.gid,
+      mode: "0700",
+      target_path: "/run/bitcoinpir-rollback-authority-edge",
+      uid: edgeIdentity.uid,
+    });
+  }
+  let publisherNetwork;
+  if (manifest.deployment_profile === "directory-publisher-netns-v1") {
+    const networkPolicy = installedFiles.find(
+      (file) => file.target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    );
+    if (!networkPolicy) fail("publisher runtime request is missing its rendered network policy");
+    const publicationArtifactManifest = installedFiles.find(
+      (file) => file.target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+    );
+    const publicationArtifacts = installedFiles
+      .filter((file) =>
+        file.target_path.startsWith(
+          "/var/lib/bitcoinpir-directory-publisher/artifacts/",
+        ))
+      .map((file) => ({ path: file.target_path, sha256: file.sha256 }));
+    const publisherUnit = manifest.runtime_units.find(
+      (unit) => unit.unit_name ===
+        "bitcoinpir-payment-v1-directory-publisher.service",
+    );
+    const publisherIdentity = manifest.service_identities.find(
+      (identity) => identity.unit_name === publisherUnit?.unit_name,
+    );
+    const publicationArgv = publisherUnit?.exec_start_ex?.[0]?.argv;
+    if (
+      !publicationArtifactManifest ||
+      publicationArtifacts.length !== 3 ||
+      !publisherIdentity ||
+      !Array.isArray(publicationArgv)
+    ) {
+      fail("publisher runtime request is missing its exact publication receipt generation inputs");
+    }
+    publisherNetwork = {
+      caddy_drop_in_path:
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      caddy_service_unit: "bhtm-caddy.service",
+      firewall: {
+        forwarding_sysctls: {
+          "net.ipv4.ip_forward": 0,
+          "net.ipv6.conf.all.forwarding": 0,
+        },
+        interface: "bpir-pub-h",
+        semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+        ufw_rules_in_install_order: [
+          "prepend deny in on bpir-pub-h from any to any",
+          "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+          "route prepend deny in on bpir-pub-h from any to any",
+          "route prepend deny out on bpir-pub-h from any to any",
+        ],
+      },
+      forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+      namespace: {
+        client: "10.203.0.2/30",
+        host: "10.203.0.1/30",
+        name: "bpir-directory-publisher",
+        path: "/run/netns/bpir-directory-publisher",
+      },
+      namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+      network_policy_sha256: networkPolicy.sha256,
+      publication_receipt: {
+        artifact_manifest: {
+          path: publicationArtifactManifest.target_path,
+          sha256: publicationArtifactManifest.sha256,
+        },
+        artifacts: publicationArtifacts,
+        argv: publicationArgv,
+        argv_sha256: computeDirectoryPublishArgvSha256V1(publicationArgv),
+        directory_mode: manifest.directory_relay_selection.directory_mode,
+        file: {
+          directory: "/var/lib/bitcoinpir-directory-publication",
+          filename_suffix: ".json",
+          gid: publisherIdentity.gid,
+          mode: "0600",
+          nlink: 1,
+          uid: publisherIdentity.uid,
+        },
+        kind: "bitcoinpir-directory-publication-receipt-v1",
+        publisher_pubkey_hex:
+          manifest.directory_relay_selection.publisher_pubkey_hex,
+        relay_origins: [manifest.directory_relay_selection.relay_origin],
+        schema_version: 1,
+      },
+      publication_mode: {
+        centralized: true,
+        degraded: true,
+        name: "centralized-single-relay",
+      },
+      publication_time_firewall_binding: {
+        activation_blocked: true,
+        activation_blocker_condition_path:
+          "/etc/bitcoinpir/payment-v1/PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED",
+        continuous_checks: [
+          "reject-any-nftables-generation-event",
+          "reject-xtables-lock-inode-drift",
+        ],
+        continuous_generation_guard_implemented: true,
+        graceful_stop_barriers: [
+          "require-empty-nftables-event-queue",
+          "require-stable-xtables-lock-inode",
+        ],
+        guard_profile: "xtables-lock-and-host-nftables-generation-monitor-v1",
+        implemented: false,
+        initial_live_semantic_lineage: {
+          binds_boot_id: false,
+          binds_owner_invocation_id: false,
+          binds_publication_approval: false,
+          binds_rule_summary: false,
+          implemented: false,
+          required_before_owner_ready: true,
+        },
+        lifecycle_scope: "publisher-netns-owner-lifetime",
+        missing_requirement: "owner-pre-ready-live-semantic-revalidation-lineage-v1",
+        point_in_time_evidence_only: true,
+        pre_ready_barriers: [
+          "open-host-netns-nftables-multicast-before-network-setup",
+          "hold-root-single-link-xtables-lock",
+          "require-empty-nftables-event-queue",
+          "repeat-full-stop-firewall-child-topology-barrier-immediately-before-ready",
+        ],
+        privileged_mutation_boundary: "non-adversarial-root-maintenance",
+        semantic_pre_post_evidence_required: true,
+        state_machine:
+          "continuous-generation-guard-implemented-live-semantic-lineage-blocked",
+      },
+      publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+    };
+  }
   return {
     approved_plan_sha256: manifest.approved_plan_sha256,
     collector: RUNTIME_COLLECTOR,
     deployment_profile: manifest.deployment_profile,
     installed_files: installedFiles,
     manifest_sha256: manifestSha256,
+    runtime_paths: runtimePaths,
     schema_version: EVIDENCE_SCHEMA_VERSION,
     secret_files: secretFiles,
     service_identities: manifest.service_identities,
+    busctl_manager_properties: RUNTIME_BUSCTL_MANAGER_PROPERTIES,
+    busctl_unit_properties: RUNTIME_BUSCTL_UNIT_PROPERTIES,
+    busctl_service_properties: RUNTIME_BUSCTL_SERVICE_PROPERTIES,
     systemctl_show_properties: RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
+    systemd_version: manifest.systemd_version,
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
     units: manifest.runtime_units,
+    ...(publisherNetwork === undefined ? {} : { publisher_network: publisherNetwork }),
   };
 }
 
@@ -2137,134 +4531,10 @@ function validateStringArray(value, label, { maxItems = 2048, maxLength = 4096 }
   }
 }
 
-function canonicalEqual(actual, expected, label) {
-  if (canonicalize(actual) !== canonicalize(expected)) {
-    fail(`${label} does not match the rendered manifest expectation`);
-  }
-}
-
-export function validateRuntimeEvidence({ model, evidence }) {
-  exactKeys(
-    evidence,
-    [
-      "collected_at_unix_seconds",
-      "collector",
-      "host",
-      "installed_files",
-      "manifest_sha256",
-      "schema_version",
-      "systemd_analyze_verify",
-      "units",
-    ],
-    "runtime evidence",
-  );
-  if (evidence.schema_version !== EVIDENCE_SCHEMA_VERSION) {
-    fail(`runtime evidence schema_version must equal ${EVIDENCE_SCHEMA_VERSION}`);
-  }
-  if (evidence.collector !== RUNTIME_COLLECTOR) fail("runtime evidence collector is not reviewed");
-  if (evidence.manifest_sha256 !== model.manifestSha256) {
-    fail("runtime evidence manifest_sha256 does not bind the rendered manifest");
-  }
-  if (
-    !Number.isSafeInteger(evidence.collected_at_unix_seconds) ||
-    evidence.collected_at_unix_seconds < 1
-  ) {
-    fail("runtime evidence collected_at_unix_seconds must be a positive safe integer");
-  }
-  exactKeys(
-    evidence.host,
-    ["boot_id", "kernel_release", "machine_id_sha256", "systemd_version"],
-    "runtime evidence host",
-  );
-  validateSha256(evidence.host.machine_id_sha256, "runtime evidence host.machine_id_sha256");
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(evidence.host.boot_id)) {
-    fail("runtime evidence host.boot_id must be a lowercase UUID");
-  }
-  for (const key of ["kernel_release", "systemd_version"]) {
-    validateSafeAscii(evidence.host[key], `runtime evidence host.${key}`, 128);
-  }
-
-  exactKeys(
-    evidence.systemd_analyze_verify,
-    ["argv", "exit_status", "stderr", "stdout"],
-    "runtime evidence systemd_analyze_verify",
-  );
-  validateStringArray(evidence.systemd_analyze_verify.argv, "systemd-analyze argv");
-  canonicalEqual(
-    evidence.systemd_analyze_verify.argv,
-    model.request.systemd_analyze_argv,
-    "systemd-analyze argv",
-  );
-  if (evidence.systemd_analyze_verify.exit_status !== 0) {
-    fail("systemd-analyze verify did not exit successfully");
-  }
-  if (evidence.systemd_analyze_verify.stdout !== "" || evidence.systemd_analyze_verify.stderr !== "") {
-    fail("systemd-analyze verify must produce no warnings or output");
-  }
-  if (sha256(Buffer.from(evidence.systemd_analyze_verify.stdout)) !== EMPTY_SHA256) {
-    fail("systemd-analyze stdout hash is not empty");
-  }
-
-  canonicalEqual(evidence.installed_files, model.request.installed_files, "installed file evidence");
-  if (!Array.isArray(evidence.units) || evidence.units.length !== model.request.units.length) {
-    fail("runtime unit evidence count does not match the rendered manifest");
-  }
-  for (let index = 0; index < evidence.units.length; index += 1) {
-    const actual = evidence.units[index];
-    const expected = model.request.units[index];
-    const label = `runtime evidence units[${index}]`;
-    exactKeys(
-      actual,
-      [
-        "active_state",
-        "conditions",
-        "drop_in_paths",
-        "environment",
-        "environment_files",
-        "exec_start",
-        "exec_start_pre",
-        "fragment_path",
-        "hardening",
-        "load_state",
-        "unit_name",
-      ],
-      label,
-    );
-    if (actual.load_state !== "loaded") fail(`${label}.load_state must equal loaded`);
-    if (!["active", "inactive"].includes(actual.active_state)) {
-      fail(`${label}.active_state must be active or inactive, never failed/unknown`);
-    }
-    if (!Array.isArray(actual.drop_in_paths) || actual.drop_in_paths.length !== 0) {
-      fail(`${label}.drop_in_paths must be empty`);
-    }
-    for (const key of [
-      "conditions",
-      "environment",
-      "environment_files",
-      "exec_start",
-      "exec_start_pre",
-    ]) {
-      validateStringArray(actual[key], `${label}.${key}`);
-    }
-    if (actual.environment_files.length !== 0) {
-      fail(`${label}.environment_files must be empty`);
-    }
-    canonicalEqual(actual.unit_name, expected.unit_name, `${label}.unit_name`);
-    canonicalEqual(actual.fragment_path, expected.fragment_path, `${label}.fragment_path`);
-    canonicalEqual(actual.exec_start, expected.exec_start, `${label}.exec_start`);
-    canonicalEqual(actual.exec_start_pre, expected.exec_start_pre, `${label}.exec_start_pre`);
-    canonicalEqual(actual.environment, expected.environment, `${label}.environment`);
-    canonicalEqual(actual.environment_files, expected.environment_files, `${label}.environment_files`);
-    canonicalEqual(actual.conditions, expected.conditions, `${label}.conditions`);
-    canonicalEqual(actual.hardening, expected.hardening, `${label}.hardening`);
-  }
-  return true;
-}
-
 function parseCli(argv) {
   const command = argv[0];
-  if (!["render", "verify", "verify-runtime"].includes(command)) {
-    fail("usage: payment-v1-rendered-artifact-gate.mjs <render|verify|verify-runtime> --source-root ABS --input-root ABS --plan ABS --approved-plan-sha256 HEX --bundle ABS [--evidence ABS --trusted-evidence-sha256 HEX]");
+  if (!["render", "verify"].includes(command)) {
+    fail("usage: payment-v1-rendered-artifact-gate.mjs <render|verify> --source-root ABS --input-root ABS --plan ABS --approved-plan-sha256 HEX --bundle ABS");
   }
   const values = Object.create(null);
   const allowed = new Set([
@@ -2273,8 +4543,6 @@ function parseCli(argv) {
     "--plan",
     "--approved-plan-sha256",
     "--bundle",
-    "--evidence",
-    "--trusted-evidence-sha256",
   ]);
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -2282,7 +4550,7 @@ function parseCli(argv) {
     if (!allowed.has(flag) || value === undefined || values[flag] !== undefined) {
       fail(`invalid, repeated, or missing CLI option: ${flag ?? "<missing>"}`);
     }
-    if (!["--approved-plan-sha256", "--trusted-evidence-sha256"].includes(flag) && !value.startsWith("/")) {
+    if (flag !== "--approved-plan-sha256" && !value.startsWith("/")) {
       fail(`${flag} must be an absolute path`);
     }
     values[flag] = value;
@@ -2296,22 +4564,7 @@ function parseCli(argv) {
   ]) {
     if (values[required] === undefined) fail(`missing required CLI option ${required}`);
   }
-  if (command === "verify-runtime" && values["--evidence"] === undefined) {
-    fail("verify-runtime requires --evidence");
-  }
-  if (command === "verify-runtime" && values["--trusted-evidence-sha256"] === undefined) {
-    fail("offline verify-runtime requires an externally trusted evidence SHA-256 pin");
-  }
-  if (command !== "verify-runtime" && values["--evidence"] !== undefined) {
-    fail("--evidence is valid only for verify-runtime");
-  }
-  if (command !== "verify-runtime" && values["--trusted-evidence-sha256"] !== undefined) {
-    fail("--trusted-evidence-sha256 is valid only for verify-runtime");
-  }
   validateSha256(values["--approved-plan-sha256"], "CLI approved plan SHA-256");
-  if (values["--trusted-evidence-sha256"] !== undefined) {
-    validateSha256(values["--trusted-evidence-sha256"], "CLI trusted evidence SHA-256");
-  }
   return { command, values };
 }
 
@@ -2330,27 +4583,7 @@ function runCli(argv) {
     process.stdout.write("payment-v1-rendered-artifact-gate: render PASS\n");
     return;
   }
-  const model = verifyBundle(common);
-  if (command === "verify-runtime") {
-    const evidenceBytes = readRegularSingleLinkFile(
-      values["--evidence"],
-      "runtime evidence",
-      MAX_JSON_BYTES,
-    );
-    if (sha256(evidenceBytes) !== values["--trusted-evidence-sha256"]) {
-      fail("runtime evidence does not match the externally trusted evidence SHA-256 pin");
-    }
-    let evidenceText;
-    try {
-      evidenceText = new TextDecoder("utf-8", { fatal: true }).decode(evidenceBytes);
-    } catch {
-      fail("runtime evidence is not valid UTF-8");
-    }
-    const evidence = parseStrictJson(evidenceText, "runtime evidence");
-    validateRuntimeEvidence({ model, evidence });
-    process.stdout.write("payment-v1-rendered-artifact-gate: offline pinned runtime structure PASS\n");
-    return;
-  }
+  verifyBundle(common);
   process.stdout.write("payment-v1-rendered-artifact-gate: verify PASS\n");
 }
 

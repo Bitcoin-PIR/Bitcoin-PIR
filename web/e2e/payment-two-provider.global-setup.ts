@@ -78,6 +78,13 @@ interface FixtureInventoryV1 {
   deterministic: boolean;
   funds_capable: boolean;
   network: string;
+  providers: Array<{
+    name: string;
+    stable_server_id: string;
+    provider_id: string;
+    operator_pubkey: string;
+    policy_signing_pubkey: string;
+  }>;
   browser_two_provider_harness?: BrowserHarnessInventoryV1;
 }
 
@@ -116,6 +123,9 @@ export interface PaymentTwoProviderFixtureV1 {
     name: string;
     providerIdHex: string;
     policySigningPubkeyHex: string;
+    /** Test-only trusted-bootstrap output, cross-checked against the
+     * deterministic bpir-admin provider inventory by global setup. */
+    trustedOperatorSigningKeyHex: string;
     expectedPayeePubkeyHex: string;
     issuerIdHex: string;
     scopeIdHex: string;
@@ -255,6 +265,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         || harness.providers[1].free_ip_key_path !== null) {
       throw new Error('fixture is missing the exact direct/BAT and Free/experimental-ARC variants');
     }
+    const trustedOperatorSigningKeys = trustedHarnessOperatorKeys(inventory, harness);
     const databasePath = fixturePath(fixtureRoot, harness.database_path);
     const databaseConfigPath = fixturePath(fixtureRoot, harness.database_config_path);
     fixturePath(fixtureRoot, harness.database_proof.proof_path);
@@ -525,6 +536,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
           provider.policy_signing_pubkey,
           32,
         ),
+        trustedOperatorSigningKeyHex: trustedOperatorSigningKeys[index],
         expectedPayeePubkeyHex: expectedPayeePubkey,
         issuerIdHex: exactHex('issuer_id', provider.issuer_id, 32),
         scopeIdHex: exactHex('scope_id', provider.scope_id, 32),
@@ -748,6 +760,69 @@ function hasExactBrowserOffer(
       && offer.deployment_status === deploymentStatus);
 }
 
+/**
+ * Model the adapter's already-verified operator-key output for this test-only
+ * runtime. The key is accepted only from bpir-admin's deterministic provider
+ * inventory, where provider_id is derived from that operator identity, and
+ * only after the browser sub-inventory agrees on the exact provider and
+ * policy key. It is never learned from a live service policy or directory
+ * self-report.
+ */
+function trustedHarnessOperatorKeys(
+  inventory: FixtureInventoryV1,
+  harness: BrowserHarnessInventoryV1,
+): [string, string] {
+  if (!Array.isArray(inventory.providers)
+      || inventory.providers.length !== 2
+      || harness.providers.length !== 2) {
+    throw new Error('fixture trust inventory must contain exactly two providers');
+  }
+  const keys = harness.providers.map((browserProvider, index) => {
+    const provider = inventory.providers[index];
+    if (!provider
+        || provider.name !== browserProvider.name
+        || provider.provider_id !== browserProvider.provider_id
+        || provider.policy_signing_pubkey !== browserProvider.policy_signing_pubkey) {
+      throw new Error(`browser provider ${index} does not match its trusted fixture inventory`);
+    }
+    const providerId = exactHex(`provider ${index} provider_id`, provider.provider_id, 32);
+    const policyKey = exactHex(
+      `provider ${index} policy_signing_pubkey`,
+      provider.policy_signing_pubkey,
+      32,
+    );
+    const operatorKey = exactHex(
+      `provider ${index} operator_pubkey`,
+      provider.operator_pubkey,
+      32,
+    );
+    const stableServerId = exactStableServerId(
+      `provider ${index} stable_server_id`,
+      provider.stable_server_id,
+    );
+    const stableServerIdBytes = Buffer.from(stableServerId, 'utf8');
+    const stableServerIdLength = Buffer.alloc(4);
+    stableServerIdLength.writeUInt32LE(stableServerIdBytes.length);
+    const derivedProviderId = createHash('sha256')
+      .update('BitcoinPIR/provider-id/v1', 'utf8')
+      .update(Buffer.from(operatorKey, 'hex'))
+      .update(stableServerIdLength)
+      .update(stableServerIdBytes)
+      .digest('hex');
+    if (derivedProviderId !== providerId) {
+      throw new Error(`provider ${index} ID is not derived from its trusted operator identity`);
+    }
+    if (operatorKey === providerId || operatorKey === policyKey) {
+      throw new Error(`provider ${index} operator trust key is not independently bound`);
+    }
+    return operatorKey;
+  });
+  if (keys[0] === keys[1]) {
+    throw new Error('two-provider fixture reused one trusted operator key');
+  }
+  return keys as [string, string];
+}
+
 function runtimeBrowserOffer(
   offer: BrowserHarnessOfferInventoryV1,
 ): PaymentTwoProviderFixtureV1['providers'][number]['offers'][number] {
@@ -796,6 +871,17 @@ function exactNonEmptyString(field: string, value: string): string {
   return value;
 }
 
+function exactStableServerId(field: string, value: string): string {
+  if (typeof value !== 'string'
+      || Buffer.byteLength(value, 'utf8') < 1
+      || Buffer.byteLength(value, 'utf8') > 256
+      || Buffer.from(value, 'utf8').toString('utf8') !== value
+      || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${field} must be 1..256 bytes of canonical control-free UTF-8`);
+  }
+  return value;
+}
+
 function exactCompressedPubkey(value: string): string {
   if (!/^(02|03)[0-9a-f]{64}$/.test(value)) {
     throw new Error('expected payee is not one compressed secp256k1 public key');
@@ -831,6 +917,7 @@ function assertIndependentRuntimeProviders(
     PaymentTwoProviderFixtureV1['providers'][number],
     | 'providerIdHex'
     | 'policySigningPubkeyHex'
+    | 'trustedOperatorSigningKeyHex'
     | 'issuerIdHex'
     | 'issuerOrigin'
     | 'serverWsUrl'
@@ -838,6 +925,7 @@ function assertIndependentRuntimeProviders(
   >> = [
     'providerIdHex',
     'policySigningPubkeyHex',
+    'trustedOperatorSigningKeyHex',
     'issuerIdHex',
     'issuerOrigin',
     'serverWsUrl',

@@ -20,7 +20,7 @@
  */
 
 const DB_NAME = 'bitcoinpir-admission-v1';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const META_STORE = 'meta';
 const RECORD_STORE = 'records';
 const CHECKPOINT_STORE = 'checkpoints';
@@ -51,16 +51,33 @@ export interface AdmissionCapabilityBindingV1 {
   scheme: AdmissionSchemeV1;
 }
 
+/**
+ * Minimal historical payment context needed by the browser-only strict-pair
+ * guard. It deliberately excludes invoice, payment hash, quote ID, wallet,
+ * query, and result data.
+ */
+export interface Bolt11CapabilityAcquisitionContextV1 {
+  kind: 'bolt11';
+  issuerEndpoint: string;
+  issuerIdHex: string;
+  network: LightningNetworkNameV1;
+  expectedPayeePubkeyHex: string;
+}
+
 export interface AdmissionCapabilityV1 extends AdmissionCapabilityBindingV1 {
   /** Canonical proof bytes, or serialized ARC presentation state. */
   payload: Uint8Array;
+  /** Present only when this capability was minted through BOLT11. */
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
 }
 
 export interface AdmissionCapabilityInventoryV1 extends AdmissionCapabilityBindingV1 {
   count: number;
+  /** Separates otherwise-identical inventory acquired through different payees. */
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
 }
 
-interface PlainRecordV1 {
+interface PlainRecordV2 {
   version: 2;
   providerIdHex: string;
   policyDigestHex: string;
@@ -69,6 +86,13 @@ interface PlainRecordV1 {
   scheme: AdmissionSchemeV1;
   payloadBase64: string;
 }
+
+interface PlainRecordV3 extends Omit<PlainRecordV2, 'version'> {
+  version: 3;
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
+}
+
+type PlainRecordV1 = PlainRecordV2 | PlainRecordV3;
 
 interface CipherRecordV1 {
   id: string;
@@ -89,6 +113,12 @@ export interface Bolt11RecoveryRecordV1 {
   id: string;
   /** HTTPS issuer endpoint copied from the exact verified signed offer. */
   issuerEndpoint: string;
+  /** Exact issuer identity committed by the signed offer and quote intent. */
+  issuerIdHex: string;
+  /** Exact Lightning network committed by the delegated quote key. */
+  network: LightningNetworkNameV1;
+  /** Independently trusted compressed payee key, never inferred on resume. */
+  expectedPayeePubkeyHex: string;
   providerIdHex: string;
   /** Exact signed policy selected before any invoice was created. */
   policyDigestHex: string;
@@ -104,8 +134,11 @@ export interface Bolt11RecoveryRecordV1 {
 }
 
 interface PlainBolt11RecoveryRecordV1 {
-  version: 3;
+  version: 4;
   issuerEndpoint: string;
+  issuerIdHex: string;
+  network: LightningNetworkNameV1;
+  expectedPayeePubkeyHex: string;
   providerIdHex: string;
   policyDigestHex: string;
   scopeIdHex: string;
@@ -171,9 +204,15 @@ export class AdmissionCredentialVaultV1 {
     this.db.close();
   }
 
-  /** Store a provider-bound capability. No payment/acquisition metadata is accepted. */
+  /**
+   * Store a provider-bound capability plus, when applicable, the minimal
+   * encrypted BOLT11 context needed to prevent historical payee confusion.
+   */
   async putCapability(capability: AdmissionCapabilityV1): Promise<string> {
     validateCapabilityV1(capability);
+    if (capability.acquisitionContext !== undefined) {
+      throw new Error('BOLT11 acquisition context is accepted only from atomic claim recovery');
+    }
     const id = randomId();
     const encrypted = await this.encryptRecord(id, capability);
     await withExclusiveLock(lockName(capability), async () => {
@@ -192,13 +231,14 @@ export class AdmissionCredentialVaultV1 {
   async takeSingleUseCapability(
     binding: AdmissionCapabilityBindingV1,
     validateBeforeRetire?: (payload: Uint8Array) => void,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<AdmissionCapabilityV1 | null> {
     validateBindingV1(binding);
     if (binding.scheme === 'arc-experimental') {
       throw new Error('ARC state must be advanced with advanceArcCredential');
     }
     return withExclusiveLock(lockName(binding), async () => {
-      const match = await this.findExact(binding);
+      const match = await this.findExact(binding, expectedAcquisitionContext);
       if (!match) return null;
       // Local canonical validation must complete while the record is still
       // recoverable. Once deleted, all network outcomes are ambiguous.
@@ -229,7 +269,10 @@ export class AdmissionCredentialVaultV1 {
    * Secret payloads and record IDs never leave the vault. This is intended
    * for product UI inventory state before the destructive one-shot take.
    */
-  async countCapabilities(binding: AdmissionCapabilityBindingV1): Promise<number> {
+  async countCapabilities(
+    binding: AdmissionCapabilityBindingV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
+  ): Promise<number> {
     validateBindingV1(binding);
     return withExclusiveLock(lockName(binding), async () => {
       const rows = await getAllValues<CipherRecordV1>(this.db, RECORD_STORE);
@@ -237,7 +280,11 @@ export class AdmissionCredentialVaultV1 {
       for (const row of rows) {
         const plain = await this.decryptRecord(row);
         try {
-          if (sameBinding(plain, binding)) count += 1;
+          if (sameBinding(plain, binding)
+              && (expectedAcquisitionContext === undefined
+                || sameAcquisitionContext(plain.acquisitionContext, expectedAcquisitionContext))) {
+            count += 1;
+          }
         } finally {
           plain.payload.fill(0);
         }
@@ -270,10 +317,11 @@ export class AdmissionCredentialVaultV1 {
           offerId: capability.offerId,
           scheme: capability.scheme,
         };
-        const key = lockName(binding);
+        const acquisitionContext = cloneAcquisitionContext(capability.acquisitionContext);
+        const key = `${lockName(binding)}:${acquisitionContextFingerprint(acquisitionContext)}`;
         const existing = inventory.get(key);
         if (existing) existing.count += 1;
-        else inventory.set(key, { ...binding, count: 1 });
+        else inventory.set(key, { ...binding, count: 1, acquisitionContext });
       } finally {
         capability.payload.fill(0);
       }
@@ -292,13 +340,14 @@ export class AdmissionCredentialVaultV1 {
   async advanceArcCredential(
     binding: AdmissionCapabilityBindingV1,
     advance: (serializedState: Uint8Array) => ArcAdvanceV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<Uint8Array | null> {
     validateBindingV1(binding);
     if (binding.scheme !== 'arc-experimental') {
       throw new Error('advanceArcCredential requires arc-experimental binding');
     }
     return withExclusiveLock(lockName(binding), async () => {
-      const match = await this.findExact(binding);
+      const match = await this.findExact(binding, expectedAcquisitionContext);
       if (!match) return null;
       const serializedState = match.plain.payload.slice();
       let advanced: ArcAdvanceV1;
@@ -597,9 +646,9 @@ export class AdmissionCredentialVaultV1 {
             }
           }
           const ids = capabilities.map(() => randomId());
-          const encrypted = await Promise.all(
-            capabilities.map((capability, index) => this.encryptRecord(ids[index], capability)),
-          );
+          const acquisitionContext = recoveryAcquisitionContext(current);
+          const encrypted = await Promise.all(capabilities.map((capability, index) =>
+            this.encryptRecord(ids[index], { ...capability, acquisitionContext })));
           await completeAcquisitionTransaction(this.db, recoveryId, encrypted);
           terminal = true;
           return ids;
@@ -619,8 +668,13 @@ export class AdmissionCredentialVaultV1 {
   ): Promise<CipherRecordV1> {
     validateBolt11Recovery(value);
     const plain: PlainBolt11RecoveryRecordV1 = {
-      version: 3,
+      version: 4,
       issuerEndpoint: value.issuerEndpoint,
+      issuerIdHex: canonicalHex32('issuerIdHex', value.issuerIdHex),
+      network: value.network,
+      expectedPayeePubkeyHex: canonicalCompressedPointHex(
+        'expectedPayeePubkeyHex', value.expectedPayeePubkeyHex,
+      ),
       providerIdHex: canonicalHex32('providerIdHex', value.providerIdHex),
       policyDigestHex: canonicalHex32('policyDigestHex', value.policyDigestHex),
       scopeIdHex: canonicalHex32('scopeIdHex', value.scopeIdHex),
@@ -628,11 +682,11 @@ export class AdmissionCredentialVaultV1 {
       expectedScheme: value.expectedScheme,
       stateBase64: bytesToBase64(value.state),
     };
-    return this.encryptBoundBytes(
+    return this.encryptBoundBytesWithDigest(
       value.id,
       new TextEncoder().encode(JSON.stringify(plain)),
       BOLT11_RECOVERY_AAD_DOMAIN,
-      recoveryBinding(value),
+      await bolt11RecoveryBindingDigestHex(value),
     );
   }
 
@@ -644,10 +698,13 @@ export class AdmissionCredentialVaultV1 {
         'BOLT11 recovery authentication failed',
       );
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as PlainBolt11RecoveryRecordV1;
-      if (parsed.version !== 3) throw new Error('version');
+      if (parsed.version !== 4) throw new Error('version');
       const value: Bolt11RecoveryRecordV1 = {
         id: row.id,
         issuerEndpoint: parsed.issuerEndpoint,
+        issuerIdHex: parsed.issuerIdHex,
+        network: parsed.network,
+        expectedPayeePubkeyHex: parsed.expectedPayeePubkeyHex,
         providerIdHex: parsed.providerIdHex,
         policyDigestHex: parsed.policyDigestHex,
         scopeIdHex: parsed.scopeIdHex,
@@ -656,7 +713,7 @@ export class AdmissionCredentialVaultV1 {
         state: base64ToBytes(parsed.stateBase64),
       };
       validateBolt11Recovery(value);
-      await requireBoundRowMatches(row, recoveryBinding(value));
+      await requireRecoveryBoundRowMatches(row, value);
       return value;
     } catch {
       throw new Error('BOLT11 recovery authentication or decoding failed');
@@ -709,6 +766,16 @@ export class AdmissionCredentialVaultV1 {
     binding: AdmissionCapabilityBindingV1,
   ): Promise<CipherRecordV1> {
     const bindingDigestHex = await capabilityBindingDigestHex(binding);
+    return this.encryptBoundBytesWithDigest(id, bytes, domain, bindingDigestHex);
+  }
+
+  private async encryptBoundBytesWithDigest(
+    id: string,
+    bytes: Uint8Array,
+    domain: string,
+    bindingDigestHex: string,
+  ): Promise<CipherRecordV1> {
+    canonicalHex32('bindingDigestHex', bindingDigestHex);
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt(
       {
@@ -749,11 +816,16 @@ export class AdmissionCredentialVaultV1 {
 
   private async findExact(
     binding: AdmissionCapabilityBindingV1,
+    expectedAcquisitionContext?: Bolt11CapabilityAcquisitionContextV1 | null,
   ): Promise<{ id: string; plain: AdmissionCapabilityV1 } | null> {
     const rows = await getAllValues<CipherRecordV1>(this.db, RECORD_STORE);
     for (const row of rows) {
       const plain = await this.decryptRecord(row);
-      if (sameBinding(plain, binding)) return { id: row.id, plain };
+      if (sameBinding(plain, binding)
+          && (expectedAcquisitionContext === undefined
+            || sameAcquisitionContext(plain.acquisitionContext, expectedAcquisitionContext))) {
+        return { id: row.id, plain };
+      }
       plain.payload.fill(0);
     }
     return null;
@@ -763,14 +835,15 @@ export class AdmissionCredentialVaultV1 {
     id: string,
     capability: AdmissionCapabilityV1,
   ): Promise<CipherRecordV1> {
-    const plain: PlainRecordV1 = {
-      version: 2,
+    const plain: PlainRecordV3 = {
+      version: 3,
       providerIdHex: canonicalHex32('providerIdHex', capability.providerIdHex),
       policyDigestHex: canonicalHex32('policyDigestHex', capability.policyDigestHex),
       scopeIdHex: canonicalHex32('scopeIdHex', capability.scopeIdHex),
       offerId: capability.offerId,
       scheme: capability.scheme,
       payloadBase64: bytesToBase64(capability.payload),
+      acquisitionContext: cloneAcquisitionContext(capability.acquisitionContext),
     };
     return this.encryptBoundBytes(
       id,
@@ -790,7 +863,7 @@ export class AdmissionCredentialVaultV1 {
         'admission capability authentication failed',
       );
       const parsed = JSON.parse(new TextDecoder().decode(decrypted)) as PlainRecordV1;
-      if (parsed.version !== 2) throw new Error('version');
+      if (parsed.version !== 2 && parsed.version !== 3) throw new Error('version');
       capability = {
         providerIdHex: parsed.providerIdHex,
         policyDigestHex: parsed.policyDigestHex,
@@ -798,6 +871,9 @@ export class AdmissionCredentialVaultV1 {
         offerId: parsed.offerId,
         scheme: parsed.scheme,
         payload: base64ToBytes(parsed.payloadBase64),
+        acquisitionContext: parsed.version === 3
+          ? cloneAcquisitionContext(parsed.acquisitionContext)
+          : undefined,
       };
       validateCapabilityV1(capability);
       await requireBoundRowMatches(row, capability);
@@ -829,6 +905,9 @@ export function validateCapabilityV1(capability: AdmissionCapabilityV1): void {
       || capability.payload.length > MAX_CAPABILITY_BYTES_V1) {
     throw new Error('capability payload must be within the canonical V1 proof bound');
   }
+  if (capability.acquisitionContext !== undefined) {
+    validateAcquisitionContext(capability.acquisitionContext);
+  }
 }
 
 function isScheme(value: string): value is AdmissionSchemeV1 {
@@ -859,6 +938,72 @@ function sameRecoveryCapabilityBinding(
     && recovery.scopeIdHex === capability.scopeIdHex.toLowerCase()
     && recovery.offerId === capability.offerId
     && recovery.expectedScheme === capability.scheme;
+}
+
+function recoveryAcquisitionContext(
+  recovery: Bolt11RecoveryRecordV1,
+): Bolt11CapabilityAcquisitionContextV1 {
+  return canonicalAcquisitionContext({
+    kind: 'bolt11',
+    issuerEndpoint: recovery.issuerEndpoint,
+    issuerIdHex: recovery.issuerIdHex,
+    network: recovery.network,
+    expectedPayeePubkeyHex: recovery.expectedPayeePubkeyHex,
+  });
+}
+
+function validateAcquisitionContext(value: Bolt11CapabilityAcquisitionContextV1): void {
+  canonicalAcquisitionContext(value);
+}
+
+function canonicalAcquisitionContext(
+  value: Bolt11CapabilityAcquisitionContextV1,
+): Bolt11CapabilityAcquisitionContextV1 {
+  if (!value || value.kind !== 'bolt11') {
+    throw new Error('capability acquisition context must be BOLT11 V1');
+  }
+  if (!['bitcoin', 'testnet', 'signet', 'regtest'].includes(value.network)) {
+    throw new Error('capability acquisition network is unsupported');
+  }
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: canonicalIssuerEndpointForVault(value.issuerEndpoint),
+    issuerIdHex: canonicalHex32('acquisition issuerIdHex', value.issuerIdHex),
+    network: value.network,
+    expectedPayeePubkeyHex: canonicalCompressedPointHex(
+      'acquisition expectedPayeePubkeyHex',
+      value.expectedPayeePubkeyHex,
+    ),
+  };
+}
+
+function cloneAcquisitionContext(
+  value: Bolt11CapabilityAcquisitionContextV1 | undefined,
+): Bolt11CapabilityAcquisitionContextV1 | undefined {
+  return value === undefined ? undefined : canonicalAcquisitionContext(value);
+}
+
+function acquisitionContextFingerprint(
+  value: Bolt11CapabilityAcquisitionContextV1 | undefined,
+): string {
+  if (value === undefined) return 'non-bolt11';
+  const canonical = canonicalAcquisitionContext(value);
+  return [
+    canonical.kind,
+    canonical.issuerEndpoint,
+    canonical.issuerIdHex,
+    canonical.network,
+    canonical.expectedPayeePubkeyHex,
+  ].join(':');
+}
+
+function sameAcquisitionContext(
+  actual: Bolt11CapabilityAcquisitionContextV1 | undefined,
+  expected: Bolt11CapabilityAcquisitionContextV1 | null,
+): boolean {
+  if (expected === null) return actual === undefined;
+  if (actual === undefined) return false;
+  return acquisitionContextFingerprint(actual) === acquisitionContextFingerprint(expected);
 }
 
 function canonicalHex32(field: string, value: string): string {
@@ -913,6 +1058,13 @@ function openDb(): Promise<IDBDatabase> {
         const tx = request.transaction;
         if (!tx) throw new Error('admission IndexedDB upgrade has no transaction');
         tx.objectStore(RECORD_STORE).clear();
+        tx.objectStore(BOLT11_RECOVERY_STORE).clear();
+      } else if (event.oldVersion === 3) {
+        // Recovery V3 did not authenticate issuer/network/payee. It cannot be
+        // resumed safely, while capability and anti-rollback records remain
+        // usable under the stricter per-record checks.
+        const tx = request.transaction;
+        if (!tx) throw new Error('admission IndexedDB upgrade has no transaction');
         tx.objectStore(BOLT11_RECOVERY_STORE).clear();
       }
     };
@@ -1034,14 +1186,42 @@ async function requireBoundRowMatches(
   }
 }
 
-function recoveryBinding(value: Bolt11RecoveryRecordV1): AdmissionCapabilityBindingV1 {
-  return {
-    providerIdHex: value.providerIdHex,
-    policyDigestHex: value.policyDigestHex,
-    scopeIdHex: value.scopeIdHex,
-    offerId: value.offerId,
-    scheme: value.expectedScheme,
-  };
+async function bolt11RecoveryBindingDigestHex(
+  value: Bolt11RecoveryRecordV1,
+): Promise<string> {
+  validateBolt11Recovery(value);
+  const canonical = [
+    'BitcoinPIR/bolt11-recovery-binding/v1',
+    canonicalIssuerEndpointForVault(value.issuerEndpoint),
+    canonicalHex32('issuerIdHex', value.issuerIdHex),
+    value.network,
+    canonicalCompressedPointHex('expectedPayeePubkeyHex', value.expectedPayeePubkeyHex),
+    canonicalHex32('providerIdHex', value.providerIdHex),
+    canonicalHex32('policyDigestHex', value.policyDigestHex),
+    canonicalHex32('scopeIdHex', value.scopeIdHex),
+    value.offerId.toString(10),
+    value.expectedScheme,
+  ].join('\0');
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    ownedArrayBuffer(new TextEncoder().encode(canonical)),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function requireRecoveryBoundRowMatches(
+  row: CipherRecordV1,
+  recovery: Bolt11RecoveryRecordV1,
+): Promise<void> {
+  const stored = canonicalHex32(
+    'encrypted recovery binding digest',
+    row.bindingDigestHex ?? '',
+  );
+  const expected = await bolt11RecoveryBindingDigestHex(recovery);
+  if (stored !== expected) {
+    throw new Error('encrypted recovery does not match its authenticated payment binding');
+  }
 }
 
 function ownedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -1087,6 +1267,11 @@ async function quoteKeyCheckpointId(
 function validateBolt11Recovery(value: Bolt11RecoveryRecordV1): void {
   canonicalOpaqueId('BOLT11 recovery ID', value.id);
   canonicalIssuerEndpointForVault(value.issuerEndpoint);
+  canonicalHex32('issuerIdHex', value.issuerIdHex);
+  if (!['bitcoin', 'testnet', 'signet', 'regtest'].includes(value.network)) {
+    throw new Error('BOLT11 recovery network is unsupported');
+  }
+  canonicalCompressedPointHex('expectedPayeePubkeyHex', value.expectedPayeePubkeyHex);
   canonicalHex32('providerIdHex', value.providerIdHex);
   canonicalHex32('policyDigestHex', value.policyDigestHex);
   canonicalHex32('scopeIdHex', value.scopeIdHex);

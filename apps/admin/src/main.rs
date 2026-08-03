@@ -27,8 +27,8 @@
 //!   decrypt, acknowledgement, and explicit one-shot NUT-07 retirement.
 //! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
 //!   for two providers, five payment methods, and five workloads.
-//! - `lightning-staging` — strict default-Signet/CLN preflight plus an explicit
-//!   local, digest-only backup-receipt ceremony.
+//! - `lightning-staging` — strict default-Signet/CLN bootstrap/full preflights
+//!   plus an explicit local, digest-only backup-receipt ceremony.
 //! - `rollback-authority-deployment-lint` — offline bounded deployment-set
 //!   public-config independence validation without reading client secrets.
 //!
@@ -49,6 +49,7 @@ mod keygen;
 mod lightning_staging;
 mod payment_artifact;
 mod payment_fixture;
+mod payment_v1_signet_smoke;
 mod rollback_authority_deployment_lint;
 mod service_keygen;
 mod service_policy;
@@ -119,10 +120,15 @@ enum Command {
     /// Emit the deterministic two-provider Payment V1 no-funds fixture.
     #[command(name = "payment-v1-no-funds-fixture")]
     PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
+    /// Explicit Signet-only paid capability smoke: verify provider and quote,
+    /// invoke an isolated payer CLN, claim one capability, and prove provider
+    /// admission without executing a PIR query.
+    #[command(name = "payment-v1-signet-smoke")]
+    PaymentV1SignetSmoke(payment_v1_signet_smoke::PaymentV1SignetSmokeArgs),
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
-    /// Strict default-Signet/CLN preflight and local backup-receipt ceremony.
+    /// Strict default-Signet/CLN bootstrap/full preflights and backup ceremony.
     #[command(name = "lightning-staging")]
     LightningStaging(lightning_staging::LightningStagingArgs),
     /// Validate 2..=16 authority configs pairwise offline without reading
@@ -233,6 +239,13 @@ async fn main() {
                 1
             }
         },
+        Command::PaymentV1SignetSmoke(args) => match payment_v1_signet_smoke::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("payment-v1-signet-smoke: {e}");
+                1
+            }
+        },
         Command::DirectoryArtifact(args) => match directory_artifact::run(args).await {
             Ok(()) => 0,
             Err(e) => {
@@ -271,6 +284,7 @@ mod cli_tests {
         let mut command = Cli::command();
         let help = command.render_long_help().to_string();
         for subcommand in [
+            "service-policy",
             "service-keygen",
             "service-store-init",
             "service-store-check",
@@ -283,6 +297,19 @@ mod cli_tests {
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
+    }
+
+    #[test]
+    fn service_policy_scope_ids_accepts_an_unsigned_config() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "service-policy",
+            "scope-ids",
+            "--config",
+            "/private/service-policy.toml",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::ServicePolicy(_)));
     }
 
     #[test]
@@ -438,6 +465,24 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::DirectoryArtifact(_)));
+
+        let centralized = Cli::try_parse_from([
+            "bpir-admin",
+            "directory-artifact",
+            "publish",
+            "--artifact",
+            "entry.event.json",
+            "--relay",
+            "wss://central.example",
+            "--centralized-single-relay",
+            "--directory-pubkey-hex",
+            &hex::encode([1u8; 32]),
+            "--now-unix",
+            "1500",
+            "--validate-only",
+        ])
+        .unwrap();
+        assert!(matches!(centralized.command, Command::DirectoryArtifact(_)));
     }
 
     #[test]
@@ -466,8 +511,52 @@ mod cli_tests {
             "--config-protected-parent",
             "/srv/bitcoinpir",
             "--config-expected-uid",
-            "991",
+            "0",
             "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
+            "991",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
+    }
+
+    #[test]
+    fn lightning_staging_supervisor_uses_the_same_closed_trust_boundary() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "lightning-staging",
+            "preflight-supervisor",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "0",
+            "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
+            "991",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
+    }
+
+    #[test]
+    fn lightning_staging_bootstrap_preflight_uses_the_same_trust_boundary() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "lightning-staging",
+            "bootstrap-preflight",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "0",
+            "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
             "991",
         ])
         .unwrap();
@@ -485,8 +574,10 @@ mod cli_tests {
             "--config-protected-parent",
             "/srv/bitcoinpir",
             "--config-expected-uid",
-            "991",
+            "0",
             "--config-expected-gid",
+            "991",
+            "--config-reader-expected-uid",
             "991",
         ];
         assert!(Cli::try_parse_from(base).is_err());

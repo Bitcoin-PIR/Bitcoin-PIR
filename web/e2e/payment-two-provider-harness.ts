@@ -32,6 +32,9 @@ const QUERY_SCRIPT_HASH_BYTE = 0x42;
 
 interface LegStateV1 {
   fixture: PaymentTwoProviderFixtureV1['providers'][number];
+  /** Test-only stand-in for the adapter's verified live operator-key output.
+   * Global setup accepts it only after exact bpir-admin inventory binding. */
+  trustedOperatorSigningKey: Uint8Array;
   policy: WasmAcceptedServicePolicyV1;
   view: ServicePolicyViewV1;
   scope: ServiceScopeViewV1;
@@ -123,6 +126,7 @@ async function acquireLeg(index: 0 | 1): Promise<{
         33,
       ),
       fetchImpl: (input, init) => issuerFetch(index, input, init),
+      assertReady: () => {},
     });
     const invoice = acquisition.invoice();
     await pollUntilSettled(acquisition);
@@ -158,6 +162,7 @@ async function startPaidLeg(index: 0 | 1): Promise<{
         33,
       ),
       fetchImpl: (input, init) => issuerFetch(index, input, init),
+      assertReady: () => {},
     });
     return {
       recoveryId: acquisition.recoveryId,
@@ -181,10 +186,28 @@ async function finishPaidLeg(
   if (offer.authorization === 'free' || offer.acquisition !== 'bolt11') {
     throw new Error(`provider ${index} selected an offer without paid BOLT11 acquisition`);
   }
+  const payee = exactHexBytes(
+    'expectedPayeePubkeyHex',
+    leg.fixture.expectedPayeePubkeyHex,
+    33,
+  );
+  const assertReady = () => {
+    const current = requireSelectedOffer(index);
+    if (current.offerId !== offer.offerId
+        || current.issuerIdHex !== offer.issuerIdHex
+        || current.endpoint !== offer.endpoint) {
+      throw new Error(`provider ${index} verified offer changed during recovery`);
+    }
+  };
   const acquisition = await Bolt11AcquisitionControllerV1.resume({
     vault: await vault(),
     recoveryId,
+    issuerEndpoint: offer.endpoint,
+    issuerIdHex: offer.issuerIdHex,
+    network: 'regtest',
+    expectedPayeePubkey: payee,
     fetchImpl: (input, init) => issuerFetch(index, input, init),
+    assertReady,
   });
   try {
     await pollUntilSettled(acquisition);
@@ -333,20 +356,17 @@ async function preflightAndQuery(): Promise<{
   const activeClient = requireClient();
   const scriptHash = new Uint8Array(20);
   scriptHash.fill(QUERY_SCRIPT_HASH_BYTE);
-  let results: Awaited<ReturnType<WasmDpfClient['queryBatchRaw']>> = [];
-  const resultJson: unknown[] = [];
+  let results: Awaited<ReturnType<WasmDpfClient['queryBatchVerified']>> = [];
   try {
     // This deliberately runs only after both independent provider grants have
     // committed. It binds the server-supplied tree tops to the installed
     // synthetic proof root before either server performs the real DPF query.
     await activeClient.preflightDatabase(0);
-    results = await activeClient.queryBatchRaw(scriptHash, 0);
+    results = await activeClient.queryBatchVerified(scriptHash, 0);
     if (results.length !== 1 || !results[0]) {
       throw new Error(`real DPF query returned ${results.length} results instead of one`);
     }
-    for (const result of results) resultJson.push(result.toJson());
-    const verdicts = await activeClient.verifyMerkleBatch(resultJson, 0);
-    if (verdicts.length !== 1 || verdicts[0] !== true) {
+    if (!results[0].merkleVerified) {
       throw new Error('proof-bound bucket-Merkle verification rejected the DPF result');
     }
     const result = results[0];
@@ -367,7 +387,6 @@ async function preflightAndQuery(): Promise<{
     scriptHash.fill(0);
     for (const result of results) result.free();
     results.length = 0;
-    resultJson.length = 0;
   }
 }
 
@@ -506,6 +525,7 @@ function selectVariant(variant: PaymentTwoProviderVariantV1): ReturnType<
         ),
       },
       offer: offers[0],
+      trustedOperatorSigningKey: activeLegs[0].trustedOperatorSigningKey,
     },
     {
       trust: {
@@ -517,6 +537,7 @@ function selectVariant(variant: PaymentTwoProviderVariantV1): ReturnType<
         ),
       },
       offer: offers[1],
+      trustedOperatorSigningKey: activeLegs[1].trustedOperatorSigningKey,
     },
   );
   selectedVariant = variant;
@@ -622,7 +643,17 @@ async function connectAndFetchPolicies(): Promise<[string, string]> {
           })) {
         throw new Error(`provider ${provider.index} live signed policy differs from the harness`);
       }
-      fetched.push({ fixture: provider, policy: accepted, view, scope });
+      fetched.push({
+        fixture: provider,
+        trustedOperatorSigningKey: exactHexBytes(
+          'trustedOperatorSigningKeyHex',
+          provider.trustedOperatorSigningKeyHex,
+          32,
+        ),
+        policy: accepted,
+        view,
+        scope,
+      });
     } catch (error) {
       accepted.free();
       throw error;
@@ -857,6 +888,8 @@ function validateFixture(fixture: PaymentTwoProviderFixtureV1): void {
       || fixture.providers[0]?.providerIdHex === fixture.providers[1]?.providerIdHex
       || fixture.providers[0]?.policySigningPubkeyHex
         === fixture.providers[1]?.policySigningPubkeyHex
+      || fixture.providers[0]?.trustedOperatorSigningKeyHex
+        === fixture.providers[1]?.trustedOperatorSigningKeyHex
       || fixture.providers[0]?.issuerOrigin === fixture.providers[1]?.issuerOrigin
       || (fixture.settlementMode === 'fake'
         && fixture.providers[0]?.expectedPayeePubkeyHex
@@ -875,6 +908,23 @@ function validateFixture(fixture: PaymentTwoProviderFixtureV1): void {
     throw new Error('browser harness refused a non-independent or funds-capable fixture');
   }
   exactHexBytes('manifestRootHex', fixture.manifestRootHex, 32);
+  for (const provider of fixture.providers) {
+    exactHexBytes('providerIdHex', provider.providerIdHex, 32);
+    exactHexBytes(
+      'policySigningPubkeyHex',
+      provider.policySigningPubkeyHex,
+      32,
+    );
+    exactHexBytes(
+      'trustedOperatorSigningKeyHex',
+      provider.trustedOperatorSigningKeyHex,
+      32,
+    );
+    if (provider.trustedOperatorSigningKeyHex === provider.providerIdHex
+        || provider.trustedOperatorSigningKeyHex === provider.policySigningPubkeyHex) {
+      throw new Error('browser harness operator trust key aliases provider or policy identity');
+    }
+  }
   exactHexBytes('databaseProof.blockHashHex', fixture.databaseProof.blockHashHex, 32);
   exactHexBytes('databaseProof.anchorHex', fixture.databaseProof.anchorHex, 36);
   exactHexBytes('databaseProof.indexMasterSeedHex', fixture.databaseProof.indexMasterSeedHex, 8);

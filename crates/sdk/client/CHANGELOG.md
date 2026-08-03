@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Removed the public DPF/Harmony raw-inspector and membership-only split
+  verifier surface. External callers now use
+  `query_batch_verified_with_inspector`, which binds the exact script-hash
+  inputs and decoded CHUNK payloads before returning an all-or-nothing Merkle
+  verdict. The lower-level split helpers remain crate-private for unit tests
+  and internal composition only.
+- `query_batch_verified_with_inspector` now returns
+  `Vec<VerifiedQueryResult>` instead of mutable
+  `Vec<Option<QueryResult>>`. The opaque result cannot be publicly
+  constructed, mutated, or deserialized; it retains the exact script hash and
+  database id and exposes read-only accessors. Converting it to a legacy
+  mutable `QueryResult` explicitly drops verification authority.
+
 ## [0.1.0] — initial release
 
 ### Added
@@ -52,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Failed proofs surface as `Some(QueryResult::merkle_failed())`
     rather than being coerced to `None`.
   - `query_batch_with_inspector` / `verify_merkle_batch_for_results`
-    split-verify pair for "run PIR now, verify later" workflows.
+    split-verify pair for "run PIR now, verify later" workflows (initially
+    public in 0.1.0; removed from the public API in Unreleased).
 - **OnionPIR per-bin Merkle verification**:
   - New module `onion_merkle.rs` (feature-gated on `onion`).
   - Two flat trees (INDEX + DATA), SHA256 leaf hash (no bin-index

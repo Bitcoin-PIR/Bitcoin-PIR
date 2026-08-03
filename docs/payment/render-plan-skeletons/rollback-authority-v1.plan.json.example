@@ -1,0 +1,67 @@
+{
+  "deployment_id": "replace-rollback-authority-v1",
+  "deployment_profile": "rollback-authority-v1",
+  "payload_artifacts": [
+    {
+      "class": "binary",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0555",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-authority/rollback-authority",
+      "target_path": "/opt/bitcoinpir/rollback-authority/INVALID_REPLACE_WITH_ROLLBACK_AUTHORITY_SHA256/rollback-authority",
+      "uid": 0
+    },
+    {
+      "class": "config",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 52942,
+      "mode": "0440",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-authority/authority-public.txt",
+      "target_path": "/etc/bitcoinpir/payment-v1/rollback-authority/authority-public.txt",
+      "uid": 0
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 52942,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-authority/authority.seed",
+      "target_path": "/etc/bitcoinpir/payment-v1/rollback-authority/authority.seed",
+      "uid": 52941
+    },
+    {
+      "class": "hash-manifest",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 0,
+      "mode": "0444",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/rollback-authority/rollback-authority.sha256",
+      "target_path": "/etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256",
+      "uid": 0
+    }
+  ],
+  "placeholders": {
+    "AUTHORITY_PUBKEY_HEX": "INVALID_REPLACE_WITH_64_LOWER_HEX_AUTHORITY_KEY",
+    "ROLLBACK_AUTHORITY_SHA256": "INVALID_REPLACE_WITH_ROLLBACK_AUTHORITY_SHA256"
+  },
+  "rendered_artifacts": [
+    {
+      "gid": 0,
+      "mode": "0644",
+      "source_path": "deploy/payment-v1/systemd/rollback-authority.service.in",
+      "source_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "target_path": "/etc/systemd/system/bitcoinpir-rollback-authority.service",
+      "uid": 0
+    }
+  ],
+  "schema_version": 2,
+  "systemd_version": "systemd 255 (255.4-1ubuntu8.15)",
+  "service_identities": [
+    {
+      "gid": 52942,
+      "group_name": "bitcoinpir-rollback-authority",
+      "uid": 52941,
+      "unit_name": "bitcoinpir-rollback-authority.service",
+      "user_name": "bitcoinpir-rollback-authority"
+    }
+  ]
+}

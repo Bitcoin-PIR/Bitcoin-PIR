@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Renamed the one-sided DPF and Harmony retained-redemption entry points to
+  `dangerousUnpairedAuthorizeRetainedService`,
+  `dangerousUnpairedAuthorizeRetainedHintService`, and
+  `dangerousUnpairedAuthorizeRetainedQueryService`. The former ordinary names
+  were removed so application code cannot mistake a secure-channel/session
+  check for verification of the independently selected two-provider payment
+  context. The strict Web adapters call these low-level methods only after
+  their pair readiness checks. Single-provider ORAM keeps its ordinary API.
+- Replaced the browser-facing split `queryBatchRaw` + arbitrary-JSON
+  `verifyMerkleBatch` flow with `queryBatchVerified`. DPF/Harmony now retain
+  query results inside one native async operation, re-derive input-dependent
+  INDEX/CHUNK semantics, require every expected CHUNK, and release no handles
+  unless the entire Merkle batch verifies.
+- `WasmQueryResult.fromJson()` and the public constructor now always produce
+  `merkleVerified = false`, ignoring any caller-supplied positive flag;
+  `mergeDelta()` always drops verification authority. Atomic DPF/Harmony
+  results cross the binding from an opaque native `VerifiedQueryResult`, and
+  their positive status lives in a private, non-deserializable provenance
+  marker rather than the mutable payload. Converting sync/query output to
+  caller-mutable plain JSON emits `merkleVerified = false`.
+
 ## [0.1.0] — initial release
 
 ### Added
@@ -84,8 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call otherwise).
 - **`WasmQueryResult.toJson()` / `fromJson()`** — round-trip
   shape with hex-encoded `txid` / `binContent` / `rawChunkData`.
-  `rawChunkData` hex-decodes symmetrically so persisted results
-  survive `fromJson` → `verifyMerkleBatch` byte-exact.
+  `rawChunkData` hex-decodes symmetrically for data portability. Deserialized
+  results are not accepted as DPF/Harmony proof input.
 - **`WasmDatabaseCatalog.getEntry(dbId)` / `hasBucketMerkle(dbId)`**
   accessors for the browser adapter layer.
 

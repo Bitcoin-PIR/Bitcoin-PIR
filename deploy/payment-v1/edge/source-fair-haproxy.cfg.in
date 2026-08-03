@@ -1,0 +1,236 @@
+# BitcoinPIR Payment V1 public source-fair edge. This rendered configuration
+# is hash-pinned and runs only behind the pinned Caddy TLS edge.
+#
+# Privacy boundary: source addresses exist only in these bounded, expiring
+# in-process tables. There is intentionally no log target, stats socket, peers
+# section, server-state file, SPOE/Lua hook, or PROXY/header forwarding to an
+# application server.
+
+global
+    maxconn 320
+    hard-stop-after 10s
+    zero-warning
+
+defaults
+    mode http
+    no log
+    option http-server-close
+    option http-no-delay
+    timeout connect 3s
+    timeout client 15s
+    timeout client-fin 5s
+    timeout server 15s
+    timeout server-fin 5s
+    timeout http-request 5s
+    timeout http-keep-alive 1s
+    timeout queue 3s
+    timeout tunnel 300s
+
+# Every public lane has its own short-lived source table. IPv4 sources are
+# mapped into the IPv6 table; IPv6 clients share a /64 bucket. `nopurge` makes
+# table exhaustion fail closed instead of evicting an active source bucket.
+backend provider_sources
+    stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)
+
+backend issuer_sources
+    stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),http_req_rate(60s),bytes_out_rate(1s)
+
+backend issuer_quote_sources
+    stick-table type ipv6 size 4096 expire 2m nopurge store http_req_rate(60s)
+
+backend issuer_quote_global
+    stick-table type integer size 1 expire 2m nopurge store http_req_rate(60s)
+
+backend directory_public_sources
+    stick-table type ipv6 size 4096 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)
+
+# The publisher has a distinct private-address Caddy ingress. HAProxy repeats
+# the exact WireGuard/private-route source check before allocating any source
+# state, so the public lane cannot reach the publisher application.
+backend directory_publisher_sources
+    stick-table type ipv6 size 64 expire 2m nopurge store conn_cur,conn_rate(10s),bytes_out_rate(1s)
+
+frontend provider_public
+    bind /run/bitcoinpir-source-fair-edge/provider.sock accept-proxy mode 660
+    maxconn 128
+    # Source is authoritative only after accept-proxy has parsed Caddy's
+    # PROXY-v2 preamble, so source-keyed admission deliberately begins in the
+    # HTTP rule set rather than an earlier tcp-request connection rule.
+    http-request deny deny_status 429 if { table_avl(provider_sources) eq 0 } !{ src,ipmask(32,64),in_table(provider_sources) }
+    http-request track-sc0 src,ipmask(32,64) table provider_sources
+    http-request deny deny_status 429 unless { sc0_tracked }
+    http-request deny deny_status 429 if { sc0_conn_cur gt 8 }
+    http-request deny deny_status 429 if { sc0_conn_rate gt 16 }
+    http-request deny deny_status 429 unless { method GET }
+    http-request deny deny_status 404 unless { path -m str /v1/pir }
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request del-header X-Forwarded-Host
+    http-request del-header X-Forwarded-Proto
+    http-request del-header CF-Connecting-IP
+    http-request del-header Client-IP
+    http-request del-header Fastly-Client-IP
+    http-request del-header Fly-Client-IP
+    http-request del-header True-Client-IP
+    http-request del-header X-Client-IP
+    http-request del-header X-Cluster-Client-IP
+    http-request del-header X-Envoy-External-Address
+    http-request del-header X-Original-Client-IP
+    http-request del-header X-Original-Forwarded-For
+    http-request del-header X-Real-IP
+    http-request del-header X-Request-ID
+    http-request del-header X-Correlation-ID
+    http-request del-header Traceparent
+    http-request del-header Tracestate
+    http-request del-header Baggage
+    http-request del-header Via
+    http-response del-header Via
+    filter bwlim-out provider_source_egress key src,ipmask(32,64) table provider_sources limit 8m min-size 2896
+    filter bwlim-out provider_stream_egress default-limit 4m default-period 1s min-size 2896
+    http-request set-bandwidth-limit provider_source_egress
+    http-request set-bandwidth-limit provider_stream_egress
+    default_backend provider_application
+
+backend provider_application
+    http-reuse never
+    server provider 127.0.0.1:8191 maxconn 128
+
+frontend issuer_public
+    bind /run/bitcoinpir-source-fair-edge/issuer.sock accept-proxy mode 660
+    maxconn 128
+    http-request deny deny_status 429 if { table_avl(issuer_sources) eq 0 } !{ src,ipmask(32,64),in_table(issuer_sources) }
+    http-request track-sc0 src,ipmask(32,64) table issuer_sources
+    http-request deny deny_status 429 unless { sc0_tracked }
+    http-request deny deny_status 429 if { sc0_conn_cur gt 8 }
+    http-request deny deny_status 429 if { sc0_conn_rate gt 32 }
+    http-request deny deny_status 429 if { sc0_http_req_rate gt 120 }
+    acl quote_create method POST
+    acl quote_create path -m str /v1/quotes/bolt11
+    http-request deny deny_status 429 if quote_create { table_avl(issuer_quote_sources) eq 0 } !{ src,ipmask(32,64),in_table(issuer_quote_sources) }
+    http-request track-sc1 src,ipmask(32,64) table issuer_quote_sources if quote_create
+    http-request deny deny_status 429 if quote_create !{ sc1_tracked }
+    http-request track-sc2 int(1) table issuer_quote_global if quote_create
+    http-request deny deny_status 429 if quote_create !{ sc2_tracked }
+    http-request deny deny_status 429 if quote_create { sc1_http_req_rate gt 6 }
+    http-request deny deny_status 429 if quote_create { sc2_http_req_rate gt 60 }
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request del-header X-Forwarded-Host
+    http-request del-header X-Forwarded-Proto
+    http-request del-header CF-Connecting-IP
+    http-request del-header Client-IP
+    http-request del-header Fastly-Client-IP
+    http-request del-header Fly-Client-IP
+    http-request del-header True-Client-IP
+    http-request del-header X-Client-IP
+    http-request del-header X-Cluster-Client-IP
+    http-request del-header X-Envoy-External-Address
+    http-request del-header X-Original-Client-IP
+    http-request del-header X-Original-Forwarded-For
+    http-request del-header X-Real-IP
+    http-request del-header X-Request-ID
+    http-request del-header X-Correlation-ID
+    http-request del-header Traceparent
+    http-request del-header Tracestate
+    http-request del-header Baggage
+    http-request del-header Via
+    http-request del-header Proxy-Authorization
+    http-request del-header Authorization
+    http-request del-header Cookie
+    http-response del-header Via
+    filter bwlim-out issuer_source_egress key src,ipmask(32,64) table issuer_sources limit 2m min-size 2896
+    filter bwlim-out issuer_stream_egress default-limit 1m default-period 1s min-size 2896
+    http-request set-bandwidth-limit issuer_source_egress
+    http-request set-bandwidth-limit issuer_stream_egress
+    default_backend issuer_application
+
+backend issuer_application
+    http-reuse never
+    server issuer 127.0.0.1:5610 maxconn 128
+
+frontend directory_public
+    bind /run/bitcoinpir-source-fair-edge/directory-public.sock accept-proxy mode 660
+    maxconn 48
+    http-request deny deny_status 429 if { table_avl(directory_public_sources) eq 0 } !{ src,ipmask(32,64),in_table(directory_public_sources) }
+    http-request track-sc0 src,ipmask(32,64) table directory_public_sources
+    http-request deny deny_status 429 unless { sc0_tracked }
+    http-request deny deny_status 429 if { sc0_conn_cur gt 4 }
+    http-request deny deny_status 429 if { sc0_conn_rate gt 12 }
+    http-request deny deny_status 429 unless { method GET }
+    http-request deny deny_status 404 unless { path -m str / }
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request del-header X-Forwarded-Host
+    http-request del-header X-Forwarded-Proto
+    http-request del-header CF-Connecting-IP
+    http-request del-header Client-IP
+    http-request del-header Fastly-Client-IP
+    http-request del-header Fly-Client-IP
+    http-request del-header True-Client-IP
+    http-request del-header X-Client-IP
+    http-request del-header X-Cluster-Client-IP
+    http-request del-header X-Envoy-External-Address
+    http-request del-header X-Original-Client-IP
+    http-request del-header X-Original-Forwarded-For
+    http-request del-header X-Real-IP
+    http-request del-header X-Request-ID
+    http-request del-header X-Correlation-ID
+    http-request del-header Traceparent
+    http-request del-header Tracestate
+    http-request del-header Baggage
+    http-request del-header Via
+    http-response del-header Via
+    filter bwlim-out directory_public_source_egress key src,ipmask(32,64) table directory_public_sources limit 4m min-size 2896
+    filter bwlim-out directory_public_stream_egress default-limit 2m default-period 1s min-size 2896
+    http-request set-bandwidth-limit directory_public_source_egress
+    http-request set-bandwidth-limit directory_public_stream_egress
+    default_backend directory_public_application
+
+backend directory_public_application
+    http-reuse never
+    server directory-public 127.0.0.1:8080 maxconn 48
+
+frontend directory_publisher
+    bind /run/bitcoinpir-source-fair-edge/directory-publisher.sock accept-proxy mode 660
+    maxconn 4
+    http-request deny deny_status 403 unless { src @DIRECTORY_PUBLISHER_CLIENT_IP@ }
+    http-request deny deny_status 429 if { table_avl(directory_publisher_sources) eq 0 } !{ src,ipmask(32,64),in_table(directory_publisher_sources) }
+    http-request track-sc0 src,ipmask(32,64) table directory_publisher_sources
+    http-request deny deny_status 429 unless { sc0_tracked }
+    http-request deny deny_status 429 if { sc0_conn_cur gt 2 }
+    http-request deny deny_status 429 if { sc0_conn_rate gt 8 }
+    http-request deny deny_status 429 unless { method GET }
+    http-request deny deny_status 404 unless { path -m str / }
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request del-header X-Forwarded-Host
+    http-request del-header X-Forwarded-Proto
+    http-request del-header CF-Connecting-IP
+    http-request del-header Client-IP
+    http-request del-header Fastly-Client-IP
+    http-request del-header Fly-Client-IP
+    http-request del-header True-Client-IP
+    http-request del-header X-Client-IP
+    http-request del-header X-Cluster-Client-IP
+    http-request del-header X-Envoy-External-Address
+    http-request del-header X-Original-Client-IP
+    http-request del-header X-Original-Forwarded-For
+    http-request del-header X-Real-IP
+    http-request del-header X-Request-ID
+    http-request del-header X-Correlation-ID
+    http-request del-header Traceparent
+    http-request del-header Tracestate
+    http-request del-header Baggage
+    http-request del-header Via
+    http-request del-header X-SSL-Client-Cert
+    http-request del-header X-Client-Cert
+    http-response del-header Via
+    filter bwlim-out directory_publisher_source_egress key src,ipmask(32,64) table directory_publisher_sources limit 2m min-size 2896
+    filter bwlim-out directory_publisher_stream_egress default-limit 1m default-period 1s min-size 2896
+    http-request set-bandwidth-limit directory_publisher_source_egress
+    http-request set-bandwidth-limit directory_publisher_stream_egress
+    default_backend directory_publisher_application
+
+backend directory_publisher_application
+    http-reuse never
+    server directory-publisher 127.0.0.1:8081 maxconn 4

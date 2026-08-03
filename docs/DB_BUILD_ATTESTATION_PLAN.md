@@ -150,19 +150,21 @@ Known cleanups:
   `super_root`.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
   with the pinned expected values below.
-- `web/src/oram-source-proof.ts::verifyOramSourceProof` checks the published
-  `/proofs/oram-source/mainnet_948454.json` artifact chain for internal
-  consistency. It hashes every listed compact artifact, recomputes
-  `BuildEvidence::report_data()` from the binary `build-evidence.bin`, checks
-  that value against the SNP report and report-data sidecar, binds the direct
-  input hashes to ORAM output metadata/build logs, checks output hashes and
-  initial controller/auth roots, and requires the explicit
-  `MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN` before returning `verified`.
-- The static TypeScript verifier does **not** validate the builder SNP signature
-  or AMD certificate chain and does not prove which ORAM image the live runtime
-  has open. The manifest's `liveDeployment` field is informational only. Those
-  are separate trust gates; do not describe the static proof as live-serving
-  attestation.
+- `web/src/oram-source-proof.ts::verifyOramSourceProof` reserves
+  `/proofs/oram-source/current.json` for a future production artifact. It
+  strictly decodes BuildEvidence v1/v2 and the root payload, recomputes the
+  versioned report-data and v2 params domains, hashes every referenced
+  artifact, and binds the exact database/all-artifacts/server-manifest bytes to
+  the hashes inside BuildEvidence. A production ORAM proof must be
+  predecessor-free full-build v2.
+- By default the verifier also validates the raw builder SNP report with the
+  AMD ARK/ASK/VCEK artifacts and requires the already verified live db0 proof
+  to have the exact attested server-manifest root and pinned database fields.
+  Disabling signature verification is fixture-only and can never return
+  `verified`. The verifier is invoked only after the normal runtime identity,
+  secure-channel, and database-proof gates; it does not replace those gates.
+- No `current.json` is published yet. The historical v1 artifact disclosed an
+  ORAM seed and now lives only under test fixtures; it is always unverified.
 
 ### 7. Deployment
 
@@ -174,12 +176,12 @@ Known cleanups:
 
 ### 8. Snapshot Artifact and Live Rollout
 
-The `mainnet_948454` snapshot has a complete database proof bundle under
-`web/public/proofs/oram-source/mainnet_948454/db/`. The same directory is also
-one input to the broader static direct-ORAM source-binding proof, but the
-database subdirectory independently passes `bpir-admin db-proof verify` with
-the pinned snapshot MuHash and bucket/Onion roots. The compact bundle is now
-installed as `db_id=0`'s `proof_dir` on both production hosts. On 2026-07-19,
+The historical `mainnet_948454` snapshot database proof bundle is retained at
+`web/src/__tests__/fixtures/oram-source-proof-v1-leaked/` for regression tests,
+not web publication. Before that relocation, its database subdirectory
+independently passed `bpir-admin db-proof verify` with the pinned snapshot
+MuHash and bucket/Onion roots. A compact operational copy was installed as
+`db_id=0`'s `proof_dir` on both production hosts. On 2026-07-19,
 `bpir-admin db-proof verify-live` returned `status=ok` for db 0 and db 1 on
 both `wss://weikeng1.bitcoinpir.org` and
 `wss://weikeng2.bitcoinpir.org`.

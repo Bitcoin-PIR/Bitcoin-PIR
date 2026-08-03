@@ -1,9 +1,44 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-07-29. This document describes repository code and local
-tests, not a production deployment. “Implemented” means that a code path exists;
-“tested” names the boundary actually exercised. It does not mean that an
-operator has activated the path with real money or public infrastructure.
+Status snapshot: 2026-08-02. This document describes repository code, focused
+tests, and the current functional-beta evidence; it is not a mainnet-production
+readiness claim. “Implemented” means that a code path exists; “tested” names
+the boundary actually exercised. It does not mean that an operator has
+activated the path with real money.
+
+## Functional-beta update
+
+- A centrally curated, explicitly degraded single-relay directory has published
+  and read back signed catalog events. A browser completed a continuous,
+  directory-selected Free query across two independently selected providers
+  while retaining the normal strict identity, binary, database, preflight, and
+  result-verification path.
+- The functional-beta web bundle carries the reviewed two-provider trusted
+  bootstrap needed to begin strict admission. It is parsed only into page
+  memory, remains independently authoritative over directory discovery, and
+  can be explicitly replaced for an intentional trust change. The bundled
+  directory defaults visibly identify the current single-relay mode as
+  degraded.
+- The browser and server now support bounded chunking/reassembly of a large
+  strict Merkle tree-top preflight response. The server performs the payment
+  admission check before the expensive query work, and the browser keeps the
+  live proof-root binding when deriving that admission scope.
+- Free, direct BOLT11 receipt, standard Cashu eCash, Cashu BAT, and
+  experimental ARC have targeted integration coverage. ARC remains
+  experimental and is not a cryptographically reviewed production claim.
+- The final no-funds method evidence is current-tree and explicit: the fake
+  issuer covers BOLT11 receipt lifecycle/recovery, the two-provider Chromium
+  harness covers Cashu BAT and experimental ARC (3/3), and the exact CDK
+  0.17.3 fakewallet script covers standard `cashuB` browser import, two-provider
+  admission, NUT-03/NUT-07 custody transition and cleanup. None of these runs
+  used a public mint, a real Lightning node or real funds.
+- Direct BOLT11 has completed one bounded, policy-bound Signet smoke: the
+  client verified the provider, paid a Signet invoice through an isolated
+  payer, observed issuer settlement, claimed a provider-bound direct receipt,
+  and received pre-query admission. That smoke deliberately sent no PIR query
+  and retained no invoice or capability fixture. User manual acceptance remains
+  the next external acceptance step. No mainnet funds or production Cashu mint
+  operation are implied by this status.
 
 ## Frozen protocol decisions
 
@@ -56,6 +91,21 @@ operator has activated the path with real money or public infrastructure.
       pre-existing durable provider spend state.
 - [x] Signed policy activation with provider identity, policy epoch/fork,
       credential-keyset and Cashu-manifest rollback floors.
+- [x] A separate exact-digest storeless activation path is intended for a
+      measured Free-PoW provider. It rejects empty policies/scopes and every
+      non-provider-local Free proof-of-work or decorated issuer/credential
+      offer, and `unified_server` refuses retained policies, ProviderStore,
+      rollback, Free-IP, payment, Cashu/BAT/ARC/shared-issuer, legacy keyset and
+      test-root inputs in that mode. A real loopback child-process test performs
+      secure-channel challenge, PoW solution, AUTH and one protected DPF frame,
+      rejects the same solution on a second secure-channel exporter with no
+      outstanding challenge, and confirms that no provider/rollback
+      SQLite/WAL/SHM appears. This is source/test evidence, not proof that a
+      VPSBG UKI has been built, uploaded, or measured. A deployment may claim
+      measurement only after its exact policy digest and startup arguments are
+      covered by independently verified UKI/attestation evidence; any policy
+      renewal or signed-byte change then requires a new UKI and client pin
+      ceremony.
 - [x] ProviderStore schema v7 with global provider-local spend uniqueness,
       BAT raw-key lineage, durable Free IP quota state, standard-Cashu swap
       recovery intents, finite per-mint/unit custody exposure, encrypted
@@ -224,7 +274,14 @@ operator has activated the path with real money or public infrastructure.
       return `NotFound` before input decoding or store access in this mode. The
       settlement signing key remains necessary for redeem/balance signatures,
       and retained verifying keys remain available for exact committed redeem
-      and approval recovery after rotation. A private Rust unit-fixture
+      and approval recovery after rotation. Production registration now
+      requires a separate provider-request public key for every authorization;
+      startup rejects count mismatch, invalid keys and reuse with clearing,
+      operator or issuer-settlement roles. Offline `bpir-admin` builders create
+      and self-verify the operator authorization and independent issuer
+      approval, while `ProviderLedgerBalanceClientV1` reads the signed
+      auth-credit balance without inventing a payout registration or target.
+      A private Rust unit-fixture
       switch retains the raw loopback payout/status roundtrip solely to test the
       transport-neutral state machines, store reopen, exact response replay
       after authorization/registration expiry and provider request-key
@@ -361,14 +418,108 @@ operator has activated the path with real money or public infrastructure.
 - [x] Browser capabilities and BOLT11 recovery bind the exact policy digest in
       authenticated storage and lock selection. The IndexedDB v3 migration
       deletes legacy capability/recovery records that cannot prove that bind.
-- [x] DPF and Harmony adapters accept independent per-leg operator pins;
-      strict identity verification rejects missing or reused pins and never
-      treats the deprecated shared-pin field as two independent anchors.
+      The v4 migration additionally deletes only V3 in-flight BOLT11 recovery
+      rows, because they did not authenticate issuer ID, network, or expected
+      payee; capabilities plus policy/quote anti-rollback checkpoints remain.
+      Contextless V3 capabilities acquired through BOLT11 remain physically
+      encrypted but strict current/retained paths deliberately cannot spend
+      them; they are stranded rather than unsafely rebound. Contextless
+      capabilities from non-BOLT acquisition remain usable. Production must
+      not activate V4 over funded V3 BOLT11 inventory without an explicit
+      migration/refund decision; the first pre-production activation has no
+      such user inventory.
+- [x] DPF and Harmony native/WASM/Web adapters expose a true staged provider
+      lifecycle. The browser connects, attests, upgrades, pins, installs the
+      database proof and may load role 0's signed policy before it enables role
+      1 selection; neither transport receives the peer choice, peer key or a
+      pair identifier. Before role 1 is dialled, browser-local validation
+      requires two non-zero, distinct operator pins. The complete pair then has
+      to pass the same pin gate again plus distinct-identity,
+      compatible-catalog and exact-root gates. A one-shot Merkle tree-top
+      preflight runs for the selected `db_id` **before** either capability is
+      acquired or authorized, and only then makes capability paths and that
+      database's PIR query method reachable. Failure spends neither role and
+      cannot revive readiness or retry within the attempt. Per-leg
+      generation/client/URL/config owners prevent late connect, catalog, proof,
+      announce or preflight completions from publishing stale readiness after
+      disconnect/replacement. The deprecated shared-pin field never counts as
+      two independent anchors.
+- [x] The DPF browser freezes the selected `db_id` after role 0 bootstrap and
+      reuses that exact value for role 1 policy admission, the real query and
+      its Merkle verification; later selector changes cannot move a paid grant
+      onto a different database.
+- [x] Harmony hint and query roles use separate workload scopes and independent
+      prices. A hint provider may expose its signed policy before a query
+      provider is selected, but filling or restoring the exact
+      dataset/PRP-bound browser cache waits for the pair's pre-authorization
+      tree-top gate. A
+      hint transport close invalidates its session-bound V2Full grant; cached
+      hint bytes may remain, while query execution remains blocked until an
+      independently admitted query role and the pre-authorization pair gate
+      complete.
 
 ### Directory and operator tooling
 
+- [x] The fixed same-host directory-publisher network now has a source-closed
+      activation ceremony in addition to its inert render profile. A canonical
+      plan binds exact installed files, external sentinels, firewall evidence,
+      Caddy/publisher preimages, boot identity and regular Node/systemctl/ip
+      executables, plus the executor's exact three-module local import closure.
+      Its native launcher now binds a seven-entry manifest, a machine-parsed
+      static-launcher proof, a recursive descriptor-pinned Node ELF closure and
+      descriptor-sealed Node/module execution that remains safe across atomic
+      pathname replacement. The launcher rejects `/etc/ld.so.preload`, invokes
+      the pinned dynamic loader with a closed library path and validates two
+      `/proc/self/maps` samples. The shared schema-v2 plan and
+      receipt validator is also consumed by the downstream Caddy overlay and
+      now requires a genuinely active/running nonzero Caddy generation. Each
+      IPv4/IPv6 INPUT/FORWARD before chain has exactly one ordered
+      `RELATED,ESTABLISHED` accept; deletion, duplication and post-user-jump
+      placement fail closed. A
+      fresh at-most-one-hour approval can start only the netns
+      unit; a different receipt-bound approval can stop only that unit. Runtime
+      verification closes nsfs, veth txid aliases/MACs/cross-indices, loopback,
+      the reviewed down/addressless kernel fallback subset, connected routes
+      and zero forwarding. Descriptor-pinned command execution and owner-only
+      pending/final receipt recovery pass real Linux tests; the native helper's
+      crash/monitor/cleanup harness passes in a disposable arm64 Linux
+      container. The ceremony never changes Caddy/firewall/sentinels, starts
+      the publisher or handles a private key. The content-addressed owner now
+      opens the host nftables generation subscription and takes the exact
+      xtables lock before topology setup; it fails on any event, queue error or
+      lock-inode drift, repeats the full barrier immediately before READY, and
+      the publisher is `BindsTo=` that lifetime. A deterministic real nft
+      mutation after client-ready produces no READY; exact systemd-255
+      pre/in-flight/post tests pass. The initial live semantic lineage remains
+      incomplete: no post-lock UFW/raw/nft revalidation binds owner InvocationID,
+      boot, rule digest and publication approval. Policy and systemd therefore
+      keep publication blocked with the intentionally unavailable
+      `PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED` condition.
+- [x] The Caddy-admin UDS cold migration and publisher-netns ceremony now use
+      the same publisher lifecycle lock. The cold plan binds an exact inactive
+      netns unit plus absent nsfs path, host veth and five sentinels; checks run
+      before and after lock acquisition and immediately before every Caddy
+      stop/candidate start/rollback start. A pre-stop activation race invokes
+      no Caddy lifecycle command.
+      After a durable start request, any error/nonzero/timeout or later proof
+      failure retains that shared lock. Same-transaction recovery either
+      terminalizes an exact late-active generation or releases the lock only
+      after repeated no-job, exact-inactive, absent nsfs/veth and exact-sentinel
+      proof. Both ordinary pre-start closure passes use a
+      Job/unit-network/Job clamp, and committed replay also rejects a pending
+      PID 1 job.
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
-      checkpoints, tombstones, relay split-view checks and rollback state.
+      checkpoints, tombstones, strict-mode relay split-view checks and rollback
+      state. The separate centralized-single-relay API requires an explicit
+      exact-one-relay opt-in and marks the result degraded without persisting its
+      mode or a relay URL in rollback state. Selectable output carries the
+      conservative minimum checkpoint/all-entry expiry, including tombstones;
+      the Web path reconstructs exact immutable typed output, uses one
+      nondecreasing wall-clock plus page-elapsed time floor, and rechecks freshness before admission,
+      payment, token, authorization, and query transitions. Expiry clears
+      active trust without manual fallback. Mode, ordered origin-only relay
+      origins, publisher key and bootstrap revision form an immutable refresh
+      intent, so stale relay/CAS completion cannot activate.
 - [x] A repository-owned directory-only Nostr relay now implements the exact
       bounded `EVENT`/`REQ`/`CLOSE` subset for one pinned kind-30078 publisher.
       It binds loopback, stores an immutable canonical-event archive plus
@@ -379,6 +530,31 @@ operator has activated the path with real money or public infrastructure.
       logging. Its current macOS library and binary unit suites passed 23/23;
       Linux clippy, installed shutdown/backup drills and public WSS behavior
       remain exact-commit/deployment evidence rather than source claims.
+- [x] A CI-wired, explicitly selected process test starts two copies of the
+      repository's production `bitcoinpir-directory-relay` binary with
+      independent config/SQLite/runtime state and four distinct loopback
+      listeners. Every accepted signed `EVENT` uses a publisher lane; every
+      accepted ID/catalog `REQ` and returned `EVENT`/`EOSE` uses a public lane.
+      Deliberate wrong-lane probes must close, and an exact-ID public readback
+      proves the rejected EVENT sentinel was not persisted. It fails closed on
+      offline/exact split-view errors, recovers lost ACK by a public-lane durable
+      ID probe plus publisher-lane idempotent retry, and verifies both listeners
+      plus stored heads across independent restarts. A
+      companion three-authority test separates provider
+      0, provider 1 and issuer DB/key/namespace/TLS material. It starts authority
+      and TLS-edge child test harnesses; each authority harness invokes
+      production `rollback_authority::run`, while the parent directly calls the
+      production ProviderStore/IssuerStore adapters. Deployment-set validation,
+      raw-client rejection and Store-adapter rejection are asserted at their
+      respective boundaries. Provider- and issuer-authority backends are stopped
+      independently while their TLS edges remain online; only the affected Store
+      fails closed, while the other two Stores remain independently openable and
+      authenticated through their own authorities. The issuer recovers the exact
+      same generation and commitment from its original authority database. It
+      does not launch `unified_server`, `payment-issuer`, or
+      installed binaries. These are local topology tests, not claims of
+      operational independence; their first Linux CI execution remains
+      candidate-commit evidence.
 - [x] Browser relay fetching and encrypted IndexedDB directory state.
 - [x] A no-account, process-local NIP-01 fake-relay integration test closes the
       signed publisher-artifact to two-relay read path through all 16 shards,
@@ -388,10 +564,14 @@ operator has activated the path with real money or public infrastructure.
 - [x] Offline `bpir-admin service-keygen`, `service-policy`, directory assertion,
       entry and checkpoint builders, plus an explicit native
       `directory-artifact publish` transport. Publishing accepts no signing key,
-      requires a pinned directory public key, two through eight credential-free
-      public `wss://` relay hostnames, exact per-event positive OK and bounded
-      per-relay time/bytes. It attempts every relay and fails the command on any
-      partial result; exact immutable artifacts can be rerun manually.
+      requires a pinned directory public key, and defaults to two through eight
+      credential-free public `wss://` relay hostnames. Exactly one relay requires
+      `--centralized-single-relay`; its receipts are explicitly
+      `centralized=true degraded=true`, while zero relays and mismatched
+      flag/count combinations fail before network I/O. Publishing requires exact
+      per-event positive OK and bounded per-relay time/bytes. It attempts every
+      relay and fails the command on any partial result; exact immutable artifacts
+      can be rerun manually.
 - [x] The staging-only Nostr readback tool accepts no key or publish operation,
       mirrors the Rust canonical public-`wss://` grammar on the raw input, and
       requires the Rust publisher's domain-separated event-set digest, valid
@@ -446,6 +626,27 @@ operator has activated the path with real money or public infrastructure.
       App token; credential governance and mutable repository/environment
       policy remain deployment gates. No deployment was triggered or
       authorized here.
+- [x] A repository-wide workflow supply-chain gate parses every workflow with
+      the locked YAML parser, rejects anchors/aliases/merge keys, permits only
+      reviewed action-name/40-hex-commit pairs, and requires every checkout to
+      use the YAML boolean `persist-credentials: false`. It rejects the
+      higher-priority `web/npm-shrinkwrap.json` before installing or importing
+      the parser, leaving `web/package-lock.json` as the only npm parser lock.
+      The SDK, generated-proof, audit and build-determinism workflows now use
+      those exact pins. The lightweight pir-core determinism job no longer
+      restores a Cargo/target cache, uses `--locked --offline` for every Cargo
+      command, and is retriggered by its root manifest, lockfile, toolchain,
+      Cargo configuration and vendored-source inputs. Updating an action still
+      requires a reviewed allowlist change in the same checked revision. Its PR
+      trigger is intentionally path-unfiltered and it handles merge groups, so
+      a future required check reports for every protected-main PR and merge-
+      queue candidate instead of remaining Pending.
+      A read-only 2026-07-29 recheck still found no classic branch protection or
+      repository ruleset on `main`; that is an external governance blocker, not
+      something this source change can close. Until a required-check/no-direct-
+      push rule is installed, this in-repository gate can be rewritten or
+      deleted and a push failure is only post-merge detection. It also does not
+      replace GitHub token/PAT/App governance.
 
 ## What the tests currently prove
 
@@ -455,6 +656,11 @@ operator has activated the path with real money or public infrastructure.
 - [x] Direct receipt and BAT production ProviderStore adapters persist/reject
       replay across restart; Free, Cashu and experimental ARC have focused
       persistence and concurrency suites.
+- [x] A dedicated two-provider OnionPIR process test performs real chunked key
+      registration and decrypts production INDEX, CHUNK and both Merkle-sibling
+      worker responses. It proves wrong-provider and structural wrong-scope
+      failures are non-consuming, post-spend DFA failures are terminal, and
+      receipt replay remains rejected after ProviderStore/process restart.
 - [x] The GitHub-closeout run exposed a conservative same-database
       rollback-floor acknowledgement race: a later writer could anchor a
       successor before an earlier caller received its CAS result, consuming
@@ -497,6 +703,17 @@ operator has activated the path with real money or public infrastructure.
       cross-provider rejection without a shared spent set. They intentionally
       use `NoSevHost` and `dangerous_unpaired_*`, so they are not production
       identity, binary-pin or hardware-attestation evidence.
+- [x] A separate `cuckoo-oram` process E2E builds tiny direct INDEX/CHUNK
+      Circuit ORAM images, authenticated sidecars and controller state in an
+      independent trusted-state directory, then launches the real
+      ORAM-enabled `unified_server`. It proves cleartext and pre-authorization
+      fail-closed behavior, provider/backend/workload scope binding, one-shot
+      accounting, exact direct-ORAM result bytes, durable receipt replay
+      rejection and authenticated ORAM reopen with a fresh receipt after
+      process restart. The pinned Linux run passed 1/1 and warnings-denied
+      clippy. Its deterministic data, local SQLite floor, `NoSevHost` and
+      unpaired SDK primitives are test boundaries, not production TEE or
+      trust-chain evidence.
 - [x] A non-default Standard Cashu process E2E is implemented and wired into
       Payment CI. It launches a deterministic TLS NUT-03 mint plus two real,
       independently configured `unified_server` processes: one signed policy
@@ -522,17 +739,23 @@ operator has activated the path with real money or public infrastructure.
       `payment-issuer`, places a private WebPKI TLS edge with a signed leaf-SPKI
       pin in front of its redeem-only route, and launches a real paid
       `unified_server` plus an independently selected Free/Open peer. A BAT
-      redemption credits the authenticated provider's shared ledger exactly
-      once and creates exactly one provider-local delivery claim; provider
-      restart/replay cannot create a second grant. Wrong CA, wrong signed pin
-      and offline issuer all fail closed before issuer application handling and
-      create neither a local claim nor a provider account. The test also checks
-      that payout rows remain zero and server logs contain no invoice, payment
-      hash, preimage or raw BAT secret. The fake-Lightning issuer binary is
-      supplied only by an absolute, non-symlink path and the shared test feature
-      inherits the release-rejected WebPKI hook. This branch's first executable
-      proof is intentionally pending the Linux Payment CI run; implementation
-      and static formatting alone are not recorded as a pass.
+      redemption reaches a complete canonical issuer success, after which the
+      test edge drops one response. The provider fails closed without a local
+      delivery claim; restarting issuer and provider against their original
+      stores/floors and replaying the identical proof reproduces the same
+      canonical-body, request and idempotency-key digests, credits ledger
+      sequence one exactly once and creates exactly one local claim. A later
+      replay cannot create a second grant. The fixed-size digest transcript is
+      test-local and retains no raw envelope, credential, idempotency key, HTTP
+      metadata, peer address or timing. Wrong CA, wrong signed pin and offline
+      issuer all fail closed before issuer application handling and create
+      neither a local claim nor a provider account. The test also checks that
+      payout rows remain zero and server logs contain no invoice, payment hash,
+      preimage or raw BAT secret. The fake-Lightning issuer binary is supplied
+      only by an absolute, non-symlink path and the shared test feature inherits
+      the release-rejected WebPKI hook. This branch's first executable proof is
+      intentionally pending the Linux Payment CI run; implementation and static
+      formatting alone are not recorded as a pass.
 - [x] Web unit tests cover acquisition recovery, directory storage, vault
       locking and local pair-selection boundaries.
 - [x] A dedicated Playwright job runs the production browser vault and
@@ -584,30 +807,28 @@ operator has activated the path with real money or public infrastructure.
       gate requires no network-installed fuzz tooling and retains explicit
       case-count/input-size bounds.
 - [x] An opt-in disposable CDK 0.17.3 fake-wallet runner starts only a random
-      loopback HTTP mint, obtains a real padded V4 `cashuB` token containing
-      NUT-12 wallet metadata, and proves the Rust logic used by the production
-      WASM importer accepts and normalizes it without forwarding DLEQ material.
-      That step is a native library test, not generated-JS/WASM browser-ABI
-      evidence. The runner then executes the
-      production provider-side NUT-03 state machine against that real CDK mint,
-      verifies the official full NUT-02 V2 keyset derivation and NUT-12 DLEQ,
-      atomically commits the grant plus custody notes, and proves resume does
-      not send a second swap. The current test source additionally reconstructs
-      a spend from authenticated custody in memory, submits it through a second
-      independent client, and expects the first custody lot to become `SPENT`
-      while successor custody remains `UNSPENT`, without placing the bearer in
-      process argv. After two earlier branch passes, a final 2026-07-28
-      current-tree default-mode run exited 0: current `bpir-admin` and WASM
-      builds succeeded, and the Chromium, native-WASM interop and provider
-      custody cases each passed 1/1. The complete run performed two real NUT-03
-      swaps and four exact NUT-07 observations against the disposable mint;
-      its owned CDK process and private runtime directory were absent after
-      cleanup. The gate first caught and then closed a missing required
-      synthetic leaf-SPKI pin plus an obsolete ignored-test import. The runner
-      uses no Lightning node or real funds and maps
-      only one synthetic test identity to loopback; the production WebPKI HTTPS
-      transport is unchanged. An unmodified provider-process/public-mint E2E
-      remains a staging gap.
+      loopback HTTP mint and creates two independent 8-sat padded V4 `cashuB`
+      notes. Current generated JS/WASM imports the first note in Chromium,
+      rejects its untouched HTTP identity, retires the accepted capability from
+      the encrypted vault, and emits owner-only canonical provider wire bytes.
+      A feature-gated private-CA TLS proxy exposes only the signed
+      `https://localhost:<port>` identity and fixed leaf-SPKI pin to a real
+      Standard Cashu `unified_server`; an independently configured Free server
+      completes the pair. The joined process test establishes both secure
+      channels, verifies exact manifest-root policies, runs proof-bound
+      preflight, DPF and Merkle absence verification, restarts both providers,
+      and rejects replay from provider-local durable state while the CDK proxy
+      request count remains one. The second note separately covers native
+      NUT-02/NUT-03/NUT-12 plus four NUT-07 custody observations, including
+      first custody `UNSPENT -> SPENT` and independent successor custody
+      `UNSPENT`, without placing a bearer in process argv. The 2026-07-29 Linux
+      run passed the Chromium, joined provider, native-WASM and native-custody
+      cells 1/1 each. CDK stdout/file logs contained no bearer, payment hash,
+      preimage or BOLT invoice value. The runner uses no Lightning node or real
+      funds; production WebPKI HTTPS is unchanged and release compilation with
+      the test root is forbidden. External public-mint interoperability,
+      independent production rollback authority and admin retirement remain
+      staging gaps.
 - [x] The product-owned wire-shape contract and compiled Rust conformance tests
       bind all five authorization methods and all five workload starts to one
       16,414-byte encrypted application request record. They separately admit
@@ -643,20 +864,101 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Implemented but not production-activated
 
-- [x] `bpir-admin lightning-staging preflight` implements a read-only,
-      fail-closed default-Signet gate for one local payer/router/issuer role.
+- [x] `bpir-admin lightning-staging bootstrap-preflight`, `preflight`, and
+      `preflight-supervisor` implement read-only, fail-closed default-Signet
+      gates for one local
+      payer/router/issuer role. Bootstrap is receipt-independent, queries no
+      gossip and accepts only zero peer channels, zero `listfunds`
+      outputs/channels plus empty `staticbackup`; it is the no-funds
+      identity/runtime gate before any faucet or channel mutation. The
+      pre-start layout gate requires the restored native 32-byte `hsm_secret`
+      with exact owner and mode `0400`, so an absent secret cannot generate a
+      replacement identity. Full preflight remains the post-channel activation
+      gate. The production supervisor no longer latches one successful pass:
+      before and after every renewal it validates the root-owned systemd
+      InvocationID mapping for the exact CLN unit, binds its first generation,
+      writes a private 180-second volatile lease after the initial pass and
+      after each 20-second sleep,
+      and sends
+      `READY`/watchdog notifications only after a complete successful renewal
+      covered by one cooperative 55-second async deadline; blocking filesystem
+      calls are bounded by exact `TimeoutStartSec=120` before the first
+      `READY`, then by the 90-second systemd watchdog. Every renewal
+      revalidates the exact
+      root-owned, content-pinned `/usr/bin/busctl` and requires the systemd
+      manager's typed `ServiceWatchdogs=true`. The unit is
+      `Type=notify`, `WatchdogSec=90`, `Restart=no`; both the RPC guard and
+      issuer bind to it, so any renewal failure, hang or CLN generation change
+      stops downstream payment access. Their 30-second stop bounds leave about
+      60 seconds of margin before the lease expires. Preflight and guard each
+      consume a distinct one-shot token from a root:root mode-`0700` runtime
+      directory before dropping privileges, so restarting CLN cannot silently
+      create a fresh downstream generation.
+      Live runtime evidence reads typed systemd D-Bus dependency arrays and
+      `TimeoutStopUSec`, `ExecStartEx`, `ExecStartPreEx`, `WatchdogUSec`, and
+      `WatchdogTimestampMonotonic`, plus two typed manager
+      `ServiceWatchdogs` passes. Each watchdog pass binds the immediately
+      following boot uptime, requires a fresh timestamp, and rejects rollback;
+      standalone D-Bus `t` values are stored as lossless canonical decimal
+      strings, including exact uint64 max for an inactive unit's infinity
+      sentinel. Scalar/typed pairs are lifecycle-closed: stopped is
+      `infinity`/uint64-max, ordinary live is `0`/`0`, and live preflight is
+      `1min 30s`/`90000000`;
+      every rendered relationship must be loaded by the manager and the
+      snapshots repeat at final sealing. Stale pre-`daemon-reload` manager
+      state fails closed.
       It pins Core/CLN/CLI/plugin binaries below explicit protected parents,
       authenticates an explicit loopback Core RPC endpoint with an owner-only
       pinned cookie, checks the exact default challenge/genesis, verifies CLN
       role/channel/gossip topology and directional minimum-liquidity estimates,
-      and binds a fresh backup receipt to the current SCB digest. Atomic receipt
-      writes explicitly unlock the pinned output-parent descriptor on every
-      ordinary success/error path; the primary operation error wins, while a
-      successful write followed by unlock failure fails closed. The latest
-      focused admin suite passed 126/126 with warnings denied. Its command
-      runner is mock-tested against a fixed
-      read-only RPC allowlist. It has not yet been run on the final persistent
-      Signet hosts and does not replace actual liquidity, payment, restore or
+      and binds a fresh backup receipt to the current SCB digest. The static
+      preflight TOML contract is root:dedicated-preflight-group mode `0440`
+      below a root-owned non-writable parent; every path ancestor is a
+      root-owned non-writable `O_NOFOLLOW`-opened directory. The command pins
+      both the actual non-root reader EUID and the exact effective plus
+      supplementary group set (config, cookie and CLN groups only). The
+      receipt is ceremony-created preflight-owned mode `0600` state below the
+      unit's mode-`0700` `StateDirectory`; V1 pins the exact
+      `/var/lib/bitcoinpir-lightning-preflight/backup-receipt.toml` path and
+      binds its configured owner/group to the trusted reader UID/config GID.
+      It is never a rendered `/etc` payload or static hash-manifest input.
+      Atomic receipt writes explicitly unlock the pinned output-parent
+      descriptor on every ordinary success/error path; the primary operation
+      error wins, while a successful write followed by parent `fsync` or unlock
+      failure is explicitly outcome-unknown and fails closed. Both command
+      runners are mock-tested against separate fixed
+      read-only RPC allowlists.
+      The rendered v26.06.6 bundle gate now requires the exact selected
+      38-file deployment-file set: `lightning-cli`, `lightning-hsmtool`, all
+      eight mandatory CLN subdaemons, `lightningd`, and all 27 built-in plugin
+      bytes at the
+      official `libexec` path. Only `bcli` and `chanbackup` remain executable;
+      the other 25 are exact root-owned `0444` payloads and exact-disabled by
+      basename. A root:root `0555` tmpfiles/runtime-evidence placeholder makes
+      the actual `/srv/lightning/plugins` default scan path a required,
+      non-ignore-missing namespace mask. The pre-start layout verifier does not
+      misclassify that already-masked path as absent; it separately rejects the
+      non-default network-local lookalike. The
+      live preflight requires exactly two active, non-dynamic plugins. This
+      replaces the crashing v26.06.6 `clear-plugins` path and closes the
+      previously misidentified `/srv/lightning/plugins` scan surface. A
+      separate one-entry manifest binds exactly one
+      private `libpq.so.5` below a digest-equals-file root. A source skeleton
+      can no longer omit a member of the selected deployment-file set. The CLN
+      unit exposes only that independent root through `LD_LIBRARY_PATH`, and
+      source, rendered and offline-manifest gates reject a second library,
+      `LD_PRELOAD` or an alternate loader path. This preserves
+      `CLN_BUNDLE_SHA256` as the upstream release-archive identity, but it does
+      not prove the live mapped object or a complete ELF closure. The private
+      libpq retains host-ABI dependencies on libssl, libcrypto, GSSAPI, LDAP and
+      libc. Production CLN activation remains blocked until maps-plus-inode
+      runtime evidence is implemented and that host ABI trust is approved. The
+      core unit intentionally omits `CLN-LOADER-MAPS-APPROVED` so a no-funds
+      generation can produce that evidence; preflight, guard and issuer require
+      it. The sentinel must remain absent until the separately reviewed schema
+      PR and evidence approval exist. These paths have not yet been run on the
+      final persistent Signet hosts and do not replace actual liquidity,
+      payment, restore or
       peer/bootstrap acceptance. The receipt is an operator assertion:
       `staticbackup`/SCB material supports channel recovery but is not a live or
       dynamic `lightningd.sqlite3` backup, and the command neither copies nor
@@ -666,7 +968,7 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       but has not been connected to a persistent, external or public-network node.
       It deliberately binds loopback and, in the prepared production topology,
       expects the guard-UID/issuer-GID method-scoped Unix socket. A separate
-      one-shot preflight UID checks the native cross-UID CLN socket and Bitcoin
+      dedicated preflight supervisor UID checks the native cross-UID CLN socket and Bitcoin
       cookie after the CLN daemon itself runs the recursive layout verifier.
       Production TLS ingress, source-aware abuse controls, Linux installed-
       artifact/runtime evidence, process supervision and operational key
@@ -714,26 +1016,235 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       duplicate/unexpected/missing, non-text, oversized, timeout and partial
       failure behavior. Its `--validate-only` preflight applies the exact
       artifact/key/time/relay checks without invoking transport. Distinct
-      hostnames do not prove independent operators.
+      hostnames do not prove independent operators. Strict mode remains the
+      two-to-eight default; centralized mode is an explicit exact-one flag and
+      every outcome labels its degraded assurance. Publisher, readback and Web
+      adapters now share the exact credential-free WSS-origin/no-path grammar.
 - [x] `bitcoinpir-directory-relay` implements the intentionally narrow
       directory-only Nostr surface: canonical signed EVENT validation for one
       pinned publisher/kind, bounded ID-filtered REQ/EOSE readback, immutable
       SQLite event archive plus current heads, durable duplicate handling,
       bounded connection/work/egress/archive/time dimensions and graceful
-      drain. It is not a general-purpose relay. The production selection and
-      unit remain `UNRESOLVED`/`ExecStart=/usr/bin/false`; final merged source,
-      binary/config/public-key hashes, source-fair ingress and a second
-      independently operated relay are activation gates.
+      drain. It is not a general-purpose relay. The production selection is
+      resolved for exact source/archive/lockfile/build-manifest/binary/config/
+      public-key hashes and explicit degraded `centralized-single-relay` mode.
+      The unit is content-addressed and hash-preflighted but remains inert until
+      all three explicit startup sentinels exist; stopped and fresh-live host
+      evidence, source-fair ingress and publication approvals remain gates. An
+      independent second operator is stronger than the approved centralized
+      profile but is not falsely inferred from same-host origin diversity.
 - [x] Source-template, rendered-profile and live-Linux evidence tools are
       checked in. The source gate freezes inactive templates and the unchanged
       VPSBG baseline. The rendered gate binds one externally approved plan to
       exact staged bytes, path/file classes and consuming service identities;
+      the Caddy gate closes exact bind/upstream sets and rejects imports,
+      invokes, snippets, named routes and non-v2 transports, while the pinned
+      adapted-JSON/socket test proves wrong-bind requests return 4xx without
+      touching any backend;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. The current source gate passed
-      16/16 and the combined rendered/live-evidence Node suite passed 63/63 on
-      this preparation tree. The first root-only target Linux collection still
+      credentials to one machine/boot/invocation. Runtime-evidence v9 binds
+      render-plan/manifest schema v2, request and host to exact
+      `systemd 255 (255.4-1ubuntu8.15)` and accepts
+      only the closed files-authoritative NSS sequences `files` and
+      `files systemd` (the latter only as the same second-position fallback for
+      both passwd and group), binds `/etc/nsswitch.conf`, `/etc/passwd` and
+      `/etc/group`, and rejects UID/GID aliases or extra protected-group
+      primary/explicit/effective members. All manifest-bound service IDs and
+      Caddy denial-inventory IDs are restricted to static `1..60000`, outside
+      systemd's recycled `DynamicUser` range and `nobody`; the checked-in
+      examples now reserve `52901..52952`. A final complete getent/id enumeration,
+      not merely another policy-file stat, closes identity drift during the
+      remainder of live collection. Two bounded
+      all-process/all-thread passes additionally reject stale protected UID/GID
+      holders outside the exact current unit cgroups, record every active
+      capability set plus `CapBnd`, reject reviewed dangerous non-root
+      capabilities, require Caddy-only `CAP_NET_BIND_SERVICE` and zero HAProxy
+      capabilities, and re-confirm every
+      MainPID/unit generation; runtime paths are rechecked after the scan. This
+      version also closes `NeedDaemonReload=no` for every live unit. The exact
+      directory publisher is the sole processless exception: evidence requires
+      a successful retained `active/exited` oneshot with `MainPID=0`, empty
+      control group, completed zero-status ExecStart, stable activation
+      timestamp/InvocationID, null process identity and no protected publisher
+      UID/GID holder in either full procfs pass. A disposable exact-systemd
+      harness exercises those real manager semantics together with the
+      publisher namespace's pre-READY timeout, post-READY failure and exact
+      `reset-failed` convergence. This version reads
+      systemd's structured `Conditions` property through a pinned
+      `/usr/bin/busctl` rather than accepting systemd 255's
+      `Conditions=[unprintable]`, and proves the exact evaluated condition set
+      plus current path truth before and after collection. It separately reads
+      `ImportCredential`, `LoadCredential`, `LoadCredentialEncrypted`,
+      `SetCredential` and `SetCredentialEncrypted` from the Service interface
+      and requires the exact empty `as`, `a(ss)`, `a(ss)`, `a(say)` and
+      `a(say)` arrays. All five are request-bound and repeated in live,
+      stopped-edge and stopped-relay final sealing; systemd 255's
+      `[unprintable]` text is never treated as empty. The same typed Service
+      passes now bind `ExecStartEx` and `ExecStartPreEx` with exact
+      `a(sasasttttuii)` path/argv/flags; only the guard/preflight token-unlink
+      precommands are privileged. Scalar command records are strict
+      systemd-255 redundancy with one-newline delimiters and coherent
+      running/completed/stopped metadata. The raw busctl parser preserves all
+      standalone `t` integers as decimal strings before JSON number rounding
+      can occur and rejects old numeric evidence, malformed syntax and
+      text/typed watchdog lifecycle mismatches.
+      The release closure is exactly five files from one frozen commit: the
+      collector, rendered gate, deployment-template gate, publisher-netns gate
+      and directory-public HAProxy artifact gate. With the pinned Node version,
+      tests use `SourceTextModule.moduleRequests` as a review aid to exact-match
+      each file's static local edges and `node:` builtin request set and reject
+      import attributes; when Node exposes request phase, only evaluation is
+      accepted. This is neither proof that dynamic, CommonJS, worker
+      or reflective loaders are absent nor a JavaScript sandbox. Independent
+      semantic review bound to the five exact SHA-256 values, frozen commit and
+      exact Node binary/version/toolchain is the authority. This source-only PR
+      leaves both directory-public PathExists blockers unsatisfied and cannot
+      activate the edge. Installed-file
+      content, independent SHA-256, stat, ACL, xattr and capability probes now
+      use one open descriptor, while initial and final `O_NOFOLLOW` path
+      descriptors must retain the same device/inode. Every secret's final parent
+      must also be consumer-EUID-owned mode `0700`, with each ancestor matching
+      the Linux `pir-private-files` DAC ownership/write/root-sticky policy;
+      readability alone is insufficient. The runtime collector separately
+      rejects named/default POSIX ACLs, xattrs and capabilities on every pinned
+      directory descriptor, which is deliberately stricter than the loader and
+      is not a claim that the loader audits Linux POSIX/NFSv4/FUSE ACLs. The
+      complete directory set and every secret file are revalidated after all
+      long external probes; only then does the final lightweight typed-
+      credential/Conditions/unit-generation pass run immediately before
+      evidence construction. This
+      is not an already-connected-FD proof. The stopped-edge evidence type
+      therefore requires inactive/dead units, absent socket paths, locked
+      non-login service accounts and an empty protected-credential closure
+      before HAProxy may start, followed by Caddy and a fresh live proof in the
+      host initial PID namespace. The earlier pinned Ubuntu 24.04,
+      HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete
+      deployment/rendered/live/source-fair/Nostr Node gate, including real
+      `getent`, per-user `id -G`, full procfs thread scans and the
+      descriptor-bound installed-file and secret-directory ABA tests. Record a
+      fresh aggregate count from the final branch before activation rather than
+      reusing an older pre-race-test total. Caddy 2.11.3 is now historical
+      compatibility evidence only, not production evidence: current edge CI
+      resolves and pins Caddy 2.11.4 and its exact amd64 binary. A current-tree
+      pinned Ubuntu 24.04 / HAProxy 2.8.16 / Caddy 2.11.4 targeted run passed
+      all 15 source-fair template and real-process tests with no skip; the
+      larger final aggregate and exact-head CI remain separate merge gates.
+      An Alpine procfs regression also passes for legal repeated `Groups:`
+      entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those
       deterministic tests.
+- [x] The directory relay unit, source gate, rendered request, stopped
+      preparation evidence and fresh-live evidence bind
+      `ProtectProc=invisible` and `ProcSubset=pid`. This narrows a compromised
+      relay's `/proc` view of co-located processes and network metadata; it does
+      not replace host separation or the PIR non-collusion assumption.
+- [x] A local, undeployed `bhtm-caddy-admin-uds-v1` maintenance gate now
+      derives the complete candidate Caddyfile and `bhtm-caddy.service` unit
+      only from exact preimages. It moves the global admin listener to
+      `unix//run/bitcoinpir-caddy-admin/admin.sock|0200`, requires root:root
+      `RuntimeDirectory` mode `0700`, `UMask=0077`, `LimitCORE=0`,
+      `MemorySwapMax=0`, `StandardOutput=null`, `StandardError=null`, no
+      drop-ins other than the exact pinned one-way publisher-namespace
+      `Wants+After` drop-in, no effective `CADDY_ADMIN`, no `--environ`, Caddy imports or environment-backed
+      substitutions, and an explicit UDS reload address. It pins the exact
+      production Caddy v2.11.4 preimage at the host's exact
+      `/usr/local/bin/caddy` independently from the resolved Caddy 2.11.4 test
+      image, and pins Node v22.22.2 independently from Node 24
+      browser CI. A real Linux container process test proves root `/config/`
+      readback, descriptor-pinned `setpriv` execution with zero effective
+      capabilities/cleared groups, `EACCES` for six simulated non-root service
+      UIDs, absent IPv4/IPv6 TCP 2019, exact directory/socket ownership and mode, and
+      same-process reload over the UDS, plus real import-override and
+      permission-drift regressions. Exact Caddy v2.11.4 regressions also prove
+      that all 21 non-canonical Unicode whitespace code points and quoted
+      `admin` directives can alter the adapted admin listener and are rejected
+      by the closed-profile lexer. Canonical adapted JSON additionally rejects
+      global, access and request-scoped log sinks; the candidate binds its
+      canonical digest and size, and the committed root readback must reproduce
+      that digest. The read-only gate still consumes an externally generated
+      adapter artifact for offline review. A separate source-hash-closed,
+      local-host-only cold executor now runs the plan-pinned Caddy binary on
+      both the exact disk preimage bytes and the exact candidate before mutation.
+      It requires the approved canonical old adapted-JSON digest to equal the
+      live TCP-admin readback and requires the loaded old unit to have the
+      exact fragment and old Exec commands, `NeedDaemonReload=no`, exactly the
+      approved publisher-namespace drop-in,
+      `EnvironmentFile`, or `PassEnvironment`. It requires root, Linux, systemd
+      `255` and same-boot/PID/Invocation/preimage pins. The plan requires a cold
+      stop/install/daemon-reload/start with a new nonzero 32-lowercase-hex
+      systemd InvocationID, complete actual
+      service-UID and existing-site inventories, exact old-config+old-unit
+      rollback, and outcome-unknown handling after an ambiguous start. The
+      executor uses an exclusive lock, exact-byte/root-only backups,
+      same-parent fsynced atomic replacements, closed public/direct/TLS probes,
+      verified pre-start rollback, and never auto-rolls back after a candidate
+      start request. Fake-ops fault tests cover each outcome region and durable
+      receipt ordering. No installation, host mutation or activation is
+      claimed. In addition to static `systemd-analyze verify`, an
+      isolated real-systemd-PID-1 compatibility test now proves two distinct
+      cold generations plus stop-time removal and start-time recreation of the
+      runtime directory/socket. It feeds each real InvocationID into the
+      production validator, binds the zero core/swap and null stream settings,
+      and confirms an intentionally failing request sentinel does not reach
+      journald. The target-host cold ceremony and its
+      independently transferred evidence remain deployment gates.
+- [x] The local, undeployed `integrated-existing-bhtm-caddy-v1` alternative is
+      renderable as a dependency-closed source-fair bundle plus an externally
+      approved overlay transaction plan. It appends only to the exact pinned
+      hardened `bhtm-caddy.service` preimage and requires a canonical,
+      owner-only committed admin-UDS receipt whose Caddy binary, Caddyfile,
+      unit and InvocationID equal that preimage. Schema v2 also requires the
+      canonical owner-only publisher-namespace ceremony plan/receipt and proves
+      that ceremony occurred on this exact hardened Caddy config,
+      PID/InvocationID/active-enter generation before overlay mutation. It uses a content-addressed
+      `renameat2(RENAME_EXCHANGE)` helper, preserves the swapped-out preimage
+      until an atomically published durable receipt, and includes deterministic
+      stale-lock/crash recovery plus WebPKI/hostname/leaf and WebSocket-accept
+      health checks. The executor validates the complete canonical hardening
+      plan/receipt and collects fresh descriptor-sealed UDS mode,
+      zero-capability UID-denial, root readback, TCP-refusal, boot and
+      generation evidence before exchange and after reload/health. Those
+      probes now bind the current effective fragment, singleton
+      publisher-namespace drop-in and environment-name
+      policy, `ExecStart`, UDS `ExecReload`, daemon-reload state,
+      runtime-directory/identity/umask/core/swap/output settings and exact MainPID argv/start
+      ticks; process environment values are never retained. Stable runtime
+      snapshots are repeated immediately before exchange and reload. Recovery
+      validates the original persisted monotonic windows unchanged, so corrupt
+      cross-window evidence fails before mutation instead of being normalized
+      into an acceptable receipt. Adapted JSON is exact-digest pinned to the
+      hardened preimage before exchange and to the overlay candidate after
+      reload and after health checks. Recovery permits either reviewed digest
+      only during ambiguous classification, then re-probes the exact terminal
+      or aborted generation before publishing state, cleanup or return. Phase
+      state and lock ownership use atomic pending-file
+      publication; helper return ambiguity is resolved only by supplemental
+      fsync and stable exact-pair classification; unknown outcomes prohibit
+      rollback, receipt terminalization and cleanup. Mutable transaction
+      directory identities and final receipt ownership metadata are sealed
+      across recovery, and the helper is parent-death bound. Helper protocol v4
+      checks the expected supervisor PID and `/proc/<pid>/stat` start ticks both
+      before and after `PR_SET_PDEATHSIG`, so subreaper adoption cannot authorize
+      a delayed mutation. An installed pair
+      cannot enter automatic rollback until its `exchanged` phase is durable;
+      failed abort publication preserves the candidate recovery witness;
+      cleanup failures remain attached to the primary error; and a durable
+      committed receipt remains attached through terminal-phase finalization
+      failure.
+      Recovery may reclaim a malformed unpublished `owner.json.pending` only
+      when it is the sole exact root-owned owner-only single-link entry; a
+      malformed authoritative owner or any ambiguous shape remains fail closed.
+      The overlay also re-pins the installed admin-UDS gate itself and requires
+      its complete file generation to equal the prerequisite hardening plan.
+      Mock failure-window tests and real Linux open/write/fsync/rename,
+      applied-then-error, SIGKILL/late-helper and repeated-recovery tests pass.
+      The root-only lock/publication suites are routed through the CI root
+      invocation so these cases cannot be silently skipped.
+      This does not perform the cold admin migration and does
+      not isolate the remaining existing root Caddy global/ACME/UID-0 domain, does
+      not replace cold edge evidence, and is not deployable on the currently
+      inspected Hetzner network until a distinct RFC1918/ULA publisher route is
+      separately provisioned and approved.
 - [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
       checkpoint signed by a disposable test key. nos.lol and
       `relay.primal.net` each returned 16 positive matching OKs, then returned
@@ -752,19 +1263,31 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       validity, single-link regular-file shape, effective-user ownership,
       mode-0600 file and mode-0700 final-parent boundary were checked without
       disclosing the secret or copying it into this repository.
-- [ ] The production directory key has not been backed up, copied to a host or
-      used to sign/publish a production catalog. No production deployment,
-      remote-server operation, database migration or real-money operation has
-      been performed. Each still requires its explicit deployment ceremony and
-      approval boundary.
-- [ ] No user manual acceptance test has been performed.
+- [x] The owner-local directory key signed and published the current
+      **functional-beta** catalog to the deployed Hetzner relay.  The key was
+      not copied into this repository or a provider, and no backup ceremony is
+      claimed here.  The catalog selects the Hetzner and VPSBG providers
+      independently; the browser verified the catalog and completed a Free
+      two-provider DPF query through the normal strict-verification path.
+- [x] Hetzner hosts the public directory relay and beta issuer surface; the
+      current VPSBG measured runtime exposes its separately signed Free-PoW,
+      Cashu BAT and experimental ARC offers.  The current Hetzner provider
+      exposes its own Free, direct-BOLT11, standard-Cashu, BAT and experimental
+      ARC offers.  This is a functional-beta deployment, not a mainnet-money
+      launch: no real Lightning payment, external Cashu mint settlement or
+      provider payout was performed for this evidence.
+- [ ] No explicit user manual-acceptance sign-off has been recorded yet.
 
 ## Production release blockers and gates
 
-The implementation-code P1 findings, including initial payout
-persist-before-send, are closed. One production data-integrity P1 remains: an
-actually independent linearizable rollback authority is not deployed. The
-other numbered items below are mandatory production release, operations,
+The previously reviewed gate/store implementation P1 findings, including
+initial payout persist-before-send, are closed. The shared-issuer operator
+workflow is also implemented: separate offline builders create the provider
+clearing authorization and issuer approval, production registration requires a
+distinct provider-request key, and `ProviderLedgerBalanceClientV1` uses the
+clearing key without inventing a payout registration or target. An actually
+independent linearizable rollback authority is still not deployed. The
+numbered items below are mandatory production release, operations,
 external-review or manual-acceptance gates; they are not all implementation P1
 findings and must not be collapsed into that count.
 
@@ -836,6 +1359,13 @@ findings and must not be collapsed into that count.
    empty private pool directory, and rollback must use the preserved old or a
    different empty directory. Old and new binaries must never share one
    pool-directory state domain.
+   The VPSBG storeless Free-PoW profile is not a shortcut for these stateful
+   roles: it is eligible only because it has no store or retained/payment
+   method. Its separate release gate is a newly built/uploaded measured UKI
+   containing the literal exact signed-policy digest, followed by fresh
+   attestation/binary/client-pin acceptance. Policy expiry/renewal, difficulty,
+   scope, limit or dataset changes all require another UKI; host-side edits fail
+   closed.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent
@@ -847,13 +1377,22 @@ findings and must not be collapsed into that count.
    synthetic report/database proof. The complete-query extension has passed a
    dedicated local branch run with proof-bound Merkle preflight, one real
    encrypted DPF query and explicit inclusion/absence verification. The
-   feature-gated Standard-Cashu/Free process cell and the real Harmony V2Full
-   lifecycle process test also passed the final coordinated current-tree Linux
-   matrix. The isolated current-tree browser rerun passed the real-issuer case
+   feature-gated provider-process supplement now joins Free, Standard Cashu,
+   Cashu BAT and experimental ARC production committers to Harmony hint/query,
+   Onion and TEE-ORAM handlers, including wrong-operation non-burn and durable
+   restart replay. Together with the DPF method-adapter and direct-receipt
+   backend cases, this closes the 25 method/workload process cells. The
+   isolated current-tree browser rerun passed the real-issuer case
    1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
-   gate. Production trust-chain, a
-   browser-to-Standard-Cashu-provider join,
-   Harmony query, Onion and TEE-ORAM process boundaries remain open.
+   gate. Production trust-chain remains open. The local Standard-Cashu
+   browser/provider join is complete. The
+   direct-receipt two-provider process test executes a complete four-frame
+   K-padded Harmony query under a distinct Harmony scope, offer and credential
+   key, including wrong-scope non-consumption, terminal-DFA rejection and
+   restart replay rejection. TEE-ORAM and OnionPIR now have local real-provider
+   process boundaries. TEE production attestation/data/floor and browser
+   integration remain open; Onion's tiny sibling fixture is not production
+   inclusion-proof evidence.
 6. **External dependency canaries.** Recorded runs exist for the earlier
    two-node local CLN runner, the disposable CDK runner, and one short-lived
    public Nostr transport/readback smoke. The extended CDK lifecycle and forced
@@ -862,8 +1401,9 @@ findings and must not be collapsed into that count.
    aggregate full-suite or production-network result.
    Persistent default-signet Lightning, including an external check of the
    default-signet challenge that the coarse CLN `signet` identity cannot prove,
-   an external WebPKI Cashu mint, production catalog publication and monitored
-   relay selection remain staging gates. The final topology also needs
+   an external WebPKI Cashu mint, production catalog publication, and stopped
+   plus fresh-live evidence for the resolved relay selection remain staging
+   gates. The final topology also needs
    production identity/attestation/pins, TLS/edge controls, outage/restart
    drills, compatibility observations and data-retention review.
 7. **ARC review.** ARC must remain hidden behind an experimental offer/UX label
@@ -904,9 +1444,11 @@ accepts that the issuer can correlate provider, scope and timing across both
 redemption streams. Different blind capabilities remove a direct token join;
 they do not remove common-infrastructure traffic analysis.
 
-## Production guard
+## Functional-beta deployment guard
 
-Production deployment, remote-server operations, production-catalog
-public-relay publication, external mint access and real Lightning funds are
-outside the completed work. They require a fresh, explicit user approval
-immediately before execution.
+The 2026-08-02 functional-beta deployment and catalog publication were
+explicitly authorized and completed.  Its public relay and provider endpoints
+are evidence for the bounded beta only.  Real Lightning funds, an external
+value-bearing Cashu mint, provider payouts, a directory-key backup ceremony,
+and any change to the deployed topology remain separate operations requiring
+fresh approval immediately before execution.

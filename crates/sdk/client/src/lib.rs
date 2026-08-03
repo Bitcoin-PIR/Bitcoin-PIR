@@ -73,10 +73,14 @@ mod onion_merkle;
 mod oram;
 mod platform_time;
 mod protocol;
+mod query_plan;
 pub mod service;
 pub mod strict_pair;
 mod transport;
+mod verified_query;
 mod verified_roots;
+#[cfg(any(target_arch = "wasm32", test))]
+mod wasm_chunk;
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
 
@@ -97,6 +101,11 @@ pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
+pub use query_plan::{
+    plan_dpf_service_query_v1, plan_harmony_service_hint_v1,
+    plan_harmony_service_query_v1, ProductBackendV1, ProductQueryLowerBoundsV1,
+    ProductQueryOmissionsV1, ProductQueryShapeV1, ProductWorkloadV1,
+};
 pub use service::{
     accept_pow_challenge_response_v1, accept_retained_service_policy_response_v1,
     accept_service_policy_response_v1, build_pow_challenge_request_v1,
@@ -116,9 +125,11 @@ pub use service::{
 pub use strict_pair::{
     select_strict_provider_offer_v1, verify_strict_two_provider_offer_pair_v1,
     StrictProviderOfferSelectionV1, StrictProviderPairOptionsV1,
-    VerifiedStrictTwoProviderOfferPairV1,
+    StrictProviderPaymentContextInputV1,
+    VerifiedStrictTwoProviderOfferPairV1, VerifiedStrictTwoProviderPaymentContextV1,
 };
 pub use transport::PirTransport;
+pub use verified_query::VerifiedQueryResult;
 pub use verified_roots::RootPolicy;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_transport::WasmWebSocketTransport;

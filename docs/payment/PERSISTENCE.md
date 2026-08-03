@@ -543,8 +543,14 @@ looks up an exact previously committed `(idempotency digest, request digest)`:
 - same key and different digest: conflict;
 - no row: validate current authority and create a new operation.
 
-This ordering lets a client recover a committed response after key rotation or
-expiry without authorizing new debt under stale authority.
+This ordering lets the issuer replay a committed response after key rotation or
+expiry without authorizing new debt under stale authority, provided the client
+can reproduce the exact original request and idempotency key. The shipped
+provider runtime retains neither an old clearing authorization/approval nor the
+old authenticated issuer tuple, so it cannot perform that recovery after its
+single configured shared-issuer authorization has been replaced. Production V1
+must drain and reconcile every outcome-unknown redeem before that rotation; the
+issuer replay rule is not a rolling-rotation guarantee for providers.
 
 ### Atomic redeem
 
@@ -603,6 +609,18 @@ fence; a process lease plus issuer SQLite cannot manufacture external
 exactly-once behavior across a crash.
 
 ## Provider settlement payout workflow
+
+Ledger-only balance reads do not create provider payout state.
+`ProviderLedgerBalanceClientV1` authenticates with the operator-authorized
+clearing key and verifies the exact issuer-signed response against the current
+or explicitly retained settlement key. Every send rechecks the authorization
+and approval against the caller's current Unix time before transport. It
+requires no registration digest,
+payout target, provider-request secret, detailed payout SQLite, or payout floor.
+Issuer production startup nevertheless registers a distinct provider-request
+public key for every authorization. Reusing the clearing key for that column is
+rejected: it would make the stored registration unusable by the full settlement
+client and collapse the redemption versus payout-recovery signature domains.
 
 `pir-provider-clearing-client` includes a concrete
 `SqliteProviderSettlementStateStoreV1` for the provider's exact payout workflow.

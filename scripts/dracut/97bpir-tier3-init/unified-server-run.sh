@@ -4,7 +4,11 @@
 # Lives at /etc/sv/unified_server/run inside the initramfs. runsvdir
 # starts this; runit restarts on exit (1s default backoff).
 #
-# Flags mirror deploy/systemd/pir-vpsbg.service:
+# Base topology flags mirror deploy/systemd/pir-vpsbg.service. The measured
+# Payment V1 suffix below is intentionally VPSBG-specific: it enables the
+# db0 Free-PoW + Hetzner shared-issuer BAT/ARC functional beta, with an
+# independently served Harmony query scope when its signed policy advertises
+# one.
 #   --port 8091
 #   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
 #   --serve-queries    (pir2 is queries-only per the production topology
@@ -52,6 +56,34 @@ UNIFIED_SERVER=/usr/local/bin/unified_server
 if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unified_server ]; then
     UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
 fi
+
+# Prefer an explicitly measured identity pair when one is present. The
+# persistent data-mount fallback remains for existing Tier 3 deployments.
+# The selected cert is signed for the public Payment V1 stable server ID.
+IDENTITY_KEY_PATH=/home/pir/data/pir2-identity.key
+IDENTITY_CERT_PATH=/home/pir/data/pir2.cert
+if [ -r /etc/bitcoinpir/identity/server.key ] && [ -r /etc/bitcoinpir/identity/server.cert ]; then
+    IDENTITY_KEY_PATH=/etc/bitcoinpir/identity/server.key
+    IDENTITY_CERT_PATH=/etc/bitcoinpir/identity/server.cert
+fi
+
+# Existing deployments load their signed policy from the mutable data mount.
+# A release may instead embed the same public policy in the UKI so its exact
+# Free offer set changes atomically with the attested runtime.  Issuer keys,
+# payment bindings, stores, and databases remain on the data mount.
+SERVICE_POLICY_PATH=/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin
+if [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then
+    SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
+fi
+
+# Do not hold the usable db0 query path behind the separate Direct-ORAM ceremony: the
+# currently mounted db0 proof is V1 and deliberately lacks the typed
+# `direct_oram` data required by the newer Direct-ORAM bootstrap.  Direct ORAM
+# remains below as an explicit future path once a new attested full-build has
+# supplied that evidence; changing this constant requires a new measured UKI
+# review and release.
+VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1
+
 ORAM_BOOT_ROOT=/home/pir/data/.oram-boot
 ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
 ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
@@ -121,6 +153,10 @@ direct_input_hash() {
     awk -v name="$1" '$2 == name || $2 == "./" name { print $1; exit }' "$2"
 }
 
+sha256_path() {
+    sha256sum "$1" | awk '{ print $1 }'
+}
+
 random_seed_hex() {
     require_file /dev/urandom
     seed="$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 -v | tr -d ' \n')"
@@ -168,21 +204,21 @@ build_direct_oram() {
     source_dir="$2"
     out_dir="$3"
     db_evidence="$4"
-    root_bundle="$5"
-    expected_muhash="$6"
-    expected_from_muhash="$7"
-    expected_index_sha="$8"
-    expected_chunks_sha="$9"
-    trusted_state_dir="${10}"
+    db_manifest="$5"
+    root_bundle="$6"
+    expected_muhash="$7"
+    expected_from_muhash="$8"
+    expected_index_sha="$9"
+    expected_chunks_sha="${10}"
+    trusted_state_dir="${11}"
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
-    seed_hex="$(random_seed_hex)"
-
     source_index_file="$source_dir/utxo_chunks_index_nodust.bin"
     source_chunks_file="$source_dir/utxo_chunks_nodust.bin"
     sha_file="$source_dir/direct-inputs.sha256"
     require_file "$source_index_file"
     require_file "$source_chunks_file"
     require_file "$db_evidence"
+    require_file "$db_manifest"
     require_file "$root_bundle"
 
     if [ -r "$sha_file" ]; then
@@ -204,12 +240,21 @@ build_direct_oram() {
         "$trusted_input_dir/utxo_chunks_nodust.bin" "$db_label chunks source"
     copy_to_trusted_runtime "$db_evidence" \
         "$trusted_input_dir/build-evidence.bin" "$db_label DB evidence"
+    copy_to_trusted_runtime "$db_manifest" \
+        "$trusted_input_dir/server-db-MANIFEST.toml" "$db_label exact server DB manifest"
     copy_to_trusted_runtime "$root_bundle" \
         "$trusted_input_dir/root-bundle-payload.bin" "$db_label root bundle"
     index_file="$trusted_input_dir/utxo_chunks_index_nodust.bin"
     chunks_file="$trusted_input_dir/utxo_chunks_nodust.bin"
     db_evidence="$trusted_input_dir/build-evidence.bin"
+    db_manifest="$trusted_input_dir/server-db-MANIFEST.toml"
     root_bundle="$trusted_input_dir/root-bundle-payload.bin"
+    trusted_index_sha="$(sha256_path "$index_file")"
+    trusted_chunks_sha="$(sha256_path "$chunks_file")"
+    [ "$trusted_index_sha" = "$expected_index_sha" ] \
+        || fatal "$db_label trusted tmpfs index copy hash mismatch"
+    [ "$trusted_chunks_sha" = "$expected_chunks_sha" ] \
+        || fatal "$db_label trusted tmpfs chunks copy hash mismatch"
 
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
     echo "[unified-server-run] regenerating $db_label direct ORAM from trusted tmpfs into $out_dir; trusted state: $trusted_state_dir" >&2
@@ -229,12 +274,14 @@ build_direct_oram() {
             --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
             --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
             --index-seed "$DIRECT_INDEX_SEED" \
-            --seed-hex "$seed_hex" \
+            --encrypted \
+            --key-hex "$ORAM_PAGE_KEY_HEX" \
             --auth-store \
             --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
+            --server-db-manifest "$db_manifest" \
             --root-bundle-payload "$root_bundle" \
             --expected-muhash "$expected_muhash" \
             --expected-from-muhash "$expected_from_muhash" \
@@ -265,12 +312,14 @@ build_direct_oram() {
             --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
             --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
             --index-seed "$DIRECT_INDEX_SEED" \
-            --seed-hex "$seed_hex" \
+            --encrypted \
+            --key-hex "$ORAM_PAGE_KEY_HEX" \
             --auth-store \
             --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
+            --server-db-manifest "$db_manifest" \
             --root-bundle-payload "$root_bundle" \
             --expected-muhash "$expected_muhash" \
             --expected-index-sha256 "$expected_index_sha" \
@@ -301,8 +350,42 @@ verify_direct_oram_publish() {
     echo "[unified-server-run] verified published $db_label direct ORAM paths" >&2
 }
 
-[ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
+if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
+    echo "[unified-server-run] starting VPSBG db0 functional beta; Direct ORAM is not advertised" >&2
+    exec "$UNIFIED_SERVER" \
+        --port 8091 \
+        --role secondary \
+        --serve-queries \
+        --config /home/pir/data/databases.toml \
+        --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
+        --vcek-dir /home/pir/data/vcek \
+        --identity-key-path "$IDENTITY_KEY_PATH" \
+        --identity-cert-path "$IDENTITY_CERT_PATH" \
+        --identity-server-id pir2-vpsbg-dpf-v1 \
+        --require-service-auth-v1 \
+        --service-policy "$SERVICE_POLICY_PATH" \
+        --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
+        --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+        --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
+        --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
+        --allow-local-service-rollback-authority-dev \
+        --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
+        --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
+        --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
+        --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
+        --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
+        --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
+        --service-shared-minimum-authorization-epoch 1 \
+        --allow-experimental-arc \
+        --service-max-concurrent-auth 4 \
+        --service-max-concurrent-online-v2full-auth 0 \
+        --connection-idle-timeout-ms 300000 \
+        --service-pre-auth-timeout-ms 300000 \
+        2>&1
+fi
+
+[ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
 for stale_staging in "$ORAM_BOOT_ROOT"/staging.*; do
@@ -315,6 +398,7 @@ safe_remove_runtime_path "$TRUSTED_STATE_ROOT"
 mkdir -p "$ORAM_STAGING_DIR" || fatal "failed to create $ORAM_STAGING_DIR"
 mkdir -p "$TRUSTED_INPUT_ROOT" "$TRUSTED_STATE_ROOT" \
     || fatal "failed to create SEV-protected ORAM runtime directories"
+ORAM_PAGE_KEY_HEX="$(random_seed_hex)"
 trap cleanup_build_staging EXIT
 
 MAINNET_SOURCE_DIR="$(first_existing_dir \
@@ -326,6 +410,10 @@ MAINNET_DB_EVIDENCE="$(first_existing_file \
     /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/build-evidence.bin \
     /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/build-evidence.bin)" \
     || fatal "mainnet build-evidence.bin missing"
+MAINNET_DB_MANIFEST="$(first_existing_file \
+    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/server-db/MANIFEST.toml \
+    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/server-db/MANIFEST.toml)" \
+    || fatal "mainnet exact server-db/MANIFEST.toml missing"
 MAINNET_ROOT_BUNDLE="$(first_existing_file \
     /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/root-bundle-payload.bin \
     /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/root-bundle-payload.bin)" \
@@ -340,17 +428,21 @@ DELTA_DB_EVIDENCE="$(first_existing_file \
     /home/pir/data/attestations/delta_940611_948454_sev_snp/build-evidence.bin \
     /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/build-evidence.bin)" \
     || fatal "delta build-evidence.bin missing"
+DELTA_DB_MANIFEST="$(first_existing_file \
+    /home/pir/data/attestations/delta_940611_948454_sev_snp/server-db/MANIFEST.toml \
+    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/server-db/MANIFEST.toml)" \
+    || fatal "delta exact server-db/MANIFEST.toml missing"
 DELTA_ROOT_BUNDLE="$(first_existing_file \
     /home/pir/data/attestations/delta_940611_948454_sev_snp/root-bundle-payload.bin \
     /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/root-bundle-payload.bin)" \
     || fatal "delta root-bundle-payload.bin missing"
 
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
-    "$MAINNET_DB_EVIDENCE" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
+    "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
     "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_FULL_TRUSTED_STATE_DIR"
 build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
-    "$DELTA_DB_EVIDENCE" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
+    "$DELTA_DB_EVIDENCE" "$DELTA_DB_MANIFEST" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
     "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_DELTA_TRUSTED_STATE_DIR"
 
@@ -360,6 +452,8 @@ verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" del
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 trap - EXIT
 
+# VPSBG is query-only and has no Harmony V2 hint pool, so the measured
+# invocation keeps online V2Full authorization disabled (limit 0).
 exec "$UNIFIED_SERVER" \
     --port 8091 \
     --role secondary \
@@ -372,17 +466,35 @@ exec "$UNIFIED_SERVER" \
     --direct-oram-drain-per-access 2 \
     --direct-oram-access-budget 75 \
     --direct-oram-cache-levels 0 \
+    --direct-oram-encrypted \
+    --direct-oram-key-hex "$ORAM_PAGE_KEY_HEX" \
     --direct-oram-auth-store \
     --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \
-    --identity-key-path /home/pir/data/pir2-identity.key \
-    --identity-cert-path /home/pir/data/pir2.cert \
-    --identity-server-id pir2 \
+    --identity-key-path "$IDENTITY_KEY_PATH" \
+    --identity-cert-path "$IDENTITY_CERT_PATH" \
+    --identity-server-id pir2-vpsbg-dpf-v1 \
+    --require-service-auth-v1 \
+    --service-policy "$SERVICE_POLICY_PATH" \
+    --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
+    --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+    --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
+    --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
+    --allow-local-service-rollback-authority-dev \
+    --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
+    --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
+    --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
+    --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
+    --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
+    --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
+    --service-shared-minimum-authorization-epoch 1 \
+    --allow-experimental-arc \
+    --service-max-concurrent-auth 4 \
+    --service-max-concurrent-online-v2full-auth 0 \
+    --connection-idle-timeout-ms 300000 \
+    --service-pre-auth-timeout-ms 300000 \
     2>&1
-# --identity-* (operator-signed identity / REQ_ANNOUNCE): key + cert live
-# in the bind-mounted rootfs /home/pir/data — NOT baked into the measured
-# initramfs (only this run script + the binary are measured). Missing or
-# inconsistent files are non-fatal (unified_server logs "Identity
-# announce: DISABLED" and serves everything else), so this is safe to ship
-# ahead of provisioning the files. server_id MUST be "pir2" to match the
-# operator-signed cert.
+# --identity-* (operator-signed identity / REQ_ANNOUNCE): a measured fallback
+# may be supplied at UKI build time; otherwise the bind-mounted rootfs paths
+# remain valid. The operator signing key is never embedded. The certificate
+# server_id MUST remain pir2-vpsbg-dpf-v1, matching the public bootstrap.

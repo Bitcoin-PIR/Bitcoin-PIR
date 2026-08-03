@@ -34,14 +34,16 @@ bpir-admin service-keygen --role free-ip-hmac --out free-ip-hmac.key
 bpir-admin service-keygen --role cashu-recovery-aead --out cashu-recovery-1.key
 bpir-admin service-keygen --role cashu-custody-aead --out cashu-custody-1.key
 bpir-admin service-keygen --role provider-shared-idempotency-hmac --out shared-idempotency.key
+bpir-admin service-keygen --role clearing-ed25519 --out provider-clearing.key
+bpir-admin service-keygen --role provider-request-ed25519 --out provider-request.key
 bpir-admin service-keygen --role receipt-ed25519 --out receipt.key
 bpir-admin service-keygen --role cashu-bat --out bat.key
 bpir-admin service-keygen --role cashu-ecash --out cashu-denomination.key
 bpir-admin service-keygen --role arc-experimental --out arc.key
 ```
 
-Other supported roles are `policy-ed25519`, `anonymous-ticket-ed25519`,
-`clearing-ed25519`, and `directory-nostr`. The six symmetric or derivation
+Other supported roles are `policy-ed25519`, `anonymous-ticket-ed25519`, and
+`directory-nostr`. The six symmetric or derivation
 roles (`credential-derivation`, `redeem-derivation`, and the four roles added
 above) print only a domain-separated operator fingerprint, never a public key
 or secret. Do not
@@ -59,7 +61,11 @@ Directory assertion, entry, and checkpoint construction remains offline and is
 documented in `DIRECTORY_PROTOCOL.md`. The separate publish transport accepts
 no secret or signing-key argument. It verifies exact canonical artifacts
 against an explicit BIP340 directory-public-key pin, then sends them unchanged
-to two through eight credential-free public `wss://` relay hostnames.
+to credential-free public `wss://` relay hostnames. The strict default requires
+two through eight distinct hostnames. Exactly one relay is accepted only with
+the explicit `--centralized-single-relay` flag; that mode is intentionally
+centralized and degraded, provides no relay redundancy or independence, and is
+the reviewed topology for the current centrally operated directory.
 
 It requires one positive NIP-01 OK for each event on each relay, applies one
 bounded total timeout per relay, does not use proxies, redirects, relay AUTH or
@@ -75,8 +81,10 @@ NFS/FUSE read deadline-bounded or defend against a privileged filesystem.
 The same `directory-artifact publish` invocation may include `--validate-only`.
 That mode fully validates the artifact bytes, directory-key pin, verification
 time and relay set, emits only bounded host/count/digest metadata, and returns
-without DNS or network I/O. Remove only that flag at the separately approved
-publication boundary.
+without DNS or network I/O. It enforces the same strict-multi-relay or explicit
+centralized-single-relay choice as a real publish. Every outcome line also
+marks the publication mode and its `centralized`/`degraded` booleans. Remove
+only `--validate-only` at the separately approved publication boundary.
 
 After an explicitly approved staging publish, read the same frozen public
 artifact back without exposing a signing key:
@@ -85,10 +93,18 @@ artifact back without exposing a signing key:
 node scripts/payment-v1-nostr-readback.mjs \
   --artifact directory-checkpoints.json \
   --relay wss://relay-one.example \
-  --relay wss://relay-two.example/nostr \
+  --relay wss://relay-two.example:8443 \
   --expected-set-digest-hex "$EVENT_SET_DIGEST_FROM_PUBLISH" \
   --timeout-ms 60000
 ```
+
+For the explicitly accepted centralized/degraded profile, both publisher and
+readback use exactly one `--relay` plus `--centralized-single-relay`. One relay
+without that flag, or two relays with it, is rejected before network I/O. The
+strict default remains two to eight origins and never falls back after failure.
+Publisher, readback, Web, and Rust production relay inputs all use the exact
+credential-free `wss://host[:nondefault-port]` origin grammar; relay paths and
+URL-normalization aliases are rejected.
 
 This helper requires the lockfile-pinned `ws` development dependency already
 installed under `web/node_modules`. It disables redirects and compression,
@@ -208,6 +224,86 @@ bpir-admin payment-artifact cashu-manifest \
   --out standard-cashu-mint-manifest-v1.bin
 ```
 
+## Shared-issuer clearing authorization and approval
+
+The provider operator and issuer run separate offline ceremonies. The provider
+first prepares a strict TOML authorization source. V1 tooling intentionally
+constructs only `AuthCredit` plus `LEDGER_CREDIT`; blind settlement and payout
+cannot be enabled by adding a TOML field. Unknown fields fail closed.
+
+```toml
+authorization_id_hex = "<32 lowercase hex>"
+authorization_epoch = 1
+provider_id_hex = "<64 lowercase hex>"
+issuer_id_hex = "<64 lowercase hex>"
+redeem_endpoint = "https://issuer.example"
+redeem_leaf_spki_sha256_pins_hex = ["<64 lowercase hex>"]
+settlement_account_id_hex = "<64 lowercase hex>"
+clearing_verifying_key_hex = "<64 lowercase hex>"
+not_before = 1700000000
+not_after = 1900000000
+
+[[rules]]
+credential_binding_digest_hex = "<64 lowercase hex>"
+accepted_value = 10
+provider_credit = 9
+issuer_fee = 1
+denomination_profile = 1
+```
+
+```sh
+bpir-admin payment-artifact clearing-authorization \
+  --operator-signing-key provider-operator.key \
+  --config clearing-authorization.toml \
+  --out provider-clearing-authorization.bin
+```
+
+The builder checks value conservation, canonical endpoint and pins, unique
+binding digests, validity, exact roundtrip and operator signature before it
+writes. It rejects reuse of the operator key as the online clearing key. Record
+the printed `authorization_digest` through an independent channel before the
+issuer ceremony.
+
+```sh
+bpir-admin payment-artifact clearing-approval \
+  --authorization provider-clearing-authorization.bin \
+  --issuer-settlement-signing-key issuer-settlement.key \
+  --expected-authorization-digest-hex "$AUTHORIZATION_DIGEST" \
+  --expected-provider-id-hex "$PROVIDER_ID" \
+  --expected-issuer-id-hex "$ISSUER_ID" \
+  --expected-operator-key-hex "$PROVIDER_OPERATOR_PUBLIC_KEY" \
+  --minimum-authorization-epoch 1 \
+  --approved-at 1700000000 \
+  --not-after 1900000000 \
+  --out provider-clearing-approval.bin
+```
+
+The issuer command verifies all out-of-band expectations and the exact digest
+before signing. It rejects settlement-key reuse with either provider key, then
+decodes and verifies its own canonical approval before writing. Rotation uses
+a strictly higher authorization epoch and a new approval; an approval cannot
+be replaced under the same authorization digest in the durable issuer store.
+
+Provision a fourth, distinct public key beside the two artifacts:
+
+```sh
+# `service-keygen` prints this public key while retaining the provider secret.
+bpir-admin service-keygen \
+  --role provider-request-ed25519 \
+  --out provider-request.key
+```
+
+Install only its raw 32-byte public half at the issuer and pass it once per
+matching authorization with
+`--clearing-provider-request-verifying-key`. The clearing key signs redemption
+and balance requests. The provider-request key is reserved for payout recovery
+and status; ledger-only mode does not use it, but production registration still
+keeps the domains distinct so a future payout client cannot inherit a
+same-key registration. Provider code that only reads the identified ledger can
+use `ProviderLedgerBalanceClientV1`; it validates the authorization, approval,
+epoch floor, current/retained issuer settlement keys, canonical signed response
+and exact nonce without inventing a payout registration or target.
+
 ## Provider store initialization
 
 `unified_server` opens existing state only. Production uses the shared
@@ -301,9 +397,11 @@ shape (paths and caps are operator-specific):
 
 Repeat a key option to retain old epochs during rotation. The same epoch
 number in the two domains is allowed, but the raw key bytes must differ. Every
-configured cap must correspond to an exact current/retained policy manifest,
-and every referenced manifest must have exactly one cap; unused or missing
-entries fail startup.
+configured cap must correspond to the exact current policy manifest, and every
+referenced manifest must have exactly one cap; unused or missing entries fail
+startup. The three checked-in provider deployment profiles are zero-retained.
+In a future, separately reviewed retention-capable profile, the same one-cap
+rule would also apply to each retained policy manifest.
 
 Offline custody operations are grouped under:
 

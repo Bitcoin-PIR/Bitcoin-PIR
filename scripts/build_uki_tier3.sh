@@ -111,6 +111,17 @@ BHTM_FROM_LEAF_PROOF=${BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/pro
 }
 export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
 
+# Optional public, signed policy to bind to this measured image.  It is not a
+# credential key or issuer secret; the provider still verifies its signature
+# at runtime.  Leaving it unset preserves the established mutable-rootfs
+# policy fallback.
+if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
+    [ -r "$BPIR_TIER3_SERVICE_POLICY" ] || {
+        echo "error: BPIR_TIER3_SERVICE_POLICY is not readable: $BPIR_TIER3_SERVICE_POLICY" >&2
+        exit 1
+    }
+fi
+
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
 # Prefer explicit KERNEL=/boot/vmlinuz-<ver> in the environment.
 # Otherwise, auto-detect the latest installed kernel (highest sort order under
@@ -219,6 +230,11 @@ echo "BHTM from-leaf proof:     $BHTM_FROM_LEAF_PROOF"
 echo "binary sha256:            $BIN_HASH"
 echo "oramctl sha256:           $ORAMCTL_HASH"
 echo "BHTM proof sha256:        $BHTM_PROOF_HASH"
+if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
+    SERVICE_POLICY_HASH=$(sha256sum "$BPIR_TIER3_SERVICE_POLICY" | awk '{print $1}')
+    echo "service policy:          $BPIR_TIER3_SERVICE_POLICY"
+    echo "service policy sha256:   $SERVICE_POLICY_HASH"
+fi
 
 # ─── Generate initramfs ────────────────────────────────────────────────────
 # --add network            : pulls in dracut's network plumbing (mostly
@@ -285,6 +301,33 @@ if [ -n "$MISSING_MODS" ]; then
     exit 1
 fi
 echo "SEV modules confirmed in initramfs: $REQUIRED_SEV_MODS"
+
+# A measured identity key is optional, but when supplied it must retain the
+# exact private-parent permissions required by unified_server's private-file
+# loader.  Otherwise the guest can attest and serve an encrypted channel while
+# silently disabling REQ_ANNOUNCE at startup.
+if [ -n "${BPIR_TIER3_IDENTITY_KEY:-}" ] || [ -n "${BPIR_TIER3_IDENTITY_CERT:-}" ]; then
+    IDENTITY_INITRD_ITEMS=(
+        'drwx------[[:space:]]+.*etc/bitcoinpir/identity$'
+        '-rw-------[[:space:]]+.*etc/bitcoinpir/identity/server\.key$'
+        '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/identity/server\.cert$'
+    )
+    for expected in "${IDENTITY_INITRD_ITEMS[@]}"; do
+        if ! grep -Eq -- "$expected" <<< "$INITRD_LISTING"; then
+            echo "ERROR: measured identity item missing or has unsafe mode: $expected" >&2
+            exit 1
+        fi
+    done
+    echo "measured identity confirmed in initramfs (private parent + key + cert)"
+fi
+
+if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
+    if ! grep -Eq -- '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/payment/service-policy\.bin$' <<< "$INITRD_LISTING"; then
+        echo "ERROR: measured service policy missing or has an unsafe mode" >&2
+        exit 1
+    fi
+    echo "measured service policy confirmed in initramfs"
+fi
 
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1

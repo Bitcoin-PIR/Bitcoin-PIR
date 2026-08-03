@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "network": "signet",
+  "providers": [
+    {
+      "label": "Hetzner Payment V1 provider",
+      "endpoint": "wss://weikeng1.bitcoinpir.org",
+      "providerIdHex": "9110aee8843ff4eaa60eb5e2f36345cef03c779c08becbfe76f4cc0400fc0eb0",
+      "policySigningKeyHex": "6528d01b64275834460fd2c6f1d8b2df1374ea62ed0204ea2429adcc70246a93",
+      "operatorSigningKeyHex": "d506c8630f13f31f0648228857c268d17996d600ed7169e091c88aadb5ecb2d4",
+      "stableServerId": "pir1-payment-beta",
+      "serverPin": {
+        "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
+      },
+      "hardwareAttestation": "unavailable-accepted",
+      "lightningPayeeTrust": [
+        {
+          "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",
+          "issuerOrigin": "https://issuer-beta.65-21-91-217.sslip.io",
+          "network": "signet",
+          "expectedPayeePubkeyHex": "03d56b422257245d2c170393fe0242f8fd5668b12034fe9d059579951e19162232"
+        }
+      ],
+      "databaseProofPins": [
+        {
+          "dbId": 0,
+          "buildKind": "snapshot",
+          "fromHeight": 0,
+          "height": 948454,
+          "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+          "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+          "paramsHashHex": "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
+          "builderGitCommit": "b692aec18b9c20ac92cb9fe22588e96ff96ad27d"
+        },
+        {
+          "dbId": 1,
+          "buildKind": "delta",
+          "fromHeight": 940611,
+          "height": 948454,
+          "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+          "fromMuhashHex": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+          "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
+          "paramsHashHex": "2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a",
+          "builderGitCommit": "01e8db91d76037cd5562fce85c40e832ad156431"
+        }
+      ]
+    },
+    {
+      "label": "VPSBG Payment V1 provider",
+      "endpoint": "wss://weikeng2.bitcoinpir.org",
+      "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+      "policySigningKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
+      "operatorSigningKeyHex": "256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a",
+      "stableServerId": "pir2-vpsbg-dpf-v1",
+      "serverPin": {
+        "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
+        "measurementHex": "cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897"
+      },
+      "hardwareAttestation": "required",
+      "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",
+      "lightningPayeeTrust": [
+        {
+          "issuerIdHex": "8799b9b02964688f7f5d35b1c502f1bfb4a344c8ca6bd3f7902814c558e1de86",
+          "issuerOrigin": "https://issuer-beta.65-21-91-217.sslip.io",
+          "network": "signet",
+          "expectedPayeePubkeyHex": "03d56b422257245d2c170393fe0242f8fd5668b12034fe9d059579951e19162232"
+        }
+      ],
+      "databaseProofPins": [
+        {
+          "dbId": 0,
+          "buildKind": "snapshot",
+          "fromHeight": 0,
+          "height": 948454,
+          "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+          "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+          "paramsHashHex": "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
+          "builderGitCommit": "b692aec18b9c20ac92cb9fe22588e96ff96ad27d"
+        },
+        {
+          "dbId": 1,
+          "buildKind": "delta",
+          "fromHeight": 940611,
+          "height": 948454,
+          "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+          "fromMuhashHex": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
+          "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+          "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+          "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+          "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
+          "paramsHashHex": "2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39",
+          "networkMagicHex": "f9beb4d9",
+          "builderBinarySha256Hex": "34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a",
+          "builderGitCommit": "01e8db91d76037cd5562fce85c40e832ad156431"
+        }
+      ]
+    }
+  ]
+}

@@ -8,16 +8,28 @@ cln_rpc_guard_unit_sha256 = "UNRESOLVED"
 cln_rpc_guard_tmpfiles_sha256 = "UNRESOLVED"
 lightningd_config_sha256 = "UNRESOLVED"
 preflight_config_sha256 = "UNRESOLVED"
-backup_receipt_sha256 = "UNRESOLVED"
+# Digests of reviewed, non-secret ceremony records transferred independently
+# from the backup domains. These are not hashes of mnemonic, hsm_secret,
+# emergency.recover or datastore bytes and do not make the live-host assertion
+# self-proving.
+identity_restore_evidence_sha256 = "UNRESOLVED"
+channel_recovery_restore_evidence_sha256 = "UNRESOLVED"
+datastore_restore_evidence_sha256 = "UNRESOLVED"
 expected_cln_version = "UNRESOLVED"
 expected_node_id_hex = "UNRESOLVED"
 
 # These booleans are operator-review inputs, not an activation mechanism.
 identity_secret_offline_restore_rehearsed = false
+identity_node_id_crosscheck_passed = false
+bootstrap_zero_channel_preflight_passed = false
 channel_recovery_restore_rehearsed = false
 dynamic_datastore_restore_rehearsed = false
 stale_channel_state_rollback_rejected = false
 default_signet_chain_pins_verified = false
+cln_selected_deployment_file_closure_verified = false
+# Keep this false and do not provision CLN-LOADER-MAPS-APPROVED until a later,
+# separately reviewed evidence schema binds live maps, inode and file digest.
+cln_loader_maps_inode_evidence_verified = false
 exact_plugin_allowlist_verified = false
 strict_rpc_socket_layout_verified = false
 cross_uid_preflight_policy_verified = false

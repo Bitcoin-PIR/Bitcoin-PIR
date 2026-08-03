@@ -41,6 +41,9 @@ install() {
     local bin=${BPIR_UNIFIED_SERVER_BIN:-${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}}
     local oramctl=${BPIR_ORAMCTL_BIN:-${ORAMCTL:-/home/pir/bitcoin-pir/oram/target/release/oramctl}}
     local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
+    local identity_key=${BPIR_TIER3_IDENTITY_KEY:-}
+    local identity_cert=${BPIR_TIER3_IDENTITY_CERT:-}
+    local service_policy=${BPIR_TIER3_SERVICE_POLICY:-}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
@@ -66,4 +69,50 @@ install() {
     inst "$oramctl" /usr/local/bin/oramctl
     inst_simple "$bhtm_from_leaf_proof" \
         /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
+
+    # Optional measured fallback for the server identity. Tier 3 normally
+    # reads identity material from the mutable data mount. A fresh rootfs can
+    # lack that pair, which leaves REQ_ANNOUNCE disabled even while attestation
+    # and the secure channel succeed. When both explicit build inputs are
+    # supplied, place only the server key + public certificate in the UKI;
+    # never the operator signing key.
+    if [ -n "$identity_key" ] || [ -n "$identity_cert" ]; then
+        if [ -z "$identity_key" ] || [ -z "$identity_cert" ]; then
+            derror "bpir-unified-server: BPIR_TIER3_IDENTITY_KEY and BPIR_TIER3_IDENTITY_CERT must be supplied together"
+            return 1
+        fi
+        if [ ! -r "$identity_key" ] || [ ! -r "$identity_cert" ]; then
+            derror "bpir-unified-server: measured identity input is not readable"
+            return 1
+        fi
+        if [ "$(wc -c < "$identity_key")" -ne 32 ]; then
+            derror "bpir-unified-server: measured identity key must be exactly 32 bytes"
+            return 1
+        fi
+        inst_dir /etc/bitcoinpir/identity
+        # `unified_server` deliberately rejects a private key whose final
+        # parent is not an exact root-owned 0700 directory.  `inst_dir`
+        # defaults to 0755, which would otherwise disable REQ_ANNOUNCE at
+        # boot even though the key itself is 0600.
+        chmod 0700 "$initdir/etc/bitcoinpir/identity"
+        inst_simple "$identity_key" /etc/bitcoinpir/identity/server.key
+        inst_simple "$identity_cert" /etc/bitcoinpir/identity/server.cert
+        chmod 0600 "$initdir/etc/bitcoinpir/identity/server.key"
+        chmod 0644 "$initdir/etc/bitcoinpir/identity/server.cert"
+    fi
+
+    # A Tier 3 release can bind a public, signed admission policy to the
+    # measured image without putting issuer, payment, or identity secrets in
+    # it.  The runner keeps its historical rootfs policy fallback for existing
+    # deployments; this optional copy is for releases that must atomically
+    # change the attested runtime and its advertised Free scopes.
+    if [ -n "$service_policy" ]; then
+        if [ ! -r "$service_policy" ]; then
+            derror "bpir-unified-server: BPIR_TIER3_SERVICE_POLICY is not readable"
+            return 1
+        fi
+        inst_dir /etc/bitcoinpir/payment
+        inst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin
+        chmod 0644 "$initdir/etc/bitcoinpir/payment/service-policy.bin"
+    fi
 }

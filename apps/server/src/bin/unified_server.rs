@@ -23,9 +23,10 @@ use pir_runtime_core::service_admission::{
     ServiceWireRequestV1,
 };
 use pir_runtime_core::service_policy_runtime::{
-    activate_retained_service_policy_v1, activate_service_policy_v1,
-    validate_policy_method_coverage_v1, validate_retained_policy_method_coverage_v1,
-    ActivatedRetainedServicePolicyV1, ActivatedServicePolicyV1,
+    activate_exact_storeless_free_pow_policy_v1, activate_retained_service_policy_v1,
+    activate_service_policy_v1, validate_policy_method_coverage_v1,
+    validate_retained_policy_method_coverage_v1, ActivatedRetainedServicePolicyV1,
+    ActivatedServicePolicyV1,
 };
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
@@ -81,6 +82,7 @@ use pir_cashu_client::{
     ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305RecoveryCipherV1,
     StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
 };
+use pir_db_attest::{BuildKind, ProofBundle};
 use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
     SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
@@ -157,9 +159,10 @@ use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
     CircuitDirectChunkReader, CircuitDirectIndexReader, CircuitOram, CircuitOramState,
     CircuitStoreAuthLayout, CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel,
-    DirectTableMetadata, EmbeddedTreePageStore, FilePageStore, FrontCachedPageStore, OramParams,
-    PageStore, PathPageStore, Result as OramResult, TieredMerklePageStore, TieredMerkleState,
-    AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    DirectOramDatasetBindingV1, DirectTableMetadata, EmbeddedTreePageStore, FilePageStore,
+    FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result as OramResult,
+    TieredMerklePageStore, TieredMerkleState, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
+    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
@@ -272,6 +275,11 @@ struct CliArgs {
     /// live; V1 deliberately has no unauthenticated historical-key list.
     service_provider_id_hex: Option<String>,
     service_policy_key_hex: Option<String>,
+    /// Exact canonical ServicePolicyV1 digest for the measured, storeless
+    /// Free-PoW-only deployment mode. The pin must be part of the measured
+    /// launch configuration; it replaces durable policy rollback state only
+    /// for this deliberately narrow policy shape.
+    service_storeless_free_pow_policy_digest_hex: Option<String>,
     /// Existing provider spend database. The rollback authority must be exactly
     /// one local development/test SQLite file or one production remote config;
     /// startup never creates or silently substitutes either.
@@ -400,6 +408,10 @@ struct CliArgs {
     /// Optional per-database trusted controller/auth state directories.
     /// Repeatable as `--direct-oram-trusted-state-db <db_id>=<dir>`.
     direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)>,
+    /// Development/test-only escape hatch for trusted state outside the
+    /// measured `/run/bitcoinpir-oram-state` tmpfs.
+    #[cfg_attr(not(feature = "cuckoo-oram"), allow(dead_code))]
+    direct_oram_allow_trusted_state_outside_run_dev: bool,
     /// Public deterministic evictions drained after each direct ORAM read.
     direct_oram_drain_per_access: u64,
     /// Fixed direct ORAM access budget per ORAM lookup request.
@@ -532,6 +544,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut service_retained_policy_paths: Vec<PathBuf> = Vec::new();
     let mut service_provider_id_hex: Option<String> = None;
     let mut service_policy_key_hex: Option<String> = None;
+    let mut service_storeless_free_pow_policy_digest_hex: Option<String> = None;
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
     let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
@@ -581,6 +594,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut direct_oram_dir: Option<PathBuf> = None;
     let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)> = Vec::new();
+    let mut direct_oram_allow_trusted_state_outside_run_dev = false;
     let mut direct_oram_drain_per_access: u64 = 2;
     let mut direct_oram_access_budget: usize = 75;
     let mut direct_oram_encrypted = false;
@@ -724,6 +738,23 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--service-policy-key-hex" => {
                 service_policy_key_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-storeless-free-pow-policy-digest-hex" => {
+                if service_storeless_free_pow_policy_digest_hex.is_some() {
+                    fatal_cli(
+                        "--service-storeless-free-pow-policy-digest-hex must not be repeated",
+                    );
+                }
+                service_storeless_free_pow_policy_digest_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-free-pow-policy-digest-hex requires a digest",
+                            )
+                        })
+                        .clone(),
+                );
                 i += 1;
             }
             "--service-store" => {
@@ -998,6 +1029,9 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                 direct_oram_trusted_state_dbs.push(parsed);
                 i += 1;
             }
+            "--allow-direct-oram-trusted-state-outside-run-dev" => {
+                direct_oram_allow_trusted_state_outside_run_dev = true;
+            }
             "--direct-oram-drain-per-access" => {
                 direct_oram_drain_per_access =
                     args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -1081,6 +1115,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         service_retained_policy_paths,
         service_provider_id_hex,
         service_policy_key_hex,
+        service_storeless_free_pow_policy_digest_hex,
         service_store_path,
         service_rollback_authority_path,
         service_remote_rollback_authority_config_path,
@@ -1130,6 +1165,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         direct_oram_dir,
         direct_oram_dbs,
         direct_oram_trusted_state_dbs,
+        direct_oram_allow_trusted_state_outside_run_dev,
         direct_oram_drain_per_access,
         direct_oram_access_budget,
         direct_oram_encrypted,
@@ -1941,6 +1977,7 @@ struct DirectOramIndexTable {
     poisoned: std::sync::Mutex<Option<String>>,
     dirty: std::sync::atomic::AtomicBool,
     hash_fns: usize,
+    metadata: DirectTableMetadata,
     state_path: PathBuf,
     auth_state_path: Option<PathBuf>,
     state_key: Option<[u8; 32]>,
@@ -1954,6 +1991,7 @@ struct DirectOramChunkTable {
     poisoned: std::sync::Mutex<Option<String>>,
     dirty: std::sync::atomic::AtomicBool,
     total_chunks: usize,
+    metadata: DirectTableMetadata,
     state_path: PathBuf,
     auth_state_path: Option<PathBuf>,
     state_key: Option<[u8; 32]>,
@@ -2057,6 +2095,58 @@ impl DirectOramTables {
     ) -> Result<Vec<DirectNativeLookupResult>, String> {
         direct_native_lookup_slots(self, script_hashes, slot_present)
     }
+
+    fn validate_dataset_binding(&self, database: &MappedDatabase) -> Result<(), String> {
+        let manifest_root = database.manifest_root.ok_or_else(|| {
+            "production Direct ORAM requires an exact verified server DB manifest root".to_owned()
+        })?;
+        let direct = database
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.direct_oram.as_ref())
+            .ok_or_else(|| {
+                "production Direct ORAM requires typed [direct_oram] data in MANIFEST.toml"
+                    .to_owned()
+            })?
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let expected = DirectOramDatasetBindingV1 {
+            server_db_manifest_sha256: manifest_root,
+            index_sha256: direct.index_sha256,
+            index_bytes: direct.index_bytes,
+            index_records: direct.index_records,
+            chunk_sha256: direct.chunk_sha256,
+            chunk_bytes: direct.chunk_bytes,
+            chunk_records: direct.chunk_records,
+            index_slots_per_bin: direct.index_slots_per_bin,
+            index_hash_fns: direct.index_hash_fns,
+            index_load_factor_ppb: direct.index_load_factor_ppb,
+            index_seed: direct.index_seed,
+        };
+        expected.validate().map_err(|error| error.to_string())?;
+        let index = *self
+            .index
+            .metadata
+            .require_dataset_binding()
+            .map_err(|error| error.to_string())?;
+        let chunk = *self
+            .chunk
+            .metadata
+            .require_dataset_binding()
+            .map_err(|error| error.to_string())?;
+        if index != chunk {
+            return Err(
+                "Direct ORAM INDEX and CHUNK metadata have different dataset bindings".into(),
+            );
+        }
+        if index != expected || index.digest() != expected.digest() {
+            return Err(format!(
+                "Direct ORAM metadata does not match verified DB manifest binding {}",
+                hex::encode(expected.digest())
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2124,6 +2214,7 @@ impl DirectOramIndexTable {
             poisoned: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
             hash_fns: metadata.hash_fns,
+            metadata,
             state_path: paths.state,
             auth_state_path: auth_store.then_some(paths.auth_state),
             state_key,
@@ -2259,6 +2350,7 @@ impl DirectOramChunkTable {
             poisoned: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
             total_chunks: metadata.total_items,
+            metadata,
             state_path: paths.state,
             auth_state_path: auth_store.then_some(paths.auth_state),
             state_key,
@@ -3951,7 +4043,10 @@ struct UnifiedServerData {
 struct StrictServiceAdmissionRuntimeV1 {
     policy: ActivatedServicePolicyV1,
     retained_policies: BTreeMap<[u8; 32], ActivatedRetainedServicePolicyV1>,
-    provider_store: ProviderStore,
+    /// Absent only for the exact-digest-pinned, Free-PoW-only measured mode.
+    /// Every durable quota, credential, payment, Cashu, ARC, retained-policy,
+    /// or shared-issuer route requires this store at startup.
+    provider_store: Option<ProviderStore>,
     free_rate_limits: Arc<FreeRateLimitStateV1>,
     free_ip_subject_key: Option<FreeIpSubjectKeyV1>,
     trust_direct_peer_ip: bool,
@@ -4218,28 +4313,33 @@ impl StrictServiceAdmissionRuntimeV1 {
 
     fn supports(&self, route: AdmissionMethodRouteV1) -> bool {
         match route {
-            AdmissionMethodRouteV1::FreeOpenBestEffort
-            | AdmissionMethodRouteV1::FreeProofOfWork
-            | AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
-            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => true,
+            AdmissionMethodRouteV1::FreeOpenBestEffort => self.provider_store.is_some(),
+            AdmissionMethodRouteV1::FreeProofOfWork => true,
+            AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
+            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => {
+                self.provider_store.is_some()
+            }
             AdmissionMethodRouteV1::FreeIpRateLimited => {
                 self.free_ip_subject_key.is_some()
                     && self.trust_direct_peer_ip
                     && self.free_rate_limits.is_persistent()
             }
-            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => self.bat_keyring.is_some(),
+            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => {
+                self.provider_store.is_some() && self.bat_keyring.is_some()
+            }
             AdmissionMethodRouteV1::ArcProviderLocalExperimental => {
-                self.experimental_arc_keyring.is_some()
+                self.provider_store.is_some() && self.experimental_arc_keyring.is_some()
             }
             AdmissionMethodRouteV1::StandardCashuMintOnline => {
-                self.cashu_recovery_cipher.is_some()
+                self.provider_store.is_some()
+                    && self.cashu_recovery_cipher.is_some()
                     && self.cashu_custody_cipher.is_some()
                     && !self.cashu_exposure_limits.is_empty()
             }
             AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
             | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
-                self.shared_issuer.is_some()
+                self.provider_store.is_some() && self.shared_issuer.is_some()
             }
         }
     }
@@ -4279,7 +4379,10 @@ impl UnifiedServerData {
 
     #[cfg(feature = "cuckoo-oram")]
     fn has_oram_for(&self, db_id: u8) -> bool {
-        self.direct_oram.contains_key(&db_id) || self.cuckoo_oram.contains_key(&db_id)
+        // Payment V1 TEE-ORAM scopes are production catalog entries. Legacy
+        // Cuckoo ORAM has no exact attested source binding and must never make
+        // such a scope locally serviceable.
+        self.direct_oram.contains_key(&db_id)
     }
 
     #[cfg(not(feature = "cuckoo-oram"))]
@@ -4316,6 +4419,68 @@ impl UnifiedServerData {
         }
     }
 
+    /// Return the strict proof dataset identifier used by Payment V1
+    /// admission for a loaded database.
+    ///
+    /// Strict clients bind DPF/Harmony to `REQ_GET_DB_PROOF` and OnionPIR to
+    /// `REQ_GET_DB_PROOF_V2`; both derive this value from the selected proof
+    /// sidecar's `server-db/MANIFEST.toml`.  That roots-only evidence manifest
+    /// is deliberately distinct from the server-loadable database manifest.
+    /// A selected sidecar must therefore verify internally *and* agree with
+    /// the loaded database's anchors and Merkle commitment before it can
+    /// replace the legacy local manifest root.  A present but malformed or
+    /// mismatched sidecar fails closed; only a genuinely absent sidecar keeps
+    /// legacy catalog compatibility.
+    fn service_dataset_binding_root_v1(
+        &self,
+        database: &MappedDatabase,
+        db_id: u8,
+        backend: ServiceBackendIdV1,
+    ) -> Option<[u8; 32]> {
+        let proof = match backend {
+            ServiceBackendIdV1::DpfPirV1 | ServiceBackendIdV1::HarmonyPirV2 => {
+                database.db_proof.as_ref()
+            }
+            ServiceBackendIdV1::OnionPirV1 => database.db_proof_v2.as_ref(),
+            // A roots-only proof does not certify the typed direct-ORAM
+            // manifest, so TEE-ORAM remains bound to the local verified
+            // server-loadable manifest root.
+            ServiceBackendIdV1::TeeOramV1 => return database.manifest_root,
+        };
+        match proof {
+            Some(proof) => {
+                let binding = verified_service_proof_binding_v1(proof, db_id)?;
+                self.service_proof_binding_matches_loaded_db_v1(database, db_id, backend, &binding)
+                    .then_some(binding.dataset_root)
+            }
+            None => database.manifest_root,
+        }
+    }
+
+    fn service_proof_binding_matches_loaded_db_v1(
+        &self,
+        database: &MappedDatabase,
+        db_id: u8,
+        backend: ServiceBackendIdV1,
+        binding: &VerifiedServiceProofBindingV1,
+    ) -> bool {
+        if !service_proof_binding_matches_loaded_db_metadata_v1(database, binding) {
+            return false;
+        }
+        let onion_root = self.onionpir_merkle_for(db_id).and_then(|info| {
+            hex::decode(&info.super_root_hex)
+                .ok()
+                .and_then(|root| (root.len() == 32).then_some(root))
+        });
+        service_proof_binding_matches_backend_commitment_v1(
+            backend,
+            database.has_bucket_merkle(),
+            database.bucket_merkle_root.as_deref(),
+            onion_root.as_deref(),
+            binding,
+        )
+    }
+
     /// Resolve an untrusted operation from actual loaded state plus the exact
     /// activated provider policy. Multiple matching scopes fail closed: the
     /// wire request is not allowed to choose an operation profile indirectly.
@@ -4334,9 +4499,9 @@ impl UnifiedServerData {
             | OperationStartV1::OnionSession { db_id }
             | OperationStartV1::TeeOramQuery { db_id } => *db_id,
         };
-        let database = self.state.get_db(db_id)?;
-        let root = database.manifest_root?;
         let (backend, workload) = operation.required_service();
+        let database = self.state.get_db(db_id)?;
+        let root = self.service_dataset_binding_root_v1(database, db_id, backend)?;
         let protocol_version = match backend {
             ServiceBackendIdV1::HarmonyPirV2 => 2,
             ServiceBackendIdV1::DpfPirV1
@@ -4392,7 +4557,9 @@ impl UnifiedServerData {
                             let Ok(db_id) = u8::try_from(index) else {
                                 return false;
                             };
-                            if database.manifest_root != Some(root) {
+                            if self.service_dataset_binding_root_v1(database, db_id, scope.backend)
+                                != Some(root)
+                            {
                                 return false;
                             }
                             match (scope.backend, scope.workload) {
@@ -4444,6 +4611,236 @@ impl UnifiedServerData {
             }
         }
         Ok(())
+    }
+}
+
+/// Proof material which is internally consistent and can be compared with a
+/// locally loaded database.  It intentionally carries no claim that the
+/// provider has performed the browser's full external attestation trust-chain
+/// verification; strict clients retain that responsibility.
+struct VerifiedServiceProofBindingV1 {
+    dataset_root: [u8; 32],
+    evidence: pir_db_attest::BuildEvidence,
+}
+
+fn verified_service_proof_binding_v1(
+    proof: &DatabaseProofBundle,
+    db_id: u8,
+) -> Option<VerifiedServiceProofBindingV1> {
+    if proof.db_id != db_id || proof.server_db_manifest_toml.is_empty() {
+        return None;
+    }
+    let verified = ProofBundle {
+        build_evidence: proof.build_evidence.clone(),
+        root_bundle_payload: proof.root_bundle_payload.clone(),
+        sev_snp_report: proof.sev_snp_report.clone(),
+        database_manifest_sha256: proof.database_manifest_sha256.clone(),
+        all_artifacts_manifest_sha256: proof.all_artifacts_manifest_sha256.clone(),
+        server_db_manifest_toml: proof.server_db_manifest_toml.clone(),
+    }
+    .verify()
+    .ok()?;
+    Some(VerifiedServiceProofBindingV1 {
+        dataset_root: pir_core::merkle::sha256(&proof.server_db_manifest_toml),
+        evidence: verified.evidence,
+    })
+}
+
+fn service_proof_binding_matches_loaded_db_metadata_v1(
+    database: &MappedDatabase,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    service_proof_binding_matches_loaded_metadata_v1(
+        database.manifest_root.is_some(),
+        &database.descriptor,
+        database.index.bins_per_table,
+        database.chunk.bins_per_table,
+        database.index.anchor,
+        database.chunk.anchor,
+        binding,
+    )
+}
+
+fn service_proof_binding_matches_loaded_metadata_v1(
+    manifest_verified: bool,
+    descriptor: &DatabaseDescriptor,
+    index_bins: usize,
+    chunk_bins: usize,
+    index_anchor: Option<pir_core::cuckoo::HeaderAnchor>,
+    chunk_anchor: Option<pir_core::cuckoo::HeaderAnchor>,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    if !manifest_verified
+        || index_bins != binding.evidence.index_bins_per_table as usize
+        || chunk_bins != binding.evidence.chunk_bins_per_table as usize
+    {
+        return false;
+    }
+    let expected_anchor = match binding.evidence.build_kind {
+        BuildKind::Snapshot => {
+            if descriptor.db_type != DatabaseType::Full
+                || descriptor.base_height != binding.evidence.from_anchor.height
+                || descriptor.height != binding.evidence.anchor.height
+            {
+                return false;
+            }
+            pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+                block_hash: binding.evidence.anchor.block_hash,
+                block_height: binding.evidence.anchor.height,
+            })
+        }
+        BuildKind::Delta => {
+            if descriptor.db_type != DatabaseType::Delta
+                || descriptor.base_height != binding.evidence.from_anchor.height
+                || descriptor.height != binding.evidence.anchor.height
+            {
+                return false;
+            }
+            pir_core::cuckoo::HeaderAnchor::Delta(pir_core::seeds::DeltaAnchor {
+                from: pir_core::seeds::ChainAnchor {
+                    block_hash: binding.evidence.from_anchor.block_hash,
+                    block_height: binding.evidence.from_anchor.height,
+                },
+                to: pir_core::seeds::ChainAnchor {
+                    block_hash: binding.evidence.anchor.block_hash,
+                    block_height: binding.evidence.anchor.height,
+                },
+            })
+        }
+    };
+    index_anchor == Some(expected_anchor) && chunk_anchor == Some(expected_anchor)
+}
+
+fn service_proof_binding_matches_backend_commitment_v1(
+    backend: ServiceBackendIdV1,
+    has_bucket_merkle: bool,
+    bucket_super_root: Option<&[u8]>,
+    onion_super_root: Option<&[u8]>,
+    binding: &VerifiedServiceProofBindingV1,
+) -> bool {
+    match backend {
+        ServiceBackendIdV1::DpfPirV1 | ServiceBackendIdV1::HarmonyPirV2 => {
+            has_bucket_merkle
+                && bucket_super_root == Some(binding.evidence.bucket_super_root.as_slice())
+        }
+        ServiceBackendIdV1::OnionPirV1 => {
+            onion_super_root == Some(binding.evidence.onion_super_root.as_slice())
+        }
+        ServiceBackendIdV1::TeeOramV1 => false,
+    }
+}
+
+#[cfg(test)]
+mod service_dataset_binding_tests {
+    use super::*;
+
+    fn retained_proof() -> DatabaseProofBundle {
+        let proof_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../web/src/__tests__/fixtures/oram-source-proof-v1-leaked/proofs/oram-source/mainnet_948454/db",
+        );
+        DatabaseProofBundle {
+            db_id: 0,
+            build_evidence: std::fs::read(proof_dir.join("build-evidence.bin")).unwrap(),
+            root_bundle_payload: std::fs::read(proof_dir.join("root-bundle-payload.bin")).unwrap(),
+            sev_snp_report: std::fs::read(proof_dir.join("build-evidence.sev-snp-report.bin"))
+                .unwrap(),
+            database_manifest_sha256: std::fs::read(proof_dir.join("database.manifest.sha256"))
+                .unwrap(),
+            all_artifacts_manifest_sha256: std::fs::read(
+                proof_dir.join("all-artifacts.manifest.sha256"),
+            )
+            .unwrap(),
+            server_db_manifest_toml: std::fs::read(proof_dir.join("server-db/MANIFEST.toml"))
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn strict_proof_binding_requires_a_complete_verified_bundle() {
+        let proof = retained_proof();
+        let binding = verified_service_proof_binding_v1(&proof, 0).unwrap();
+        assert_eq!(
+            hex::encode(binding.dataset_root),
+            "0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec"
+        );
+        assert_eq!(
+            hex::encode(binding.evidence.bucket_super_root),
+            "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b"
+        );
+        assert_eq!(
+            hex::encode(binding.evidence.onion_super_root),
+            "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4"
+        );
+        let mut malformed = proof;
+        malformed.server_db_manifest_toml[0] ^= 1;
+        assert!(verified_service_proof_binding_v1(&malformed, 0).is_none());
+    }
+
+    #[test]
+    fn strict_proof_binding_rejects_wrong_loaded_anchor_or_commitment() {
+        let binding = verified_service_proof_binding_v1(&retained_proof(), 0).unwrap();
+        let descriptor = DatabaseDescriptor {
+            name: "fixture".to_owned(),
+            db_type: DatabaseType::Full,
+            base_height: binding.evidence.from_anchor.height,
+            height: binding.evidence.anchor.height,
+            index_params: INDEX_PARAMS.clone(),
+            chunk_params: CHUNK_PARAMS.clone(),
+        };
+        let anchor = pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+            block_hash: binding.evidence.anchor.block_hash,
+            block_height: binding.evidence.anchor.height,
+        });
+        assert!(service_proof_binding_matches_loaded_metadata_v1(
+            true,
+            &descriptor,
+            binding.evidence.index_bins_per_table as usize,
+            binding.evidence.chunk_bins_per_table as usize,
+            Some(anchor),
+            Some(anchor),
+            &binding,
+        ));
+        let wrong_anchor = pir_core::cuckoo::HeaderAnchor::Snapshot(pir_core::seeds::ChainAnchor {
+            block_hash: [0x55; 32],
+            block_height: binding.evidence.anchor.height,
+        });
+        assert!(!service_proof_binding_matches_loaded_metadata_v1(
+            true,
+            &descriptor,
+            binding.evidence.index_bins_per_table as usize,
+            binding.evidence.chunk_bins_per_table as usize,
+            Some(wrong_anchor),
+            Some(wrong_anchor),
+            &binding,
+        ));
+        assert!(service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::DpfPirV1,
+            true,
+            Some(binding.evidence.bucket_super_root.as_slice()),
+            None,
+            &binding,
+        ));
+        assert!(!service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::DpfPirV1,
+            true,
+            Some(&[0u8; 32]),
+            None,
+            &binding,
+        ));
+        assert!(service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::OnionPirV1,
+            false,
+            None,
+            Some(binding.evidence.onion_super_root.as_slice()),
+            &binding,
+        ));
+        assert!(!service_proof_binding_matches_backend_commitment_v1(
+            ServiceBackendIdV1::OnionPirV1,
+            false,
+            None,
+            Some(&[0u8; 32]),
+            &binding,
+        ));
     }
 }
 
@@ -5563,7 +5960,12 @@ trait ServiceResponseBudgetV1 {
     fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String>;
 }
 
-const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 32;
+// The authenticated bucket-tree-top preflight is deliberately available
+// before service admission.  Production tree-top responses are sent in
+// 256 KiB transport chunks, so one main-db response needs about 35 WebSocket
+// messages in addition to the small strict-bootstrap responses.  Keep this
+// physical-frame limit comfortably above that bounded pre-admission flow.
+const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 128;
 const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
 type PreAuthDeadlineFutureV1 =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -7309,6 +7711,7 @@ fn load_strict_service_admission_v1(
         || !args.service_retained_policy_paths.is_empty()
         || args.service_provider_id_hex.is_some()
         || args.service_policy_key_hex.is_some()
+        || args.service_storeless_free_pow_policy_digest_hex.is_some()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
         || args.service_remote_rollback_authority_config_path.is_some()
@@ -7381,6 +7784,54 @@ fn load_strict_service_admission_v1(
         SERVICE_CONFIG_FILE_LIMIT_V1,
         "signed service policy",
     )?;
+    let storeless_free_pow_policy_digest = args
+        .service_storeless_free_pow_policy_digest_hex
+        .as_deref()
+        .map(|value| {
+            decode_fixed_hex_v1::<32>(value, "--service-storeless-free-pow-policy-digest-hex")
+        })
+        .transpose()?;
+    if storeless_free_pow_policy_digest.is_some()
+        && (!args.service_retained_policy_paths.is_empty()
+            || args.arc_key_path.is_some()
+            || !args.cashu_keysets.is_empty()
+            || args.service_store_path.is_some()
+            || args.service_rollback_authority_path.is_some()
+            || args.service_remote_rollback_authority_config_path.is_some()
+            || args.allow_local_service_rollback_authority_dev
+            || args.service_free_ip_key_path.is_some()
+            || args.service_trust_direct_peer_ip
+            || !args.service_bat_key_paths.is_empty()
+            || !args.service_arc_key_specs.is_empty()
+            || args.allow_experimental_arc
+            || !args.service_cashu_recovery_key_specs.is_empty()
+            || args.service_cashu_recovery_active_epoch.is_some()
+            || !args.service_cashu_custody_key_specs.is_empty()
+            || args.service_cashu_custody_active_epoch.is_some()
+            || !args.service_cashu_exposure_limit_specs.is_empty()
+            || args.service_shared_authorization_path.is_some()
+            || args.service_shared_issuer_approval_path.is_some()
+            || args.service_shared_operator_key_hex.is_some()
+            || args.service_shared_issuer_settlement_key_hex.is_some()
+            || args.service_shared_clearing_key_path.is_some()
+            || args.service_shared_idempotency_key_path.is_some()
+            || args.service_shared_minimum_authorization_epoch.is_some()
+            || {
+                #[cfg(feature = "standard-cashu-process-e2e")]
+                {
+                    test_only_service_https_configured
+                }
+                #[cfg(not(feature = "standard-cashu-process-e2e"))]
+                {
+                    false
+                }
+            })
+    {
+        return Err(
+            "storeless Free-PoW mode forbids retained policies, stores, rollback authorities, Free IP quota, credential/payment keys, legacy or V1 Cashu/ARC, shared issuer, and test HTTPS configuration"
+                .to_owned(),
+        );
+    }
     let mut experimental_arc_usage =
         inspect_experimental_arc_policy_v1(&signed_policy, "signed service policy")?;
     let mut retained_policy_inputs = Vec::with_capacity(args.service_retained_policy_paths.len());
@@ -7406,55 +7857,64 @@ fn load_strict_service_admission_v1(
             "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE PINNED DRAFT-01 IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
         );
     }
-    let provider_store_path = args
-        .service_store_path
-        .as_deref()
-        .ok_or_else(|| "--service-store is required".to_owned())?;
-    let rollback_source = service_rollback_authority_source_v1(
-        args.service_rollback_authority_path.as_deref(),
-        args.service_remote_rollback_authority_config_path
-            .as_deref(),
-        args.allow_local_service_rollback_authority_dev,
-    )?;
-    let canonical_store =
-        validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
+    let provider_store = if storeless_free_pow_policy_digest.is_some() {
+        None
+    } else {
+        let provider_store_path = args
+            .service_store_path
+            .as_deref()
+            .ok_or_else(|| "--service-store is required".to_owned())?;
+        let rollback_source = service_rollback_authority_source_v1(
+            args.service_rollback_authority_path.as_deref(),
+            args.service_remote_rollback_authority_config_path
+                .as_deref(),
+            args.allow_local_service_rollback_authority_dev,
+        )?;
+        let canonical_store =
+            validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
 
-    let options = StoreOptions::default();
-    let store_startup_check_started = Instant::now();
-    let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
-        ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
-            let canonical_rollback =
-                validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
-            if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
-                return Err(
-                    "provider store and rollback authority must be different files/inodes"
-                        .to_owned(),
+        let options = StoreOptions::default();
+        let store_startup_check_started = Instant::now();
+        let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
+            ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
+                let canonical_rollback =
+                    validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
+                if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
+                    return Err(
+                        "provider store and rollback authority must be different files/inodes"
+                            .to_owned(),
+                    );
+                }
+                eprintln!(
+                    "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
                 );
-            }
-            eprintln!(
-                "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
-            );
-            Arc::new(
-                SqliteRollbackFloorAuthorityV1::open_existing(
-                    &canonical_rollback,
-                    options.busy_timeout,
+                Arc::new(
+                    SqliteRollbackFloorAuthorityV1::open_existing(
+                        &canonical_rollback,
+                        options.busy_timeout,
+                    )
+                    .map_err(|error| format!("failed to open rollback authority: {error}"))?,
                 )
-                .map_err(|error| format!("failed to open rollback authority: {error}"))?,
-            )
-        }
-        ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
-            open_remote_service_rollback_authority_v1(provider_id, path)?
-        }
+            }
+            ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
+                open_remote_service_rollback_authority_v1(provider_id, path)?
+            }
+        };
+        let store = ProviderStore::open_existing(
+            &canonical_store,
+            provider_id,
+            options,
+            rollback_authority,
+        )
+        .map_err(|error| format!("failed to open provider spend store: {error}"))?;
+        let _store_inventory = store.operational_inventory().map_err(|error| {
+            format!("failed to read provider store operational inventory: {error}")
+        })?;
+        let startup_line =
+            provider_store_startup_log_line_v1(store_startup_check_started.elapsed().as_millis());
+        println!("{startup_line}");
+        Some(store)
     };
-    let provider_store =
-        ProviderStore::open_existing(&canonical_store, provider_id, options, rollback_authority)
-            .map_err(|error| format!("failed to open provider spend store: {error}"))?;
-    let _store_inventory = provider_store
-        .operational_inventory()
-        .map_err(|error| format!("failed to read provider store operational inventory: {error}"))?;
-    let startup_line =
-        provider_store_startup_log_line_v1(store_startup_check_started.elapsed().as_millis());
-    println!("{startup_line}");
 
     let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
         Some(path) => Some(
@@ -7712,7 +8172,12 @@ fn load_strict_service_admission_v1(
             )
             .map_err(|error| format!("shared issuer HTTPS trust is invalid: {error}"))?;
         shared
-            .committer(&provider_store, &http_transport)
+            .committer(
+                provider_store.as_ref().ok_or_else(|| {
+                    "shared issuer configuration requires a provider store".to_owned()
+                })?,
+                &http_transport,
+            )
             .map_err(|error| format!("shared issuer clearing configuration is invalid: {error}"))?;
         shared
             .authorization
@@ -7735,16 +8200,27 @@ fn load_strict_service_admission_v1(
             .map_err(|error| format!("issuer clearing approval is not current: {error}"))?;
     }
 
-    let policy = activate_service_policy_v1(
-        &signed_policy,
-        provider_id,
-        verifying_key,
-        &provider_store,
-        now_unix,
-        experimental_arc_keyring
-            .as_ref()
-            .map(|keyring| keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1),
-    )
+    let policy = match storeless_free_pow_policy_digest {
+        Some(expected_digest) => activate_exact_storeless_free_pow_policy_v1(
+            &signed_policy,
+            provider_id,
+            verifying_key,
+            expected_digest,
+            now_unix,
+        ),
+        None => activate_service_policy_v1(
+            &signed_policy,
+            provider_id,
+            verifying_key,
+            provider_store
+                .as_ref()
+                .ok_or_else(|| "provider store is unavailable".to_owned())?,
+            now_unix,
+            experimental_arc_keyring
+                .as_ref()
+                .map(|keyring| keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1),
+        ),
+    }
     .map_err(|error| format!("failed to activate signed service policy: {error}"))?;
     let mut retained_policies = BTreeMap::new();
     for (retained_path, retained_bytes) in retained_policy_inputs {
@@ -7765,10 +8241,15 @@ fn load_strict_service_admission_v1(
             ));
         }
     }
-    let free_rate_limits = Arc::new(FreeRateLimitStateV1::provider_store(
-        provider_store.clone(),
-        pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
-    ));
+    let free_rate_limits = Arc::new(match provider_store.as_ref() {
+        Some(store) => FreeRateLimitStateV1::provider_store(
+            store.clone(),
+            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+        ),
+        None => FreeRateLimitStateV1::new(
+            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+        ),
+    });
     let runtime = StrictServiceAdmissionRuntimeV1 {
         policy,
         retained_policies,
@@ -7819,6 +8300,8 @@ fn load_strict_service_admission_v1(
                     })?;
                 let readiness = runtime
                     .provider_store
+                    .as_ref()
+                    .ok_or_else(|| "retained policy requires a provider store".to_owned())?
                     .verify_existing_verified_offer_namespace_v1(
                         &verified_offer,
                         retained.policy().issued_at,
@@ -7970,6 +8453,8 @@ fn validate_cashu_runtime_configuration_v1(
             })?;
         let inventory = runtime
             .provider_store
+            .as_ref()
+            .ok_or_else(|| "standard Cashu requires a provider store".to_owned())?
             .cashu_custody_inventory_v1(mint_id, unit)
             .map_err(|error| {
                 format!(
@@ -8431,16 +8916,88 @@ async fn main() {
                     );
                     std::process::exit(2);
                 };
+                let database = all_databases.get(db_id as usize).unwrap_or_else(|| {
+                    panic!("loaded DB vector is missing configured db_id={db_id}")
+                });
+                if !args.direct_oram_auth_store {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-auth-store",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if !args.direct_oram_encrypted {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-encrypted so the host cannot track plaintext block relocation",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if args.direct_oram_no_save {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} rejects --direct-oram-no-save because mutable controller/auth state must commit",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                if trusted_state_dir.is_none() {
+                    eprintln!(
+                        "ERROR: production Direct ORAM for db_id={} requires a separate --direct-oram-trusted-state-db",
+                        db_id
+                    );
+                    std::process::exit(2);
+                }
+                let trusted_state_dir = trusted_state_dir
+                    .as_deref()
+                    .expect("production Direct ORAM checked trusted-state directory");
+                if !args.direct_oram_allow_trusted_state_outside_run_dev {
+                    let trusted_state_dir = std::fs::canonicalize(trusted_state_dir)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "failed to resolve Direct ORAM trusted-state directory for db_id={} ({}): {}",
+                                db_id,
+                                trusted_state_dir.display(),
+                                error
+                            )
+                        });
+                    if !trusted_state_dir.starts_with("/run/bitcoinpir-oram-state") {
+                        eprintln!(
+                            "ERROR: production Direct ORAM for db_id={} requires trusted state under measured /run/bitcoinpir-oram-state; got {}",
+                            db_id,
+                            trusted_state_dir.display()
+                        );
+                        std::process::exit(2);
+                    }
+                    let bulk_dir = std::fs::canonicalize(&oram_dir).unwrap_or_else(|error| {
+                        panic!(
+                            "failed to resolve Direct ORAM bulk directory for db_id={} ({}): {}",
+                            db_id,
+                            oram_dir.display(),
+                            error
+                        )
+                    });
+                    if bulk_dir.starts_with(&trusted_state_dir)
+                        || trusted_state_dir.starts_with(&bulk_dir)
+                    {
+                        eprintln!(
+                            "ERROR: production Direct ORAM for db_id={} requires disjoint bulk and trusted-state directories",
+                            db_id
+                        );
+                        std::process::exit(2);
+                    }
+                } else {
+                    eprintln!(
+                        "WARNING: Direct ORAM trusted state outside measured /run explicitly allowed for development/testing (db_id={})",
+                        db_id
+                    );
+                }
 
                 println!(
                     "  Direct ORAM: enabled for db_id={} name={}, dir={}, trusted_state_dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
                     db_id,
                     db_label,
                     oram_dir.display(),
-                    trusted_state_dir
-                        .as_deref()
-                        .unwrap_or(&oram_dir)
-                        .display(),
+                    trusted_state_dir.display(),
                     args.direct_oram_access_budget,
                     args.direct_oram_drain_per_access,
                     args.direct_oram_encrypted,
@@ -8449,7 +9006,7 @@ async fn main() {
                 );
                 let tables = DirectOramTables::open_with_trusted_state(
                     &oram_dir,
-                    trusted_state_dir.as_deref(),
+                    Some(trusted_state_dir),
                     args.direct_oram_drain_per_access,
                     args.direct_oram_access_budget,
                     args.direct_oram_encrypted,
@@ -8465,6 +9022,14 @@ async fn main() {
                         db_id, db_label, e
                     )
                 });
+                tables
+                    .validate_dataset_binding(database)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "failed to bind Direct ORAM to verified DB for db_id={} ({}): {}",
+                            db_id, db_label, error
+                        )
+                    });
                 opened.insert(db_id, tables);
             }
             opened
@@ -9294,6 +9859,11 @@ async fn main() {
         }
         if runtime.trust_direct_peer_ip {
             println!("  Free IP quotas: direct TCP peer explicitly trusted");
+        }
+        if runtime.provider_store.is_none() {
+            println!(
+                "  Storeless Free-PoW: exact policy digest pin active; no provider store or rollback authority"
+            );
         }
         AdmissionEnforcementV1::Enforced
     } else {
@@ -10453,26 +11023,29 @@ async fn main() {
                                                     },
                                                 )
                                             } else {
-                                                let mut provider_local = ProviderStoreBearerCommitterV1::new(
-                                                    &runtime.provider_store,
-                                                    runtime
-                                                        .bat_keyring
-                                                        .as_ref()
-                                                        .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
-                                                );
-                                                if let Some(keyring) =
-                                                    runtime.experimental_arc_keyring.as_ref()
-                                                {
-                                                    provider_local = provider_local
-                                                        .with_arc_adapter_v1(keyring);
-                                                }
+                                                let provider_local = runtime.provider_store.as_ref().map(|store| {
+                                                    let committer = ProviderStoreBearerCommitterV1::new(
+                                                        store,
+                                                        runtime
+                                                            .bat_keyring
+                                                            .as_ref()
+                                                            .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
+                                                    );
+                                                    match runtime.experimental_arc_keyring.as_ref() {
+                                                        Some(keyring) => committer.with_arc_adapter_v1(keyring),
+                                                        None => committer,
+                                                    }
+                                                });
                                                 let mut composite =
-                                                    CompositeAdmissionMethodCommitterV1::new()
-                                                        .with_provider_local(&provider_local);
+                                                    CompositeAdmissionMethodCommitterV1::new();
+                                                if let Some(committer) = provider_local.as_ref() {
+                                                    composite = composite.with_provider_local(committer);
+                                                }
                                                 if let Some(free) = free_admission.as_ref() {
                                                     composite = composite.with_free(free);
                                                 }
                                                 let standard_cashu = match (
+                                                    runtime.provider_store.as_ref(),
                                                     runtime.cashu_recovery_cipher.as_ref(),
                                                     runtime.cashu_custody_cipher.as_ref(),
                                                     verified_offer
@@ -10481,6 +11054,7 @@ async fn main() {
                                                         .as_ref(),
                                                 ) {
                                                     (
+                                                        Some(store),
                                                         Some(recovery),
                                                         Some(custody),
                                                         Some(manifest),
@@ -10494,7 +11068,7 @@ async fn main() {
                                                         .map(|limits| {
                                                             StandardCashuAdmissionCommitterV1::new(
                                                                 StandardCashuClientV1::new(
-                                                                    &runtime.provider_store,
+                                                                    store,
                                                                     &runtime.http_transport,
                                                                     recovery,
                                                                     custody,
@@ -10511,10 +11085,11 @@ async fn main() {
                                                 let shared_issuer = runtime
                                                     .shared_issuer
                                                     .as_ref()
-                                                    .and_then(|config| {
+                                                    .zip(runtime.provider_store.as_ref())
+                                                    .and_then(|(config, store)| {
                                                         config
                                                             .committer(
-                                                                &runtime.provider_store,
+                                                                store,
                                                                 &runtime.http_transport,
                                                             )
                                                             .ok()
@@ -11387,7 +11962,28 @@ async fn main() {
                             msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                             msg.push(RESP_BUCKET_MERKLE_TREE_TOPS);
                             msg.extend_from_slice(tops);
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
+                            // Tree-top blobs for the live main database are
+                            // larger than a browser-safe WebSocket frame.
+                            // All current SDK transports reassemble the
+                            // shared CHUNK_MAGIC envelope, so use it here
+                            // unconditionally rather than allowing a large
+                            // single-frame write to stall until the
+                            // pre-authorization deadline.
+                            if let Err(error) = send_resp_chunked(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                msg,
+                                true,
+                            )
+                            .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] bucket Merkle tree-tops send error: {}",
+                                    peer,
+                                    error
+                                );
+                                break;
+                            }
                             unsafe_debug_log!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
                         } else {
                             let err = Response::Error(format!("db {} has no bucket merkle tree-tops", db_id));
@@ -12612,6 +13208,30 @@ mod service_admission_dispatch_tests {
     }
 
     #[tokio::test]
+    async fn bucket_tree_top_preflight_budget_carries_live_main_sized_chunked_response() {
+        // The functional-beta main DB tree-top blob is 9,155,384 bytes.
+        // Keep the pre-admission envelope test tied to the response shape
+        // that browser strict verification must receive before authorization.
+        const LIVE_MAIN_TREE_TOP_BYTES: usize = 9_155_384;
+        let mut sink = test_sink(0);
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_BUCKET_MERKLE_TREE_TOPS);
+
+        send_resp_chunked(&mut sink, None, vec![0; LIVE_MAIN_TREE_TOP_BYTES + 5], true)
+            .await
+            .expect("chunked main tree-top preflight must fit its fixed budget");
+
+        let expected_chunks = (LIVE_MAIN_TREE_TOP_BYTES + 5).div_ceil(CHUNK_SIZE);
+        assert_eq!(sink.inner.messages.len(), expected_chunks);
+        assert!(
+            expected_chunks > 32,
+            "the old frame budget cannot carry this flow"
+        );
+        assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
+        assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
+    }
+
+    #[tokio::test]
     async fn absolute_deadline_interrupts_permanently_pending_preflight_group_flush() {
         let mut sink = permanently_pending_test_sink(0);
         sink.set_test_pre_auth_egress_limits(4, u64::MAX);
@@ -13159,6 +13779,20 @@ mod service_admission_dispatch_tests {
             "3".to_owned(),
         ]);
         assert_eq!(args.service_max_concurrent_online_v2full_auth, Some(3));
+    }
+
+    #[test]
+    fn cli_parser_accepts_exact_storeless_free_pow_policy_digest() {
+        let digest = "42".repeat(32);
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--service-storeless-free-pow-policy-digest-hex".to_owned(),
+            digest.clone(),
+        ]);
+        assert_eq!(
+            args.service_storeless_free_pow_policy_digest_hex.as_deref(),
+            Some(digest.as_str())
+        );
     }
 
     #[cfg(feature = "test-only-unsafe-query-logging")]

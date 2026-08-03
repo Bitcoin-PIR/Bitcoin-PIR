@@ -589,6 +589,13 @@ indexed by the key ID inside each signed response. A historical initial payout
 response may therefore remain verifiable while all new responses use the
 current registration key.
 
+Those retained registries are issuer/ledger recovery mechanisms, not a
+provider-runtime retained-authorization mechanism. V1
+`SharedIssuerAdmissionCommitterV1` loads one clearing authorization, approval
+key and issuer settlement key. A provider-side redeem that is still pending
+when one of those bindings rotates has no automatic retained-key recovery path;
+operators must drain or explicitly reconcile it before rotation.
+
 Payouts remain outside the query path. A signed payout intent is consumed once
 under a database uniqueness constraint in the same transaction as account
 reserve/debit, payout creation and durable outbox insertion. Status recovery
@@ -631,6 +638,36 @@ fingerprint. Both raw-key comparisons happen before any explicit shared-issuer
 override is considered. The comparison stays entirely in the client; neither
 provider, issuer, nor directory receives the selected peer or a pair
 identifier.
+
+The same local check rejects a shared issuer/origin and a shared Lightning
+payee by default. These are separate explicit acknowledgements in the native
+API. The Web product combines them into one clearly labelled, in-memory-only,
+single-attempt consent for users who deliberately select a pooled issuer. Even
+then, provider origins and provider-specific policy, operator, receipt, BAT and
+ARC keys must remain distinct.
+
+The Web trusted bootstrap does not contain a provider-wide Lightning payee.
+Each provider instead has a bounded `lightningPayeeTrust` array. Every entry
+binds an exact signed-offer issuer identity, credential-free canonical HTTPS
+issuer origin, Lightning network and compressed payee identity:
+
+```json
+{
+  "lightningPayeeTrust": [{
+    "issuerIdHex": "<64 lowercase hex>",
+    "issuerOrigin": "https://issuer.example",
+    "network": "signet",
+    "expectedPayeePubkeyHex": "<02 or 03 followed by 64 lowercase hex>"
+  }]
+}
+```
+
+The issuer origin above is taken from the exact signed `ServiceOfferViewV1`;
+it is not the provider's independent `wss://` PIR endpoint. Duplicate
+`(issuerIdHex, canonical issuerOrigin, network)` tuples are rejected even when
+they repeat the same payee. A non-BOLT11 offer receives no payee context. A
+BOLT11 offer with zero or more than one exact trust match fails before invoice
+acquisition or capability retirement.
 
 If the client reaches only one provider, any capability already durably spent
 there remains spent. The product deliberately provides no automatic recovery

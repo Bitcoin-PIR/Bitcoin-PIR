@@ -13,14 +13,17 @@ use pir_service_protocol::{
     paid_receipt_key_id, AuthScheme, Bolt11QuoteKeyDelegationV1, CashuDenominationKeyV1,
     CashuKeysetBindingV1, CashuRequiredNutsV1, CredentialKeyBindingClaimsV1,
     CredentialKeyBindingExpectationV1, CredentialKeyBindingV1, CredentialUnitV1,
-    LightningNetworkV1, StandardCashuMintExpectationV1, StandardCashuMintManifestV1,
-    MAX_CREDENTIAL_KEY_ID_LEN,
+    IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationClaimsV1,
+    ProviderClearingAuthorizationV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1,
+    StandardCashuMintExpectationV1, StandardCashuMintManifestV1, MAX_CREDENTIAL_KEY_ID_LEN,
 };
 use serde::Deserialize;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_MANIFEST_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CLEARING_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CLEARING_AUTHORIZATION_BYTES: u64 = 64 * 1024;
 
 #[derive(Args, Debug)]
 pub struct PaymentArtifactArgs {
@@ -39,6 +42,12 @@ enum PaymentArtifactCommand {
     /// Build and self-verify a canonical standard Cashu mint manifest.
     #[command(name = "cashu-manifest")]
     CashuManifest(CashuManifestArgs),
+    /// Operator-sign and self-verify one production ledger-only provider authorization.
+    #[command(name = "clearing-authorization")]
+    ClearingAuthorization(ClearingAuthorizationArgs),
+    /// Issuer-sign and self-verify one exact provider clearing authorization.
+    #[command(name = "clearing-approval")]
+    ClearingApproval(ClearingApprovalArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -160,6 +169,75 @@ struct CashuManifestArgs {
     force: bool,
 }
 
+#[derive(Args, Debug)]
+struct ClearingAuthorizationArgs {
+    /// Owner-only 32-byte provider-operator Ed25519 seed.
+    #[arg(long)]
+    operator_signing_key: PathBuf,
+    /// Strict TOML source for one auth-credit, ledger-only authorization.
+    #[arg(long)]
+    config: PathBuf,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Debug)]
+struct ClearingApprovalArgs {
+    /// Canonical operator-signed ProviderClearingAuthorizationV1 bytes.
+    #[arg(long)]
+    authorization: PathBuf,
+    /// Owner-only 32-byte issuer-settlement Ed25519 seed.
+    #[arg(long)]
+    issuer_settlement_signing_key: PathBuf,
+    /// Digest printed by the independently run clearing-authorization ceremony.
+    #[arg(long)]
+    expected_authorization_digest_hex: String,
+    #[arg(long)]
+    expected_provider_id_hex: String,
+    #[arg(long)]
+    expected_issuer_id_hex: String,
+    #[arg(long)]
+    expected_operator_key_hex: String,
+    #[arg(long)]
+    minimum_authorization_epoch: u64,
+    #[arg(long)]
+    approved_at: u64,
+    #[arg(long)]
+    not_after: u64,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClearingAuthorizationConfig {
+    authorization_id_hex: String,
+    authorization_epoch: u64,
+    provider_id_hex: String,
+    issuer_id_hex: String,
+    redeem_endpoint: String,
+    redeem_leaf_spki_sha256_pins_hex: Vec<String>,
+    settlement_account_id_hex: String,
+    clearing_verifying_key_hex: String,
+    not_before: u64,
+    not_after: u64,
+    rules: Vec<LedgerClearingRuleConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LedgerClearingRuleConfig {
+    credential_binding_digest_hex: String,
+    accepted_value: u64,
+    provider_credit: u64,
+    issuer_fee: u64,
+    denomination_profile: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CashuManifestConfig {
@@ -199,6 +277,8 @@ pub fn run(args: PaymentArtifactArgs) -> Result<(), String> {
         PaymentArtifactCommand::QuoteDelegation(args) => build_quote_delegation(args),
         PaymentArtifactCommand::CredentialBinding(args) => build_credential_binding(args),
         PaymentArtifactCommand::CashuManifest(args) => build_cashu_manifest(args),
+        PaymentArtifactCommand::ClearingAuthorization(args) => build_clearing_authorization(args),
+        PaymentArtifactCommand::ClearingApproval(args) => build_clearing_approval(args),
     }
 }
 
@@ -333,6 +413,227 @@ fn build_credential_binding(args: CredentialBindingArgs) -> Result<(), String> {
         )
     );
     println!("out={}", args.out.display());
+    Ok(())
+}
+
+fn build_clearing_authorization(args: ClearingAuthorizationArgs) -> Result<(), String> {
+    let operator_key = crate::keygen::read_secret_key(&args.operator_signing_key)?;
+    let config_bytes = read_bounded_public_file(&args.config, MAX_CLEARING_CONFIG_BYTES)?;
+    let config: ClearingAuthorizationConfig = toml::from_str(
+        std::str::from_utf8(&config_bytes)
+            .map_err(|_| format!("{} is not UTF-8", args.config.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", args.config.display()))?;
+    if config.not_before == 0 || config.authorization_epoch == 0 {
+        return Err("clearing authorization epoch and not_before must be non-zero".to_owned());
+    }
+    let clearing_verifying_key = parse_hex_exact::<32>(
+        "clearing_verifying_key_hex",
+        &config.clearing_verifying_key_hex,
+    )?;
+    VerifyingKey::from_bytes(&clearing_verifying_key)
+        .map_err(|_| "clearing_verifying_key_hex is not a valid Ed25519 key".to_owned())?;
+    if clearing_verifying_key == operator_key.verifying_key().to_bytes() {
+        return Err("operator and provider clearing keys must be distinct".to_owned());
+    }
+    let rules = config
+        .rules
+        .iter()
+        .map(|rule| {
+            Ok(SettlementRuleV1 {
+                credential_binding_digest: parse_hex_exact::<32>(
+                    "credential_binding_digest_hex",
+                    &rule.credential_binding_digest_hex,
+                )?,
+                unit: SettlementUnitV1::AuthCredit,
+                accepted_value: rule.accepted_value,
+                provider_credit: rule.provider_credit,
+                issuer_fee: rule.issuer_fee,
+                denomination_profile: rule.denomination_profile,
+                settlement_modes: SettlementModesV1::from_bits(SettlementModesV1::LEDGER_CREDIT)
+                    .map_err(|error| format!("construct ledger-only settlement mode: {error}"))?,
+                blind_output_minimum_validity_seconds: 0,
+                blind_output_keyset: None,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let authorization = ProviderClearingAuthorizationV1::sign(
+        ProviderClearingAuthorizationClaimsV1 {
+            authorization_id: parse_hex_exact::<16>(
+                "authorization_id_hex",
+                &config.authorization_id_hex,
+            )?,
+            authorization_epoch: config.authorization_epoch,
+            provider_id: parse_hex_exact::<32>("provider_id_hex", &config.provider_id_hex)?,
+            issuer_id: parse_hex_exact::<32>("issuer_id_hex", &config.issuer_id_hex)?,
+            redeem_endpoint: config.redeem_endpoint,
+            redeem_leaf_spki_sha256_pins: config
+                .redeem_leaf_spki_sha256_pins_hex
+                .iter()
+                .map(|pin| parse_hex_exact::<32>("redeem leaf SPKI SHA-256 pin", pin))
+                .collect::<Result<Vec<_>, _>>()?,
+            settlement_account_id: parse_hex_exact::<32>(
+                "settlement_account_id_hex",
+                &config.settlement_account_id_hex,
+            )?,
+            clearing_verifying_key,
+            not_before: config.not_before,
+            not_after: config.not_after,
+            rules,
+        },
+        &operator_key,
+    )
+    .map_err(|error| format!("construct provider clearing authorization: {error}"))?;
+    let encoded = authorization
+        .encode()
+        .map_err(|error| format!("encode provider clearing authorization: {error}"))?;
+    let decoded = ProviderClearingAuthorizationV1::decode(&encoded)
+        .map_err(|error| format!("decode generated provider clearing authorization: {error}"))?;
+    if decoded != authorization
+        || decoded
+            .encode()
+            .map_err(|error| format!("re-encode provider clearing authorization: {error}"))?
+            != encoded
+    {
+        return Err("generated provider clearing authorization is not canonical".to_owned());
+    }
+    decoded
+        .verify_for(
+            &decoded.claims.provider_id,
+            &decoded.claims.issuer_id,
+            &operator_key.verifying_key(),
+            decoded.claims.not_before,
+            config.authorization_epoch,
+        )
+        .map_err(|error| format!("self-verify provider clearing authorization: {error}"))?;
+    ensure_auth_credit_ledger_only(&decoded)?;
+    let digest = decoded
+        .authorization_digest()
+        .map_err(|error| format!("digest provider clearing authorization: {error}"))?;
+    write_public_artifact(&args.out, &encoded, args.force)?;
+    println!("provider_id={}", hex::encode(decoded.claims.provider_id));
+    println!("issuer_id={}", hex::encode(decoded.claims.issuer_id));
+    println!(
+        "operator_key={}",
+        hex::encode(decoded.operator_verifying_key)
+    );
+    println!(
+        "clearing_key={}",
+        hex::encode(decoded.claims.clearing_verifying_key)
+    );
+    println!("authorization_digest={}", hex::encode(digest));
+    println!("out={}", args.out.display());
+    Ok(())
+}
+
+fn build_clearing_approval(args: ClearingApprovalArgs) -> Result<(), String> {
+    if args.minimum_authorization_epoch == 0 || args.approved_at == 0 {
+        return Err("minimum authorization epoch and approved_at must be non-zero".to_owned());
+    }
+    let exact = read_bounded_public_file(&args.authorization, MAX_CLEARING_AUTHORIZATION_BYTES)?;
+    let authorization = ProviderClearingAuthorizationV1::decode(&exact)
+        .map_err(|error| format!("decode provider clearing authorization: {error}"))?;
+    if authorization
+        .encode()
+        .map_err(|error| format!("re-encode provider clearing authorization: {error}"))?
+        != exact
+    {
+        return Err("provider clearing authorization is not canonical".to_owned());
+    }
+    let expected_digest = parse_hex_exact::<32>(
+        "--expected-authorization-digest-hex",
+        &args.expected_authorization_digest_hex,
+    )?;
+    if authorization
+        .authorization_digest()
+        .map_err(|error| format!("digest provider clearing authorization: {error}"))?
+        != expected_digest
+    {
+        return Err(
+            "provider clearing authorization digest does not match ceremony input".to_owned(),
+        );
+    }
+    let expected_provider =
+        parse_hex_exact::<32>("--expected-provider-id-hex", &args.expected_provider_id_hex)?;
+    let expected_issuer =
+        parse_hex_exact::<32>("--expected-issuer-id-hex", &args.expected_issuer_id_hex)?;
+    let expected_operator_bytes = parse_hex_exact::<32>(
+        "--expected-operator-key-hex",
+        &args.expected_operator_key_hex,
+    )?;
+    let expected_operator = VerifyingKey::from_bytes(&expected_operator_bytes)
+        .map_err(|_| "--expected-operator-key-hex is not a valid Ed25519 key".to_owned())?;
+    authorization
+        .verify_for(
+            &expected_provider,
+            &expected_issuer,
+            &expected_operator,
+            args.approved_at,
+            args.minimum_authorization_epoch,
+        )
+        .map_err(|error| format!("verify provider clearing authorization: {error}"))?;
+    ensure_auth_credit_ledger_only(&authorization)?;
+
+    let settlement_key = crate::keygen::read_secret_key(&args.issuer_settlement_signing_key)?;
+    let settlement_verifying_key = settlement_key.verifying_key().to_bytes();
+    if settlement_verifying_key == authorization.operator_verifying_key
+        || settlement_verifying_key == authorization.claims.clearing_verifying_key
+    {
+        return Err(
+            "issuer settlement, provider operator, and provider clearing keys must be distinct"
+                .to_owned(),
+        );
+    }
+    let approval = IssuerClearingApprovalV1::sign(
+        &authorization,
+        args.approved_at,
+        args.not_after,
+        &settlement_key,
+    )
+    .map_err(|error| format!("construct issuer clearing approval: {error}"))?;
+    let encoded = approval.encode();
+    let decoded = IssuerClearingApprovalV1::decode(&encoded)
+        .map_err(|error| format!("decode generated issuer clearing approval: {error}"))?;
+    if decoded != approval || decoded.encode() != encoded {
+        return Err("generated issuer clearing approval is not canonical".to_owned());
+    }
+    decoded
+        .verify_for(
+            &authorization,
+            &settlement_key.verifying_key(),
+            args.approved_at,
+            args.minimum_authorization_epoch,
+        )
+        .map_err(|error| format!("self-verify issuer clearing approval: {error}"))?;
+    write_public_artifact(&args.out, &encoded, args.force)?;
+    println!(
+        "authorization_digest={}",
+        hex::encode(decoded.authorization_digest)
+    );
+    println!(
+        "issuer_settlement_key_id={}",
+        hex::encode(decoded.issuer_settlement_key_id)
+    );
+    println!("authorization_epoch={}", decoded.authorization_epoch);
+    println!("out={}", args.out.display());
+    Ok(())
+}
+
+fn ensure_auth_credit_ledger_only(
+    authorization: &ProviderClearingAuthorizationV1,
+) -> Result<(), String> {
+    if authorization.claims.rules.is_empty()
+        || authorization.claims.rules.iter().any(|rule| {
+            rule.unit != SettlementUnitV1::AuthCredit
+                || rule.settlement_modes.bits() != SettlementModesV1::LEDGER_CREDIT
+                || rule.blind_output_minimum_validity_seconds != 0
+                || rule.blind_output_keyset.is_some()
+        })
+    {
+        return Err(
+            "production clearing artifacts must contain auth-credit ledger-only rules".to_owned(),
+        );
+    }
     Ok(())
 }
 
@@ -654,6 +955,42 @@ mod tests {
         crate::keygen::write_secret_bytes_unix(path, bytes).unwrap();
     }
 
+    fn clearing_config(
+        operator: &SigningKey,
+        clearing: &SigningKey,
+        authorization_epoch: u64,
+    ) -> String {
+        assert_ne!(
+            operator.verifying_key().to_bytes(),
+            clearing.verifying_key().to_bytes()
+        );
+        format!(
+            "authorization_id_hex = \"{}\"\n\
+             authorization_epoch = {authorization_epoch}\n\
+             provider_id_hex = \"{}\"\n\
+             issuer_id_hex = \"{}\"\n\
+             redeem_endpoint = \"https://issuer.example\"\n\
+             redeem_leaf_spki_sha256_pins_hex = [\"{}\"]\n\
+             settlement_account_id_hex = \"{}\"\n\
+             clearing_verifying_key_hex = \"{}\"\n\
+             not_before = 1700000000\n\
+             not_after = 1900000000\n\
+             [[rules]]\n\
+             credential_binding_digest_hex = \"{}\"\n\
+             accepted_value = 10\n\
+             provider_credit = 9\n\
+             issuer_fee = 1\n\
+             denomination_profile = 7\n",
+            hex::encode([0x51; 16]),
+            hex::encode([0x52; 32]),
+            hex::encode([0x53; 32]),
+            hex::encode([0x54; 32]),
+            hex::encode([0x55; 32]),
+            hex::encode(clearing.verifying_key().to_bytes()),
+            hex::encode([0x56; 32]),
+        )
+    }
+
     #[test]
     fn quote_delegation_command_writes_self_verified_roundtrip() {
         let directory = private_tempdir().unwrap();
@@ -685,6 +1022,140 @@ mod tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn clearing_authorization_and_independent_approval_are_canonical_and_self_verified() {
+        let directory = private_tempdir().unwrap();
+        let operator = SigningKey::from_bytes(&[0x41; 32]);
+        let clearing = SigningKey::from_bytes(&[0x42; 32]);
+        let settlement = SigningKey::from_bytes(&[0x43; 32]);
+        let operator_path = directory.path().join("operator.key");
+        let settlement_path = directory.path().join("settlement.key");
+        let config_path = directory.path().join("clearing.toml");
+        let authorization_path = directory.path().join("authorization.bin");
+        let approval_path = directory.path().join("approval.bin");
+        write_secret(&operator_path, &operator.to_bytes());
+        write_secret(&settlement_path, &settlement.to_bytes());
+        std::fs::write(&config_path, clearing_config(&operator, &clearing, 7)).unwrap();
+
+        build_clearing_authorization(ClearingAuthorizationArgs {
+            operator_signing_key: operator_path,
+            config: config_path,
+            out: authorization_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let authorization_bytes = std::fs::read(&authorization_path).unwrap();
+        let authorization = ProviderClearingAuthorizationV1::decode(&authorization_bytes).unwrap();
+        assert_eq!(authorization.encode().unwrap(), authorization_bytes);
+        assert_eq!(
+            authorization.claims.clearing_verifying_key,
+            clearing.verifying_key().to_bytes()
+        );
+        let authorization_digest = authorization.authorization_digest().unwrap();
+
+        build_clearing_approval(ClearingApprovalArgs {
+            authorization: authorization_path,
+            issuer_settlement_signing_key: settlement_path,
+            expected_authorization_digest_hex: hex::encode(authorization_digest),
+            expected_provider_id_hex: hex::encode(authorization.claims.provider_id),
+            expected_issuer_id_hex: hex::encode(authorization.claims.issuer_id),
+            expected_operator_key_hex: hex::encode(operator.verifying_key().to_bytes()),
+            minimum_authorization_epoch: 7,
+            approved_at: 1_700_000_000,
+            not_after: 1_900_000_000,
+            out: approval_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let approval_bytes = std::fs::read(approval_path).unwrap();
+        let approval = IssuerClearingApprovalV1::decode(&approval_bytes).unwrap();
+        assert_eq!(approval.encode(), approval_bytes);
+        approval
+            .verify_for(
+                &authorization,
+                &settlement.verifying_key(),
+                1_700_000_000,
+                7,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn clearing_artifact_builders_reject_key_reuse_unknown_fields_and_swapped_digest() {
+        let directory = private_tempdir().unwrap();
+        let operator = SigningKey::from_bytes(&[0x61; 32]);
+        let clearing = SigningKey::from_bytes(&[0x62; 32]);
+        let settlement = SigningKey::from_bytes(&[0x63; 32]);
+        let operator_path = directory.path().join("operator.key");
+        let settlement_path = directory.path().join("settlement.key");
+        write_secret(&operator_path, &operator.to_bytes());
+        write_secret(&settlement_path, &settlement.to_bytes());
+
+        let reused_config = directory.path().join("reused.toml");
+        std::fs::write(
+            &reused_config,
+            clearing_config(&clearing, &operator, 1).replace(
+                &hex::encode(clearing.verifying_key().to_bytes()),
+                &hex::encode(operator.verifying_key().to_bytes()),
+            ),
+        )
+        .unwrap();
+        assert!(build_clearing_authorization(ClearingAuthorizationArgs {
+            operator_signing_key: operator_path.clone(),
+            config: reused_config,
+            out: directory.path().join("must-not-exist.bin"),
+            force: false,
+        })
+        .unwrap_err()
+        .contains("must be distinct"));
+
+        let unknown_config = directory.path().join("unknown.toml");
+        std::fs::write(
+            &unknown_config,
+            format!(
+                "{}\nunreviewed_mode = true\n",
+                clearing_config(&operator, &clearing, 1)
+            ),
+        )
+        .unwrap();
+        assert!(build_clearing_authorization(ClearingAuthorizationArgs {
+            operator_signing_key: operator_path.clone(),
+            config: unknown_config,
+            out: directory.path().join("must-not-exist-2.bin"),
+            force: false,
+        })
+        .is_err());
+
+        let config_path = directory.path().join("valid.toml");
+        let authorization_path = directory.path().join("authorization.bin");
+        std::fs::write(&config_path, clearing_config(&operator, &clearing, 3)).unwrap();
+        build_clearing_authorization(ClearingAuthorizationArgs {
+            operator_signing_key: operator_path,
+            config: config_path,
+            out: authorization_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let authorization =
+            ProviderClearingAuthorizationV1::decode(&std::fs::read(&authorization_path).unwrap())
+                .unwrap();
+        let error = build_clearing_approval(ClearingApprovalArgs {
+            authorization: authorization_path,
+            issuer_settlement_signing_key: settlement_path,
+            expected_authorization_digest_hex: hex::encode([0x99; 32]),
+            expected_provider_id_hex: hex::encode(authorization.claims.provider_id),
+            expected_issuer_id_hex: hex::encode(authorization.claims.issuer_id),
+            expected_operator_key_hex: hex::encode(operator.verifying_key().to_bytes()),
+            minimum_authorization_epoch: 3,
+            approved_at: 1_700_000_000,
+            not_after: 1_900_000_000,
+            out: directory.path().join("must-not-exist-3.bin"),
+            force: false,
+        })
+        .unwrap_err();
+        assert!(error.contains("digest does not match"));
     }
 
     #[test]

@@ -1,0 +1,3629 @@
+#!/usr/bin/env node
+
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fchownSync,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  rmdirSync,
+  statfsSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { isIP } from "node:net";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  canonicalJson,
+  parseStrictJson,
+} from "./payment-v1-integrated-caddy-overlay-gate.mjs";
+import {
+  validatePublisherCaddyDropIn,
+  validatePublisherFirewallOutputs,
+  validatePublisherNamespaceOwnerUnitV1,
+  validatePublisherNetworkPolicy,
+} from "./payment-v1-publisher-netns-gate.mjs";
+import {
+  PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_APPLY_APPROVAL_KIND,
+  PUBLISHER_NETNS_CEREMONY_KIND,
+  PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND,
+  PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND,
+  PUBLISHER_NETNS_LIFECYCLE_LOCK,
+  PUBLISHER_NETNS_PLAN_SCHEMA_VERSION,
+  PUBLISHER_NETNS_RECEIPT_KIND,
+  PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS,
+  PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND,
+  computePublisherNetnsPlanSha256V2,
+  computePublisherNetnsFailedUnitSha256V1,
+  expectedPublisherNodeLoaderClosureManifestBytesV1,
+  expectedPublisherNetnsLauncherManifestBytesV2,
+  inspectStaticElfV1,
+  validatePublisherNetnsApprovalV2,
+  validatePublisherNetnsFailedRecoveryApprovalV1,
+  validatePublisherNetnsFailedRecoveryReceiptV1,
+  validatePublisherNetnsFailedUnitV1,
+  validatePublisherNetnsPlanV2,
+  validatePublisherNetnsReceiptV2,
+  validatePublisherNodeElfClosureBytesV1,
+} from "./payment-v1-publisher-netns-schema.mjs";
+
+export const CEREMONY_KIND = PUBLISHER_NETNS_CEREMONY_KIND;
+export const APPLY_APPROVAL_KIND = PUBLISHER_NETNS_APPLY_APPROVAL_KIND;
+export const ROLLBACK_APPROVAL_KIND = PUBLISHER_NETNS_ROLLBACK_APPROVAL_KIND;
+export const FAILED_RECOVERY_APPROVAL_KIND =
+  PUBLISHER_NETNS_FAILED_RECOVERY_APPROVAL_KIND;
+export const RECEIPT_KIND = PUBLISHER_NETNS_RECEIPT_KIND;
+export const FAILED_RECOVERY_RECEIPT_KIND =
+  PUBLISHER_NETNS_FAILED_RECOVERY_RECEIPT_KIND;
+export const ROLLBACK_RECEIPT_KIND =
+  "bitcoinpir-payment-v1-publisher-netns-rollback-receipt-v1";
+
+const NETNS_UNIT = "bitcoinpir-payment-v1-publisher-netns.service";
+const PUBLISHER_UNIT = "bitcoinpir-payment-v1-directory-publisher.service";
+const CADDY_UNIT = "bhtm-caddy.service";
+const CADDY_NETNS_DROP_IN =
+  "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf";
+const NETNS_UNIT_FRAGMENT =
+  "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service";
+const MAX_JSON_BYTES = 8 * 1024 * 1024;
+const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
+const MAX_APPROVAL_WINDOW_SECONDS = 60 * 60;
+const MAX_CLOCK_SKEW_SECONDS = 300;
+const LOCK_OWNER = "owner.json";
+const LOCK_OWNER_PENDING = `${LOCK_OWNER}.pending`;
+const MAX_LOCK_RECOVERY_TRANSITIONS = 16;
+const MAX_LOCK_OWNER_BYTES = 4096;
+const STATE_FILENAMES = Object.freeze([
+  "00-prepared.json",
+  "05-start-intent.json",
+  "06-reset-failed-intent.json",
+  "07-failed-start-recovered.json",
+  "10-runtime-verified.json",
+  "20-committed.json",
+  "25-stop-intent.json",
+  "30-rolled-back.json",
+]);
+
+export const APPLY_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_APPLY_ACKNOWLEDGEMENTS;
+
+export const ROLLBACK_ACKNOWLEDGEMENTS = PUBLISHER_NETNS_ROLLBACK_ACKNOWLEDGEMENTS;
+
+export const FAILED_RECOVERY_ACKNOWLEDGEMENTS =
+  PUBLISHER_NETNS_FAILED_RECOVERY_ACKNOWLEDGEMENTS;
+
+export function formatPublisherNetnsPlanValidationV2(planSha256) {
+  return `valid schema_version=${PUBLISHER_NETNS_PLAN_SCHEMA_VERSION} plan_sha256=${planSha256}\n`;
+}
+
+export function formatPublisherNetnsCeremonyOutcomeV2(outcome, receiptPath) {
+  return `${outcome} schema_version=${PUBLISHER_NETNS_PLAN_SCHEMA_VERSION} receipt=${receiptPath}\n`;
+}
+
+export function assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId) {
+  exactKeys(owner, ["boot_id", "pid", "process_start_ticks", "transaction_id"],
+    "stale lock owner");
+  if (
+    typeof owner.boot_id !== "string" ||
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(owner.boot_id) ||
+    owner.boot_id === "00000000-0000-0000-0000-000000000000"
+  ) fail("stale lifecycle lock boot_id must be one canonical nonzero UUID");
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
+    fail("stale lifecycle lock pid must be one positive safe integer");
+  }
+  if (typeof owner.process_start_ticks !== "string" ||
+      !/^[1-9][0-9]*$/u.test(owner.process_start_ticks)) {
+    fail("stale lifecycle lock process_start_ticks must be canonical positive decimal text");
+  }
+  if (owner.transaction_id !== transactionId) {
+    fail("stale lifecycle lock belongs to a different transaction and requires explicit review");
+  }
+  return true;
+}
+
+const EXPECTED_SENTINELS = Object.freeze([
+  "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+  "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+  "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+  "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+]);
+
+const EXPECTED_FILE_IDS = Object.freeze([
+  "caddy-netns-dropin",
+  "directory-publisher-unit",
+  "helper-binary",
+  "helper-manifest",
+  "netns-hosts",
+  "netns-nsswitch",
+  "netns-resolv",
+  "network-inputs-manifest",
+  "network-policy",
+  "publisher-netns-unit",
+]);
+
+const INERT_KERNEL_LINK_KINDS = Object.freeze({
+  erspan0: "erspan",
+  gre0: "gre",
+  gretap0: "gretap",
+  ip6_vti0: "vti6",
+  ip6gre0: "ip6gre",
+  ip6tnl0: "ip6tnl",
+  ip_vti0: "vti",
+  sit0: "sit",
+  tunl0: "ipip",
+});
+
+function fail(message) {
+  throw new Error(`publisher-netns-ceremony: ${message}`);
+}
+
+class PublisherNetnsStartOutcomeUnknownError extends Error {
+  constructor(message, cause) {
+    super(`publisher-netns-ceremony: ${message}: ${cause.message}`, { cause });
+    this.name = "PublisherNetnsStartOutcomeUnknownError";
+  }
+}
+
+function exactKeys(value, expected, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    fail(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (canonicalJson(actual) !== canonicalJson(wanted)) {
+    fail(`${label} keys drifted: expected ${canonicalJson(wanted)}, got ${canonicalJson(actual)}`);
+  }
+}
+
+function exactArray(actual, expected, label) {
+  if (canonicalJson(actual) !== canonicalJson(expected)) fail(`${label} drifted`);
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function validateSha256(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value)) {
+    fail(`${label} must be 64 lowercase hexadecimal characters`);
+  }
+}
+
+function validateDecimal(value, label, { nonzero = false } = {}) {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(value)) {
+    fail(`${label} must be canonical unsigned decimal text`);
+  }
+  if (nonzero && value === "0") fail(`${label} must be non-zero`);
+}
+
+function validateSlug(value, label) {
+  if (typeof value !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(value)) {
+    fail(`${label} must be a 1..64 byte lowercase slug`);
+  }
+}
+
+function validateCanonicalAbsolute(path, label) {
+  if (
+    typeof path !== "string" ||
+    path.length < 2 ||
+    path.length > 4096 ||
+    !path.startsWith("/") ||
+    path.includes("\0") ||
+    path.includes("//") ||
+    path.split("/").some((part) => part === "." || part === "..") ||
+    resolve(path) !== path
+  ) {
+    fail(`${label} must be one canonical absolute path`);
+  }
+}
+
+function validateInterfaceName(value, label) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 15 ||
+      !/^[a-z][a-z0-9_-]*$/u.test(value)) {
+    fail(`${label} must be a 1..15 byte lowercase Linux interface name`);
+  }
+}
+
+function parseIpv4(value, label) {
+  if (isIP(value) !== 4 || !/^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){3}$/u.test(value)) {
+    fail(`${label} must be canonical dotted-decimal IPv4`);
+  }
+  const octets = value.split(".").map(Number);
+  if (octets.some((part) => part > 255)) fail(`${label} has an out-of-range octet`);
+  return octets.reduce((sum, part) => (sum << 8n) | BigInt(part), 0n);
+}
+
+function parseIpv6(value, label) {
+  if (isIP(value) !== 6 || value !== value.toLowerCase() || value.includes("%") ||
+      /(?:^|:)0[0-9a-f]+/u.test(value)) {
+    fail(`${label} must be canonical lowercase IPv6 without a zone identifier`);
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) fail(`${label} has more than one compression marker`);
+  const left = halves[0] === "" ? [] : halves[0].split(":");
+  const right = halves.length === 1 || halves[1] === "" ? [] : halves[1].split(":");
+  if (left.concat(right).some((part) => !/^[0-9a-f]{1,4}$/u.test(part))) {
+    fail(`${label} has a malformed hextet`);
+  }
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) {
+    fail(`${label} has the wrong hextet count`);
+  }
+  const words = [...left, ...Array(missing).fill("0"), ...right].map((part) => BigInt(`0x${part}`));
+  return words.reduce((sum, part) => (sum << 16n) | part, 0n);
+}
+
+function privateIp(value, label) {
+  const family = isIP(value);
+  if (family === 4) {
+    const address = parseIpv4(value, label);
+    const first = Number(address >> 24n);
+    const second = Number((address >> 16n) & 255n);
+    const privateV4 = first === 10 || (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168);
+    if (!privateV4) fail(`${label} must be RFC1918`);
+    return { address, family: "ipv4" };
+  }
+  if (family === 6) {
+    const address = parseIpv6(value, label);
+    if ((address >> 121n) !== 0x7en) fail(`${label} must be RFC4193 ULA (fc00::/7)`);
+    return { address, family: "ipv6" };
+  }
+  fail(`${label} must be RFC1918 IPv4 or RFC4193 ULA IPv6`);
+}
+
+export function validatePrivatePairV1({ client, family, host, prefixLength }) {
+  const hostParsed = privateIp(host, "topology.host_address");
+  const clientParsed = privateIp(client, "topology.client_address");
+  if (hostParsed.family !== family || clientParsed.family !== family) {
+    fail("topology addresses and declared family must match");
+  }
+  if (hostParsed.address === clientParsed.address) fail("host and client addresses must be distinct");
+  const bits = family === "ipv4" ? 32 : 128;
+  const expectedPrefix = family === "ipv4" ? 30 : 126;
+  if (prefixLength !== expectedPrefix) {
+    fail(`topology ${family} prefix_length must equal ${expectedPrefix}`);
+  }
+  const hostPartBits = BigInt(bits - prefixLength);
+  if ((hostParsed.address >> hostPartBits) !== (clientParsed.address >> hostPartBits)) {
+    fail("host and client addresses must share the exact point-to-point subnet");
+  }
+  const hostPartMask = (1n << hostPartBits) - 1n;
+  const hostPart = hostParsed.address & hostPartMask;
+  const clientPart = clientParsed.address & hostPartMask;
+  if (!new Set([hostPart.toString(), clientPart.toString()]).has("1") ||
+      !new Set([hostPart.toString(), clientPart.toString()]).has("2")) {
+    fail("host and client must occupy the +1 and +2 point-to-point addresses");
+  }
+  return true;
+}
+
+function validateDnsHost(value, label) {
+  if (typeof value !== "string" || value.length > 253 || value !== value.toLowerCase() ||
+      value.endsWith(".") || value.split(".").length < 2 ||
+      value.split(".").some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(part))) {
+    fail(`${label} must be a canonical lowercase DNS hostname`);
+  }
+}
+
+function validateFilePin(value, label, { paths, modes, uid = 0, gid = 0 } = {}) {
+  exactKeys(value, [
+    "ctime_ns", "device", "gid", "inode", "mode", "mtime_ns", "nlink",
+    "path", "sha256", "size", "uid",
+  ], label);
+  validateCanonicalAbsolute(value.path, `${label}.path`);
+  if (paths !== undefined && !paths.includes(value.path)) fail(`${label}.path is not approved`);
+  validateSha256(value.sha256, `${label}.sha256`);
+  for (const key of ["device", "inode", "ctime_ns", "mtime_ns", "size"]) {
+    validateDecimal(value[key], `${label}.${key}`, { nonzero: key === "inode" });
+  }
+  if (!Number.isSafeInteger(value.uid) || !Number.isSafeInteger(value.gid) ||
+      !Number.isSafeInteger(value.nlink) || value.nlink !== 1 ||
+      value.uid !== uid || value.gid !== gid || !modes.includes(value.mode)) {
+    fail(`${label} owner, mode or single-link contract drifted`);
+  }
+}
+
+function validateUnitState(value, label, { active, name }) {
+  exactKeys(value, [
+    "active_enter_timestamp_monotonic", "active_state", "invocation_id", "load_state",
+    "main_pid", "name", "need_daemon_reload", "sub_state",
+  ], label);
+  if (value.name !== name) fail(`${label}.name drifted`);
+  if (value.load_state !== "loaded") fail(`${label} must be loaded`);
+  if (value.need_daemon_reload !== "no") fail(`${label} has an unsealed systemd generation`);
+  validateDecimal(value.active_enter_timestamp_monotonic,
+    `${label}.active_enter_timestamp_monotonic`);
+  validateDecimal(value.main_pid, `${label}.main_pid`);
+  if (active) {
+    if (value.active_state !== "active" || value.sub_state !== "running" ||
+        value.active_enter_timestamp_monotonic === "0" || value.main_pid === "0" ||
+        !/^[0-9a-f]{32}$/u.test(value.invocation_id) ||
+        /^0{32}$/u.test(value.invocation_id)) {
+      fail(`${label} must be one live non-zero systemd generation`);
+    }
+  } else if (value.active_state !== "inactive" || value.sub_state !== "dead" ||
+      value.main_pid !== "0" || !["", "0".repeat(32)].includes(value.invocation_id)) {
+    fail(`${label} must be inactive/dead with no process generation`);
+  }
+}
+
+function validateCanonicalWordSet(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (entry, index) =>
+        typeof entry !== "string" ||
+        entry.length < 1 ||
+        /[\0\r\n\t ]/u.test(entry) ||
+        (index > 0 && value[index - 1] >= entry),
+    )
+  ) {
+    fail(`${label} must be a unique sorted non-empty systemd word set`);
+  }
+}
+
+function expectedLoadedExec(plan) {
+  const helper = plan.installed_files.find((entry) => entry.id === "helper-binary")?.pin;
+  if (helper === undefined) fail("loaded namespace unit lacks its helper pin");
+  return {
+    start: [{ argv: `${helper.path} run`, ignore_errors: "no", path: helper.path }],
+    start_pre: [
+      {
+        argv: `/usr/bin/test -x ${helper.path}`,
+        ignore_errors: "no",
+        path: "/usr/bin/test",
+      },
+      {
+        argv: "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+        ignore_errors: "no",
+        path: "/usr/bin/sha256sum",
+      },
+      {
+        argv: `${helper.path} self-test`,
+        ignore_errors: "no",
+        path: helper.path,
+      },
+    ],
+    stop_post: [{
+      argv: `${helper.path} cleanup`,
+      ignore_errors: "no",
+      path: helper.path,
+    }],
+  };
+}
+
+function expectedLoadedServicePolicy() {
+  return {
+    ambient_capabilities: [],
+    capability_bounding_set: ["CAP_NET_ADMIN", "CAP_SYS_ADMIN"],
+    group: "root",
+    kill_mode: "control-group",
+    limit_core: "0",
+    lock_personality: "yes",
+    memory_deny_write_execute: "yes",
+    memory_max: "67108864",
+    memory_swap_max: "0",
+    no_new_privileges: "yes",
+    notify_access: "main",
+    restart: "no",
+    restrict_address_families: ["AF_NETLINK", "AF_UNIX"],
+    restrict_namespaces: "net",
+    restrict_realtime: "yes",
+    restrict_suid_sgid: "yes",
+    standard_error: "null",
+    standard_output: "null",
+    state_directory: ["bitcoinpir-publisher-netns"],
+    state_directory_mode: "0700",
+    system_call_architectures: ["native"],
+    tasks_max: "8",
+    timeout_start_usec: "30s",
+    timeout_stop_usec: "30s",
+    type: "notify",
+    umask: "0077",
+    unset_environment: [
+      "BASH_ENV", "ENV", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH",
+      "LD_PRELOAD", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+    ],
+    user: "root",
+    working_directory: "/var/lib/bitcoinpir-publisher-netns",
+  };
+}
+
+function validateLoadedNetnsUnit(value, plan, label) {
+  exactKeys(value, [
+    "condition_paths",
+    "condition_source",
+    "dropin_paths",
+    "exec",
+    "fragment_path",
+    "need_daemon_reload",
+    "relationships",
+    "service",
+  ], label);
+  if (
+    value.fragment_path !== NETNS_UNIT_FRAGMENT ||
+    canonicalJson(value.dropin_paths) !== canonicalJson([]) ||
+    value.need_daemon_reload !== "no" ||
+    value.condition_source !== "exact-fragment-pin-plus-NeedDaemonReload=no" ||
+    canonicalJson(value.condition_paths) !== canonicalJson(EXPECTED_SENTINELS) ||
+    canonicalJson(value.exec) !== canonicalJson(expectedLoadedExec(plan)) ||
+    canonicalJson(value.service) !== canonicalJson(expectedLoadedServicePolicy())
+  ) {
+    fail(`${label} drifted from the exact loaded publisher namespace unit policy`);
+  }
+  exactKeys(value.relationships, [
+    "after", "before", "binds_to", "part_of", "requires", "wants",
+  ], `${label}.relationships`);
+  for (const key of ["after", "before", "binds_to", "part_of", "requires", "wants"]) {
+    validateCanonicalWordSet(value.relationships[key], `${label}.relationships.${key}`);
+  }
+  if (
+    !value.relationships.after.includes("local-fs.target") ||
+    !value.relationships.before.includes(CADDY_UNIT) ||
+    !value.relationships.before.includes("bitcoinpir-payment-v1-source-fair-edge.service") ||
+    canonicalJson(value.relationships.binds_to) !== canonicalJson([]) ||
+    canonicalJson(value.relationships.part_of) !== canonicalJson([CADDY_UNIT]) ||
+    canonicalJson(value.relationships.requires) !== canonicalJson([]) ||
+    canonicalJson(value.relationships.wants) !== canonicalJson([])
+  ) {
+    fail(`${label}.relationships drifted from the reviewed one-way ordering contract`);
+  }
+}
+
+function validateManagerGeneration(value, label) {
+  exactKeys(value, [
+    "generators_finish_timestamp_monotonic",
+    "generators_start_timestamp_monotonic",
+    "pid1_exe_device",
+    "pid1_exe_inode",
+    "pid1_exe_path",
+    "pid1_start_ticks",
+    "units_load_finish_timestamp_monotonic",
+    "units_load_start_timestamp_monotonic",
+  ], label);
+  for (const key of [
+    "generators_finish_timestamp_monotonic",
+    "generators_start_timestamp_monotonic",
+    "pid1_exe_device",
+    "pid1_exe_inode",
+    "pid1_start_ticks",
+    "units_load_finish_timestamp_monotonic",
+    "units_load_start_timestamp_monotonic",
+  ]) {
+    validateDecimal(value[key], `${label}.${key}`, { nonzero: true });
+  }
+  validateCanonicalAbsolute(value.pid1_exe_path, `${label}.pid1_exe_path`);
+}
+
+function validateCaddyState(value, label) {
+  exactKeys(value, ["config", "dependency", "unit"], label);
+  validateFilePin(value.config, `${label}.config`, {
+    paths: ["/etc/caddy/Caddyfile"], modes: ["0644"],
+  });
+  validateUnitState(value.unit, `${label}.unit`, { active: true, name: CADDY_UNIT });
+  exactKeys(value.dependency, [
+    "after_namespace_owner", "binds_to_namespace_owner", "drop_in_paths",
+    "part_of_namespace_owner", "requires_namespace_owner",
+    "wants_namespace_owner",
+  ], `${label}.dependency`);
+  if (
+    value.dependency.after_namespace_owner !== true ||
+    value.dependency.wants_namespace_owner !== true ||
+    value.dependency.binds_to_namespace_owner !== false ||
+    value.dependency.part_of_namespace_owner !== false ||
+    value.dependency.requires_namespace_owner !== false ||
+    canonicalJson(value.dependency.drop_in_paths) !==
+      canonicalJson([CADDY_NETNS_DROP_IN])
+  ) {
+    fail(`${label}.dependency is not the exact loaded one-way namespace relation`);
+  }
+}
+
+function validateTopology(value) {
+  exactKeys(value, [
+    "address_family", "client_address", "client_interface", "default_route",
+    "forwarding", "host_address", "host_interface", "host_port", "hosts_path",
+    "namespace_name", "namespace_path", "nat", "prefix_length", "publisher_hostname",
+  ], "topology");
+  validateInterfaceName(value.host_interface, "topology.host_interface");
+  validateInterfaceName(value.client_interface, "topology.client_interface");
+  if (value.host_interface === value.client_interface) fail("topology interfaces must be distinct");
+  if (typeof value.namespace_name !== "string" || value.namespace_name.length > 32 ||
+      !/^[a-z][a-z0-9_-]*$/u.test(value.namespace_name)) {
+    fail("topology.namespace_name is malformed");
+  }
+  if (value.namespace_path !== `/run/netns/${value.namespace_name}` ||
+      value.hosts_path !== `/etc/netns/${value.namespace_name}/hosts`) {
+    fail("topology namespace and sealed hosts paths must derive from the exact namespace name");
+  }
+  validateCanonicalAbsolute(value.namespace_path, "topology.namespace_path");
+  validateCanonicalAbsolute(value.hosts_path, "topology.hosts_path");
+  validateDnsHost(value.publisher_hostname, "topology.publisher_hostname");
+  validatePrivatePairV1({
+    client: value.client_address,
+    family: value.address_family,
+    host: value.host_address,
+    prefixLength: value.prefix_length,
+  });
+  if (value.default_route !== false || value.forwarding !== false || value.nat !== false ||
+      value.host_port !== 443) {
+    fail("topology must close default routing, forwarding and NAT and fix publisher port 443");
+  }
+  // The reviewed native helper is deliberately a single closed production
+  // profile. The pair validator above also covers ULA for future separately
+  // content-addressed helpers; this helper's constants remain exact RFC1918.
+  if (canonicalJson(value) !== canonicalJson({
+    address_family: "ipv4",
+    client_address: "10.203.0.2",
+    client_interface: "bpir-pub-c",
+    default_route: false,
+    forwarding: false,
+    host_address: "10.203.0.1",
+    host_interface: "bpir-pub-h",
+    host_port: 443,
+    hosts_path: "/etc/netns/bpir-directory-publisher/hosts",
+    namespace_name: "bpir-directory-publisher",
+    namespace_path: "/run/netns/bpir-directory-publisher",
+    nat: false,
+    prefix_length: 30,
+    publisher_hostname: value.publisher_hostname,
+  })) {
+    fail("topology does not equal the reviewed native-helper production profile");
+  }
+}
+
+function expectedInstalledPaths(plan) {
+  const helper = plan.installed_files.find((file) => file.id === "helper-binary")?.pin;
+  const digest = helper?.sha256 ?? "invalid";
+  return new Map([
+    ["caddy-netns-dropin",
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf"],
+    ["directory-publisher-unit",
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"],
+    ["helper-binary",
+      `/opt/bitcoinpir/publisher-netns/${digest}/payment-v1-publisher-netns`],
+    ["helper-manifest", "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256"],
+    ["netns-hosts", plan.topology.hosts_path],
+    ["netns-nsswitch", `/etc/netns/${plan.topology.namespace_name}/nsswitch.conf`],
+    ["netns-resolv", `/etc/netns/${plan.topology.namespace_name}/resolv.conf`],
+    ["network-inputs-manifest",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256"],
+    ["network-policy",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json"],
+    ["publisher-netns-unit",
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service"],
+  ]);
+}
+
+function validateInstalledFiles(plan) {
+  if (!Array.isArray(plan.installed_files) || plan.installed_files.length !== EXPECTED_FILE_IDS.length) {
+    fail("installed_files must contain the exact closed publisher-network set");
+  }
+  exactArray(plan.installed_files.map((value) => value.id), EXPECTED_FILE_IDS,
+    "installed_files canonical id order");
+  const paths = expectedInstalledPaths(plan);
+  for (const entry of plan.installed_files) {
+    exactKeys(entry, ["id", "pin"], `installed_files.${entry.id}`);
+    const binary = entry.id === "helper-binary";
+    validateFilePin(entry.pin, `installed_files.${entry.id}.pin`, {
+      paths: [paths.get(entry.id)], modes: binary ? ["0555"] :
+        entry.id.endsWith("unit") || entry.id === "caddy-netns-dropin" ? ["0644"] : ["0444"],
+    });
+  }
+  const helper = plan.installed_files.find((entry) => entry.id === "helper-binary").pin;
+  if (helper.path.split("/").at(-2) !== helper.sha256) {
+    fail("helper binary content-address directory must equal its SHA-256");
+  }
+}
+
+function validateRuntime(value) {
+  exactKeys(value, [
+    "executor", "health_probe", "integrated_caddy_gate", "ip", "launcher", "launcher_manifest",
+    "node", "node_loader_closure_manifest", "publisher_netns_gate", "schema_validator", "systemctl",
+  ], "runtime");
+  validateFilePin(value.launcher, "runtime.launcher", {
+    paths: [
+      `/opt/bitcoinpir/publisher-netns-launcher/${value.launcher.sha256}/payment-v1-publisher-netns-launcher`,
+    ],
+    modes: ["0555"],
+  });
+  validateFilePin(value.launcher_manifest, "runtime.launcher_manifest", {
+    paths: [
+      "/etc/bitcoinpir/payment-v1/publisher-netns/launcher-inputs.sha256",
+    ],
+    modes: ["0444"],
+  });
+  validateFilePin(value.executor, "runtime.executor", {
+    paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-ceremony.mjs"],
+    modes: ["0555"],
+  });
+  validateFilePin(value.health_probe, "runtime.health_probe", {
+    paths: [
+      "/usr/local/libexec/bitcoinpir/payment-v1-publisher-private-health-probe.mjs",
+    ],
+    modes: ["0555"],
+  });
+  validateFilePin(value.integrated_caddy_gate, "runtime.integrated_caddy_gate", {
+    paths: [
+      "/usr/local/libexec/bitcoinpir/payment-v1-integrated-caddy-overlay-gate.mjs",
+    ],
+    modes: ["0555"],
+  });
+  validateFilePin(value.publisher_netns_gate, "runtime.publisher_netns_gate", {
+    paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-gate.mjs"],
+    modes: ["0555"],
+  });
+  validateFilePin(value.schema_validator, "runtime.schema_validator", {
+    paths: ["/usr/local/libexec/bitcoinpir/payment-v1-publisher-netns-schema.mjs"],
+    modes: ["0555"],
+  });
+  validateFilePin(value.node, "runtime.node", {
+    paths: ["/usr/bin/node"], modes: ["0555", "0755"],
+  });
+  validateFilePin(value.node_loader_closure_manifest,
+    "runtime.node_loader_closure_manifest", {
+      paths: ["/etc/bitcoinpir/payment-v1/publisher-netns/node-loader-closure.sha256"],
+      modes: ["0444"],
+    });
+  validateFilePin(value.systemctl, "runtime.systemctl", {
+    paths: ["/usr/bin/systemctl"], modes: ["0555", "0755"],
+  });
+  validateFilePin(value.ip, "runtime.ip", {
+    paths: ["/usr/bin/ip"], modes: ["0555", "0755"],
+  });
+}
+
+function expectedLauncherManifestBytes(runtime) {
+  return expectedPublisherNetnsLauncherManifestBytesV2(runtime);
+}
+
+function validateTransaction(value, ceremonyId) {
+  exactKeys(value, [
+    "lock_path", "receipt_path", "rollback_receipt_path", "state_directory",
+  ], "transaction");
+  const root = "/var/lib/bitcoinpir/payment-v1/publisher-netns";
+  const expected = {
+    lock_path: PUBLISHER_NETNS_LIFECYCLE_LOCK,
+    receipt_path: `${root}/receipts/${ceremonyId}.json`,
+    rollback_receipt_path: `${root}/receipts/${ceremonyId}.rollback.json`,
+    state_directory: `${root}/transactions/${ceremonyId}`,
+  };
+  if (canonicalJson(value) !== canonicalJson(expected)) fail("transaction paths drifted");
+}
+
+function expectedManifestBytes(plan, ids) {
+  const entries = ids.map((id) => {
+    const pin = plan.installed_files.find((entry) => entry.id === id)?.pin;
+    if (pin === undefined) fail(`hash manifest references missing installed file ${id}`);
+    return pin;
+  }).sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return Buffer.from(
+    entries.map((pin) => `${pin.sha256}  ${pin.path}\n`).join(""),
+    "utf8",
+  );
+}
+
+function rejectSecretSurface(plan) {
+  if (plan.publisher_private_key_installed !== false) {
+    fail("publisher_private_key_installed must be false");
+  }
+  const forbiddenName = /(?:^|[_-])(?:payment[_-]?preimage|payment[_-]?hash|invoice|cashu[_-]?proof|bearer[_-]?token)(?:$|[_-])/iu;
+  const forbiddenPublisherKey = /(?:publisher|nostr)[_-]?(?:private|signing|secret)[_-]?(?:key|seed)/iu;
+  const visit = (value, path = "plan") => {
+    if (typeof value === "string") {
+      if (/nsec1[023456789acdefghjklmnpqrstuvwxyz]{20,}/iu.test(value) ||
+          forbiddenPublisherKey.test(value)) {
+        fail(`${path} contains a forbidden publisher private-key value`);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, `${path}[${index}]`));
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        if (path === "plan" && key === "publisher_private_key_installed") continue;
+        if (forbiddenName.test(key) || forbiddenPublisherKey.test(key)) {
+          fail(`${path}.${key} is a forbidden key/payment/query correlation field`);
+        }
+        visit(entry, `${path}.${key}`);
+      }
+    }
+  };
+  visit(plan);
+}
+
+export function validateCeremonyPlan(plan) {
+  validatePublisherNetnsPlanV2(plan);
+  exactKeys(plan, [
+    "activation_sentinels", "caddy_preimage", "ceremony_id", "firewall_evidence",
+    "host", "installed_files", "kind", "launcher_static_elf", "node_elf_closure", "preimage",
+    "publisher_private_key_installed", "relationship", "runtime", "schema_version",
+    "source_commit", "topology", "transaction",
+  ], "plan");
+  if (plan.schema_version !== 2 || plan.kind !== CEREMONY_KIND) fail("plan kind/schema drifted");
+  validateSlug(plan.ceremony_id, "plan.ceremony_id");
+  if (typeof plan.source_commit !== "string" || !/^[0-9a-f]{40}$/u.test(plan.source_commit)) {
+    fail("plan.source_commit must be an exact lowercase Git commit");
+  }
+  validateTopology(plan.topology);
+  validateInstalledFiles(plan);
+  validateRuntime(plan.runtime);
+  rejectSecretSurface(plan);
+  if (!Array.isArray(plan.activation_sentinels) ||
+      plan.activation_sentinels.length !== EXPECTED_SENTINELS.length) {
+    fail("activation_sentinels must close the exact externally provisioned set");
+  }
+  exactArray(plan.activation_sentinels.map((pin) => pin.path), EXPECTED_SENTINELS,
+    "activation_sentinels canonical path order");
+  for (const [index, pin] of plan.activation_sentinels.entries()) {
+    validateFilePin(pin, `activation_sentinels[${index}]`, {
+      paths: [EXPECTED_SENTINELS[index]], modes: ["0400"],
+    });
+  }
+  validateFilePin(plan.firewall_evidence, "firewall_evidence", {
+    paths: ["/var/lib/bitcoinpir/payment-v1/publisher-netns/evidence/firewall.json"],
+    modes: ["0400"],
+  });
+  exactKeys(plan.host, [
+    "boot_id", "machine_id_sha256", "systemd_manager_generation", "systemd_version",
+  ], "host");
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(plan.host.boot_id)) {
+    fail("host.boot_id is malformed");
+  }
+  validateSha256(plan.host.machine_id_sha256, "host.machine_id_sha256");
+  if (typeof plan.host.systemd_version !== "string" ||
+      !/^systemd 255(?: \(255\.[0-9]+-[^)]+\))?$/u.test(plan.host.systemd_version)) {
+    fail("host.systemd_version must be the exact reviewed systemd 255 line");
+  }
+  validateManagerGeneration(plan.host.systemd_manager_generation, "host.systemd_manager_generation");
+  validateCaddyState(plan.caddy_preimage, "caddy_preimage");
+  exactKeys(plan.preimage, [
+    "host_interface", "loaded_netns_unit", "namespace_path", "netns_unit", "publisher_unit",
+  ],
+    "preimage");
+  if (plan.preimage.namespace_path !== "absent" || plan.preimage.host_interface !== "absent") {
+    fail("preimage namespace path and host interface must both be absent");
+  }
+  validateUnitState(plan.preimage.netns_unit, `preimage.${NETNS_UNIT}`, {
+    active: false, name: NETNS_UNIT,
+  });
+  validateUnitState(plan.preimage.publisher_unit, `preimage.${PUBLISHER_UNIT}`, {
+    active: false, name: PUBLISHER_UNIT,
+  });
+  validateLoadedNetnsUnit(plan.preimage.loaded_netns_unit, plan, "preimage.loaded_netns_unit");
+  exactKeys(plan.relationship, [
+    "caddy_dependency", "integrated_profile", "network_before_caddy",
+    "publisher_requires_namespace", "receipt_generation_scope", "reboot_recreation",
+    "reverse_stop_propagation",
+  ], "relationship");
+  if (canonicalJson(plan.relationship) !== canonicalJson({
+    caddy_dependency: "Wants+After",
+    integrated_profile: "integrated-existing-bhtm-caddy-v1",
+    network_before_caddy: true,
+    publisher_requires_namespace: true,
+    receipt_generation_scope: "exact-boot-and-systemd-generation",
+    reboot_recreation: "caddy-wants-after-persistent-sentinels",
+    reverse_stop_propagation: false,
+  })) {
+    fail("relationship does not equal the reviewed one-way Caddy ordering contract");
+  }
+  validateTransaction(plan.transaction, plan.ceremony_id);
+  return true;
+}
+
+export function computePlanSha256(plan) {
+  validateCeremonyPlan(plan);
+  return computePublisherNetnsPlanSha256V2(plan);
+}
+
+function parseUtc(value, label) {
+  if (typeof value !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) fail(`${label} must be whole-second UTC`);
+  const millis = Date.parse(value);
+  if (!Number.isSafeInteger(millis) || new Date(millis).toISOString() !== value.replace("Z", ".000Z")) {
+    fail(`${label} is not canonical UTC`);
+  }
+  return Math.floor(millis / 1000);
+}
+
+function validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, rollback) {
+  validatePublisherNetnsApprovalV2({
+    approval, approvedPlanSha256, nowUnix, plan, rollback,
+  });
+  const expectedKeys = rollback ? [
+    "acknowledgements", "approved_at_utc", "approved_by", "ceremony_id",
+    "committed_receipt_sha256", "decision", "executor_sha256", "expires_at_utc",
+    "kind", "launcher_manifest_sha256", "launcher_sha256", "plan_sha256", "schema_version",
+  ] : [
+    "acknowledgements", "approved_at_utc", "approved_by", "ceremony_id", "decision",
+    "executor_sha256", "expires_at_utc", "kind", "launcher_manifest_sha256",
+    "launcher_sha256", "plan_sha256", "schema_version",
+  ];
+  exactKeys(approval, expectedKeys, rollback ? "rollback approval" : "apply approval");
+  if (approval.schema_version !== 2 || approval.kind !==
+      (rollback ? ROLLBACK_APPROVAL_KIND : APPLY_APPROVAL_KIND)) fail("approval kind/schema drifted");
+  if (approval.ceremony_id !== plan.ceremony_id || approval.plan_sha256 !== approvedPlanSha256 ||
+      approval.executor_sha256 !== plan.runtime.executor.sha256 ||
+      approval.launcher_sha256 !== plan.runtime.launcher.sha256 ||
+      approval.launcher_manifest_sha256 !== plan.runtime.launcher_manifest.sha256) {
+    fail("approval binding drifted");
+  }
+  if (typeof approval.approved_by !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u.test(approval.approved_by)) {
+    fail("approval approved_by identifier is malformed");
+  }
+  exactArray(approval.acknowledgements,
+    rollback ? ROLLBACK_ACKNOWLEDGEMENTS : APPLY_ACKNOWLEDGEMENTS,
+    "approval acknowledgements");
+  const approved = parseUtc(approval.approved_at_utc, "approval.approved_at_utc");
+  const expires = parseUtc(approval.expires_at_utc, "approval.expires_at_utc");
+  if (expires <= approved || expires - approved > MAX_APPROVAL_WINDOW_SECONDS ||
+      nowUnix < approved - MAX_CLOCK_SKEW_SECONDS || nowUnix > expires) {
+    fail("approval is not currently valid within the one-hour window");
+  }
+  const decision = rollback ? "approve-stop-exact-publisher-netns" :
+    "approve-start-exact-publisher-netns";
+  if (approval.decision !== decision) fail("approval decision drifted");
+  if (rollback) validateSha256(approval.committed_receipt_sha256,
+    "rollback approval committed_receipt_sha256");
+  return true;
+}
+
+function validateFailedRecoveryApproval(
+  approval,
+  plan,
+  approvedPlanSha256,
+  nowUnix,
+) {
+  validatePublisherNetnsFailedRecoveryApprovalV1({
+    approval,
+    approvedPlanSha256,
+    nowUnix,
+    plan,
+  });
+  exactKeys(approval, [
+    "acknowledgements", "activation_approval_sha256", "approved_at_utc", "approved_by",
+    "ceremony_id", "decision", "executor_sha256", "expires_at_utc", "failed_unit",
+    "failed_unit_sha256", "kind", "launcher_manifest_sha256", "launcher_sha256",
+    "plan_sha256", "reset_failed_argv", "schema_version", "start_intent_sha256",
+  ], "failed-start recovery approval");
+  if (
+    approval.schema_version !== 1 ||
+    approval.kind !== FAILED_RECOVERY_APPROVAL_KIND ||
+    approval.ceremony_id !== plan.ceremony_id ||
+    approval.plan_sha256 !== approvedPlanSha256 ||
+    approval.executor_sha256 !== plan.runtime.executor.sha256 ||
+    approval.launcher_sha256 !== plan.runtime.launcher.sha256 ||
+    approval.launcher_manifest_sha256 !== plan.runtime.launcher_manifest.sha256 ||
+    approval.decision !== "approve-reset-exact-failed-publisher-netns" ||
+    canonicalJson(approval.reset_failed_argv) !== canonicalJson(["reset-failed", NETNS_UNIT])
+  ) fail("failed-start recovery approval binding or fixed reset argv drifted");
+  exactArray(
+    approval.acknowledgements,
+    FAILED_RECOVERY_ACKNOWLEDGEMENTS,
+    "failed-start recovery approval acknowledgements",
+  );
+  validatePublisherNetnsFailedUnitV1(
+    approval.failed_unit,
+    "failed-start recovery approval.failed_unit",
+  );
+  if (approval.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(
+    approval.failed_unit,
+  )) fail("failed-start recovery approval failed unit digest drifted");
+  return true;
+}
+
+function failedRecoveryReceiptPath(plan) {
+  return `${dirname(plan.transaction.receipt_path)}/${plan.ceremony_id}.failed-start-recovery.json`;
+}
+
+function failedRecoveryStateProjection(value) {
+  return {
+    active_enter_timestamp_monotonic: value.active_enter_timestamp_monotonic,
+    active_state: value.active_state,
+    invocation_id: value.invocation_id,
+    load_state: value.load_state,
+    main_pid: value.main_pid,
+    name: value.name,
+    need_daemon_reload: value.need_daemon_reload,
+    sub_state: value.sub_state,
+  };
+}
+
+function validateRuntimeTopology(value, plan) {
+  exactKeys(value, [
+    "client", "forwarding_sysctls", "host", "namespace", "routes",
+  ], "runtime topology");
+  exactKeys(value.namespace, [
+    "device", "inert_interfaces", "inode", "interface_names", "loopback", "path", "type",
+  ],
+    "runtime topology.namespace");
+  if (value.namespace.path !== plan.topology.namespace_path || value.namespace.type !== "nsfs") {
+    fail("runtime namespace path/type drifted");
+  }
+  validateDecimal(value.namespace.device, "runtime namespace.device");
+  validateDecimal(value.namespace.inode, "runtime namespace.inode", { nonzero: true });
+  if (!Array.isArray(value.namespace.inert_interfaces) ||
+      value.namespace.inert_interfaces.length > Object.keys(INERT_KERNEL_LINK_KINDS).length) {
+    fail("runtime namespace inert interface set is malformed");
+  }
+  const inertNames = [];
+  for (const [index, link] of value.namespace.inert_interfaces.entries()) {
+    exactKeys(link, ["addresses", "alias", "index", "kind", "name", "up"],
+      `runtime namespace.inert_interfaces[${index}]`);
+    if (!(link.name in INERT_KERNEL_LINK_KINDS) ||
+        link.kind !== INERT_KERNEL_LINK_KINDS[link.name] || link.alias !== "" ||
+        link.up !== false || !Array.isArray(link.addresses) || link.addresses.length !== 0 ||
+        !Number.isSafeInteger(link.index) || link.index < 1 || inertNames.includes(link.name)) {
+      fail("runtime namespace contains a non-inert kernel fallback interface");
+    }
+    inertNames.push(link.name);
+  }
+  exactArray(inertNames, [...inertNames].sort(), "runtime namespace inert interface order");
+  exactArray(value.namespace.interface_names,
+    ["lo", plan.topology.client_interface, ...inertNames].sort(),
+    "runtime namespace exact functional/inert interface set");
+  exactKeys(value.namespace.loopback, ["addresses", "alias", "index", "up"],
+    "runtime namespace.loopback");
+  if (value.namespace.loopback.alias !== "" || value.namespace.loopback.up !== true ||
+      !Number.isSafeInteger(value.namespace.loopback.index) || value.namespace.loopback.index < 1 ||
+      canonicalJson(value.namespace.loopback.addresses) !== canonicalJson([{
+        family: "inet", local: "127.0.0.1", prefix_length: 8,
+      }])) {
+    fail("runtime namespace loopback identity/address set drifted");
+  }
+  for (const side of ["host", "client"]) {
+    exactKeys(value[side], [
+      "address", "alias", "index", "interface", "mac", "peer_index", "prefix_length", "up",
+    ],
+      `runtime topology.${side}`);
+    if (value[side].interface !== plan.topology[`${side}_interface`] ||
+        value[side].address !== plan.topology[`${side}_address`] ||
+        value[side].prefix_length !== plan.topology.prefix_length || value[side].up !== true ||
+        !isLocalUnicastMac(value[side].mac) ||
+        !Number.isSafeInteger(value[side].index) || value[side].index < 1 ||
+        !Number.isSafeInteger(value[side].peer_index) || value[side].peer_index < 1) {
+      fail(`runtime topology.${side} drifted`);
+    }
+  }
+  const hostAlias = value.host.alias.match(
+    /^bitcoinpir-payment-v1-publisher-netns:([0-9a-f]{32}):host$/u,
+  );
+  if (hostAlias === null || value.client.alias !==
+      `bitcoinpir-payment-v1-publisher-netns:${hostAlias[1]}:client` ||
+      value.host.index === value.client.index ||
+      value.host.peer_index !== value.client.index ||
+      value.client.peer_index !== value.host.index ||
+      new Set([
+        value.client.index, value.namespace.loopback.index,
+        ...value.namespace.inert_interfaces.map((link) => link.index),
+      ]).size !== value.namespace.inert_interfaces.length + 2) {
+    fail("runtime veth pair identity drifted");
+  }
+  exactKeys(value.forwarding_sysctls,
+    ["net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding"], "runtime forwarding sysctls");
+  if (value.forwarding_sysctls["net.ipv4.ip_forward"] !== 0 ||
+      value.forwarding_sysctls["net.ipv6.conf.all.forwarding"] !== 0) {
+    fail("host forwarding must remain disabled for both address families");
+  }
+  exactKeys(value.routes, ["client_main", "host_main"], "runtime routes");
+  for (const key of ["client_main", "host_main"]) {
+    if (!Array.isArray(value.routes[key]) || value.routes[key].length !== 1) {
+      fail(`${key} must contain only the connected publisher subnet route`);
+    }
+    exactKeys(value.routes[key][0], ["default", "destination", "gateway", "nat"],
+      `runtime routes.${key}[0]`);
+    const route = value.routes[key][0];
+    const expectedSubnet = plan.topology.address_family === "ipv4" ? "10.203.0.0/30" :
+      "fd00::/126";
+    if (route.default === true || route.gateway !== null || route.nat === true ||
+        route.destination !== expectedSubnet) fail(`${key} contains a default/gateway/NAT route`);
+  }
+  return true;
+}
+
+function isLocalUnicastMac(value) {
+  if (typeof value !== "string" || !/^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/u.test(value)) return false;
+  return (Number.parseInt(value.slice(0, 2), 16) & 3) === 2;
+}
+
+function validateReceipt(receipt, plan, approvedPlanSha256) {
+  validatePublisherNetnsReceiptV2({ receipt, plan, approvedPlanSha256 });
+  exactKeys(receipt, [
+    "activation_approval_sha256", "approved_approval_sha256", "approved_plan_sha256",
+    "caddy_after", "caddy_before",
+    "ceremony_id", "firewall_evidence_sha256", "host", "installed_files",
+    "kind", "loaded_netns_unit", "netns_unit", "outcome", "publisher_unit", "runtime", "schema_version",
+    "sentinels", "topology",
+  ], "receipt");
+  if (receipt.schema_version !== 2 || receipt.kind !== RECEIPT_KIND ||
+      receipt.ceremony_id !== plan.ceremony_id || receipt.approved_plan_sha256 !== approvedPlanSha256 ||
+      receipt.outcome !== "committed") fail("receipt identity/outcome drifted");
+  validateSha256(receipt.approved_approval_sha256, "receipt approved approval SHA-256");
+  validateSha256(receipt.activation_approval_sha256, "receipt activation approval SHA-256");
+  validateSha256(receipt.firewall_evidence_sha256, "receipt firewall evidence SHA-256");
+  if (receipt.firewall_evidence_sha256 !== plan.firewall_evidence.sha256 ||
+      canonicalJson(receipt.host) !== canonicalJson(plan.host) ||
+      canonicalJson(receipt.caddy_before) !== canonicalJson(plan.caddy_preimage) ||
+      canonicalJson(receipt.caddy_after) !== canonicalJson(plan.caddy_preimage) ||
+      canonicalJson(receipt.installed_files) !== canonicalJson(plan.installed_files.map((entry) => entry.pin)) ||
+      canonicalJson(receipt.runtime) !== canonicalJson(plan.runtime) ||
+      canonicalJson(receipt.loaded_netns_unit) !==
+        canonicalJson(plan.preimage.loaded_netns_unit) ||
+      canonicalJson(receipt.sentinels) !== canonicalJson(plan.activation_sentinels)) {
+    fail("receipt closed input/runtime pins drifted");
+  }
+  validateUnitState(receipt.netns_unit, `receipt.${NETNS_UNIT}`, {
+    active: true, name: NETNS_UNIT,
+  });
+  validateUnitState(receipt.publisher_unit, `receipt.${PUBLISHER_UNIT}`, {
+    active: false, name: PUBLISHER_UNIT,
+  });
+  validateRuntimeTopology(receipt.topology, plan);
+  return true;
+}
+
+function validateFailedRecoveryReceipt(
+  receipt,
+  plan,
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+) {
+  validatePublisherNetnsFailedRecoveryReceiptV1({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    plan,
+    receipt,
+  });
+  if (
+    receipt.kind !== FAILED_RECOVERY_RECEIPT_KIND ||
+    receipt.schema_version !== 1 ||
+    receipt.outcome !== "failed-start-recovered" ||
+    receipt.approved_recovery_approval_sha256 !== approvedRecoveryApprovalSha256 ||
+    receipt.failed_unit_sha256 !== computePublisherNetnsFailedUnitSha256V1(
+      receipt.failed_unit,
+    )
+  ) fail("failed-start recovery receipt binding drifted");
+  return true;
+}
+
+function stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, phase, extra = {}) {
+  return {
+    approved_approval_sha256: approvedApprovalSha256,
+    approved_plan_sha256: approvedPlanSha256,
+    ceremony_id: plan.ceremony_id,
+    phase,
+    schema_version: 1,
+    ...extra,
+  };
+}
+
+async function collectClosedInputs(plan, ops) {
+  const installed = [];
+  for (const entry of plan.installed_files) {
+    const observed = await ops.readRegular(entry.pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(entry.pin)) {
+      fail(`installed file ${entry.id} drifted`);
+    }
+    if (entry.id === "netns-hosts") {
+      const expected = Buffer.from(
+        `127.0.0.1 localhost\n${plan.topology.host_address} ${plan.topology.publisher_hostname}\n`,
+        "utf8",
+      );
+      if (!observed.bytes.equals(expected)) fail("sealed namespace hosts bytes drifted");
+    }
+    if (entry.id === "netns-resolv" &&
+        !observed.bytes.equals(Buffer.from("nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", "utf8"))) {
+      fail("sealed namespace resolver bytes drifted");
+    }
+    if (entry.id === "netns-nsswitch" && !observed.bytes.equals(Buffer.from(
+      "passwd: files\ngroup: files\nhosts: files\nnetworks: files\n", "utf8"))) {
+      fail("sealed namespace NSS bytes drifted");
+    }
+    if (entry.id === "helper-manifest" && !observed.bytes.equals(
+      expectedManifestBytes(plan, ["helper-binary"]),
+    )) {
+      fail("publisher namespace helper manifest does not bind the exact helper pin");
+    }
+    if (entry.id === "network-inputs-manifest" && !observed.bytes.equals(
+      expectedManifestBytes(plan, [
+        "netns-hosts", "netns-nsswitch", "netns-resolv", "network-policy",
+      ]),
+    )) {
+      fail("publisher network-input manifest does not bind the four exact input pins");
+    }
+    const text = observed.bytes.toString("utf8");
+    if (entry.id === "caddy-netns-dropin") validatePublisherCaddyDropIn(text);
+    if (entry.id === "publisher-netns-unit") validatePublisherNamespaceOwnerUnitV1(text);
+    if (entry.id === "network-policy") {
+      validatePublisherNetworkPolicy(text, plan.topology.publisher_hostname);
+    }
+    installed.push(observed.snapshot);
+  }
+  const runtime = {};
+  let nodeBytes = null;
+  for (const [name, pin] of Object.entries(plan.runtime)) {
+    const observed = await ops.readRegular(pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(pin)) {
+      fail(`runtime command ${name} drifted`);
+    }
+    if (name === "launcher_manifest" &&
+        !observed.bytes.equals(expectedLauncherManifestBytes(plan.runtime))) {
+      fail("launcher manifest does not bind the exact Node/executor/import closure");
+    }
+    if (name === "launcher" &&
+        canonicalJson(inspectStaticElfV1(observed.bytes)) !==
+          canonicalJson(plan.launcher_static_elf)) {
+      fail("launcher bytes do not equal the approved machine-verifiable static ELF proof");
+    }
+    if (name === "node") nodeBytes = observed.bytes;
+    if (name === "node_loader_closure_manifest" &&
+        !observed.bytes.equals(
+          expectedPublisherNodeLoaderClosureManifestBytesV1(plan.node_elf_closure),
+        )) {
+      fail("Node loader closure manifest does not equal the exact plan-bound object set");
+    }
+    runtime[name] = observed.snapshot;
+  }
+  if (nodeBytes === null) fail("Node runtime bytes were not collected");
+  const objectBytes = new Map();
+  for (const object of plan.node_elf_closure.objects) {
+    const observed = await ops.readRegular(object.pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(object.pin)) {
+      fail(`Node loader object ${object.soname} drifted`);
+    }
+    objectBytes.set(object.pin.path, observed.bytes);
+  }
+  validatePublisherNodeElfClosureBytesV1({
+    closure: plan.node_elf_closure,
+    nodeBytes,
+    objectBytes,
+  });
+  const sentinels = [];
+  for (const pin of plan.activation_sentinels) {
+    const observed = await ops.readRegular(pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(pin) ||
+        sha256(observed.bytes) !== pin.sha256) {
+      fail(`sentinel ${pin.path} bytes or metadata drifted`);
+    }
+    sentinels.push(observed.snapshot);
+  }
+  const firewall = await ops.readRegular(plan.firewall_evidence.path);
+  if (canonicalJson(firewall.snapshot) !== canonicalJson(plan.firewall_evidence)) {
+    fail("publisher firewall evidence file drifted");
+  }
+  const parsed = parseStrictJson(firewall.bytes.toString("utf8"), "publisher firewall evidence");
+  validatePublisherFirewallOutputs(parsed);
+  return { installed, runtime, sentinels };
+}
+
+async function commonPreflight(plan, ops) {
+  const host = await ops.hostIdentity();
+  if (canonicalJson(host) !== canonicalJson(plan.host)) fail("host identity/systemd generation drifted");
+  const caddy = await ops.caddyState();
+  if (canonicalJson(caddy) !== canonicalJson(plan.caddy_preimage)) {
+    fail("Caddy preimage changed; network ceremony must precede the integrated overlay");
+  }
+  const publisher = await ops.unitState(PUBLISHER_UNIT);
+  if (canonicalJson(publisher) !== canonicalJson(plan.preimage.publisher_unit)) {
+    fail("publisher service is not the exact inactive preimage");
+  }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit drifted from the approved effective policy");
+  }
+  const closed = await collectClosedInputs(plan, ops);
+  return { caddy, closed, host, loadedNetnsUnit, publisher };
+}
+
+async function assertAdjacentPreStartClosure(plan, ops, label) {
+  // Re-read the complete closed input set at the activation boundary.  The
+  // earlier preflight is only an observation: a runtime binary, manifest,
+  // sentinel, firewall receipt, Caddy generation, or loaded unit may change
+  // after it.  In particular, the second call happens after the durable start
+  // intent and immediately before systemctl start.
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
+  await commonPreflight(plan, ops);
+  const state = await ops.unitState(NETNS_UNIT);
+  if (
+    canonicalJson(state) !== canonicalJson(plan.preimage.netns_unit) ||
+    !(await ops.networkAbsent(plan))
+  ) {
+    fail(`${label} publisher namespace preimage changed`);
+  }
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
+}
+
+function validateDurableStartIntent(observed, plan, approvedPlanSha256) {
+  const intent = parseStrictJson(observed.bytes.toString("utf8"), "durable start intent");
+  exactKeys(intent, [
+    "approved_approval_sha256", "approved_plan_sha256", "ceremony_id", "phase",
+    "schema_version",
+  ], "durable start intent");
+  if (intent.schema_version !== 1 || intent.phase !== "start-intent" ||
+      intent.ceremony_id !== plan.ceremony_id ||
+      intent.approved_plan_sha256 !== approvedPlanSha256) {
+    fail("durable start intent identity/plan binding drifted");
+  }
+  validateSha256(intent.approved_approval_sha256,
+    "durable start intent approved approval SHA-256");
+  return intent;
+}
+
+async function assertInactiveFailedStartRecovery(plan, ops) {
+  const requireNoJob = async (label) => {
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail(`${label} retained a pending publisher namespace systemd job`);
+    }
+  };
+  const requireInactiveAbsent = async (label) => {
+    const unit = await ops.unitState(NETNS_UNIT);
+    if (canonicalJson(unit) !== canonicalJson(plan.preimage.netns_unit)) {
+      fail(`${label} publisher namespace unit is not the exact inactive generation`);
+    }
+    if (!(await ops.networkAbsent(plan))) {
+      fail(`${label} publisher namespace nsfs path or host veth is present`);
+    }
+  };
+
+  await requireNoJob("initial failed-start recovery proof");
+  await requireInactiveAbsent("initial failed-start recovery proof");
+  const before = await commonPreflight(plan, ops);
+  await requireNoJob("terminal failed-start recovery proof");
+  await requireInactiveAbsent("terminal failed-start recovery proof");
+  await requireNoJob("final failed-start recovery proof");
+  return before;
+}
+
+function validateDurableResetFailedIntent(
+  observed,
+  plan,
+  approvedPlanSha256,
+) {
+  const intent = parseStrictJson(observed.bytes.toString("utf8"), "durable reset-failed intent");
+  exactKeys(intent, [
+    "activation_approval_sha256", "approved_approval_sha256", "approved_plan_sha256",
+    "ceremony_id", "failed_unit_sha256", "phase", "reset_failed_argv", "schema_version",
+    "start_intent_sha256",
+  ], "durable reset-failed intent");
+  if (
+    intent.schema_version !== 1 ||
+    intent.phase !== "reset-failed-intent" ||
+    intent.ceremony_id !== plan.ceremony_id ||
+    intent.approved_plan_sha256 !== approvedPlanSha256 ||
+    canonicalJson(intent.reset_failed_argv) !== canonicalJson(["reset-failed", NETNS_UNIT])
+  ) fail("durable reset-failed intent identity, approval or fixed argv drifted");
+  for (const key of [
+    "activation_approval_sha256", "approved_approval_sha256", "failed_unit_sha256",
+    "start_intent_sha256",
+  ]) validateSha256(intent[key], `durable reset-failed intent.${key}`);
+  return intent;
+}
+
+async function assertExactFailedStartRecoveryPreimage(
+  plan,
+  ops,
+  approvedFailedUnit,
+  label,
+) {
+  if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+    fail(`${label} retained a pending publisher namespace systemd job`);
+  }
+  const failed = await ops.failedUnitState(NETNS_UNIT);
+  validatePublisherNetnsFailedUnitV1(failed, `${label}.failed_unit`);
+  if (canonicalJson(failed) !== canonicalJson(approvedFailedUnit)) {
+    fail(`${label} failed publisher namespace invocation drifted from approval`);
+  }
+  if (!(await ops.networkAbsent(plan))) {
+    fail(`${label} retained a publisher namespace nsfs path or host veth`);
+  }
+  const before = await commonPreflight(plan, ops);
+  if (
+    await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+    canonicalJson(await ops.failedUnitState(NETNS_UNIT)) !== canonicalJson(approvedFailedUnit) ||
+    !(await ops.networkAbsent(plan)) ||
+    await ops.unitJobAbsent(NETNS_UNIT) !== true
+  ) fail(`${label} failed invocation, topology or PID1 job changed during terminal proof`);
+  return before;
+}
+
+function buildFailedRecoveryReceipt({
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  before,
+  failedUnit,
+  intent,
+  plan,
+  recoveredUnit,
+  startIntentSha256,
+}) {
+  return {
+    activation_approval_sha256: intent.activation_approval_sha256,
+    approved_plan_sha256: approvedPlanSha256,
+    approved_recovery_approval_sha256: approvedRecoveryApprovalSha256,
+    caddy: before.caddy,
+    ceremony_id: plan.ceremony_id,
+    failed_unit: failedUnit,
+    failed_unit_sha256: computePublisherNetnsFailedUnitSha256V1(failedUnit),
+    firewall_evidence_sha256: plan.firewall_evidence.sha256,
+    host: before.host,
+    installed_files: before.closed.installed,
+    kind: FAILED_RECOVERY_RECEIPT_KIND,
+    loaded_netns_unit: before.loadedNetnsUnit,
+    outcome: "failed-start-recovered",
+    publisher_unit: before.publisher,
+    recovered_unit: recoveredUnit,
+    reset_failed_argv: ["reset-failed", NETNS_UNIT],
+    reset_intent_approval_sha256: intent.approved_approval_sha256,
+    runtime: before.closed.runtime,
+    schema_version: 1,
+    sentinels: before.closed.sentinels,
+    start_intent_sha256: startIntentSha256,
+    topology_absent: true,
+  };
+}
+
+function failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt) {
+  return stateRecord(
+    plan,
+    approvedPlanSha256,
+    receipt.approved_recovery_approval_sha256,
+    "failed-start-recovered",
+    {
+      activation_approval_sha256: receipt.activation_approval_sha256,
+      failed_unit_sha256: receipt.failed_unit_sha256,
+      recovery_receipt_sha256: sha256(Buffer.from(canonicalJson(receipt), "utf8")),
+      reset_intent_approval_sha256: receipt.reset_intent_approval_sha256,
+      start_intent_sha256: receipt.start_intent_sha256,
+    },
+  );
+}
+
+async function finishFailedStartRecovery({
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  before,
+  failedUnit,
+  intent,
+  ops,
+  plan,
+  startIntentSha256,
+}) {
+  const terminal = await assertInactiveFailedStartRecovery(plan, ops);
+  if (canonicalJson(terminal) !== canonicalJson(before)) {
+    fail("failed-start recovery closed inputs drifted across reset-failed");
+  }
+  const recoveredUnit = await ops.unitState(NETNS_UNIT);
+  if (canonicalJson(recoveredUnit) !== canonicalJson(plan.preimage.netns_unit)) {
+    fail("failed-start recovery terminal unit drifted after proof");
+  }
+  const receipt = buildFailedRecoveryReceipt({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    before,
+    failedUnit,
+    intent,
+    plan,
+    recoveredUnit,
+    startIntentSha256,
+  });
+  validateFailedRecoveryReceipt(
+    receipt,
+    plan,
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+  );
+  await ops.writeReceipt(failedRecoveryReceiptPath(plan), receipt);
+  await ops.writeState(
+    plan.transaction.state_directory,
+    "07-failed-start-recovered.json",
+    failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt),
+  );
+  return receipt;
+}
+
+async function buildCommittedReceipt({
+  activationApprovalSha256,
+  approvedApprovalSha256,
+  approvedPlanSha256,
+  before,
+  ops,
+  plan,
+}) {
+  const caddyAfter = await ops.caddyState();
+  if (canonicalJson(caddyAfter) !== canonicalJson(before.caddy)) {
+    fail("Caddy changed while provisioning the publisher namespace");
+  }
+  const publisher = await ops.unitState(PUBLISHER_UNIT);
+  if (canonicalJson(publisher) !== canonicalJson(before.publisher)) {
+    fail("publisher service changed during the network-only ceremony");
+  }
+  const netns = await ops.unitState(NETNS_UNIT);
+  validateUnitState(netns, `runtime.${NETNS_UNIT}`, { active: true, name: NETNS_UNIT });
+  const topology = await ops.networkState(plan);
+  validateRuntimeTopology(topology, plan);
+  const closedAfter = await collectClosedInputs(plan, ops);
+  if (canonicalJson(closedAfter) !== canonicalJson(before.closed)) {
+    fail("installed files, sentinels or firewall evidence changed during start");
+  }
+  const hostAfter = await ops.hostIdentity();
+  if (canonicalJson(hostAfter) !== canonicalJson(before.host)) {
+    fail("host boot/systemd identity changed during namespace start");
+  }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit changed during namespace start");
+  }
+  return {
+    activation_approval_sha256: activationApprovalSha256,
+    approved_approval_sha256: approvedApprovalSha256,
+    approved_plan_sha256: approvedPlanSha256,
+    caddy_after: caddyAfter,
+    caddy_before: before.caddy,
+    ceremony_id: plan.ceremony_id,
+    firewall_evidence_sha256: plan.firewall_evidence.sha256,
+    host: before.host,
+    installed_files: closedAfter.installed,
+    kind: RECEIPT_KIND,
+    loaded_netns_unit: loadedNetnsUnit,
+    netns_unit: netns,
+    outcome: "committed",
+    publisher_unit: publisher,
+    runtime: closedAfter.runtime,
+    schema_version: 2,
+    sentinels: closedAfter.sentinels,
+    topology,
+  };
+}
+
+async function recoverFailedStartLocked({
+  approval,
+  approvedPlanSha256,
+  approvedRecoveryApprovalSha256,
+  lifecycle,
+  ops,
+  plan,
+}) {
+  lifecycle.retainLockOnError = true;
+  const startIntentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
+  const observedStartIntent = await ops.readOptionalRegular(startIntentPath);
+  if (observedStartIntent === null) {
+    fail("failed-start recovery found no durable start intent");
+  }
+  const startIntent = validateDurableStartIntent(
+    observedStartIntent,
+    plan,
+    approvedPlanSha256,
+  );
+  const startIntentSha256 = sha256(observedStartIntent.bytes);
+  if (
+    startIntentSha256 !== approval.start_intent_sha256 ||
+    startIntent.approved_approval_sha256 !== approval.activation_approval_sha256
+  ) fail("failed-start recovery approval does not bind the durable approved start attempt");
+
+  const recoveryReceiptPath = failedRecoveryReceiptPath(plan);
+  const existingReceipt = await ops.readOptionalRegular(recoveryReceiptPath);
+  if (existingReceipt !== null) {
+    const receipt = parseStrictJson(
+      existingReceipt.bytes.toString("utf8"),
+      "existing failed-start recovery receipt",
+    );
+    validateFailedRecoveryReceipt(
+      receipt,
+      plan,
+      approvedPlanSha256,
+      receipt.approved_recovery_approval_sha256,
+    );
+    const observedResetIntent = await ops.readOptionalRegular(
+      `${plan.transaction.state_directory}/06-reset-failed-intent.json`,
+    );
+    if (observedResetIntent === null) {
+      fail("existing failed-start recovery receipt has no durable reset-failed intent");
+    }
+    const resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    const terminal = await assertInactiveFailedStartRecovery(plan, ops);
+    if (
+      receipt.activation_approval_sha256 !== approval.activation_approval_sha256 ||
+      receipt.failed_unit_sha256 !== approval.failed_unit_sha256 ||
+      receipt.start_intent_sha256 !== approval.start_intent_sha256 ||
+      resetIntent.activation_approval_sha256 !== receipt.activation_approval_sha256 ||
+      resetIntent.approved_approval_sha256 !== receipt.reset_intent_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== receipt.failed_unit_sha256 ||
+      resetIntent.start_intent_sha256 !== receipt.start_intent_sha256 ||
+      canonicalJson(terminal.caddy) !== canonicalJson(receipt.caddy) ||
+      canonicalJson(terminal.closed.installed) !== canonicalJson(receipt.installed_files) ||
+      canonicalJson(terminal.closed.runtime) !== canonicalJson(receipt.runtime) ||
+      canonicalJson(terminal.closed.sentinels) !== canonicalJson(receipt.sentinels) ||
+      canonicalJson(terminal.host) !== canonicalJson(receipt.host) ||
+      canonicalJson(terminal.loadedNetnsUnit) !== canonicalJson(receipt.loaded_netns_unit) ||
+      canonicalJson(terminal.publisher) !== canonicalJson(receipt.publisher_unit)
+    ) fail("existing failed-start recovery receipt no longer describes terminal closed inputs");
+    await ops.writeState(
+      plan.transaction.state_directory,
+      "07-failed-start-recovered.json",
+      failedRecoveryTerminalStateRecord(plan, approvedPlanSha256, receipt),
+    );
+    lifecycle.retainLockOnError = false;
+    return receipt;
+  }
+
+  const resetIntentPath = `${plan.transaction.state_directory}/06-reset-failed-intent.json`;
+  const observedResetIntent = await ops.readOptionalRegular(resetIntentPath);
+  const current = await ops.unitState(NETNS_UNIT);
+  const exactInactive = canonicalJson(current) === canonicalJson(plan.preimage.netns_unit);
+  if (exactInactive) {
+    if (observedResetIntent === null) {
+      fail("failed-start recovery found inactive state without its durable reset-failed intent");
+    }
+    const resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    if (
+      resetIntent.start_intent_sha256 !== startIntentSha256 ||
+      resetIntent.activation_approval_sha256 !== startIntent.approved_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== approval.failed_unit_sha256
+    ) fail("durable reset-failed intent does not bind the approved failed start attempt");
+    const before = await assertInactiveFailedStartRecovery(plan, ops);
+    const receipt = await finishFailedStartRecovery({
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256,
+      before,
+      failedUnit: approval.failed_unit,
+      intent: resetIntent,
+      ops,
+      plan,
+      startIntentSha256,
+    });
+    lifecycle.retainLockOnError = false;
+    return receipt;
+  }
+
+  if (
+    canonicalJson(failedRecoveryStateProjection(approval.failed_unit)) !== canonicalJson(current)
+  ) fail("failed-start recovery current unit is not the exact approved failed invocation");
+  let resetIntent;
+  if (observedResetIntent === null) {
+    resetIntent = stateRecord(
+      plan,
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256,
+      "reset-failed-intent",
+      {
+        activation_approval_sha256: startIntent.approved_approval_sha256,
+        failed_unit_sha256: approval.failed_unit_sha256,
+        reset_failed_argv: ["reset-failed", NETNS_UNIT],
+        start_intent_sha256: startIntentSha256,
+      },
+    );
+    await ops.writeState(
+      plan.transaction.state_directory,
+      "06-reset-failed-intent.json",
+      resetIntent,
+    );
+  } else {
+    resetIntent = validateDurableResetFailedIntent(
+      observedResetIntent,
+      plan,
+      approvedPlanSha256,
+    );
+    if (
+      resetIntent.start_intent_sha256 !== startIntentSha256 ||
+      resetIntent.activation_approval_sha256 !== startIntent.approved_approval_sha256 ||
+      resetIntent.failed_unit_sha256 !== approval.failed_unit_sha256
+    ) fail("durable reset-failed intent does not bind the approved failed start attempt");
+  }
+  const before = await assertExactFailedStartRecoveryPreimage(
+    plan,
+    ops,
+    approval.failed_unit,
+    "reset-adjacent failed-start recovery proof",
+  );
+  const result = await ops.systemctl(["reset-failed", NETNS_UNIT]);
+  if (result.status !== 0) {
+    fail("exact publisher namespace reset-failed returned nonzero with an unknown final outcome");
+  }
+  const receipt = await finishFailedStartRecovery({
+    approvedPlanSha256,
+    approvedRecoveryApprovalSha256,
+    before,
+    failedUnit: approval.failed_unit,
+    intent: resetIntent,
+    ops,
+    plan,
+    startIntentSha256,
+  });
+  lifecycle.retainLockOnError = false;
+  return receipt;
+}
+
+async function applyLocked({
+  approval,
+  approvedApprovalSha256,
+  approvedPlanSha256,
+  lifecycle,
+  ops,
+  plan,
+  recover,
+}) {
+  if (recover) lifecycle.retainLockOnError = true;
+  if (recover && approval.kind === FAILED_RECOVERY_APPROVAL_KIND) {
+    lifecycle.outcome = "reset-failed";
+    return recoverFailedStartLocked({
+      approval,
+      approvedPlanSha256,
+      approvedRecoveryApprovalSha256: approvedApprovalSha256,
+      lifecycle,
+      ops,
+      plan,
+    });
+  }
+  const existing = await ops.readOptionalRegular(plan.transaction.receipt_path);
+  if (existing !== null) {
+    const receipt = parseStrictJson(existing.bytes.toString("utf8"), "existing receipt");
+    validateReceipt(receipt, plan, approvedPlanSha256);
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("committed replay found a pending publisher namespace systemd job");
+    }
+    const before = await commonPreflight(plan, ops);
+    const netns = await ops.unitState(NETNS_UNIT);
+    if (canonicalJson(netns) !== canonicalJson(receipt.netns_unit)) {
+      fail("committed receipt no longer describes the live namespace unit generation");
+    }
+    const topology = await ops.networkState(plan);
+    if (canonicalJson(topology) !== canonicalJson(receipt.topology) ||
+        canonicalJson(before.closed.installed) !== canonicalJson(receipt.installed_files) ||
+        canonicalJson(before.closed.runtime) !== canonicalJson(receipt.runtime) ||
+        canonicalJson(before.closed.sentinels) !== canonicalJson(receipt.sentinels)) {
+      fail("committed receipt no longer describes the live closed topology/inputs");
+    }
+    if (
+      await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+      canonicalJson(await ops.unitState(NETNS_UNIT)) !== canonicalJson(receipt.netns_unit) ||
+      await ops.unitJobAbsent(NETNS_UNIT) !== true
+    ) {
+      fail("committed replay generation or PID1 job changed during terminal proof");
+    }
+    await ops.writeState(plan.transaction.state_directory, "20-committed.json",
+      stateRecord(plan, approvedPlanSha256, receipt.approved_approval_sha256, "committed", {
+        receipt_sha256: sha256(existing.bytes),
+      }));
+    return receipt;
+  }
+  const current = await ops.unitState(NETNS_UNIT);
+  const intentPath = `${plan.transaction.state_directory}/05-start-intent.json`;
+  const observedIntent = await ops.readOptionalRegular(intentPath);
+  const exactInactive = canonicalJson(current) === canonicalJson(plan.preimage.netns_unit);
+  if (recover && current.active_state === "failed") {
+    fail("recover-commit requires an exact failed-start recovery approval for failed/failed state");
+  }
+  if (exactInactive && !(await ops.networkAbsent(plan))) {
+    fail("inactive namespace unit has an unknown namespace path or host-interface preimage");
+  }
+  if (!exactInactive && !recover) {
+    fail("publisher namespace is not the inactive preimage; use recover-commit for a lost start response");
+  }
+
+  if (recover && exactInactive) {
+    lifecycle.retainLockOnError = true;
+    if (observedIntent !== null) {
+      validateDurableStartIntent(observedIntent, plan, approvedPlanSha256);
+    }
+    await assertInactiveFailedStartRecovery(plan, ops);
+    lifecycle.retainLockOnError = false;
+    if (observedIntent === null) {
+      fail("recover-commit proved an exact inactive/absent state but found no durable start intent");
+    }
+    fail(
+      "recover-commit proved the requested start did not commit; " +
+      "the single-use start intent remains durable and the lifecycle lock was recovered",
+    );
+  }
+
+  if (exactInactive) {
+    if (observedIntent !== null) {
+      fail("inactive publisher namespace has an existing durable start intent; it cannot be started again");
+    }
+  }
+
+  let activationApprovalSha256 = approvedApprovalSha256;
+  if (!exactInactive) {
+    lifecycle.retainLockOnError = true;
+    if (observedIntent === null) {
+      fail("recover-commit found an active or unknown namespace without the durable start intent");
+    }
+    activationApprovalSha256 = validateDurableStartIntent(
+      observedIntent,
+      plan,
+      approvedPlanSha256,
+    ).approved_approval_sha256;
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("recover-commit found a pending publisher namespace systemd job");
+    }
+  }
+
+  const before = await commonPreflight(plan, ops);
+  let started = false;
+  if (exactInactive) {
+    await assertAdjacentPreStartClosure(plan, ops, "final pre-start");
+    await ops.writeState(plan.transaction.state_directory, "00-prepared.json",
+      stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "prepared"));
+    await ops.writeState(plan.transaction.state_directory, "05-start-intent.json",
+      stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "start-intent"));
+    await assertAdjacentPreStartClosure(plan, ops, "start-adjacent");
+    lifecycle.retainLockOnError = true;
+    const result = await ops.systemctl(["start", NETNS_UNIT]);
+    if (result.status !== 0) {
+      fail("exact publisher namespace unit start returned nonzero with an unknown final outcome");
+    }
+    started = true;
+  }
+  const receipt = await buildCommittedReceipt({
+    activationApprovalSha256, approvedApprovalSha256, approvedPlanSha256, before, ops, plan,
+  });
+  if (recover && !exactInactive) {
+    if (await ops.unitJobAbsent(NETNS_UNIT) !== true ||
+        canonicalJson(await ops.unitState(NETNS_UNIT)) !== canonicalJson(receipt.netns_unit) ||
+        await ops.unitJobAbsent(NETNS_UNIT) !== true) {
+      fail("recover-commit active generation or PID1 job changed during terminal proof");
+    }
+  }
+  await ops.writeState(plan.transaction.state_directory, "10-runtime-verified.json",
+    stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "runtime-verified", {
+      netns_invocation_id: receipt.netns_unit.invocation_id,
+      namespace_device: receipt.topology.namespace.device,
+      namespace_inode: receipt.topology.namespace.inode,
+      start_invoked: started,
+    }));
+  await ops.writeReceipt(plan.transaction.receipt_path, receipt);
+  await ops.writeState(plan.transaction.state_directory, "20-committed.json",
+    stateRecord(plan, approvedPlanSha256, approvedApprovalSha256, "committed", {
+      receipt_sha256: sha256(Buffer.from(canonicalJson(receipt), "utf8")),
+    }));
+  return receipt;
+}
+
+export async function executeApply({
+  approval,
+  approvedApprovalSha256,
+  approvedPlanSha256,
+  nowUnix,
+  ops,
+  plan,
+  recover = false,
+}) {
+  validateCeremonyPlan(plan);
+  if (computePlanSha256(plan) !== approvedPlanSha256) fail("plan digest was not independently approved");
+  const failedRecovery = recover && approval.kind === FAILED_RECOVERY_APPROVAL_KIND;
+  if (failedRecovery) {
+    validateFailedRecoveryApproval(approval, plan, approvedPlanSha256, nowUnix);
+  } else {
+    validateApprovalCommon(approval, plan, approvedPlanSha256, nowUnix, false);
+  }
+  const approvalBytes = Buffer.from(canonicalJson(approval), "utf8");
+  if (sha256(approvalBytes) !== approvedApprovalSha256) {
+    fail(`${failedRecovery ? "failed-start recovery" : "apply"} approval digest drifted`);
+  }
+  const release = await ops.acquireLock(plan.transaction.lock_path, {
+    recoverStale: recover,
+    transactionId: `publisher-netns:${plan.ceremony_id}`,
+  });
+  const lifecycle = { outcome: "start", retainLockOnError: false };
+  let releaseLock = true;
+  try {
+    return await applyLocked({
+      approval, approvedApprovalSha256, approvedPlanSha256, lifecycle, ops, plan, recover,
+    });
+  } catch (error) {
+    if (lifecycle.retainLockOnError) {
+      releaseLock = false;
+      if (error instanceof PublisherNetnsStartOutcomeUnknownError) throw error;
+      throw new PublisherNetnsStartOutcomeUnknownError(
+        `publisher namespace ${lifecycle.outcome} outcome is unknown; ` +
+          "shared lifecycle lock retained",
+        error,
+      );
+    }
+    throw error;
+  } finally {
+    if (releaseLock) await release();
+  }
+}
+
+function validateRollbackReceipt(
+  receipt,
+  committed,
+  plan,
+  approvedPlanSha256,
+  committedReceiptSha256,
+) {
+  exactKeys(receipt, [
+    "approved_plan_sha256", "approved_rollback_approval_sha256",
+    "ceremony_id", "committed_receipt_sha256", "caddy_after", "kind",
+    "loaded_netns_unit", "netns_unit", "outcome", "publisher_unit", "schema_version",
+    "stop_approval_sha256", "topology_absent",
+  ], "rollback receipt");
+  if (receipt.schema_version !== 2 || receipt.kind !== ROLLBACK_RECEIPT_KIND ||
+      receipt.ceremony_id !== plan.ceremony_id || receipt.approved_plan_sha256 !== approvedPlanSha256 ||
+      receipt.outcome !== "rolled-back" || receipt.topology_absent !== true ||
+      receipt.committed_receipt_sha256 !== committedReceiptSha256 ||
+      canonicalJson(receipt.caddy_after) !== canonicalJson(committed.caddy_after) ||
+      canonicalJson(receipt.loaded_netns_unit) !==
+        canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("rollback receipt identity/outcome drifted");
+  }
+  validateSha256(
+    receipt.approved_rollback_approval_sha256,
+    "rollback receipt terminalization approval SHA-256",
+  );
+  validateSha256(
+    receipt.stop_approval_sha256,
+    "rollback receipt stop approval SHA-256",
+  );
+  validateUnitState(receipt.netns_unit, `rollback.${NETNS_UNIT}`, {
+    active: false, name: NETNS_UNIT,
+  });
+  validateUnitState(receipt.publisher_unit, `rollback.${PUBLISHER_UNIT}`, {
+    active: false, name: PUBLISHER_UNIT,
+  });
+  return true;
+}
+
+async function rollbackLocked({
+  approvedPlanSha256,
+  approvedRollbackApprovalSha256,
+  committed,
+  committedReceiptSha256,
+  ops,
+  plan,
+  recover,
+}) {
+  const existing = await ops.readOptionalRegular(plan.transaction.rollback_receipt_path);
+  if (existing !== null) {
+    const receipt = parseStrictJson(existing.bytes.toString("utf8"), "rollback receipt");
+    validateRollbackReceipt(
+      receipt,
+      committed,
+      plan,
+      approvedPlanSha256,
+      committedReceiptSha256,
+    );
+    await commonPreflight(plan, ops);
+    const netns = await ops.unitState(NETNS_UNIT);
+    if (canonicalJson(netns) !== canonicalJson(receipt.netns_unit) ||
+        !(await ops.networkAbsent(plan))) {
+      fail("rollback receipt no longer describes an absent publisher namespace");
+    }
+    return receipt;
+  }
+  const before = await commonPreflight(plan, ops);
+  if (canonicalJson(before.caddy) !== canonicalJson(committed.caddy_after)) {
+    fail("Caddy generation changed after namespace commit; roll back the integrated overlay first");
+  }
+  const current = await ops.unitState(NETNS_UNIT);
+  if (current.active_state !== "active" && !recover) {
+    fail("publisher namespace is not active; use recover-rollback for a lost stop response");
+  }
+  const stopIntentPath = `${plan.transaction.state_directory}/25-stop-intent.json`;
+  const observedStopIntent = await ops.readOptionalRegular(stopIntentPath);
+  let stopApprovalSha256 = approvedRollbackApprovalSha256;
+  if (observedStopIntent !== null) {
+    const intent = parseStrictJson(
+      observedStopIntent.bytes.toString("utf8"),
+      "durable stop intent",
+    );
+    exactKeys(intent, [
+      "approved_approval_sha256", "approved_plan_sha256", "ceremony_id",
+      "committed_receipt_sha256", "phase", "schema_version",
+    ], "durable stop intent");
+    if (
+      intent.schema_version !== 1 ||
+      intent.phase !== "stop-intent" ||
+      intent.ceremony_id !== plan.ceremony_id ||
+      intent.approved_plan_sha256 !== approvedPlanSha256 ||
+      intent.committed_receipt_sha256 !== committedReceiptSha256
+    ) {
+      fail("durable stop intent identity/plan/receipt binding drifted");
+    }
+    validateSha256(
+      intent.approved_approval_sha256,
+      "durable stop intent approved rollback SHA-256",
+    );
+    stopApprovalSha256 = intent.approved_approval_sha256;
+  } else if (current.active_state !== "active") {
+    fail("recover-rollback found an inactive namespace without the durable stop intent");
+  }
+  if (current.active_state === "active") {
+    if (canonicalJson(current) !== canonicalJson(committed.netns_unit)) {
+      fail("publisher namespace systemd generation changed after commit");
+    }
+    if (observedStopIntent !== null && !recover) {
+      fail("a durable stop intent already exists; use recover-rollback for an explicit retry");
+    }
+    if (observedStopIntent === null) {
+      await ops.writeState(plan.transaction.state_directory, "25-stop-intent.json",
+        stateRecord(plan, approvedPlanSha256, approvedRollbackApprovalSha256, "stop-intent", {
+          committed_receipt_sha256: committedReceiptSha256,
+        }));
+    }
+    const result = await ops.systemctl(["stop", NETNS_UNIT]);
+    if (result.status !== 0) fail("exact publisher namespace unit stop failed");
+  }
+  const netnsAfter = await ops.unitState(NETNS_UNIT);
+  validateUnitState(netnsAfter, `rollback.${NETNS_UNIT}`, {
+    active: false, name: NETNS_UNIT,
+  });
+  if (!(await ops.networkAbsent(plan))) fail("namespace or owned host veth remains after stop");
+  const caddyAfter = await ops.caddyState();
+  if (canonicalJson(caddyAfter) !== canonicalJson(committed.caddy_after)) {
+    fail("Caddy changed while stopping the publisher namespace");
+  }
+  const publisher = await ops.unitState(PUBLISHER_UNIT);
+  if (canonicalJson(publisher) !== canonicalJson(plan.preimage.publisher_unit)) {
+    fail("publisher service changed while stopping its namespace");
+  }
+  const closedAfter = await collectClosedInputs(plan, ops);
+  if (canonicalJson(closedAfter) !== canonicalJson(before.closed)) {
+    fail("installed files, sentinels or firewall evidence changed during stop");
+  }
+  const hostAfter = await ops.hostIdentity();
+  if (canonicalJson(hostAfter) !== canonicalJson(before.host)) {
+    fail("host boot/systemd identity changed during namespace stop");
+  }
+  const loadedNetnsUnit = await ops.loadedNetnsUnit();
+  if (canonicalJson(loadedNetnsUnit) !== canonicalJson(plan.preimage.loaded_netns_unit)) {
+    fail("loaded publisher namespace unit changed during namespace stop");
+  }
+  const receipt = {
+    approved_plan_sha256: approvedPlanSha256,
+    approved_rollback_approval_sha256: approvedRollbackApprovalSha256,
+    caddy_after: caddyAfter,
+    ceremony_id: plan.ceremony_id,
+    committed_receipt_sha256: committedReceiptSha256,
+    kind: ROLLBACK_RECEIPT_KIND,
+    loaded_netns_unit: loadedNetnsUnit,
+    netns_unit: netnsAfter,
+    outcome: "rolled-back",
+    publisher_unit: publisher,
+    schema_version: 2,
+    stop_approval_sha256: stopApprovalSha256,
+    topology_absent: true,
+  };
+  await ops.writeReceipt(plan.transaction.rollback_receipt_path, receipt);
+  await ops.writeState(plan.transaction.state_directory, "30-rolled-back.json",
+    stateRecord(plan, approvedPlanSha256, approvedRollbackApprovalSha256, "rolled-back", {
+      rollback_receipt_sha256: sha256(Buffer.from(canonicalJson(receipt), "utf8")),
+    }));
+  return receipt;
+}
+
+export async function executeRollback({
+  approvedPlanSha256,
+  approvedReceiptSha256,
+  approvedRollbackApprovalSha256,
+  nowUnix,
+  ops,
+  plan,
+  recover = false,
+  rollbackApproval,
+}) {
+  validateCeremonyPlan(plan);
+  if (computePlanSha256(plan) !== approvedPlanSha256) fail("plan digest was not independently approved");
+  validateApprovalCommon(rollbackApproval, plan, approvedPlanSha256, nowUnix, true);
+  if (rollbackApproval.committed_receipt_sha256 !== approvedReceiptSha256) {
+    fail("rollback approval does not bind the approved committed receipt");
+  }
+  const approvalBytes = Buffer.from(canonicalJson(rollbackApproval), "utf8");
+  if (sha256(approvalBytes) !== approvedRollbackApprovalSha256) {
+    fail("rollback approval digest drifted");
+  }
+  const observed = await ops.readRegular(plan.transaction.receipt_path);
+  if (sha256(observed.bytes) !== approvedReceiptSha256) fail("committed receipt bytes drifted");
+  const committed = parseStrictJson(observed.bytes.toString("utf8"), "committed receipt");
+  validateReceipt(committed, plan, approvedPlanSha256);
+  const release = await ops.acquireLock(plan.transaction.lock_path, {
+    recoverStale: recover,
+    transactionId: `publisher-netns-rollback:${plan.ceremony_id}`,
+  });
+  try {
+    return await rollbackLocked({
+      approvedPlanSha256,
+      approvedRollbackApprovalSha256,
+      committed,
+      committedReceiptSha256: approvedReceiptSha256,
+      ops,
+      plan,
+      recover,
+    });
+  } finally {
+    await release();
+  }
+}
+
+function sameStableStat(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode &&
+    left.uid === right.uid && left.gid === right.gid && left.nlink === right.nlink &&
+    left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function snapshotFromOpenFile(path, stat, bytes) {
+  return {
+    ctime_ns: stat.ctimeNs.toString(),
+    device: stat.dev.toString(),
+    gid: Number(stat.gid),
+    inode: stat.ino.toString(),
+    mode: (Number(stat.mode) & 0o7777).toString(8).padStart(4, "0"),
+    mtime_ns: stat.mtimeNs.toString(),
+    nlink: Number(stat.nlink),
+    path,
+    sha256: sha256(bytes),
+    size: stat.size.toString(),
+    uid: Number(stat.uid),
+  };
+}
+
+function openStableRegular(path) {
+  const before = lstatSync(path, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink()) fail(`${path} is not a regular no-follow file`);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || !sameStableStat(before, opened)) {
+      fail(`${path} changed before its no-follow descriptor was opened`);
+    }
+    const bytes = readFileSync(fd);
+    const afterDescriptor = fstatSync(fd, { bigint: true });
+    const afterPath = lstatSync(path, { bigint: true });
+    if (!afterPath.isFile() || afterPath.isSymbolicLink() ||
+        !sameStableStat(opened, afterDescriptor) || !sameStableStat(opened, afterPath)) {
+      fail(`${path} changed while it was read`);
+    }
+    return { bytes, fd, snapshot: snapshotFromOpenFile(path, opened, bytes) };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function regularSnapshot(path) {
+  const opened = openStableRegular(path);
+  closeSync(opened.fd);
+  return { bytes: opened.bytes, snapshot: opened.snapshot };
+}
+
+function optionalRegular(path) {
+  try {
+    return regularSnapshot(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function fsyncParent(path) {
+  const fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY |
+    constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function secureDirectory(path, label = path) {
+  const stat = lstatSync(path, { bigint: true });
+  const mode = Number(stat.mode) & 0o7777;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0n || stat.gid !== 0n ||
+      mode !== 0o700) {
+    fail(`${label} must be a root-owned no-follow 0700 directory`);
+  }
+  return stat;
+}
+
+function exactOwnerRecord(observed, path, bytes, allowedLinks = [1]) {
+  if (!observed.bytes.equals(bytes) || observed.snapshot.path !== path ||
+      observed.snapshot.mode !== "0400" || observed.snapshot.uid !== 0 ||
+      observed.snapshot.gid !== 0 || !allowedLinks.includes(observed.snapshot.nlink)) {
+    fail(`published record ${path} has an unreviewed owner/content/link shape`);
+  }
+}
+
+export function writeAllSyncV1(fd, bytes, writer = writeSync) {
+  if (!Buffer.isBuffer(bytes)) fail("atomic record bytes must be a Buffer");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const remaining = bytes.length - offset;
+    const written = writer(fd, bytes, offset, remaining, offset);
+    if (!Number.isSafeInteger(written) || written <= 0 || written > remaining) {
+      fail("atomic record write returned an invalid short-write length");
+    }
+    offset += written;
+  }
+  return offset;
+}
+
+function writeAtomicNoReplace(path, value) {
+  const bytes = Buffer.from(canonicalJson(value), "utf8");
+  const pending = `${path}.pending`;
+  secureDirectory(dirname(path), `record parent ${dirname(path)}`);
+
+  // Reconcile both crash windows before creating a new inode: (1) the pending
+  // file was fsynced but not linked, or (2) the hard link was created but the
+  // pending name was not removed. Any contradictory inode/content fails closed.
+  let final = optionalRegular(path);
+  let staged = optionalRegular(pending);
+  if (final !== null) {
+    if (staged !== null) {
+      exactOwnerRecord(final, path, bytes, [2]);
+      exactOwnerRecord(staged, pending, bytes, [2]);
+      if (final.snapshot.device !== staged.snapshot.device ||
+          final.snapshot.inode !== staged.snapshot.inode) {
+        fail(`final and pending records disagree for ${path}`);
+      }
+      unlinkSync(pending);
+      fsyncParent(path);
+      final = regularSnapshot(path);
+    }
+    exactOwnerRecord(final, path, bytes);
+    return final;
+  }
+  if (staged !== null) {
+    exactOwnerRecord(staged, pending, bytes);
+    try {
+      linkSync(pending, path);
+      fsyncParent(path);
+    } catch (error) {
+      final = optionalRegular(path);
+      if (final === null || final.snapshot.device !== staged.snapshot.device ||
+          final.snapshot.inode !== staged.snapshot.inode || !final.bytes.equals(bytes)) throw error;
+    }
+    unlinkSync(pending);
+    fsyncParent(path);
+    final = regularSnapshot(path);
+    exactOwnerRecord(final, path, bytes);
+    return final;
+  }
+
+  const fd = openSync(pending,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+    0o400);
+  try {
+    fchmodSync(fd, 0o400);
+    fchownSync(fd, 0, 0);
+    writeAllSyncV1(fd, bytes);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  try {
+    linkSync(pending, path);
+    fsyncParent(path);
+    unlinkSync(pending);
+    fsyncParent(path);
+  } catch (error) {
+    const final = optionalRegular(path);
+    const staged = optionalRegular(pending);
+    if (final !== null && staged !== null && final.snapshot.device === staged.snapshot.device &&
+        final.snapshot.inode === staged.snapshot.inode && final.bytes.equals(bytes) &&
+        staged.bytes.equals(bytes)) {
+      unlinkSync(pending);
+      fsyncParent(path);
+      const recovered = regularSnapshot(path);
+      exactOwnerRecord(recovered, path, bytes);
+      return recovered;
+    }
+    throw error;
+  }
+  const result = regularSnapshot(path);
+  exactOwnerRecord(result, path, bytes);
+  return result;
+}
+
+function processStartTicks(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  if (close < 0) fail("malformed /proc process stat");
+  const fields = stat.slice(close + 2).split(" ");
+  const value = fields[19];
+  if (!/^[1-9][0-9]*$/u.test(value ?? "")) fail("malformed process start ticks");
+  return value;
+}
+
+function currentBootId() {
+  return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+}
+
+function validateLockDirectoryStat(stat, label) {
+  const mode = Number(stat.mode) & 0o7777;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0n || stat.gid !== 0n ||
+      mode !== 0o700) {
+    fail(`${label} must be a root-owned no-follow 0700 directory`);
+  }
+}
+
+function openStableLockDirectory(path, label) {
+  const before = lstatSync(path, { bigint: true });
+  validateLockDirectoryStat(before, label);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY |
+    constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    const afterPath = lstatSync(path, { bigint: true });
+    validateLockDirectoryStat(opened, label);
+    validateLockDirectoryStat(afterPath, label);
+    if (!sameStableStat(before, opened) || !sameStableStat(opened, afterPath)) {
+      fail(`${label} changed while its descriptor was opened`);
+    }
+    return { fd, path, stat: opened };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function lockDirectoryEntryPath(directory, name = "") {
+  return `/proc/self/fd/${directory.fd}${name === "" ? "" : `/${name}`}`;
+}
+
+function assertLockDirectoryGeneration(directory, expected, label) {
+  const descriptor = fstatSync(directory.fd, { bigint: true });
+  const named = lstatSync(directory.path, { bigint: true });
+  validateLockDirectoryStat(descriptor, label);
+  validateLockDirectoryStat(named, label);
+  if (!sameStableStat(descriptor, named) ||
+      (expected !== null && !sameStableStat(expected, descriptor))) {
+    fail(`${label} directory generation changed`);
+  }
+  return descriptor;
+}
+
+function openLockRecord(directory, name) {
+  const opened = openStableRegular(lockDirectoryEntryPath(directory, name));
+  opened.snapshot.path = `${directory.path}/${name}`;
+  return opened;
+}
+
+function closeLockState(state) {
+  for (const record of [state.owner, state.pending]) {
+    if (record !== null) closeSync(record.fd);
+  }
+}
+
+function readLockState(directory) {
+  const entries = readdirSync(lockDirectoryEntryPath(directory), { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  if (entries.some((entry) =>
+    ![LOCK_OWNER, LOCK_OWNER_PENDING].includes(entry.name) || !entry.isFile())) {
+    fail("stale lock has an unknown shape");
+  }
+  const names = entries.map((entry) => entry.name);
+  return {
+    names,
+    owner: names.includes(LOCK_OWNER) ? openLockRecord(directory, LOCK_OWNER) : null,
+    pending: names.includes(LOCK_OWNER_PENDING) ?
+      openLockRecord(directory, LOCK_OWNER_PENDING) : null,
+  };
+}
+
+function parseLockOwnerRecord(observed, path, transactionId, allowedLinks) {
+  if (observed.bytes.length === 0 || observed.bytes.length > MAX_LOCK_OWNER_BYTES) {
+    fail(`stale lock owner ${path} exceeds its closed byte bound`);
+  }
+  const owner = parseStrictJson(observed.bytes.toString("utf8"), "stale lock owner");
+  assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId);
+  const canonical = Buffer.from(canonicalJson(owner), "utf8");
+  exactOwnerRecord(observed, path, canonical, allowedLinks);
+  return owner;
+}
+
+function sameLockRecord(left, right) {
+  return left.snapshot.device === right.snapshot.device &&
+    left.snapshot.inode === right.snapshot.inode &&
+    left.snapshot.ctime_ns === right.snapshot.ctime_ns &&
+    left.snapshot.mtime_ns === right.snapshot.mtime_ns &&
+    left.snapshot.mode === right.snapshot.mode &&
+    left.snapshot.uid === right.snapshot.uid &&
+    left.snapshot.gid === right.snapshot.gid &&
+    left.snapshot.nlink === right.snapshot.nlink &&
+    left.snapshot.size === right.snapshot.size &&
+    left.snapshot.sha256 === right.snapshot.sha256 &&
+    left.bytes.equals(right.bytes);
+}
+
+function assertOpenLockRecordStable(directory, name, expected, label) {
+  const descriptor = fstatSync(expected.fd, { bigint: true });
+  const descriptorSnapshot = snapshotFromOpenFile(
+    `${directory.path}/${name}`,
+    descriptor,
+    expected.bytes,
+  );
+  if (canonicalJson(descriptorSnapshot) !== canonicalJson(expected.snapshot)) {
+    fail(`${label} descriptor generation changed`);
+  }
+  const reopened = openLockRecord(directory, name);
+  try {
+    if (!sameLockRecord(expected, reopened)) {
+      fail(`${label} inode, ctime, metadata, or content changed`);
+    }
+  } finally {
+    closeSync(reopened.fd);
+  }
+}
+
+function assertExactLockState(directory, expected, generation, label) {
+  assertLockDirectoryGeneration(directory, generation, label);
+  const state = readLockState(directory);
+  try {
+    const names = Object.entries(expected)
+      .filter(([, value]) => value !== null)
+      .map(([name]) => name === "owner" ? LOCK_OWNER : LOCK_OWNER_PENDING)
+      .sort();
+    if (canonicalJson(state.names) !== canonicalJson(names)) {
+      fail(`${label} entries changed`);
+    }
+    for (const [name, record] of Object.entries(expected)) {
+      if (record === null) continue;
+      assertOpenLockRecordStable(
+        directory,
+        name === "owner" ? LOCK_OWNER : LOCK_OWNER_PENDING,
+        record,
+        label,
+      );
+      if (!sameLockRecord(record, state[name])) {
+        fail(`${label} record generation changed`);
+      }
+    }
+  } finally {
+    closeLockState(state);
+  }
+  assertLockDirectoryGeneration(directory, generation, label);
+}
+
+function stageLockOwner(directory, owner, controls) {
+  const bytes = Buffer.from(canonicalJson(owner), "utf8");
+  if (bytes.length === 0 || bytes.length > MAX_LOCK_OWNER_BYTES) {
+    fail("lock owner exceeds its closed byte bound");
+  }
+  const writer = controls.lockOwnerWriter ?? writeSync;
+  if (typeof writer !== "function") fail("lock owner writer must be a function");
+  const fd = openSync(lockDirectoryEntryPath(directory, LOCK_OWNER_PENDING),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+    constants.O_NOFOLLOW | constants.O_CLOEXEC, 0o400);
+  try {
+    fchmodSync(fd, 0o400);
+    fchownSync(fd, 0, 0);
+    writeAllSyncV1(fd, bytes, writer);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  fsyncSync(directory.fd);
+  const pending = openLockRecord(directory, LOCK_OWNER_PENDING);
+  parseLockOwnerRecord(
+    pending,
+    `${directory.path}/${LOCK_OWNER_PENDING}`,
+    owner.transaction_id,
+    [1],
+  );
+  return pending;
+}
+
+function lockCheckpoint(controls, name, details = {}) {
+  if (controls.checkpoint !== undefined) controls.checkpoint(name, details);
+}
+
+function buildLockOwner(transactionId, controls) {
+  const pid = controls.ownerPid ?? process.pid;
+  const owner = {
+    boot_id: controls.ownerBootId ?? currentBootId(),
+    pid,
+    process_start_ticks: controls.ownerProcessStartTicks ?? processStartTicks(pid),
+    transaction_id: transactionId,
+  };
+  assertPublisherRecoveryOwnsLifecycleLock(owner, transactionId);
+  return owner;
+}
+
+function lockOwnerIsLive(owner, controls) {
+  const observedBootId = controls.observedBootId === undefined ?
+    currentBootId() : controls.observedBootId();
+  if (owner.boot_id !== observedBootId) return false;
+  try {
+    const observedTicks = controls.observedProcessStartTicks === undefined ?
+      processStartTicks(owner.pid) : controls.observedProcessStartTicks(owner.pid);
+    return observedTicks === owner.process_start_ticks;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return false;
+    fail(`cannot prove stale lifecycle lock process generation: ${error.message}`);
+  }
+}
+
+function promotePendingOwner(directory) {
+  linkSync(
+    lockDirectoryEntryPath(directory, LOCK_OWNER_PENDING),
+    lockDirectoryEntryPath(directory, LOCK_OWNER),
+  );
+  fsyncSync(directory.fd);
+}
+
+function unlinkLockEntry(directory, name) {
+  unlinkSync(lockDirectoryEntryPath(directory, name));
+  fsyncSync(directory.fd);
+}
+
+function installOwnerIntoEmptyDirectory(directory, owner, controls) {
+  const emptyGeneration = assertLockDirectoryGeneration(
+    directory,
+    directory.stat,
+    "empty transaction lock",
+  );
+  const empty = readLockState(directory);
+  try {
+    if (empty.names.length !== 0) fail("empty transaction lock changed before owner staging");
+  } finally {
+    closeLockState(empty);
+  }
+  assertLockDirectoryGeneration(directory, emptyGeneration, "empty transaction lock");
+
+  const pending = stageLockOwner(directory, owner, controls);
+  try {
+    lockCheckpoint(controls, "after-lock-owner-pending-fsync", { path: directory.path });
+    const pendingGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "pending transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: null, pending },
+      pendingGeneration,
+      "pending transaction lock",
+    );
+    promotePendingOwner(directory);
+    lockCheckpoint(controls, "after-lock-owner-final-link", { path: directory.path });
+  } finally {
+    closeSync(pending.fd);
+  }
+
+  const linked = readLockState(directory);
+  try {
+    if (linked.owner === null || linked.pending === null ||
+        linked.owner.snapshot.device !== linked.pending.snapshot.device ||
+        linked.owner.snapshot.inode !== linked.pending.snapshot.inode ||
+        !linked.owner.bytes.equals(linked.pending.bytes)) {
+      fail("new transaction lock owner hard-link generation drifted");
+    }
+    parseLockOwnerRecord(linked.owner, `${directory.path}/${LOCK_OWNER}`,
+      owner.transaction_id, [2]);
+    parseLockOwnerRecord(linked.pending, `${directory.path}/${LOCK_OWNER_PENDING}`,
+      owner.transaction_id, [2]);
+    const linkedGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "linked transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: linked.owner, pending: linked.pending },
+      linkedGeneration,
+      "linked transaction lock",
+    );
+    unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+  } finally {
+    closeLockState(linked);
+  }
+  const final = readLockState(directory);
+  try {
+    if (final.owner === null || final.pending !== null || final.names.length !== 1) {
+      fail("new transaction lock did not converge to one owner");
+    }
+    const observed = parseLockOwnerRecord(final.owner, `${directory.path}/${LOCK_OWNER}`,
+      owner.transaction_id, [1]);
+    if (canonicalJson(observed) !== canonicalJson(owner)) {
+      fail("new transaction lock owner drifted during publication");
+    }
+    const finalGeneration = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "published transaction lock",
+    );
+    assertExactLockState(
+      directory,
+      { owner: final.owner, pending: null },
+      finalGeneration,
+      "published transaction lock",
+    );
+  } finally {
+    closeLockState(final);
+  }
+  return owner;
+}
+
+function removeOwnedPendingAfterRejectedClaim(directory, pending) {
+  try {
+    assertOpenLockRecordStable(
+      directory,
+      LOCK_OWNER_PENDING,
+      pending,
+      "rejected stale-lock replacement pending",
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+}
+
+// `owner.json.pending` is both the durable publication stage and the reclaim
+// claim. Once a live recovery generation stages it, every other reviewed
+// recovery observes that live PID/boot tuple and stops. The fixed lock path is
+// never removed during stale reclaim: all mutations address the already-open
+// directory inode through procfs, so a raced replacement at the ambient path
+// can be detected but can never be unlinked by this recovery generation.
+function recoverExistingLock(directory, owner, transactionId, controls) {
+  for (let transition = 0; transition < MAX_LOCK_RECOVERY_TRANSITIONS; transition += 1) {
+    directory.stat = assertLockDirectoryGeneration(
+      directory,
+      null,
+      "stale transaction lock",
+    );
+    const state = readLockState(directory);
+    try {
+      if (state.names.length === 0) {
+        return installOwnerIntoEmptyDirectory(directory, owner, controls);
+      }
+
+      if (state.owner === null && state.pending !== null) {
+        const pendingPath = `${directory.path}/${LOCK_OWNER_PENDING}`;
+        if (state.pending.bytes.length > MAX_LOCK_OWNER_BYTES) {
+          fail(`stale lock owner ${pendingPath} exceeds its closed byte bound`);
+        }
+        exactOwnerRecord(state.pending, pendingPath, state.pending.bytes, [1]);
+        let pendingOwner = null;
+        if (state.pending.bytes.length !== 0) {
+          try {
+            pendingOwner = parseStrictJson(
+              state.pending.bytes.toString("utf8"),
+              "stale pending lock owner",
+            );
+          } catch {
+            // The pending name is not authoritative until owner.json exists.
+            // A sole malformed/partial root-owned pending inode proves that
+            // acquisition never returned. Removing that exact generation may
+            // abort a concurrent writer, but it cannot create two holders:
+            // the writer will fail its pathname/link verification.
+          }
+        }
+        if (pendingOwner === null) {
+          const malformedGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "malformed unpublished pending transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: null, pending: state.pending },
+            malformedGeneration,
+            "malformed unpublished pending transaction lock",
+          );
+          lockCheckpoint(controls, "before-malformed-pending-delete", {
+            path: directory.path,
+          });
+          assertExactLockState(
+            directory,
+            { owner: null, pending: state.pending },
+            malformedGeneration,
+            "deletion-adjacent malformed unpublished pending transaction lock",
+          );
+          try {
+            unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+          continue;
+        }
+        assertPublisherRecoveryOwnsLifecycleLock(pendingOwner, transactionId);
+        const canonicalPending = Buffer.from(canonicalJson(pendingOwner), "utf8");
+        exactOwnerRecord(state.pending, pendingPath, canonicalPending, [1]);
+        if (lockOwnerIsLive(pendingOwner, controls)) {
+          fail("transaction lock owner publication is held by a live process generation");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "stale pending-only transaction lock",
+        );
+        assertExactLockState(
+          directory,
+          { owner: null, pending: state.pending },
+          generation,
+          "stale pending-only transaction lock",
+        );
+        try {
+          promotePendingOwner(directory);
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+        continue;
+      }
+
+      if (state.owner === null || state.pending === null) {
+        if (state.owner === null) fail("stale lock has an unknown shape");
+        const oldOwner = parseLockOwnerRecord(
+          state.owner,
+          `${directory.path}/${LOCK_OWNER}`,
+          transactionId,
+          [1],
+        );
+        if (lockOwnerIsLive(oldOwner, controls)) {
+          fail("transaction lock is held by a live process generation");
+        }
+        lockCheckpoint(controls, "after-stale-owner-validation", {
+          owner: structuredClone(oldOwner),
+          path: directory.path,
+        });
+
+        let replacement;
+        try {
+          replacement = stageLockOwner(directory, owner, controls);
+        } catch (error) {
+          if (error?.code === "EEXIST") continue;
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-pending-fsync", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        let replacementGeneration;
+        try {
+          replacementGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "claimed stale transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: state.owner, pending: replacement },
+            replacementGeneration,
+            "claimed stale transaction lock",
+          );
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "before-stale-owner-delete", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          // This is deliberately repeated after the testable concurrency
+          // boundary: descriptor identity, inode/ctime/content, the complete
+          // entry set, and the named directory generation must all still be
+          // the exact generation that was claimed above.
+          assertExactLockState(
+            directory,
+            { owner: state.owner, pending: replacement },
+            replacementGeneration,
+            "deletion-adjacent stale transaction lock",
+          );
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+
+        try {
+          unlinkLockEntry(directory, LOCK_OWNER);
+        } catch (error) {
+          removeOwnedPendingAfterRejectedClaim(directory, replacement);
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-owner-unlink", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          promotePendingOwner(directory);
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        try {
+          lockCheckpoint(controls, "after-lock-replacement-owner-link", {
+            path: directory.path,
+          });
+        } catch (error) {
+          closeSync(replacement.fd);
+          throw error;
+        }
+        closeSync(replacement.fd);
+
+        const linked = readLockState(directory);
+        try {
+          if (linked.owner === null || linked.pending === null ||
+              linked.owner.snapshot.device !== linked.pending.snapshot.device ||
+              linked.owner.snapshot.inode !== linked.pending.snapshot.inode ||
+              !linked.owner.bytes.equals(linked.pending.bytes)) {
+            fail("replacement lock owner hard-link generation drifted");
+          }
+          const linkedOwner = parseLockOwnerRecord(linked.owner,
+            `${directory.path}/${LOCK_OWNER}`, transactionId, [2]);
+          parseLockOwnerRecord(linked.pending,
+            `${directory.path}/${LOCK_OWNER_PENDING}`, transactionId, [2]);
+          if (canonicalJson(linkedOwner) !== canonicalJson(owner)) {
+            fail("replacement lock owner content drifted");
+          }
+          const linkedGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "linked replacement transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: linked.owner, pending: linked.pending },
+            linkedGeneration,
+            "linked replacement transaction lock",
+          );
+          unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+        } finally {
+          closeLockState(linked);
+        }
+        const final = readLockState(directory);
+        try {
+          if (final.owner === null || final.pending !== null || final.names.length !== 1) {
+            fail("replacement lock did not converge to one owner");
+          }
+          const finalOwner = parseLockOwnerRecord(
+            final.owner,
+            `${directory.path}/${LOCK_OWNER}`,
+            transactionId,
+            [1],
+          );
+          if (canonicalJson(finalOwner) !== canonicalJson(owner)) {
+            fail("replacement lock owner changed after pending cleanup");
+          }
+          const finalGeneration = assertLockDirectoryGeneration(
+            directory,
+            null,
+            "published replacement transaction lock",
+          );
+          assertExactLockState(
+            directory,
+            { owner: final.owner, pending: null },
+            finalGeneration,
+            "published replacement transaction lock",
+          );
+        } finally {
+          closeLockState(final);
+        }
+        return owner;
+      }
+
+      const sameInode = state.owner.snapshot.device === state.pending.snapshot.device &&
+        state.owner.snapshot.inode === state.pending.snapshot.inode;
+      if (sameInode) {
+        const oldOwner = parseLockOwnerRecord(
+          state.owner,
+          `${directory.path}/${LOCK_OWNER}`,
+          transactionId,
+          [2],
+        );
+        const stagedOwner = parseLockOwnerRecord(
+          state.pending,
+          `${directory.path}/${LOCK_OWNER_PENDING}`,
+          transactionId,
+          [2],
+        );
+        if (canonicalJson(oldOwner) !== canonicalJson(stagedOwner) ||
+            !state.owner.bytes.equals(state.pending.bytes)) {
+          fail("linked lock owner records disagree");
+        }
+        if (lockOwnerIsLive(oldOwner, controls)) {
+          fail("transaction lock is held by a live process generation");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "stale linked transaction lock",
+        );
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: state.pending },
+          generation,
+          "stale linked transaction lock",
+        );
+        lockCheckpoint(controls, "before-stale-linked-pending-delete", {
+          path: directory.path,
+        });
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: state.pending },
+          generation,
+          "deletion-adjacent stale linked transaction lock",
+        );
+        try {
+          unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        continue;
+      }
+
+      const oldOwner = parseLockOwnerRecord(
+        state.owner,
+        `${directory.path}/${LOCK_OWNER}`,
+        transactionId,
+        [1],
+      );
+      const stagedOwner = parseLockOwnerRecord(
+        state.pending,
+        `${directory.path}/${LOCK_OWNER_PENDING}`,
+        transactionId,
+        [1],
+      );
+      if (lockOwnerIsLive(oldOwner, controls) || lockOwnerIsLive(stagedOwner, controls)) {
+        fail("transaction lock replacement is held by a live process generation");
+      }
+      const generation = assertLockDirectoryGeneration(
+        directory,
+        null,
+        "stale replacement transaction lock",
+      );
+      assertExactLockState(
+        directory,
+        { owner: state.owner, pending: state.pending },
+        generation,
+        "stale replacement transaction lock",
+      );
+      lockCheckpoint(controls, "before-stale-replacement-pending-delete", {
+        path: directory.path,
+      });
+      assertExactLockState(
+        directory,
+        { owner: state.owner, pending: state.pending },
+        generation,
+        "deletion-adjacent stale replacement transaction lock",
+      );
+      // owner.json remains the authoritative generation until the replacing
+      // process has unlinked it. If both different inodes are still visible,
+      // roll the dead unpublished candidate back instead of promoting it.
+      // A raced recovery may already have removed that candidate or replaced
+      // it with its own live pending claim; ENOENT therefore means "re-read",
+      // while an unlink can at worst abort an acquisition that has not yet
+      // returned. A concurrently completed live owner is never removed here.
+      try {
+        unlinkLockEntry(directory, LOCK_OWNER_PENDING);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      continue;
+    } finally {
+      closeLockState(state);
+    }
+  }
+  fail("stale lock recovery exceeded its bounded generation transitions");
+}
+
+function acquireLock(path, { recoverStale, transactionId }, controls = {}) {
+  if (process.platform !== "linux") fail("transaction lock requires Linux procfs descriptors");
+  const owner = buildLockOwner(transactionId, controls);
+  const create = () => {
+    mkdirSync(path, { mode: 0o700 });
+    fsyncParent(path);
+    const directory = openStableLockDirectory(path, "transaction lock");
+    try {
+      lockCheckpoint(controls, "after-lock-mkdir", { path });
+      installOwnerIntoEmptyDirectory(directory, owner, controls);
+    } finally {
+      closeSync(directory.fd);
+    }
+  };
+  try {
+    create();
+  } catch (error) {
+    if (error?.code !== "EEXIST" || !recoverStale) throw error;
+    const directory = openStableLockDirectory(path, "stale transaction lock");
+    try {
+      recoverExistingLock(directory, owner, transactionId, controls);
+    } finally {
+      closeSync(directory.fd);
+    }
+  }
+  return async () => {
+    const directory = openStableLockDirectory(path, "transaction lock before release");
+    try {
+      const state = readLockState(directory);
+      try {
+        if (state.owner === null || state.pending !== null || state.names.length !== 1) {
+          fail("transaction lock directory changed before release");
+        }
+        const current = parseLockOwnerRecord(
+          state.owner,
+          `${path}/${LOCK_OWNER}`,
+          transactionId,
+          [1],
+        );
+        if (canonicalJson(current) !== canonicalJson(owner)) {
+          fail("transaction lock ownership changed");
+        }
+        const generation = assertLockDirectoryGeneration(
+          directory,
+          null,
+          "transaction lock before release",
+        );
+        assertExactLockState(
+          directory,
+          { owner: state.owner, pending: null },
+          generation,
+          "transaction lock before release",
+        );
+        unlinkLockEntry(directory, LOCK_OWNER);
+      } finally {
+        closeLockState(state);
+      }
+    } finally {
+      closeSync(directory.fd);
+    }
+    rmdirSync(path);
+    fsyncParent(path);
+  };
+}
+
+function invokePinned(pin, args, { maxBytes = MAX_COMMAND_BYTES, timeoutMs = 30_000 } = {}) {
+  if (!Array.isArray(args) || args.some((part) => typeof part !== "string" || part.includes("\0"))) {
+    fail("pinned command argv is malformed");
+  }
+  const opened = openStableRegular(pin.path);
+  if (canonicalJson(opened.snapshot) !== canonicalJson(pin)) {
+    closeSync(opened.fd);
+    fail(`pinned command ${pin.path} drifted before invocation`);
+  }
+  let result;
+  try {
+    result = spawnSync("/proc/self/fd/3", args, {
+      encoding: null,
+      env: { LANG: "C", LC_ALL: "C", PATH: "/usr/sbin:/usr/bin" },
+      killSignal: "SIGKILL",
+      maxBuffer: maxBytes,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe", opened.fd],
+      timeout: timeoutMs,
+    });
+  } finally {
+    closeSync(opened.fd);
+  }
+  const after = regularSnapshot(pin.path);
+  if (canonicalJson(after.snapshot) !== canonicalJson(pin)) {
+    fail(`pinned command ${pin.path} drifted during invocation`);
+  }
+  if (result.error) fail(`command failed: ${result.error.message}`);
+  return {
+    status: result.status ?? 255,
+    stderr: result.stderr ?? Buffer.alloc(0),
+    stdout: result.stdout ?? Buffer.alloc(0),
+  };
+}
+
+function systemctlProperties(name, properties, systemctlPin) {
+  if (![NETNS_UNIT, PUBLISHER_UNIT, CADDY_UNIT].includes(name)) {
+    fail(`unreviewed systemd unit state request: ${name}`);
+  }
+  const result = invokePinned(systemctlPin, ["show", name,
+    ...properties.flatMap((property) => ["-p", property])]);
+  if (result.status !== 0 || result.stderr.length !== 0) fail(`systemctl show failed for ${name}`);
+  const values = new Map();
+  for (const line of result.stdout.toString("utf8").trimEnd().split("\n")) {
+    const equals = line.indexOf("=");
+    if (equals < 1 || values.has(line.slice(0, equals))) fail(`malformed systemctl output for ${name}`);
+    values.set(line.slice(0, equals), line.slice(equals + 1));
+  }
+  if (values.size !== properties.length ||
+      properties.some((property) => !values.has(property))) {
+    fail(`systemctl show omitted a requested property for ${name}`);
+  }
+  return values;
+}
+
+function systemctlUnit(name, systemctlPin) {
+  const properties = [
+    "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID",
+    "ActiveEnterTimestampMonotonic", "NeedDaemonReload",
+  ];
+  const values = systemctlProperties(name, properties, systemctlPin);
+  return {
+    active_enter_timestamp_monotonic: values.get("ActiveEnterTimestampMonotonic"),
+    active_state: values.get("ActiveState"),
+    invocation_id: values.get("InvocationID"),
+    load_state: values.get("LoadState"),
+    main_pid: values.get("MainPID"),
+    name,
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    sub_state: values.get("SubState"),
+  };
+}
+
+function systemctlFailedUnit(name, systemctlPin) {
+  if (name !== NETNS_UNIT) fail(`unreviewed failed systemd unit state request: ${name}`);
+  const properties = [
+    "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID",
+    "ActiveEnterTimestampMonotonic", "InactiveEnterTimestampMonotonic",
+    "StateChangeTimestampMonotonic", "NeedDaemonReload", "Result", "ExecMainCode",
+    "ExecMainStatus",
+  ];
+  const values = systemctlProperties(name, properties, systemctlPin);
+  const failed = {
+    active_enter_timestamp_monotonic: values.get("ActiveEnterTimestampMonotonic"),
+    active_state: values.get("ActiveState"),
+    exec_main_code: values.get("ExecMainCode"),
+    exec_main_status: values.get("ExecMainStatus"),
+    inactive_enter_timestamp_monotonic: values.get("InactiveEnterTimestampMonotonic"),
+    invocation_id: values.get("InvocationID"),
+    load_state: values.get("LoadState"),
+    main_pid: values.get("MainPID"),
+    name,
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    result: values.get("Result"),
+    state_change_timestamp_monotonic: values.get("StateChangeTimestampMonotonic"),
+    sub_state: values.get("SubState"),
+  };
+  validatePublisherNetnsFailedUnitV1(failed);
+  return failed;
+}
+
+function systemdWords(value, label) {
+  if (value === "") return [];
+  const words = value.split(/[\t ]+/u).sort();
+  if (
+    words.some((word) => word.length < 1 || /[\0\r\n]/u.test(word)) ||
+    new Set(words).size !== words.length
+  ) {
+    fail(`${label} is not a unique systemd word set`);
+  }
+  return words;
+}
+
+export function parseSystemdExecRecordsV1(value, label = "systemd Exec property") {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > 256 * 1024 ||
+    /[\r\0]/u.test(value)
+  ) {
+    fail(`${label} is not a non-empty systemd Exec command list`);
+  }
+  const result = [];
+  const recordPattern = /\{[^{}\r\n]*\}/gu;
+  let cursor = 0;
+  for (const [index, match] of [...value.matchAll(recordPattern)].entries()) {
+    const separator = value.slice(cursor, match.index);
+    if (
+      (cursor === 0 && separator !== "") ||
+      (cursor !== 0 && !/^(?:\n|[ \t]*;[ \t]*)$/u.test(separator))
+    ) {
+      fail(`${label} has an unreviewed record separator`);
+    }
+    const record = match[0];
+    const path = /(?:^\{[\t ]*|[\t ]*;[\t ]*)path=([^ ;]+)[\t ]*;/u.exec(record)?.[1];
+    const argv = /(?:^\{[\t ]*|[\t ]*;[\t ]*)argv\[\]=(.+?)[\t ]*;[\t ]*ignore_errors=/u.exec(record)?.[1]?.trim();
+    const ignoreErrors = /(?:^\{[\t ]*|[\t ]*;[\t ]*)ignore_errors=(yes|no)[\t ]*;/u.exec(record)?.[1];
+    if (
+      path === undefined ||
+      argv === undefined ||
+      ignoreErrors === undefined ||
+      !/^\/[A-Za-z0-9_./@+-]+(?:[\t ]+[A-Za-z0-9_./@+=:-]+)*$/u.test(argv)
+    ) {
+      fail(`${label}[${index}] has an unreviewed systemd Exec serialization`);
+    }
+    result.push({ argv, ignore_errors: ignoreErrors, path });
+    cursor = match.index + record.length;
+  }
+  if (result.length === 0 || cursor !== value.length) {
+    fail(`${label} has an unreviewed systemd Exec serialization`);
+  }
+  return result;
+}
+
+function systemctlLoadedNetnsUnit(systemctlPin) {
+  const properties = [
+    "After", "AmbientCapabilities", "Before", "BindsTo", "CapabilityBoundingSet",
+    "DropInPaths", "ExecStart", "ExecStartPre", "ExecStopPost", "FragmentPath", "Group",
+    "KillMode", "LimitCORE", "LockPersonality", "MemoryDenyWriteExecute", "MemoryMax",
+    "MemorySwapMax", "NeedDaemonReload", "NoNewPrivileges", "NotifyAccess", "PartOf",
+    "Requires", "Restart", "RestrictAddressFamilies", "RestrictNamespaces",
+    "RestrictRealtime", "RestrictSUIDSGID", "StandardError", "StandardOutput",
+    "StateDirectory", "StateDirectoryMode", "SystemCallArchitectures", "TasksMax",
+    "TimeoutStartUSec", "TimeoutStopUSec", "Type", "UMask", "UnsetEnvironment", "User", "Wants",
+    "WorkingDirectory",
+  ];
+  const values = systemctlProperties(NETNS_UNIT, properties, systemctlPin);
+  return {
+    condition_paths: [...EXPECTED_SENTINELS],
+    condition_source: "exact-fragment-pin-plus-NeedDaemonReload=no",
+    dropin_paths: systemdWords(values.get("DropInPaths"), "publisher namespace DropInPaths"),
+    exec: {
+      start: parseSystemdExecRecordsV1(values.get("ExecStart"), "publisher namespace ExecStart"),
+      start_pre: parseSystemdExecRecordsV1(
+        values.get("ExecStartPre"),
+        "publisher namespace ExecStartPre",
+      ),
+      stop_post: parseSystemdExecRecordsV1(
+        values.get("ExecStopPost"),
+        "publisher namespace ExecStopPost",
+      ),
+    },
+    fragment_path: values.get("FragmentPath"),
+    need_daemon_reload: values.get("NeedDaemonReload"),
+    relationships: {
+      after: systemdWords(values.get("After"), "publisher namespace After"),
+      before: systemdWords(values.get("Before"), "publisher namespace Before"),
+      binds_to: systemdWords(values.get("BindsTo"), "publisher namespace BindsTo"),
+      part_of: systemdWords(values.get("PartOf"), "publisher namespace PartOf"),
+      requires: systemdWords(values.get("Requires"), "publisher namespace Requires"),
+      wants: systemdWords(values.get("Wants"), "publisher namespace Wants"),
+    },
+    service: {
+      ambient_capabilities: systemdWords(
+        values.get("AmbientCapabilities"),
+        "publisher namespace AmbientCapabilities",
+      ),
+      capability_bounding_set: systemdWords(
+        values.get("CapabilityBoundingSet"),
+        "publisher namespace CapabilityBoundingSet",
+      ),
+      group: values.get("Group"),
+      kill_mode: values.get("KillMode"),
+      limit_core: values.get("LimitCORE"),
+      lock_personality: values.get("LockPersonality"),
+      memory_deny_write_execute: values.get("MemoryDenyWriteExecute"),
+      memory_max: values.get("MemoryMax"),
+      memory_swap_max: values.get("MemorySwapMax"),
+      no_new_privileges: values.get("NoNewPrivileges"),
+      notify_access: values.get("NotifyAccess"),
+      restart: values.get("Restart"),
+      restrict_address_families: systemdWords(
+        values.get("RestrictAddressFamilies"),
+        "publisher namespace RestrictAddressFamilies",
+      ),
+      restrict_namespaces: values.get("RestrictNamespaces"),
+      restrict_realtime: values.get("RestrictRealtime"),
+      restrict_suid_sgid: values.get("RestrictSUIDSGID"),
+      standard_error: values.get("StandardError"),
+      standard_output: values.get("StandardOutput"),
+      state_directory: systemdWords(
+        values.get("StateDirectory"),
+        "publisher namespace StateDirectory",
+      ),
+      state_directory_mode: values.get("StateDirectoryMode"),
+      system_call_architectures: systemdWords(
+        values.get("SystemCallArchitectures"),
+        "publisher namespace SystemCallArchitectures",
+      ),
+      tasks_max: values.get("TasksMax"),
+      timeout_start_usec: values.get("TimeoutStartUSec"),
+      timeout_stop_usec: values.get("TimeoutStopUSec"),
+      type: values.get("Type"),
+      umask: values.get("UMask"),
+      unset_environment: systemdWords(
+        values.get("UnsetEnvironment"),
+        "publisher namespace UnsetEnvironment",
+      ),
+      user: values.get("User"),
+      working_directory: values.get("WorkingDirectory"),
+    },
+  };
+}
+
+function systemctlManagerGeneration(systemctlPin) {
+  const properties = [
+    "GeneratorsFinishTimestampMonotonic",
+    "GeneratorsStartTimestampMonotonic",
+    "UnitsLoadFinishTimestampMonotonic",
+    "UnitsLoadStartTimestampMonotonic",
+  ];
+  const result = invokePinned(systemctlPin, [
+    "show",
+    ...properties.flatMap((property) => ["-p", property]),
+  ]);
+  if (result.status !== 0 || result.stderr.length !== 0) {
+    fail("systemctl manager-generation show failed");
+  }
+  const values = new Map();
+  for (const line of result.stdout.toString("utf8").trimEnd().split("\n")) {
+    const equals = line.indexOf("=");
+    if (equals < 1 || values.has(line.slice(0, equals))) {
+      fail("malformed systemctl manager-generation output");
+    }
+    values.set(line.slice(0, equals), line.slice(equals + 1));
+  }
+  if (values.size !== properties.length || properties.some((key) => !values.has(key))) {
+    fail("systemctl manager-generation show omitted a property");
+  }
+  const stat = readFileSync("/proc/1/stat", "utf8");
+  const close = stat.lastIndexOf(")");
+  const startTicks = close < 1 ? undefined : stat.slice(close + 2).trim().split(" ")[19];
+  if (!/^[1-9][0-9]*$/u.test(startTicks ?? "")) fail("PID 1 start ticks are malformed");
+  const exePath = readlinkSync("/proc/1/exe");
+  validateCanonicalAbsolute(exePath, "PID 1 executable path");
+  const exe = statSync("/proc/1/exe", { bigint: true, throwIfNoEntry: true });
+  const generation = {
+    generators_finish_timestamp_monotonic: values.get("GeneratorsFinishTimestampMonotonic"),
+    generators_start_timestamp_monotonic: values.get("GeneratorsStartTimestampMonotonic"),
+    pid1_exe_device: exe.dev.toString(),
+    pid1_exe_inode: exe.ino.toString(),
+    pid1_exe_path: exePath,
+    pid1_start_ticks: startTicks,
+    units_load_finish_timestamp_monotonic: values.get("UnitsLoadFinishTimestampMonotonic"),
+    units_load_start_timestamp_monotonic: values.get("UnitsLoadStartTimestampMonotonic"),
+  };
+  validateManagerGeneration(generation, "live systemd manager generation");
+  return generation;
+}
+
+function systemctlCaddyDependency(systemctlPin) {
+  const properties = [
+    "After", "BindsTo", "DropInPaths", "PartOf", "Requires", "Wants",
+  ];
+  const values = systemctlProperties(CADDY_UNIT, properties, systemctlPin);
+  const words = (property) => {
+    const text = values.get(property);
+    if (text === "") return [];
+    const result = text.split(" ");
+    if (result.some((value) => value === "" || /[\0\r\n]/u.test(value)) ||
+        new Set(result).size !== result.length) {
+      fail(`systemctl ${property} for ${CADDY_UNIT} is not a unique word set`);
+    }
+    return result.sort();
+  };
+  const relation = (property) => words(property).includes(NETNS_UNIT);
+  return {
+    after_namespace_owner: relation("After"),
+    binds_to_namespace_owner: relation("BindsTo"),
+    drop_in_paths: words("DropInPaths"),
+    part_of_namespace_owner: relation("PartOf"),
+    requires_namespace_owner: relation("Requires"),
+    wants_namespace_owner: relation("Wants"),
+  };
+}
+
+function parseIpJson(result, label) {
+  if (result.status !== 0 || result.stderr.length !== 0) fail(`${label} command failed`);
+  return parseStrictJson(result.stdout.toString("utf8"), label);
+}
+
+function oneInterface(value, name, label) {
+  if (!Array.isArray(value) || value.length !== 1 || value[0].ifname !== name) {
+    fail(`${label} did not return the one requested interface`);
+  }
+  return value[0];
+}
+
+function sideFromIp(link, addr, plan, side) {
+  const address = oneInterface(addr, plan.topology[`${side}_interface`], `${side} address`);
+  const family = plan.topology.address_family === "ipv4" ? "inet" : "inet6";
+  const candidates = (address.addr_info ?? []).filter((item) => item.family === family && item.scope === "global");
+  if (candidates.length !== 1) fail(`${side} interface must have one global address`);
+  return {
+    address: candidates[0].local,
+    alias: link.ifalias ?? "",
+    index: link.ifindex,
+    interface: link.ifname,
+    mac: link.address,
+    peer_index: link.link_index,
+    prefix_length: candidates[0].prefixlen,
+    up: Array.isArray(link.flags) && link.flags.includes("UP") && link.operstate === "UP",
+  };
+}
+
+function addressSummary(link) {
+  if (!Array.isArray(link.addr_info)) fail(`interface ${link.ifname} omitted addr_info`);
+  return link.addr_info.map((address) => ({
+    family: address.family,
+    local: address.local,
+    prefix_length: address.prefixlen,
+  })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+}
+
+function routeSummary(routes) {
+  if (!Array.isArray(routes)) fail("ip route output is not an array");
+  return routes.map((route) => ({
+    default: route.dst === "default",
+    destination: route.dst ?? null,
+    gateway: route.gateway ?? null,
+    nat: route.type === "nat" || route.encap?.type === "nat",
+  }));
+}
+
+export function linuxOps(plan) {
+  if (process.platform !== "linux" || process.geteuid?.() !== 0) {
+    fail("real publisher netns ceremony requires Linux EUID 0");
+  }
+  validateCeremonyPlan(plan);
+  const ip = plan.runtime.ip;
+  const systemctl = plan.runtime.systemctl;
+  return {
+    async acquireLock(path, options) { return acquireLock(path, options); },
+    async caddyState() {
+      return {
+        config: regularSnapshot("/etc/caddy/Caddyfile").snapshot,
+        dependency: systemctlCaddyDependency(systemctl),
+        unit: systemctlUnit(CADDY_UNIT, systemctl),
+      };
+    },
+    async hostIdentity() {
+      const version = invokePinned(systemctl, ["--version"]);
+      if (version.status !== 0 || version.stderr.length !== 0) fail("systemctl --version failed");
+      return {
+        boot_id: currentBootId(),
+        machine_id_sha256: sha256(readFileSync("/etc/machine-id")),
+        systemd_manager_generation: systemctlManagerGeneration(systemctl),
+        systemd_version: version.stdout.toString("utf8").split("\n")[0],
+      };
+    },
+    async loadedNetnsUnit() {
+      return systemctlLoadedNetnsUnit(systemctl);
+    },
+    async failedUnitState(name) {
+      return systemctlFailedUnit(name, systemctl);
+    },
+    async networkAbsent(plan) {
+      try { lstatSync(plan.topology.namespace_path); return false; } catch (error) { if (error.code !== "ENOENT") throw error; }
+      try { lstatSync(`/sys/class/net/${plan.topology.host_interface}`); return false; } catch (error) { if (error.code !== "ENOENT") throw error; }
+      return true;
+    },
+    async networkState(plan) {
+      const hostLink = oneInterface(parseIpJson(invokePinned(ip, [
+        "-j", "-details", "link", "show", "dev", plan.topology.host_interface,
+      ]), "host link"), plan.topology.host_interface, "host link");
+      const hostAddr = parseIpJson(invokePinned(ip, [
+        "-j", "addr", "show", "dev", plan.topology.host_interface,
+      ]), "host address");
+      // Descriptor 3 remains the reviewed iproute2 inode in the outer `ip
+      // netns exec` process and is reused as the inner executable. No PATH or
+      // mutable pathname is consulted for either process generation.
+      const inside = (args) => invokePinned(ip, [
+        "netns", "exec", plan.topology.namespace_name, "/proc/self/fd/3", ...args,
+      ]);
+      const clientLinks = parseIpJson(inside(["-j", "-details", "addr", "show"]), "namespace links");
+      const names = clientLinks.map((link) => link.ifname).sort();
+      const clientLink = clientLinks.find((link) => link.ifname === plan.topology.client_interface);
+      if (clientLink === undefined) fail("namespace client veth is absent");
+      const loopback = clientLinks.find((link) => link.ifname === "lo");
+      if (loopback === undefined) fail("namespace loopback is absent");
+      const inertInterfaces = clientLinks
+        .filter((link) => !["lo", plan.topology.client_interface].includes(link.ifname))
+        .map((link) => ({
+          addresses: addressSummary(link),
+          alias: link.ifalias ?? "",
+          index: link.ifindex,
+          kind: link.linkinfo?.info_kind ?? "",
+          name: link.ifname,
+          up: Array.isArray(link.flags) && link.flags.includes("UP"),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const clientAddr = parseIpJson(inside(["-j", "addr", "show", "dev",
+        plan.topology.client_interface]), "client address");
+      const hostRoutes = parseIpJson(invokePinned(ip, [
+        "-j", "route", "show", "table", "main", "dev", plan.topology.host_interface,
+      ]), "host routes");
+      const clientRoutes = parseIpJson(inside(["-j", "route", "show", "table", "main"]), "client routes");
+      const ns = lstatSync(plan.topology.namespace_path, { bigint: true });
+      const nsFilesystem = statfsSync(plan.topology.namespace_path, { bigint: true });
+      if (nsFilesystem.type !== 0x6e736673n) fail("namespace filesystem type is not nsfs");
+      return {
+        client: sideFromIp(clientLink, clientAddr, plan, "client"),
+        forwarding_sysctls: {
+          "net.ipv4.ip_forward": Number(readFileSync("/proc/sys/net/ipv4/ip_forward", "utf8").trim()),
+          "net.ipv6.conf.all.forwarding": Number(readFileSync(
+            "/proc/sys/net/ipv6/conf/all/forwarding", "utf8").trim()),
+        },
+        host: sideFromIp(hostLink, hostAddr, plan, "host"),
+        namespace: {
+          device: ns.dev.toString(),
+          inert_interfaces: inertInterfaces,
+          inode: ns.ino.toString(),
+          interface_names: names,
+          loopback: {
+            addresses: addressSummary(loopback),
+            alias: loopback.ifalias ?? "",
+            index: loopback.ifindex,
+            up: Array.isArray(loopback.flags) && loopback.flags.includes("UP"),
+          },
+          path: plan.topology.namespace_path, type: "nsfs",
+        },
+        routes: { client_main: routeSummary(clientRoutes), host_main: routeSummary(hostRoutes) },
+      };
+    },
+    async readOptionalRegular(path) { return optionalRegular(path); },
+    async readRegular(path) { return regularSnapshot(path); },
+    async systemctl(args) {
+      if (![
+        canonicalJson(["reset-failed", NETNS_UNIT]),
+        canonicalJson(["start", NETNS_UNIT]),
+        canonicalJson(["stop", NETNS_UNIT]),
+      ]
+        .includes(canonicalJson(args))) {
+        fail(`unreviewed systemctl mutation: ${args.join(" ")}`);
+      }
+      return invokePinned(systemctl, args, { timeoutMs: 60_000 });
+    },
+    async unitJobAbsent(name) {
+      return systemctlProperties(name, ["Job"], systemctl).get("Job") === "";
+    },
+    async unitState(name) { return systemctlUnit(name, systemctl); },
+    async writeReceipt(path, value) { return writeAtomicNoReplace(path, value); },
+    async writeState(directory, filename, value) {
+      secureDirectory(dirname(directory), `transaction root ${dirname(directory)}`);
+      try {
+        mkdirSync(directory, { mode: 0o700 });
+        fsyncParent(directory);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      secureDirectory(directory, "transaction state directory");
+      const entries = readdirSync(directory);
+      const allowed = new Set(STATE_FILENAMES.flatMap((name) => [name, `${name}.pending`]));
+      if (!STATE_FILENAMES.includes(filename) || entries.some((name) => !allowed.has(name))) {
+        fail("transaction state directory contains an unknown entry");
+      }
+      const path = `${directory}/${filename}`;
+      const existing = optionalRegular(path);
+      if (existing !== null) {
+        if (!existing.bytes.equals(Buffer.from(canonicalJson(value), "utf8"))) fail(`state ${filename} replay drifted`);
+        return existing;
+      }
+      return writeAtomicNoReplace(path, value);
+    },
+  };
+}
+
+export const PUBLISHER_NETNS_CEREMONY_TEST_ONLY_IO = Object.freeze({
+  acquireLock,
+  readRegular: regularSnapshot,
+  runPinnedBinary: invokePinned,
+  writeAtomicNoReplace,
+});
+
+function parseArgs(argv) {
+  const args = [...argv];
+  const commandName = args.shift();
+  const values = new Map();
+  for (let index = 0; index < args.length; index += 2) {
+    if (!args[index]?.startsWith("--") || args[index + 1] === undefined || values.has(args[index])) {
+      fail("arguments must be unique --name value pairs");
+    }
+    values.set(args[index], args[index + 1]);
+  }
+  return { commandName, values };
+}
+
+function required(values, key) {
+  const value = values.get(key);
+  if (value === undefined) fail(`missing ${key}`);
+  return value;
+}
+
+function readStrict(path, label) {
+  validateCanonicalAbsolute(path, `${label} path`);
+  const observed = regularSnapshot(path);
+  if (observed.bytes.length > MAX_JSON_BYTES) fail(`${label} exceeds the byte bound`);
+  return { observed, value: parseStrictJson(observed.bytes.toString("utf8"), label) };
+}
+
+async function main(argv) {
+  const { commandName, values } = parseArgs(argv);
+  if (!["apply", "recover-commit", "rollback", "recover-rollback", "validate-plan"].includes(commandName)) {
+    fail("usage: publisher-netns-ceremony.mjs apply|recover-commit|rollback|recover-rollback|validate-plan --plan ABS ...");
+  }
+  const commonArgs = ["--approved-plan-sha256", "--approved-source-sha256", "--plan"];
+  const commandArgs = commandName === "validate-plan" ? commonArgs :
+    ["apply", "recover-commit"].includes(commandName) ? [
+      ...commonArgs, "--approval", "--approved-approval-sha256",
+    ] : [
+      ...commonArgs, "--approved-receipt-sha256", "--approved-rollback-approval-sha256",
+      "--rollback-approval",
+    ];
+  exactArray([...values.keys()].sort(), [...commandArgs].sort(), `${commandName} argument set`);
+  const planRead = readStrict(required(values, "--plan"), "ceremony plan");
+  const plan = planRead.value;
+  validateCeremonyPlan(plan);
+  const approvedPlanSha256 = required(values, "--approved-plan-sha256");
+  validateSha256(approvedPlanSha256, "approved plan SHA-256");
+  if (computePlanSha256(plan) !== approvedPlanSha256) fail("approved plan digest drifted");
+  const approvedSourceSha256 = required(values, "--approved-source-sha256");
+  const approvedLoader = plan.node_elf_closure.objects[0].pin.path;
+  if (approvedSourceSha256 !== plan.runtime.executor.sha256 ||
+      fileURLToPath(import.meta.url) !== plan.runtime.executor.path ||
+      process.execPath !== approvedLoader || process.argv0 !== plan.runtime.node.path ||
+      process.argv[0] !== plan.runtime.node.path) {
+    fail("executor source/path or Node path drifted from the exact plan");
+  }
+  for (const [name, pin] of Object.entries(plan.runtime)) {
+    const observed = regularSnapshot(pin.path);
+    if (canonicalJson(observed.snapshot) !== canonicalJson(pin)) {
+      fail(`runtime command ${name} does not equal the approved plan pin`);
+    }
+  }
+  if (commandName === "validate-plan") {
+    process.stdout.write(formatPublisherNetnsPlanValidationV2(approvedPlanSha256));
+    return;
+  }
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const ops = linuxOps(plan);
+  let result;
+  if (commandName === "apply" || commandName === "recover-commit") {
+    const approvalRead = readStrict(required(values, "--approval"), "apply approval");
+    result = await executeApply({
+      approval: approvalRead.value,
+      approvedApprovalSha256: required(values, "--approved-approval-sha256"),
+      approvedPlanSha256,
+      nowUnix,
+      ops,
+      plan,
+      recover: commandName === "recover-commit",
+    });
+  } else {
+    const approvalRead = readStrict(required(values, "--rollback-approval"),
+      "rollback approval");
+    result = await executeRollback({
+      approvedPlanSha256,
+      approvedReceiptSha256: required(values, "--approved-receipt-sha256"),
+      approvedRollbackApprovalSha256: required(values, "--approved-rollback-approval-sha256"),
+      nowUnix,
+      ops,
+      plan,
+      recover: commandName === "recover-rollback",
+      rollbackApproval: approvalRead.value,
+    });
+  }
+  process.stdout.write(formatPublisherNetnsCeremonyOutcomeV2(
+    result.outcome,
+    result.outcome === "failed-start-recovered" ? failedRecoveryReceiptPath(plan) :
+      commandName.startsWith("recover-rollback") || commandName === "rollback" ?
+        plan.transaction.rollback_receipt_path : plan.transaction.receipt_path,
+  ));
+}
+
+const isMain = process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isMain) {
+  await main(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

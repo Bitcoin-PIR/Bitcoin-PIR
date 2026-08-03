@@ -2,7 +2,7 @@
  * Product-level V1 admission state machine.
  *
  * The controller owns ordering, not pricing policy: a caller supplies a
- * strict, already verified transport bootstrap and the user explicitly
+ * strict transport/database-root bootstrap and the user explicitly
  * chooses one exact signed scope/offer per independent provider. No peer
  * provider, pair identifier, invoice, token, address, or query result is ever
  * passed to another leg or persisted by this module.
@@ -13,6 +13,7 @@ import {
   type AdmissionCapabilityBindingV1,
   type AdmissionCapabilityInventoryV1,
   type AdmissionSchemeV1,
+  type Bolt11CapabilityAcquisitionContextV1,
   type Bolt11RecoveryRecordV1,
   type LightningNetworkNameV1,
 } from './admission-vault.js';
@@ -21,11 +22,12 @@ import {
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
+  VerifiedSingleProviderRetainedOfferV1,
+  type IndependentProviderPairAdmissionSelectionV1,
   type ProviderPairBolt11AcquisitionOptionsV1,
   type ProviderPairSideV1,
   type ServiceAuthorizationOptionsV1,
 } from './service-admission.js';
-import { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
 import {
   Bolt11RecoveryRequiredErrorV1,
   resumeBolt11AcquisitionV1,
@@ -33,12 +35,25 @@ import {
   type Bolt11QuoteStatusNameV1,
 } from './service-acquisition.js';
 import type {
+  ServiceEntitlementLimitsViewV1,
   ServiceGrantViewV1,
   ServiceOfferViewV1,
   ServicePolicyViewV1,
   RetainedServiceRedemptionViewV1,
   ServiceScopeViewV1,
 } from './sdk-bridge.js';
+import {
+  assertProductQueryShapeFitsScopeV1,
+  canonicalProductQueryShapeV1,
+  intersectHomogeneousEntitlementLimitsV1,
+  sameProductQueryShapeV1,
+  type ProductQueryShapeV1,
+  type ProductQueryShapesByRoleV1,
+} from './service-entitlement.js';
+import {
+  expectedLightningPayeeForOfferV1,
+  type ProductLightningPayeeTrustV1,
+} from './product-provider-bootstrap.js';
 
 export type ProductAdmissionTopologyV1 = 'independent-pair' | 'single-provider';
 
@@ -84,9 +99,17 @@ export interface ProductAdmissionLegV1 {
   backend: ServiceScopeViewV1['backend'];
   workload: ServiceScopeViewV1['workload'];
   network?: LightningNetworkNameV1;
-  /** Independent trusted bootstrap only; never directory self-reported data. */
-  expectedLightningPayeePubkey?: Uint8Array;
+  /**
+   * Independent exact-issuer trust only; never directory self-reported data.
+   * Optional for non-BOLT11 legs. A selected BOLT11 offer fails closed unless
+   * exactly one `(issuer ID, canonical HTTPS origin, network)` entry matches.
+   */
+  lightningPayeeTrust?: readonly ProductLightningPayeeTrustV1[];
+  /** Required at runtime for every independent-pair leg; unused by true single-provider products. */
+  providerEndpoint?: string;
   resource?: ProductAdmissionResourceV1;
+  /** Optional exact planner snapshot captured during strict bootstrap. */
+  queryShape?: ProductQueryShapeV1;
 }
 
 export interface ProductStrictBootstrapV1 {
@@ -121,16 +144,23 @@ export interface ProductOfferOptionV1 extends ProductOfferChoiceV1 {
 export interface ProductRetainedCapabilityOptionV1
   extends AdmissionCapabilityInventoryV1 {}
 
+export interface ProductRetainedCapabilitySelectorV1
+  extends AdmissionCapabilityBindingV1 {
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
+}
+
 export interface ProductRetainedSelectionV1 {
   binding: AdmissionCapabilityBindingV1;
   count: number;
   redemption: RetainedServiceRedemptionViewV1;
   recoveryId: string | null;
+  acquisitionContext?: Bolt11CapabilityAcquisitionContextV1;
 }
 
 export interface ProductRetainedRecoveryOptionV1 {
   id: string;
   binding: AdmissionCapabilityBindingV1;
+  acquisitionContext: Bolt11CapabilityAcquisitionContextV1;
 }
 
 export interface ProductAdmissionLegSnapshotV1 {
@@ -150,12 +180,16 @@ export interface ProductAdmissionLegSnapshotV1 {
   quoteStatus: Bolt11QuoteStatusNameV1 | null;
   recoveryIds: string[];
   errorCode: ProductAdmissionErrorCodeV1 | null;
+  /** Frozen planner lower bounds; never sent to either provider. */
+  queryShape: ProductQueryShapeV1 | null;
 }
 
 export interface ProductAdmissionSnapshotV1 {
   phase: 'idle' | 'bootstrapping' | 'selecting' | 'ready-to-query' | 'querying' | 'failed';
   topology: ProductAdmissionTopologyV1;
-  allowSharedIssuerCorrelationOnce: boolean;
+  allowSharedInfrastructureCorrelationOnce: boolean;
+  /** Present only when both selected legs use the same workload units. */
+  homogeneousPairLimits: ServiceEntitlementLimitsViewV1 | null;
   legs: ProductAdmissionLegSnapshotV1[];
   errorCode: ProductAdmissionErrorCodeV1 | null;
 }
@@ -165,6 +199,8 @@ export type ProductAdmissionErrorCodeV1 =
   | 'strict-bootstrap-failed'
   | 'policy-unavailable'
   | 'simple-free-unavailable'
+  | 'query-shape-unavailable'
+  | 'entitlement-limits-insufficient'
   | 'offer-selection-invalidated'
   | 'pair-correlation-rejected'
   | 'lightning-payee-untrusted'
@@ -197,7 +233,7 @@ export class ProductResourceFailedAfterAuthorizationErrorV1
   }
 }
 
-interface LegStateV1 extends ProductAdmissionLegV1 {
+interface LegStateV1 extends Omit<ProductAdmissionLegV1, 'queryShape'> {
   policy: ServicePolicyViewV1;
   offers: ProductOfferOptionV1[];
   selected: ProductOfferOptionV1 | null;
@@ -216,19 +252,26 @@ interface LegStateV1 extends ProductAdmissionLegV1 {
   transitionInFlight: boolean;
   /** True once this exact leg has touched credential/acquisition state. */
   credentialFlowStarted: boolean;
+  queryShape: ProductQueryShapeV1 | null;
 }
 
 type FrozenSelectionV1 =
   | { kind: 'pair'; value: VerifiedIndependentProviderPairV1 }
-  | { kind: 'single'; value: VerifiedSingleProviderOfferV1 };
+  | {
+    kind: 'single';
+    value: VerifiedSingleProviderOfferV1 | VerifiedSingleProviderRetainedOfferV1;
+  };
 
 export class ProductAdmissionControllerV1 {
   private phase: ProductAdmissionSnapshotV1['phase'] = 'idle';
   private bootstraps: ProductStrictBootstrapV1[] = [];
   private legs: LegStateV1[] = [];
-  private allowSharedIssuerCorrelationOnce = false;
+  private allowSharedInfrastructureCorrelationOnce = false;
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
+  private queryShapesFrozen = false;
+  /** Invalidated synchronously when a strict admission attempt starts closing. */
+  private lifecycleGeneration = 0;
   private readonly resumeBolt11Impl: typeof resumeBolt11AcquisitionV1;
 
   constructor(private readonly options: ProductAdmissionControllerOptionsV1) {
@@ -236,8 +279,8 @@ export class ProductAdmissionControllerV1 {
   }
 
   /**
-   * Execute the strict transport/proof bootstrap before any service-policy,
-   * quote, capability, or query operation is reachable.
+   * Execute the complete strict transport/proof/tree-top bootstrap before any
+   * service-policy, quote or capability operation is reachable.
    */
   async prepare(
     strictBootstrap: () => Promise<ProductStrictBootstrapV1>,
@@ -276,10 +319,10 @@ export class ProductAdmissionControllerV1 {
   }
 
   /**
-   * Add one strict provider independently. The first leg can select an offer,
-   * acquire/import a capability, and authorize before the second provider is
-   * known. Pair/privacy checks become mandatory once both offers are selected
-   * and are repeated immediately before the final PIR query.
+   * Add one strict provider independently. Policy inspection is allowed after
+   * one leg, but every acquisition/import/authorization path remains blocked
+   * until both legs are connected and the second bootstrap has completed the
+   * pair database/tree-top preflight.
    */
   async prepareLeg(
     strictBootstrap: () => Promise<ProductStrictLegBootstrapV1>,
@@ -292,6 +335,12 @@ export class ProductAdmissionControllerV1 {
     }
     if (this.legs.length >= 2 || this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'cannot add another provider leg now');
+    }
+    if (this.legs.length === 1 && !hasAdmissionSelection(this.legs[0])) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'select the first provider exact offer before connecting the second provider',
+      );
     }
     this.phase = 'bootstrapping';
     this.errorCode = null;
@@ -337,6 +386,12 @@ export class ProductAdmissionControllerV1 {
   /** A live policy refresh invalidates every exact selection and grant. */
   async refreshPolicies(): Promise<ProductAdmissionSnapshotV1> {
     this.requirePrepared();
+    if (this.queryShapesFrozen) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'policy refresh after credential flow requires a new strict admission attempt',
+      );
+    }
     if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'an admission transition is in flight');
     }
@@ -358,17 +413,69 @@ export class ProductAdmissionControllerV1 {
     }
   }
 
-  /** Advanced, in-memory-only confirmation. It resets on close/prepare. */
-  setAllowSharedIssuerCorrelationOnce(allowed: boolean): ProductAdmissionSnapshotV1 {
+  /**
+   * Advanced, in-memory-only confirmation for both shared issuer/origin and
+   * shared Lightning-payee correlation. It resets on close/prepare and must
+   * be set before either credential flow starts.
+   */
+  setAllowSharedInfrastructureCorrelationOnce(allowed: boolean): ProductAdmissionSnapshotV1 {
     this.requirePrepared();
-    if (this.legs.filter((leg) => leg.credentialFlowStarted).length > 1) {
+    if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'shared-issuer confirmation must happen before a second credential flow starts',
+        'operation-failed',
+        'cannot change correlation consent during an admission transition',
       );
     }
-    this.allowSharedIssuerCorrelationOnce = allowed === true;
+    if (this.legs.some((leg) => leg.credentialFlowStarted)) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'shared-infrastructure confirmation must happen before either credential flow starts',
+      );
+    }
+    this.allowSharedInfrastructureCorrelationOnce = allowed === true;
     this.validateFrozenSelectionIfComplete();
+    return this.snapshot();
+  }
+
+  /**
+   * Install planner-proven demand before offer selection. Pair roles are
+   * independent: Harmony hint and query shapes are intentionally not merged.
+   * Once any credential flow begins, only an identical recomputation is
+   * accepted; changing demand requires a new strict admission attempt.
+   */
+  setQueryShape(role: string, shapeValue: ProductQueryShapeV1): ProductAdmissionSnapshotV1 {
+    const leg = this.requireLeg(role);
+    if (this.legs.some((candidate) => candidate.transitionInFlight)) {
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'cannot change planned query demand during an admission transition',
+      );
+    }
+    let shape: ProductQueryShapeV1;
+    try {
+      shape = canonicalProductQueryShapeV1(shapeValue, `${leg.label} planned query shape`);
+    } catch (cause) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'the backend planner did not provide canonical query demand',
+        { cause },
+      );
+    }
+    if (shape.backend !== leg.backend || shape.workload !== leg.workload) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'planned query demand does not match this provider role',
+      );
+    }
+    if (this.queryShapesFrozen) {
+      if (leg.queryShape && sameProductQueryShapeV1(leg.queryShape, shape)) return this.snapshot();
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'planned query demand changed after credential flow began; start a new admission',
+      );
+    }
+    if (hasAdmissionSelection(leg)) this.assertShapeFitsLeg(leg, shape);
+    leg.queryShape = cloneQueryShape(shape);
     return this.snapshot();
   }
 
@@ -377,47 +484,51 @@ export class ProductAdmissionControllerV1 {
     choice: ProductOfferChoiceV1,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted
-        || leg.status === 'authorized'
-        || leg.status === 'cached-resource-ready'
-        || leg.status === 'ambiguous-spend') {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'this provider offer is frozen after its credential flow starts',
+    return this.withLegExclusiveMutation(leg, async () => {
+      if (this.pairCredentialFlowStarted()
+          || leg.credentialFlowStarted
+          || leg.status === 'authorized'
+          || leg.status === 'cached-resource-ready'
+          || leg.status === 'ambiguous-spend') {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          'this provider offer is frozen after its credential flow starts',
+        );
+      }
+      leg.acquisition?.close();
+      leg.acquisition = null;
+      leg.invoice = null;
+      leg.invoiceExpiresAtUnix = null;
+      leg.quoteStatus = null;
+      leg.recoveryIds = [];
+      leg.retainedSelected = null;
+      const selected = leg.offers.find(
+        (candidate) => candidate.scopeIdHex === canonicalHex32(choice.scopeIdHex)
+          && candidate.offerId === choice.offerId,
       );
-    }
-    leg.acquisition?.close();
-    leg.acquisition = null;
-    leg.invoice = null;
-    leg.invoiceExpiresAtUnix = null;
-    leg.quoteStatus = null;
-    leg.recoveryIds = [];
-    leg.retainedSelected = null;
-    const selected = leg.offers.find(
-      (candidate) => candidate.scopeIdHex === canonicalHex32(choice.scopeIdHex)
-        && candidate.offerId === choice.offerId,
-    );
-    if (!selected) {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'selected offer is not in the current verified policy',
-      );
-    }
-    leg.selected = cloneOfferOption(selected);
-    leg.status = 'ready';
-    leg.errorCode = null;
-    this.phase = 'selecting';
-    this.validateFrozenSelectionIfComplete();
-    await this.refreshLegInventory(leg);
-    await this.refreshLegRecoveries(leg);
-    return this.snapshot();
+      if (!selected) {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          'selected offer is not in the current verified policy',
+        );
+      }
+      this.assertShapeFitsScope(leg, selected.scope);
+      leg.selected = cloneOfferOption(selected);
+      leg.status = 'ready';
+      leg.errorCode = null;
+      this.phase = 'selecting';
+      this.validateFrozenSelectionIfComplete();
+      await this.refreshLegInventory(leg);
+      await this.refreshLegRecoveries(leg);
+      return this.snapshot();
+    });
   }
 
   /**
-   * Select the first signed Free offer that does not require a user-supplied
+   * Select the first signed Free offer that can run without a user-supplied
    * or previously retained capability. Simple mode deliberately excludes
-   * anonymous-ticket offers: those are single-use vault credentials, not a
-   * direct free quota, and silently spending one would be surprising.
+   * anonymous-ticket offers: those consume a single-use vault credential and
+   * are not an automatic free quota.
    */
   async selectFreeOffers(): Promise<ProductAdmissionSnapshotV1> {
     this.requirePrepared();
@@ -472,10 +583,11 @@ export class ProductAdmissionControllerV1 {
   /** Select an already-purchased proof bound to an exact historical policy. */
   async selectRetainedCapability(
     role: string,
-    requested: AdmissionCapabilityBindingV1,
+    requested: ProductRetainedCapabilitySelectorV1,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted
+    if (this.pairCredentialFlowStarted()
+        || leg.credentialFlowStarted
         || leg.status === 'authorized'
         || leg.status === 'cached-resource-ready'
         || leg.status === 'ambiguous-spend') {
@@ -487,9 +599,18 @@ export class ProductAdmissionControllerV1 {
     return this.withLegTransition(leg, async () => {
       await this.refreshRetainedInventory(leg);
       const binding = canonicalCapabilityBinding(requested);
-      const available = leg.retainedCapabilities.find(
-        (candidate) => sameCapabilityBinding(candidate, binding) && candidate.count > 0,
-      );
+      const requestedContext = cloneAcquisitionContext(requested.acquisitionContext);
+      const candidates = leg.retainedCapabilities.filter((candidate) =>
+        sameCapabilityBinding(candidate, binding)
+          && sameOptionalAcquisitionContext(candidate.acquisitionContext, requestedContext)
+          && candidate.count > 0);
+      if (candidates.length > 1) {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          'historical capability selector is ambiguous across payment contexts',
+        );
+      }
+      const available = candidates[0];
       if (!available) {
         throw new ProductAdmissionErrorV1(
           'capability-inventory-empty',
@@ -497,12 +618,14 @@ export class ProductAdmissionControllerV1 {
         );
       }
       const redemption = await leg.session.inspectRetainedCapability(binding);
+      this.assertShapeFitsScope(leg, redemption.scope);
       leg.selected = null;
       leg.retainedSelected = {
         binding,
         count: available.count,
         redemption,
         recoveryId: null,
+        acquisitionContext: cloneAcquisitionContext(available.acquisitionContext),
       };
       leg.recoveryIds = [];
       leg.status = 'ready';
@@ -520,7 +643,7 @@ export class ProductAdmissionControllerV1 {
     recoveryId: string,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
-    if (leg.credentialFlowStarted) {
+    if (this.pairCredentialFlowStarted() || leg.credentialFlowStarted) {
       throw new ProductAdmissionErrorV1(
         'offer-selection-invalidated',
         'this provider selection is frozen after its credential flow starts',
@@ -536,12 +659,14 @@ export class ProductAdmissionControllerV1 {
         );
       }
       const redemption = await leg.session.inspectRetainedCapability(option.binding);
+      this.assertShapeFitsScope(leg, redemption.scope);
       leg.selected = null;
       leg.retainedSelected = {
         binding: { ...option.binding },
         count: 0,
         redemption,
         recoveryId,
+        acquisitionContext: cloneAcquisitionContext(option.acquisitionContext),
       };
       leg.recoveryIds = [recoveryId];
       leg.status = 'ready';
@@ -558,7 +683,9 @@ export class ProductAdmissionControllerV1 {
     options: ServiceAuthorizationOptionsV1 = {},
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireAdmissionSelectionLeg(role);
+    this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') {
         throw new ProductAdmissionErrorV1(
           'offer-selection-invalidated',
@@ -566,7 +693,7 @@ export class ProductAdmissionControllerV1 {
         );
       }
       this.assertSelectionPrivacyIfComplete();
-      const frozen = leg.selected ? this.freezeLegSelection(leg) : null;
+      const frozen = this.freezeSelection();
       const binding = selectedCapabilityBinding(leg);
 
       if (leg.resource) {
@@ -578,9 +705,11 @@ export class ProductAdmissionControllerV1 {
           this.updateReadyPhase();
           return this.snapshot();
         }
+        leg.status = 'ready';
       }
 
       const chosenOffer = selectedOffer(leg);
+      await this.assertPairAcquisitionBarrier();
       if (leg.retainedSelected || requiresVaultCapability(chosenOffer)) {
         await this.refreshLegInventory(leg);
         if ((leg.inventory ?? 0) <= 0) {
@@ -596,9 +725,7 @@ export class ProductAdmissionControllerV1 {
       leg.credentialFlowStarted = true;
       let grant: ServiceGrantViewV1;
       try {
-        grant = leg.retainedSelected
-          ? await leg.session.authorizeRetainedCapability(binding)
-          : await frozen!.authorize(options);
+        grant = await authorizeFrozen(frozen, this.sideFor(role), options);
       } catch (cause) {
         if (cause instanceof AmbiguousCapabilitySpendErrorV1) {
           leg.status = 'ambiguous-spend';
@@ -633,33 +760,41 @@ export class ProductAdmissionControllerV1 {
 
   async startBolt11(role: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireSelectedLeg(role);
+    this.assertCredentialFlowTopologyReady();
+    const lifecycleGeneration = this.lifecycleGeneration;
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       if (leg.selected!.offer.acquisition !== 'bolt11') {
         throw new ProductAdmissionErrorV1('operation-failed', 'selected offer is not BOLT11');
       }
-      const payee = leg.expectedLightningPayeePubkey;
-      if (!(payee instanceof Uint8Array) || payee.length !== 33) {
-        leg.errorCode = 'lightning-payee-untrusted';
-        throw new ProductAdmissionErrorV1(
-          'lightning-payee-untrusted',
-          'BOLT11 is disabled without an independently trusted expected payee key',
-        );
-      }
-      const frozen = this.freezeLegSelection(leg);
+      const payee = selectedExpectedLightningPayee(leg);
+      const frozen = this.freezeSelection();
+      const assertReady = () => this.assertBolt11StartReady(leg, lifecycleGeneration);
+      assertReady();
       leg.status = 'acquiring';
       leg.credentialFlowStarted = true;
+      let acquisition: Bolt11AcquisitionHandleV1 | null = null;
       try {
-        const acquisition = await frozen.startBolt11Acquisition(
+        acquisition = await startBolt11Frozen(
+          frozen,
+          this.sideFor(role),
           {
             vault: this.options.vault,
             network: leg.network ?? 'bitcoin',
             expectedPayeePubkey: payee.slice(),
+            assertReady,
           },
         );
-        this.installAcquisition(leg, acquisition);
+        assertReady();
+        // Keep the verified invoice out of observable controller state until
+        // every remaining vault await has completed under the same pair.
         await this.refreshLegRecoveries(leg);
+        assertReady();
+        this.installAcquisition(leg, acquisition);
+        acquisition = null;
         return this.snapshot();
       } catch (cause) {
+        acquisition?.close();
         if (cause instanceof Bolt11RecoveryRequiredErrorV1) {
           leg.status = 'failed';
           leg.errorCode = 'bolt11-recovery-required';
@@ -677,24 +812,60 @@ export class ProductAdmissionControllerV1 {
 
   async resumeBolt11(role: string, recoveryId: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireAdmissionSelectionLeg(role);
+    this.assertCredentialFlowTopologyReady();
+    const lifecycleGeneration = this.lifecycleGeneration;
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
+      this.freezeSelection();
+      const payee = selectedExpectedLightningPayee(leg);
+      const network = leg.network ?? 'bitcoin';
+      const offer = selectedOffer(leg);
+      const assertReady = () => this.assertBolt11StartReady(leg, lifecycleGeneration);
+      assertReady();
       const recovery = await this.options.vault.getBolt11Recovery(recoveryId);
+      assertReady();
       if (!recovery || !recoveryMatchesLeg(recovery, leg)) {
         throw new ProductAdmissionErrorV1(
           'operation-failed',
           'encrypted BOLT11 recovery does not match the current exact offer',
         );
       }
-      this.assertSelectionPrivacyIfComplete();
       leg.credentialFlowStarted = true;
-      const acquisition = await this.resumeBolt11Impl({
-        vault: this.options.vault,
-        recoveryId,
-      });
-      this.installAcquisition(leg, acquisition);
-      await this.refreshLegRecoveries(leg);
-      await this.refreshRetainedRecoveries(leg);
-      return this.snapshot();
+      let acquisition: Bolt11AcquisitionHandleV1 | null = null;
+      try {
+        acquisition = await this.resumeBolt11Impl({
+          vault: this.options.vault,
+          recoveryId,
+          issuerEndpoint: offer.endpoint,
+          issuerIdHex: offer.issuerIdHex,
+          network,
+          expectedPayeePubkey: payee,
+          assertReady,
+        });
+        assertReady();
+        await acquisition.ensureQuote();
+        assertReady();
+        await this.refreshLegRecoveries(leg);
+        assertReady();
+        await this.refreshRetainedRecoveries(leg);
+        assertReady();
+        this.installAcquisition(leg, acquisition);
+        acquisition = null;
+        return this.snapshot();
+      } catch (cause) {
+        acquisition?.close();
+        if (cause instanceof Bolt11RecoveryRequiredErrorV1) {
+          leg.status = 'failed';
+          leg.errorCode = 'bolt11-recovery-required';
+          leg.recoveryIds = [cause.recoveryId];
+          throw new ProductAdmissionErrorV1(
+            'bolt11-recovery-required',
+            'invoice response may have been lost; resume the encrypted acquisition',
+            { cause },
+          );
+        }
+        throw cause;
+      }
     });
   }
 
@@ -716,6 +887,7 @@ export class ProductAdmissionControllerV1 {
   async claimBolt11(role: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireLeg(role);
     return this.withLegTransition(leg, async () => {
+      this.assertShapeFitsLeg(leg);
       if (!leg.acquisition || (leg.quoteStatus !== 'payment-settled'
           && leg.quoteStatus !== 'late-settled-reconcile')) {
         throw new ProductAdmissionErrorV1(
@@ -743,7 +915,9 @@ export class ProductAdmissionControllerV1 {
     serializedToken: string,
   ): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireSelectedLeg(role);
+    this.assertCredentialFlowTopologyReady();
     return this.withLegTransition(leg, async () => {
+      this.freezeQueryShapesForCredentialFlow();
       const offer = leg.selected!.offer;
       if (offer.acquisition !== 'cashu-ecash'
           || offer.authorization !== 'cashu-ecash'
@@ -753,12 +927,14 @@ export class ProductAdmissionControllerV1 {
           'selected offer is not standard Cashu eCash',
         );
       }
-      const frozen = this.freezeLegSelection(leg);
+      const frozen = this.freezeSelection();
       leg.credentialFlowStarted = true;
-      await frozen.importStandardCashuToken({
-        vault: this.options.vault,
+      await importCashuFrozen(
+        frozen,
+        this.sideFor(role),
+        this.options.vault,
         serializedToken,
-      });
+      );
       leg.status = 'ready';
       leg.errorCode = null;
       await this.refreshLegInventory(leg);
@@ -774,6 +950,7 @@ export class ProductAdmissionControllerV1 {
         || leg.status === 'cached-resource-ready'))) return false;
     try {
       this.assertCompleteSelectionPrivacy();
+      this.assertEveryShapeFitsSelection();
       return true;
     } catch {
       return false;
@@ -781,7 +958,11 @@ export class ProductAdmissionControllerV1 {
   }
 
   /** Exactly one caller-supplied query attempt; no retry and no refund logic. */
-  async executeQuery<T>(query: () => Promise<T>): Promise<T> {
+  async executeQuery<T>(
+    currentShapes: ProductQueryShapesByRoleV1,
+    query: () => Promise<T>,
+  ): Promise<T> {
+    this.assertCurrentQueryShapes(currentShapes);
     if (!this.canQuery()) {
       throw new ProductAdmissionErrorV1(
         'operation-failed',
@@ -791,6 +972,7 @@ export class ProductAdmissionControllerV1 {
     // Re-run the pair/privacy guard immediately before the real query. This is
     // browser-local only and never creates a pair identifier on either wire.
     this.assertCompleteSelectionPrivacy();
+    this.assertEveryShapeFitsSelection();
     this.queryAttempted = true;
     this.phase = 'querying';
     const result = await query();
@@ -813,7 +995,8 @@ export class ProductAdmissionControllerV1 {
     return {
       phase: this.phase,
       topology: this.options.topology,
-      allowSharedIssuerCorrelationOnce: this.allowSharedIssuerCorrelationOnce,
+      allowSharedInfrastructureCorrelationOnce: this.allowSharedInfrastructureCorrelationOnce,
+      homogeneousPairLimits: this.homogeneousPairLimits(),
       legs: this.legs.map((leg) => ({
         role: leg.role,
         label: leg.label,
@@ -824,13 +1007,17 @@ export class ProductAdmissionControllerV1 {
         selected: leg.selected
           ? { scopeIdHex: leg.selected.scopeIdHex, offerId: leg.selected.offerId }
           : null,
-        retainedCapabilities: leg.retainedCapabilities.map((entry) => ({ ...entry })),
+        retainedCapabilities: leg.retainedCapabilities.map((entry) => ({
+          ...entry,
+          acquisitionContext: cloneAcquisitionContext(entry.acquisitionContext),
+        })),
         retainedSelected: leg.retainedSelected
           ? cloneRetainedSelection(leg.retainedSelected)
           : null,
         retainedRecoveries: leg.retainedRecoveries.map((entry) => ({
           id: entry.id,
           binding: { ...entry.binding },
+          acquisitionContext: cloneAcquisitionContext(entry.acquisitionContext)!,
         })),
         inventory: leg.inventory,
         invoice: leg.invoice,
@@ -838,24 +1025,34 @@ export class ProductAdmissionControllerV1 {
         quoteStatus: leg.quoteStatus,
         recoveryIds: [...leg.recoveryIds],
         errorCode: leg.errorCode,
+        queryShape: leg.queryShape ? cloneQueryShape(leg.queryShape) : null,
       })),
       errorCode: this.errorCode,
     };
   }
 
   async close(): Promise<void> {
+    this.lifecycleGeneration += 1;
     this.closeAcquisitions();
     for (const leg of this.legs) {
       if (!leg.transitionInFlight) {
         try { leg.session.close(); } catch { /* closing transport below is authoritative */ }
       }
     }
-    await this.closeBootstrapOnly();
-    this.legs = [];
-    this.phase = 'idle';
-    this.errorCode = null;
-    this.allowSharedIssuerCorrelationOnce = false;
-    this.queryAttempted = false;
+    let closeFailure: unknown = null;
+    try {
+      await this.closeBootstrapOnly();
+    } catch (error) {
+      closeFailure = error;
+    } finally {
+      this.legs = [];
+      this.phase = 'idle';
+      this.errorCode = null;
+      this.allowSharedInfrastructureCorrelationOnce = false;
+      this.queryAttempted = false;
+      this.queryShapesFrozen = false;
+    }
+    if (closeFailure) throw closeFailure;
   }
 
   private async refreshPoliciesInternal(): Promise<void> {
@@ -893,6 +1090,11 @@ export class ProductAdmissionControllerV1 {
       this.assertCompleteSelectionPrivacy();
       this.errorCode = null;
     } catch (cause) {
+      if (cause instanceof ProductAdmissionErrorV1
+          && cause.code === 'lightning-payee-untrusted') {
+        this.errorCode = cause.code;
+        throw cause;
+      }
       this.errorCode = 'pair-correlation-rejected';
       throw new ProductAdmissionErrorV1(
         'pair-correlation-rejected',
@@ -912,14 +1114,9 @@ export class ProductAdmissionControllerV1 {
         'select one exact signed current or retained offer for every required provider role',
       );
     }
-    if (this.options.topology === 'independent-pair') {
-      const [first, second] = this.legs;
-      assertIndependentProviderOfferPairV1(
-        { trust: first.session.trustAnchor(), offer: selectedOffer(first) },
-        { trust: second.session.trustAnchor(), offer: selectedOffer(second) },
-        { allowSharedIssuerCorrelation: this.allowSharedIssuerCorrelationOnce },
-      );
-    }
+    // Constructing the opaque typestate is itself the authoritative local
+    // privacy check, including mixed current/retained historical contexts.
+    this.freezeSelection();
   }
 
   private assertSelectionPrivacyIfComplete(): void {
@@ -933,18 +1130,38 @@ export class ProductAdmissionControllerV1 {
   private freezeSelection(): FrozenSelectionV1 {
     this.requirePrepared();
     const expected = this.options.topology === 'independent-pair' ? 2 : 1;
-    if (this.legs.length !== expected || this.legs.some((leg) => !leg.selected)) {
+    if (this.legs.length !== expected || this.legs.some((leg) => !hasAdmissionSelection(leg))) {
       throw new ProductAdmissionErrorV1(
         'offer-selection-invalidated',
-        'select one exact signed offer for every required provider role',
+        'select one exact signed current or retained offer for every required provider role',
       );
     }
     if (this.options.topology === 'single-provider') {
       const leg = this.legs[0];
+      const expectedLightningPayeePubkey = projectedLightningPayee(leg);
+      const paymentContext = {
+        lightningNetwork: leg.network ?? 'bitcoin',
+        expectedLightningPayeePubkey,
+      };
+      if (leg.retainedSelected) {
+        return {
+          kind: 'single',
+          value: VerifiedSingleProviderRetainedOfferV1.create({
+            session: leg.session,
+            ...paymentContext,
+            binding: { ...leg.retainedSelected.binding },
+            redemption: cloneRetainedSelection(leg.retainedSelected).redemption,
+            acquisitionContext: cloneAcquisitionContext(
+              leg.retainedSelected.acquisitionContext,
+            ),
+          }),
+        };
+      }
       return {
         kind: 'single',
         value: VerifiedSingleProviderOfferV1.create({
           session: leg.session,
+          ...paymentContext,
           scopeIdHex: leg.selected!.scopeIdHex,
           offerId: leg.selected!.offerId,
         }),
@@ -953,47 +1170,15 @@ export class ProductAdmissionControllerV1 {
     const [first, second] = this.legs;
     return {
       kind: 'pair',
-      value: VerifiedIndependentProviderPairV1.create(
+      value: VerifiedIndependentProviderPairV1.createSelections(
+        pairSelectionForLeg(first),
+        pairSelectionForLeg(second),
         {
-          session: first.session,
-          scopeIdHex: first.selected!.scopeIdHex,
-          offerId: first.selected!.offerId,
+          allowSharedIssuerCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+          allowSharedLightningPayeeCorrelation: this.allowSharedInfrastructureCorrelationOnce,
         },
-        {
-          session: second.session,
-          scopeIdHex: second.selected!.scopeIdHex,
-          offerId: second.selected!.offerId,
-        },
-        { allowSharedIssuerCorrelation: this.allowSharedIssuerCorrelationOnce },
       ),
     };
-  }
-
-  /**
-   * Freeze one exact provider leg without requiring that the user has already
-   * discovered or selected the other provider. This preserves the protocol's
-   * sequential "find one server, then find another" workflow. Once both legs
-   * are selected, the independent-provider guard is still enforced before a
-   * second action and again immediately before the PIR query.
-   */
-  private freezeLegSelection(leg: LegStateV1): VerifiedSingleProviderOfferV1 {
-    this.requirePrepared();
-    if (!leg.selected) {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'select one exact signed offer for this provider role',
-      );
-    }
-    if (this.options.topology === 'independent-pair'
-        && this.legs.length === 2
-        && this.legs.every((candidate) => hasAdmissionSelection(candidate))) {
-      this.assertCompleteSelectionPrivacy();
-    }
-    return VerifiedSingleProviderOfferV1.create({
-      session: leg.session,
-      scopeIdHex: leg.selected.scopeIdHex,
-      offerId: leg.selected.offerId,
-    });
   }
 
   private sideFor(role: string): ProviderPairSideV1 {
@@ -1010,6 +1195,166 @@ export class ProductAdmissionControllerV1 {
         'commercial admission is not prepared on a strict verified connection',
       );
     }
+  }
+
+  private assertCredentialFlowTopologyReady(): void {
+    if (this.options.topology === 'independent-pair'
+        && (this.legs.length !== 2
+          || !this.legs.every((leg) => hasAdmissionSelection(leg)))) {
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'strictly connect and preflight both providers and select both exact offers before either credential flow',
+      );
+    }
+  }
+
+  /**
+   * Bind first invoice exposure to this exact product attempt. The provider
+   * session adds its own transport/policy guard; this layer additionally
+   * prevents a late async acquisition from surviving controller close or
+   * replacement of either independently selected product leg.
+   */
+  private assertBolt11StartReady(leg: LegStateV1, generation: number): void {
+    const expected = this.options.topology === 'independent-pair' ? 2 : 1;
+    if (this.lifecycleGeneration !== generation
+        || this.phase === 'idle'
+        || this.phase === 'failed'
+        || this.bootstraps.length === 0
+        || this.legs.length !== expected
+        || !this.legs.includes(leg)
+        || !hasAdmissionSelection(leg)) {
+      throw new ProductAdmissionErrorV1(
+        'strict-bootstrap-failed',
+        'strict product admission was invalidated before invoice exposure',
+      );
+    }
+    this.assertCredentialFlowTopologyReady();
+    this.assertSelectionPrivacyIfComplete();
+    this.assertShapeFitsLeg(leg);
+  }
+
+  private pairCredentialFlowStarted(): boolean {
+    return this.options.topology === 'independent-pair'
+      && this.legs.some((candidate) => candidate.credentialFlowStarted);
+  }
+
+  /** Do not start either connection-bound grant while the peer still needs a
+   * wallet/mint round trip. This is a local acquisition barrier, not a
+   * cross-provider transaction or shared identifier. */
+  private async assertPairAcquisitionBarrier(): Promise<void> {
+    if (this.options.topology !== 'independent-pair') return;
+    for (const candidate of this.legs) {
+      if (candidate.status === 'authorized' || candidate.status === 'cached-resource-ready') {
+        continue;
+      }
+      const offer = selectedOffer(candidate);
+      if (!candidate.retainedSelected && !requiresVaultCapability(offer)) continue;
+      await this.refreshLegInventory(candidate);
+      if ((candidate.inventory ?? 0) <= 0) {
+        throw new ProductAdmissionErrorV1(
+          'capability-inventory-empty',
+          `prepare the exact capability for ${candidate.label} before authorizing either provider`,
+        );
+      }
+    }
+  }
+
+  private assertShapeFitsScope(
+    leg: LegStateV1,
+    scope: ServiceScopeViewV1,
+    shape = leg.queryShape,
+  ): void {
+    if (!shape) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        `the backend planner has not frozen demand for ${leg.label}`,
+      );
+    }
+    try {
+      assertProductQueryShapeFitsScopeV1(shape, scope, `${leg.label} signed scope`);
+    } catch (cause) {
+      throw new ProductAdmissionErrorV1(
+        'entitlement-limits-insufficient',
+        `the selected signed entitlement cannot cover known demand for ${leg.label}`,
+        { cause },
+      );
+    }
+  }
+
+  private assertShapeFitsLeg(leg: LegStateV1, shape = leg.queryShape): void {
+    const scope = selectedScope(leg);
+    if (!scope) {
+      if (!shape) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `the backend planner has not frozen demand for ${leg.label}`,
+        );
+      }
+      return;
+    }
+    this.assertShapeFitsScope(leg, scope, shape);
+  }
+
+  private assertEveryShapeFitsSelection(): void {
+    for (const leg of this.legs) this.assertShapeFitsLeg(leg);
+  }
+
+  private freezeQueryShapesForCredentialFlow(): void {
+    this.assertEveryShapeFitsSelection();
+    this.queryShapesFrozen = true;
+  }
+
+  private assertCurrentQueryShapes(current: ProductQueryShapesByRoleV1): void {
+    if (!current || typeof current !== 'object') {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'current backend planner demand is required immediately before query execution',
+      );
+    }
+    const expectedRoles = new Set(this.legs.map((leg) => leg.role));
+    const actualRoles = Object.keys(current);
+    if (actualRoles.length !== expectedRoles.size
+        || actualRoles.some((role) => !expectedRoles.has(role))) {
+      throw new ProductAdmissionErrorV1(
+        'query-shape-unavailable',
+        'current backend planner demand does not cover the exact provider roles',
+      );
+    }
+    for (const leg of this.legs) {
+      if (!leg.queryShape) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `the backend planner has not frozen demand for ${leg.label}`,
+        );
+      }
+      let currentShape: ProductQueryShapeV1;
+      try {
+        currentShape = canonicalProductQueryShapeV1(
+          current[leg.role],
+          `${leg.label} current query shape`,
+        );
+      } catch (cause) {
+        throw new ProductAdmissionErrorV1(
+          'query-shape-unavailable',
+          `current backend planner demand is malformed for ${leg.label}`,
+          { cause },
+        );
+      }
+      if (!sameProductQueryShapeV1(leg.queryShape, currentShape)) {
+        throw new ProductAdmissionErrorV1(
+          'offer-selection-invalidated',
+          `planned demand changed after authorization for ${leg.label}; start a new admission`,
+        );
+      }
+      this.assertShapeFitsScope(leg, selectedScope(leg)!, currentShape);
+    }
+  }
+
+  private homogeneousPairLimits(): ServiceEntitlementLimitsViewV1 | null {
+    if (this.options.topology !== 'independent-pair' || this.legs.length !== 2) return null;
+    const scopes = this.legs.map(selectedScope);
+    if (scopes.some((scope) => scope === null)) return null;
+    return intersectHomogeneousEntitlementLimitsV1(scopes as ServiceScopeViewV1[]);
   }
 
   private requireLeg(role: string): LegStateV1 {
@@ -1042,7 +1387,9 @@ export class ProductAdmissionControllerV1 {
   }
 
   private async withLegTransition<T>(leg: LegStateV1, operation: () => Promise<T>): Promise<T> {
-    if (leg.transitionInFlight) {
+    if (leg.transitionInFlight
+        || (this.options.topology === 'independent-pair'
+          && this.legs.some((candidate) => candidate.transitionInFlight))) {
       throw new ProductAdmissionErrorV1('operation-failed', 'this provider action is in flight');
     }
     leg.transitionInFlight = true;
@@ -1067,12 +1414,36 @@ export class ProductAdmissionControllerV1 {
     }
   }
 
+  /** Serialize selection mutations without translating an expected selection
+   * rejection into a transport/admission failure state. */
+  private async withLegExclusiveMutation<T>(
+    leg: LegStateV1,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (leg.transitionInFlight
+        || (this.options.topology === 'independent-pair'
+          && this.legs.some((candidate) => candidate.transitionInFlight))) {
+      throw new ProductAdmissionErrorV1('operation-failed', 'this provider action is in flight');
+    }
+    leg.transitionInFlight = true;
+    try {
+      return await operation();
+    } finally {
+      leg.transitionInFlight = false;
+    }
+  }
+
   private installAcquisition(leg: LegStateV1, acquisition: Bolt11AcquisitionHandleV1): void {
+    // Read all guarded UI fields before replacing the currently installed
+    // handle, so a stale-invoice rejection cannot leave a dangling handle.
+    const invoice = acquisition.invoice();
+    const invoiceExpiresAtUnix = acquisition.invoiceExpiresAtUnix();
+    const quoteStatus = acquisition.status();
     leg.acquisition?.close();
     leg.acquisition = acquisition;
-    leg.invoice = acquisition.invoice();
-    leg.invoiceExpiresAtUnix = acquisition.invoiceExpiresAtUnix();
-    leg.quoteStatus = acquisition.status();
+    leg.invoice = invoice;
+    leg.invoiceExpiresAtUnix = invoiceExpiresAtUnix;
+    leg.quoteStatus = quoteStatus;
     leg.status = leg.quoteStatus === 'payment-settled'
       || leg.quoteStatus === 'late-settled-reconcile'
       ? 'payment-settled'
@@ -1084,7 +1455,11 @@ export class ProductAdmissionControllerV1 {
     if (leg.retainedSelected) {
       await this.refreshRetainedInventory(leg);
       const available = leg.retainedCapabilities.find((candidate) =>
-        sameCapabilityBinding(candidate, leg.retainedSelected!.binding));
+        sameCapabilityBinding(candidate, leg.retainedSelected!.binding)
+          && sameOptionalAcquisitionContext(
+            candidate.acquisitionContext,
+            leg.retainedSelected!.acquisitionContext,
+          ));
       const count = available?.count ?? 0;
       leg.retainedSelected.count = count;
       leg.inventory = count;
@@ -1094,7 +1469,10 @@ export class ProductAdmissionControllerV1 {
       leg.inventory = null;
       return;
     }
-    leg.inventory = await this.options.vault.countCapabilities(selectedCapabilityBinding(leg));
+    leg.inventory = await this.options.vault.countCapabilities(
+      selectedCapabilityBinding(leg),
+      currentCapabilityAcquisitionContext(leg),
+    );
   }
 
   private async refreshRetainedInventory(leg: LegStateV1): Promise<void> {
@@ -1103,7 +1481,11 @@ export class ProductAdmissionControllerV1 {
       : [];
     leg.retainedCapabilities = list
       .filter((entry) => entry.providerIdHex === leg.policy.providerIdHex && entry.count > 0)
-      .map((entry) => ({ ...canonicalCapabilityBinding(entry), count: entry.count }));
+      .map((entry) => ({
+        ...canonicalCapabilityBinding(entry),
+        count: entry.count,
+        acquisitionContext: cloneAcquisitionContext(entry.acquisitionContext),
+      }));
   }
 
   private async refreshLegRecoveries(leg: LegStateV1): Promise<void> {
@@ -1131,6 +1513,7 @@ export class ProductAdmissionControllerV1 {
           offerId: recovery.offerId,
           scheme: recovery.expectedScheme,
         }),
+        acquisitionContext: recoveryAcquisitionContext(recovery),
       }));
   }
 
@@ -1152,7 +1535,15 @@ export class ProductAdmissionControllerV1 {
 
   private async closeBootstrapOnly(): Promise<void> {
     const bootstraps = this.bootstraps.splice(0);
-    for (const bootstrap of bootstraps.reverse()) await bootstrap.close();
+    const outcomes = await Promise.allSettled(
+      bootstraps.reverse().map((bootstrap) => Promise.resolve().then(() => bootstrap.close())),
+    );
+    const failures = outcomes
+      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+      .map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'one or more strict provider transports failed to close');
+    }
   }
 }
 
@@ -1188,9 +1579,12 @@ function validateLegBootstrap(
 }
 
 function pendingLeg(leg: ProductAdmissionLegV1): LegStateV1 {
+  const queryShape = leg.queryShape === undefined
+    ? null
+    : canonicalProductQueryShapeV1(leg.queryShape, `${leg.label} bootstrap query shape`);
   return {
     ...leg,
-    expectedLightningPayeePubkey: leg.expectedLightningPayeePubkey?.slice(),
+    lightningPayeeTrust: leg.lightningPayeeTrust?.map((entry) => ({ ...entry })),
     policy: emptyPolicy(),
     offers: [],
     selected: null,
@@ -1208,6 +1602,7 @@ function pendingLeg(leg: ProductAdmissionLegV1): LegStateV1 {
     errorCode: null,
     transitionInFlight: false,
     credentialFlowStarted: false,
+    queryShape,
   };
 }
 
@@ -1262,6 +1657,101 @@ function selectedOffer(leg: LegStateV1): ServiceOfferViewV1 {
     'offer-selection-invalidated',
     'no exact current or retained provider offer is selected',
   );
+}
+
+function selectedExpectedLightningPayee(leg: LegStateV1): Uint8Array {
+  const offer = selectedOffer(leg);
+  if (offer.acquisition !== 'bolt11') {
+    throw new ProductAdmissionErrorV1(
+      'operation-failed',
+      'the selected offer does not use BOLT11 acquisition',
+    );
+  }
+  try {
+    const payee = expectedLightningPayeeForOfferV1(
+      leg.lightningPayeeTrust ?? [],
+      offer,
+      leg.network ?? 'bitcoin',
+    );
+    if (payee) return payee.slice();
+  } catch (cause) {
+    leg.errorCode = 'lightning-payee-untrusted';
+    throw new ProductAdmissionErrorV1(
+      'lightning-payee-untrusted',
+      'BOLT11 is disabled without one exact independently trusted issuer payee',
+      { cause },
+    );
+  }
+  leg.errorCode = 'lightning-payee-untrusted';
+  throw new ProductAdmissionErrorV1(
+    'lightning-payee-untrusted',
+    'BOLT11 is disabled without one exact independently trusted issuer payee',
+  );
+}
+
+function projectedLightningPayee(leg: LegStateV1): Uint8Array | undefined {
+  return selectedOffer(leg).acquisition === 'bolt11'
+    ? selectedExpectedLightningPayee(leg)
+    : undefined;
+}
+
+function pairSelectionForLeg(
+  leg: LegStateV1,
+): IndependentProviderPairAdmissionSelectionV1 {
+  const expectedLightningPayeePubkey = projectedLightningPayee(leg);
+  const common = {
+    session: leg.session,
+    providerEndpoint: leg.providerEndpoint ?? '',
+    lightningNetwork: leg.network ?? 'bitcoin',
+    expectedLightningPayeePubkey,
+  };
+  if (leg.retainedSelected) {
+    return {
+      kind: 'retained',
+      value: {
+        ...common,
+        binding: { ...leg.retainedSelected.binding },
+        redemption: cloneRetainedSelection(leg.retainedSelected).redemption,
+        acquisitionContext: cloneAcquisitionContext(
+          leg.retainedSelected.acquisitionContext,
+        ),
+      },
+    };
+  }
+  if (!leg.selected) {
+    throw new ProductAdmissionErrorV1(
+      'offer-selection-invalidated',
+      'no exact current or retained provider offer is selected',
+    );
+  }
+  return {
+    kind: 'current',
+    value: {
+      ...common,
+      scopeIdHex: leg.selected.scopeIdHex,
+      offerId: leg.selected.offerId,
+    },
+  };
+}
+
+function currentCapabilityAcquisitionContext(
+  leg: LegStateV1,
+): Bolt11CapabilityAcquisitionContextV1 | null | undefined {
+  if (!leg.selected) return undefined;
+  if (leg.selected.offer.acquisition !== 'bolt11') return null;
+  const endpoint = new URL(leg.selected.offer.endpoint);
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: endpoint.origin,
+    issuerIdHex: leg.selected.offer.issuerIdHex,
+    network: leg.network ?? 'bitcoin',
+    expectedPayeePubkeyHex: bytesToHex(selectedExpectedLightningPayee(leg)),
+  };
+}
+
+function selectedScope(leg: LegStateV1): ServiceScopeViewV1 | null {
+  if (leg.retainedSelected) return leg.retainedSelected.redemption.scope;
+  return leg.selected?.scope ?? null;
 }
 
 function canonicalCapabilityBinding(
@@ -1372,9 +1862,11 @@ async function startBolt11Frozen(
   side: ProviderPairSideV1,
   options: ProviderPairBolt11AcquisitionOptionsV1,
 ): Promise<Bolt11AcquisitionHandleV1> {
-  return frozen.kind === 'pair'
-    ? frozen.value.startBolt11Acquisition(side, options)
-    : frozen.value.startBolt11Acquisition(options);
+  if (frozen.kind === 'pair') return frozen.value.startBolt11Acquisition(side, options);
+  if (frozen.value instanceof VerifiedSingleProviderRetainedOfferV1) {
+    throw new Error('a retained provider capability cannot start a new invoice');
+  }
+  return frozen.value.startBolt11Acquisition(options);
 }
 
 async function importCashuFrozen(
@@ -1383,19 +1875,40 @@ async function importCashuFrozen(
   vault: AdmissionCredentialVaultV1,
   serializedToken: string,
 ): Promise<string> {
-  return frozen.kind === 'pair'
-    ? frozen.value.importStandardCashuToken(side, { vault, serializedToken })
-    : frozen.value.importStandardCashuToken({ vault, serializedToken });
+  if (frozen.kind === 'pair') {
+    return frozen.value.importStandardCashuToken(side, { vault, serializedToken });
+  }
+  if (frozen.value instanceof VerifiedSingleProviderRetainedOfferV1) {
+    throw new Error('a retained provider capability cannot import a new Cashu token');
+  }
+  return frozen.value.importStandardCashuToken({ vault, serializedToken });
 }
 
 function recoveryMatchesLeg(recovery: Bolt11RecoveryRecordV1, leg: LegStateV1): boolean {
   if (!hasAdmissionSelection(leg)) return false;
-  const binding = selectedCapabilityBinding(leg);
-  return recovery.providerIdHex === binding.providerIdHex
-    && recovery.policyDigestHex === binding.policyDigestHex
-    && recovery.scopeIdHex === binding.scopeIdHex
-    && recovery.offerId === binding.offerId
-    && recovery.expectedScheme === binding.scheme;
+  try {
+    const binding = selectedCapabilityBinding(leg);
+    const offer = selectedOffer(leg);
+    if (offer.acquisition !== 'bolt11') return false;
+    const endpoint = new URL(offer.endpoint);
+    const payeeHex = bytesToHex(selectedExpectedLightningPayee(leg));
+    const matches = recovery.providerIdHex === binding.providerIdHex
+      && recovery.policyDigestHex === binding.policyDigestHex
+      && recovery.scopeIdHex === binding.scopeIdHex
+      && recovery.offerId === binding.offerId
+      && recovery.expectedScheme === binding.scheme
+      && recovery.issuerEndpoint === endpoint.origin
+      && recovery.issuerIdHex === offer.issuerIdHex
+      && recovery.network === (leg.network ?? 'bitcoin')
+      && recovery.expectedPayeePubkeyHex === payeeHex;
+    return matches && (leg.retainedSelected?.acquisitionContext === undefined
+      || sameOptionalAcquisitionContext(
+        leg.retainedSelected.acquisitionContext,
+        recoveryAcquisitionContext(recovery),
+      ));
+  } catch {
+    return false;
+  }
 }
 
 function classifyPrepareError(cause: unknown): ProductAdmissionErrorCodeV1 {
@@ -1415,6 +1928,8 @@ function clonePolicy(policy: ServicePolicyViewV1): ServicePolicyViewV1 {
 function cloneScope(scope: ServiceScopeViewV1): ServiceScopeViewV1 {
   return {
     ...scope,
+    dataset: { ...scope.dataset },
+    limits: { ...scope.limits },
     offers: scope.offers.map(cloneOffer),
   };
 }
@@ -1439,16 +1954,67 @@ function cloneRetainedSelection(
     binding: { ...selection.binding },
     count: selection.count,
     recoveryId: selection.recoveryId,
+    acquisitionContext: cloneAcquisitionContext(selection.acquisitionContext),
     redemption: {
       providerIdHex: selection.redemption.providerIdHex,
       policyDigestHex: selection.redemption.policyDigestHex,
       scope: {
         ...selection.redemption.scope,
+        dataset: { ...selection.redemption.scope.dataset },
         limits: { ...selection.redemption.scope.limits },
         offers: [],
       },
       offer: cloneOffer(selection.redemption.offer),
     },
+  };
+}
+
+function cloneAcquisitionContext(
+  value: Bolt11CapabilityAcquisitionContextV1 | undefined,
+): Bolt11CapabilityAcquisitionContextV1 | undefined {
+  if (value === undefined) return undefined;
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: value.issuerEndpoint,
+    issuerIdHex: value.issuerIdHex,
+    network: value.network,
+    expectedPayeePubkeyHex: value.expectedPayeePubkeyHex,
+  };
+}
+
+function sameOptionalAcquisitionContext(
+  first: Bolt11CapabilityAcquisitionContextV1 | undefined,
+  second: Bolt11CapabilityAcquisitionContextV1 | undefined,
+): boolean {
+  if (first === undefined || second === undefined) return first === second;
+  return first.kind === second.kind
+    && first.issuerEndpoint === second.issuerEndpoint
+    && first.issuerIdHex === second.issuerIdHex
+    && first.network === second.network
+    && first.expectedPayeePubkeyHex === second.expectedPayeePubkeyHex;
+}
+
+function recoveryAcquisitionContext(
+  recovery: Bolt11RecoveryRecordV1,
+): Bolt11CapabilityAcquisitionContextV1 {
+  return {
+    kind: 'bolt11',
+    issuerEndpoint: recovery.issuerEndpoint,
+    issuerIdHex: recovery.issuerIdHex,
+    network: recovery.network,
+    expectedPayeePubkeyHex: recovery.expectedPayeePubkeyHex,
+  };
+}
+
+function bytesToHex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function cloneQueryShape(shape: ProductQueryShapeV1): ProductQueryShapeV1 {
+  return {
+    backend: shape.backend,
+    workload: shape.workload,
+    lowerBounds: { ...shape.lowerBounds },
   };
 }
 

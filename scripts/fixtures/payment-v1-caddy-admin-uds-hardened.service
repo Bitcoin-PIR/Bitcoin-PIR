@@ -1,0 +1,26 @@
+[Unit]
+Description=Existing bhtm Caddy
+After=network-online.target
+
+[Service]
+Type=notify
+TimeoutStopSec=5s
+
+# BEGIN BITCOINPIR CADDY ADMIN UDS V1
+User=root
+Group=root
+RuntimeDirectory=bitcoinpir-caddy-admin
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+LimitCORE=0
+MemorySwapMax=0
+StandardOutput=null
+StandardError=null
+UMask=0077
+UnsetEnvironment=CADDY_ADMIN
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/bitcoinpir-caddy-admin/admin.sock
+# END BITCOINPIR CADDY ADMIN UDS V1
+[Install]
+WantedBy=multi-user.target

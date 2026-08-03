@@ -40,7 +40,7 @@ use pir_sdk_client::{
     verify_database_proof_response as verify_database_proof_response_payload,
     verify_database_proof_v2_response as verify_database_proof_v2_response_payload,
     DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, RootPolicy, VerifiedDatabaseRoots,
-    PRP_FASTPRP, PRP_HMR12,
+    ProductQueryShapeV1, PRP_FASTPRP, PRP_HMR12,
 };
 use wasm_bindgen::prelude::*;
 
@@ -50,9 +50,7 @@ use crate::service::{
     WasmAcceptedRetainedServiceRedemptionV1, WasmAcceptedServicePolicyV1,
     WasmServicePowChallengeV1,
 };
-use crate::{
-    parse_query_result_json, to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult,
-};
+use crate::{to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
 
 // These symbols are only referenced from wasm32-gated bridges below, so
 // keep their imports gated too — on native we only compile recorder-impl
@@ -118,12 +116,104 @@ fn validate_master_key_len(len: usize) -> Result<(), String> {
     Ok(())
 }
 
+type AttestSeedSlots = [Option<[u8; 32]>; 2];
+
+/// Invalidate the previous attestation/handshake binding before any fallible
+/// part of a new attestation attempt. If the request fails, no stale seed can
+/// be reused by a later secure-channel upgrade.
+fn begin_attest_attempt(slots: &mut AttestSeedSlots, server_index: usize) {
+    slots[server_index] = None;
+}
+
+/// Consume the binding before the fallible handshake starts. A failed
+/// handshake therefore requires a fresh attestation instead of permitting a
+/// replay with the same ephemeral key.
+fn take_attest_seed(slots: &mut AttestSeedSlots, server_index: usize) -> Option<[u8; 32]> {
+    slots[server_index].take()
+}
+
 /// Pretty-print a `PirError` for the JS side. We stringify via
 /// `Display` (the `thiserror` output) — callers can still distinguish
 /// kinds downstream by inspecting the message prefix, matching the
 /// error-taxonomy placeholder in the SDK roadmap.
 fn err_to_js(e: pir_sdk::PirError) -> JsError {
     JsError::new(&e.to_string())
+}
+
+/// Serialize a native transport-free service plan to the JS diagnostic shape.
+/// Optional lower-bound counters are omitted, never emitted as `null`, so the
+/// strict TypeScript canonicalizer cannot confuse "unknown" with zero.
+fn product_query_plan_json(plan: &ProductQueryShapeV1) -> serde_json::Value {
+    let mut lower_bounds = serde_json::Map::new();
+    lower_bounds.insert(
+        "logicalInputs".into(),
+        serde_json::Value::from(plan.lower_bounds.logical_inputs),
+    );
+    lower_bounds.insert(
+        "frames".into(),
+        serde_json::Value::from(plan.lower_bounds.frames),
+    );
+    if let Some(work_units) = plan.lower_bounds.work_units {
+        // ProductQueryShapeV1 represents u64 counters as canonical decimal
+        // strings so JavaScript never loses integer precision.
+        lower_bounds.insert(
+            "workUnits".into(),
+            serde_json::Value::String(work_units.to_string()),
+        );
+    }
+    if let Some(hint_groups) = plan.lower_bounds.hint_groups {
+        lower_bounds.insert(
+            "hintGroups".into(),
+            serde_json::Value::from(hint_groups),
+        );
+    }
+    if let Some(concurrent_sockets) = plan.lower_bounds.concurrent_sockets {
+        lower_bounds.insert(
+            "concurrentSockets".into(),
+            serde_json::Value::from(concurrent_sockets),
+        );
+    }
+
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "backend".into(),
+        serde_json::Value::String(plan.backend.as_str().into()),
+    );
+    root.insert(
+        "workload".into(),
+        serde_json::Value::String(plan.workload.as_str().into()),
+    );
+    root.insert(
+        "lowerBounds".into(),
+        serde_json::Value::Object(lower_bounds),
+    );
+    if let Some(pbc_rounds) = plan.pbc_rounds {
+        root.insert("pbcRounds".into(), serde_json::Value::from(pbc_rounds));
+    }
+    if let Some(exact_index_frames) = plan.exact_index_frames {
+        root.insert(
+            "exactIndexFrames".into(),
+            serde_json::Value::from(exact_index_frames),
+        );
+    }
+
+    let omitted = [
+        (plan.omitted.request_bytes, "requestBytes"),
+        (plan.omitted.response_bytes, "responseBytes"),
+        (plan.omitted.merkle_frames, "merkleFrames"),
+        (
+            plan.omitted.additional_chunk_frames,
+            "dataDependentAdditionalChunkFrames",
+        ),
+        (plan.omitted.sibling_hint_groups, "siblingHintGroups"),
+    ]
+    .into_iter()
+    .filter_map(|(is_omitted, label)| {
+        is_omitted.then_some(serde_json::Value::String(label.into()))
+    })
+    .collect();
+    root.insert("omitted".into(), serde_json::Value::Array(omitted));
+    serde_json::Value::Object(root)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -181,6 +271,7 @@ fn database_proof_json(roots: &VerifiedDatabaseRoots) -> serde_json::Value {
     let onion = roots.onion_layout_v2;
     serde_json::json!({
         "dbId": roots.db_id,
+        "manifestRootHex": roots.manifest_root_hex(),
         "buildKind": pir_db_attest::build_kind_label(roots.build_kind),
         "fromHeight": roots.from_height,
         "fromBlockHashHex": roots.from_block_hash_hex(),
@@ -228,9 +319,12 @@ fn database_proof_payload_from_frame(frame: &[u8]) -> Result<&[u8], String> {
     Ok(&frame[4..])
 }
 
-/// Build the JS-facing JSON shape of a `SyncResult`. Mirrors
-/// [`WasmQueryResult::to_json`](crate::WasmQueryResult) for the per-item
-/// layout so the two consumers see identical entry objects.
+/// Build the JS-facing data-only JSON shape of a `SyncResult`.
+///
+/// Plain objects cannot retain the private provenance carried by a
+/// [`WasmQueryResult`](crate::WasmQueryResult), so `merkleVerified` is always
+/// false. Callers that need native provenance must use `getResult()` and keep
+/// the returned opaque handle.
 fn sync_result_to_json(sync: &SyncResult) -> serde_json::Value {
     let results: Vec<serde_json::Value> = sync
         .results
@@ -264,7 +358,7 @@ fn query_result_option_to_json(result: &Option<QueryResult>) -> serde_json::Valu
                 "entries": entries,
                 "isWhale": qr.is_whale,
                 "totalBalance": qr.total_balance(),
-                "merkleVerified": qr.merkle_verified,
+                "merkleVerified": false,
             })
         }
     }
@@ -453,7 +547,10 @@ impl WasmSyncResult {
             .map(WasmQueryResult::from_native)
     }
 
-    /// Convert the full sync result to a plain JSON object.
+    /// Convert the full sync result to a data-only plain JSON object.
+    /// Verification provenance cannot survive conversion to caller-mutable
+    /// JSON, so every `merkleVerified` property is false. Use `getResult()`
+    /// to retain the opaque native provenance marker.
     ///
     /// Shape:
     /// ```json
@@ -461,7 +558,7 @@ impl WasmSyncResult {
     ///   "results": [
     ///     null,
     ///     { "entries": [...], "isWhale": false,
-    ///       "totalBalance": 0, "merkleVerified": true }
+    ///       "totalBalance": 0, "merkleVerified": false }
     ///   ],
     ///   "syncedHeight": 900000,
     ///   "wasFreshSync": true
@@ -941,6 +1038,11 @@ impl WasmDatabaseProof {
         self.inner.db_id
     }
 
+    #[wasm_bindgen(getter, js_name = manifestRootHex)]
+    pub fn manifest_root_hex(&self) -> String {
+        self.inner.manifest_root_hex()
+    }
+
     #[wasm_bindgen(getter, js_name = buildKind)]
     pub fn build_kind(&self) -> String {
         pir_db_attest::build_kind_label(self.inner.build_kind).to_owned()
@@ -1368,11 +1470,47 @@ impl WasmDpfClient {
         self.inner.connect().await.map_err(err_to_js)
     }
 
+    /// Set one staged provider URL before that leg is connected.
+    #[wasm_bindgen(js_name = setServerUrl)]
+    pub fn set_server_url(&mut self, server_index: u8, url: &str) -> Result<(), JsError> {
+        self.inner
+            .set_server_url(server_index, url)
+            .map_err(err_to_js)
+    }
+
+    /// Connect one provider without selecting or dialing its peer.
+    #[wasm_bindgen(js_name = connectServer)]
+    pub async fn connect_server(&mut self, server_index: u8) -> Result<(), JsError> {
+        self.inner
+            .connect_server(server_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = disconnectServer)]
+    pub async fn disconnect_server(&mut self, server_index: u8) -> Result<(), JsError> {
+        if server_index < 2 {
+            self.attest_eph_seeds[server_index as usize] = None;
+        }
+        self.inner
+            .disconnect_server(server_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = isServerConnected)]
+    pub fn is_server_connected(&self, server_index: u8) -> Result<bool, JsError> {
+        self.inner
+            .is_server_connected(server_index)
+            .map_err(err_to_js)
+    }
+
     /// Close both WebSocket connections. After this the client returns
     /// `isConnected === false` and `connect` must be called before the
     /// next query.
     #[wasm_bindgen(js_name = disconnect)]
     pub async fn disconnect(&mut self) -> Result<(), JsError> {
+        self.attest_eph_seeds = [None, None];
         self.inner.disconnect().await.map_err(err_to_js)
     }
 
@@ -1420,6 +1558,43 @@ impl WasmDpfClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Verify the proof returned by one exact staged provider.
+    #[wasm_bindgen(js_name = verifyDatabaseProofFromServer)]
+    pub async fn verify_database_proof_from_server(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof_from_server(server_index, db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Fetch and install-or-compare one staged provider's catalog.
+    #[wasm_bindgen(js_name = fetchCatalogFromServer)]
+    pub async fn fetch_catalog_from_server(
+        &mut self,
+        server_index: u8,
+    ) -> Result<WasmDatabaseCatalog, JsError> {
+        let catalog = self
+            .inner
+            .fetch_catalog_from_server(server_index)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseCatalog::from_native(catalog))
     }
 
     /// Select whether every query must be bound to proof-verified database
@@ -1576,8 +1751,11 @@ impl WasmDpfClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedService)]
-    pub async fn authorize_retained_service_v1(
+    /// Low-level one-sided DPF retained redemption. The JavaScript name is
+    /// intentionally explicit because this method does not verify the other
+    /// provider's payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedService)]
+    pub async fn dangerous_unpaired_authorize_retained_service_v1(
         &mut self,
         server_index: u8,
         db_id: u8,
@@ -1588,7 +1766,7 @@ impl WasmDpfClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_service_redemption_v1(
+            .dangerous_unpaired_authorize_retained_service_redemption_v1(
                 server_index,
                 db_id,
                 &accepted.inner,
@@ -1673,32 +1851,7 @@ impl WasmDpfClient {
             .query_batch(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
-        let json: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| match r {
-                None => serde_json::Value::Null,
-                Some(qr) => {
-                    let entries: Vec<serde_json::Value> = qr
-                        .entries
-                        .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "txid": hex_encode(&e.txid),
-                                "vout": e.vout,
-                                "amountSats": e.amount_sats,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "entries": entries,
-                        "isWhale": qr.is_whale,
-                        "totalBalance": qr.total_balance(),
-                        "merkleVerified": qr.merkle_verified,
-                    })
-                }
-            })
-            .collect();
-        Ok(to_js_object(&json))
+        Ok(to_js_object(&query_results_to_json(&results)))
     }
 
     /// Return the two server URLs this client is connected to as a
@@ -1746,6 +1899,7 @@ impl WasmDpfClient {
                 server_index
             )));
         }
+        begin_attest_attempt(&mut self.attest_eph_seeds, server_index as usize);
         let mut eph_seed = [0u8; 32];
         let mut random_32 = [0u8; 32];
         getrandom::getrandom(&mut eph_seed)
@@ -1821,12 +1975,12 @@ impl WasmDpfClient {
         let pub1: [u8; 32] = server_static_pub_1
             .try_into()
             .map_err(|_| JsError::new("serverStaticPub1 must be exactly 32 bytes"))?;
-        let eph_seed_0 = self.attest_eph_seeds[0].ok_or_else(|| {
+        let eph_seed_0 = take_attest_seed(&mut self.attest_eph_seeds, 0).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(0) first (eph_seed binding required)",
             )
         })?;
-        let eph_seed_1 = self.attest_eph_seeds[1].ok_or_else(|| {
+        let eph_seed_1 = take_attest_seed(&mut self.attest_eph_seeds, 1).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(1) first (eph_seed binding required)",
             )
@@ -1845,30 +1999,61 @@ impl WasmDpfClient {
             .map_err(err_to_js)?;
         // One-shot: consume the cached seeds so a follow-up reconnect
         // is forced to re-attest before another upgrade.
-        self.attest_eph_seeds = [None, None];
         Ok(())
     }
 
-    /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
-    /// but returns opaque [`WasmQueryResult`] handles whose
-    /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**.
-    ///
-    /// This is the pair-wise half of the split-verify flow: call this,
-    /// persist or inspect the results, then later call
-    /// [`verifyMerkleBatch`](Self::verify_merkle_batch) against the same
-    /// `db_id` to obtain the per-query verdicts.
+    /// Upgrade one staged provider using only that leg's attestation-bound
+    /// ephemeral seed. No peer transport is inspected or modified.
+    #[wasm_bindgen(js_name = upgradeServerToSecureChannel)]
+    pub async fn upgrade_server_to_secure_channel(
+        &mut self,
+        server_index: u8,
+        server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new("serverIndex must be 0 or 1"));
+        }
+        let server_static_pub: [u8; 32] = server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub must be exactly 32 bytes"))?;
+        let eph_seed = take_attest_seed(&mut self.attest_eph_seeds, server_index as usize)
+            .ok_or_else(|| {
+                JsError::new("upgradeServerToSecureChannel requires attest(serverIndex) first")
+            })?;
+        let mut hs_nonce = [0u8; 32];
+        getrandom::getrandom(&mut hs_nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        self.inner
+            .upgrade_server_to_secure_channel_with_seed(
+                server_index,
+                server_static_pub,
+                eph_seed,
+                hs_nonce,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(())
+    }
+
+    /// Release-safe inspector batch query. Native Rust retains every raw
+    /// INDEX/CHUNK bin, re-derives coordinates and decoded payloads from the
+    /// exact input order, and completes Merkle verification before this
+    /// promise resolves. A single failed slot rejects the whole batch; JS
+    /// never receives an unverified entry or an independently forgeable JSON
+    /// proof object.
     ///
     /// Returns a JS `Array` of length `N` (the input scripthash count).
     /// Every slot is a non-null [`WasmQueryResult`] — not-found queries
     /// are synthesised as empty inspector-populated results so the
     /// absence-proof bins are preserved for verification.
+    /// Empty input or a database without bucket-Merkle commitments fails
+    /// before the private query phase.
     ///
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups), including when most queries are not-found — the
     /// wire-level batch is unchanged.
-    #[wasm_bindgen(js_name = queryBatchRaw)]
-    pub async fn query_batch_raw(
+    #[wasm_bindgen(js_name = queryBatchVerified)]
+    pub async fn query_batch_verified(
         &mut self,
         script_hashes: &Uint8Array,
         db_id: u8,
@@ -1877,80 +2062,33 @@ impl WasmDpfClient {
         let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
         let results = self
             .inner
-            .query_batch_with_inspector(&script_hashes, db_id)
+            .query_batch_verified_with_inspector(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
-        for r in results {
-            match r {
-                Some(qr) => {
-                    arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
-                }
-                None => {
-                    // `query_batch_with_inspector` synthesises `Some(empty)`
-                    // for not-found, so we shouldn't land here in practice;
-                    // forward `null` if the contract ever changes.
-                    arr.push(&JsValue::NULL);
-                }
-            }
+        for result in results {
+            arr.push(&JsValue::from(WasmQueryResult::from_verified(result)));
         }
         Ok(arr.into())
     }
 
-    /// Standalone Merkle verifier — consumes inspector-populated
-    /// QueryResults (as JSON, typically produced by
-    /// [`queryBatchRaw`](Self::query_batch_raw) then
-    /// `WasmQueryResult.toJson()` and possibly round-tripped through
-    /// persistent storage) and returns one `bool` per input.
-    ///
-    /// # Arguments
-    /// * `results_json` — JS `Array` where each element is either `null`
-    ///   (caller had nothing to verify for that slot — always returns
-    ///   `true`) or a `QueryResult` JSON object including `indexBins` /
-    ///   `chunkBins` / `matchedIndexIdx`.
-    /// * `db_id` — database to verify against.
-    ///
-    /// # Returns
-    /// JS `Array` of `bool`:
-    /// * `true`  — all attached Merkle items verified, or nothing to
-    ///   verify at this slot.
-    /// * `false` — at least one Merkle proof failed; callers should
-    ///   treat the slot as untrusted.
-    ///
-    /// Databases that don't publish a bucket-Merkle tree are accepted
-    /// trivially (every slot returns `true`).
-    #[wasm_bindgen(js_name = verifyMerkleBatch)]
-    pub async fn verify_merkle_batch(
-        &mut self,
-        results_json: &JsValue,
+    /// Plan the complete provider-local query transcript lower bound without
+    /// opening a socket or emitting a PIR frame. The cached verified catalog
+    /// supplies `dbId` geometry; the INDEX round count comes from the same PBC
+    /// planner as `queryBatchVerified`.
+    #[wasm_bindgen(js_name = planServiceQuery)]
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &Uint8Array,
         db_id: u8,
     ) -> Result<JsValue, JsError> {
-        let data: serde_json::Value = serde_wasm_bindgen::from_value(results_json.clone())
-            .map_err(|e| JsError::new(&format!("JSON parse error: {}", e)))?;
-        let items = data
-            .as_array()
-            .ok_or_else(|| JsError::new("verifyMerkleBatch: results must be an array"))?;
-
-        let mut parsed: Vec<Option<QueryResult>> = Vec::with_capacity(items.len());
-        for v in items {
-            if v.is_null() {
-                parsed.push(None);
-            } else {
-                parsed.push(Some(parse_query_result_json(v)?));
-            }
-        }
-
-        let verdicts = self
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let plan = self
             .inner
-            .verify_merkle_batch_for_results(&parsed, db_id)
-            .await
+            .plan_service_query(&script_hashes, db_id)
             .map_err(err_to_js)?;
-
-        let arr = Array::new();
-        for ok in verdicts {
-            arr.push(&JsValue::from_bool(ok));
-        }
-        Ok(arr.into())
+        Ok(to_js_object(&product_query_plan_json(&plan)))
     }
 
     /// Install a [`WasmAtomicMetrics`] recorder. All subsequent
@@ -2138,9 +2276,43 @@ impl WasmHarmonyClient {
         self.inner.connect().await.map_err(err_to_js)
     }
 
+    #[wasm_bindgen(js_name = setProviderUrl)]
+    pub fn set_provider_url(&mut self, provider_index: u8, url: &str) -> Result<(), JsError> {
+        self.inner
+            .set_provider_url(provider_index, url)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = connectProvider)]
+    pub async fn connect_provider(&mut self, provider_index: u8) -> Result<(), JsError> {
+        self.inner
+            .connect_provider(provider_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = disconnectProvider)]
+    pub async fn disconnect_provider(&mut self, provider_index: u8) -> Result<(), JsError> {
+        if provider_index < 2 {
+            self.attest_eph_seeds[provider_index as usize] = None;
+        }
+        self.inner
+            .disconnect_provider(provider_index)
+            .await
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = isProviderConnected)]
+    pub fn is_provider_connected(&self, provider_index: u8) -> Result<bool, JsError> {
+        self.inner
+            .is_provider_connected(provider_index)
+            .map_err(err_to_js)
+    }
+
     /// Close both WebSocket connections.
     #[wasm_bindgen(js_name = disconnect)]
     pub async fn disconnect(&mut self) -> Result<(), JsError> {
+        self.attest_eph_seeds = [None, None];
         self.inner.disconnect().await.map_err(err_to_js)
     }
 
@@ -2180,6 +2352,41 @@ impl WasmHarmonyClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    #[wasm_bindgen(js_name = verifyDatabaseProofFromProvider)]
+    pub async fn verify_database_proof_from_provider(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof_from_provider(provider_index, db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    #[wasm_bindgen(js_name = fetchCatalogFromProvider)]
+    pub async fn fetch_catalog_from_provider(
+        &mut self,
+        provider_index: u8,
+    ) -> Result<WasmDatabaseCatalog, JsError> {
+        let catalog = self
+            .inner
+            .fetch_catalog_from_provider(provider_index)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseCatalog::from_native(catalog))
     }
 
     /// Select whether every query must be bound to proof-verified database
@@ -2332,8 +2539,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedHintService)]
-    pub async fn authorize_retained_hint_service_v1(
+    /// Low-level retained hint redemption without a verified hint/query
+    /// payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedHintService)]
+    pub async fn dangerous_unpaired_authorize_retained_hint_service_v1(
         &mut self,
         db_id: u8,
         accepted: &WasmAcceptedRetainedServiceRedemptionV1,
@@ -2343,7 +2552,12 @@ impl WasmHarmonyClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_hint_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .dangerous_unpaired_authorize_retained_hint_service_v1(
+                db_id,
+                &accepted.inner,
+                proof,
+                now_unix,
+            )
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
@@ -2376,8 +2590,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeRetainedQueryService)]
-    pub async fn authorize_retained_query_service_v1(
+    /// Low-level retained query redemption without a verified hint/query
+    /// payment context.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedQueryService)]
+    pub async fn dangerous_unpaired_authorize_retained_query_service_v1(
         &mut self,
         db_id: u8,
         accepted: &WasmAcceptedRetainedServiceRedemptionV1,
@@ -2387,7 +2603,12 @@ impl WasmHarmonyClient {
         let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
         let grant = self
             .inner
-            .authorize_retained_query_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .dangerous_unpaired_authorize_retained_query_service_v1(
+                db_id,
+                &accepted.inner,
+                proof,
+                now_unix,
+            )
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
@@ -2465,32 +2686,7 @@ impl WasmHarmonyClient {
             .query_batch(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
-        let json: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| match r {
-                None => serde_json::Value::Null,
-                Some(qr) => {
-                    let entries: Vec<serde_json::Value> = qr
-                        .entries
-                        .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "txid": hex_encode(&e.txid),
-                                "vout": e.vout,
-                                "amountSats": e.amount_sats,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "entries": entries,
-                        "isWhale": qr.is_whale,
-                        "totalBalance": qr.total_balance(),
-                        "merkleVerified": qr.merkle_verified,
-                    })
-                }
-            })
-            .collect();
-        Ok(to_js_object(&json))
+        Ok(to_js_object(&query_results_to_json(&results)))
     }
 
     // ─── Session 5: inspector / verify / DB-switch / hint-cache surface ─────
@@ -2523,6 +2719,7 @@ impl WasmHarmonyClient {
                 server_index
             )));
         }
+        begin_attest_attempt(&mut self.attest_eph_seeds, server_index as usize);
         let mut eph_seed = [0u8; 32];
         let mut random_32 = [0u8; 32];
         getrandom::getrandom(&mut eph_seed)
@@ -2574,13 +2771,13 @@ impl WasmHarmonyClient {
         let query_pub: [u8; 32] = query_server_static_pub
             .try_into()
             .map_err(|_| JsError::new("queryServerStaticPub must be exactly 32 bytes"))?;
-        let eph_seed_hint = self.attest_eph_seeds[0].ok_or_else(|| {
+        let eph_seed_hint = take_attest_seed(&mut self.attest_eph_seeds, 0).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(0) on the hint server first \
                  (eph_seed binding required)",
             )
         })?;
-        let eph_seed_query = self.attest_eph_seeds[1].ok_or_else(|| {
+        let eph_seed_query = take_attest_seed(&mut self.attest_eph_seeds, 1).ok_or_else(|| {
             JsError::new(
                 "upgradeToSecureChannel: must call attest(1) on the query server first \
                  (eph_seed binding required)",
@@ -2603,24 +2800,51 @@ impl WasmHarmonyClient {
             )
             .await
             .map_err(err_to_js)?;
-        self.attest_eph_seeds = [None, None];
         Ok(())
     }
 
-    /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
-    /// but returns opaque [`WasmQueryResult`] handles whose
-    /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,
-    /// and whose per-query Merkle verification has been **skipped**.
-    ///
-    /// See [`WasmDpfClient::query_batch_raw`] for the full split-verify
-    /// flow description. The Harmony wrapper exposes the same JS-facing
-    /// contract despite the different wire protocol underneath.
+    #[wasm_bindgen(js_name = upgradeProviderToSecureChannel)]
+    pub async fn upgrade_provider_to_secure_channel(
+        &mut self,
+        provider_index: u8,
+        server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        if provider_index >= 2 {
+            return Err(JsError::new("providerIndex must be 0 or 1"));
+        }
+        let server_static_pub: [u8; 32] = server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub must be exactly 32 bytes"))?;
+        let eph_seed = take_attest_seed(&mut self.attest_eph_seeds, provider_index as usize)
+            .ok_or_else(|| {
+                JsError::new("upgradeProviderToSecureChannel requires attest(providerIndex) first")
+            })?;
+        let mut hs_nonce = [0u8; 32];
+        getrandom::getrandom(&mut hs_nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        self.inner
+            .upgrade_provider_to_secure_channel_with_seed(
+                provider_index,
+                server_static_pub,
+                eph_seed,
+                hs_nonce,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(())
+    }
+
+    /// Release-safe inspector batch query. See
+    /// [`WasmDpfClient::query_batch_verified`] for the all-or-nothing
+    /// verification and JS-boundary contract.
+    /// Empty input or a database without bucket-Merkle commitments fails
+    /// before the private query phase.
     ///
     /// 🔒 Padding invariants are preserved (K=75 INDEX / K_CHUNK=80
     /// CHUNK groups) — padding lives in the native `HarmonyClient` query
     /// path that this wrapper delegates to.
-    #[wasm_bindgen(js_name = queryBatchRaw)]
-    pub async fn query_batch_raw(
+    #[wasm_bindgen(js_name = queryBatchVerified)]
+    pub async fn query_batch_verified(
         &mut self,
         script_hashes: &Uint8Array,
         db_id: u8,
@@ -2629,63 +2853,40 @@ impl WasmHarmonyClient {
         let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
         let results = self
             .inner
-            .query_batch_with_inspector(&script_hashes, db_id)
+            .query_batch_verified_with_inspector(&script_hashes, db_id)
             .await
             .map_err(err_to_js)?;
         let arr = Array::new();
-        for r in results {
-            match r {
-                Some(qr) => {
-                    arr.push(&JsValue::from(WasmQueryResult::from_native(qr)));
-                }
-                None => {
-                    // `query_batch_with_inspector` synthesises `Some(empty)`
-                    // for not-found; fall through to null if the contract
-                    // ever changes.
-                    arr.push(&JsValue::NULL);
-                }
-            }
+        for result in results {
+            arr.push(&JsValue::from(WasmQueryResult::from_verified(result)));
         }
         Ok(arr.into())
     }
 
-    /// Standalone Merkle verifier over inspector-populated QueryResults.
-    /// See [`WasmDpfClient::verify_merkle_batch`] for the full argument
-    /// / return contract — the Harmony implementation uses the same
-    /// per-bucket machinery via the `HarmonySiblingQuerier` transport
-    /// path, so the JS-facing behaviour is identical.
-    #[wasm_bindgen(js_name = verifyMerkleBatch)]
-    pub async fn verify_merkle_batch(
-        &mut self,
-        results_json: &JsValue,
+    /// Query-provider counterpart of `WasmDpfClient.planServiceQuery`.
+    /// Reports `2R` exact INDEX frames plus the mandatory two-frame batched
+    /// CHUNK-presence round; Merkle and extra real-chunk rounds remain omitted.
+    #[wasm_bindgen(js_name = planServiceQuery)]
+    pub fn plan_service_query(
+        &self,
+        script_hashes: &Uint8Array,
         db_id: u8,
     ) -> Result<JsValue, JsError> {
-        let data: serde_json::Value = serde_wasm_bindgen::from_value(results_json.clone())
-            .map_err(|e| JsError::new(&format!("JSON parse error: {}", e)))?;
-        let items = data
-            .as_array()
-            .ok_or_else(|| JsError::new("verifyMerkleBatch: results must be an array"))?;
-
-        let mut parsed: Vec<Option<QueryResult>> = Vec::with_capacity(items.len());
-        for v in items {
-            if v.is_null() {
-                parsed.push(None);
-            } else {
-                parsed.push(Some(parse_query_result_json(v)?));
-            }
-        }
-
-        let verdicts = self
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let plan = self
             .inner
-            .verify_merkle_batch_for_results(&parsed, db_id)
-            .await
+            .plan_service_query(&script_hashes, db_id)
             .map_err(err_to_js)?;
+        Ok(to_js_object(&product_query_plan_json(&plan)))
+    }
 
-        let arr = Array::new();
-        for ok in verdicts {
-            arr.push(&JsValue::from_bool(ok));
-        }
-        Ok(arr.into())
+    /// Plan the catalog-known cold-cache hint lower bound. This is a separate
+    /// provider/workload from the query plan and never inspects query inputs.
+    #[wasm_bindgen(js_name = planServiceHint)]
+    pub fn plan_service_hint(&self, db_id: u8) -> Result<JsValue, JsError> {
+        let plan = self.inner.plan_service_hint(db_id).map_err(err_to_js)?;
+        Ok(to_js_object(&product_query_plan_json(&plan)))
     }
 
     /// Get the currently-loaded `db_id`, or `null` if no hints are
@@ -2697,7 +2898,7 @@ impl WasmHarmonyClient {
 
     /// Pin this client's hint state to `db_id`. If hints for a different
     /// db are currently loaded, invalidates them — the next
-    /// `sync`/`queryBatch`/`queryBatchRaw` will re-fetch (or restore
+    /// `sync`/`queryBatch`/`queryBatchVerified` will re-fetch (or restore
     /// from the hint cache if configured).
     ///
     /// Idempotent when `db_id` already matches the loaded state.
@@ -2795,6 +2996,42 @@ impl WasmHarmonyClient {
             .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
         self.inner
             .load_hints_bytes(bytes, db_info)
+            .map_err(err_to_js)
+    }
+
+    /// Restore only a complete paid hint resource. The native client requires
+    /// proof-verified tree tops for `dbId` and rejects main-only or malformed
+    /// sibling state, clearing the partial in-memory bundle on failure.
+    #[wasm_bindgen(js_name = loadCompleteHints)]
+    pub fn load_complete_hints(
+        &mut self,
+        bytes: &[u8],
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+    ) -> Result<(), JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
+        self.inner
+            .load_complete_hints_bytes(bytes, db_info)
+            .map_err(err_to_js)
+    }
+
+    /// True only when every main and authenticated sibling hint group for the
+    /// proof-verified database is present in memory.
+    #[wasm_bindgen(js_name = hasCompleteHints)]
+    pub fn has_complete_hints(
+        &self,
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+    ) -> Result<bool, JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
+        self.inner
+            .has_complete_hints_for_verified_database(db_info)
             .map_err(err_to_js)
     }
 
@@ -2897,6 +3134,30 @@ impl WasmHarmonyClient {
         };
         self.inner
             .fetch_hints_with_progress(&db_info, &prog)
+            .await
+            .map_err(err_to_js)
+    }
+
+    /// Pre-fetch every main and Merkle-sibling hint group needed to restore a
+    /// paid hint entitlement across page reloads. Requires proof-verified tree
+    /// tops to have been installed through `preflightDatabase` first.
+    #[wasm_bindgen(js_name = fetchCompleteHintsWithProgress)]
+    pub async fn fetch_complete_hints_with_progress(
+        &mut self,
+        catalog: &WasmDatabaseCatalog,
+        db_id: u8,
+        progress: js_sys::Function,
+    ) -> Result<(), JsError> {
+        let db_info = catalog
+            .inner()
+            .get(db_id)
+            .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?
+            .clone();
+        let prog = JsHintProgress {
+            cb: SendWrapper::new(progress),
+        };
+        self.inner
+            .fetch_complete_hints_with_progress(&db_info, &prog)
             .await
             .map_err(err_to_js)
     }
@@ -3279,6 +3540,51 @@ pub fn prp_fastprp() -> u8 {
 mod tests {
     use super::*;
 
+    fn planner_db(index_k: u8, chunk_k: u8) -> pir_sdk::DatabaseInfo {
+        pir_sdk::DatabaseInfo {
+            db_id: 0,
+            kind: pir_sdk::DatabaseKind::Full,
+            name: "wasm-planner".into(),
+            height: 1,
+            index_bins: 1_024,
+            chunk_bins: 2_048,
+            index_k,
+            chunk_k,
+            tag_seed: 1,
+            dpf_n_index: 10,
+            dpf_n_chunk: 11,
+            has_bucket_merkle: true,
+            index_master_seed: 2,
+            chunk_master_seed: 3,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn failed_reattest_clears_the_previous_handshake_seed() {
+        let mut slots: AttestSeedSlots = [Some([0x11; 32]), Some([0x22; 32])];
+
+        // `begin_attest_attempt` runs before randomness or network I/O. A
+        // failure after this point leaves no older binding available.
+        begin_attest_attempt(&mut slots, 0);
+
+        assert_eq!(slots[0], None);
+        assert_eq!(slots[1], Some([0x22; 32]));
+    }
+
+    #[test]
+    fn failed_handshake_cannot_reuse_a_consumed_attestation_seed() {
+        let mut slots: AttestSeedSlots = [Some([0x31; 32]), Some([0x32; 32])];
+
+        // The real handshake starts only after this one-shot take. Simulate a
+        // later transport failure by deliberately not putting it back.
+        assert_eq!(take_attest_seed(&mut slots, 1), Some([0x32; 32]));
+
+        assert_eq!(take_attest_seed(&mut slots, 1), None);
+        assert_eq!(slots[0], Some([0x31; 32]));
+    }
+
     #[test]
     fn database_proof_frame_requires_exact_length_prefix() {
         let frame = [2, 0, 0, 0, 0x0a, 0x01];
@@ -3306,6 +3612,7 @@ mod tests {
     fn database_proof_exposes_onion_entry_size() {
         let roots = VerifiedDatabaseRoots {
             db_id: 1,
+            manifest_root: [9; 32],
             build_kind: pir_db_attest::BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],
@@ -3323,8 +3630,10 @@ mod tests {
         };
 
         let json = database_proof_json(&roots);
+        assert_eq!(json["manifestRootHex"], "09".repeat(32));
         assert_eq!(json["onionEntrySize"], 3328);
         let proof = WasmDatabaseProof { inner: roots };
+        assert_eq!(proof.manifest_root_hex(), "09".repeat(32));
         assert_eq!(proof.onion_entry_size(), 3328);
     }
 
@@ -3333,6 +3642,7 @@ mod tests {
         let layout = pir_db_attest::OnionQueryLayoutV2::current(948_640, 10_273, 37_954, 3_328);
         let roots = VerifiedDatabaseRoots {
             db_id: 0,
+            manifest_root: [9; 32],
             build_kind: pir_db_attest::BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],
@@ -3385,6 +3695,48 @@ mod tests {
         assert!(unpack_script_hashes(&buf).is_err());
         let buf = vec![0u8; 41];
         assert!(unpack_script_hashes(&buf).is_err());
+    }
+
+    #[test]
+    fn service_query_plan_json_preserves_u64_and_omission_semantics() {
+        let hashes = vec![[0_u8; 20], [1_u8; 20], [2_u8; 20], [3_u8; 20]];
+        let plan = pir_sdk_client::plan_dpf_service_query_v1(&hashes, &planner_db(3, 3))
+            .expect("transport-free DPF plan");
+        let json = product_query_plan_json(&plan);
+
+        assert_eq!(json["backend"], "dpf-pir");
+        assert_eq!(json["workload"], "dpf-query");
+        assert_eq!(json["lowerBounds"]["logicalInputs"], 2);
+        assert_eq!(json["lowerBounds"]["frames"], 6);
+        assert_eq!(json["lowerBounds"]["workUnits"], "36");
+        assert_eq!(json["lowerBounds"]["concurrentSockets"], 1);
+        assert!(json["lowerBounds"].get("hintGroups").is_none());
+        assert_eq!(json["pbcRounds"], 2);
+        assert_eq!(json["exactIndexFrames"], 2);
+        assert!(json["omitted"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::String("merkleFrames".into())));
+        assert!(json.get("requestBytes").is_none());
+    }
+
+    #[test]
+    fn harmony_hint_plan_json_is_a_separate_product_workload() {
+        let plan = pir_sdk_client::plan_harmony_service_hint_v1(&planner_db(75, 80))
+            .expect("transport-free hint plan");
+        let json = product_query_plan_json(&plan);
+
+        assert_eq!(json["backend"], "harmony-pir");
+        assert_eq!(json["workload"], "harmony-hint");
+        assert_eq!(json["lowerBounds"]["logicalInputs"], 0);
+        assert_eq!(json["lowerBounds"]["frames"], 1);
+        assert_eq!(json["lowerBounds"]["hintGroups"], 155);
+        assert_eq!(json["lowerBounds"]["workUnits"], "155");
+        assert!(json.get("pbcRounds").is_none());
+        assert!(json["omitted"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::String("siblingHintGroups".into())));
     }
 
     #[test]
@@ -3482,21 +3834,20 @@ mod tests {
     }
 
     #[test]
-    fn sync_result_to_json_shape() {
+    fn sync_result_to_json_drops_raw_verification_metadata() {
         use pir_sdk::{QueryResult, SyncResult, UtxoEntry};
 
         let mut txid = [0u8; 32];
         txid[31] = 0xab;
 
+        let mut raw = QueryResult::with_entries(vec![UtxoEntry {
+            txid,
+            vout: 7,
+            amount_sats: 12345,
+        }]);
+        raw.merkle_verified = true;
         let sync = SyncResult {
-            results: vec![
-                None,
-                Some(QueryResult::with_entries(vec![UtxoEntry {
-                    txid,
-                    vout: 7,
-                    amount_sats: 12345,
-                }])),
-            ],
+            results: vec![None, Some(raw)],
             synced_height: 900_000,
             was_fresh_sync: true,
         };
@@ -3511,8 +3862,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["vout"], 7);
         assert_eq!(entries[0]["amountSats"], 12345);
-        // `merkleVerified` defaults to `true` via `QueryResult::with_entries`.
-        assert_eq!(results[1]["merkleVerified"], true);
+        // Even positive native diagnostic metadata is stripped from mutable
+        // plain JSON. Only an opaque WasmQueryResult handle preserves it.
+        assert_eq!(results[1]["merkleVerified"], false);
     }
 
     #[test]

@@ -103,7 +103,9 @@ install() {
     # /usr/local/bin/unified_server which the 96bpir-unified-server
     # module bakes in. The run script gates on /home/pir/data/
     # databases.toml (bind-mounted by bpir-tier3-init) and exec's
-    # the same flag set as deploy/systemd/pir-vpsbg.service.
+    # the same base topology flags as deploy/systemd/pir-vpsbg.service plus
+    # the explicitly reviewed VPSBG Payment V1 suffix baked into its measured
+    # run script.
     inst_dir /etc/sv/unified_server
     inst_simple "$moddir/unified-server-run.sh" /etc/sv/unified_server/run
 }

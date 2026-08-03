@@ -43,6 +43,8 @@ enum DirectoryArtifactCommand {
     Assertion(AssertionArgs),
     /// Build one signed NIP-01 EVENT message for a provider entry.
     Entry(EntryArgs),
+    /// Retire one provider ID without advertising an operator assertion or offers.
+    Tombstone(TombstoneArgs),
     /// Build one signed checkpoint EVENT for each of the 16 coarse shards.
     Checkpoints(CheckpointArgs),
     /// Publish already-signed EVENT artifacts unchanged to every relay.
@@ -128,6 +130,35 @@ struct EntryArgs {
 }
 
 #[derive(Args, Debug)]
+struct TombstoneArgs {
+    /// Retired provider ID as 32-byte lowercase hexadecimal.
+    #[arg(long)]
+    provider_id_hex: String,
+    #[arg(long)]
+    directory_signing_key: PathBuf,
+    /// Additional x-only secp256k1 role key which the directory key must not equal.
+    #[arg(long = "reserved-xonly-pubkey-hex")]
+    reserved_xonly_pubkey_hex: Vec<String>,
+    #[arg(long)]
+    directory_sequence: u64,
+    #[arg(long)]
+    directory_valid_until: u64,
+    #[arg(long, value_enum, default_value = "unavailable")]
+    health_class: HealthClassArg,
+    /// Unix seconds floored to the directory's five-minute health bucket.
+    #[arg(long)]
+    health_observed_bucket: u64,
+    #[arg(long)]
+    created_at: u64,
+    #[arg(long)]
+    now_unix: u64,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Debug)]
 struct CheckpointArgs {
     /// One NIP-01 ["EVENT", event] entry artifact. Repeat for every provider.
     #[arg(long = "entry-event")]
@@ -158,6 +189,7 @@ pub async fn run(args: DirectoryArtifactArgs) -> Result<(), String> {
     match args.command {
         DirectoryArtifactCommand::Assertion(args) => build_assertion(args),
         DirectoryArtifactCommand::Entry(args) => build_entry(args),
+        DirectoryArtifactCommand::Tombstone(args) => build_tombstone(args),
         DirectoryArtifactCommand::Checkpoints(args) => build_checkpoints(args),
         DirectoryArtifactCommand::Publish(args) => crate::directory_publish::run(args).await,
     }
@@ -331,6 +363,57 @@ fn build_entry(args: EntryArgs) -> Result<(), String> {
     let reparsed = parse_event_message(&message, "generated directory entry EVENT")?;
     if reparsed != event_json {
         return Err("NIP-01 EVENT envelope self-check changed the event".to_owned());
+    }
+    write_atomic_private(&args.out, &message, args.force)?;
+    println!(
+        "directory_pubkey_xonly={}",
+        hex::encode(publisher.public_key())
+    );
+    println!("provider_id={}", hex::encode(entry.provider_id()));
+    println!("event_id={}", hex::encode(event.id()));
+    println!("shard={:x}", verified.shard());
+    Ok(())
+}
+
+fn build_tombstone(args: TombstoneArgs) -> Result<(), String> {
+    require_nonzero_time(args.now_unix)?;
+    if args.created_at == 0 || args.created_at > args.now_unix {
+        return Err("--created-at must be non-zero and no later than --now-unix".to_owned());
+    }
+    let provider_id = decode_lower_fixed_hex::<32>(&args.provider_id_hex, "provider ID")?;
+    let reserved = decode_reserved_xonly_keys(&args.reserved_xonly_pubkey_hex)?;
+    let publisher = load_directory_key(&args.directory_signing_key, &[], &reserved)?;
+    let entry = DirectoryEntryV1::new_tombstone(
+        provider_id,
+        args.directory_sequence,
+        args.directory_valid_until,
+        DirectoryHealthV1 {
+            class: args.health_class.into(),
+            observed_bucket: args.health_observed_bucket,
+        },
+        args.now_unix,
+    )
+    .map_err(|error| format!("directory tombstone validation failed: {error}"))?;
+    let auxiliary_randomness = fresh_auxiliary_randomness()?;
+    let event = publisher
+        .sign_entry_event(&entry, args.created_at, &auxiliary_randomness)
+        .map_err(|error| format!("directory tombstone EVENT signing failed: {error}"))?;
+    let event_json = event
+        .to_json_bytes()
+        .map_err(|error| format!("directory tombstone EVENT encoding failed: {error}"))?;
+    let verified =
+        verify_directory_entry_event_v1(&event_json, publisher.public_key(), args.now_unix)
+            .map_err(|error| {
+                format!("directory tombstone EVENT self-verification failed: {error}")
+            })?;
+    if verified.discovery_entry() != &entry {
+        return Err("directory tombstone EVENT self-check changed the entry".to_owned());
+    }
+    let message = event
+        .to_event_message_json_bytes()
+        .map_err(|error| format!("directory tombstone EVENT envelope failed: {error}"))?;
+    if parse_event_message(&message, "generated directory tombstone EVENT")? != event_json {
+        return Err("directory tombstone EVENT envelope changed the event".to_owned());
     }
     write_atomic_private(&args.out, &message, args.force)?;
     println!(
@@ -751,8 +834,309 @@ fn write_atomic_private(path: &Path, bytes: &[u8], force: bool) -> Result<(), St
     result
 }
 
+#[cfg(unix)]
+pub(crate) fn write_atomic_private_no_replace_v1(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_private_no_replace_with_hook_v1(path, bytes, |_| Ok(()))
+}
+
+#[cfg(unix)]
+pub(crate) fn require_private_output_absent_v1(path: &Path) -> Result<(), String> {
+    use rustix::fs::{self as rustix_fs, AtFlags, FileType, Mode, OFlags};
+
+    let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "private output path must have a file name".to_owned())?;
+    let parent_fd = rustix_fs::open(
+        parent_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("open private output parent failed: {error}"))?;
+    let parent_stat = rustix_fs::fstat(&parent_fd)
+        .map_err(|error| format!("inspect private output parent failed: {error}"))?;
+    let parent_snapshot = private_output_parent_v1(&parent_stat);
+    if !FileType::from_raw_mode(parent_stat.st_mode).is_dir()
+        || parent_stat.st_uid != rustix::process::geteuid().as_raw()
+        || parent_stat.st_gid != rustix::process::getegid().as_raw()
+        || parent_stat.st_mode & 0o7777 != 0o700
+    {
+        return Err("private output parent must be an owner-matched 0700 directory".to_owned());
+    }
+    match rustix_fs::statat(&parent_fd, file_name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => {
+            return Err(format!(
+                "immutable private output already exists: {}",
+                path.display()
+            ));
+        }
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(format!("inspect private output target failed: {error}")),
+    }
+    validate_private_output_parent_v1(parent_path, parent_snapshot)
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrivateNoReplaceCommitPointV1 {
+    BeforePublish,
+    AfterPublish,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrivateOutputParentV1 {
+    device: u128,
+    inode: u128,
+    gid: u32,
+    mode: u64,
+    uid: u32,
+}
+
+#[cfg(unix)]
+fn private_output_parent_v1(stat: &rustix::fs::Stat) -> PrivateOutputParentV1 {
+    PrivateOutputParentV1 {
+        device: stat.st_dev as u128,
+        inode: stat.st_ino as u128,
+        gid: stat.st_gid,
+        mode: stat.st_mode as u64,
+        uid: stat.st_uid,
+    }
+}
+
+#[cfg(unix)]
+fn validate_private_output_parent_v1(
+    parent_path: &Path,
+    expected: PrivateOutputParentV1,
+) -> Result<(), String> {
+    use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
+
+    let reopened = rustix_fs::open(
+        parent_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("reopen output parent failed: {error}"))?;
+    let stat = rustix_fs::fstat(&reopened)
+        .map_err(|error| format!("reinspect output parent failed: {error}"))?;
+    if !FileType::from_raw_mode(stat.st_mode).is_dir()
+        || private_output_parent_v1(&stat) != expected
+    {
+        return Err("output parent pathname or private generation changed".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_committed_private_output_at_v1(
+    parent: &fs::File,
+    parent_path: &Path,
+    parent_snapshot: PrivateOutputParentV1,
+    file_name: &std::ffi::OsStr,
+    expected: &[u8],
+    committed_identity: (u128, u128),
+) -> Result<(), String> {
+    use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
+
+    let fd = rustix_fs::openat(
+        parent,
+        file_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("open existing output failed: {error}"))?;
+    let before = rustix_fs::fstat(&fd)
+        .map_err(|error| format!("inspect existing output failed: {error}"))?;
+    if !FileType::from_raw_mode(before.st_mode).is_file()
+        || before.st_nlink != 1
+        || before.st_mode & 0o7777 != 0o600
+        || before.st_uid != rustix::process::geteuid().as_raw()
+        || before.st_gid != rustix::process::getegid().as_raw()
+        || usize::try_from(before.st_size).ok() != Some(expected.len())
+        || before.st_dev as u128 != committed_identity.0
+        || before.st_ino as u128 != committed_identity.1
+    {
+        return Err(
+            "committed output metadata is not the exact owner-only 0600 one-link regular data"
+                .to_owned(),
+        );
+    }
+    let before_snapshot = public_file_snapshot_v1(&before);
+    let file = fs::File::from(fd);
+    let mut observed = Vec::with_capacity(expected.len());
+    (&file)
+        .take((expected.len() as u64).saturating_add(1))
+        .read_to_end(&mut observed)
+        .map_err(|error| format!("read committed output failed: {error}"))?;
+    let after = rustix_fs::fstat(&file)
+        .map_err(|error| format!("reinspect committed output failed: {error}"))?;
+    if observed != expected || public_file_snapshot_v1(&after) != before_snapshot {
+        return Err("committed output bytes or descriptor generation differ".to_owned());
+    }
+    let confirmation = rustix_fs::openat(
+        parent,
+        file_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("reopen committed output failed: {error}"))?;
+    let confirmed = rustix_fs::fstat(&confirmation)
+        .map_err(|error| format!("confirm committed output failed: {error}"))?;
+    if public_file_snapshot_v1(&confirmed) != before_snapshot {
+        return Err("committed output pathname changed during validation".to_owned());
+    }
+    validate_private_output_parent_v1(parent_path, parent_snapshot)?;
+    parent
+        .sync_all()
+        .map_err(|error| format!("sync committed output directory failed: {error}"))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_atomic_private_no_replace_with_hook_v1<F>(
+    path: &Path,
+    bytes: &[u8],
+    mut commit_hook: F,
+) -> Result<(), String>
+where
+    F: FnMut(PrivateNoReplaceCommitPointV1) -> Result<(), String>,
+{
+    use rustix::fs::{self as rustix_fs, AtFlags, FileType, Mode, OFlags, RenameFlags};
+
+    if bytes.is_empty() {
+        return Err("refusing to write an empty private output".to_owned());
+    }
+    let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "private output path must have a file name".to_owned())?;
+    let parent_fd = rustix_fs::open(
+        parent_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("open private output parent failed: {error}"))?;
+    let parent = fs::File::from(parent_fd);
+    let parent_stat = rustix_fs::fstat(&parent)
+        .map_err(|error| format!("inspect private output parent failed: {error}"))?;
+    let parent_snapshot = private_output_parent_v1(&parent_stat);
+    if !FileType::from_raw_mode(parent_stat.st_mode).is_dir()
+        || parent_stat.st_uid != rustix::process::geteuid().as_raw()
+        || parent_stat.st_gid != rustix::process::getegid().as_raw()
+        || parent_stat.st_mode & 0o7777 != 0o700
+    {
+        return Err("private output parent must be an owner-matched 0700 directory".to_owned());
+    }
+
+    let target_name = file_name
+        .to_str()
+        .ok_or_else(|| "private output path must have a UTF-8 file name".to_owned())?;
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|error| format!("OS randomness unavailable for atomic output: {error}"))?;
+    let temporary = format!(".{target_name}.{}.tmp", hex::encode(nonce));
+    let mut temporary_created = false;
+    let result = (|| {
+        let fd = rustix_fs::openat(
+            &parent,
+            temporary.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|error| format!("create private output temporary failed: {error}"))?;
+        temporary_created = true;
+        rustix_fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
+            .map_err(|error| format!("secure private output temporary failed: {error}"))?;
+        let mut temporary_file = fs::File::from(fd);
+        temporary_file
+            .write_all(bytes)
+            .and_then(|()| temporary_file.sync_all())
+            .map_err(|error| format!("write private output temporary failed: {error}"))?;
+        let temporary_stat = rustix_fs::fstat(&temporary_file)
+            .map_err(|error| format!("inspect private output temporary failed: {error}"))?;
+        if !FileType::from_raw_mode(temporary_stat.st_mode).is_file()
+            || temporary_stat.st_nlink != 1
+            || temporary_stat.st_uid != rustix::process::geteuid().as_raw()
+            || temporary_stat.st_gid != rustix::process::getegid().as_raw()
+            || temporary_stat.st_mode & 0o7777 != 0o600
+            || usize::try_from(temporary_stat.st_size).ok() != Some(bytes.len())
+        {
+            return Err(
+                "private output temporary failed owner/mode/link/length validation".to_owned(),
+            );
+        }
+        let committed_identity = (temporary_stat.st_dev as u128, temporary_stat.st_ino as u128);
+        drop(temporary_file);
+        parent.sync_all().map_err(|error| {
+            format!("sync private output temporary directory entry failed: {error}")
+        })?;
+        validate_private_output_parent_v1(parent_path, parent_snapshot)?;
+        commit_hook(PrivateNoReplaceCommitPointV1::BeforePublish)?;
+        match rustix_fs::renameat_with(
+            &parent,
+            temporary.as_str(),
+            &parent,
+            file_name,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => {
+                temporary_created = false;
+            }
+            Err(rustix::io::Errno::EXIST) => {
+                rustix_fs::unlinkat(&parent, temporary.as_str(), AtFlags::empty()).map_err(
+                    |error| format!("remove colliding private output temporary failed: {error}"),
+                )?;
+                temporary_created = false;
+                parent.sync_all().map_err(|error| {
+                    format!("sync colliding private output cleanup failed: {error}")
+                })?;
+                validate_private_output_parent_v1(parent_path, parent_snapshot)?;
+                return Err(format!(
+                    "immutable private output already exists at atomic commit: {}",
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "atomically publish private output without replacement failed: {error}"
+                ));
+            }
+        }
+        commit_hook(PrivateNoReplaceCommitPointV1::AfterPublish)?;
+        parent
+            .sync_all()
+            .map_err(|error| format!("sync committed private output directory failed: {error}"))?;
+        validate_committed_private_output_at_v1(
+            &parent,
+            parent_path,
+            parent_snapshot,
+            file_name,
+            bytes,
+            committed_identity,
+        )
+    })();
+    if temporary_created {
+        let _ = rustix_fs::unlinkat(&parent, temporary.as_str(), AtFlags::empty());
+        let _ = parent.sync_all();
+    }
+    result
+}
+
 #[cfg(not(unix))]
 fn write_atomic_private(_path: &Path, _bytes: &[u8], _force: bool) -> Result<(), String> {
+    Err("directory artifacts require Unix atomic 0600 output semantics".to_owned())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn write_atomic_private_no_replace_v1(
+    _path: &Path,
+    _bytes: &[u8],
+) -> Result<(), String> {
+    Err("directory artifacts require Unix atomic 0600 output semantics".to_owned())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn require_private_output_absent_v1(_path: &Path) -> Result<(), String> {
     Err("directory artifacts require Unix atomic 0600 output semantics".to_owned())
 }
 
@@ -761,6 +1145,7 @@ mod tests {
     use super::*;
     use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
+    use pir_directory_nostr::DirectoryEntryStatusV1;
     use pir_service_protocol::{
         AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, DatasetBindingV1,
         DeploymentStatus, EntitlementLimitsV1, FreeModeV1, PriceV1, PrivacyLeakageV1,
@@ -952,6 +1337,63 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_and_checkpoint_roundtrip_offline() {
+        let directory = private_tempdir().unwrap();
+        let directory_key_path = directory.path().join("directory.key");
+        let tombstone_path = directory.path().join("tombstone.event.json");
+        let checkpoints_path = directory.path().join("checkpoints.json");
+        write_key(&directory_key_path, [0x55; 32]);
+
+        build_tombstone(TombstoneArgs {
+            provider_id_hex: hex::encode([0x91; 32]),
+            directory_signing_key: directory_key_path.clone(),
+            reserved_xonly_pubkey_hex: Vec::new(),
+            directory_sequence: 3,
+            directory_valid_until: 2_400,
+            health_class: HealthClassArg::Unavailable,
+            health_observed_bucket: NOW,
+            created_at: NOW,
+            now_unix: NOW,
+            out: tombstone_path.clone(),
+            force: false,
+        })
+        .unwrap();
+
+        let publisher = DirectoryPublisherKeyV1::from_secret_bytes([0x55; 32]).unwrap();
+        let tombstone_json =
+            parse_event_message(&fs::read(&tombstone_path).unwrap(), "test tombstone").unwrap();
+        let verified =
+            verify_directory_entry_event_v1(&tombstone_json, publisher.public_key(), NOW).unwrap();
+        assert_eq!(
+            verified.discovery_entry().status(),
+            DirectoryEntryStatusV1::Tombstone
+        );
+        assert!(verified.discovery_entry().operator_assertion().is_none());
+
+        build_checkpoints(CheckpointArgs {
+            entry_events: vec![tombstone_path.clone()],
+            directory_signing_key: directory_key_path,
+            reserved_xonly_pubkey_hex: Vec::new(),
+            checkpoint_epoch: 14,
+            not_before: 1_000,
+            valid_until: 2_400,
+            created_at: NOW,
+            now_unix: NOW,
+            out: checkpoints_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let bundle: Vec<Box<RawValue>> =
+            serde_json::from_slice(&fs::read(&checkpoints_path).unwrap()).unwrap();
+        assert_eq!(bundle.len(), 16);
+        for message in bundle {
+            let event_json =
+                parse_event_message(message.get().as_bytes(), "test checkpoint").unwrap();
+            verify_directory_checkpoint_event_v1(&event_json, publisher.public_key(), NOW).unwrap();
+        }
+    }
+
+    #[test]
     fn key_reuse_existing_output_and_wrong_directory_key_fail_closed() {
         let directory = private_tempdir().unwrap();
         let same_key = SigningKey::from_bytes(&[7; 32]);
@@ -977,8 +1419,10 @@ mod tests {
         assert!(error.contains("must be distinct"));
 
         let existing = directory.path().join("existing");
-        write_atomic_private(&existing, b"first", false).unwrap();
+        write_atomic_private_no_replace_v1(&existing, b"first").unwrap();
+        assert!(write_atomic_private_no_replace_v1(&existing, b"first").is_err());
         assert!(write_atomic_private(&existing, b"second", false).is_err());
+        assert!(write_atomic_private_no_replace_v1(&existing, b"second").is_err());
         assert_eq!(fs::read(existing).unwrap(), b"first");
 
         let wrong = DirectoryPublisherKeyV1::from_secret_bytes([8; 32]).unwrap();
@@ -997,6 +1441,62 @@ mod tests {
         let event = wrong.sign_entry_event(&entry, NOW, &[1; 32]).unwrap();
         let event_json = event.to_json_bytes().unwrap();
         assert!(verify_directory_entry_event_v1(&event_json, right.public_key(), NOW).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_no_replace_receipt_has_one_atomic_commit_point_and_never_adopts() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = private_tempdir().unwrap();
+        let before = directory.path().join("before.json");
+        let before_error =
+            write_atomic_private_no_replace_with_hook_v1(&before, b"complete-before\n", |point| {
+                if point == PrivateNoReplaceCommitPointV1::BeforePublish {
+                    Err("injected-before-publish".to_owned())
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert!(before_error.contains("injected-before-publish"));
+        assert!(!before.exists());
+
+        let after = directory.path().join("after.json");
+        let after_error =
+            write_atomic_private_no_replace_with_hook_v1(&after, b"complete-after\n", |point| {
+                if point == PrivateNoReplaceCommitPointV1::AfterPublish {
+                    Err("injected-after-publish".to_owned())
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert!(after_error.contains("injected-after-publish"));
+        assert_eq!(fs::read(&after).unwrap(), b"complete-after\n");
+        let after_metadata = fs::symlink_metadata(&after).unwrap();
+        assert_eq!(after_metadata.nlink(), 1);
+        assert_eq!(after_metadata.permissions().mode() & 0o777, 0o600);
+
+        assert!(write_atomic_private_no_replace_v1(&after, b"complete-after\n").is_err());
+        assert!(write_atomic_private_no_replace_v1(&after, b"different\n").is_err());
+        assert_eq!(fs::read(&after).unwrap(), b"complete-after\n");
+        assert_eq!(fs::symlink_metadata(&after).unwrap().nlink(), 1);
+
+        let special_parent = directory.path().join("special-parent");
+        fs::create_dir(&special_parent).unwrap();
+        fs::set_permissions(&special_parent, fs::Permissions::from_mode(0o1700)).unwrap();
+        let special_output = special_parent.join("receipt.json");
+        assert!(require_private_output_absent_v1(&special_output).is_err());
+        assert!(write_atomic_private_no_replace_v1(&special_output, b"receipt\n").is_err());
+        assert!(!special_output.exists());
+
+        let leftover_temporaries = fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftover_temporaries, 0);
     }
 
     #[cfg(unix)]

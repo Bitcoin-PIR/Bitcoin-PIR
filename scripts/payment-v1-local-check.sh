@@ -17,19 +17,20 @@ network.
            TCP or Unix-domain listeners.
   --full   The default offline payment-platform Rust suite, operator tooling,
            loopback-only unified-server process E2E (including strict-TLS
-           Standard Cashu), WASM checks, web typecheck/tests/bundle, a local
+           Standard Cashu and authenticated direct TEE-ORAM), WASM checks,
+           web typecheck/tests/bundle, a local
            Chromium multi-tab vault test, a real-WASM/loopback no-funds issuer
            acquisition test, and a browser -> two independent issuers -> two
            real provider-gate test. This is the default.
 
-Full mode starts only temporary unified-server, rollback-authority,
-deterministic test-only TLS/NUT-03 mint, Vite and fake issuer listeners
+Full mode starts only temporary directory-relay, unified-server,
+rollback-authority, test-only TLS/NUT-03 mint, Vite and fake issuer listeners
 explicitly bound to 127.0.0.1; the tests kill and wait for every child. Neither
-mode contacts an external Lightning node or Cashu mint, publishes to a Nostr
-relay, deploys a server, uses real funds, or modifies source files. Quick mode
-starts no persistent service process. Cargo, the JavaScript package manager,
-and tests may update their normal local build caches (for example target/ and
-web/node_modules cache metadata).
+mode contacts an external Lightning node or Cashu mint, publishes to a public
+Nostr relay, deploys a server, uses real funds, or modifies source files. Quick
+mode starts no persistent service process. Cargo, the JavaScript package
+manager, and tests may update their normal local build caches (for example
+target/ and web/node_modules cache metadata).
 EOF
 }
 
@@ -86,12 +87,46 @@ cargo test --locked --offline -p pir-sdk-wasm --lib
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node --test scripts/payment-v1-deployment-template-gate.test.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
+bash -n scripts/build-payment-v1-directory-relay.sh
+bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
+bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+bash -n scripts/payment-v1-systemd-255-pid1.test.sh
+bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
+node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+  scripts/payment-v1-publisher-netns-schema.test.mjs \
+  scripts/payment-v1-publisher-private-health-probe.test.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+  scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
   scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 if [[ "$mode" == "quick" ]]; then
@@ -139,6 +174,15 @@ cargo test --locked --offline -p runtime \
 cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p runtime --test payment_v1_onion_process_e2e
+cargo test --locked --offline \
+  --manifest-path vendor/bitcoinpir-oram/Cargo.toml
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e \
+  -- --exact --ignored
 cargo test --locked --offline -p pir-rollback-authority-client \
   --features test-only-webpki-root \
   test_only_webpki_root_requires_owner_only_regular_file
@@ -219,6 +263,11 @@ cargo test --locked --offline -p runtime \
   --test payment_v1_process_e2e \
   remote_authority_process::remote_authority_real_process_tls_provider_e2e \
   -- --exact
+cargo test --locked --offline -p runtime \
+  --features remote-authority-process-e2e \
+  --test payment_v1_process_e2e \
+  three_authority_process::three_authority_real_process_topology_e2e \
+  -- --exact
 cargo clippy --locked --offline -p runtime \
   --features remote-authority-process-e2e \
   --bin unified_server \
@@ -242,16 +291,45 @@ cargo clippy --locked --offline -p payment-issuer \
   -- -D warnings
 cargo check --locked --offline -p runtime --bin unified_server
 
-echo "[6/9] Standard Cashu and shared-issuer signed-pin TLS process boundaries"
+echo "[6/9] Standard Cashu, complete method/backend matrix, and shared-issuer TLS boundaries"
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
   standard_cashu_real_process_tls_two_provider_e2e \
   -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_process_e2e \
+  all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_onion_process_e2e \
+  all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --test payment_v1_tee_oram_process_e2e \
+  all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart \
+  -- --exact
 cargo clippy --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --bin unified_server \
   --test payment_v1_standard_cashu_process_e2e \
+  --test payment_v1_process_e2e \
+  --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram,standard-cashu-process-e2e \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 cashu_boundary_log="$(mktemp "${TMPDIR:-/tmp}/bpir-cashu-boundary.XXXXXX")"
@@ -290,12 +368,16 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
-    --test payment_v1_shared_issuer_process_e2e \
-    shared_issuer_real_process_tls_e2e -- --exact
+    --test payment_v1_shared_issuer_process_e2e
 cargo clippy --locked --offline \
   -p runtime \
   --features shared-issuer-process-e2e \
@@ -320,12 +402,46 @@ node scripts/payment-v1-pages-deploy-gate.mjs
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node --test scripts/payment-v1-deployment-template-gate.test.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
+bash -n scripts/build-payment-v1-directory-relay.sh
+bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.mjs
 node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
+bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+bash -n scripts/payment-v1-systemd-255-pid1.test.sh
+bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
+node scripts/payment-v1-publisher-netns-gate.mjs
 node --test \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+  scripts/payment-v1-publisher-netns-schema.test.mjs \
+  scripts/payment-v1-publisher-private-health-probe.test.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+  scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
   scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
@@ -360,11 +476,18 @@ cargo clippy --locked --offline -p runtime \
   --test payment_v1_process_e2e \
   --test payment_v1_methods_process_e2e \
   --test payment_v1_harmony_pool_process_e2e \
+  --test payment_v1_onion_process_e2e \
   --no-deps \
   -- -D warnings
 cargo clippy --locked --offline -p runtime \
   --features test-only-unsafe-query-logging \
   --bin unified_server \
+  --no-deps \
+  -- -D warnings
+cargo clippy --locked --offline -p runtime \
+  --features cuckoo-oram \
+  --bin unified_server \
+  --test payment_v1_tee_oram_process_e2e \
   --no-deps \
   -- -D warnings
 

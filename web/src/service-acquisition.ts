@@ -25,6 +25,7 @@ import {
   type WasmBolt11QuoteStatusV1,
   type WasmIssuedCapabilitiesV1,
 } from './sdk-bridge.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 const CT_QUOTE_INTENT = 'application/vnd.bitcoinpir.bolt11-quote-intent-v1';
 const CT_QUOTE = 'application/vnd.bitcoinpir.bolt11-quote-v1';
@@ -69,11 +70,23 @@ export interface StartBolt11AcquisitionV1 {
   requestTimeoutMs?: number;
   /** Development-only support for apps/payment-issuer serve-fake. */
   allowInsecureLoopback?: boolean;
+  /**
+   * Browser-local strict-session/pair generation guard. The caller binds this
+   * closure to the exact verified provider selection; it is re-run around
+   * every asynchronous boundary that precedes first invoice exposure.
+   */
+  assertReady: () => void;
 }
 
 export interface ResumeBolt11AcquisitionV1 {
   vault: AdmissionCredentialVaultV1;
   recoveryId: string;
+  issuerEndpoint: string;
+  issuerIdHex: string;
+  network: LightningNetworkNameV1;
+  expectedPayeePubkey: Uint8Array;
+  /** Revalidated around recovery load and every possible invoice POST/escape. */
+  assertReady: () => void;
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
   allowInsecureLoopback?: boolean;
@@ -102,6 +115,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
     private readonly fetchImpl: typeof fetch,
     private readonly allowInsecureLoopback: boolean,
     private readonly requestTimeoutMs: number,
+    private readonly assertReadyForInvoice: () => void,
   ) {}
 
   /**
@@ -110,6 +124,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
    */
   static async start(options: StartBolt11AcquisitionV1): Promise<Bolt11AcquisitionControllerV1> {
     validateStart(options);
+    options.assertReady();
     const endpoint = canonicalIssuerEndpoint(
       options.offer.endpoint,
       options.allowInsecureLoopback ?? false,
@@ -122,6 +137,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       options.allowInsecureLoopback ?? false,
       requestTimeout(options.requestTimeoutMs),
     );
+    options.assertReady();
     const sdk = bolt11Sdk();
     const issuerId = hexToBytes32('offer.issuerIdHex', options.offer.issuerIdHex);
     const payee = fixedBytes('expectedPayeePubkey', options.expectedPayeePubkey, 33);
@@ -136,12 +152,13 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       bytesToHex(payee),
       initial,
       (checkpoint) => {
+        options.assertReady();
         const handle = options.policy.beginBolt11Acquisition(
           hexToBytes32('scope.scopeIdHex', options.scope.scopeIdHex),
           options.offer.offerId,
           delegation,
           checkpoint,
-          trustedNowUnix(),
+          trustedNowUnixV1(),
         );
         return {
           nextCheckpoint: handle.quote_key_checkpoint_bytes(),
@@ -149,10 +166,19 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         };
       },
     );
+    try {
+      options.assertReady();
+    } catch (error) {
+      acquisition.free();
+      throw error;
+    }
     let recovery: Bolt11RecoveryRecordV1;
     try {
       recovery = await options.vault.createBolt11Recovery({
         issuerEndpoint: endpoint,
+        issuerIdHex: canonicalHex32('offer.issuerIdHex', options.offer.issuerIdHex),
+        network: options.network,
+        expectedPayeePubkeyHex: bytesToHex(payee),
         providerIdHex: canonicalHex32('policy.providerIdHex', options.policy.providerIdHex),
         policyDigestHex: canonicalHex32(
           'policy.policyDigestHex',
@@ -174,9 +200,11 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       fetchImpl,
       options.allowInsecureLoopback ?? false,
       requestTimeout(options.requestTimeoutMs),
+      options.assertReady,
     );
     try {
       await controller.ensureQuote();
+      options.assertReady();
       return controller;
     } catch (cause) {
       controller.close();
@@ -190,21 +218,45 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
 
   /** Restore without making a network request. */
   static async resume(options: ResumeBolt11AcquisitionV1): Promise<Bolt11AcquisitionControllerV1> {
+    options.assertReady();
     const recovery = await options.vault.getBolt11Recovery(options.recoveryId);
+    options.assertReady();
     if (!recovery) throw new Error('BOLT11 recovery record was not found (it may be complete)');
-    canonicalIssuerEndpoint(recovery.issuerEndpoint, options.allowInsecureLoopback ?? false);
-    const wasm = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
-      recovery.state,
-      trustedNowUnix(),
-    );
-    return new Bolt11AcquisitionControllerV1(
-      options.vault,
-      recovery,
-      wasm,
-      options.fetchImpl ?? fetch,
+    const endpoint = canonicalIssuerEndpoint(
+      options.issuerEndpoint,
       options.allowInsecureLoopback ?? false,
-      requestTimeout(options.requestTimeoutMs),
     );
+    const issuerIdHex = canonicalHex32('issuerIdHex', options.issuerIdHex);
+    const payee = fixedBytes('expectedPayeePubkey', options.expectedPayeePubkey, 33);
+    if (!['bitcoin', 'testnet', 'signet', 'regtest'].includes(options.network)) {
+      throw new Error('unsupported Lightning network');
+    }
+    if (recovery.issuerEndpoint !== endpoint
+        || recovery.issuerIdHex !== issuerIdHex
+        || recovery.network !== options.network
+        || recovery.expectedPayeePubkeyHex !== bytesToHex(payee)) {
+      throw new Error('BOLT11 recovery does not match the frozen issuer/network/payee context');
+    }
+    let wasm: WasmBolt11AcquisitionV1 | null = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
+      recovery.state,
+      trustedNowUnixV1(),
+    );
+    try {
+      options.assertReady();
+      const controller = new Bolt11AcquisitionControllerV1(
+        options.vault,
+        recovery,
+        wasm,
+        options.fetchImpl ?? fetch,
+        options.allowInsecureLoopback ?? false,
+        requestTimeout(options.requestTimeoutMs),
+        options.assertReady,
+      );
+      wasm = null;
+      return controller;
+    } finally {
+      wasm?.free();
+    }
   }
 
   get recoveryId(): string {
@@ -213,13 +265,22 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
 
   /** One exact quote POST. Replays the intent's signed idempotency key. */
   async ensureQuote(): Promise<string> {
+    this.assertReadyForInvoice();
     return this.withLockedRecovery(async (wasm, recovery, locked) => {
+      this.assertReadyForInvoice();
+      let existing: string | null = null;
       try {
-        return wasm.invoice();
+        existing = wasm.invoice();
       } catch {
         // A pre-quote recovery is expected to have no invoice yet.
       }
+      if (existing !== null) {
+        this.assertReadyForInvoice();
+        return existing;
+      }
       const body = wasm.quote_intent_bytes();
+      // This is the final guard before the issuer can linearize a quote.
+      this.assertReadyForInvoice();
       const response = await requestBinary(
         this.fetchImpl,
         issuerUrl(recovery.issuerEndpoint, 'v1/quotes/bolt11', this.allowInsecureLoopback),
@@ -230,13 +291,27 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_QUOTE_BYTES,
         this.requestTimeoutMs,
       );
-      wasm.accept_initial_quote(response, trustedNowUnix());
+      // If the strict pair/session became stale after the POST linearized, we
+      // may still verify and durably save the issuer response for recovery,
+      // but the stale invoice must never escape this controller invocation.
+      let staleAfterPost: unknown = null;
+      try {
+        this.assertReadyForInvoice();
+      } catch (error) {
+        staleAfterPost = error;
+      }
+      wasm.accept_initial_quote(response, trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
-      return wasm.invoice();
+      if (staleAfterPost) throw staleAfterPost;
+      this.assertReadyForInvoice();
+      const invoice = wasm.invoice();
+      this.assertReadyForInvoice();
+      return invoice;
     });
   }
 
   invoice(): string {
+    this.assertReadyForInvoice();
     return this.requireHandle().invoice();
   }
 
@@ -256,7 +331,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
   async pollStatus(): Promise<Bolt11QuoteStatusNameV1> {
     return this.withLockedRecovery(async (wasm, recovery, locked) => {
       const quoteId = canonicalHex32('quoteId', wasm.quote_id_hex());
-      const body = wasm.build_status_request(trustedNowUnix());
+      const body = wasm.build_status_request(trustedNowUnixV1());
       const response = await requestBinary(
         this.fetchImpl,
         issuerUrl(
@@ -271,7 +346,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_QUOTE_BYTES,
         this.requestTimeoutMs,
       );
-      wasm.accept_status(response, trustedNowUnix());
+      wasm.accept_status(response, trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
       return wasm.quote_status();
     });
@@ -286,7 +361,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       const quoteId = canonicalHex32('quoteId', wasm.quote_id_hex());
       // prepare_claim is replay-stable. Persist its exact blinded requests and
       // signature before the POST so response loss can replay byte-for-byte.
-      const body = wasm.prepare_claim(trustedNowUnix());
+      const body = wasm.prepare_claim(trustedNowUnixV1());
       await locked.persistState(wasm.recovery_state_bytes());
       const response = await requestBinary(
         this.fetchImpl,
@@ -302,7 +377,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_ISSUANCE_RESPONSE_BYTES,
         this.requestTimeoutMs,
       );
-      const issued = wasm.finish_claim(response, trustedNowUnix());
+      const issued = wasm.finish_claim(response, trustedNowUnixV1());
       const capabilities: AdmissionCapabilityV1[] = [];
       try {
         const scheme = validateIssuedScheme(issued.scheme);
@@ -349,7 +424,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       this.requireActive();
       const working = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
         recovery.state,
-        trustedNowUnix(),
+        trustedNowUnixV1(),
       );
       try {
         return await operation(working, recovery, locked);
@@ -365,7 +440,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
           if (!this.completed) {
             this.wasm = bolt11Sdk().WasmBolt11AcquisitionV1.restore(
               recovery.state,
-              trustedNowUnix(),
+              trustedNowUnixV1(),
             );
           }
         }
@@ -385,7 +460,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
   }
 }
 
-/** Resume never creates a new invoice and therefore needs no new pair check. */
+/** Resume remains bound to the current strict pair and may complete a pre-quote recovery. */
 export function resumeBolt11AcquisitionV1(
   options: ResumeBolt11AcquisitionV1,
 ): Promise<Bolt11AcquisitionHandleV1> {
@@ -511,6 +586,9 @@ async function readResponseBodyBoundedV1(
 
 function validateStart(options: StartBolt11AcquisitionV1): void {
   requestTimeout(options.requestTimeoutMs);
+  if (typeof options.assertReady !== 'function') {
+    throw new Error('BOLT11 acquisition requires a strict-session readiness guard');
+  }
   if (options.offer.acquisition !== 'bolt11') {
     throw new Error('selected signed offer is not acquired with BOLT11');
   }
@@ -588,12 +666,6 @@ function canonicalIssuerEndpoint(value: string, allowInsecureLoopback: boolean):
     throw new Error('issuer endpoint must be a credential-free origin URL');
   }
   return parsed.origin;
-}
-
-function trustedNowUnix(): bigint {
-  const now = Date.now();
-  if (!Number.isFinite(now) || now <= 0) throw new Error('trusted wall clock is unavailable');
-  return BigInt(Math.floor(now / 1000));
 }
 
 function canonicalHex32(field: string, value: string): string {

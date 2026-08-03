@@ -21,6 +21,21 @@ and shared-redeem/clone-fencing results. Exact-head pushed CI remains a distinct
 merge gate; no local result is production-network, deployed-origin or real-
 funds acceptance.
 
+This document is the **source merge** acceptance boundary only. The later
+deployment phases are **private no-funds**, **public Signet**, and **production
+mainnet**. Passing any command below does not authorize a remote-host mutation,
+bounded service activation, persistent Signet identity/wallet/channel,
+faucet/test-coin use, external Cashu-mint access, public Nostr publication,
+VPSBG UKI change, production-key installation/use, or a mainnet/real-value
+operation; each is an independent approval gate. Production mainnet is
+additionally blocked because the repository does not yet implement a reviewed
+mainnet deployment preflight.
+
+Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory the
+non-secret inputs for a later approved phase and start any proposed render plan
+from [render-plan-skeletons/](render-plan-skeletons/). Those files do not turn
+local acceptance into deployment approval.
+
 ## Prerequisites
 
 - run from the repository root;
@@ -63,7 +78,7 @@ Full local check:
 scripts/payment-v1-local-check.sh --full
 ```
 
-Optional real-CDK browser import and provider-side NUT-03/NUT-12
+Optional real-CDK browser import, real-provider query, and native custody
 interoperability (outside the default offline suite) requires exact
 `cdk-mintd` and `cdk-cli` 0.17.3 binaries. Apple-arm64 uses the recorded
 official hashes below by default; other platforms must also provide both
@@ -119,11 +134,17 @@ directory. It validates padded V4 `cashuB`, current `m,u,t` structure, local
 stripping of known NUT-12 wallet metadata, and either the freshly rebuilt
 default-mode or hash-pinned browser-only JS/WASM ABI. Chromium must reject the
 untouched HTTP token. Because the Cashu proofs do not bind wallet mint-URL
-metadata, the private test fixture relabels only
-that CBOR text to the exact synthetic HTTPS identity in the signed manifest;
-this is not a production transport bypass. The default mode also runs the
-native importer and exercises the provider's NUT-03/NUT-12 swap and custody
-path. The current ignored test expects four exact NUT-07 observations:
+metadata, the private test fixture relabels only that CBOR text. Default mode
+uses a signed `https://localhost:<port>` identity and a test-only strict-TLS
+proxy whose private CA and leaf SPKI are fixed in the feature-gated process
+test; browser-only mode uses a non-routable synthetic identity. Neither path
+adds a production plaintext or pinless fallback. Default mode mints two
+independent 8-sat notes. Chromium turns the first into canonical provider wire
+bytes, then a real Standard Cashu `unified_server` and an independent Free peer
+complete two secure channels, exact manifest-root policy checks, preflight,
+DPF, Merkle verification, provider restart and local replay rejection without
+a second CDK request. The second note is reserved for the native importer and
+custody lifecycle. That native ignored test expects four exact NUT-07 observations:
 original inputs become `SPENT`, first custody is initially `UNSPENT`, a second
 independent BitcoinPIR client spends that authenticated custody through NUT-03,
 and the first custody then becomes `SPENT` while successor custody is
@@ -135,9 +156,9 @@ test later passed a dedicated local branch run. The final 2026-07-28
 default-mode run repeated it against the current tree and is recorded below.
 The predecessor `--browser-only` case passed before the current
 acknowledgement-and-provenance guard was added; guarded browser-only mode still
-needs its own current-guard run. The runner does not
-execute the admin retirement command against CDK or an unmodified
-`unified_server` transport.
+needs its own current-guard run. The runner does not execute the admin
+retirement command against CDK, use a public-WebPKI mint, or establish a
+production rollback authority.
 
 Test-only heap limitation: JavaScript `String` values are immutable, so the
 temporary `cashuB` strings cannot be deterministically zeroized. The harness
@@ -324,6 +345,25 @@ bearer files were removed and no CDK process remained.
 This historical invocation predates the current mandatory prebuilt
 `bpir-admin`/WASM provenance pins and is not a pass record for that new guard.
 
+On 2026-07-29 the current same-run extension passed against locally built
+Linux-arm64 CDK 0.17.3 binaries. Their local build digests were
+`0421e150ac7d201c0211a6fea144f864d5f5ec081a2365b189720a5860237aa7`
+(`cdk-mintd`, fakewallet+SQLite) and
+`e894d9ce0696db34ba547ecd6cc50f9a760ec1cad77628388dd7e4c7acdb8243`
+(`cdk-cli`, no default features); these identify the tested local builds and
+are not official-release provenance. Mint, CLI, both providers and all Rust
+tests ran in one Linux container with CDK reachable only on container loopback.
+Chromium imported the first note through the Linux-built current-tree WASM and
+wrote the owner-only canonical spend. The ignored real-CDK process case passed
+1/1, including independent Free authorization, two secure channels, exact-root
+preflight, DPF/Merkle, two-provider restart and replay rejection with the TLS
+proxy attempt count still one. The second-note WASM parser and native
+NUT-03/NUT-07 custody cases each passed 1/1. CDK stdout and file logs contained
+no `cashuB` bearer, payment-hash/preimage field or BOLT invoice value. This used
+fakewallet notes only: no Lightning node, invoice payment, public mint, remote
+PIR service or real funds participated. Exact-commit CI remains authoritative
+before merge.
+
 ### 2026-07-28 current-tree CDK default-mode closeout
 
 The opt-in, no-funds default-mode runner completed with exit status 0 using
@@ -383,6 +423,80 @@ current-tree evidence for the local production-CLN adapter, generated-WASM
 acquisition/recovery and joined synthetic two-provider DPF/Merkle boundary. It
 is not Signet, public-network, real-funds, production-ingress, production
 attestation or deployed-origin acceptance; ARC remains experimental.
+
+### 2026-07-30 Hetzner CLN v26.06.6 final-parse/plugin probe
+
+An isolated, no-funds probe ran the exact official Ubuntu 24.04 amd64 CLN
+archive (`3214d71227f780a9a53cf264ab35cf452e0bdf43c1497ea406beedf2ad0af058`)
+on the target Hetzner host with the separately pinned private `libpq.so.5`
+(`ad59c3cee64268b3cf6c245ea623610ca32eab3c0bfe39d90cabf27e46ad4203`)
+and Bitcoin Core 31.1 in disposable regtest state. Bitcoin Core listened only
+on loopback with wallet and P2P disabled; CLN used `--offline`, a loopback-only
+test bind and a disposable identity. No Signet/mainnet address, channel, coin or
+payment was created.
+
+The checked-in pre-probe shape found two fail-closed but production-blocking
+release facts: config-file `clear-plugins` deterministically segfaulted in
+v26.06.6, and `invoices-onchain-fallback=false` was rejected in the final
+config pass because the secure-default option is a no-argument opt-in. The
+early `--test-daemons-only` probe had exited before the latter check. With both
+spellings removed, all 27 official built-ins present at their compiled path,
+25 exact basename disables, the same 25 files root-owned `0444`, and only
+`bcli`/`chanbackup` mode `0555`, the daemon completed startup. `plugin list`
+contained exactly those two canonical paths with `active=true` and
+`dynamic=false`. An explicit `plugin start` of the inert `commando` member was
+rejected with `Permission denied`, after which the two-plugin set was unchanged.
+
+The temporary CLN and Core processes were then stopped, their three test ports
+were verified absent, and both exact diagnostic staging directories were
+deleted. `bitcoinpir-core-lightning.service` remained inactive. This is target
+probe evidence that the selected private libpq leaf was sufficient for this
+disposable start; it is not maps-plus-inode proof of the loaded object, a
+complete ELF loader closure, or production Signet identity, custody, liquidity,
+payment, persistent installation or activation evidence. The exact libpq still
+uses host libssl, libcrypto, GSSAPI, LDAP and libc dependencies. Production CLN
+activation remains blocked until the runtime-evidence schema binds the selected
+mapping and the host ABI trust is approved. The core unit may run without funds
+to collect that evidence, but `CLN-LOADER-MAPS-APPROVED` must remain absent until
+the separately reviewed schema PR and evidence approval exist; its absence
+mechanically blocks preflight, guard and issuer.
+
+### 2026-07-29 CLN bootstrap and bundle-layout gate
+
+The current-tree bootstrap work was exercised without creating a persistent
+wallet, contacting a remote node or using funds. The focused Lightning-staging Rust
+suite passed 32/32, the full `bpir-admin` suite passed 125/125, and the scoped
+warnings-denied clippy invocation passed. The deployment-template gate passed
+24/24 and the rendered-artifact gate passed 79/79.
+
+The selected deployment-file check was also tested against the official Core
+Lightning v26.06.6 image pinned by digest:
+
+```text
+elementsproject/lightningd@sha256:094be3630f865c795649d6063a8796afa0f78e82a0c311bb34f2b0bd570c819a
+```
+
+Because the deployment target is x86-64 while the development host is arm64,
+the manifest-list check was repeated under QEMU against its explicit linux/amd64
+child digest
+`sha256:f8f1ec25ea6dfbc9fab1e3dd918e15f7c4a3f5bb97b87bb6490d4c8a7c71ee6b`.
+It reported `v26.06.6`, passed `--test-daemons-only --offline`, contained the
+same eight required subdaemons and accepted the native 32-byte identity format.
+
+A minimal copied layout containing the pinned CLI, HSM tool, daemon, required
+plugins and required `libexec/c-lightning` subdaemons passed
+`lightningd --test-daemons-only --offline`. Removing `lightning_hsmd` was
+rejected, and the positive invocation with an explicit empty config made no
+wallet or network-state mutation. The final bootstrap gate additionally uses
+the fixed eight-call sequence with empty `listfunds`, and the rendered layout
+requires a pre-existing owner-read-only native 32-byte `hsm_secret`. A
+disposable native 32-byte seed was accepted by the same pinned image's
+`lightning-hsmtool getnodeid` and produced an exact compressed public node ID;
+no seed bytes were printed or retained. This is evidence for the bootstrap RPC
+sequence, activation-sentinel separation and selected bundled deployment files only.
+It is not evidence for a persistent Signet identity, an isolated identity
+restore, faucet funding, channel recovery, production secrets or a production
+deployment.
 
 ### 2026-07-28 focused Harmony closeout
 
@@ -472,6 +586,13 @@ focused local evidence only. The same code was subsequently covered by the
 passing final pinned-Linux aggregate; pushed CI remains a separate per-commit
 merge gate.
 
+The DPF and Harmony retained send methods are deliberately exported only as
+`dangerous_unpaired_*` in Rust and `dangerousUnpaired*` in JavaScript. Their
+ordinary one-sided names do not exist. The Web DPF/Harmony adapters call the
+low-level entry points only behind strict pair transport/readiness checks and
+the product layer must freeze the exact two-provider payment context before it
+retires either capability. Onion and TEE-ORAM remain single-provider APIs.
+
 ### 2026-07-28 final pinned-Linux Rust/process matrix
 
 A clean Rust 1.94.1 Docker target ran the final current tree offline with no
@@ -552,11 +673,11 @@ the complete vendor tree as an incidental Payment change.
 
 | Method | Focused command/boundary | What it proves | What it does not prove |
 |---|---|---|---|
-| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and leakage disclosure, zero invoice/issuer requests, durable same-provider rejection, independent provider-1 ARC admission and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
+| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, the feature-gated non-receipt process matrix, `payment_v1_process_e2e`, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, including wrong-operation non-burn and restart-persistent quota rejection; the default process test additionally boots exact-pinned storeless Free-PoW with no store/authority, completes challenge/solution/AUTH/real DPF and rejects cross-exporter replay; the Chromium variant joins an exact signed quota-1/window-3600 IP-rate-limited offer and verified DPF/Merkle execution | public-IP attribution behind a real proxy, a generated-browser PoW case, production SEV/UKI measurement, or production DDoS resistance |
 | Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket and generated-WASM acquisition path; the final current-tree opt-in run passed the forced payer -> router -> issuer route and joined verified provider queries | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
-| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and a strict-TLS mint with signed endpoint/pin through a real Cashu provider, independent Free peer, two secure channels, DPF/Merkle, restart/replay and wrong-CA/pin/offline failures; both the joined CDK boundary and provider-process cell passed final current-tree runs | one same-run browser-to-provider topology, an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
-| Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof through a real provider process and provider-local durable BAT spend/restart rejection | a public/shared Cashu service or production key custody |
-| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
+| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated Standard-Cashu/non-receipt process commands below | exact swap/recovery/grant-to-custody state machine, generated-JS/WASM plus real-CDK NUT-03/NUT-12, and strict-TLS NUT-03 swap through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes; wrong-operation and replay rejection do not make an extra mint request | an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
+| Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, `payment_v1_methods_process_e2e`, and the feature-gated non-receipt process matrix | real blind/DLEQ/unblind proofs through DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, plus provider-local durable serial rejection after restart | a public/shared Cashu service or production key custody |
+| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, the feature-gated non-receipt process matrix, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through DPF, Harmony hint/query, Onion and TEE-ORAM provider processes plus nullifier persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
 
 The cross-product test is:
 
@@ -571,6 +692,33 @@ integration test, not five live external payment integrations. Focused
 production-adapter tests supplement the synthetic committers used to make the
 matrix deterministic.
 
+The production-process cross-product supplement is feature-gated only because
+its Standard Cashu leg installs a private test CA. One shared fixture prepares
+Free-IP, strict-TLS Standard Cashu, BAT and experimental ARC offers/proofs; the
+real `unified_server`, production committer, ProviderStore and native backend
+handler are never replaced. It runs the four exact tests named in
+`docs/payment/TEST_PLAN.md`. Together with the dedicated direct-receipt tests
+and DPF method-adapter tests, this closes all 25 method/workload cells. Each
+non-receipt cell checks encrypted AUTH, exact signed scope/workload,
+wrong-operation non-burn, native handler output and restart-persistent method
+state. Harmony hint uses two capabilities per method to separately prove
+pre-dispatch reservation restoration and first-dispatch durable consumption.
+ARC remains experimental despite this coverage.
+
+### 2026-07-29 provider-process matrix closeout
+
+The candidate based on `eb08d956` passed the four focused matrix commands in
+`TEST_PLAN.md` on Linux/arm64 in `bpir-rust-ci:1.94.1` (1/1 each). A combined
+`cuckoo-oram,standard-cashu-process-e2e` run of all four process test binaries
+then passed 9/9, including every pre-existing direct-receipt process test. The
+pre-existing strict-TLS two-provider Standard Cashu process case separately
+passed 1/1. Both targeted Clippy invocations passed with warnings denied: the
+Standard-Cashu server plus Harmony-query/hint and Onion targets, and the
+combined-feature TEE-ORAM target. No public mint, external network, remote
+provider, production attestation, Lightning node or funds participated. The
+ARC leg used the required explicit experimental opt-in and is not a
+cryptographic-review claim.
+
 ## Loopback provider process boundaries
 
 Full mode and payment-platform CI run:
@@ -579,23 +727,46 @@ Full mode and payment-platform CI run:
 cargo test --offline -p runtime --test payment_v1_process_e2e
 cargo test --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --offline -p runtime --test payment_v1_onion_process_e2e
+cargo test --locked --offline -p runtime --features cuckoo-oram \
+  --test payment_v1_tee_oram_process_e2e
 ```
 
-The first two no-funds tests launch two independent logical providers as real
-OS child processes and communicate over real TCP/WebSocket connections. Each
-provider has a distinct provider ID, policy key, method keys, ProviderStore and rollback
-authority. Both listeners are explicitly `127.0.0.1`-only, and the first test
-also proves that a misspelled `--bind-addres` flag exits non-zero before opening
-a listener.
+The first two no-funds tests launch real OS child processes and communicate over
+real TCP/WebSocket connections. Their stateful two-provider fixtures give each
+provider a distinct provider ID, policy key, method keys, ProviderStore and
+rollback authority. The first test binary also has a distinct single-provider
+storeless Free-PoW fixture with no ProviderStore or authority. Every listener
+is explicitly `127.0.0.1`-only, and the first test also proves that a misspelled
+`--bind-addres` flag exits non-zero before opening a listener.
 
 The direct-receipt test covers cleartext backend rejection, ephemeral-bound
 attestation exchange, secure-channel upgrade, exact signed manifest-root
 policy verification, encrypted pre-authorization rejection, provider-specific
-direct-receipt authorization, a valid DPF request/response, signed one-frame
-limit rejection, and durable replay rejection after provider 0 is restarted.
-The exact provider-1 receipt is first rejected by provider 0 and then succeeds
-at provider 1, proving that the wrong-provider rejection neither burns it nor
-consults a shared cross-provider spent set.
+and workload-specific direct-receipt authorization, a valid DPF
+request/response, and a complete four-frame K-padded Harmony INDEX/CHUNK query
+through the real handler. DPF and Harmony use distinct signed scopes, globally
+unique offer IDs and credential keys. A DPF receipt rejected at the Harmony
+scope remains usable for DPF; a completed Harmony DFA is terminal; both DPF
+and Harmony spends remain rejected after provider 0 restarts. The exact
+provider-1 DPF receipt is first rejected by provider 0 and then succeeds at
+provider 1, proving that the wrong-provider rejection neither burns it nor
+consults a shared cross-provider spent set. No hint server is configured or
+named by this query-provider test.
+
+The same process binary now exercises the narrow VPSBG-oriented storeless
+mode. It pins the exact domain-separated digest of one canonical signed policy
+containing only provider-local Free-PoW, starts `unified_server` without a
+ProviderStore or rollback argument, obtains a server-fresh challenge on the
+encrypted channel, solves it, receives `AUTH_GRANTED`, and reaches one real DPF
+handler frame. A second connection has a different secure-channel exporter and
+no outstanding challenge, so replaying the old solution is rejected. The
+temporary runtime tree is checked for provider/rollback SQLite, WAL and SHM
+files. Startup negatives cover the wrong digest, an otherwise valid Free-open
+policy, retained/store/rollback/Free-IP/BAT/shared inputs and legacy ARC/Cashu
+keys. This does not prove a measured UKI: the exact digest must be included in
+that UKI, and every signed policy update requires a new UKI/measurement/client
+pin ceremony.
 
 The method-adapter test repeats the real wire and DPF execution boundary for
 Free open, durable provider-local IP quota, provider-local Cashu BAT and
@@ -605,22 +776,49 @@ provider-0 BAT/ARC presentation at provider 1, proves provider-local quota
 independence, and rejects quota/BAT/ARC replay after both providers restart
 against their own stores.
 
-This test intentionally observes `NoSevHost` and uses SDK
+The Onion process test launches two independently keyed providers and reaches
+the production OnionPIR workers with a one-row fixture generated through the
+public `onionpir` API. It proves wrong-provider and structurally wrong-scope
+failures do not consume the receipt, then performs one real chunked key
+registration and decrypts INDEX, CHUNK and both Merkle-sibling response
+ciphertexts. Extra registration, phase skip, wrong round and a second logical
+job fail closed after the atomic spend, and replay stays rejected across a
+ProviderStore/process restart. Its tiny Merkle fixture exercises sibling
+ciphertext generation/decryption, not full production inclusion verification.
+
+These loopback process tests intentionally observe `NoSevHost` and use SDK
 `dangerous_unpaired_*` helpers. It validates the local secure wire and Payment
 V1 gate, not production server identity, binary pinning, hardware attestation,
 production database proof/trusted-root pinning, Merkle tree-top/inclusion
 verification, or an attested build. Its receipt is constructed from public
 deterministic fixture keys: no issuer process, browser, wallet, Lightning node,
-external Cashu mint, Nostr relay or real funds participate. Only the DPF
-backend is executed through the first two multi-provider process tests. The five-method x
-five-workload in-process matrix remains the process-independent coverage for
-Standard Cashu, Harmony query, Onion and TEE-ORAM. The third process test
-launches one real Harmony V2Full hint provider with a private disk pool and
-checks invalid-proof non-consumption, pre-dispatch disconnect restoration,
-first-dispatch durable consumption, matching-marker restart and replaced-inode
-fail-closed behavior. The separate opt-in CDK runner
-exercises the real provider-side client against a loopback CDK mint through an
-exact test-only endpoint mapping.
+external Cashu mint, Nostr relay or real funds participate. The direct-receipt
+test executes both DPF and Harmony query backends; the method-adapter test
+executes DPF, and the dedicated backend tests execute Harmony hints, Onion and
+TEE-ORAM. The five-method x five-workload in-process matrix remains
+deterministic wire/gate evidence, while the feature-gated process supplement
+exercises the same cross-product through production committers and handlers.
+The Harmony process test launches one real Harmony V2Full hint provider with a
+private disk pool and checks invalid-proof non-consumption, per-method
+pre-dispatch disconnect restoration, first-dispatch durable consumption,
+matching-marker restart and replaced-inode fail-closed behavior.
+
+The fourth process test uses the production `cuckoo-oram` feature. It builds a
+tiny direct INDEX/CHUNK Circuit ORAM through the same public library API used
+by `oramctl build-direct`, including authenticated sidecars and a separate
+trusted controller-state directory. A paid direct receipt crosses the real
+encrypted admission gate and reaches the direct ORAM handler; the response is
+checked against the two exact source chunk records and the fixed response
+padding budget. Same-key receipts bound to another provider or a DPF scope,
+and a raw DPF operation under the TEE-ORAM scope, fail before ORAM work. The
+grant admits one frame only, spent receipt replay remains rejected after
+restart, and a fresh receipt proves that the authenticated ORAM state reopens
+and remains usable. The pinned Linux run passed 1/1 plus warnings-denied
+clippy. This is local `NoSevHost`/deterministic-fixture evidence, not production
+attestation, DB proof, remote rollback-floor or browser evidence.
+
+The separate opt-in CDK runner exercises the real provider-side client against
+a loopback CDK mint through an exact test-only endpoint mapping.
 
 An additional non-default Standard Cashu process cell is implemented:
 
@@ -641,6 +839,30 @@ and explicitly verifies the Merkle absence result. It restarts both providers
 against their original stores, rejects bearer replay without a second NUT-03,
 then proves wrong CA, wrong signed pin and offline mint fail closed without
 another mint spend.
+
+The pinned-CDK runner additionally invokes the ignored same-run case after
+Chromium writes its owner-only canonical spend:
+
+```sh
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_standard_cashu_process_e2e \
+  standard_cashu_real_cdk_browser_provider_two_server_e2e \
+  -- --ignored --exact
+```
+
+The runner supplies only owner-only temporary database, policy, spend and
+endpoint bindings. The test recomputes the prepared manifest and bucket roots,
+requires an exact manifest-root DPF scope, terminates the fixed private-CA TLS
+identity at a loopback-only proxy to the actual CDK HTTP listener, and launches
+the Standard Cashu and Free providers with independent identities, policy keys,
+stores and rollback databases. It then performs secure-channel policy
+authorization on both sides, proof-bound tree-top preflight, a two-server DPF
+query and Merkle absence verification. After both providers restart, replay is
+rejected from provider-local state and the proxy's durable attempt count remains
+one. Provider/proxy logs are checked against bearer/proof/invoice material; the
+runner separately checks CDK stdout and file logs for bearer values, payment
+hash/preimage fields and BOLT invoice strings.
 
 The private CA hook exists only under the named debug-only feature. Its root
 must be an owner-only bounded file; normal WebPKI chain, hostname, time and the
@@ -663,19 +885,43 @@ cargo build --locked --offline \
   --features test-only-fake-lightning \
   --bin payment-issuer \
   --target-dir "$issuer_e2e_target_dir"
+cargo build --locked --offline \
+  -p bpir-admin \
+  --bin bpir-admin \
+  --target-dir "$issuer_e2e_target_dir"
 BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+BITCOINPIR_BPIR_ADMIN_BIN="$issuer_e2e_target_dir/debug/bpir-admin" \
   cargo test --locked --offline \
     -p runtime \
     --features shared-issuer-process-e2e \
-    --test payment_v1_shared_issuer_process_e2e \
-    shared_issuer_real_process_tls_e2e -- --exact
+    --test payment_v1_shared_issuer_process_e2e
 ```
+
+The target includes a minimal mixed-offer provider: a single strict DPF scope
+serves 4-bit Free-PoW and shared-issuer BAT. Free-PoW leaves the issuer's
+durable redemption count at zero; after issuer restart BAT redeems exactly
+once, while `unified_server` receives neither `--service-bat-key` nor
+`--service-arc-key`.
 
 This is the executable provider-to-shared-clearing seam: a real issuer behind
 a private signed-pin TLS edge, a real paid provider and an independent Free
-peer. It proves one issuer redemption/ledger credit, one provider-local grant,
-restart/replay at-most-once behavior, and fail-closed wrong-CA/wrong-pin/offline
-dependencies without invoice creation or real funds. It does not prove public
+peer. The edge reads one complete canonical issuer success, then drops that
+response after the issuer commit while retaining only three test-local SHA-256
+digests. The provider fails closed without a local claim. Restarting both issuer
+and provider against their original stores/floors and replaying the exact proof
+must reproduce all three digests, recover exactly one provider-local grant and
+leave exactly one issuer ledger credit/sequence; a later replay cannot create a
+second grant. The same run invokes the production `bpir-admin` builders for
+both clearing artifacts, provisions a distinct provider-request public key,
+verifies freshly signed balances before and after an issuer restart, then—only
+after the lost-response operation reaches a known local-delivery result—rotates
+the authorization epoch and issuer settlement key with explicit old-key
+retention. The restarted provider keeps the credential at-most-once. This does
+not claim that V1 recovers an outcome-unknown redeem across authorization
+rotation; operators must drain and reconcile before rotating. Wrong-CA,
+wrong-pin and offline issuer
+dependencies fail before the issuer HTTP application without invoice creation
+or real funds. It does not prove public
 source-fair ingress, independent production rollback domains, real Lightning,
 automated payout, or target-host systemd state. The source is wired into CI,
 but this preparation branch must not record a pass until the Linux cell has run
@@ -714,13 +960,14 @@ encrypted browser vault. Default mode sends those exact canonical browser
 bytes to the real admission gate and standard-Cashu committer, executes the
 provider-side NUT-03 request and NUT-12 DLEQ verification, commits received
 notes to custody, and checks same-process and reopened-store replay rejection.
-That joined default-mode case passed the final 2026-07-28 current-tree CDK run
-recorded above. Its predecessor local branch run also spent authenticated
-custody through a second
-independently keyed client, observed the first custody lot become all-`SPENT`,
-and observed successor custody remain all-`UNSPENT`. Its test transport maps
-only the signed synthetic identity to the validated loopback mint; production
-HTTPS/WebPKI behavior is unchanged.
+The current same-run extension uses the first independent note for Chromium and
+the real `unified_server` provider, routes only its NUT-03 swap through the
+feature-gated private-CA TLS proxy, completes the independent Free peer plus
+DPF/Merkle query, and proves restart replay is rejected without another CDK
+touch. A second independent note is then spent by the native custody test,
+which observes the first custody lot become all-`SPENT` and successor custody
+remain all-`UNSPENT`. Production HTTPS/WebPKI behavior is unchanged; the
+private root feature is compile-rejected in release profiles.
 
 ## Fake Lightning and issuer checks
 
@@ -877,6 +1124,42 @@ all-relay attempts, nonzero partial failure, timeout and rejection of false,
 duplicate/unexpected/missing, non-text and oversized replies. They deliberately
 do not prove WebPKI, public relay policy, operator independence, or compatibility
 with relays that inject Ping/Pong control frames during the publish exchange.
+
+The full local script and Payment CI additionally select the real two-relay
+process topology explicitly (the test is ignored by ordinary package runs so
+`--quick` still starts no service process):
+
+```sh
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e -- --exact --ignored
+```
+
+It launches two copies of the repository's production
+`bitcoinpir-directory-relay` binary and covers separate config/SQLite/runtime
+state plus four distinct loopback listeners. Every accepted signed `EVENT`
+publication uses a publisher lane; every accepted ID/catalog `REQ` and returned
+`EVENT`/`EOSE` uses a public lane. Deliberate wrong-lane probes must close, and
+an exact-ID public readback proves the rejected EVENT sentinel was not
+persisted. The test covers complete 16-shard signed readback, one relay offline, two
+independently valid but conflicting stale-head views with an exact split-view
+error, a public-lane lost-ACK durability barrier followed by an idempotent
+publisher-lane retry, and readiness of both listeners after independent restart.
+The remote-authority full-mode cell also selects
+`three_authority_process::three_authority_real_process_topology_e2e`. That test
+spawns three authority child test harnesses which invoke production
+`rollback_authority::run` and three TLS-edge child harnesses; the parent process
+calls production ProviderStore/IssuerStore adapters directly. The
+deployment-set validator owns duplicate-pin/namespace rejection, raw clients
+own wrong-pin/client/cross-domain transport assertions, and the production
+adapters own crossed-provider, independently isolated provider- and
+issuer-authority outages, exact same-generation issuer recovery and stale-floor
+assertions. During each authority outage the other two Stores remain
+independently openable and authenticated through their own authorities. It does
+not launch `unified_server`, `payment-issuer`, or installed
+binaries. These new commands require their first Linux CI run on the candidate
+commit; no passing result is claimed here, and same-host processes do not prove
+operational independence.
 
 The staging-only readback script resolves the lockfile-pinned `ws` dependency
 from `web/node_modules`, disables compression and redirects, and applies a
@@ -1088,11 +1371,140 @@ local rollback floors and deterministic all-zero database remain
 non-production boundaries, and ARC remains experimental pending independent
 review.
 
+## Source-fair cold-activation evidence
+
+The historical pinned Ubuntu 24.04/HAProxy 2.8.16/Caddy 2.11.3 audit container passed the
+five deployment, rendered-artifact, runtime-evidence, source-fair and Nostr
+readback suites 154/154 with no skip. This includes real Linux `getent`, `id -G`, procfs
+all-thread scanning, all active capability sets plus `CapBnd`, rejection tests
+for CHOWN/DAC_OVERRIDE/FOWNER/SETFCAP and managed-unit capability expansion,
+locked service-account policy validation, the stopped-edge evidence validator,
+pinned Caddy adapted-JSON closure, and 4xx/no-backend cross-bind probes.
+That Caddy version is no longer production evidence. Current edge CI resolves
+the exact Caddy 2.11.4 OCI index/binary. The separate existing-Caddy admin-UDS
+process test also runs Caddy 2.11.4 with Node 22.22.2, proves root API readback,
+non-root service-UID `EACCES` after descriptor-pinned `setpriv` clears
+capabilities and supplementary groups, exact root-owned DAC metadata, absent
+TCP 2019, a real import-override regression, permission-drift rejection, and a
+same-process reload through the UDS. The exact adapter suite also proves all 21
+non-canonical Unicode whitespace separators and both quoted `admin` directive
+forms can change the real adapted listener and are rejected by the gate, and
+proves the exact candidate adapter output and live `/config/` readback have the
+same strict-parsed canonical JSON digest and size. This
+branch also adds an isolated real-systemd-PID-1 lifecycle test. It refuses to
+overwrite any existing Caddy unit/config/runtime path, starts the byte-exact
+fixture twice as distinct cold generations, proves stop-time directory/socket
+removal and start-time root:root `0700`/`0200` recreation, validates both real
+32-lowercase-hex systemd InvocationIDs through the production gate, proves
+effective `LimitCORE=0`, `MemorySwapMax=0`, `StandardOutput=null` and
+`StandardError=null`, confirms a failing request sentinel is absent from
+journald, and repeats UDS readback, TCP-2019 absence and same-PID reload checks.
+A current target-host
+cold ceremony and its independently transferred evidence remain required. This
+does not isolate UID 0 or `CAP_DAC_OVERRIDE`. A current-tree pinned Ubuntu 24.04 /
+HAProxy 2.8.16 / Caddy 2.11.4 targeted run passed the 15 source-fair template
+and real-process tests with no skip. A fresh complete aggregate using the final
+branch remains required before activation.
+
+This is deterministic compatibility evidence, not target-host activation. The
+actual candidate must first collect an independently digest-pinned
+`collect-stopped-edge` record while Caddy and HAProxy are fully stopped and all
+Unix listeners are absent. Only after a bounded edge activation is approved and
+both `ACTIVATION-APPROVED` and `EDGE-ACTIVATION-APPROVED` are provisioned may it
+start HAProxy then Caddy and collect a separate digest-pinned `collect-live`
+record. Both must run from the target host's independently confirmed initial
+PID namespace; a warm reload, container-only record or evidence without its
+complete transferred SHA-256 is not accepted. At the end of a private no-funds
+drill, stop Caddy and then HAProxy, confirm the listener set is empty, and revoke
+`EDGE-ACTIVATION-APPROVED`.
+
+## 2026-07-30 P1-3 preflight owner/mode contract
+
+The current worktree passed the focused static-config/dynamic-receipt closeout:
+
+```sh
+cargo test --locked --offline -p bpir-admin
+node --test scripts/payment-v1-deployment-template-gate.test.mjs \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+cargo clippy --locked --offline -p bpir-admin --all-targets --no-deps -- -D warnings
+```
+
+Results were 139/139 Rust tests and 104/104 Node tests, with the target package
+warnings-denied clippy clean. In addition, the exact
+`protected_config_real_linux_uid_gid_and_mode_contract` test passed as root in
+the existing `bpir-rust-ci:1.94.1` Linux container with networking disabled.
+That real-kernel matrix changes the child EUID, effective GID and supplementary
+groups and covers root/config-group `0440`, wrong owner/mode/EUID, missing and
+extra groups, a writable direct parent and a writable ancestor. The normal
+macOS run also executes the platform-independent identity/group-set matrix.
+
+The broader dependency-linting form without `--no-deps` remains non-green under
+the local Rust 1.94.1 toolchain because the pre-existing
+`pir-identity::signing_preimage` triggers Clippy's `too_many_arguments`; that is
+not reported as passing evidence for this closeout.
+
+## 2026-07-30 P1-1 CLN InvocationID lease closeout
+
+The committed CLN short-lease remediation source passed these checks in a
+network-disabled, root-run `bpir-rust-ci:1.94.1-tools` container with the source
+mounted read-only and `CARGO_TARGET_DIR` confined to the container's `/tmp`:
+
+```sh
+cargo fmt --package bpir-admin -- --check
+cargo test --locked --offline -p bpir-admin
+BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1 cargo test --locked --offline \
+  -p bpir-admin \
+  lightning_staging::tests::protected_config_real_linux_uid_gid_and_mode_contract \
+  -- --exact --nocapture
+cargo clippy --locked --offline -p bpir-admin --all-targets --no-deps -- -D warnings
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
+```
+
+Results were 141/141 Rust tests, the separately forced real-root contract 1/1,
+and 212 Node cases with 190 passed, 22 platform-specific skips and zero
+failures. Package-scoped formatting and warnings-denied Clippy were clean. The
+source gate passed directly, and Actionlint passed for this workflow after
+excluding its three pre-existing informational `SC2016` findings outside the
+new root-test step.
+
+The Node runtime suite includes typed D-Bus dependency arrays and
+`TimeoutStopUSec`, stale-manager/missing-edge/lookalike/timeout mutations, and
+final-snapshot drift. Rust additionally covers commit-time backup-age
+revalidation, exact watchdog environment parsing and Linux abstract notify
+sockets.
+
+The accumulated required relationship, service-property and watchdog fields
+intentionally bump the live request, collector identity and evidence kind from
+v4 to v6. Existing v4 or v5 render requests and evidence must not be translated
+or reused; render a new v6 request and collect fresh target-host evidence after
+`daemon-reload`.
+
+This establishes source and deterministic compatibility evidence only. It does
+not prove target-systemd formatting, a live CLN InvocationID mapping, watchdog
+enforcement, BindsTo propagation, fresh CLN identity bootstrap or production
+activation; those remain target-host gates.
+
 ## Expected acceptance record
 
 Record the commit, platform/toolchain, command mode, pass/fail result and any
 skipped boundary. Do not record invoices, payment hashes, preimages, raw
 capabilities, query addresses, results, browser vault records or secret paths.
+
+Keep the record external to this dated document and begin it with the following
+fail-closed fields. Fill them from the actual post-merge artifacts; never infer
+a merge SHA or CI conclusion from a local worktree:
+
+| Field | Initial value before independent verification |
+| --- | --- |
+| `merged_source_commit` | `UNSET_AFTER_MERGE` |
+| `exact_head_ci_urls_and_conclusions` | `UNSET_AFTER_MERGE` |
+| `local_acceptance_source_commit` | exact tested commit, or `UNSET` |
+| `render_plan_digest` | `NOT_APPLICABLE_SOURCE_MERGE` |
+| `remote_runtime_evidence_digest` | `NOT_APPLICABLE_SOURCE_MERGE` |
 
 At minimum, a release candidate needs evidence for:
 
@@ -1106,7 +1518,8 @@ At minimum, a release candidate needs evidence for:
 6. persistence/restart/concurrency suites;
 7. deterministic no-funds fixture generation;
 8. the locked product contract and exact external EasyCrypt record;
-9. an approved staging network E2E once its edge controls are implemented.
+9. the stopped-edge and fresh-live source-fair activation evidence pair;
+10. an approved staging network E2E once its edge controls are implemented.
 
 ## Not exercised by this procedure
 
@@ -1125,15 +1538,66 @@ At minimum, a release candidate needs evidence for:
   connection/auth limits, or tree-top bandwidth overload at the edge;
 - production identity/binary pins, remote servers, hardware attestation,
   production database proofs/trusted roots, or production databases;
-- process-level Harmony query, Onion or TEE-ORAM execution (their canonical
-  gate states are covered in-process; Harmony V2Full hint lifecycle now has a
-  dedicated local real-provider-process boundary);
+- production-grade process fixtures for Harmony, Onion or TEE-ORAM (their
+  local real-provider-process boundaries use deterministic/no-SEV fixtures and
+  do not establish production attestation, data or inclusion-proof evidence);
 - a deployed browser-to-issuer-to-provider main-page network E2E (the visible
   main-page controller is covered by unit tests; the local Chromium harness
   reaches two real issuers and two real providers and executes a DPF query with
   Merkle verification, but uses `NoSevHost`, synthetic proof material and an
   all-zero test database rather than production identity/attestation/data);
 - independent ARC review;
+- an installed and independently verified directory-relay runtime. The
+  selection is now resolved and hash-frozen in
+  `deploy/payment-v1/relay-selection.toml.example`, using the explicitly
+  accepted degraded `centralized-single-relay` mode; stopped-state and
+  fresh-live target evidence remain deployment blockers;
+- a production Standard Cashu mint. Until an exact mint, WebPKI/pins, unit,
+  custody limits and recovery/outage plan are approved, every mint-dependent
+  Standard Cashu offer in the current policy must be omitted. The checked-in
+  profiles reject retained-policy flags and payloads. The
+  complete `provider-v1` profile still has fixed Standard-Cashu inputs and must
+  remain unmaterialized and inactive without that mint approval. The distinct
+  `provider-no-standard-cashu-v1` profile may be used only after its own plan
+  approval: it binds a separate unit, NSS identity, state/configuration paths
+  and activation sentinel, and carries BAT/shared-issuer material but no
+  Standard-Cashu recovery, custody or exposure inputs. Its current acquisition
+  policy must omit Standard Cashu. This checked-in profile is zero-retained:
+  the gates reject retained-policy flags and payloads, so it has no old-policy
+  redemption route. Startup fails if current method coverage or Cashu
+  configuration checks fail. This does not establish a
+  production mint or authorize
+  external mint access. A
+  still smaller deployment may instead select `provider-direct-v1`, whose exact
+  nine-payload closure omits BAT and shared-issuer material as well and includes
+  an owner-only remote rollback config, client-signing seed and value-root key.
+  Its current
+  acquisition routes may use only Free open-best-effort, Free proof-of-work,
+  provider-local Free anonymous tickets and direct BOLT11 receipts. This is
+  also a zero-retained closed profile. The Cashu validator rejects Standard
+  Cashu in the current policy; current method coverage rejects BAT, shared
+  online, ARC and every other unavailable applicable route. The unit also
+  carries no Free-IP
+  adapter material. It has a
+  separate unit/account/paths/sentinel and makes no paid-QoS claim. Before any
+  provider-profile switch, stop and deauthorize the old unit, prove it inactive
+  with no `8191` listener, and create only the new profile sentinel. For the
+  same logical provider, first stop issuance/admission, wait through the
+  longest old policy/capability/grace horizon, fully retire/reconcile Standard
+  Cashu custody, and drain shared-issuer redeems to known outcomes. Static gates
+  cannot prove that drain, so separately reviewed transition evidence is
+  mandatory. Only then may a stopped-state migration preserve the
+  stable server ID, operator key and derived provider ID, policy-signing key,
+  provider identity certificate/key, ProviderStore/store-instance identity,
+  spend and replay history, remote authority instance/key, namespace, client-
+  verifying-key identity, client-signing seed, value-root key and floor. The
+  TOML may be re-rendered only with the new canonical secret paths. Rotating an
+  authority-identity field requires a separately reviewed migration ceremony
+  because V1 has no online rebind/reset; a blank
+  store in the new profile directory is forbidden. Otherwise the deployment
+  must use and publish a genuinely new provider/server identity;
+- a reviewed mainnet deployment preflight. The current Lightning preflight is
+  default-Signet-specific and cannot authorize mainnet;
 - deployed-origin CSP/header enforcement, dependency closeout and manual
   testing;
 - a repository ruleset that requires the Payment/security checks and prevents
@@ -1143,5 +1607,8 @@ At minimum, a release candidate needs evidence for:
   to dispatch Actions;
 - user manual acceptance.
 
-All of the above remain explicit gates. Production deployment, remote server
-operations and real Lightning funds require fresh user approval.
+All of the above remain explicit gates. Remote server mutation, bounded service
+activation, persistent Signet custody, faucet/test-coin use, external Cashu-mint
+access, public Nostr publication, VPSBG UKI build/upload/reboot, production-key
+installation/use and mainnet/real Lightning funds require separate fresh
+approvals; none implies another.

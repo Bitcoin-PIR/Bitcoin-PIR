@@ -4,6 +4,35 @@ Status: pre-production operating contract. No production deployment, public
 relay publication, external mint access or real Lightning operation has been
 performed under this plan.
 
+## Deployment phases and approval scope
+
+Every operator record must name one phase: **source merge**, **private no-
+funds**, **public Signet**, or **production mainnet**.
+
+- Source merge records the reviewed commit and exact-head CI; it installs or
+  activates nothing.
+- Private no-funds may render any approved closed plan for offline review.
+  Remote installation/start is limited to the edge profile, requires separate
+  remote-host and bounded activation approvals, and ends by stopping the edge
+  and revoking its profile sentinel. It uses synthetic credentials and no
+  persistent Lightning state or public publication.
+- Public Signet uses staging-only persistent wallet/node/channel identities,
+  test coins and public staging surfaces.
+- Production mainnet is currently blocked because the repository's deployment
+  preflight is default-Signet-specific; no reviewed mainnet preflight exists.
+
+Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory every
+non-secret input and [render-plan-skeletons/](render-plan-skeletons/) as the
+only starting shapes for a closed render plan. Preserve merge/CI and activation
+evidence in an external record; do not put secret paths' contents, keys,
+invoices, payment hashes, preimages or bearer proofs in that record.
+
+Remote mutation, bounded service activation, persistent Signet custody,
+faucet/test-coin use, external Cashu-mint access, public Nostr or DNS
+publication, VPSBG UKI build/upload/reboot, production-key installation/use,
+and mainnet/real-value operations are separate approval gates. No approval
+implies any other gate.
+
 ## 1. Choose the topology before choosing prices
 
 Pricing and commercial policy belong in signed offers. Cryptographic and
@@ -116,6 +145,14 @@ If a user deliberately selects two offers backed by the same shared issuer,
 surface that common-infrastructure risk before acquisition. Never claim that
 blind issuance makes the shared issuer invisible.
 
+The client models a shared Lightning payee as a second, independent correlation
+boundary. Native callers must acknowledge issuer and payee sharing separately.
+The Web product's advanced, in-memory-only confirmation explicitly acknowledges
+both for that one attempt so a pooled Cashu/BAT/ARC service can use one
+settlement node. The default rejects either form of sharing. No acknowledgement
+ever permits one provider WebSocket origin, policy/operator key, raw BAT/ARC
+key, or direct-receipt verification key to serve both PIR roles.
+
 Different provider IDs, keys, issuer IDs and domains are necessary hygiene,
 not proof of different owners. Until independently sourced operator diversity
 or a reviewed signed operator-group/governance assertion is available, the UI
@@ -226,13 +263,23 @@ container images, CI artifacts or directory events.
 
 ## 3. Persistence and backup domains
 
-Every logical provider has its own ProviderStore. Independent providers must
+Every stateful logical provider has its own ProviderStore. Independent providers must
 not share the database, WAL, spent set or remote spend service. Replicas sharing
 one `provider_id` and keysets are one logical provider and need one linearizable
 spend authority. Payment V1 does not support independent ProviderStore
 databases as active/active replicas. A common external rollback-floor CAS can
 fence an exact cloned-state race to one winner, but it is not detailed-state
 replication and does not make the losing database safe to serve.
+
+The sole V1 exception is a measured, exact-digest-pinned storeless profile whose
+signed policy contains only provider-local Free proof-of-work offers. It creates
+no ProviderStore, WAL/SHM, rollback client or retained-policy surface. Its exact
+domain-separated signed-policy digest, provider ID and policy verification key
+must be compiled into the measured UKI launch inputs. Any policy renewal or
+change requires a new UKI and client measurement/pin ceremony; do not edit the
+host policy or append an unmeasured digest argument. Adding any stateful quota,
+credential, payment or retained method exits this exception and requires the
+ordinary independent store/authority ceremony before startup.
 
 The provider/issuer SQLite database and its rollback-floor authority must be in
 **independent backup and restore domains**. Merely using two filenames on one
@@ -317,8 +364,16 @@ old recovery instance with its original immutable root/network/payee boundary.
 Never weaken delegation, network or payee checks to make an old quote fit a new
 instance.
 
-When already-issued credentials must survive a policy rotation, keep each
-canonical old policy in an immutable operator-controlled file and repeat:
+The runtime binary supports retained policies, but none of the three checked-in
+provider deployment profiles does: their source and rendered gates deliberately
+reject the flag and payload below. Do not add it ad hoc to those units. They
+require a complete credential/custody/redeem drain as documented in the
+deployment guide. The following contract applies only to a future, separately
+reviewed retention-capable profile.
+
+In such a future profile, when already-issued credentials must survive a policy
+rotation, keep each canonical old policy in an immutable operator-controlled
+file and repeat:
 
 ```text
 --service-retained-policy /absolute/path/to/old-policy.bin
@@ -335,6 +390,26 @@ reviewed configuration rollout. Restarting with the same current and retained
 files is idempotent; retain the old receipt/BAT/ARC verification keys for the
 same horizon.
 
+The browser's independently distributed trusted bootstrap has a parallel
+retention obligation. For every unexpired capability acquired through
+BOLT11, keep its exact `(issuerIdHex, canonical HTTPS issuerOrigin, network,
+expectedPayeePubkeyHex)` entry in that provider's `lightningPayeeTrust` array
+through the longest credential use/grace horizon. Removing an active tuple
+does not rebind the token: strict current and retained paths intentionally
+strand it. A payee, network, issuer-origin, or issuer-root rotation therefore
+adds a new exact tuple and retains the old tuple; a payee rotation must use a
+new issuer identity rather than assigning two payees to one tuple. The Nostr
+directory is not an authority for this table.
+
+V1 permits at most 64 trust entries per provider. Before signing or deploying
+a rotation, inventory every current and retained BOLT11 offer plus its latest
+possible capability expiry. Fail the rollout if adding the new tuple would
+exceed 64 while any old tuple can still authorize an outstanding capability.
+Stop new issuance and drain, expire, or explicitly reconcile/refund that old
+cohort before removing its tuple; never evict an active entry merely to satisfy
+the bound. Record the inventory and horizon in the rollout evidence, then test
+one retained capability under every tuple scheduled to remain.
+
 V1 has one trusted service-policy verifying key per provider process. That key
 **must remain stable for every retained credential grace period**. Rotating the
 service-policy signing key while old credentials still need redemption is not
@@ -345,6 +420,35 @@ as needed), or publish a deliberately reviewed future protocol version with an
 authenticated policy-key succession proof.
 
 V1 also loads only one shared-issuer clearing authorization per provider.
+Create it with the offline provider-operator builder, transfer its printed
+digest independently, and have the issuer run the separate approval builder.
+Provision a fourth, raw provider-request public key in the same list position;
+it must differ from clearing, operator and issuer-settlement keys. Ledger-only
+balance reads use the clearing key and need no payout registration, but the
+issuer still persists the distinct request key so a future payout/status
+workflow cannot inherit collapsed signature domains. Rotation requires a
+strictly higher authorization epoch and a new issuer approval; retain an old
+issuer settlement public key only for exact historical recovery.
+
+This retained issuer key is not a retained provider authorization. The shipped
+`unified_server` constructs one `SharedIssuerAdmissionCommitterV1` from the one
+current clearing authorization, approval and issuer endpoint/pin tuple; it has
+no keyring of old clearing authorizations and cannot reconstruct an
+outcome-unknown redeem made under an authorization that has since been
+replaced. The issuer can replay exact previously committed request bytes under
+their original idempotency key, but that server-side property is useful only
+while the provider can still reproduce and authenticate that exact request.
+Therefore V1 clearing-authorization, clearing-key or settlement-key rotation is
+a drain boundary: stop new shared-issuer admission, let every in-flight redeem
+reach a known local-delivery result, reconcile every ambiguous operation, and
+only then replace the authorization/approval and restart. If an outcome remains
+unknown, keep the old provider instance and complete its exact recovery before
+rotation or fail closed and handle it as an accounting incident. Do not claim
+that retained settlement keys make rolling shared-authorization rotation or
+cross-rotation provider recovery safe. A future retained-authorization client
+requires a separately reviewed bounded keyring, endpoint/pin lifetime rules and
+tests; V1 does not provide it.
+
 Certificate-key rotation at the same issuer origin must use a newly
 operator-signed and issuer-approved two-pin overlap, followed by removal of the
 old pin in a later higher authorization epoch. Do not change the signed issuer
@@ -353,6 +457,18 @@ the exact endpoint check will make those capabilities fail closed. Keep the old
 origin serving through the longest redemption-grace horizon, or wait for a
 future multi-authorization migration protocol.
 
+This single-authorization boundary also covers the approval key and issuer
+settlement verification key loaded by `SharedIssuerAdmissionCommitterV1`.
+Retained settlement-key lookup exists at the issuer and in the independent
+`ProviderLedgerBalanceClientV1`; it is **not** a retained shared-authorization
+recovery path inside the provider runtime. V1 therefore cannot resume a
+provider-side pending redeem across a clearing-authorization, approval-key or
+issuer-settlement-key rotation. Before any such rotation, stop new redeems and
+drain/reconcile every pending provider redeem under the old authorization. If
+that cannot be done, record and explicitly accept the fail-closed/manual-
+reconciliation risk; do not describe keyring retention elsewhere as server
+recovery support.
+
 Standard-Cashu custody records retain the exact manifest digest and pin set
 that authorized each swap. Before a planned mint leaf-key rotation, publish a
 signed two-pin manifest while the old key is still served, then export, spend
@@ -360,6 +476,40 @@ and NUT-07-retire every older single-pin lot. An emergency key replacement can
 leave those old lots safely uncheckable; do not graft the new pin onto them or
 use an unpinned client. Freeze exposure and perform explicit incident
 reconciliation until an authenticated custody-migration protocol exists.
+
+### Publisher namespace activation before the Caddy overlay
+
+The rendered `directory-publisher-netns-v1` tree must remain inert after
+installation. Use the separate plan and at-most-one-hour approval in
+`PUBLISHER_NETNS_CEREMONY.md` to start only the exact namespace unit and obtain
+an owner-only receipt. Bind that receipt into the integrated-existing-Caddy
+overlay plan before any Caddy change. Do not start the publisher and do not
+create `PUBLISHER-LIVE-FIREWALL-LINEAGE-IMPLEMENTED`. The exact namespace owner
+opens the host nftables event subscription before topology setup, holds the
+standard xtables lock and fails on any event or lock-inode drift. The publisher
+must retain its exact `BindsTo=` edge to that owner. However, the current owner
+does not re-collect live UFW/raw/nft semantics after acquiring the guard or bind
+that digest to its InvocationID, boot and publication approval. The checked-in
+policy therefore remains `activation_blocked=true`.
+
+Only schema-v2 ceremony plans/approvals are current. Invoke the executor through
+the independently pinned native launcher, its approved seven-entry manifest and
+the complete recursive descriptor-pinned Node ELF closure;
+direct Node invocation is not a production ceremony. Until an independently
+reviewed pre-READY live semantic-lineage implementation replaces the blocker,
+the terminal state is namespace-only. Likewise, if the continuous guard
+cannot subscribe to host nftables notifications, cannot take the exact
+root-owned single-link `/run/xtables.lock`, observes a queued event, or is not
+the same active namespace-owner generation, neither the publisher service nor
+any Nostr publication may start, even when an older namespace receipt is valid.
+
+Rollback order is the reverse trust order: stop the publisher, restore the
+exact Caddy overlay preimage, then use a distinct receipt-bound rollback
+approval to stop only the namespace. A changed Caddy/boot generation makes the
+narrow rollback unavailable and requires the cold-edge incident procedure.
+After reboot, the Caddy dependency may recreate the namespace, but the old
+ceremony receipt is provenance rather than current evidence; collect fresh
+runtime evidence before publication.
 
 Build and self-verify directory artifacts offline, then inspect the explicit
 publisher help separately:
@@ -372,14 +522,21 @@ cargo run --offline -p bpir-admin -- directory-artifact publish --help
 Only `directory-artifact publish` opens a relay connection. It reads no signing
 key: freeze and review the already-signed entry/checkpoint files, pin the
 expected directory public key, and select two through eight credential-free
-public `wss://` relay hostnames. Distinct hostnames are not evidence of distinct
-operators or infrastructure; audit that independently.
+public `wss://` relay hostnames for the strict default. Exactly one relay is
+allowed only with `--centralized-single-relay`; that explicit degraded mode is
+the current central-directory topology and supplies no relay redundancy or
+operator/failure independence. Zero relays, one without the flag, and the flag
+with multiple relays fail before network I/O. Distinct hostnames in strict mode
+are not evidence of distinct operators or infrastructure; audit that
+independently.
 
 Before the approved publication window, run the intended `publish` invocation
 with `--validate-only`. A successful validation performs no DNS or network I/O
 and reports `result=validated` for the frozen artifact set and relay hostnames.
-Record its event-set digest, then remove only `--validate-only` when publication
-is explicitly authorized; any other input change requires a fresh review.
+The receipt also records the publication mode and explicit
+`centralized`/`degraded` booleans. Record its event-set digest, then remove only
+`--validate-only` when publication is explicitly authorized; any other input
+change requires a fresh review.
 
 The publisher sends every exact EVENT to every relay, requires one positive
 matching NIP-01 OK per event, and uses a bounded total timeout for each relay.
@@ -387,7 +544,8 @@ It attempts all relays but exits nonzero on partial success. Preserve the exact
 artifacts and rerun them manually after resolving the failed relay; never
 advance the external per-`d` timestamp/sequence ledger based on a partial run.
 There is no automatic retry, proxy, redirect, relay AUTH, or signing fallback.
-Normal output contains only relay hostname, event count and result code.
+Normal output contains only relay hostname, event count, event-set digest,
+publication-mode fields and result code.
 
 ## 5. Bootstrap stores
 
@@ -436,7 +594,23 @@ digest/epoch. Never attach an empty synthetic local-claim namespace to the old
 exact issuer replay history: that would make an old signed success deliverable
 again.
 
-For every standard-Cashu mint/unit in a current or retained policy, configure
+If no exact production Standard Cashu mint has been selected and approved,
+omit every mint-dependent Cashu offer from the current policy. The three
+checked-in provider profiles are zero-retained; a future separately reviewed
+retention-capable profile would also have to omit the offer from every retained
+policy.
+The disposable CDK fake-wallet mint is test evidence, not a production mint.
+The current closed `provider-v1` unit and render skeleton always carry
+Standard-Cashu custody/recovery/exposure inputs, so offer omission does not make
+that profile eligible to render or start. A mint-free provider must use the
+separately reviewed `provider-no-standard-cashu-v1` profile; do not remove
+fields from `provider-v1`.
+When a production mint is selected, its canonical origin, WebPKI/leaf pin set,
+unit, manifest, finite exposure caps, recovery/custody keys and outage/
+retirement procedure become required render-plan inputs.
+
+For every Standard Cashu mint/unit in the current policy—or in a retained
+policy of a future retention-capable profile—configure
 one exact finite value/note exposure cap plus distinct recovery and custody
 keyrings. Run `bpir-admin cashu-custody inventory` before activation and
 rehearse provider-bound recipient key generation, bounded export, exact replay,
@@ -459,6 +633,16 @@ blinding scalar or query data into operator records.
 
 Run `LOCAL_ACCEPTANCE.md` first. Then require all of the following before any
 public/staging listener:
+
+The directory relay selection is resolved, but no listener or catalog
+publication is eligible until the exact install bundle passes stopped evidence,
+the three relay startup sentinels are separately approved, fresh-live evidence
+passes, and routing/publication approvals are recorded. Resolution alone must
+not create a sentinel or start the unit. The current private no-funds live drill
+must remain unrouted and must not start CLN, the issuer or a provider.
+Likewise, the current Lightning preflight accepts only default Signet. Mainnet
+cannot proceed by changing a config value or by user approval alone; it needs a
+reviewed mainnet implementation and negative tests.
 
 1. put the loopback-only `payment-issuer serve-cln` behind a separately managed
    TLS edge; retain the built-in process-wide quote/status/mutation/
@@ -539,18 +723,20 @@ public/staging listener:
    activation limits, and reject the rollout if either store exceeds them.
    Public serving logs deliberately emit only a coarse successful-check marker
    and elapsed time, never exact generation, quote, spent, or custody counts;
-5. retain the implemented loopback two-provider direct-receipt, Free, BAT and
-   experimental-ARC DPF process checks, the feature-gated Standard-Cashu/Free
-   two-provider process cell, and the real-process Harmony V2Full
-   reserve/reject/disconnect/dispatch/restart lifecycle. Then complete the
-   remaining non-DPF process cells and approved external/deployed boundaries;
-   the local process tests use
+5. retain the implemented loopback two-provider DPF checks, the complete
+   feature-gated Free/Standard-Cashu/BAT/experimental-ARC provider-process
+   supplement across Harmony hint/query, Onion and TEE-ORAM, and every
+   direct-receipt backend process case. Then complete the approved
+   external/deployed boundaries; the local process tests use
    `NoSevHost`/`dangerous_unpaired_*` and are not production trust-chain
    evidence;
 6. retain the disposable local CDK fake-wallet token-import check, then run an
    approved WebPKI Cashu mint NUT-03/recovery/outage canary; separately run an
    approved regtest/signet Core Lightning canary;
-7. approved relay split-view/outage drill;
+7. approved mode-specific relay drill: centralized mode proves one-relay outage
+   fails closed without retry or strict-mode downgrade, while strict mode proves
+   two-origin completeness, split-view rejection and no fallback after one of an
+   exact two-origin set fails;
 8. logging/metrics review against `SECURITY.md`;
 9. ARC kept experimental and optional pending independent review. Local ARC
    integration requires `--allow-experimental-arc` on each configured
@@ -565,7 +751,17 @@ aggregate edge controls across many connections.
 
 ## 7. Activation order
 
-When separately approved, use this order:
+When the exact phase and every action it needs are separately approved, use
+this order. Private no-funds is restricted to offline rendering of any closed
+profile and remote installation/start of the approved edge bundle only. Before
+that edge starts, record the exact bounded approval and provision both
+`ACTIVATION-APPROVED` and `EDGE-ACTIVATION-APPROVED`; do not install or execute
+the issuer/provider/authority steps below. After fresh-live evidence, stop Caddy
+and then HAProxy, verify every edge listener is gone, and revoke the edge
+sentinel. For public Signet, keep
+`real_funds_authorized = false` and use staging-only keys. There is no valid
+production-mainnet execution of this sequence until its missing preflight is
+implemented and reviewed.
 
 1. freeze exact binaries, hashes, policies, directory artifacts and key IDs;
 2. restore/check database and independent rollback authority separately;
@@ -670,12 +866,33 @@ replacement event, never an older event.
 
 Obtain fresh user approval immediately before any of these actions:
 
-- production deployment or remote-server operation;
-- connecting the executable to a real Lightning node or spending/receiving
-  real Lightning funds;
-- contacting an external Cashu mint with production value;
-- publishing provider catalogs to a public Nostr relay;
-- installing production keys or performing a production database migration.
+- any remote-server mutation or deployment, including a private no-funds
+  install/drill;
+- creating or using persistent Signet node identities, wallets or channels;
+- requesting, receiving or spending Signet faucet/test coins;
+- any VPSBG measured-UKI build, upload, reboot, measurement/pin change or
+  rollback selection;
+- installing, transferring, using or rotating a production key;
+- connecting the executable to a mainnet Lightning node or spending/receiving
+  real-value Lightning funds;
+- any network access to an external Cashu mint, including no-value/read-only
+  compatibility probes or issuance/redemption mutations (disposable loopback
+  test mints remain covered by local test approval rather than this gate);
+- publishing provider catalogs/events to a public Nostr relay or changing
+  public DNS/routing; and
+- performing a production database migration.
+
+These approvals are independent and non-transitive. A remote-host approval is
+not a service-activation, Signet, Nostr, VPSBG-UKI, production-key or real-funds
+approval; a bounded service-activation approval names the exact profile and
+units, provisions only its exact role-specific sentinel set alongside the
+global one, and does not authorize another unit or phase. A Signet approval is
+not a mainnet approval.
+Even with approval, mainnet remains blocked
+until the missing reviewed deployment preflight exists, and relay publication
+remains blocked until the resolved relay install has independently verified
+stopped-state and fresh-live evidence and the publisher-key use/catalog
+publication steps receive their own approval.
 
 ARC additionally requires an independent cryptographic review before it can
 leave experimental status.

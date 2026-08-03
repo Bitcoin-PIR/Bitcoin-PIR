@@ -1,5 +1,5 @@
 /**
- * IndexedDB persistence for HarmonyPIR hint state (v3 schema).
+ * IndexedDB persistence for complete HarmonyPIR hint state (v4 schema).
  *
  * Stores the opaque byte blob produced by `WasmHarmonyClient.saveHints()`
  * (self-describing, fingerprinted — see `crates/sdk/client/src/hint_cache.rs`)
@@ -25,9 +25,9 @@
  */
 
 const DB_NAME = 'harmonypir-hints';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = 'hints';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 export interface HarmonyHintCacheBindingV1 {
   providerIdHex: string;
@@ -38,7 +38,28 @@ export interface HarmonyHintCacheBindingV1 {
   prpBackend: number;
 }
 
-/** Stored IndexedDB record (v2). */
+/** Generic product resources call their backend-specific variant `variant`.
+ * Harmony hint persistence names that same value `prpBackend` so it is part
+ * of the exact cache key. Keep this conversion explicit at the boundary. */
+export interface HarmonyHintResourceBindingV1
+  extends Omit<HarmonyHintCacheBindingV1, 'prpBackend'> {
+  variant: number;
+}
+
+export function resourceBindingToHarmonyHintCacheBindingV1(
+  binding: HarmonyHintResourceBindingV1,
+): HarmonyHintCacheBindingV1 {
+  return {
+    providerIdHex: binding.providerIdHex,
+    policyDigestHex: binding.policyDigestHex,
+    scopeIdHex: binding.scopeIdHex,
+    offerId: binding.offerId,
+    datasetIdHex: binding.datasetIdHex,
+    prpBackend: binding.variant,
+  };
+}
+
+/** Stored IndexedDB record containing a complete main+sibling hint bundle. */
 export interface StoredHints {
   cacheKey: string;
   dbId: number;

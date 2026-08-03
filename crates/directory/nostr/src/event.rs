@@ -16,6 +16,17 @@ pub const MAX_NOSTR_TAGS_V1: usize = 64;
 pub const MAX_NOSTR_TAG_ITEMS_V1: usize = 8;
 pub const MAX_NOSTR_TAG_VALUE_BYTES_V1: usize = 1_024;
 
+/// Validate a BIP340/Nostr x-only public key before it is pinned in runtime
+/// configuration. Syntactic 32-byte, non-zero checks are insufficient because
+/// not every field element is the x-coordinate of a secp256k1 point.
+pub fn validate_directory_xonly_public_key_v1(
+    public_key: &[u8; 32],
+) -> Result<(), DirectoryErrorV1> {
+    VerifyingKey::from_bytes(public_key)
+        .map(|_| ())
+        .map_err(|_| DirectoryErrorV1::InvalidDirectoryPublicKey)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NostrEventV1 {
     id: [u8; 32],
@@ -124,6 +135,8 @@ impl NostrEventV1 {
         if computed != self.id {
             return Err(DirectoryErrorV1::InvalidEventId);
         }
+        validate_directory_xonly_public_key_v1(&self.pubkey)
+            .map_err(|_| DirectoryErrorV1::InvalidEventSignature)?;
         let verifying_key = VerifyingKey::from_bytes(&self.pubkey)
             .map_err(|_| DirectoryErrorV1::InvalidEventSignature)?;
         let signature = SchnorrSignature::try_from(self.signature.as_slice())

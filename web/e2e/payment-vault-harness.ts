@@ -57,6 +57,17 @@ const scope: ServiceScopeViewV1 = {
   protocolVersion: 1,
   operationProfile: 1,
   entitlementProfile: 1,
+  dataset: { kind: 'manifest-root', rootHex: '5a'.repeat(32) },
+  limits: {
+    maxLogicalInputs: 1,
+    maxFrames: 64,
+    maxRequestBytes: '1048576',
+    maxResponseBytes: '2097152',
+    maxWallTimeMs: 30_000,
+    maxConcurrentSockets: 1,
+    maxHintGroups: 0,
+    maxWorkUnits: '10000',
+  },
   offers: [offer],
 };
 
@@ -171,6 +182,7 @@ const api = {
       network: 'bitcoin',
       expectedPayeePubkey: PAYEE,
       allowInsecureLoopback: true,
+      assertReady: () => {},
     });
     await activeAcquisition.pollStatus();
     return {
@@ -196,7 +208,12 @@ const api = {
       const acquisition = await Bolt11AcquisitionControllerV1.resume({
         vault: await vault(),
         recoveryId,
+        issuerEndpoint: offer.endpoint,
+        issuerIdHex: offer.issuerIdHex,
+        network: 'bitcoin',
+        expectedPayeePubkey: PAYEE,
         allowInsecureLoopback: true,
+        assertReady: () => {},
       });
       try {
         return { ok: true, count: await acquisition.claim() };

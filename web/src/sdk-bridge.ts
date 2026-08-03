@@ -20,6 +20,8 @@ interface PirSdkWasm {
   WasmSyncPlan: WasmSyncPlan;
   WasmQueryResult: {
     new(): WasmQueryResult;
+    /** Data import only: caller `merkleVerified` is ignored and the returned
+     * handle is always unverified. */
     fromJson(json: any): WasmQueryResult;
   };
   // Native-WASM DPF client — used by `dpf-adapter.ts` to retire the pure-TS
@@ -169,7 +171,20 @@ interface PirSdkWasm {
   };
   /** Strict transport-neutral verifier for complete multi-relay catalogs. */
   WasmDirectoryCatalogCandidateV1: {
-    verifyRelayCatalogs(
+    /**
+     * Event-batch verifier only. Caller has already enforced 2..8 canonical
+     * origin-only WSS URLs and 16 EOSE-complete subscriptions per view.
+     */
+    verifyStrictRelayEventBatch(
+      relayBatchJson: Uint8Array,
+      pinnedDirectoryPubkey: Uint8Array,
+      nowUnix: bigint,
+    ): WasmDirectoryCatalogCandidateV1;
+    /**
+     * Event-batch verifier only. Caller has already enforced one canonical
+     * origin-only WSS URL and 16 EOSE-complete subscriptions.
+     */
+    verifyCentralizedSingleRelayEventBatch(
       relayBatchJson: Uint8Array,
       pinnedDirectoryPubkey: Uint8Array,
       nowUnix: bigint,
@@ -512,6 +527,8 @@ export interface WasmAnnounceVerification {
 export interface WasmDatabaseProof {
   free(): void;
   readonly dbId: number;
+  /** SHA-256 of the verified server database MANIFEST.toml bytes. */
+  readonly manifestRootHex?: string;
   readonly buildKind: 'snapshot' | 'delta' | string;
   readonly fromHeight: number;
   readonly fromBlockHashHex: string;
@@ -572,6 +589,12 @@ export interface ServiceScopeViewV1 {
   protocolVersion: number;
   operationProfile: number;
   entitlementProfile: number;
+  dataset:
+    | { kind: 'class'; classId: number }
+    | { kind: 'catalog-epoch'; epoch: string }
+    | { kind: 'manifest-root'; rootHex: string };
+  /** Immutable counters committed by the live signed policy digest. */
+  limits: ServiceEntitlementLimitsViewV1;
   offers: ServiceOfferViewV1[];
 }
 
@@ -589,7 +612,7 @@ export interface ServiceEntitlementLimitsViewV1 {
 export interface RetainedServiceRedemptionViewV1 {
   providerIdHex: string;
   policyDigestHex: string;
-  scope: ServiceScopeViewV1 & { limits: ServiceEntitlementLimitsViewV1 };
+  scope: ServiceScopeViewV1;
   offer: ServiceOfferViewV1;
 }
 
@@ -713,9 +736,40 @@ export interface WasmServicePowChallengeV1 {
   solveChunk(startNonce: bigint, maxAttempts: number): Uint8Array;
 }
 
+/** Diagnostic superset returned by the transport-free native PBC planner. */
+export interface WasmProductQueryPlanV1 {
+  backend: 'dpf-pir' | 'harmony-pir';
+  workload: 'dpf-query' | 'harmony-query' | 'harmony-hint';
+  lowerBounds: {
+    logicalInputs: number;
+    frames: number;
+    workUnits?: string;
+    hintGroups?: number;
+    concurrentSockets?: number;
+  };
+  /** Exact PBC INDEX job count; absent for the hint workload. */
+  pbcRounds?: number;
+  /** Exact INDEX frames at this provider; excludes CHUNK/Merkle. */
+  exactIndexFrames?: number;
+  /** Counters intentionally not estimated by the pre-query planner. */
+  omitted: Array<
+    | 'requestBytes'
+    | 'responseBytes'
+    | 'merkleFrames'
+    | 'dataDependentAdditionalChunkFrames'
+    | 'siblingHintGroups'
+  >;
+}
+
 export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
+  /** Configure one provider before that leg is connected. */
+  setServerUrl(serverIndex: number, url: string): void;
+  /** Connect or disconnect exactly one independently selected provider. */
+  connectServer(serverIndex: number): Promise<void>;
+  disconnectServer(serverIndex: number): Promise<void>;
+  isServerConnected(serverIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Send REQ_ATTEST to one of the connected servers (`serverIndex`
@@ -741,14 +795,27 @@ export interface WasmDpfClient {
    *  otherwise). On handshake failure both connections are dropped —
    *  call `connect` again to retry. */
   upgradeToSecureChannel(pub0: Uint8Array, pub1: Uint8Array): Promise<void>;
-  /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
-   * (which go through `query_batch_with_inspector`) can resolve `db_id`
+  /** Upgrade one staged provider without touching the peer leg. */
+  upgradeServerToSecureChannel(serverIndex: number, serverStaticPub: Uint8Array): Promise<void>;
+  /** Populate the native-side catalog so subsequent `queryBatchVerified` calls
+   * can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  /** Fetch the catalog from one staged provider. The second catalog must be
+   *  query-compatible with the first before the native client accepts it;
+   *  display names, ordering, and peer-only entries do not affect matching. */
+  fetchCatalogFromServer(serverIndex: number): Promise<WasmDatabaseCatalog>;
   /** Fetch and verify an attested-builder database proof against the
    * native catalog. Optional string policy pins may be `undefined` or empty.
    * Mainnet network magic is always enforced by the WASM method. */
   verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
+  verifyDatabaseProofFromServer(
+    serverIndex: number,
     dbId: number,
     expectedParamsHashHex?: string | null,
     allowedBuilderBinarySha256Hex?: string | null,
@@ -798,7 +865,9 @@ export interface WasmDpfClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedService(
+  /** Low-level one-sided retained redemption. The strict DPF adapter calls
+   * this only after its two-provider readiness and product-pair checks. */
+  dangerousUnpairedAuthorizeRetainedService(
     serverIndex: number,
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
@@ -813,14 +882,12 @@ export interface WasmDpfClient {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmServicePowChallengeV1>;
-  /** Inspector-path batch query. Returns an `Array<WasmQueryResult>` of
-   * length `N` (one per packed scripthash). Every slot is non-null —
-   * not-found queries are synthesised as empty inspector-populated
-   * results so absence-proof bins are preserved. */
-  queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
-  /** Standalone Merkle verifier — consumes inspector-populated results as
-   * JSON (typically `wqr.toJson()`-serialised). Returns `boolean[]`. */
-  verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
+  /** Release-safe inspector query. Native code binds each result to the
+   * exact input order and db, verifies every INDEX/CHUNK bin, and rejects
+   * the whole batch before exposing handles if any proof fails. */
+  queryBatchVerified(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
+  /** Pure zero-network plan over packed `20*N` script-hash bytes. */
+  planServiceQuery(scriptHashes: Uint8Array, dbId: number): WasmProductQueryPlanV1;
   /** Register a JS callback for every `ConnectionState` transition; the
    * callback receives a single string (`"connecting"` / `"connected"` /
    * `"disconnected"`). Replaces any previously registered listener. */
@@ -855,11 +922,18 @@ interface WasmSyncPlan {
  * constructor signature. Fields used by `harmonypir-adapter.ts`; the full
  * surface exposed by `crates/sdk/wasm/src/client.rs::WasmHarmonyClient` is a
  * superset (notably `queryBatch` + `fetchCatalog`, which the adapter doesn't
- * need because PIR rounds go through `queryBatchRaw`).
+ * need because PIR rounds go through `queryBatchVerified`).
  */
 export interface WasmHarmonyClient {
   free(): void;
   readonly isConnected: boolean;
+  /** Provider 0 is the independently priced hint workload; provider 1 is
+   *  the per-query workload. Either role may be configured/connected first
+   *  without disclosing the peer selection. */
+  setProviderUrl(providerIndex: number, url: string): void;
+  connectProvider(providerIndex: number): Promise<void>;
+  disconnectProvider(providerIndex: number): Promise<void>;
+  isProviderConnected(providerIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Same as `WasmDpfClient.attest`. `serverIndex` 0 = hint server,
@@ -872,13 +946,22 @@ export interface WasmHarmonyClient {
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
+  upgradeProviderToSecureChannel(providerIndex: number, serverStaticPub: Uint8Array): Promise<void>;
   /** Fetch + cache the database catalog over the WASM client's
    *  internal connection. Returns a `WasmDatabaseCatalog` handle the
    *  caller can pass back into `fetchHintsWithProgress` / `loadHints`
    *  / `fingerprint`. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  fetchCatalogFromProvider(providerIndex: number): Promise<WasmDatabaseCatalog>;
   /** Same as `WasmDpfClient.verifyDatabaseProof`. */
   verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
+  verifyDatabaseProofFromProvider(
+    providerIndex: number,
     dbId: number,
     expectedParamsHashHex?: string | null,
     allowedBuilderBinarySha256Hex?: string | null,
@@ -924,7 +1007,8 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedHintService(
+  /** Low-level retained hint redemption without a native hint/query pair. */
+  dangerousUnpairedAuthorizeRetainedHintService(
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     proofBytes: Uint8Array,
@@ -937,7 +1021,8 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
-  authorizeRetainedQueryService(
+  /** Low-level retained query redemption without a native hint/query pair. */
+  dangerousUnpairedAuthorizeRetainedQueryService(
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     proofBytes: Uint8Array,
@@ -970,13 +1055,14 @@ export interface WasmHarmonyClient {
   /** Effective PRP backend selected by V2 hint setup. */
   cachePrpBackend(): number;
   setPrpBackend(backend: number): void;
-  /** Inspector-path batch query — populates `indexBins`/`chunkBins`
-   *  on every returned `WasmQueryResult`. Not-found slots are
-   *  synthesised as empty inspector-populated results (never null)
-   *  so Merkle absence proofs have something to verify against. */
-  queryBatchRaw(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
-  /** Standalone Merkle verifier (mirrors `WasmDpfClient.verifyMerkleBatch`). */
-  verifyMerkleBatch(resultsJson: any[], dbId: number): Promise<boolean[]>;
+  /** Release-safe inspector query. Native code binds each result to the
+   *  exact input order and db, then completes all Merkle checks before
+   *  returning any handle. */
+  queryBatchVerified(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
+  /** Query-provider plan including mandatory CHUNK-presence traffic. */
+  planServiceQuery(scriptHashes: Uint8Array, dbId: number): WasmProductQueryPlanV1;
+  /** Separate cold-cache hint-provider main-group lower bound. */
+  planServiceHint(dbId: number): WasmProductQueryPlanV1;
   /** 16-byte fingerprint derived from `(masterKey, prpBackend, catalog.get(dbId))`.
    *  Embedded in `saveHints()` output; exposed here so the IndexedDB
    *  bridge can tag cache entries for debugging. */
@@ -988,6 +1074,12 @@ export interface WasmHarmonyClient {
    *  cross-checked against `(masterKey, prpBackend, catalog.get(dbId))`;
    *  a mismatch throws rather than silently loading stale hints. */
   loadHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
+  /** Restore only a complete paid hint resource. Requires authenticated
+   *  tree-tops and rejects/clears main-only or malformed sibling state. */
+  loadCompleteHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
+  /** Whether the in-memory state exactly covers all main and authenticated
+   *  sibling groups for this proof-verified database. */
+  hasCompleteHints(catalog: WasmDatabaseCatalog, dbId: number): boolean;
   /** Minimum per-group query budget across every loaded HarmonyGroup.
    *  `undefined` when nothing is loaded. */
   minQueriesRemaining(): number | undefined;
@@ -996,7 +1088,7 @@ export interface WasmHarmonyClient {
   /** Register a `ConnectionState` transition listener. */
   onStateChange(cb: (state: string) => void): void;
   /** Progress-reporting variant of `sync`; currently unused by the
-   *  adapter (queryBatchRaw is the primary path). */
+   *  adapter (`queryBatchVerified` is the primary path). */
   syncWithProgress(
     scriptHashes: Uint8Array,
     lastHeight: number | null | undefined,
@@ -1008,6 +1100,13 @@ export interface WasmHarmonyClient {
    *  (typically 155). On a cache hit / already-loaded state the
    *  callback fires once with `done === total`. */
   fetchHintsWithProgress(
+    catalog: WasmDatabaseCatalog,
+    dbId: number,
+    progress: (event: { done: number; total: number; phase: string }) => void,
+  ): Promise<void>;
+  /** Fetch the restart-safe paid resource: all main and Merkle-sibling hints.
+   *  Strict tree-top preflight must already have completed. */
+  fetchCompleteHintsWithProgress(
     catalog: WasmDatabaseCatalog,
     dbId: number,
     progress: (event: { done: number; total: number; phase: string }) => void,
@@ -1252,6 +1351,7 @@ export interface WasmQueryResult {
   readonly entryCount: number;
   readonly totalBalance: bigint;
   readonly isWhale: boolean;
+  /** Native release verdict. Constructor/fromJson handles always return false. */
   readonly merkleVerified: boolean;
   /** Returns `{txid: hexString, vout, amountSats}` or `null`. */
   getEntry(index: number): any;
