@@ -50,6 +50,8 @@ export class ProductAdmissionPanelV1 {
   private snapshot: ProductAdmissionSnapshotV1 | null = null;
   private readonly rows = new Map<string, RoleElementsV1>();
   private publicError: string | null = null;
+  private automationNotice: string | null = null;
+  private unavailableNotice = 'Commercial admission is not configured; queries fail closed.';
   private busy = false;
 
   constructor(private readonly options: ProductAdmissionPanelOptionsV1) {
@@ -59,7 +61,7 @@ export class ProductAdmissionPanelV1 {
     notice.dataset.admissionNotice = 'true';
     notice.setAttribute('role', 'status');
     notice.setAttribute('aria-live', 'polite');
-    notice.textContent = 'Commercial admission 未配置；查询会 fail closed。';
+    notice.textContent = this.unavailableNotice;
     options.root.appendChild(notice);
 
     if (options.transportCompatibilityNotice) {
@@ -131,8 +133,23 @@ export class ProductAdmissionPanelV1 {
     }
     this.renderUnavailable(
       options.length === 0
-        ? 'Commercial admission 未配置；导入完整 trusted bootstrap 后才能查询。'
-        : '选择每个角色的独立 provider，然后开始严格验证。',
+        ? 'Commercial admission is not configured; load a complete trusted bootstrap before querying.'
+        : 'Select an independent trusted provider for each role, then start strict verification.',
+    );
+  }
+
+  /** Apply a mode default without overwriting an explicit user selection. */
+  setDefaultProviderIds(defaults: Record<string, string>): void {
+    if (Object.keys(defaults).length === 0) return;
+    for (const [role, providerIdHex] of Object.entries(defaults)) {
+      const row = this.rows.get(role);
+      if (!row || row.provider.value || !providerIdHex) continue;
+      if (Array.from(row.provider.options).some((option) => option.value === providerIdHex)) {
+        row.provider.value = providerIdHex;
+      }
+    }
+    this.renderUnavailable(
+      'Simple mode will use the selected trusted provider defaults and signed Free access when available.',
     );
   }
 
@@ -148,16 +165,30 @@ export class ProductAdmissionPanelV1 {
   attach(controller: ProductAdmissionControllerV1): void {
     this.controller = controller;
     this.publicError = null;
+    this.automationNotice = null;
     this.render(controller.snapshot());
   }
 
-  detach(message = 'Commercial admission 未配置；查询会 fail closed。'): void {
+  detach(message = 'Commercial admission is not configured; queries fail closed.'): void {
     this.controller = null;
     this.snapshot = null;
+    this.publicError = null;
+    this.automationNotice = null;
     this.busy = false;
     for (const row of this.rows.values()) row.provider.disabled = false;
     this.renderUnavailable(message);
     this.options.onStateChange?.(null);
+  }
+
+  setAutomationNotice(message: string | null): void {
+    this.automationNotice = message;
+    this.render();
+  }
+
+  setPublicError(message: string | null): void {
+    this.publicError = message;
+    if (message) this.automationNotice = null;
+    this.render();
   }
 
   render(snapshot = this.controller?.snapshot() ?? null): void {
@@ -165,11 +196,14 @@ export class ProductAdmissionPanelV1 {
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = this.publicError
-        ?? (snapshot?.phase === 'ready-to-query'
-          ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
-          : snapshot?.phase === 'querying'
-            ? 'One authorized PIR query is in flight; it will not be retried automatically.'
-            : 'Strict server verification passed. Select and authorize each exact signed offer.');
+        ?? this.automationNotice
+        ?? (snapshot
+          ? (snapshot.phase === 'ready-to-query'
+            ? 'All exact provider roles are authorized. The next Query action sends one PIR query.'
+            : snapshot.phase === 'querying'
+              ? 'One authorized PIR query is in flight; it will not be retried automatically.'
+              : 'Strict server verification passed. Select and authorize each exact signed offer.')
+          : this.unavailableNotice);
       notice.classList.toggle('error', this.publicError !== null || snapshot?.phase === 'failed');
     }
     if (!snapshot) return;
@@ -361,6 +395,7 @@ export class ProductAdmissionPanelV1 {
   }
 
   private renderUnavailable(message: string): void {
+    this.unavailableNotice = message;
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = message;
@@ -390,6 +425,7 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
     case 'commercial-admission-unconfigured': return 'Commercial admission is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy admission is disabled.';
+    case 'simple-free-unavailable': return 'Simple mode stopped because every provider role lacks a safe automatic signed Free path; switch to Advanced mode to review exact offers.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart admission.';
     case 'pair-correlation-rejected': return 'The selected pair shares an issuer or trust key; choose independently, or use the one-attempt advanced confirmation.';
     case 'lightning-payee-untrusted': return 'BOLT11 is blocked because no independent expected-payee key is trusted.';
@@ -471,7 +507,7 @@ function statusLabel(
   if (leg.status === 'failed') return 'Admission: failed closed';
   if (selected && (selected.offer.authorization === 'cashu-bat'
       || selected.offer.authorization === 'arc-experimental') && leg.inventory === 0) {
-    return `Inventory: 0 · 需先导入/购买 capability${selected.offer.authorization === 'arc-experimental' ? ' · EXPERIMENTAL' : ''}`;
+    return `Inventory: 0 · import or acquire a capability first${selected.offer.authorization === 'arc-experimental' ? ' · EXPERIMENTAL' : ''}`;
   }
   if (leg.inventory !== null) return `Inventory: ${leg.inventory} exact capability record(s)`;
   return `Admission: ${leg.status}`;
