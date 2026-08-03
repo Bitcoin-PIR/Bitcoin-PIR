@@ -88,6 +88,8 @@ export class ProductAdmissionPanelV1 {
   private snapshot: ProductAdmissionSnapshotV1 | null = null;
   private readonly rows = new Map<string, RoleElementsV1>();
   private publicError: string | null = null;
+  private automationNotice: string | null = null;
+  private unavailableNotice = 'Query access is not configured; queries are blocked.';
   private busy = false;
 
   constructor(private readonly options: ProductAdmissionPanelOptionsV1) {
@@ -97,7 +99,7 @@ export class ProductAdmissionPanelV1 {
     notice.dataset.admissionNotice = 'true';
     notice.setAttribute('role', 'status');
     notice.setAttribute('aria-live', 'polite');
-    notice.textContent = 'Query access is not configured; queries are blocked.';
+    notice.textContent = this.unavailableNotice;
     options.root.appendChild(notice);
 
     if (options.transportCompatibilityNotice) {
@@ -176,6 +178,21 @@ export class ProductAdmissionPanelV1 {
     );
   }
 
+  /** Apply simple-mode defaults without overwriting an explicit selection. */
+  setDefaultProviderIds(defaults: Record<string, string>): void {
+    if (Object.keys(defaults).length === 0) return;
+    for (const [role, providerIdHex] of Object.entries(defaults)) {
+      const row = this.rows.get(role);
+      if (!row || row.provider.value || !providerIdHex) continue;
+      if (Array.from(row.provider.options).some((option) => option.value === providerIdHex)) {
+        row.provider.value = providerIdHex;
+      }
+    }
+    this.renderUnavailable(
+      'Simple mode will use the selected trusted provider defaults and signed Free access when available.',
+    );
+  }
+
   selectedProviderIds(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [role, row] of this.rows) {
@@ -203,16 +220,30 @@ export class ProductAdmissionPanelV1 {
   attach(controller: ProductAdmissionControllerV1): void {
     this.controller = controller;
     this.publicError = null;
+    this.automationNotice = null;
     this.render(controller.snapshot());
   }
 
   detach(message = 'Query access is not configured; queries are blocked.'): void {
     this.controller = null;
     this.snapshot = null;
+    this.publicError = null;
+    this.automationNotice = null;
     this.busy = false;
     for (const row of this.rows.values()) row.provider.disabled = false;
     this.renderUnavailable(message);
     this.options.onStateChange?.(null);
+  }
+
+  setAutomationNotice(message: string | null): void {
+    this.automationNotice = message;
+    this.render();
+  }
+
+  setPublicError(message: string | null): void {
+    this.publicError = message;
+    if (message) this.automationNotice = null;
+    this.render();
   }
 
   render(snapshot = this.controller?.snapshot() ?? null): void {
@@ -220,6 +251,7 @@ export class ProductAdmissionPanelV1 {
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = this.publicError
+        ?? this.automationNotice
         ?? (snapshot?.phase === 'ready-to-query'
           ? 'All exact provider roles are authorized. The next action sends one query to every required provider role.'
           : snapshot?.phase === 'querying'
@@ -487,6 +519,7 @@ export class ProductAdmissionPanelV1 {
   }
 
   private renderUnavailable(message: string): void {
+    this.unavailableNotice = message;
     const notice = this.options.root.querySelector<HTMLElement>('[data-admission-notice]');
     if (notice) {
       notice.textContent = message;
@@ -519,6 +552,7 @@ function publicErrorForCode(code: ProductAdmissionErrorCodeV1): string {
     case 'commercial-admission-unconfigured': return 'Query access is not configured.';
     case 'strict-bootstrap-failed': return 'Strict server verification failed; no quote, capability, or query was sent.';
     case 'policy-unavailable': return 'A live signed V1 policy/anchor is unavailable; legacy query access is disabled.';
+    case 'simple-free-unavailable': return 'Simple mode stopped because every provider role lacks a safe automatic signed Free path; switch to Advanced mode to review exact offers.';
     case 'query-shape-unavailable': return 'The exact backend planner demand is unavailable; no offer or capability may be used.';
     case 'entitlement-limits-insufficient': return 'The signed entitlement is below the backend planner’s known demand; no payment or capability was used.';
     case 'offer-selection-invalidated': return 'The exact offer selection changed or is incomplete; restart provider verification.';

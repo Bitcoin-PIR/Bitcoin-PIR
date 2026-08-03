@@ -502,6 +502,89 @@ describe('product admission lifecycle', () => {
     expect(state.takes).toBe(1);
   });
 
+  it('automates independent signed Free selections without touching paid offers', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = freeOffer(31);
+    const secondOffer = { ...freeOffer(32), issuerIdHex: '01'.repeat(32) };
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [secondOffer])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+      ],
+      close: vi.fn(),
+    }));
+
+    await controller.selectFreeOffers();
+    await controller.authorizeSelectedFreeOffers();
+
+    expect(controller.canQuery()).toBe(true);
+    expect(first.authorize).toHaveBeenCalledOnce();
+    expect(second.authorize).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
+  it('stops simple mode when a required role has no automatic Free offer', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = freeOffer(33);
+    const secondOffer = paidOffer(34, 'cashu-bat');
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [secondOffer])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
+      ],
+      close: vi.fn(),
+    }));
+
+    await expect(controller.selectFreeOffers()).rejects.toMatchObject({ code: 'simple-free-unavailable' });
+    expect(first.authorize).not.toHaveBeenCalled();
+    expect(second.authorize).not.toHaveBeenCalled();
+    await controller.close();
+  });
+
   it('does not start a free peer grant while the paid peer still needs acquisition', async () => {
     const { vault, state } = fakeVault();
     const target = testTarget('dpf-pir', 'dpf-query');

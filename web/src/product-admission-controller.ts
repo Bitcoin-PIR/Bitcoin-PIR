@@ -198,6 +198,7 @@ export type ProductAdmissionErrorCodeV1 =
   | 'commercial-admission-unconfigured'
   | 'strict-bootstrap-failed'
   | 'policy-unavailable'
+  | 'simple-free-unavailable'
   | 'query-shape-unavailable'
   | 'entitlement-limits-insufficient'
   | 'offer-selection-invalidated'
@@ -521,6 +522,62 @@ export class ProductAdmissionControllerV1 {
       await this.refreshLegRecoveries(leg);
       return this.snapshot();
     });
+  }
+
+  /**
+   * Select the first signed Free offer that can run without a user-supplied
+   * or previously retained capability. Simple mode deliberately excludes
+   * anonymous-ticket offers: those consume a single-use vault credential and
+   * are not an automatic free quota.
+   */
+  async selectFreeOffers(): Promise<ProductAdmissionSnapshotV1> {
+    this.requirePrepared();
+    for (const leg of this.legs) {
+      if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') continue;
+      if (leg.credentialFlowStarted || leg.retainedSelected) {
+        throw simpleFreeUnavailable(
+          `${leg.label} already has a credential flow or retained capability selected`,
+        );
+      }
+      if (leg.selected) {
+        if (!isAutomaticFreeOffer(leg.selected.offer)) {
+          throw simpleFreeUnavailable(`${leg.label} does not have an automatic signed Free selection`);
+        }
+        continue;
+      }
+      if (leg.status === 'failed' || leg.status === 'ambiguous-spend') {
+        throw simpleFreeUnavailable(`${leg.label} is already in a failed admission state`);
+      }
+      const option = leg.offers.find((candidate) => isAutomaticFreeOffer(candidate.offer));
+      if (!option) {
+        throw simpleFreeUnavailable(`${leg.label} does not advertise an automatic signed Free offer`);
+      }
+      await this.selectOffer(leg.role, {
+        scopeIdHex: option.scopeIdHex,
+        offerId: option.offerId,
+      });
+    }
+    return this.snapshot();
+  }
+
+  /** Authorize only the exact automatic Free selections made by simple mode. */
+  async authorizeSelectedFreeOffers(): Promise<ProductAdmissionSnapshotV1> {
+    this.requirePrepared();
+    for (const leg of this.legs) {
+      if (leg.status === 'authorized' || leg.status === 'cached-resource-ready') continue;
+      if (!leg.selected || !isAutomaticFreeOffer(leg.selected.offer)) {
+        throw simpleFreeUnavailable(`${leg.label} has no automatic signed Free selection to authorize`);
+      }
+      if (leg.credentialFlowStarted
+          || leg.status === 'failed'
+          || leg.status === 'ambiguous-spend'
+          || leg.status === 'invoice-open'
+          || leg.status === 'payment-settled') {
+        throw simpleFreeUnavailable(`${leg.label} requires manual recovery before simple mode can continue`);
+      }
+      await this.authorize(leg.role);
+    }
+    return this.snapshot();
   }
 
   /** Select an already-purchased proof bound to an exact historical policy. */
@@ -1761,6 +1818,20 @@ function schemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {
 
 function requiresVaultCapability(offer: ServiceOfferViewV1): boolean {
   return offer.authorization !== 'free' || offer.freeMode === 'anonymous-ticket';
+}
+
+function isAutomaticFreeOffer(offer: ServiceOfferViewV1): boolean {
+  return offer.authorization === 'free'
+    && (offer.freeMode === 'open-best-effort'
+      || offer.freeMode === 'ip-rate-limited'
+      || offer.freeMode === 'proof-of-work');
+}
+
+function simpleFreeUnavailable(message: string): ProductAdmissionErrorV1 {
+  return new ProductAdmissionErrorV1(
+    'simple-free-unavailable',
+    `simple mode stopped: ${message}`,
+  );
 }
 
 function missingInventoryMessage(offer: ServiceOfferViewV1): string {

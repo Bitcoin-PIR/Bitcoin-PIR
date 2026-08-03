@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Zr7LcDJ1HsZfwpmXfN+FGBxV0aGe01t9iqESJ0vZwEU=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-b8TG95QxjM4somz6wyvUYDWyB/lSvJGD5R+mrKDaIt8=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -816,6 +816,21 @@
         .admission-config-grid textarea { min-height: 92px; font-family: var(--mono); font-size: 11px; }
         .admission-config-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
         .admission-config-status { font-size: 11.5px; color: var(--ink-mute); }
+        .admission-simple-mode {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-top: 10px;
+            padding: 9px 10px;
+            border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+            border-radius: var(--r);
+            background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+            color: var(--ink-mute);
+            font-size: 11.5px;
+            line-height: 1.45;
+        }
+        .admission-simple-mode input { margin-top: 2px; accent-color: var(--accent); }
+        .admission-simple-mode strong { color: var(--ink); }
         .product-admission-panel { display: grid; gap: 8px; margin: 14px 0 10px; }
         .admission-notice {
             margin: 0; padding: 8px 10px; border-left: 3px solid var(--warn);
@@ -898,6 +913,10 @@
                         <span class="name">ORAM TEE</span>
                     </button>
                 </div>
+                <label class="admission-simple-mode" for="simpleAdmissionMode">
+                    <input type="checkbox" id="simpleAdmissionMode" checked>
+                    <span><strong>Simple mode.</strong> Strictly verify the trusted servers, choose signed Free access, authorize each required role, and run one query automatically. Paid, ambiguous, or unavailable paths stop for review.</span>
+                </label>
                 <details class="admission-config" id="admissionConfig">
                     <summary>Provider verification trust configuration</summary>
                     <div class="admission-config-grid">
@@ -1755,6 +1774,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }),
         };
 
+        function simpleAdmissionEnabled() {
+            const checkbox = document.getElementById('simpleAdmissionMode');
+            return checkbox instanceof HTMLInputElement && checkbox.checked;
+        }
+
+        function defaultProviderIdsForKind(kind) {
+            const providers = productTrustedBootstrap?.providers ?? [];
+            const roles = {
+                dpf: ['server0', 'server1'],
+                harmony: ['hint', 'query'],
+                onion: ['onion'],
+                oram: ['oram'],
+            }[kind] ?? [];
+            if (providers.length < roles.length) return {};
+            return Object.fromEntries(roles.map((role, index) => [
+                role,
+                providers[index].providerIdHex,
+            ]));
+        }
+
         function hasExactAdmissionSelection(leg) {
             return leg?.selected != null || leg?.retainedSelected != null;
         }
@@ -1767,6 +1806,22 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const button = document.getElementById(id);
             if (!button) return;
             if (button.dataset.admissionActionInFlight === 'true') return;
+            if (simpleAdmissionEnabled()) {
+                if (button.disabled) return;
+                if (snapshot?.phase === 'querying') {
+                    button.disabled = true;
+                    button.textContent = 'Verified query in progress…';
+                } else if (snapshot?.phase === 'ready-to-query') {
+                    button.disabled = false;
+                    button.textContent = 'Run one verified query';
+                } else {
+                    button.disabled = false;
+                    button.textContent = snapshot?.phase === 'selecting'
+                        ? 'Finish automatic Free access'
+                        : 'Run free query';
+                }
+                return;
+            }
             if (id === 'queryBtn') {
                 const legs = snapshot?.legs ?? [];
                 if (!snapshot) {
@@ -1849,7 +1904,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 label: provider.label,
                 source: matchingDirectoryEntry(provider) ? 'directory' : 'manual',
             }));
-            Object.values(admissionPanels).forEach(panel => panel.setProviderOptions(choices));
+            Object.entries(admissionPanels).forEach(([kind, panel]) => {
+                panel.setProviderOptions(choices);
+                if (simpleAdmissionEnabled()) {
+                    panel.setDefaultProviderIds(defaultProviderIdsForKind(kind));
+                }
+            });
         }
 
         function loadBundledFunctionalBetaTrustedBootstrap() {
@@ -1976,6 +2036,16 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 admissionTrustTransitions -= 1;
             }
         }
+
+        document.getElementById('simpleAdmissionMode').addEventListener('change', async () => {
+            await closeAllAdmissionAttempts('Admission mode changed; start a new strict admission attempt.');
+            renderTrustedProviderOptions();
+            Object.values(admissionPanels).forEach(panel => {
+                if (simpleAdmissionEnabled()) {
+                    panel.setAutomationNotice('Simple mode is ready: strict verification and signed Free authorization will run automatically.');
+                }
+            });
+        });
 
         function currentDirectoryRefreshInput() {
             return {
@@ -2468,6 +2538,34 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return controller;
         }
 
+        async function completeSimpleAdmission(kind, controller) {
+            const panel = admissionPanels[kind];
+            panel.setPublicError(null);
+            panel.setAutomationNotice('Simple mode: selecting a signed Free offer for every required role…');
+            await controller.selectFreeOffers();
+
+            if ((kind === 'dpf' || kind === 'harmony')
+                && controller.snapshot().legs.length === 1) {
+                const secondRole = kind === 'dpf' ? 'server1' : 'query';
+                const vault = await admissionVault();
+                await requireFreshDirectoryTrustForSecurityTransition();
+                await controller.prepareLeg(
+                    () => prepareCurrentIndependentProductLeg(
+                        kind, secondRole, vault, controller,
+                    ),
+                );
+                await requireFreshDirectoryTrustForSecurityTransition();
+                installPreparedProductQueryShapes(kind, controller);
+                await controller.selectFreeOffers();
+            }
+
+            panel.render(controller.snapshot());
+            panel.setAutomationNotice('Simple mode: authorizing signed Free access for every required role…');
+            await controller.authorizeSelectedFreeOffers();
+            panel.render(controller.snapshot());
+            panel.setAutomationNotice('Simple mode: strict verification and Free authorization complete. Running one verified query…');
+        }
+
         async function runProductAdmissionQuery(kind, query) {
             await requireFreshDirectoryTrustForSecurityTransition();
             if (admissionTrustTransitions !== 0) {
@@ -2485,8 +2583,24 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     await closeAdmissionAttempt(kind, 'Provider verification failed; inputs are editable again.');
                     throw error;
                 }
-                log(`${kind}: provider verification and signed policy complete; select and authorize each exact offer.`, 'success');
-                return;
+                if (simpleAdmissionEnabled()) {
+                    try {
+                        await completeSimpleAdmission(kind, controller);
+                    } catch (error) {
+                        admissionPanels[kind].setPublicError(publicAdmissionError(error));
+                        throw error;
+                    }
+                } else {
+                    log(`${kind}: provider verification and signed policy complete; select and authorize each exact offer.`, 'success');
+                    return;
+                }
+            } else if (simpleAdmissionEnabled() && phase === 'selecting') {
+                try {
+                    await completeSimpleAdmission(kind, controller);
+                } catch (error) {
+                    admissionPanels[kind].setPublicError(publicAdmissionError(error));
+                    throw error;
+                }
             }
             const snapshot = controller.snapshot();
             if ((kind === 'dpf' || kind === 'harmony') && snapshot.legs.length === 1) {
@@ -5402,11 +5516,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             // HarmonyPIR queryBatch takes addresses OR scriptPubKey hex;
                             // we pass the hex `lines`. Returns Map<qi, HarmonyQueryResult>.
                             const resultMap = await hpClient.queryBatch(lines, (phase, detail) => {
-                                let pct = 10;
-                                if (phase === 'Level 1') pct = 30;
-                                else if (phase === 'Level 2') pct = 60;
-                                else if (phase === 'Reassemble') pct = 90;
-                                hpSetProgress(pct, `${stepLabel} \u2014 ${phase}: ${detail}`);
+                                const pct = phase === 'setup'
+                                    ? 15
+                                    : phase === 'index'
+                                        ? 55
+                                        : phase === 'decode'
+                                            ? 90
+                                            : 10;
+                                const label = phase === 'index'
+                                    ? `${stepLabel} \u2014 waiting for the native query: ${detail}`
+                                    : `${stepLabel} \u2014 ${phase}: ${detail}`;
+                                hpSetProgress(pct, label);
                             });
                             // Convert Map<qi, HarmonyQueryResult> → (HarmonyQueryResult|null)[]
                             // in scripthash order for the SyncController's merge loop.
@@ -5711,11 +5831,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // prewarm IIFE may still be running when the user lands here, and
                 // the wasm client's `&mut self` would otherwise be contended.
                 const results = await hpExclusive(() => queryClient.queryBatch(lines, (phase, detail) => {
-                    let pct = 5;
-                    if (phase === 'Level 1') pct = 25;
-                    else if (phase === 'Level 2') pct = 55;
-                    else if (phase === 'Reassemble') pct = 90;
-                    hpSetProgress(pct, `${phase}: ${detail}`);
+                    const pct = phase === 'setup'
+                        ? 15
+                        : phase === 'index'
+                            ? 55
+                            : phase === 'decode'
+                                ? 90
+                                : 10;
+                    const label = phase === 'index'
+                        ? `Waiting for the native query: ${detail}`
+                        : `${phase}: ${detail}`;
+                    hpSetProgress(pct, label);
                 }, queryDbId));
 
                 if (hpClient !== queryClient || queryClient.getDbId() !== queryDbId) {
