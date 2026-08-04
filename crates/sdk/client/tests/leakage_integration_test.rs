@@ -49,6 +49,12 @@ use pir_core::hash::derive_groups_3;
 use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, PirError, RoundKind, RoundProfile};
 use pir_sdk_client::{DpfClient, HarmonyClient, PirClient, ScriptHash};
 
+// Live-server Payment-V1 admission helpers (attest → secure channel →
+// policy → PoW → authorize). The public deployment enforces
+// `--require-service-auth-v1`, so backend queries need these before any
+// INDEX/CHUNK frame is sent. See `tests/common/mod.rs`.
+mod common;
+
 #[cfg(feature = "onion")]
 use pir_sdk_client::OnionClient;
 
@@ -323,6 +329,8 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) =
             (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        // The public deployment enforces Payment-V1 admission.
+        common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile { profile: recorder.take_profile("dpf"), k_index, k_chunk })
@@ -387,19 +395,38 @@ async fn onion_catalog_k() -> (usize, usize) {
 
 // ─── DPF tests ──────────────────────────────────────────────────────────────
 
+/// Run one DPF batch as a cold session (fresh connection + Payment-V1
+/// admission) and return the query duration. The enforced production servers
+/// grant exactly one query per connection (the grant completes after the
+/// query and the connection is terminal), so benches must reconnect and
+/// re-admit per batch.
+async fn dpf_cold_batch_query(
+    shs: &[ScriptHash],
+    db_id: u8,
+) -> Result<std::time::Duration, PirError> {
+    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+    client.connect().await?;
+    common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
+    let started = std::time::Instant::now();
+    client.query_batch(shs, db_id).await?;
+    let elapsed = started.elapsed();
+    client.disconnect().await.ok();
+    Ok(elapsed)
+}
+
 /// Empirical amortization benchmark for DPF — same shape as
 /// `harmony_amortization_bench` so the two can be compared
 /// side-by-side. DPF has no hint phase (stateless servers), so the
-/// "cold session" cost is just connection + catalog. Per-query cost
+/// "cold session" cost is just connection + admission. Per-query cost
 /// should be roughly constant (no amortization curve like Harmony).
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_amortization_bench() {
     with_transport_retry("dpf amortization bench", || async {
-        let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-        client.connect().await?;
-        let catalog = client.fetch_catalog().await?;
-        let db_id = catalog.databases[0].db_id;
+        // The enforced production servers grant exactly one query per
+        // connection, so every batch below is measured as a cold session:
+        // connect + Payment-V1 admission + one query_batch.
+        let db_id = 0;
 
         // Same 10 distinct not-found scripthashes as the Harmony bench.
         let scripthashes: Vec<ScriptHash> = (0..10u8)
@@ -411,19 +438,13 @@ async fn dpf_amortization_bench() {
             })
             .collect();
 
-        let t0 = std::time::Instant::now();
-        client.query_batch(&scripthashes[..1], db_id).await?;
-        let cold = t0.elapsed();
+        let cold = dpf_cold_batch_query(&scripthashes[..1], db_id).await?;
         println!("[BENCH] DPF 1st query (cold session): {:.2?}", cold);
 
-        let t1 = std::time::Instant::now();
-        client.query_batch(&scripthashes[1..2], db_id).await?;
-        let warm_single = t1.elapsed();
+        let warm_single = dpf_cold_batch_query(&scripthashes[1..2], db_id).await?;
         println!("[BENCH] DPF 2nd query: {:.2?}", warm_single);
 
-        let t2 = std::time::Instant::now();
-        client.query_batch(&scripthashes[2..], db_id).await?;
-        let batch_of_8 = t2.elapsed();
+        let batch_of_8 = dpf_cold_batch_query(&scripthashes[2..], db_id).await?;
         println!("[BENCH] DPF 8-batch query: {:.2?}", batch_of_8);
         println!(
             "[BENCH] DPF per-scripthash: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
@@ -432,7 +453,6 @@ async fn dpf_amortization_bench() {
             batch_of_8 / 8,
         );
 
-        client.disconnect().await.ok();
         Ok::<(), PirError>(())
     })
     .await

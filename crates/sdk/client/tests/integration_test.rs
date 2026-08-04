@@ -23,6 +23,12 @@
 //!   cargo run --release -p runtime --bin unified_server -- --port 8091 &
 //!   cargo run --release -p runtime --bin unified_server -- --port 8092 &
 
+// Live-server Payment-V1 admission helpers (attest → secure channel →
+// policy → PoW → authorize). The public deployment enforces
+// `--require-service-auth-v1`, so backend queries need these before any
+// INDEX/CHUNK frame is sent. See `tests/common/mod.rs`.
+mod common;
+
 use pir_sdk_client::{
     DatabaseProofPolicy, DpfClient, HarmonyClient, PirClient, PirError, QueryResult, RootPolicy,
     ScriptHash, SyncResult, VerifiedDatabaseRoots, WsConnection,
@@ -437,6 +443,13 @@ async fn test_dpf_client_sync_single() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     let script_hashes = vec![test_script_hash()];
     let result = client.sync(&script_hashes, None).await.expect("sync failed");
 
@@ -455,6 +468,13 @@ async fn test_dpf_client_query_batch() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
     client.fetch_catalog().await.expect("fetch_catalog failed");
+
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
 
     let script_hashes = vec![test_script_hash()];
     let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
@@ -483,6 +503,13 @@ async fn test_dpf_client_multiple_queries() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     // Create multiple distinct script hashes
     let script_hashes: Vec<ScriptHash> = (0..5)
         .map(|i| {
@@ -507,11 +534,28 @@ async fn test_dpf_client_sync_with_cached_height() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     let script_hashes = vec![test_script_hash()];
 
     // First sync
     let result1 = client.sync(&script_hashes, None).await.expect("sync failed");
     let height = result1.synced_height;
+    client.disconnect().await.unwrap();
+
+    // Enforced servers grant exactly one query per connection (the grant
+    // completes after the query and the connection is terminal), so the
+    // delta sync needs a fresh connection + admission.
+    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+    client.connect().await.expect("reconnect failed");
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed (delta)");
 
     // Second sync with cached height (should use delta if available)
     let result2 = client.sync(&script_hashes, Some(height)).await.expect("sync failed");
@@ -621,6 +665,14 @@ async fn test_dpf_strict_production_canary() {
                 )
             });
     }
+
+    // Backend frames on the enforced production servers require Payment-V1
+    // admission (attest → secure channel → policy → authorize) even for the
+    // strict canary path.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("strict DPF live admission failed");
 
     for pin in PRODUCTION_DATABASE_PINS {
         client
