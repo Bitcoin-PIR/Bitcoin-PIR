@@ -28,6 +28,17 @@ async fn dump_one(
 ) {
     let nonce = fresh_32();
     let attestation = client.attest(server_index, nonce).await.expect("attest failed");
+    println!(
+        "[attest] {label}: binary_sha256={} git_rev={} manifest_roots={:?}",
+        hex::encode(attestation.response.binary_sha256),
+        attestation.response.git_rev,
+        attestation
+            .response
+            .manifest_roots
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>()
+    );
     client
         .upgrade_server_to_secure_channel_with_seed(
             server_index,

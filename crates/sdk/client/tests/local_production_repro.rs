@@ -18,7 +18,7 @@ use pir_sdk_client::channel::establish;
 use pir_sdk_client::service::{
     dangerous_unpaired_authorize_service_operation_v1,
     dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
-    ServicePolicyCheckpointV1,
+    request_pow_challenge_v1, ServicePolicyCheckpointV1,
 };
 use pir_sdk_client::PirTransport;
 use pir_sdk_client::WsConnection;
@@ -65,21 +65,53 @@ fn pick_free_scope_offer(
     policy: &ServicePolicyV1,
     backend: BackendId,
     workload: WorkloadId,
-) -> ([u8; 32], u32) {
+) -> ([u8; 32], u32, FreeModeV1) {
+    let mut pow: Option<([u8; 32], u32)> = None;
     for scope_policy in policy.scopes.iter() {
         if scope_policy.scope.backend != backend || scope_policy.scope.workload != workload {
             continue;
         }
         let scope_id = scope_policy.scope.scope_id();
         for offer in scope_policy.offers.iter() {
-            if offer.authorization == AuthScheme::FreeV1
-                && matches!(offer.free_mode, FreeModeV1::OpenBestEffort)
-            {
-                return (scope_id, offer.offer_id);
+            if offer.authorization != AuthScheme::FreeV1 {
+                continue;
+            }
+            match offer.free_mode {
+                FreeModeV1::OpenBestEffort | FreeModeV1::IpRateLimited => {
+                    return (scope_id, offer.offer_id, offer.free_mode)
+                }
+                FreeModeV1::ProofOfWork => {
+                    if pow.is_none() {
+                        pow = Some((scope_id, offer.offer_id));
+                    }
+                }
+                _ => {}
             }
         }
     }
-    panic!("no free open-best-effort scope/offer for {backend:?} {workload:?}");
+    if let Some((sid, oid)) = pow {
+        return (sid, oid, FreeModeV1::ProofOfWork);
+    }
+    panic!("no free scope/offer for {backend:?} {workload:?}");
+}
+
+/// Brute-force a Free-PoW solution (the VPSBG free offers use bits ≈ 4).
+async fn solve_pow(challenge: &pir_service_protocol::PowChallengeResponseV1) -> Vec<u8> {
+    let c = challenge.clone();
+    tokio::task::spawn_blocking(move || {
+        for nonce in 0..=u64::MAX {
+            let sol = pir_service_protocol::FreePowProofV1 {
+                challenge_id: c.challenge_id,
+                nonce,
+            };
+            if pir_service_protocol::pow_solution_meets_difficulty_v1(&c, &sol).unwrap_or(false) {
+                return sol.encode().expect("pow encode").to_vec();
+            }
+        }
+        unreachable!("pow nonce exhausted");
+    })
+    .await
+    .expect("solver task")
 }
 
 /// attest → X25519 → policy → OpenBestEffort authorize for `operation`.
@@ -115,9 +147,31 @@ async fn admit_backend_leg(
     )
     .await
     .expect("policy fetch failed");
-    let (scope_id, offer_id) = pick_free_scope_offer(accepted.policy(), backend, workload);
-    let proof = dangerous_unpaired_build_authorization_proof_v1(&accepted, &scope_id, offer_id, &[])
-        .expect("proof build failed");
+    let (scope_id, offer_id, free_mode) = pick_free_scope_offer(accepted.policy(), backend, workload);
+    let proof_bytes: Vec<u8> = match free_mode {
+        FreeModeV1::OpenBestEffort | FreeModeV1::IpRateLimited => Vec::new(),
+        FreeModeV1::ProofOfWork => {
+            let challenge = request_pow_challenge_v1(
+                &mut transport,
+                &accepted,
+                scope_id,
+                offer_id,
+                operation.clone(),
+                now_unix(),
+            )
+            .await
+            .expect("pow challenge");
+            solve_pow(&challenge).await
+        }
+        other => panic!("unexpected free mode {other:?}"),
+    };
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &scope_id,
+        offer_id,
+        &proof_bytes,
+    )
+    .expect("proof build failed");
     let grant = dangerous_unpaired_authorize_service_operation_v1(
         &mut transport,
         &accepted,
