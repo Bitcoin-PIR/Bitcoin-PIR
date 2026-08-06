@@ -1,14 +1,19 @@
-# Feature request to OnionPIRv2: thread-safe `answer_query` for parallel per-server dispatch
+# OnionPIRv2 thread-safety request and downstream adoption
 
-**Status:** authored 2026-05-15 from a downstream consumer (BitcoinPIR)
+**Status: RESOLVED.** This request was authored 2026-05-15 from a downstream
+consumer (BitcoinPIR) and landed upstream in `2402b16`. BitcoinPIR subsequently
+pinned the updated fork and deployed threaded per-server dispatch. The request
+text below is retained as historical design and regression context.
+
+The original downstream symptom was
 hitting a Cloudflare WebSocket idle-timeout on the public production
 endpoint. The current sequential `answer_query` takes ~162 s on a
 75-group INDEX batch (i7-8700, single thread); CF Free closes the
 tunnel at ~100 s. Rayon-parallelizing `answer_query` across the 75
 per-group `PirServer` instances would bring wall time to ~27 s on the
-6-core host, but is currently unsafe due to two process-global pieces
+6-core host, but was unsafe due to two process-global pieces
 of state inside the matmul / keyswitch kernels. This request
-documents the smallest upstream change that would let downstream
+documented the smallest upstream change that would let downstream
 consumers parallelize without touching upstream call sites.
 
 **Audience:** the AI agent (or human) working in
@@ -16,25 +21,23 @@ consumers parallelize without touching upstream call sites.
 context is required to act on this — every claim below is grounded
 in upstream source paths and concrete code.
 
-**TL;DR:** Two upstream changes are needed for downstream parallel
+**Original requested changes:** Two upstream changes were needed for downstream parallel
 `Server::answer_query` to be sound:
 
 1. **`src/bv_keyswitch.cpp:286` — make `g_scratch` `thread_local`.** The
-   `GaloisScratch` struct currently lives in an anonymous-namespace
+   `GaloisScratch` struct originally lived in an anonymous-namespace
    `static` global. Two threads calling `bv_apply_galois_inplace_k1`
    (or `_k2`) concurrently both read and write the same vectors,
    producing data races on the gadget-decomposition scratch.
 2. **`src/shared_key_store.cpp` — add internal `std::mutex` synchronization.**
-   The class is documented "NOT thread-safe" and `touch()` calls
+   The class was documented "NOT thread-safe" and `touch()` called
    `std::list::splice` on `lru_order_`. Concurrent `touch()` from
    parallel `answer_query` calls (during `fast_expand_qry`) is UB on
    the list pointer manipulation when the LRU has ≥ 2 clients.
 
-Both are localized, mechanical, no API change. The first one is the
-hard blocker — without it parallel `answer_query` is unsafe even with
-a single client. The second one is needed for soundness once the
-keystore caches more than one client at a time (BitcoinPIR's typical
-deployment).
+Both were localized, mechanical changes with no API change. The first was the
+hard blocker for parallel `answer_query`; the second hardened the multi-client
+keystore case used by the deployment.
 
 ---
 
@@ -425,14 +428,13 @@ PirCommand::AnswerBatch { client_id, level, queries, reply } => {
 }
 ```
 
-Post-patch, downstream replaces `.iter().enumerate().map(...)` with
-`.par_iter_mut().enumerate().flat_map(...)` (already drafted, then
-reverted pending this upstream fix; the diff is small). With 75
+The downstream implementation now replaces the sequential iterator with
+`.par_iter_mut().enumerate().flat_map(...)`. With 75
 INDEX groups on a 6-core i7-8700, sequential wall time of 162 s
 drops to ≈ 27 s, comfortably under Cloudflare's 100 s WebSocket idle
 timeout.
 
-### One-shot regression test on upstream
+### Original one-shot regression test proposal
 
 Add to `src/tests/test_pir.cpp` (or similar):
 
@@ -482,11 +484,9 @@ TEST(PirEnd2End, ParallelServersOneClientOneKeystore) {
 }
 ```
 
-This test fails reliably on the current upstream and passes after both
-patches land. With only patch (1) (`thread_local g_scratch`) and the
-single-client invariant respected (one keystore client_id), it also
-passes — patch (2) is required only for the multi-client case which
-the test above doesn't exercise.
+This test described the expected upstream regression boundary. The upstream
+thread-safety changes are now landed; current downstream behavior and pinned
+revisions are validated by the BitcoinPIR integration and production tests.
 
 ---
 
@@ -505,29 +505,20 @@ the test above doesn't exercise.
 - **No semantic change to LRU policy.** The mutex only protects
   against concurrent mutation — the eviction order, MAX_CLIENTS, etc.
   remain unchanged.
-- **Future-proofing.** Once these land, downstream can also expose a
+- **Future-proofing.** With these changes landed, downstream can also expose a
   `QueryQueue`-backed multi-client path (each `answer_query` runs on
   a different worker thread) without further upstream changes.
 
-If both fixes ship in a single upstream commit, BitcoinPIR's
-follow-up is mechanical: bump the rev in three Cargo.toml files
-(`build/`, `crates/sdk/client/`, `apps/server/`), recompile, redeploy.
-Expected wall-time improvement on pir1's i7-8700: INDEX 162 s →
-27 s, CHUNK 158 s → 27 s. Total per-query batch ≈ 60 s — under CF's
-100 s threshold with room to spare.
+The downstream follow-up is complete. The current fork revision is pinned in
+`tools/db-builder/Cargo.toml`, `crates/sdk/client/Cargo.toml`, and
+`apps/server/Cargo.toml`; those are the paths to update for a future reviewed
+fork rotation. The old `build/` path is historical and no longer exists.
 
 ---
 
 ## 6. Acknowledgement of deployment context
 
-BitcoinPIR pir1's specific deployment (one client per AnswerBatch,
-mpsc-serialized worker thread) currently makes the `SharedKeyStore`
-`touch()` race benign in practice (all promotions are no-ops because
-the LRU has one entry that's already at front). So the **immediate
-production blocker is purely patch (1)** — the `g_scratch` race
-applies to even single-client parallel `answer_query`. Patch (2)
-hardens against the multi-client future case.
-
-If upstream prefers a phased rollout, landing (1) alone unblocks the
-BitcoinPIR CF timeout fix; (2) can follow as a separate hardening
-commit.
+BitcoinPIR's original deployment used one client per `AnswerBatch` and an
+mpsc-serialized worker. This section is historical context; the current
+threaded dispatch relies on the landed upstream thread-local scratch and
+mutex-protected keystore changes. It is not an open production blocker.

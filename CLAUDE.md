@@ -347,6 +347,12 @@ YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
 
 ## Key Files
 
+- `crates/sdk/client/tests/common/mod.rs` — live-server Payment-V1 admission
+  helpers for the integration/leakage suites (`admit_dpf_live`,
+  `admit_harmony_live`, `admit_onion_live`, free-offer selection + Free-PoW
+  solver). Harmony/onion granted-query paths are production-blocked as of
+  2026-08-06; their live tests are `PIR_STRICT_PRODUCTION_CANARY`-gated
+  (see `docs/PR_CLEANUP_TRACKER.md` P0-1).
 - `crates/sdk/core/src/lib.rs`, `crates/sdk/core/src/error.rs`, `crates/sdk/core/src/metrics.rs`,
   `crates/sdk/core/src/sync.rs`.
 - `crates/sdk/client/src/`: `admin.rs`, `attest.rs`, `channel.rs`,

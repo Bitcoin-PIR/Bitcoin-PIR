@@ -30,11 +30,12 @@ use ed25519_dalek::VerifyingKey;
 use pir_sdk::{PirError, PirResult};
 use pir_sdk_client::{
     dangerous_unpaired_build_authorization_proof_v1, AcceptedServicePolicyV1,
-    DatabaseProofPolicy, DpfClient, RootPolicy, ServicePolicyCheckpointV1,
+    DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient, RootPolicy,
+    ServicePolicyCheckpointV1,
 };
 use pir_service_protocol::{
     pow_solution_meets_difficulty_v1, AuthScheme, BackendId, FreeModeV1, FreePowProofV1,
-    PowChallengeResponseV1, ServicePolicyV1, WorkloadId,
+    HintTransport, PowChallengeResponseV1, ServicePolicyV1, WorkloadId,
 };
 
 /// Operator-published trust anchors for one live provider, mirrored from
@@ -92,6 +93,26 @@ pub fn production_db0_proof_policy() -> DatabaseProofPolicy {
     )];
     policy.allowed_builder_git_commits =
         vec!["b692aec18b9c20ac92cb9fe22588e96ff96ad27d".to_owned()];
+    policy
+}
+
+/// Database-proof policy for the pinned production db0 OnionPIR v2 layout.
+/// Mirrors `production_onion_v2_pin(PRODUCTION_DATABASE_PINS[0])` in
+/// `tests/integration_test.rs`: v2 proofs must verify against the exact
+/// OnionPIR builder artifact, not the generic bucket-Merkle builder.
+/// `OnionClient::fetch_service_policy_v1` requires installed verified roots
+/// and the strict canary binds its tree-top preflight to the v2 super-root,
+/// so the OnionPIR admission path installs the v2 proof.
+pub fn production_db0_onion_v2_proof_policy() -> DatabaseProofPolicy {
+    let mut policy = production_db0_proof_policy();
+    policy.expected_params_hash = Some(decode_hex_array(
+        "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
+    ));
+    policy.allowed_builder_binary_sha256 = vec![decode_hex_array(
+        "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
+    )];
+    policy.allowed_builder_git_commits =
+        vec!["d49a199e290ccbb05b6481c5ba691cb516aa76bb".to_owned()];
     policy
 }
 
@@ -298,6 +319,274 @@ pub async fn admit_dpf_live(
     client.install_verified_database_roots(roots)?;
     admit_dpf_server(client, 0, db_id, &hetzner_pins()).await?;
     admit_dpf_server(client, 1, db_id, &vpsbg_pins()).await?;
+    Ok(())
+}
+
+/// Produce the FreeV1 proof payload for a Harmony hint/query leg or an
+/// OnionPIR session: empty for no-proof free modes, a solved PoW otherwise.
+/// `fetch_challenge` is the backend-specific PoW-challenge roundtrip; it is
+/// only driven when the selected offer is proof-of-work.
+async fn free_proof_bytes<Fetch>(
+    free_mode: FreeModeV1,
+    fetch_challenge: Fetch,
+) -> PirResult<Vec<u8>>
+where
+    Fetch: std::future::Future<Output = PirResult<PowChallengeResponseV1>>,
+{
+    match free_mode {
+        FreeModeV1::OpenBestEffort | FreeModeV1::IpRateLimited => Ok(Vec::new()),
+        FreeModeV1::ProofOfWork => {
+            let challenge = fetch_challenge.await?;
+            let solution = solve_pow(&challenge).await?;
+            Ok(solution.encode().map_err(proto_err)?.to_vec())
+        }
+        other => Err(PirError::InvalidState(format!(
+            "unexpected free mode {other:?} in selected live offer"
+        ))),
+    }
+}
+
+/// Admit one Harmony provider leg's secure channel: attest → X25519
+/// handshake. Policy fetch + authorize are deliberately separate so the
+/// caller can choose when the grant's `max_wall_time_ms` starts ticking.
+async fn admit_harmony_leg_channel(
+    client: &mut HarmonyClient,
+    provider_index: u8,
+) -> PirResult<()> {
+    let nonce = fresh_32()?;
+    let attestation = client.attest(provider_index, nonce).await?;
+    if attestation.response.server_static_pub.iter().all(|b| *b == 0) {
+        return Err(PirError::VerificationFailed(format!(
+            "Harmony provider{provider_index} attestation returned all-zero server static pubkey"
+        )));
+    }
+    let eph_seed = fresh_32()?;
+    let hs_nonce = fresh_32()?;
+    client
+        .upgrade_provider_to_secure_channel_with_seed(
+            provider_index,
+            attestation.response.server_static_pub,
+            eph_seed,
+            hs_nonce,
+        )
+        .await
+}
+
+/// Authorize the Harmony hint leg's free offer with the V2Full hint
+/// transport and no attach token, mirroring the WASM product flow
+/// (`authorizeHintService` in `crates/sdk/wasm/src/client.rs`) — the only
+/// hint transport the production V1 gate accepts without a paid pairing
+/// token.
+async fn admit_harmony_hint_authorize(
+    client: &mut HarmonyClient,
+    db_id: u8,
+    pins: &LiveProviderPins,
+) -> PirResult<()> {
+    let accepted = client
+        .fetch_service_policy_v1(
+            0,
+            db_id,
+            pins.provider_id,
+            &pins.policy_signing_key,
+            now_unix(),
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await?;
+    let (scope_id, offer_id, free_mode) = select_free_scope_offer(
+        accepted.policy(),
+        BackendId::HarmonyPirV2,
+        WorkloadId::HarmonyHintBundleV1,
+    )?;
+    let proof_bytes = free_proof_bytes(
+        free_mode,
+        client.request_hint_pow_challenge_v1(db_id, &accepted, scope_id, offer_id, now_unix()),
+    )
+    .await?;
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &scope_id,
+        offer_id,
+        &proof_bytes,
+    )?;
+    client
+        .dangerous_unpaired_authorize_hint_service_v1(
+            db_id,
+            &accepted,
+            scope_id,
+            offer_id,
+            proof,
+            HintTransport::V2Full,
+            None,
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Authorize the Harmony query leg's free offer. Call this only after all
+/// hint-megabyte work is done: the live `harmony-query-job-v1` scope grants
+/// `max_wall_time_ms = 120_000` measured from the AUTH grant, and a fresh
+/// ~21 s main-bundle download plus per-level sibling streams must not eat
+/// into the query phase's window.
+async fn admit_harmony_query_authorize(
+    client: &mut HarmonyClient,
+    db_id: u8,
+    pins: &LiveProviderPins,
+) -> PirResult<()> {
+    let accepted = client
+        .fetch_service_policy_v1(
+            1,
+            db_id,
+            pins.provider_id,
+            &pins.policy_signing_key,
+            now_unix(),
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await?;
+    let (scope_id, offer_id, free_mode) = select_free_scope_offer(
+        accepted.policy(),
+        BackendId::HarmonyPirV2,
+        WorkloadId::HarmonyQueryJobV1,
+    )?;
+    let proof_bytes = free_proof_bytes(
+        free_mode,
+        client.request_query_pow_challenge_v1(db_id, &accepted, scope_id, offer_id, now_unix()),
+    )
+    .await?;
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &scope_id,
+        offer_id,
+        &proof_bytes,
+    )?;
+    client
+        .dangerous_unpaired_authorize_query_service_v1(db_id, &accepted, scope_id, offer_id, proof)
+        .await?;
+    Ok(())
+}
+
+/// `HintProgress` sink for test-side pre-fetch calls.
+struct NoopHintProgress;
+impl pir_sdk_client::HintProgress for NoopHintProgress {
+    fn on_group_complete(&self, _done: u32, _total: u32, _phase: &str) {}
+}
+
+/// Complete the live admission sequence for a HarmonyPIR query, ordered to
+/// respect the production grant windows (the same staging the browser
+/// product uses):
+///
+/// 1. install the verified database proof,
+/// 2. snapshot the catalog (once the hint-leg grant is flushed, the hint
+///    connection accepts exactly the V2Full main-dispatch frame; any other
+///    frame — even an otherwise-ungated one like REQ_GET_DB_CATALOG —
+///    terminalizes it),
+/// 3. open both legs' secure channels and authorize the hint leg
+///    (`harmony-hint-bundle-v1`, V2Full transport),
+/// 4. preflight the proof-verified tree tops over the query leg,
+/// 5. download the complete main + Merkle-sibling hint bundle under the
+///    V2Full grant — all hint-leg traffic, bounded by the hint scope's
+///    300 s window,
+/// 6. ONLY THEN authorize the query leg (`harmony-query-job-v1`), whose
+///    grant allows 120 s total for the INDEX → CHUNK → Merkle query phase.
+///
+/// Authorizing the query leg up-front instead spends a double-digit share
+/// of its 120 s window on the ~21 s main-bundle download + sibling streams
+/// before the first INDEX frame leaves, so the admission sequence keeps
+/// hint-leg megabytes outside the query grant's budget.
+pub async fn admit_harmony_live(
+    client: &mut HarmonyClient,
+    db_id: u8,
+    proof_policy: &DatabaseProofPolicy,
+) -> PirResult<()> {
+    client.set_root_policy(RootPolicy::RequireVerified);
+    let roots = client.verify_database_proof(db_id, proof_policy).await?;
+    client.install_verified_database_roots(roots)?;
+
+    // Snapshot the catalog entry BEFORE the hint-leg grant. Once the V2Full
+    // AUTH result is flushed, the hint connection accepts exactly one frame
+    // — the bound main-dispatch — and any other frame on that connection
+    // (even an otherwise-ungated one like REQ_GET_DB_CATALOG) terminalizes
+    // the pending-reservation connection hard.
+    let catalog = client.fetch_catalog().await?;
+    let db_info = catalog
+        .databases
+        .iter()
+        .find(|db| db.db_id == db_id)
+        .cloned()
+        .ok_or(PirError::DatabaseNotFound(db_id))?;
+
+    admit_harmony_leg_channel(client, 0).await?;
+    admit_harmony_hint_authorize(client, db_id, &hetzner_pins()).await?;
+    // From here until `fetch_complete_hints_with_progress` returns, the
+    // hint connection may only carry the V2Full main dispatch followed by
+    // the canonical sibling sequence. Query-leg work below uses the other
+    // connection and is unaffected.
+    admit_harmony_leg_channel(client, 1).await?;
+    client.preflight_verified_database(db_id).await?;
+    client
+        .fetch_complete_hints_with_progress(&db_info, &NoopHintProgress)
+        .await?;
+
+    admit_harmony_query_authorize(client, db_id, &vpsbg_pins()).await?;
+    Ok(())
+}
+
+/// Complete the live admission sequence for an OnionPIR session on the
+/// Hetzner provider: install the v2 database proof, attest, open the
+/// secure channel, then authorize the `onion-evaluate-job-v1` free offer.
+/// The resulting grant permits exactly one key registration followed by
+/// the canonical INDEX → CHUNK → Merkle query sequence on this connection
+/// (the production V1 register-once DFA).
+pub async fn admit_onion_live(
+    client: &mut OnionClient,
+    db_id: u8,
+    proof_policy: &DatabaseProofPolicy,
+) -> PirResult<()> {
+    client.set_root_policy(RootPolicy::RequireVerified);
+    let roots = client.verify_database_proof_v2(db_id, proof_policy).await?;
+    client.install_verified_database_roots(roots)?;
+
+    let pins = hetzner_pins();
+    let nonce = fresh_32()?;
+    let attestation = client.attest(nonce).await?;
+    if attestation.response.server_static_pub.iter().all(|b| *b == 0) {
+        return Err(PirError::VerificationFailed(
+            "OnionPIR attestation returned all-zero server static pubkey".into(),
+        ));
+    }
+    let eph_seed = fresh_32()?;
+    let hs_nonce = fresh_32()?;
+    client
+        .upgrade_to_secure_channel_with_seeds(attestation.response.server_static_pub, eph_seed, hs_nonce)
+        .await?;
+    let accepted = client
+        .fetch_service_policy_v1(
+            db_id,
+            pins.provider_id,
+            &pins.policy_signing_key,
+            now_unix(),
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await?;
+    let (scope_id, offer_id, free_mode) = select_free_scope_offer(
+        accepted.policy(),
+        BackendId::OnionPirV1,
+        WorkloadId::OnionEvaluateJobV1,
+    )?;
+    let proof_bytes = free_proof_bytes(
+        free_mode,
+        client.request_service_pow_challenge_v1(db_id, &accepted, scope_id, offer_id, now_unix()),
+    )
+    .await?;
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &scope_id,
+        offer_id,
+        &proof_bytes,
+    )?;
+    client
+        .authorize_service_v1(db_id, &accepted, scope_id, offer_id, proof)
+        .await?;
     Ok(())
 }
 
