@@ -5962,11 +5962,17 @@ trait ServiceResponseBudgetV1 {
 
 // The authenticated bucket-tree-top preflight is deliberately available
 // before service admission.  Production tree-top responses are sent in
-// 256 KiB transport chunks, so one main-db response needs about 35 WebSocket
-// messages in addition to the small strict-bootstrap responses.  Keep this
-// physical-frame limit comfortably above that bounded pre-admission flow.
-const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 128;
-const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
+// 256 KiB transport chunks: the db1 (delta_940611_948454) blob is
+// 23,426,084 bytes (≈90 messages) and the db0 blob is 9,155,384 bytes
+// (≈35 messages), so a strict client fetching both (plus the small
+// strict-bootstrap responses) needs the message limit comfortably above
+// ~130 and the byte limit above ~32.6 MB.  `72180a3f` raised only the
+// message limit (32→128) against the db0 shape and left the byte limit
+// pinned at the db0 scale, which made db1 tree-tops physically
+// un-serveable: the atomic group reservation failed before any chunk
+// left the socket.
+const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 192;
+const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 64 * 1024 * 1024;
 type PreAuthDeadlineFutureV1 =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
@@ -6870,6 +6876,25 @@ const MAX_REASSEMBLED: usize = 16 * 1024 * 1024;
 // Keeping the WebSocket parser itself small bounds memory before application
 // admission logic sees the frame.
 const MAX_WS_MESSAGE_BYTES: usize = 512 * 1024;
+
+/// Production WebSocket transport limits, shared between the listener and
+/// the regression tests that must prove responses survive them:
+/// 512 KiB inbound message/frame caps plus a 2 MiB per-socket write-buffer
+/// cap that bounds slow-consumer memory. Any single server→client message
+/// above ~2 MiB (notably a live-scale Harmony batch response, ~4 MiB) must
+/// therefore ride the shared CHUNK_MAGIC envelope — see
+/// `harmony_batch_response_at_live_scale_crosses_production_ws_limits`.
+#[allow(deprecated)]
+fn production_ws_config_v1() -> WebSocketConfig {
+    WebSocketConfig {
+        max_send_queue: None,
+        write_buffer_size: 128 * 1024,
+        max_write_buffer_size: 2 * 1024 * 1024,
+        max_message_size: Some(MAX_WS_MESSAGE_BYTES),
+        max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
+        accept_unmasked_frames: false,
+    }
+}
 // Process-wide cap across all partially/completely reassembled client
 // requests.  This is independent of the connection count and signed grant
 // limits so many slow clients cannot each retain a 16 MiB buffer.
@@ -10103,14 +10128,7 @@ async fn main() {
         tokio::spawn(async move {
             let _connection_permit = connection_permit;
             #[allow(deprecated)]
-            let ws_config = WebSocketConfig {
-                max_send_queue: None,
-                write_buffer_size: 128 * 1024,
-                max_write_buffer_size: 2 * 1024 * 1024,
-                max_message_size: Some(MAX_WS_MESSAGE_BYTES),
-                max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
-                accept_unmasked_frames: false,
-            };
+            let ws_config = production_ws_config_v1();
             let ws = match tokio::time::timeout(
                 websocket_handshake_timeout,
                 accept_async_with_config(stream, Some(ws_config)),
@@ -12549,7 +12567,32 @@ async fn main() {
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_batch_query(&q)).await.unwrap();
                             unsafe_debug_log!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            // Harmony batch responses scale as K × (T−1) ×
+                            // entry_size (~4 MiB per level against the live
+                            // main database), far above both the 512 KiB
+                            // single-message cap and the 2 MiB write-buffer
+                            // cap.  A single large WebSocket message would
+                            // wedge the sink (WriteBufferFull) and the
+                            // previously swallowed error left the client
+                            // waiting forever.  Every current SDK transport
+                            // reassembles the shared CHUNK_MAGIC envelope,
+                            // so always chunk this response, exactly like the
+                            // bucket tree-tops preflight above.
+                            if let Err(error) = send_resp_chunked(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                resp.encode(),
+                                true,
+                            )
+                            .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] harmony-batch response send error: {}",
+                                    peer,
+                                    error
+                                );
+                                break;
+                            }
                         }
                     }
                     REQ_ORAM_LOOKUP => {
@@ -13160,6 +13203,99 @@ mod service_admission_dispatch_tests {
     }
 
     #[tokio::test]
+    async fn harmony_batch_response_at_live_scale_crosses_production_ws_limits() {
+        let payload_len = 75 * (5 + 1065 * INDEX_PARAMS.bin_size()) + 64;
+        for fill in [0xa5u8, 0x00, 0xff] {
+            let mut payload = vec![fill; payload_len + 4];
+            payload[4] = RESP_HARMONY_BATCH_QUERY;
+            let (server_raw, client_raw) = tokio::io::duplex(64 * 1024 * 1024);
+            let (server_ws, client_ws) = tokio::join!(
+                tokio_tungstenite::accept_async_with_config(
+                    server_raw,
+                    Some(production_ws_config_v1()),
+                ),
+                tokio_tungstenite::client_async("ws://localhost", client_raw),
+            );
+            let server_ws = server_ws.expect("server handshake");
+            let mut client_ws = client_ws.expect("client handshake").0;
+            let (server_sink, _server_stream) = server_ws.split();
+            let mut sink = ServiceAdmissionSink::<_, ConnectionAdmissionGateV1>::new(
+                server_sink,
+                AdmissionEnforcementV1::Enforced,
+                Instant::now(),
+                Duration::from_secs(120),
+            );
+            let send_payload = payload.clone();
+            let send = tokio::spawn(async move {
+                send_resp_chunked(&mut sink, None, send_payload, true)
+                    .await
+                    .expect("chunked live-scale harmony response must send cleanly");
+            });
+            // Client-side reassembly of the shared CHUNK_MAGIC envelope.
+            let (mut acc, mut expected_seq, mut total) = (Vec::new(), 0usize, None::<usize>);
+            loop {
+                let message = client_ws
+                    .next()
+                    .await
+                    .expect("stream ended before full response")
+                    .expect("client read error");
+                let bin = message.into_data();
+                assert!(
+                    bin.len() >= 4 + CHUNK_HDR && bin[4] == CHUNK_MAGIC,
+                    "live-scale response left as a single unchunked message"
+                );
+                let seq = u16::from_le_bytes([bin[5], bin[6]]) as usize;
+                let declared_total = u16::from_le_bytes([bin[7], bin[8]]) as usize;
+                assert_eq!(seq, expected_seq, "out-of-order chunk {seq} (expected {expected_seq})");
+                if let Some(t) = total {
+                    assert_eq!(t, declared_total, "chunk total changed mid-stream");
+                } else {
+                    total = Some(declared_total);
+                }
+                expected_seq += 1;
+                acc.extend_from_slice(&bin[4 + CHUNK_HDR..]);
+                if expected_seq == total.expect("chunk total set") {
+                    break;
+                }
+            }
+            send.await.unwrap();
+            assert_eq!(acc.len(), payload.len());
+            assert_eq!(acc, payload, "leaved response body mismatch (fill=0x{fill:02x})");
+        }
+    }
+
+    /// Companion negative half: the SAME live-scale body must NOT be
+    /// deliverable as a single unchunked `send_resp` message under the
+    /// production caps — that is the pre-fix failure mode (the swallowed
+    /// `WriteBufferFull` error wedged the connection instead of closing it).
+    #[tokio::test]
+    async fn harmony_batch_response_at_live_scale_fails_without_chunking() {
+        let payload_len = 75 * (5 + 1065 * INDEX_PARAMS.bin_size()) + 64;
+        let mut payload = vec![0u8; payload_len + 4];
+        payload[4] = RESP_HARMONY_BATCH_QUERY;
+        let (server_raw, client_raw) = tokio::io::duplex(64 * 1024 * 1024);
+        let (server_ws, _client_ws) = tokio::join!(
+            tokio_tungstenite::accept_async_with_config(
+                server_raw,
+                Some(production_ws_config_v1()),
+            ),
+            tokio_tungstenite::client_async("ws://localhost", client_raw),
+        );
+        let server_ws = server_ws.expect("server handshake");
+        let (server_sink, _server_stream) = server_ws.split();
+        let mut sink = ServiceAdmissionSink::<_, ConnectionAdmissionGateV1>::new(
+            server_sink,
+            AdmissionEnforcementV1::Enforced,
+            Instant::now(),
+            Duration::from_secs(120),
+        );
+        assert!(
+            send_resp(&mut sink, None, payload).await.is_err(),
+            "a >2MiB single WebSocket message must be rejected by the production caps"
+        );
+    }
+
+    #[tokio::test]
     async fn preflight_egress_has_independent_message_and_byte_limits() {
         let mut sink = test_sink(0);
         sink.set_test_pre_auth_egress_limits(2, 64);
@@ -13227,6 +13363,38 @@ mod service_admission_dispatch_tests {
             expected_chunks > 32,
             "the old frame budget cannot carry this flow"
         );
+        assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
+        assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
+    }
+
+    #[tokio::test]
+    async fn bucket_tree_top_preflight_budget_carries_both_live_databases_on_one_connection() {
+        // Live shapes measured on pir1 (2026-08-06): the delta database's
+        // tree-top blob is 23,426,084 bytes (≈90 transport chunks); the main
+        // blob is 9,155,384 bytes (≈35 chunks). A strict client preflights
+        // BOTH on the same granted connection before any delta sync, so the
+        // fixed pre-admission envelope must carry the pair plus the handful
+        // of strict-bootstrap responses ahead of it — the 72180a3f bump of
+        // the message limit alone (32→128) did not, because it left the byte
+        // limit at the main-DB scale.
+        const LIVE_MAIN_TREE_TOP_BYTES: usize = 9_155_384;
+        const LIVE_DELTA_TREE_TOP_BYTES: usize = 23_426_084;
+        let mut sink = test_sink(0);
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_SERVICE_POLICY_V1);
+        sink.meter_pre_auth_response_for_opcode(REQ_GET_DB_PROOF_V2);
+        sink.meter_pre_auth_response_for_opcode(REQ_BUCKET_MERKLE_TREE_TOPS);
+
+        send_resp(&mut sink, None, vec![0; 4096])
+            .await
+            .expect("small bootstrap response");
+        send_resp_chunked(&mut sink, None, vec![0; LIVE_MAIN_TREE_TOP_BYTES + 5], true)
+            .await
+            .expect("chunked main tree-tops must fit with db1 still ahead");
+        send_resp_chunked(&mut sink, None, vec![0; LIVE_DELTA_TREE_TOP_BYTES + 5], true)
+            .await
+            .expect("chunked delta tree-tops must fit after the main preflight");
+
         assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
         assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
     }
