@@ -23,7 +23,7 @@ describe('bundled functional-beta trusted bootstrap', () => {
       '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      '48fbbff418bf6ed34ce5d612867f77df31c471769a3cafa7a15fc74de27f2d0c7bf017f6d19dc00a64d3751658077cb6',
+      '1c375b265b669dc7d74cc1041fbe1cda97b2df1d2cd60439a11da8f69bad81657a74f954ae6fb7c0cfa38d390440947c',
     );
     expect(parsed.providers[0].supportedWorkloads).toEqual([
       'dpf-query', 'harmony-hint', 'onion-session',
