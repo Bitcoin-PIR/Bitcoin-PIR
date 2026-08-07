@@ -79,6 +79,7 @@ async fn dump_one(
             l.max_hint_groups,
             l.max_work_units,
         );
+        println!("  scope_full_debug: {:?}", scope);
         for offer in &scope.offers {
             println!(
                 "  offer={}: acq={:?} free_mode={:?} auth={:?} verify={:?} deploy={:?} price={:?} pow_bits={}",
@@ -110,7 +111,11 @@ async fn dump_live_signed_service_policies() {
     client
         .install_verified_database_roots(roots)
         .expect("root installation failed");
-    dump_one(&mut client, 0, "pir1 Hetzner (weikeng1)", &hetzner_pins()).await;
-    dump_one(&mut client, 1, "pir2 VPSBG (weikeng2)", &vpsbg_pins()).await;
+    if std::env::var("REPRO_LEG").is_err() || std::env::var("REPRO_LEG").unwrap() == "1" {
+        dump_one(&mut client, 0, "pir1 Hetzner (weikeng1)", &hetzner_pins()).await;
+    }
+    if std::env::var("REPRO_LEG").is_err() || std::env::var("REPRO_LEG").unwrap() == "2" {
+        dump_one(&mut client, 1, "pir2 VPSBG (weikeng2)", &vpsbg_pins()).await;
+    }
     client.disconnect().await.unwrap();
 }

@@ -10,7 +10,7 @@
       "operatorSigningKeyHex": "d506c8630f13f31f0648228857c268d17996d600ed7169e091c88aadb5ecb2d4",
       "stableServerId": "pir1-payment-beta",
       "serverPin": {
-        "binarySha256Hex": "d23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8"
+        "binarySha256Hex": "c836e11ad2bd5854fe9015311a7540d06a4075371ac38052c810eeba62fe202e"
       },
       "hardwareAttestation": "unavailable-accepted",
       "supportedWorkloads": [
@@ -68,8 +68,8 @@
       "operatorSigningKeyHex": "256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a",
       "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
-        "binarySha256Hex": "ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4",
-        "measurementHex": "cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897"
+        "binarySha256Hex": "4f51c64d1f66e73ec4904b370c69e0573e25c4a058f822b9b9b773d777c784d5",
+        "measurementHex": "48fbbff418bf6ed34ce5d612867f77df31c471769a3cafa7a15fc74de27f2d0c7bf017f6d19dc00a64d3751658077cb6"
       },
       "hardwareAttestation": "required",
       "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",

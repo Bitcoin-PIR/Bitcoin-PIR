@@ -410,7 +410,7 @@ Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on fi
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
 - SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
 
-### Attestation pins (current as of 2026-07-22)
+### Attestation pins (current as of 2026-08-07)
 `web/src/attest-pin.ts` is the authoritative source — values below are a quick reference.
-- **pir1 (Hetzner)**: binary `4cf7d467...` (commit `d126f36a`, Cargo release build with `cuckoo-oram`) — no SEV, no measurement
-- **pir2 (VPSBG) Tier 3**: binary `61d74a9c...` (commit `837108b6`) baked into UKI sha256 `3d511f88...`, measurement `478fb4ac...` — pir2 serves `--serve-queries` plus direct ORAM for db_id 0/1, with no OnionPIR
+- **pir1 (Hetzner)**: binary `c836e11a...` (commit `831a5ea1`, Cargo release build, default features incl. `9b7128f0` harmony response chunk fix) — no SEV, no measurement
+- **pir2 (VPSBG) Tier 3**: binary `4f51c64d...` (commit `831a5ea1`, same fix source, `--features cuckoo-oram`) baked into UKI sha256 `7603d33e...` (measured-boot image id 227, epoch-3 policy `5ac4bcb5` embedded: harmony-query `max_response_bytes` 64→128 MiB), measurement `48fbbff4...` — pir2 serves `--serve-queries`; previous image id 223 kept as rollback target
