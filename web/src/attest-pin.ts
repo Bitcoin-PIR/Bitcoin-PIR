@@ -135,13 +135,14 @@ export interface ServerAttestPin {
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT captured from the live Tier 3 deploy after uploading the
-  // 831a5ea1 harmony-response-fix UKI (epoch-3 policy), then validating
-  // REPORT_DATA plus the AMD chain.
+  // 831a5ea1 harmony-response-fix UKI (epoch-4 policy: harmony-response
+  // budget 128 MiB + DPF wall-time budget 120 s; measured-boot image id
+  // 229), then validating REPORT_DATA plus the AMD chain.
   measurementHex:
-    '48fbbff418bf6ed34ce5d612867f77df31c471769a3cafa7a15fc74de27f2d0c7bf017f6d19dc00a64d3751658077cb6',
+    '1c375b265b669dc7d74cc1041fbe1cda97b2df1d2cd60439a11da8f69bad81657a74f954ae6fb7c0cfa38d390440947c',
   binarySha256Hex:
     '4f51c64d1f66e73ec4904b370c69e0573e25c4a058f822b9b9b773d777c784d5',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta, harmony-response-fix epoch-3)',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta, harmony-response-fix epoch-4)',
 };
 
 /**
