@@ -2,8 +2,9 @@
 
 Use this runbook whenever production moves to a new full snapshot, adds or
 replaces a delta, or rebuilds an existing height with different database
-roots. It covers the proof, server catalog, production pins, and temporary v1
-OnionPIR layout pins as one release unit.
+roots. It covers the proof, server catalog, production pins, and strict v2
+OnionPIR proof pins as one release unit. DPF/HarmonyPIR retain their v1 proof
+compatibility surface; strict OnionPIR does not use a v1 layout-pin fallback.
 
 The safety rule is simple: a client may be temporarily unavailable during a
 rotation, but it must never fall back to an unverified root. A proof/pin or
@@ -97,10 +98,11 @@ In the same change set, update `web/src/attest-pin.ts`:
 1. Add or replace the `DatabaseProofPin` for every affected database in
    `PRODUCTION_DB_PROOF_PINS`. Copy values from the independently accepted
    proof record, not from a live server response.
-2. While proof v1 is in use, update the matching entry in
-   `PRODUCTION_ONION_QUERY_LAYOUT_PINS`. Confirm the database ID, packed-entry
-   counts, table sizes, seeds, slot sizes, arity, and Merkle group geometry
-   against the build output.
+2. For strict OnionPIR, update the matching entry in
+   `PRODUCTION_ONION_DB_PROOF_V2_PINS`. Confirm the complete typed layout,
+   packed-entry counts, table sizes, slot sizes, arity, and Merkle geometry
+   against the independently accepted v2 proof. Do not recreate the removed
+   `PRODUCTION_ONION_QUERY_LAYOUT_PINS` table or a v1 layout fallback.
 3. Update the duplicate `PRODUCTION_DATABASE_PINS` in
    `crates/sdk/client/tests/integration_test.rs`. The scheduled native canary must
    fail on an unreviewed rotation; keep these values synchronized with the
@@ -110,9 +112,9 @@ In the same change set, update `web/src/attest-pin.ts`:
 
 Run the Rust/WASM/web tests that cover proof parsing, full-field pin matching,
 typed installation, tree-top preflight, layout mismatch, found/absent/whale
-verification, and disconnect cleanup. Do not remove the v1 layout pins until a
-deployed v2 verifier proves that the signed database proof commits every one
-of those fields.
+verification, and disconnect cleanup. Strict OnionPIR is v2-only: do not add
+v1 layout pins or a silent v2-to-v1 fallback. DPF/HarmonyPIR v1 proof
+compatibility remains covered by their separate database-proof pins.
 
 ## 4. Stage both hosts without activating them
 
@@ -143,7 +145,7 @@ following are ready:
 - complete files and proof sidecars exist on both hosts;
 - the two proposed catalogs are identical for all fields used by sync
   planning and root verification;
-- the matching frontend pin/layout change has passed review and CI;
+- the matching frontend proof-pin change has passed review and CI;
 - the prior generation, config, frontend commit, proof values, and Pages
   artifact are identified for rollback.
 
@@ -179,8 +181,8 @@ short maintenance window and accept temporary fail-closed queries:
 5. Confirm runtime pin and operator identity on Hetzner, and runtime pin,
    operator identity, SEV-SNP measurement, AMD certificate chain, and secure
    channel on VPSBG.
-6. Merge/deploy the already-reviewed frontend proof and layout pins. Wait for
-   the exact commit's Pages workflow to complete successfully.
+6. Merge/deploy the already-reviewed frontend proof pins. Wait for the exact
+   commit's Pages workflow to complete successfully.
 
 Activating the servers before the new web pins makes old clients reject the
 new proof; deploying the pins first makes new clients reject old servers.
@@ -230,7 +232,7 @@ Rollback the generation as a unit:
    reselect the prior known-good Tier 3 UKI in the VPSBG portal and reboot.
 3. Run `verify-live` for every restored database ID on both hosts and confirm
    both catalogs agree.
-4. Redeploy the prior known-good frontend proof/layout pins and wait for Pages.
+4. Redeploy the prior known-good frontend proof pins and wait for Pages.
 5. Repeat the strict browser acceptance checks above.
 
 If only one host fails after activation, do not leave a mixed fleet serving.

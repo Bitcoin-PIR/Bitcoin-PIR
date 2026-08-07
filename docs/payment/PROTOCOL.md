@@ -390,8 +390,12 @@ consumption before verification.
 ```text
 PRE_AUTH
   allow: announce, attest, handshake, catalog, DB proof, signed policy
-  meter: at most 32 verification/preflight WebSocket messages and 16 MiB of
-         actual encoded egress per connection; reserve chunk groups atomically
+  meter: at most 192 verification/preflight WebSocket messages and 64 MiB of
+         actual encoded egress per connection; reserve chunk groups atomically.
+         (Sized for the live tree-top preflight: the delta DB's
+         `merkle_bucket_tree_tops.bin` alone is ~90 chunks / 22.4 MiB and the
+         strict client preflights db0+db1 on one connection; `72180a3f` had
+         bumped the message count only.)
   deny: all paid backend work
 
 AUTH_VERIFY
