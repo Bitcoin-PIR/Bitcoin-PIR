@@ -21,6 +21,16 @@ PROOF_MANIFEST_PATH = Path("proof-manifest.json")
 IMPLEMENTATION_CONTRACT_PATH = Path("verification/contracts/wire-shape-v1.json")
 TRUSTED_VERIFIER_COMMAND = ["easycrypt", "compile", "-I", ".", "Theorem.ec"]
 TRUSTED_VERIFIER_DOCKERFILE = Path("verification/toolchains/easycrypt.Dockerfile")
+TRUSTED_VERIFIER_SCHEMA = "BitcoinPIR/product-owned-easycrypt-verifier/v2"
+TRUSTED_VERIFIER_IMAGE = "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier"
+TRUSTED_VERIFIER_SOURCE_REPOSITORY = "Bitcoin-PIR/Bitcoin-PIR"
+TRUSTED_VERIFIER_PUBLISH_WORKFLOW = (
+    ".github/workflows/publish-easycrypt-verifier.yml"
+)
+TRUSTED_VERIFIER_SOURCE_REF = "refs/heads/main"
+OCI_IMAGE_DIGEST = re.compile(
+    r"ghcr\.io/bitcoin-pir/bitcoinpir-easycrypt-verifier@sha256:[0-9a-f]{64}"
+)
 COMPILED_PROOF_SUFFIXES = {".eco", ".ecpc", ".ecaut"}
 FORBIDDEN_PROOF_FILENAMES = {"easycrypt.project"}
 FORBIDDEN_PROOF_SUFFIXES = {".eca"}
@@ -50,6 +60,15 @@ def load_json(path: Path, label: str) -> tuple[dict[str, object], bytes]:
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value, raw
+
+
+def require_exact_keys(value: dict[str, object], expected: set[str], label: str) -> None:
+    actual = set(value)
+    if actual != expected:
+        fail(
+            f"{label} keys must be exactly {sorted(expected)}; "
+            f"got {sorted(actual)}"
+        )
 
 
 def sha256(raw: bytes) -> str:
@@ -689,15 +708,123 @@ def git_tracked_files(repository: Path) -> set[str]:
 
 
 def write_github_output(
-    path: Path, repository: str, commit: str, run_id: str
+    path: Path,
+    repository: str,
+    commit: str,
+    run_id: str,
+    verifier_mode: str,
+    verifier_image: str,
+    verifier_source_commit: str,
 ) -> None:
     try:
         with path.open("a", encoding="utf-8") as output:
             output.write(f"repository={repository}\n")
             output.write(f"commit={commit}\n")
             output.write(f"run_id={run_id}\n")
+            output.write(f"verifier_mode={verifier_mode}\n")
+            output.write(f"verifier_image={verifier_image}\n")
+            output.write(f"verifier_source_commit={verifier_source_commit}\n")
     except OSError as error:
         fail(f"cannot write GitHub output {path}: {error}")
+
+
+def validate_trusted_verifier(
+    trusted_verifier: dict[str, object], verifier_raw: bytes
+) -> tuple[str, str, str]:
+    """Validate the product-owned verifier and select its safe distribution mode.
+
+    Bootstrap deliberately has no OCI reference: a PR keeps the old local build
+    until a separately published, attested image digest has been reviewed into
+    this lock.  A pinned distribution is always an immutable GHCR digest.
+    """
+    require_exact_keys(
+        trusted_verifier,
+        {
+            "schema",
+            "dockerfilePath",
+            "dockerfileSha256",
+            "baseImage",
+            "easycryptRepository",
+            "easycryptCommit",
+            "ocamlVersion",
+            "why3Version",
+            "altErgoVersion",
+            "platform",
+            "command",
+            "distribution",
+        },
+        "trustedVerifier",
+    )
+    if string_field(trusted_verifier, "schema") != TRUSTED_VERIFIER_SCHEMA:
+        fail("trusted verifier schema is unsupported")
+    verifier_dockerfile = safe_relative_path(trusted_verifier, "dockerfilePath")
+    if verifier_dockerfile != TRUSTED_VERIFIER_DOCKERFILE:
+        fail(f"trusted verifier Dockerfile must remain {TRUSTED_VERIFIER_DOCKERFILE}")
+    expected_verifier_digest = digest_field(trusted_verifier, "dockerfileSha256")
+    actual_verifier_digest = sha256(verifier_raw)
+    if actual_verifier_digest != expected_verifier_digest:
+        fail(
+            "trusted verifier Dockerfile digest drifted: "
+            f"expected {expected_verifier_digest}, got {actual_verifier_digest}"
+        )
+
+    expected_fields = {
+        "baseImage": TRUSTED_PROOF_TOOLCHAIN["base_image"],
+        "easycryptRepository": TRUSTED_PROOF_TOOLCHAIN["easycrypt_repository"],
+        "easycryptCommit": TRUSTED_PROOF_TOOLCHAIN["easycrypt_commit"],
+        "ocamlVersion": TRUSTED_PROOF_TOOLCHAIN["ocaml_version"],
+        "why3Version": TRUSTED_PROOF_TOOLCHAIN["why3_version"],
+        "altErgoVersion": TRUSTED_PROOF_TOOLCHAIN["solvers"][0]["version"],
+        "platform": TRUSTED_PROOF_TOOLCHAIN["platform"],
+    }
+    for field, expected in expected_fields.items():
+        if string_field(trusted_verifier, field) != expected:
+            fail(f"trusted verifier {field} drifted from the reviewed toolchain")
+    if string_list_field(trusted_verifier, "command") != TRUSTED_VERIFIER_COMMAND:
+        fail("trusted verifier command drifted from the reviewed EasyCrypt invocation")
+
+    dockerfile = verifier_raw.decode("utf-8", errors="strict")
+    for required in [
+        f"FROM {expected_fields['baseImage']}",
+        f"ARG EASYCRYPT_COMMIT={expected_fields['easycryptCommit']}",
+        f"ARG OCAML_VERSION={expected_fields['ocamlVersion']}",
+        f"ARG WHY3_VERSION={expected_fields['why3Version']}",
+        f"ARG ALT_ERGO_VERSION={expected_fields['altErgoVersion']}",
+    ]:
+        if required not in dockerfile:
+            fail(f"trusted verifier Dockerfile no longer binds {required}")
+
+    distribution = object_field(trusted_verifier, "distribution")
+    require_exact_keys(distribution, {"mode", "image", "provenance"}, "trustedVerifier.distribution")
+    mode = string_field(distribution, "mode")
+    image = distribution.get("image")
+    provenance = distribution.get("provenance")
+    if mode == "bootstrap":
+        if image is not None or provenance is not None:
+            fail("bootstrap verifier distribution must not name an unpublished image")
+        return mode, "", ""
+    if mode != "pinned":
+        fail("trusted verifier distribution mode must be bootstrap or pinned")
+    if not isinstance(image, str) or not OCI_IMAGE_DIGEST.fullmatch(image):
+        fail("pinned verifier image must be the reviewed GHCR immutable sha256 reference")
+    provenance_object = object_field(distribution, "provenance")
+    require_exact_keys(
+        provenance_object,
+        {"repository", "workflow", "ref", "commit", "dockerfileSha256"},
+        "trustedVerifier.distribution.provenance",
+    )
+    if string_field(provenance_object, "repository") != TRUSTED_VERIFIER_SOURCE_REPOSITORY:
+        fail("pinned verifier provenance repository drifted")
+    if string_field(provenance_object, "workflow") != TRUSTED_VERIFIER_PUBLISH_WORKFLOW:
+        fail("pinned verifier provenance workflow drifted")
+    if string_field(provenance_object, "ref") != TRUSTED_VERIFIER_SOURCE_REF:
+        fail("pinned verifier provenance ref must be main")
+    source_commit = string_field(provenance_object, "commit")
+    if not GIT_COMMIT.fullmatch(source_commit):
+        fail("pinned verifier provenance commit must be a full lowercase Git commit")
+    if digest_field(provenance_object, "dockerfileSha256") != expected_verifier_digest:
+        fail("pinned verifier provenance Dockerfile digest drifted")
+    return mode, image, source_commit
 
 
 def main() -> None:
@@ -762,23 +889,13 @@ def main() -> None:
 
     trusted_verifier = object_field(lock, "trustedVerifier")
     verifier_dockerfile = safe_relative_path(trusted_verifier, "dockerfilePath")
-    if verifier_dockerfile != TRUSTED_VERIFIER_DOCKERFILE:
-        fail(f"trusted verifier Dockerfile must remain {TRUSTED_VERIFIER_DOCKERFILE}")
-    expected_verifier_digest = digest_field(trusted_verifier, "dockerfileSha256")
-    if string_field(trusted_verifier, "platform") != "linux/amd64":
-        fail("trusted verifier platform must remain linux/amd64")
-    if string_list_field(trusted_verifier, "command") != TRUSTED_VERIFIER_COMMAND:
-        fail("trusted verifier command drifted from the reviewed EasyCrypt invocation")
     try:
         verifier_raw = (ROOT / verifier_dockerfile).read_bytes()
     except OSError as error:
         fail(f"cannot read trusted verifier Dockerfile: {error}")
-    actual_verifier_digest = sha256(verifier_raw)
-    if actual_verifier_digest != expected_verifier_digest:
-        fail(
-            "trusted verifier Dockerfile digest drifted: "
-            f"expected {expected_verifier_digest}, got {actual_verifier_digest}"
-        )
+    verifier_mode, verifier_image, verifier_source_commit = validate_trusted_verifier(
+        trusted_verifier, verifier_raw
+    )
 
     record, record_raw = load_json(
         ROOT / verification_record_path, "formal proof verification record"
@@ -821,7 +938,15 @@ def main() -> None:
         fail("verification record toolchain does not match the trusted toolchain")
 
     if arguments.github_output:
-        write_github_output(arguments.github_output, repository, commit, run_id)
+        write_github_output(
+            arguments.github_output,
+            repository,
+            commit,
+            run_id,
+            verifier_mode,
+            verifier_image,
+            verifier_source_commit,
+        )
 
     if arguments.proof_dir:
         proof_dir = arguments.proof_dir.resolve()

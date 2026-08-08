@@ -1,0 +1,96 @@
+name: Publish attested EasyCrypt verifier
+
+# This workflow is intentionally not a pull_request workflow: PR code must
+# never receive a package-write token.  Phase A formal CI continues to build
+# locally until a digest produced here is reviewed into formal-proofs.json.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-easycrypt-verifier.yml'
+      - 'verification/toolchains/easycrypt.Dockerfile'
+      - 'verification/locks/formal-proofs.json'
+      - 'verification/scripts/verify_formal_lock.py'
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-easycrypt-verifier-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # A manual dispatch from another ref and any future non-main event fail
+    # closed before credentials capable of publishing a package are granted.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      IMAGE: ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier
+    steps:
+      - name: Check out BitcoinPIR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish a bootstrap image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: verification/toolchains
+          file: verification/toolchains/easycrypt.Dockerfile
+          platforms: linux/amd64
+          push: true
+          # This unique discovery tag is never a consumer input.  Consumers
+          # accept only the immutable digest emitted by this build.
+          tags: ${{ env.IMAGE }}:bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Bitcoin-PIR/Bitcoin-PIR
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+
+      - name: Attest the immutable verifier digest
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify published provenance before reporting the digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image_ref="${IMAGE}@${IMAGE_DIGEST}"
+          gh attestation verify "oci://${image_ref}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-easycrypt-verifier.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA"
+          {
+            echo "Published, attested verifier digest: ${image_ref}"
+            echo "Phase B: copy this exact digest and the current source commit into"
+            echo "verification/locks/formal-proofs.json, then require a fresh PR CI run."
+          } >> "$GITHUB_STEP_SUMMARY"

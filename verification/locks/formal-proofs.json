@@ -14,8 +14,15 @@
     "sha256": "648227ffba4946b5adc55291bdb77eb452d93a5c03c553a17dc6f5d053b97bf7"
   },
   "trustedVerifier": {
+    "schema": "BitcoinPIR/product-owned-easycrypt-verifier/v2",
     "dockerfilePath": "verification/toolchains/easycrypt.Dockerfile",
     "dockerfileSha256": "84b3d2e19b0d7b82b208000e4c9620178f0bd6aaf134d0e14d5a531dbeae58f9",
+    "baseImage": "ghcr.io/easycrypt/ec-build-box@sha256:5a46a4d816e763ad5de9ee9502d52158c742b9b98cc1f60c443d135a270fdb6a",
+    "easycryptRepository": "https://github.com/EasyCrypt/easycrypt",
+    "easycryptCommit": "dd9bd930d45e81980e546fc835ed2022418644be",
+    "ocamlVersion": "4.14.1",
+    "why3Version": "1.8.2",
+    "altErgoVersion": "2.6.3",
     "platform": "linux/amd64",
     "command": [
       "easycrypt",
@@ -23,7 +30,12 @@
       "-I",
       ".",
       "Theorem.ec"
-    ]
+    ],
+    "distribution": {
+      "mode": "bootstrap",
+      "image": null,
+      "provenance": null
+    }
   },
   "verification": {
     "command": "make check"
