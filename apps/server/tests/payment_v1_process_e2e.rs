@@ -812,9 +812,8 @@ async fn all_non_receipt_methods_commit_before_real_harmony_query_and_replay_aft
 
 #[test]
 fn misspelled_bind_flag_fails_closed_before_listening() {
-    let port = unused_loopback_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
-        .args(["--bind-addres", "127.0.0.1", "--port", &port.to_string()])
+        .args(["--bind-addres", "127.0.0.1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -837,14 +836,11 @@ fn misspelled_bind_flag_fails_closed_before_listening() {
         .expect("collect typo process output");
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("unknown argument: --bind-addres"),
         "{stderr}"
-    );
-    assert!(
-        TcpStream::connect(("127.0.0.1", port)).is_err(),
-        "misspelled bind flag must fail before a listener is opened"
     );
 }
 

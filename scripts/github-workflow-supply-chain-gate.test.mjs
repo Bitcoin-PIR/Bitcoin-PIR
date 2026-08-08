@@ -18,6 +18,7 @@ import {
   SUPPLY_CHAIN_GATE_PUSH_PATHS,
   validateNpmParserLockBoundary,
   validatePaymentPlatformCompileAcceleration,
+  validatePaymentV1CiLaneInventory,
   validateSupplyChainGateTriggers,
   validateWorkflowDirectory,
   validateWorkflowSource,
@@ -72,30 +73,51 @@ const paymentPlatformWorkflow = readFileSync(
   new URL("../.github/workflows/payment-platform.yml", import.meta.url),
   "utf8",
 );
+const paymentLaneScript = readFileSync(
+  new URL("./payment-v1-ci-lane.sh", import.meta.url),
+  "utf8",
+);
 
 test("accepts the reviewed payment-platform compile acceleration boundary", () => {
   assert.doesNotThrow(() => validatePaymentPlatformCompileAcceleration(paymentPlatformWorkflow));
 });
 
+test("accepts the reviewed payment CI lane inventory", () => {
+  assert.doesNotThrow(() => validatePaymentV1CiLaneInventory(paymentLaneScript));
+});
+
+for (const [label, source, pattern] of [
+  ["missing core lane", paymentLaneScript.replace("  core)", "  removed)"), /core lane/u],
+  ["missing root UID boundary", paymentLaneScript.replace("BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1", "BPIR_REMOVED=1"), /BPIR_REQUIRE_ROOT_CREDENTIAL_TEST/u],
+  ["missing feature superset", paymentLaneScript.replace("cuckoo-oram,shared-issuer-process-e2e", "cuckoo-oram"), /cuckoo-oram,shared-issuer-process-e2e/u],
+  ["missing shared issuer target", paymentLaneScript.replaceAll("payment_v1_shared_issuer_process_e2e", "payment_v1_removed_process_e2e"), /payment_v1_shared_issuer_process_e2e/u],
+  ["Phase 2 feature superset regression", paymentLaneScript.replace("cuckoo-oram,shared-issuer-process-e2e", "cuckoo-oram,standard-cashu-process-e2e"), /cuckoo-oram,shared-issuer-process-e2e/u],
+  ["Phase 2 obsolete Clippy returns", paymentLaneScript.replace("  runtime-features)", "  runtime-features)\n    cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server --no-deps -- -D warnings"), /must not retain obsolete feature-specific runtime Clippy commands/u],
+]) {
+  test(`rejects lane inventory ${label}`, () => {
+    assert.throws(() => validatePaymentV1CiLaneInventory(source), pattern);
+  });
+}
+
 for (const [label, source, pattern] of [
   [
     "payment platform test LTO regression",
-    paymentPlatformWorkflow.replace('CARGO_PROFILE_TEST_LTO: "off"', 'CARGO_PROFILE_TEST_LTO: "thin"'),
+    paymentPlatformWorkflow.replaceAll('CARGO_PROFILE_TEST_LTO: "off"', 'CARGO_PROFILE_TEST_LTO: "thin"'),
     /CARGO_PROFILE_TEST_LTO=off/u,
   ],
   [
     "payment platform incremental regression",
-    paymentPlatformWorkflow.replace('CARGO_INCREMENTAL: "0"', 'CARGO_INCREMENTAL: "1"'),
+    paymentPlatformWorkflow.replaceAll('CARGO_INCREMENTAL: "0"', 'CARGO_INCREMENTAL: "1"'),
     /CARGO_INCREMENTAL=0/u,
   ],
   [
     "payment platform sccache env regression",
-    paymentPlatformWorkflow.replace('SCCACHE_GHA_ENABLED: "true"', 'SCCACHE_GHA_ENABLED: "false"'),
+    paymentPlatformWorkflow.replaceAll('SCCACHE_GHA_ENABLED: "true"', 'SCCACHE_GHA_ENABLED: "false"'),
     /SCCACHE_GHA_ENABLED=true/u,
   ],
   [
     "payment platform mutable sccache action",
-    paymentPlatformWorkflow.replace(
+    paymentPlatformWorkflow.replaceAll(
       `mozilla-actions/sccache-action@${sccacheAction}`,
       "mozilla-actions/sccache-action@v0.0.11",
     ),
@@ -104,52 +126,28 @@ for (const [label, source, pattern] of [
   [
     "payment platform target cache regression",
     paymentPlatformWorkflow.replace(
-      "- name: Test payment platform offline",
-      `- name: Forbidden target cache\n        uses: actions/cache@${APPROVED_ACTION_COMMITS["actions/cache"]}\n      - name: Test payment platform offline`,
+      '- name: Run protocol lane',
+      `- name: Forbidden target cache\n        uses: actions/cache@${APPROVED_ACTION_COMMITS["actions/cache"]}\n      - name: Run protocol lane`,
     ),
     /must not cache the workspace target directory/u,
   ],
   [
     "payment platform timings artifact retention regression",
-    paymentPlatformWorkflow.replace("retention-days: 7", "retention-days: 14"),
+    paymentPlatformWorkflow.replaceAll("retention-days: 7", "retention-days: 14"),
     /seven-day retention/u,
   ],
   [
     "payment platform custom timing path missing",
-    paymentPlatformWorkflow.replace("\n            target/payment-issuer-shared-e2e/cargo-timings", ""),
-    /Cargo timing artifact paths/u,
+    paymentPlatformWorkflow.replaceAll("target/payment-issuer-shared-e2e/cargo-timings", "target/payment-issuer-shared-e2e/missing"),
+    /timing paths/u,
   ],
   [
     "payment platform broad timing path",
-    paymentPlatformWorkflow.replace(
+    paymentPlatformWorkflow.replaceAll(
       "target/payment-issuer-shared-e2e/cargo-timings",
       "target/**/cargo-timings",
     ),
-    /Cargo timing artifact paths/u,
-  ],
-  [
-    "payment platform feature superset regression",
-    paymentPlatformWorkflow.replace(
-      "--features cuckoo-oram,shared-issuer-process-e2e",
-      "--features cuckoo-oram,standard-cashu-process-e2e",
-    ),
-    /runtime feature-superset Clippy/u,
-  ],
-  [
-    "payment platform feature-superset test target missing",
-    paymentPlatformWorkflow.replaceAll(
-      "--test payment_v1_shared_issuer_process_e2e",
-      "--test payment_v1_removed_process_e2e",
-    ),
-    /payment_v1_shared_issuer_process_e2e/u,
-  ],
-  [
-    "payment platform obsolete feature Clippy returns",
-    paymentPlatformWorkflow.replace(
-      "      - name: Prove test-only WebPKI roots cannot enter release artifacts",
-      "      - name: Forbidden duplicate runtime feature Clippy\n        run: cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server --test payment_v1_tee_oram_process_e2e --no-deps -- -D warnings\n      - name: Prove test-only WebPKI roots cannot enter release artifacts",
-    ),
-    /must not retain obsolete feature-specific runtime Clippy commands/u,
+    /timing paths/u,
   ],
 ]) {
   test(`rejects ${label}`, () => {

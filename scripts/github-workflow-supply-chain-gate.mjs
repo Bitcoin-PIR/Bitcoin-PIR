@@ -227,6 +227,34 @@ export function validatePaymentPlatformCompileAcceleration(
   label = "payment platform workflow",
 ) {
   const workflow = parseWorkflowSource(source, label);
+  const laneJob = workflow.jobs?.["protocol-and-persistence-lanes"];
+  if (isRecord(laneJob)) {
+    if (Object.hasOwn(workflow.jobs, "protocol-and-persistence-legacy")) fail(`${label} must not retain a legacy protocol job`);
+    const expectedEnv = { CARGO_PROFILE_TEST_LTO: "off", CARGO_INCREMENTAL: "0", SCCACHE_GHA_ENABLED: "true", RUSTC_WRAPPER: "sccache" };
+    if (!isRecord(laneJob.env)) fail(`${label} protocol lanes must define compiler-cache env`);
+    for (const [key, value] of Object.entries(expectedEnv)) if (laneJob.env[key] !== value) fail(`${label} protocol lanes must set ${key}=${value}`);
+    if (!isRecord(laneJob.strategy) || !isRecord(laneJob.strategy.matrix) || laneJob.strategy["fail-fast"] !== false) fail(`${label} protocol lanes must use fail-fast=false matrix`);
+    const lanes = laneJob.strategy.matrix.include;
+    if (!Array.isArray(lanes) || lanes.length !== 4) fail(`${label} protocol lanes must define exactly four lanes`);
+    requireExactStringList(lanes.map((entry) => entry.lane), ["core", "runtime-default-security", "runtime-features", "issuer-directory-tools"], `${label} protocol lane names`);
+    const steps = laneJob.steps;
+    if (!Array.isArray(steps)) fail(`${label} protocol lane steps must be a list`);
+    if (steps.some((step) => typeof step.run === "string" && /\bcargo\s/u.test(step.run))) fail(`${label} protocol lanes must not retain inline Cargo commands`);
+    if (steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/cache@"))) fail(`${label} protocol lanes must not cache the workspace target directory`);
+    const timingPaths = Object.fromEntries(lanes.map((entry) => [entry.lane, entry.timing_paths]));
+    if (timingPaths.core !== "target/cargo-timings" || timingPaths["runtime-default-security"] !== "target/cargo-timings" || timingPaths["issuer-directory-tools"] !== "target/cargo-timings" || timingPaths["runtime-features"] !== "target/cargo-timings\ntarget/payment-issuer-shared-e2e/cargo-timings") fail(`${label} protocol lane timing paths must be exact`);
+    const sccacheAction = `mozilla-actions/sccache-action@${APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"]}`;
+    requireWorkflowStep(steps, (step) => step.uses === sccacheAction, `${label} protocol lanes must install the reviewed sccache action`);
+    requireWorkflowStep(steps, (step) => step.run === 'bash scripts/payment-v1-ci-lane.sh --lane "${{ matrix.lane }}"', `${label} protocol lanes must use the reviewed lane entrypoint`);
+    requireWorkflowStep(steps, (step) => step.if === "always()" && typeof step.run === "string" && step.run.includes("--show-stats"), `${label} protocol lanes must report sccache stats`);
+    const artifact = requireWorkflowStep(steps, (step) => step.if === "always()" && step.uses === `actions/upload-artifact@${APPROVED_ACTION_COMMITS["actions/upload-artifact"]}`, `${label} protocol lanes must upload timing reports`);
+    if (artifact.with?.path !== "${{ matrix.timing_paths }}" || artifact.with?.["retention-days"] !== 7 || artifact.with?.["if-no-files-found"] !== "ignore") fail(`${label} protocol lanes must upload only seven-day retention matrix timing reports`);
+    const aggregate = workflow.jobs["protocol-and-persistence"];
+    if (!isRecord(aggregate) || aggregate.name !== "Protocol, stores, adapters, issuer and runtime" || aggregate.if !== "${{ always() }}" || aggregate.needs !== "protocol-and-persistence-lanes") fail(`${label} must preserve the stable protocol aggregate required check`);
+    const browser = workflow.jobs["browser-storage-boundary"];
+    if (!isRecord(browser) || browser.if !== "${{ github.event_name == 'workflow_dispatch' && inputs.run_browser_checks }}") fail(`${label} Chromium browser boundary must be explicit-dispatch opt-in`);
+    return;
+  }
   if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs["protocol-and-persistence"])) {
     fail(`${label} must define the protocol-and-persistence job`);
   }
@@ -319,6 +347,28 @@ export function validatePaymentPlatformCompileAcceleration(
     if (normalizedCargoRuns.includes(obsoleteCommand)) {
       fail(`${label} must not retain obsolete feature-specific runtime Clippy commands`);
     }
+  }
+}
+
+export function validatePaymentV1CiLaneInventory(source, label = "payment CI lane script") {
+  for (const lane of ["core", "runtime-default-security", "runtime-features", "issuer-directory-tools"]) {
+    if (!source.includes(`  ${lane})`)) fail(`${label} must define the ${lane} lane`);
+  }
+  for (const requiredCommand of [
+    "BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1",
+    "test-only-unsafe-query-logging",
+    "remote-authority-process-e2e",
+    "cuckoo-oram,shared-issuer-process-e2e",
+    "payment_v1_shared_issuer_process_e2e",
+    "test-only-fake-lightning",
+    "payment_v1_two_relay_process_e2e",
+    "cdk_nut03_interop",
+    "generate-payment-v1-no-funds.sh",
+  ]) {
+    if (!source.includes(requiredCommand)) fail(`${label} must inventory ${requiredCommand}`);
+  }
+  for (const obsoleteFeature of ["--features cuckoo-oram --bin unified_server", "--features standard-cashu-process-e2e --bin unified_server", "--features cuckoo-oram,standard-cashu-process-e2e --bin unified_server", "--features shared-issuer-process-e2e --bin unified_server"]) {
+    if (source.includes(obsoleteFeature)) fail(`${label} must not retain obsolete feature-specific runtime Clippy commands`);
   }
 }
 
