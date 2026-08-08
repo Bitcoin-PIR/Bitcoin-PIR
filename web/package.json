@@ -32,7 +32,7 @@
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
+    "@playwright/test": "1.62.1",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "fake-indexeddb": "^6.2.4",
