@@ -32,9 +32,15 @@
       "Theorem.ec"
     ],
     "distribution": {
-      "mode": "bootstrap",
-      "image": null,
-      "provenance": null
+      "mode": "pinned",
+      "image": "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier@sha256:bc174b56c1e59cfa3e8e0385fcf2dbc3332a1e433d99a59992562e56284b2d48",
+      "provenance": {
+        "repository": "Bitcoin-PIR/Bitcoin-PIR",
+        "workflow": ".github/workflows/publish-easycrypt-verifier.yml",
+        "ref": "refs/heads/main",
+        "commit": "aab4e4ccf65a94969be34b65ab0f23c2623ee5a6",
+        "dockerfileSha256": "84b3d2e19b0d7b82b208000e4c9620178f0bd6aaf134d0e14d5a531dbeae58f9"
+      }
     }
   },
   "verification": {

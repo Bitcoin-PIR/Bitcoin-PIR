@@ -104,26 +104,27 @@ The durable statement is that a specific proof tree and its deterministically
 generated contract binding passed a specific verifier. This remains narrower
 than a full refinement proof from Rust or TypeScript into EasyCrypt.
 
-### Product-owned EasyCrypt verifier bootstrap and rollback
+### Product-owned EasyCrypt verifier distribution and rollback
 
-The verifier lock has two fail-closed distribution modes. **Phase A** is
-`bootstrap`: there is deliberately no OCI image digest, so the formal job builds
-`verification/toolchains/easycrypt.Dockerfile` locally and still recompiles the
-proof. This is the only safe state before the first real package exists; a
-placeholder digest is invalid.
+The verifier lock has two fail-closed distribution modes. **Phase B is active**:
+the lock names a real, immutable, attested OCI digest, and the formal job pulls
+that digest before recompiling the proof. A digest placeholder is invalid. The
+alternate `bootstrap` mode deliberately has no OCI image digest and rebuilds
+`verification/toolchains/easycrypt.Dockerfile` locally; it is retained only as
+an explicit reviewed rollback path.
 
 The `Publish attested EasyCrypt verifier` workflow is not callable from a PR. It
-can publish only from `main` after a controlled toolchain change, an explicit
-`main` dispatch, or the weekly clean rebuild. It publishes a temporary discovery
-tag only to obtain an OCI digest; that tag is never a trust input. The workflow
-attests and verifies the final `ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier@sha256:...`
-digest before reporting it.
+can publish only from `main` after its own workflow or the EasyCrypt Dockerfile
+changes, an explicit `main` dispatch, or the weekly clean rebuild. A lock or
+validator-only change therefore cannot cause an unnecessary cold rebuild. It
+publishes a temporary discovery tag only to obtain an OCI digest; that tag is
+never a trust input. The workflow attests and verifies the final
+`ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier@sha256:...` digest before
+reporting it.
 
-To enter **Phase B**, a reviewed follow-up changes the lock to `pinned` with the
-reported immutable digest and its `main` publisher provenance. The ordinary
-formal job then pulls that exact digest, checks its RepoDigest and OCI source /
-revision labels, authenticates to GHCR with its read-only GitHub token, verifies
-the GitHub provenance attestation for the protected
+The ordinary formal job now pulls the exact lock digest, checks its RepoDigest
+and OCI source / revision labels, authenticates to GHCR with its read-only
+GitHub token, verifies the GitHub provenance attestation for the protected
 publisher workflow, and still runs `easycrypt compile -I . Theorem.ec`. It never
 uses a tag or a fallback image. Rollback is another reviewed lock change to an
 earlier attested digest; returning to `bootstrap` intentionally restores the

@@ -1,16 +1,14 @@
 name: Publish attested EasyCrypt verifier
 
 # This workflow is intentionally not a pull_request workflow: PR code must
-# never receive a package-write token.  Phase A formal CI continues to build
-# locally until a digest produced here is reviewed into formal-proofs.json.
+# never receive a package-write token. The formal lock consumes only a reviewed,
+# attested digest produced here; the bootstrap mode remains a deliberate rollback.
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/publish-easycrypt-verifier.yml'
       - 'verification/toolchains/easycrypt.Dockerfile'
-      - 'verification/locks/formal-proofs.json'
-      - 'verification/scripts/verify_formal_lock.py'
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:

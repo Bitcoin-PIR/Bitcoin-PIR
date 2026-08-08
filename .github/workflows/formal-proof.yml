@@ -55,9 +55,8 @@ jobs:
           python3 verification/scripts/verify_formal_lock.py
           --proof-dir .formal-proof
 
-      # Phase A deliberately keeps this cold build: the lock has no real
-      # published OCI digest yet.  The validator is the only authority allowed
-      # to switch this condition to the attested, immutable Phase B image.
+      # Bootstrap is a reviewed rollback mode. The validator is the only
+      # authority allowed to select it instead of the attested Phase B image.
       - name: Build product-owned trusted EasyCrypt verifier (Phase A bootstrap)
         if: steps.lock.outputs.verifier_mode == 'bootstrap'
         run: |
