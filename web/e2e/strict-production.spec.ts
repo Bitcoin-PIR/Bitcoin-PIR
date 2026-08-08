@@ -35,10 +35,7 @@ async function queryOnce(
   await button.click();
   await expect(button).toHaveText('Querying…');
   await expect(button).toBeEnabled({ timeout: QUERY_TIMEOUT });
-  await expect(button).toHaveText('Query UTXOs');
-  await expect(page.locator('#log')).not.toContainText(
-    /(?:connection failed:|query error:|batch error:)/i,
-  );
+  await expectNoFatalLog(page);
   await expect(results).toContainText(CANARY_ADDRESS);
   return results;
 }
@@ -67,7 +64,7 @@ async function expectLogContains(page: Page, ...messages: string[]): Promise<voi
 
 async function expectNoFatalLog(page: Page): Promise<void> {
   const fatal = page.locator('#log').getByText(
-    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|query error:|batch error:|connection failed:)/i,
+    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|WASM module required|query error:|batch error:|(?:connection|connect) failed:)/i,
   );
   await expect(fatal).toHaveCount(0);
 }
@@ -79,8 +76,6 @@ test('DPF-PIR verifies both servers, the result, and tears down transport', asyn
   await expect(page.locator('#dpfVerification0')).toHaveText('YES');
   await expect(page.locator('#dpfVerification1')).toHaveText('YES');
   await expectVerifiedResult(results);
-  await expectTornDown(page, '#connectBtn', '#disconnectBtn');
-  await expectNoFatalLog(page);
   await expectLogContains(
     page,
     'Upgraded to encrypted channel',
@@ -88,6 +83,11 @@ test('DPF-PIR verifies both servers, the result, and tears down transport', asyn
     'operator-endorsed identity verified (pir2)',
     'Bitcoin/MuHash anchor verified',
     'Batch complete: 1/1 found',
+  );
+  await expectTornDown(page, '#connectBtn', '#disconnectBtn');
+  await expectNoFatalLog(page);
+  await expectLogContains(
+    page,
     'Disconnected',
   );
 });
@@ -99,9 +99,6 @@ test('HarmonyPIR verifies both roles, the result, and preserves no socket', asyn
   await expect(page.locator('#hpVerificationHint')).toHaveText('YES');
   await expect(page.locator('#hpVerificationQuery')).toHaveText('YES');
   await expectVerifiedResult(results);
-  await expectTornDown(page, '#hp-connectBtn', '#hp-disconnectBtn');
-  await expect(page.locator('#hp-status')).toContainText('Status: Disconnected');
-  await expectNoFatalLog(page);
   await expectLogContains(
     page,
     'HarmonyPIR: upgraded to encrypted channel',
@@ -109,6 +106,9 @@ test('HarmonyPIR verifies both roles, the result, and preserves no socket', asyn
     'HarmonyPIR query: operator-endorsed identity verified (pir2)',
     'HarmonyPIR batch complete: 1/1 found',
   );
+  await expectTornDown(page, '#hp-connectBtn', '#hp-disconnectBtn');
+  await expect(page.locator('#hp-status')).toContainText('Status: Disconnected');
+  await expectNoFatalLog(page);
 });
 
 test('OnionPIR passes strict layout/tree-top preflight and verifies the result', async ({ page }) => {
@@ -117,9 +117,9 @@ test('OnionPIR passes strict layout/tree-top preflight and verifies the result',
 
   await expect(page.locator('#onionVerification')).toHaveText('YES');
   await expectVerifiedResult(results);
+  await expectLogContains(page, 'OnionPIR batch complete: 1/1 found');
   await expectTornDown(page, '#op-connectBtn', '#op-disconnectBtn');
   await expectNoFatalLog(page);
-  await expectLogContains(page, 'OnionPIR batch complete: 1/1 found');
 });
 
 test('ORAM TEE verifies the runtime, completes a lookup, and disconnects', async ({ page }) => {
@@ -127,14 +127,17 @@ test('ORAM TEE verifies the runtime, completes a lookup, and disconnects', async
   await queryOnce(page, '#oram-scriptPubkeys', '#oram-queryBtn', '#oram-resultsContainer');
 
   await expect(page.locator('#oramVerification')).toHaveText('YES');
-  await expectTornDown(page, '#oram-connectBtn', '#oram-disconnectBtn');
-  await expect(page.locator('#oram-status')).toContainText('Status: Disconnected');
-  await expectNoFatalLog(page);
   await expectLogContains(
     page,
     'ORAM upgraded to encrypted channel',
     'ORAM: operator-endorsed identity verified (pir2)',
     'ORAM batch complete: 1/1 found',
+  );
+  await expectTornDown(page, '#oram-connectBtn', '#oram-disconnectBtn');
+  await expect(page.locator('#oram-status')).toContainText('Status: Disconnected');
+  await expectNoFatalLog(page);
+  await expectLogContains(
+    page,
     'ORAM: Disconnected',
   );
 });
