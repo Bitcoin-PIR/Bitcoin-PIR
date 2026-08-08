@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-a55CCVP4KsKQ2sVjnZ1OFNER96NPzLtsBqUvyjNNrMo=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-sRlmD0eadjZswbJv08HtozMwakJ76W0psVu62XSltEo=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -896,7 +896,12 @@
     </header>
 
     <!-- ── APP ──────────────────────────────────────────────────── -->
-    <div class="app">
+    <div
+        id="bitcoinPirApp"
+        class="app"
+        aria-busy="true"
+        data-module-readiness="initializing"
+    >
         <!-- MAIN -->
         <main class="main">
 
@@ -6375,6 +6380,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             mismatches: [],
             error: 'waiting for a strictly verified live db 0 proof and a new v2 source ceremony',
         });
+
+        // This is deliberately the final step in the application module.  It
+        // means every backend tab, query control, and admission panel now has
+        // its listener/state initialization, independent of any backend
+        // connection or proof verification that happens after user input.
+        const bitcoinPirApp = document.getElementById('bitcoinPirApp');
+        bitcoinPirApp?.setAttribute('aria-busy', 'false');
+        bitcoinPirApp?.setAttribute('data-module-readiness', 'ready');
     </script>
 
     <!-- Query Inspector Modal -->

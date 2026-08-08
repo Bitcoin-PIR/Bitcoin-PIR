@@ -12,12 +12,12 @@ test.describe.configure({ mode: 'serial' });
 
 async function openBackend(page: Page, tabName: string): Promise<void> {
   await page.goto(`/?strict-canary=${Date.now()}`, { waitUntil: 'domcontentloaded' });
-  // The production bundle attaches backend listeners near the end of its
-  // module. DOMContentLoaded can fire while that module is still evaluating,
-  // so wait for the final static-proof startup task to report before clicking.
-  await expect(page.locator('#log')).toContainText(
-    /ORAM TEE: ORAM source binding verified|ORAM source-binding proof check failed/,
-  );
+  // The production bundle binds all backend/admission controls near the end
+  // of its module. DOMContentLoaded can fire while it is still evaluating;
+  // wait for its explicit, backend-independent interaction-ready state.
+  const app = page.locator('#bitcoinPirApp');
+  await expect(app).toHaveAttribute('data-module-readiness', 'ready');
+  await expect(app).toHaveAttribute('aria-busy', 'false');
   await expect(page.getByRole('tab', { name: tabName, exact: true })).toBeVisible();
   await page.getByRole('tab', { name: tabName, exact: true }).click();
 }
