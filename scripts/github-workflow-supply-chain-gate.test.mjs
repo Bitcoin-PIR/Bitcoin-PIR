@@ -3,6 +3,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -16,6 +17,8 @@ import {
   APPROVED_ACTION_COMMITS,
   SUPPLY_CHAIN_GATE_PUSH_PATHS,
   validateNpmParserLockBoundary,
+  validatePaymentPlatformCompileAcceleration,
+  validatePaymentV1CiLaneInventory,
   validateSupplyChainGateTriggers,
   validateWorkflowDirectory,
   validateWorkflowSource,
@@ -23,6 +26,7 @@ import {
 
 const checkout = APPROVED_ACTION_COMMITS["actions/checkout"];
 const setupNode = APPROVED_ACTION_COMMITS["actions/setup-node"];
+const sccacheAction = APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"];
 
 function workflow(stepSource = `
       - name: Checkout
@@ -55,12 +59,144 @@ test("accepts exact allowlisted commits and non-persisting checkout credentials"
   assert.deepEqual(result, { actionUses: 2, checkouts: 1 });
 });
 
+test("accepts the reviewed exact sccache action pin", () => {
+  const result = validateWorkflowSource(workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@${sccacheAction}
+`));
+  assert.deepEqual(result, { actionUses: 2, checkouts: 1 });
+});
+
+const paymentPlatformWorkflow = readFileSync(
+  new URL("../.github/workflows/payment-platform.yml", import.meta.url),
+  "utf8",
+);
+const paymentLaneScript = readFileSync(
+  new URL("./payment-v1-ci-lane.sh", import.meta.url),
+  "utf8",
+);
+
+test("accepts the reviewed payment-platform compile acceleration boundary", () => {
+  assert.doesNotThrow(() => validatePaymentPlatformCompileAcceleration(paymentPlatformWorkflow));
+});
+
+test("accepts the reviewed payment CI lane inventory", () => {
+  assert.doesNotThrow(() => validatePaymentV1CiLaneInventory(paymentLaneScript));
+});
+
+for (const [label, source, pattern] of [
+  ["missing core lane", paymentLaneScript.replace("  core)", "  removed)"), /core lane/u],
+  ["missing root UID boundary", paymentLaneScript.replace("BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1", "BPIR_REMOVED=1"), /BPIR_REQUIRE_ROOT_CREDENTIAL_TEST/u],
+  ["missing feature superset", paymentLaneScript.replace("cuckoo-oram,shared-issuer-process-e2e", "cuckoo-oram"), /cuckoo-oram,shared-issuer-process-e2e/u],
+  ["missing shared issuer target", paymentLaneScript.replaceAll("payment_v1_shared_issuer_process_e2e", "payment_v1_removed_process_e2e"), /payment_v1_shared_issuer_process_e2e/u],
+  ["Phase 2 feature superset regression", paymentLaneScript.replace("cuckoo-oram,shared-issuer-process-e2e", "cuckoo-oram,standard-cashu-process-e2e"), /cuckoo-oram,shared-issuer-process-e2e/u],
+  ["Phase 2 obsolete Clippy returns", paymentLaneScript.replace("  runtime-features)", "  runtime-features)\n    cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server --no-deps -- -D warnings"), /must not retain obsolete feature-specific runtime Clippy commands/u],
+]) {
+  test(`rejects lane inventory ${label}`, () => {
+    assert.throws(() => validatePaymentV1CiLaneInventory(source), pattern);
+  });
+}
+
+for (const [label, source, pattern] of [
+  [
+    "payment platform test LTO regression",
+    paymentPlatformWorkflow.replaceAll('CARGO_PROFILE_TEST_LTO: "off"', 'CARGO_PROFILE_TEST_LTO: "thin"'),
+    /CARGO_PROFILE_TEST_LTO=off/u,
+  ],
+  [
+    "payment platform incremental regression",
+    paymentPlatformWorkflow.replaceAll('CARGO_INCREMENTAL: "0"', 'CARGO_INCREMENTAL: "1"'),
+    /CARGO_INCREMENTAL=0/u,
+  ],
+  [
+    "payment platform sccache env regression",
+    paymentPlatformWorkflow.replaceAll('SCCACHE_GHA_ENABLED: "true"', 'SCCACHE_GHA_ENABLED: "false"'),
+    /SCCACHE_GHA_ENABLED=true/u,
+  ],
+  [
+    "payment platform sccache PR write regression",
+    paymentPlatformWorkflow.replace(
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}",
+      'SCCACHE_GHA_RW_MODE: READ_WRITE',
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
+    "payment platform sccache PR cache mode missing",
+    paymentPlatformWorkflow.replace(
+      "      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}\n",
+      "",
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
+    "payment platform sccache wrong write event",
+    paymentPlatformWorkflow.replace(
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}",
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'workflow_dispatch' && 'READ_WRITE' || 'READ_ONLY' }}",
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
+    "payment platform mutable sccache action",
+    paymentPlatformWorkflow.replaceAll(
+      `mozilla-actions/sccache-action@${sccacheAction}`,
+      "mozilla-actions/sccache-action@v0.0.11",
+    ),
+    /reviewed sccache action/u,
+  ],
+  [
+    "payment platform target cache regression",
+    paymentPlatformWorkflow.replace(
+      '- name: Run protocol lane',
+      `- name: Forbidden target cache\n        uses: actions/cache@${APPROVED_ACTION_COMMITS["actions/cache"]}\n      - name: Run protocol lane`,
+    ),
+    /must not cache the workspace target directory/u,
+  ],
+  [
+    "payment platform timings artifact retention regression",
+    paymentPlatformWorkflow.replaceAll("retention-days: 7", "retention-days: 14"),
+    /seven-day retention/u,
+  ],
+  [
+    "payment platform custom timing path missing",
+    paymentPlatformWorkflow.replaceAll("target/payment-issuer-shared-e2e/cargo-timings", "target/payment-issuer-shared-e2e/missing"),
+    /timing paths/u,
+  ],
+  [
+    "payment platform broad timing path",
+    paymentPlatformWorkflow.replaceAll(
+      "target/payment-issuer-shared-e2e/cargo-timings",
+      "target/**/cargo-timings",
+    ),
+    /timing paths/u,
+  ],
+]) {
+  test(`rejects ${label}`, () => {
+    assert.throws(() => validatePaymentPlatformCompileAcceleration(source), pattern);
+  });
+}
+
 for (const [label, source, pattern] of [
   ["mutable tag", workflow(`
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 `), /lowercase 40-hex/u],
+  ["mutable sccache tag", workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@v0.0.11
+`), /lowercase 40-hex/u],
+  ["wrong sccache commit", workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@${"1".repeat(40)}
+`), /allowlist/u],
   ["unknown exact action", workflow(`
       - uses: example/unknown@${"1".repeat(40)}
 `), /allowlist/u],

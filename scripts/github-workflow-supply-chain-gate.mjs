@@ -20,6 +20,7 @@ export const APPROVED_ACTION_COMMITS = Object.freeze({
   "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
   "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/upload-pages-artifact": "fc324d3547104276b827a68afc52ff2a11cc49c9",
+  "mozilla-actions/sccache-action": "fc920bf0ec8de6ee65d409111f7ec508035751ba",
 });
 
 export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([
@@ -211,6 +212,166 @@ export function validateWorkflowSource(source, label = "workflow") {
   return counters;
 }
 
+function requireWorkflowStep(steps, predicate, label) {
+  const step = steps.find((candidate) => isRecord(candidate) && predicate(candidate));
+  if (step === undefined) fail(label);
+  return step;
+}
+
+function normalizeWorkflowCommand(command) {
+  return command.replaceAll(/\\\s*/gu, " ").replaceAll(/\s+/gu, " ").trim();
+}
+
+export function validatePaymentPlatformCompileAcceleration(
+  source,
+  label = "payment platform workflow",
+) {
+  const workflow = parseWorkflowSource(source, label);
+  const laneJob = workflow.jobs?.["protocol-and-persistence-lanes"];
+  if (isRecord(laneJob)) {
+    if (Object.hasOwn(workflow.jobs, "protocol-and-persistence-legacy")) fail(`${label} must not retain a legacy protocol job`);
+    const expectedEnv = { CARGO_PROFILE_TEST_LTO: "off", CARGO_INCREMENTAL: "0", SCCACHE_GHA_ENABLED: "true", SCCACHE_GHA_RW_MODE: "${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}", RUSTC_WRAPPER: "sccache" };
+    if (!isRecord(laneJob.env)) fail(`${label} protocol lanes must define compiler-cache env`);
+    for (const [key, value] of Object.entries(expectedEnv)) if (laneJob.env[key] !== value) fail(`${label} protocol lanes must set ${key}=${value}`);
+    if (!isRecord(laneJob.strategy) || !isRecord(laneJob.strategy.matrix) || laneJob.strategy["fail-fast"] !== false) fail(`${label} protocol lanes must use fail-fast=false matrix`);
+    const lanes = laneJob.strategy.matrix.include;
+    if (!Array.isArray(lanes) || lanes.length !== 4) fail(`${label} protocol lanes must define exactly four lanes`);
+    requireExactStringList(lanes.map((entry) => entry.lane), ["core", "runtime-default-security", "runtime-features", "issuer-directory-tools"], `${label} protocol lane names`);
+    const steps = laneJob.steps;
+    if (!Array.isArray(steps)) fail(`${label} protocol lane steps must be a list`);
+    if (steps.some((step) => typeof step.run === "string" && /\bcargo\s/u.test(step.run))) fail(`${label} protocol lanes must not retain inline Cargo commands`);
+    if (steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/cache@"))) fail(`${label} protocol lanes must not cache the workspace target directory`);
+    const timingPaths = Object.fromEntries(lanes.map((entry) => [entry.lane, entry.timing_paths]));
+    if (timingPaths.core !== "target/cargo-timings" || timingPaths["runtime-default-security"] !== "target/cargo-timings" || timingPaths["issuer-directory-tools"] !== "target/cargo-timings" || timingPaths["runtime-features"] !== "target/cargo-timings\ntarget/payment-issuer-shared-e2e/cargo-timings") fail(`${label} protocol lane timing paths must be exact`);
+    const sccacheAction = `mozilla-actions/sccache-action@${APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"]}`;
+    requireWorkflowStep(steps, (step) => step.uses === sccacheAction, `${label} protocol lanes must install the reviewed sccache action`);
+    requireWorkflowStep(steps, (step) => step.run === 'bash scripts/payment-v1-ci-lane.sh --lane "${{ matrix.lane }}"', `${label} protocol lanes must use the reviewed lane entrypoint`);
+    requireWorkflowStep(steps, (step) => step.if === "always()" && typeof step.run === "string" && step.run.includes("--show-stats"), `${label} protocol lanes must report sccache stats`);
+    const artifact = requireWorkflowStep(steps, (step) => step.if === "always()" && step.uses === `actions/upload-artifact@${APPROVED_ACTION_COMMITS["actions/upload-artifact"]}`, `${label} protocol lanes must upload timing reports`);
+    if (artifact.with?.path !== "${{ matrix.timing_paths }}" || artifact.with?.["retention-days"] !== 7 || artifact.with?.["if-no-files-found"] !== "ignore") fail(`${label} protocol lanes must upload only seven-day retention matrix timing reports`);
+    const aggregate = workflow.jobs["protocol-and-persistence"];
+    if (!isRecord(aggregate) || aggregate.name !== "Protocol, stores, adapters, issuer and runtime" || aggregate.if !== "${{ always() }}" || aggregate.needs !== "protocol-and-persistence-lanes") fail(`${label} must preserve the stable protocol aggregate required check`);
+    const browser = workflow.jobs["browser-storage-boundary"];
+    if (!isRecord(browser) || browser.if !== "${{ github.event_name == 'workflow_dispatch' && inputs.run_browser_checks }}") fail(`${label} Chromium browser boundary must be explicit-dispatch opt-in`);
+    return;
+  }
+  if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs["protocol-and-persistence"])) {
+    fail(`${label} must define the protocol-and-persistence job`);
+  }
+  const job = workflow.jobs["protocol-and-persistence"];
+  if (!isRecord(job.env)) fail(`${label} protocol job must define compiler-cache env`);
+  const expectedEnv = {
+    CARGO_PROFILE_TEST_LTO: "off",
+    CARGO_INCREMENTAL: "0",
+    SCCACHE_GHA_ENABLED: "true",
+    RUSTC_WRAPPER: "sccache",
+  };
+  for (const [key, value] of Object.entries(expectedEnv)) {
+    if (job.env[key] !== value) fail(`${label} protocol job must set ${key}=${value}`);
+  }
+  if (!Array.isArray(job.steps)) fail(`${label} protocol job steps must be a list`);
+
+  const steps = job.steps;
+  const sccacheAction = `mozilla-actions/sccache-action@${APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"]}`;
+  requireWorkflowStep(
+    steps,
+    (step) => step.uses === sccacheAction,
+    `${label} protocol job must install the reviewed sccache action`,
+  );
+  if (steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/cache@"))) {
+    fail(`${label} protocol job must not cache the workspace target directory`);
+  }
+
+  const cargoRuns = steps
+    .filter((step) => typeof step.run === "string")
+    .map((step) => step.run)
+    .join("\n");
+  for (const command of ["cargo test --timings", "cargo clippy --timings", "cargo build --timings"]) {
+    if (!cargoRuns.includes(command)) {
+      fail(`${label} protocol job must collect timings from a representative ${command}`);
+    }
+  }
+  const stats = requireWorkflowStep(
+    steps,
+    (step) => step.if === "always()" && typeof step.run === "string" &&
+      step.run.includes("SCCACHE_PATH") && step.run.includes("--show-stats"),
+    `${label} protocol job must report sccache stats in an always step`,
+  );
+  if (stats.shell !== "bash") fail(`${label} sccache stats step must use bash`);
+  const timingArtifact = requireWorkflowStep(
+    steps,
+    (step) => step.if === "always()" &&
+      step.uses === `actions/upload-artifact@${APPROVED_ACTION_COMMITS["actions/upload-artifact"]}` &&
+      isRecord(step.with) && typeof step.with.path === "string",
+    `${label} protocol job must upload only Cargo timing reports`,
+  );
+  requireExactStringList(
+    timingArtifact.with.path.trimEnd().split("\n").map((path) => path.trim()),
+    ["target/cargo-timings", "target/payment-issuer-shared-e2e/cargo-timings"],
+    `${label} Cargo timing artifact paths`,
+  );
+  if (timingArtifact.with["if-no-files-found"] !== "ignore" || timingArtifact.with["retention-days"] !== 7) {
+    fail(`${label} Cargo timing artifact must be optional with seven-day retention`);
+  }
+
+  const featureSupersetStep = requireWorkflowStep(
+    steps,
+    (step) => step.name === "Lint runtime ORAM, Standard Cashu, and shared-issuer feature superset" &&
+      typeof step.run === "string",
+    `${label} protocol job must lint the reviewed runtime feature superset`,
+  );
+  const featureSupersetCommand = normalizeWorkflowCommand(featureSupersetStep.run);
+  for (const requiredArgument of [
+    "cargo clippy --locked --offline -p runtime",
+    "--features cuckoo-oram,shared-issuer-process-e2e",
+    "--bin unified_server",
+    "--test payment_v1_tee_oram_process_e2e",
+    "--test payment_v1_standard_cashu_process_e2e",
+    "--test payment_v1_process_e2e",
+    "--test payment_v1_harmony_pool_process_e2e",
+    "--test payment_v1_onion_process_e2e",
+    "--test payment_v1_shared_issuer_process_e2e",
+    "--no-deps -- -D warnings",
+  ]) {
+    if (!featureSupersetCommand.includes(requiredArgument)) {
+      fail(`${label} runtime feature-superset Clippy must include ${requiredArgument}`);
+    }
+  }
+  const normalizedCargoRuns = normalizeWorkflowCommand(cargoRuns);
+  for (const obsoleteCommand of [
+    "cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features shared-issuer-process-e2e --bin unified_server",
+  ]) {
+    if (normalizedCargoRuns.includes(obsoleteCommand)) {
+      fail(`${label} must not retain obsolete feature-specific runtime Clippy commands`);
+    }
+  }
+}
+
+export function validatePaymentV1CiLaneInventory(source, label = "payment CI lane script") {
+  for (const lane of ["core", "runtime-default-security", "runtime-features", "issuer-directory-tools"]) {
+    if (!source.includes(`  ${lane})`)) fail(`${label} must define the ${lane} lane`);
+  }
+  for (const requiredCommand of [
+    "BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1",
+    "test-only-unsafe-query-logging",
+    "remote-authority-process-e2e",
+    "cuckoo-oram,shared-issuer-process-e2e",
+    "payment_v1_shared_issuer_process_e2e",
+    "test-only-fake-lightning",
+    "payment_v1_two_relay_process_e2e",
+    "cdk_nut03_interop",
+    "generate-payment-v1-no-funds.sh",
+  ]) {
+    if (!source.includes(requiredCommand)) fail(`${label} must inventory ${requiredCommand}`);
+  }
+  for (const obsoleteFeature of ["--features cuckoo-oram --bin unified_server", "--features standard-cashu-process-e2e --bin unified_server", "--features cuckoo-oram,standard-cashu-process-e2e --bin unified_server", "--features shared-issuer-process-e2e --bin unified_server"]) {
+    if (source.includes(obsoleteFeature)) fail(`${label} must not retain obsolete feature-specific runtime Clippy commands`);
+  }
+}
+
 export function validateWorkflowDirectory(directoryInput) {
   const directory = requireCanonicalDirectory(directoryInput, "workflow directory");
   const entries = readdirSync(directory, { withFileTypes: true })
@@ -243,6 +404,9 @@ export function validateWorkflowDirectory(directoryInput) {
     const result = validateWorkflowSource(source, `workflow ${entry.name}`);
     if (entry.name === "workflow-supply-chain.yml") {
       validateSupplyChainGateTriggers(source, `workflow ${entry.name}`);
+    }
+    if (entry.name === "payment-platform.yml") {
+      validatePaymentPlatformCompileAcceleration(source, `workflow ${entry.name}`);
     }
     actionUses += result.actionUses;
     checkouts += result.checkouts;
