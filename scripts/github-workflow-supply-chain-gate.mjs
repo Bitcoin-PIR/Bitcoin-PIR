@@ -218,6 +218,10 @@ function requireWorkflowStep(steps, predicate, label) {
   return step;
 }
 
+function normalizeWorkflowCommand(command) {
+  return command.replaceAll(/\\\s*/gu, " ").replaceAll(/\s+/gu, " ").trim();
+}
+
 export function validatePaymentPlatformCompileAcceleration(
   source,
   label = "payment platform workflow",
@@ -280,6 +284,41 @@ export function validatePaymentPlatformCompileAcceleration(
   );
   if (timingArtifact.with["if-no-files-found"] !== "ignore" || timingArtifact.with["retention-days"] !== 7) {
     fail(`${label} Cargo timing artifact must be optional with seven-day retention`);
+  }
+
+  const featureSupersetStep = requireWorkflowStep(
+    steps,
+    (step) => step.name === "Lint runtime ORAM, Standard Cashu, and shared-issuer feature superset" &&
+      typeof step.run === "string",
+    `${label} protocol job must lint the reviewed runtime feature superset`,
+  );
+  const featureSupersetCommand = normalizeWorkflowCommand(featureSupersetStep.run);
+  for (const requiredArgument of [
+    "cargo clippy --locked --offline -p runtime",
+    "--features cuckoo-oram,shared-issuer-process-e2e",
+    "--bin unified_server",
+    "--test payment_v1_tee_oram_process_e2e",
+    "--test payment_v1_standard_cashu_process_e2e",
+    "--test payment_v1_process_e2e",
+    "--test payment_v1_harmony_pool_process_e2e",
+    "--test payment_v1_onion_process_e2e",
+    "--test payment_v1_shared_issuer_process_e2e",
+    "--no-deps -- -D warnings",
+  ]) {
+    if (!featureSupersetCommand.includes(requiredArgument)) {
+      fail(`${label} runtime feature-superset Clippy must include ${requiredArgument}`);
+    }
+  }
+  const normalizedCargoRuns = normalizeWorkflowCommand(cargoRuns);
+  for (const obsoleteCommand of [
+    "cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --bin unified_server",
+    "cargo clippy --locked --offline -p runtime --features shared-issuer-process-e2e --bin unified_server",
+  ]) {
+    if (normalizedCargoRuns.includes(obsoleteCommand)) {
+      fail(`${label} must not retain obsolete feature-specific runtime Clippy commands`);
+    }
   }
 }
 

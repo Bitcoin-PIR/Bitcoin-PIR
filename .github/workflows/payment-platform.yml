@@ -276,7 +276,6 @@ jobs:
         run: |
           cargo test --locked --offline --manifest-path vendor/bitcoinpir-oram/Cargo.toml
           cargo test --locked --offline -p runtime --features cuckoo-oram --test payment_v1_tee_oram_process_e2e
-          cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server --test payment_v1_tee_oram_process_e2e --no-deps -- -D warnings
       - name: Exercise two independent directory-relay process stores and views
         run: |
           cargo test --locked --offline -p bitcoinpir-directory-relay --test payment_v1_two_relay_process_e2e two_relay_real_process_catalog_e2e -- --exact --ignored
@@ -296,8 +295,6 @@ jobs:
           cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_harmony_pool_process_e2e all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_dispatch -- --exact
           cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_onion_process_e2e all_non_receipt_methods_commit_before_real_onion_job_and_replay_after_restart -- --exact
           cargo test --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --test payment_v1_tee_oram_process_e2e all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_restart -- --exact
-          cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server --test payment_v1_standard_cashu_process_e2e --test payment_v1_process_e2e --test payment_v1_harmony_pool_process_e2e --test payment_v1_onion_process_e2e --no-deps -- -D warnings
-          cargo clippy --locked --offline -p runtime --features cuckoo-oram,standard-cashu-process-e2e --bin unified_server --test payment_v1_tee_oram_process_e2e --no-deps -- -D warnings
           log_file="$(mktemp "${RUNNER_TEMP}/bpir-cashu-test-root-cli.XXXXXX")"
           trap 'rm -f -- "$log_file"' EXIT
           if cargo run --locked --offline -p runtime --bin unified_server -- --test-only-service-https-root-pem /does/not/exist >"$log_file" 2>&1; then
@@ -323,10 +320,17 @@ jobs:
               -p runtime \
               --features shared-issuer-process-e2e \
               --test payment_v1_shared_issuer_process_e2e
+      - name: Lint runtime ORAM, Standard Cashu, and shared-issuer feature superset
+        run: |
           cargo clippy --locked --offline \
             -p runtime \
-            --features shared-issuer-process-e2e \
+            --features cuckoo-oram,shared-issuer-process-e2e \
             --bin unified_server \
+            --test payment_v1_tee_oram_process_e2e \
+            --test payment_v1_standard_cashu_process_e2e \
+            --test payment_v1_process_e2e \
+            --test payment_v1_harmony_pool_process_e2e \
+            --test payment_v1_onion_process_e2e \
             --test payment_v1_shared_issuer_process_e2e \
             --no-deps -- -D warnings
       - name: Prove test-only WebPKI roots cannot enter release artifacts

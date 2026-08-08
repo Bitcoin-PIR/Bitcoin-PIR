@@ -127,6 +127,30 @@ for (const [label, source, pattern] of [
     ),
     /Cargo timing artifact paths/u,
   ],
+  [
+    "payment platform feature superset regression",
+    paymentPlatformWorkflow.replace(
+      "--features cuckoo-oram,shared-issuer-process-e2e",
+      "--features cuckoo-oram,standard-cashu-process-e2e",
+    ),
+    /runtime feature-superset Clippy/u,
+  ],
+  [
+    "payment platform feature-superset test target missing",
+    paymentPlatformWorkflow.replaceAll(
+      "--test payment_v1_shared_issuer_process_e2e",
+      "--test payment_v1_removed_process_e2e",
+    ),
+    /payment_v1_shared_issuer_process_e2e/u,
+  ],
+  [
+    "payment platform obsolete feature Clippy returns",
+    paymentPlatformWorkflow.replace(
+      "      - name: Prove test-only WebPKI roots cannot enter release artifacts",
+      "      - name: Forbidden duplicate runtime feature Clippy\n        run: cargo clippy --locked --offline -p runtime --features cuckoo-oram --bin unified_server --test payment_v1_tee_oram_process_e2e --no-deps -- -D warnings\n      - name: Prove test-only WebPKI roots cannot enter release artifacts",
+    ),
+    /must not retain obsolete feature-specific runtime Clippy commands/u,
+  ],
 ]) {
   test(`rejects ${label}`, () => {
     assert.throws(() => validatePaymentPlatformCompileAcceleration(source), pattern);
