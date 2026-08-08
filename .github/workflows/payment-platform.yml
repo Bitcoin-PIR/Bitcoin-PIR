@@ -125,6 +125,13 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
+      # CI-only compile override: keep optimized test code, but make independent
+      # cargo invocations reusable through sccache. Incremental object paths are
+      # intentionally disabled for this job; Cargo's release profile is unchanged.
+      CARGO_PROFILE_TEST_LTO: "off"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,9 +139,13 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install --profile minimal
+      # Official action v0.0.11. Its post step persists the compiler cache via
+      # the GitHub Actions cache backend; do not cache the workspace target dir.
+      - name: Install sccache compiler cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Test payment platform offline
         run: >-
-          cargo test --locked --offline
+          cargo test --timings --locked --offline
           -p pir-channel
           -p pir-strict-https
           -p pir-private-files
@@ -192,7 +203,7 @@ jobs:
           --features provider-store
       - name: Deny warnings across dedicated Payment V1 crates and issuer
         run: >-
-          cargo clippy --locked --offline --all-targets --no-deps
+          cargo clippy --timings --locked --offline --all-targets --no-deps
           -p pir-strict-https
           -p pir-private-files
           -p pir-rollback-authority-protocol
@@ -297,12 +308,12 @@ jobs:
       - name: Exercise real provider to shared issuer clearing over pinned WebPKI TLS
         run: |
           issuer_e2e_target_dir="$PWD/target/payment-issuer-shared-e2e"
-          cargo build --locked --offline \
+          cargo build --timings --locked --offline \
             -p payment-issuer \
             --features test-only-fake-lightning \
             --bin payment-issuer \
             --target-dir "$issuer_e2e_target_dir"
-          cargo build --locked --offline \
+          cargo build --timings --locked --offline \
             -p bpir-admin \
             --bin bpir-admin \
             --target-dir "$issuer_e2e_target_dir"
@@ -414,6 +425,25 @@ jobs:
           grep -F 'playwright.payment-cln-joined.config.ts' web/package.json >/dev/null
           grep -F "BITCOINPIR_PAYMENT_TWO_PROVIDER_BACKEND = 'fake'" web/playwright.payment-two-provider.config.ts >/dev/null
           grep -F "BITCOINPIR_PAYMENT_TWO_PROVIDER_BACKEND = 'cln-regtest'" web/playwright.payment-cln-joined.config.ts >/dev/null
+      - name: Report sccache compiler-cache statistics
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SCCACHE_PATH:-}" ]]; then
+            "$SCCACHE_PATH" --show-stats
+          else
+            echo "sccache was unavailable before stats collection" >&2
+          fi
+      - name: Upload Cargo compile timing reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: protocol-and-persistence-cargo-timings-${{ github.run_id }}
+          path: |
+            target/cargo-timings
+            target/payment-issuer-shared-e2e/cargo-timings
+          if-no-files-found: ignore
+          retention-days: 7
 
   wasm-boundary:
     name: Browser payment and directory boundary

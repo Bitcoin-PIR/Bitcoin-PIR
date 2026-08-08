@@ -20,6 +20,7 @@ export const APPROVED_ACTION_COMMITS = Object.freeze({
   "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
   "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/upload-pages-artifact": "fc324d3547104276b827a68afc52ff2a11cc49c9",
+  "mozilla-actions/sccache-action": "fc920bf0ec8de6ee65d409111f7ec508035751ba",
 });
 
 export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([
@@ -211,6 +212,77 @@ export function validateWorkflowSource(source, label = "workflow") {
   return counters;
 }
 
+function requireWorkflowStep(steps, predicate, label) {
+  const step = steps.find((candidate) => isRecord(candidate) && predicate(candidate));
+  if (step === undefined) fail(label);
+  return step;
+}
+
+export function validatePaymentPlatformCompileAcceleration(
+  source,
+  label = "payment platform workflow",
+) {
+  const workflow = parseWorkflowSource(source, label);
+  if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs["protocol-and-persistence"])) {
+    fail(`${label} must define the protocol-and-persistence job`);
+  }
+  const job = workflow.jobs["protocol-and-persistence"];
+  if (!isRecord(job.env)) fail(`${label} protocol job must define compiler-cache env`);
+  const expectedEnv = {
+    CARGO_PROFILE_TEST_LTO: "off",
+    CARGO_INCREMENTAL: "0",
+    SCCACHE_GHA_ENABLED: "true",
+    RUSTC_WRAPPER: "sccache",
+  };
+  for (const [key, value] of Object.entries(expectedEnv)) {
+    if (job.env[key] !== value) fail(`${label} protocol job must set ${key}=${value}`);
+  }
+  if (!Array.isArray(job.steps)) fail(`${label} protocol job steps must be a list`);
+
+  const steps = job.steps;
+  const sccacheAction = `mozilla-actions/sccache-action@${APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"]}`;
+  requireWorkflowStep(
+    steps,
+    (step) => step.uses === sccacheAction,
+    `${label} protocol job must install the reviewed sccache action`,
+  );
+  if (steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/cache@"))) {
+    fail(`${label} protocol job must not cache the workspace target directory`);
+  }
+
+  const cargoRuns = steps
+    .filter((step) => typeof step.run === "string")
+    .map((step) => step.run)
+    .join("\n");
+  for (const command of ["cargo test --timings", "cargo clippy --timings", "cargo build --timings"]) {
+    if (!cargoRuns.includes(command)) {
+      fail(`${label} protocol job must collect timings from a representative ${command}`);
+    }
+  }
+  const stats = requireWorkflowStep(
+    steps,
+    (step) => step.if === "always()" && typeof step.run === "string" &&
+      step.run.includes("SCCACHE_PATH") && step.run.includes("--show-stats"),
+    `${label} protocol job must report sccache stats in an always step`,
+  );
+  if (stats.shell !== "bash") fail(`${label} sccache stats step must use bash`);
+  const timingArtifact = requireWorkflowStep(
+    steps,
+    (step) => step.if === "always()" &&
+      step.uses === `actions/upload-artifact@${APPROVED_ACTION_COMMITS["actions/upload-artifact"]}` &&
+      isRecord(step.with) && typeof step.with.path === "string",
+    `${label} protocol job must upload only Cargo timing reports`,
+  );
+  requireExactStringList(
+    timingArtifact.with.path.trimEnd().split("\n").map((path) => path.trim()),
+    ["target/cargo-timings", "target/payment-issuer-shared-e2e/cargo-timings"],
+    `${label} Cargo timing artifact paths`,
+  );
+  if (timingArtifact.with["if-no-files-found"] !== "ignore" || timingArtifact.with["retention-days"] !== 7) {
+    fail(`${label} Cargo timing artifact must be optional with seven-day retention`);
+  }
+}
+
 export function validateWorkflowDirectory(directoryInput) {
   const directory = requireCanonicalDirectory(directoryInput, "workflow directory");
   const entries = readdirSync(directory, { withFileTypes: true })
@@ -243,6 +315,9 @@ export function validateWorkflowDirectory(directoryInput) {
     const result = validateWorkflowSource(source, `workflow ${entry.name}`);
     if (entry.name === "workflow-supply-chain.yml") {
       validateSupplyChainGateTriggers(source, `workflow ${entry.name}`);
+    }
+    if (entry.name === "payment-platform.yml") {
+      validatePaymentPlatformCompileAcceleration(source, `workflow ${entry.name}`);
     }
     actionUses += result.actionUses;
     checkouts += result.checkouts;

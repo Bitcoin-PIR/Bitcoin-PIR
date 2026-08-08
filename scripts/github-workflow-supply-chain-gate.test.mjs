@@ -3,6 +3,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -16,6 +17,7 @@ import {
   APPROVED_ACTION_COMMITS,
   SUPPLY_CHAIN_GATE_PUSH_PATHS,
   validateNpmParserLockBoundary,
+  validatePaymentPlatformCompileAcceleration,
   validateSupplyChainGateTriggers,
   validateWorkflowDirectory,
   validateWorkflowSource,
@@ -23,6 +25,7 @@ import {
 
 const checkout = APPROVED_ACTION_COMMITS["actions/checkout"];
 const setupNode = APPROVED_ACTION_COMMITS["actions/setup-node"];
+const sccacheAction = APPROVED_ACTION_COMMITS["mozilla-actions/sccache-action"];
 
 function workflow(stepSource = `
       - name: Checkout
@@ -55,12 +58,99 @@ test("accepts exact allowlisted commits and non-persisting checkout credentials"
   assert.deepEqual(result, { actionUses: 2, checkouts: 1 });
 });
 
+test("accepts the reviewed exact sccache action pin", () => {
+  const result = validateWorkflowSource(workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@${sccacheAction}
+`));
+  assert.deepEqual(result, { actionUses: 2, checkouts: 1 });
+});
+
+const paymentPlatformWorkflow = readFileSync(
+  new URL("../.github/workflows/payment-platform.yml", import.meta.url),
+  "utf8",
+);
+
+test("accepts the reviewed payment-platform compile acceleration boundary", () => {
+  assert.doesNotThrow(() => validatePaymentPlatformCompileAcceleration(paymentPlatformWorkflow));
+});
+
+for (const [label, source, pattern] of [
+  [
+    "payment platform test LTO regression",
+    paymentPlatformWorkflow.replace('CARGO_PROFILE_TEST_LTO: "off"', 'CARGO_PROFILE_TEST_LTO: "thin"'),
+    /CARGO_PROFILE_TEST_LTO=off/u,
+  ],
+  [
+    "payment platform incremental regression",
+    paymentPlatformWorkflow.replace('CARGO_INCREMENTAL: "0"', 'CARGO_INCREMENTAL: "1"'),
+    /CARGO_INCREMENTAL=0/u,
+  ],
+  [
+    "payment platform sccache env regression",
+    paymentPlatformWorkflow.replace('SCCACHE_GHA_ENABLED: "true"', 'SCCACHE_GHA_ENABLED: "false"'),
+    /SCCACHE_GHA_ENABLED=true/u,
+  ],
+  [
+    "payment platform mutable sccache action",
+    paymentPlatformWorkflow.replace(
+      `mozilla-actions/sccache-action@${sccacheAction}`,
+      "mozilla-actions/sccache-action@v0.0.11",
+    ),
+    /reviewed sccache action/u,
+  ],
+  [
+    "payment platform target cache regression",
+    paymentPlatformWorkflow.replace(
+      "- name: Test payment platform offline",
+      `- name: Forbidden target cache\n        uses: actions/cache@${APPROVED_ACTION_COMMITS["actions/cache"]}\n      - name: Test payment platform offline`,
+    ),
+    /must not cache the workspace target directory/u,
+  ],
+  [
+    "payment platform timings artifact retention regression",
+    paymentPlatformWorkflow.replace("retention-days: 7", "retention-days: 14"),
+    /seven-day retention/u,
+  ],
+  [
+    "payment platform custom timing path missing",
+    paymentPlatformWorkflow.replace("\n            target/payment-issuer-shared-e2e/cargo-timings", ""),
+    /Cargo timing artifact paths/u,
+  ],
+  [
+    "payment platform broad timing path",
+    paymentPlatformWorkflow.replace(
+      "target/payment-issuer-shared-e2e/cargo-timings",
+      "target/**/cargo-timings",
+    ),
+    /Cargo timing artifact paths/u,
+  ],
+]) {
+  test(`rejects ${label}`, () => {
+    assert.throws(() => validatePaymentPlatformCompileAcceleration(source), pattern);
+  });
+}
+
 for (const [label, source, pattern] of [
   ["mutable tag", workflow(`
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 `), /lowercase 40-hex/u],
+  ["mutable sccache tag", workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@v0.0.11
+`), /lowercase 40-hex/u],
+  ["wrong sccache commit", workflow(`
+      - uses: actions/checkout@${checkout}
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@${"1".repeat(40)}
+`), /allowlist/u],
   ["unknown exact action", workflow(`
       - uses: example/unknown@${"1".repeat(40)}
 `), /allowlist/u],
