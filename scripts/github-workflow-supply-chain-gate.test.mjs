@@ -116,6 +116,30 @@ for (const [label, source, pattern] of [
     /SCCACHE_GHA_ENABLED=true/u,
   ],
   [
+    "payment platform sccache PR write regression",
+    paymentPlatformWorkflow.replace(
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}",
+      'SCCACHE_GHA_RW_MODE: READ_WRITE',
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
+    "payment platform sccache PR cache mode missing",
+    paymentPlatformWorkflow.replace(
+      "      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}\n",
+      "",
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
+    "payment platform sccache wrong write event",
+    paymentPlatformWorkflow.replace(
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}",
+      "SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'workflow_dispatch' && 'READ_WRITE' || 'READ_ONLY' }}",
+    ),
+    /SCCACHE_GHA_RW_MODE=/u,
+  ],
+  [
     "payment platform mutable sccache action",
     paymentPlatformWorkflow.replaceAll(
       `mozilla-actions/sccache-action@${sccacheAction}`,

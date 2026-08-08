@@ -230,7 +230,7 @@ export function validatePaymentPlatformCompileAcceleration(
   const laneJob = workflow.jobs?.["protocol-and-persistence-lanes"];
   if (isRecord(laneJob)) {
     if (Object.hasOwn(workflow.jobs, "protocol-and-persistence-legacy")) fail(`${label} must not retain a legacy protocol job`);
-    const expectedEnv = { CARGO_PROFILE_TEST_LTO: "off", CARGO_INCREMENTAL: "0", SCCACHE_GHA_ENABLED: "true", RUSTC_WRAPPER: "sccache" };
+    const expectedEnv = { CARGO_PROFILE_TEST_LTO: "off", CARGO_INCREMENTAL: "0", SCCACHE_GHA_ENABLED: "true", SCCACHE_GHA_RW_MODE: "${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}", RUSTC_WRAPPER: "sccache" };
     if (!isRecord(laneJob.env)) fail(`${label} protocol lanes must define compiler-cache env`);
     for (const [key, value] of Object.entries(expectedEnv)) if (laneJob.env[key] !== value) fail(`${label} protocol lanes must set ${key}=${value}`);
     if (!isRecord(laneJob.strategy) || !isRecord(laneJob.strategy.matrix) || laneJob.strategy["fail-fast"] !== false) fail(`${label} protocol lanes must use fail-fast=false matrix`);

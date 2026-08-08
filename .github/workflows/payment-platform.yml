@@ -150,6 +150,7 @@ jobs:
       CARGO_PROFILE_TEST_LTO: "off"
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTC_WRAPPER: sccache
     steps:
       - name: Checkout
