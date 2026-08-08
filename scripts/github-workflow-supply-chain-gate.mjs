@@ -32,8 +32,6 @@ export const EASYCRYPT_PUBLISH_WORKFLOW = ".github/workflows/publish-easycrypt-v
 export const EASYCRYPT_PUBLISH_PATHS = Object.freeze([
   ".github/workflows/publish-easycrypt-verifier.yml",
   "verification/toolchains/easycrypt.Dockerfile",
-  "verification/locks/formal-proofs.json",
-  "verification/scripts/verify_formal_lock.py",
 ]);
 
 export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([

@@ -94,6 +94,18 @@ const formalProofLock = readFileSync(
   "utf8",
 );
 
+function mutateFormalProofLock(mutate) {
+  const lock = JSON.parse(formalProofLock);
+  mutate(lock);
+  return `${JSON.stringify(lock, null, 2)}\n`;
+}
+
+function bootstrapFormalProofLock() {
+  return mutateFormalProofLock((lock) => {
+    lock.trustedVerifier.distribution = { mode: "bootstrap", image: null, provenance: null };
+  });
+}
+
 test("accepts the reviewed payment-platform compile acceleration boundary", () => {
   assert.doesNotThrow(() => validatePaymentPlatformCompileAcceleration(paymentPlatformWorkflow));
 });
@@ -102,9 +114,19 @@ test("accepts the reviewed payment CI lane inventory", () => {
   assert.doesNotThrow(() => validatePaymentV1CiLaneInventory(paymentLaneScript));
 });
 
-test("accepts the reviewed Phase A EasyCrypt verifier bootstrap", () => {
+test("accepts the reviewed Phase B pinned EasyCrypt verifier", () => {
   assert.deepEqual(
     validateEasyCryptVerifierPolicy(formalProofWorkflow, easyCryptPublisherWorkflow, formalProofLock),
+    {
+      mode: "pinned",
+      image: "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier@sha256:bc174b56c1e59cfa3e8e0385fcf2dbc3332a1e433d99a59992562e56284b2d48",
+    },
+  );
+});
+
+test("accepts explicit Phase A bootstrap rollback without an OCI reference", () => {
+  assert.deepEqual(
+    validateEasyCryptVerifierPolicy(formalProofWorkflow, easyCryptPublisherWorkflow, bootstrapFormalProofLock()),
     { mode: "bootstrap", image: null },
   );
 });
@@ -209,24 +231,38 @@ for (const [label, formal, publisher, lock, pattern] of [
     "bootstrap fabricates an image digest",
     formalProofWorkflow,
     easyCryptPublisherWorkflow,
-    formalProofLock.replace('"image": null', `"image": "${EASYCRYPT_VERIFIER_IMAGE}@sha256:${"a".repeat(64)}"`),
+    mutateFormalProofLock((lock) => {
+      lock.trustedVerifier.distribution = {
+        mode: "bootstrap",
+        image: `${EASYCRYPT_VERIFIER_IMAGE}@sha256:${"a".repeat(64)}`,
+        provenance: null,
+      };
+    }),
     /must not trust an unpublished image/u,
   ],
   [
     "pinned phase uses a mutable image reference",
     formalProofWorkflow,
     easyCryptPublisherWorkflow,
-    formalProofLock
-      .replace('"mode": "bootstrap"', '"mode": "pinned"')
-      .replace('"image": null', `"image": "${EASYCRYPT_VERIFIER_IMAGE}:latest"`)
-      .replace('"provenance": null', '"provenance": {}'),
+    mutateFormalProofLock((lock) => {
+      lock.trustedVerifier.distribution.image = `${EASYCRYPT_VERIFIER_IMAGE}:latest`;
+    }),
     /immutable reviewed GHCR digest/u,
+  ],
+  [
+    "pinned phase uses provenance from an unprotected publisher",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow,
+    mutateFormalProofLock((lock) => {
+      lock.trustedVerifier.distribution.provenance.ref = "refs/pull/1/merge";
+    }),
+    /reviewed main publisher/u,
   ],
   [
     "publisher path scope expands beyond the reviewed toolchain inputs",
     formalProofWorkflow,
     easyCryptPublisherWorkflow.replace(
-      "verification/scripts/verify_formal_lock.py",
+      "verification/toolchains/easycrypt.Dockerfile",
       "verification/**",
     ),
     formalProofLock,
@@ -242,8 +278,6 @@ test("keeps the exact reviewed EasyCrypt publisher path inventory", () => {
   assert.deepEqual(EASYCRYPT_PUBLISH_PATHS, [
     ".github/workflows/publish-easycrypt-verifier.yml",
     "verification/toolchains/easycrypt.Dockerfile",
-    "verification/locks/formal-proofs.json",
-    "verification/scripts/verify_formal_lock.py",
   ]);
 });
 
