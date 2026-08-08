@@ -15,10 +15,14 @@ import test from "node:test";
 
 import {
   APPROVED_ACTION_COMMITS,
+  EASYCRYPT_PUBLISH_PATHS,
+  EASYCRYPT_VERIFIER_IMAGE,
   SUPPLY_CHAIN_GATE_PUSH_PATHS,
+  validateEasyCryptVerifierPolicy,
   validateNpmParserLockBoundary,
   validatePaymentPlatformCompileAcceleration,
   validatePaymentV1CiLaneInventory,
+  validateSupplyChainGateValidatorCoverage,
   validateSupplyChainGateTriggers,
   validateWorkflowDirectory,
   validateWorkflowSource,
@@ -77,6 +81,18 @@ const paymentLaneScript = readFileSync(
   new URL("./payment-v1-ci-lane.sh", import.meta.url),
   "utf8",
 );
+const formalProofWorkflow = readFileSync(
+  new URL("../.github/workflows/formal-proof.yml", import.meta.url),
+  "utf8",
+);
+const easyCryptPublisherWorkflow = readFileSync(
+  new URL("../.github/workflows/publish-easycrypt-verifier.yml", import.meta.url),
+  "utf8",
+);
+const formalProofLock = readFileSync(
+  new URL("../verification/locks/formal-proofs.json", import.meta.url),
+  "utf8",
+);
 
 test("accepts the reviewed payment-platform compile acceleration boundary", () => {
   assert.doesNotThrow(() => validatePaymentPlatformCompileAcceleration(paymentPlatformWorkflow));
@@ -84,6 +100,151 @@ test("accepts the reviewed payment-platform compile acceleration boundary", () =
 
 test("accepts the reviewed payment CI lane inventory", () => {
   assert.doesNotThrow(() => validatePaymentV1CiLaneInventory(paymentLaneScript));
+});
+
+test("accepts the reviewed Phase A EasyCrypt verifier bootstrap", () => {
+  assert.deepEqual(
+    validateEasyCryptVerifierPolicy(formalProofWorkflow, easyCryptPublisherWorkflow, formalProofLock),
+    { mode: "bootstrap", image: null },
+  );
+});
+
+for (const [label, formal, publisher, lock, pattern] of [
+  [
+    "unconditional cold build",
+    formalProofWorkflow.replace(
+      "if: steps.lock.outputs.verifier_mode == 'bootstrap'\n        run: |\n          docker build",
+      "run: |\n          docker build",
+    ),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /Phase A build/u,
+  ],
+  [
+    "missing real proof compile",
+    formalProofWorkflow.replace("easycrypt compile -I . Theorem.ec", "easycrypt --version"),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /real proof/u,
+  ],
+  [
+    "mutable Phase B pull",
+    formalProofWorkflow.replace("${{ steps.lock.outputs.verifier_image }}", "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier:latest"),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /Phase B must pull/u,
+  ],
+  [
+    "Phase B pull lacks GHCR login",
+    formalProofWorkflow.replace(
+      "Log in to GitHub Container Registry (Phase B)",
+      "Removed GHCR login",
+    ),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /log in before pulling/u,
+  ],
+  [
+    "Phase B login drops the ephemeral token",
+    formalProofWorkflow.replace(
+      "password: ${{ github.token }}",
+      "password: ${{ secrets.UNRELATED_TOKEN }}",
+    ),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /GHCR login/u,
+  ],
+  [
+    "Phase B provenance check lacks authenticated gh CLI",
+    formalProofWorkflow.replace(
+      "GH_TOKEN: ${{ github.token }}",
+      "GH_TOKEN: missing",
+    ),
+    easyCryptPublisherWorkflow,
+    formalProofLock,
+    /Phase B verifier check/u,
+  ],
+  [
+    "publisher provenance self-check lacks authenticated gh CLI",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace(
+      "GH_TOKEN: ${{ github.token }}",
+      "GH_TOKEN: missing",
+    ),
+    formalProofLock,
+    /publisher verification/u,
+  ],
+  [
+    "publisher accepts pull requests",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace("on:\n  push:", "on:\n  pull_request:\n  push:"),
+    formalProofLock,
+    /publisher\.on must contain exactly/u,
+  ],
+  [
+    "publisher uses mutable latest tag",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace(
+      "bootstrap-${{ github.run_id }}-${{ github.run_attempt }}",
+      "latest",
+    ),
+    formalProofLock,
+    /unique bootstrap discovery tag/u,
+  ],
+  [
+    "publisher can publish from a non-main ref",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace("github.ref == 'refs/heads/main'", "always()"),
+    formalProofLock,
+    /fail closed outside main/u,
+  ],
+  [
+    "publisher drops attestation",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace("uses: actions/attest@", "uses: actions/upload-artifact@"),
+    formalProofLock,
+    /attest its exact pushed digest/u,
+  ],
+  [
+    "bootstrap fabricates an image digest",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow,
+    formalProofLock.replace('"image": null', `"image": "${EASYCRYPT_VERIFIER_IMAGE}@sha256:${"a".repeat(64)}"`),
+    /must not trust an unpublished image/u,
+  ],
+  [
+    "pinned phase uses a mutable image reference",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow,
+    formalProofLock
+      .replace('"mode": "bootstrap"', '"mode": "pinned"')
+      .replace('"image": null', `"image": "${EASYCRYPT_VERIFIER_IMAGE}:latest"`)
+      .replace('"provenance": null', '"provenance": {}'),
+    /immutable reviewed GHCR digest/u,
+  ],
+  [
+    "publisher path scope expands beyond the reviewed toolchain inputs",
+    formalProofWorkflow,
+    easyCryptPublisherWorkflow.replace(
+      "verification/scripts/verify_formal_lock.py",
+      "verification/**",
+    ),
+    formalProofLock,
+    /publisher\.on\.push\.paths/u,
+  ],
+]) {
+  test(`rejects EasyCrypt verifier regression: ${label}`, () => {
+    assert.throws(() => validateEasyCryptVerifierPolicy(formal, publisher, lock), pattern);
+  });
+}
+
+test("keeps the exact reviewed EasyCrypt publisher path inventory", () => {
+  assert.deepEqual(EASYCRYPT_PUBLISH_PATHS, [
+    ".github/workflows/publish-easycrypt-verifier.yml",
+    "verification/toolchains/easycrypt.Dockerfile",
+    "verification/locks/formal-proofs.json",
+    "verification/scripts/verify_formal_lock.py",
+  ]);
 });
 
 for (const [label, source, pattern] of [
@@ -332,6 +493,24 @@ test("accepts always-reporting PR and merge-queue gate triggers", () => {
     events: 4,
     pushPaths: SUPPLY_CHAIN_GATE_PUSH_PATHS.length,
   });
+});
+
+const supplyChainGateWorkflow = readFileSync(
+  new URL("../.github/workflows/workflow-supply-chain.yml", import.meta.url),
+  "utf8",
+);
+
+test("requires the formal verifier validator mutation suite in the supply-chain gate", () => {
+  assert.doesNotThrow(() => validateSupplyChainGateValidatorCoverage(supplyChainGateWorkflow));
+  assert.throws(
+    () => validateSupplyChainGateValidatorCoverage(
+      supplyChainGateWorkflow.replace(
+        "python3 -m unittest verification/scripts/test_verify_formal_lock.py",
+        "true",
+      ),
+    ),
+    /test_verify_formal_lock/u,
+  );
 });
 
 test("rejects a PR path filter that can strand a required check", () => {

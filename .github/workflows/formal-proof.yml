@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  packages: read
+  attestations: read
 
 concurrency:
   group: formal-proof-${{ github.workflow }}-${{ github.ref }}
@@ -53,7 +55,11 @@ jobs:
           python3 verification/scripts/verify_formal_lock.py
           --proof-dir .formal-proof
 
-      - name: Build product-owned trusted EasyCrypt verifier
+      # Phase A deliberately keeps this cold build: the lock has no real
+      # published OCI digest yet.  The validator is the only authority allowed
+      # to switch this condition to the attested, immutable Phase B image.
+      - name: Build product-owned trusted EasyCrypt verifier (Phase A bootstrap)
+        if: steps.lock.outputs.verifier_mode == 'bootstrap'
         run: |
           docker build \
             --platform linux/amd64 \
@@ -61,13 +67,56 @@ jobs:
             --file verification/toolchains/easycrypt.Dockerfile \
             verification/toolchains
 
+      - name: Log in to GitHub Container Registry (Phase B)
+        if: steps.lock.outputs.verifier_mode == 'pinned'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull product-owned trusted EasyCrypt verifier (Phase B)
+        if: steps.lock.outputs.verifier_mode == 'pinned'
+        run: |
+          set -euo pipefail
+          docker pull "${{ steps.lock.outputs.verifier_image }}"
+
+      - name: Verify prebuilt verifier identity and provenance (Phase B)
+        if: steps.lock.outputs.verifier_mode == 'pinned'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image_ref="${{ steps.lock.outputs.verifier_image }}"
+          observed_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image_ref")"
+          test "$observed_ref" = "$image_ref"
+          source_label="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$image_ref")"
+          revision_label="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_ref")"
+          test "$source_label" = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+          test "$revision_label" = "${{ steps.lock.outputs.verifier_source_commit }}"
+          gh attestation verify "oci://${image_ref}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-easycrypt-verifier.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "${{ steps.lock.outputs.verifier_source_commit }}"
+
+      - name: Select trusted verifier image
+        id: verifier
+        run: |
+          set -euo pipefail
+          case "${{ steps.lock.outputs.verifier_mode }}" in
+            bootstrap) echo 'image=bitcoinpir/protocol-proofs-toolchain:locked' >> "$GITHUB_OUTPUT" ;;
+            pinned) echo "image=${{ steps.lock.outputs.verifier_image }}" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'formal lock selected an unsupported verifier mode' >&2; exit 1 ;;
+          esac
+
       - name: Re-run locked proof with trusted command
         run: |
           docker run --rm \
             --platform linux/amd64 \
             --volume "$GITHUB_WORKSPACE/.formal-proof:/proofs" \
             --workdir /proofs \
-            bitcoinpir/protocol-proofs-toolchain:locked \
+            "${{ steps.verifier.outputs.image }}" \
             easycrypt compile -I . Theorem.ec
 
   gate:
