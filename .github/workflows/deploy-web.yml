@@ -1,8 +1,9 @@
 name: Deploy Web Client to GitHub Pages
 
 on:
-  push:
-    branches: [ main ]
+  # A main push cannot publish: the deploy job requires the explicit confirmed
+  # dispatch below. Keep validation in its dedicated CI workflows and avoid a
+  # second full build/Playwright run that would always end with deploy skipped.
   workflow_dispatch:
     inputs:
       confirm_production_deploy:

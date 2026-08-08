@@ -4,40 +4,53 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/payment-v1-local-check.sh [--quick|--full]
+Usage: scripts/payment-v1-local-check.sh [--quick|--pr|--browser|--full]
 
 Runs BitcoinPIR payment-v1 checks without contacting payment infrastructure or
-using real funds. Cargo is forced offline; full mode requires a preinstalled
-`wasm-pack`/`wasm-bindgen` toolchain and refuses to bootstrap it from the
-network.
+using real funds. Cargo is forced offline; `--pr` and browser profiles require
+a preinstalled `wasm-pack`/`wasm-bindgen` toolchain and refuse to bootstrap it
+from the network.
 
-  --quick  Five-method × five-workload matrix plus focused persistence,
+  --quick  Default. Five-method × five-workload matrix plus focused persistence,
            directory-relay, deployment-template and fake-Lightning checks.
            It starts no service process; unit tests may briefly bind loopback
            TCP or Unix-domain listeners.
-  --full   The default offline payment-platform Rust suite, operator tooling,
-           loopback-only unified-server process E2E (including strict-TLS
-           Standard Cashu and authenticated direct TEE-ORAM), WASM checks,
-           web typecheck/tests/bundle, a local
-           Chromium multi-tab vault test, a real-WASM/loopback no-funds issuer
-           acquisition test, and a browser -> two independent issuers -> two
-           real provider-gate test. This is the default.
+  --pr     Quick checks plus the deterministic offline payment-platform Rust
+           suite, operator tooling, loopback-only process E2E, WASM validation,
+           generated binding boundary, Web typecheck, Web unit tests, and Web
+           bundle. It does not install or run Playwright/Chromium.
+  --browser
+           Explicit opt-in: run the --pr profile, then local Chromium payment
+           boundaries. Requires preinstalled web dependencies and Chromium.
+  --full   Compatibility alias for --browser. It is explicit opt-in and never
+           the default.
 
-Full mode starts only temporary directory-relay, unified-server,
-rollback-authority, test-only TLS/NUT-03 mint, Vite and fake issuer listeners
-explicitly bound to 127.0.0.1; the tests kill and wait for every child. Neither
-mode contacts an external Lightning node or Cashu mint, publishes to a public
-Nostr relay, deploys a server, uses real funds, or modifies source files. Quick
-mode starts no persistent service process. Cargo, the JavaScript package
-manager, and tests may update their normal local build caches (for example
-target/ and web/node_modules cache metadata).
+The browser profiles add only local Chromium multi-tab vault, real-WASM loopback
+no-funds issuer, and two-provider payment E2E tests on top of `--pr`.
+
+The `--pr` profile is the normal deterministic CI-equivalent local entry. It
+includes the offline payment-platform Rust suite, operator tooling, loopback-only
+unified-server process E2E (including strict-TLS Standard Cashu and authenticated
+direct TEE-ORAM), WASM checks, and Web typecheck/tests/bundle; it contains no
+browser E2E.
+
+The `--pr` profile starts only temporary directory-relay, unified-server,
+rollback-authority, test-only TLS/NUT-03 mint and fake issuer listeners explicitly
+bound to 127.0.0.1. Browser profiles additionally start Vite and Playwright;
+the tests kill and wait for every child. No profile contacts an external Lightning
+node or Cashu mint, publishes to a public Nostr relay, deploys a server, uses real
+funds, or modifies source files. Quick mode starts no persistent service process.
+Cargo, the JavaScript package manager, and tests may update their normal local
+build caches (for example target/ and web/node_modules cache metadata).
 EOF
 }
 
-mode="full"
+mode="quick"
 case "${1:-}" in
   "") ;;
   --quick) mode="quick" ;;
+  --pr) mode="pr" ;;
+  --browser) mode="browser" ;;
   --full) mode="full" ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
@@ -51,10 +64,11 @@ if [[ ! -f Cargo.toml || ! -f docs/payment/IMPLEMENTATION_STATUS.md ]]; then
   exit 1
 fi
 
-echo "[1/5] canonical five-method x five-workload admission matrix"
+run_quick_checks() {
+echo "[quick] canonical five-method x five-workload admission matrix"
 cargo test --locked --offline -p pir-runtime-core --test service_admission_matrix
 
-echo "[2/5] real provider-store receipt/BAT adapters and durable replay boundary"
+echo "[quick] real provider-store receipt/BAT adapters and durable replay boundary"
 cargo test --locked --offline -p pir-strict-https
 cargo test --locked --offline -p pir-private-files
 cargo test --locked --offline -p pir-rollback-authority-protocol
@@ -66,13 +80,13 @@ cargo test --locked --offline -p pir-payment-crypto --features provider-store \
 cargo test --locked --offline -p pir-runtime-core --test service_admission_matrix \
   direct_receipt_production_committer_spend_survives_store_restart
 
-echo "[3/5] Free, standard Cashu, and experimental ARC persistence/concurrency"
+echo "[quick] Free, standard Cashu, and experimental ARC persistence/concurrency"
 cargo test --locked --offline -p pir-service-store free_ip_rate_limit
 cargo test --locked --offline -p pir-cashu-client
 cargo test --locked --offline -p pir-cashu-custody
 cargo test --locked --offline -p pir-arc-adapter --features provider-store
 
-echo "[4/5] fake-Lightning, quote/claim lifecycle, and native/WASM client boundaries"
+echo "[quick] fake-Lightning, quote/claim lifecycle, and native/WASM client boundaries"
 cargo test --locked --offline -p bitcoinpir-directory-relay
 cargo test --locked --offline -p bitcoinpir-cln-rpc-guard
 cargo test --locked --offline -p pir-lightning-backend
@@ -128,13 +142,10 @@ node --test --test-concurrency=1 \
   scripts/payment-v1-rendered-artifact-gate.test.mjs
 node --test --test-concurrency=1 \
   scripts/payment-v1-linux-runtime-evidence.test.mjs
+}
 
-if [[ "$mode" == "quick" ]]; then
-  echo "[5/5] quick mode complete (no external network, no funds)"
-  exit 0
-fi
-
-echo "[5/9] full offline platform, operator tooling, and server wiring"
+run_pr_checks() {
+echo "[pr] deterministic offline platform, operator tooling, and server wiring"
 cargo test --locked --offline \
   -p pir-channel \
   -p pir-strict-https \
@@ -291,7 +302,7 @@ cargo clippy --locked --offline -p payment-issuer \
   -- -D warnings
 cargo check --locked --offline -p runtime --bin unified_server
 
-echo "[6/9] Standard Cashu, complete method/backend matrix, and shared-issuer TLS boundaries"
+echo "[pr] Standard Cashu, complete method/backend matrix, and shared-issuer TLS boundaries"
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
@@ -444,7 +455,7 @@ node --test --test-concurrency=1 \
 node --test --test-concurrency=1 \
   scripts/payment-v1-linux-runtime-evidence.test.mjs
 
-echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
+echo "[pr] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
   -p pir-strict-https \
   -p pir-private-files \
@@ -491,23 +502,48 @@ cargo clippy --locked --offline -p runtime \
   --no-deps \
   -- -D warnings
 
-echo "[8/9] WASM target and generated binding boundary"
+echo "[pr] WASM target and generated binding boundary"
 cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
 if ! command -v wasm-pack >/dev/null 2>&1; then
-  echo "payment-v1-local-check: wasm-pack is required in full mode" >&2
+  echo "payment-v1-local-check: wasm-pack is required in the --pr and browser profiles" >&2
   exit 1
 fi
 CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm \
   --target web --out-dir pkg --mode no-install --no-opt \
   -- --locked --offline
+}
 
-echo "[9/9] web typecheck, unit tests, bundle, and local Chromium payment boundaries"
+run_web_checks() {
+echo "[web] typecheck, unit tests, and production bundle"
 (cd web \
   && npm run build \
   && npm test \
-  && npm run build-web \
+  && npm run build-web)
+}
+
+run_browser_checks() {
+echo "[browser] local Chromium payment boundaries"
+(cd web \
   && npm run test:e2e:payment-vault \
   && npm run test:e2e:payment-real-issuer \
   && npm run test:e2e:payment-two-provider)
+}
 
-echo "payment-v1-local-check: full mode complete (no external network, no funds)"
+run_quick_checks
+
+case "$mode" in
+  quick)
+    echo "payment-v1-local-check: quick profile complete (no external network, no funds, no browser)"
+    ;;
+  pr)
+    run_pr_checks
+    run_web_checks
+    echo "payment-v1-local-check: pr profile complete (no external network, no funds, no browser)"
+    ;;
+  browser|full)
+    run_pr_checks
+    run_web_checks
+    run_browser_checks
+    echo "payment-v1-local-check: $mode profile complete (no external network, no funds)"
+    ;;
+esac
