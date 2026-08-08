@@ -42,6 +42,8 @@ import {
   type ServerInfoJson,
 } from './server-info.js';
 import {
+  initSdkWasm,
+  isSdkWasmReady,
   requireSdkWasm,
   type WasmAnnounceVerification,
   type WasmAttestVerification,
@@ -557,6 +559,7 @@ export class BatchPirClientAdapter {
       if (this.strictLegReady[peerIndex] || this.wasmClient?.isServerConnected(peerIndex)) {
         this.assertIndependentOperatorPins();
       }
+      await this.ensureSdkWasmInitialized();
       const diagnostic = this.diagnosticSocket(serverIndex);
       const client = this.ensureStagedWasmClient();
       owner = {
@@ -813,6 +816,22 @@ export class BatchPirClientAdapter {
     return client;
   }
 
+  /**
+   * Native DPF transport has no TypeScript fallback.  Wait for the shared SDK
+   * initializer here, rather than relying on a page-level best-effort startup
+   * call, so neither public connection entry can race WASM module setup.
+   */
+  private async ensureSdkWasmInitialized(): Promise<void> {
+    if (isSdkWasmReady()) return;
+    try {
+      if (await initSdkWasm()) return;
+    } catch {
+      // Normalize loader failures with the unavailable case. The native SDK
+      // must not be touched until it has completed initialization.
+    }
+    throw new Error('PIR SDK WASM initialization failed; cannot establish DPF transport');
+  }
+
   private operatorPinForLeg(serverIndex: 0 | 1): Uint8Array {
     const configured = serverIndex === 0
       ? this.config.pinnedOperatorPubkey0
@@ -938,6 +957,8 @@ export class BatchPirClientAdapter {
       if (this.isStrictVerification() && this.config.useSecureChannel === false) {
         throw new Error('strict verification requires the secure channel');
       }
+
+      await this.ensureSdkWasmInitialized();
 
       // Side-channels first — these carry small diagnostic frames, so
       // they're useful even before the PIR client comes up.
