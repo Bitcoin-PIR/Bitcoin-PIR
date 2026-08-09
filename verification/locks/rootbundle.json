@@ -7,5 +7,15 @@
   "golden_bundle_sha256": "71c32a0dbaf5d2fad4d2778fca5c6c88f317a0606358b4c49f429d368ebcd4dc",
   "production_payload_sha256": [
     "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f"
-  ]
+  ],
+  "vendored_files_sha256": {
+    "COMPATIBILITY.md": "2ff65c8406ab88679a6886cbb4c2e941686f74dfef70c49b8c70c28d02150059",
+    "Cargo.toml": "2b1a5918ddfdf4ddf1f6a3a397aa73b0ee3f58f072bd7c9c92aca4bbbb34d9ca",
+    "examples/golden_vector.rs": "4049f5dd7132ea8df81a81f6810d1b75c12b30fd1985a6c7354bfeee40c4abc1",
+    "src/lib.rs": "a6b7272d1ddccd46d76a0ca12ddbaed05aee2bee767c955eb29bdc47dab3ba39",
+    "testdata/v1_bundle.hex": "17f803792c55c08c86ea25ee92e07d97acca99526735b611806fdeaba31b146d",
+    "testdata/v1_payload.hex": "c81e4f79583a19e9599249b657c252048003cc16eaa2e655dda98169974a1763",
+    "testdata/v1_trusted_keys.hex": "bf3cfc8e14ce7df81f63a334143f60fda152bc20e2ad2b2978026bf2ced862b5",
+    "tests/golden_vectors.rs": "c957c928f12be23d69f87ad2fa0c62d48201b8dce630af408698f085aad425aa"
+  }
 }
