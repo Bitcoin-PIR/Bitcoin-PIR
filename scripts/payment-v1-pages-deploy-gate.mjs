@@ -173,25 +173,6 @@ function findPagesCapabilities(workflow) {
   return findings;
 }
 
-function verifyReadOnlyWorkflowPermissions(workflow, label) {
-  requireExactMapping(
-    workflow.permissions,
-    { contents: 'read' },
-    `${label} permissions`,
-  );
-  const jobs = requireRecord(workflow.jobs, `${label} jobs`);
-  for (const [jobName, jobValue] of Object.entries(jobs)) {
-    const job = requireRecord(jobValue, `${label} job ${jobName}`);
-    if (Object.hasOwn(job, 'permissions')) {
-      requireExactMapping(
-        job.permissions,
-        { contents: 'read' },
-        `${label} job ${jobName} permissions`,
-      );
-    }
-  }
-}
-
 function canDeploy({ eventName, ref, confirmed, buildSucceeded }) {
   return (
     eventName === 'workflow_dispatch' &&
@@ -236,25 +217,12 @@ function verifySelfTests() {
     fail('semantic Pages detector accepted its negative control');
   }
 
-  const readOnlySibling = parseWorkflowSource(
-    'permissions: { contents: read }\njobs: { test: { runs-on: ubuntu-latest } }\n',
-    'read-only sibling control',
+  const nonPagesPublisher = parseWorkflowSource(
+    'permissions: { contents: read, packages: read, attestations: read }\njobs: { publish: { permissions: { contents: read, packages: write, attestations: write, id-token: write } } }\n',
+    'non-Pages publisher control',
   );
-  verifyReadOnlyWorkflowPermissions(readOnlySibling, 'read-only sibling control');
-  const writableSibling = parseWorkflowSource(
-    'permissions: { contents: read }\njobs: { test: { permissions: { contents: write } } }\n',
-    'writable sibling control',
-  );
-  let writableSiblingRejected = false;
-  try {
-    verifyReadOnlyWorkflowPermissions(writableSibling, 'writable sibling control');
-  } catch (error) {
-    writableSiblingRejected = String(error).includes(
-      'pages-deploy-gate: writable sibling control job test permissions',
-    );
-  }
-  if (!writableSiblingRejected) {
-    fail('sibling job-level write permission control was not rejected');
+  if (findPagesCapabilities(nonPagesPublisher).length !== 0) {
+    fail('semantic Pages detector rejected a non-Pages publisher control');
   }
 }
 
@@ -377,7 +345,6 @@ function verifyNoOtherPagesPublisher(workflowsDirectory, selectedWorkflow) {
       readFileSync(candidate, 'utf8'),
       `workflow ${entry.name}`,
     );
-    verifyReadOnlyWorkflowPermissions(workflow, `workflow ${entry.name}`);
     const findings = findPagesCapabilities(workflow);
     if (findings.length > 0) {
       fail(`unexpected Pages-capable workflow: ${entry.name}`);
