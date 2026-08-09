@@ -100,9 +100,8 @@ test('HarmonyPIR verifies both roles, the result, and preserves no socket', asyn
   await expectVerifiedResult(results);
   await expectLogContains(
     page,
-    'HarmonyPIR: upgraded to encrypted channel',
-    'HarmonyPIR hint: operator-endorsed identity verified (pir1)',
-    'HarmonyPIR query: operator-endorsed identity verified (pir2)',
+    'HarmonyPIR hint: operator-endorsed identity verified (pir1-payment-beta)',
+    'HarmonyPIR query: operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
     'HarmonyPIR batch complete: 1/1 found',
   );
   await expectTornDown(page, '#hp-connectBtn', '#hp-disconnectBtn');
