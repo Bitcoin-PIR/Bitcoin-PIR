@@ -67,6 +67,8 @@ import {
   type ServerInfoJson,
 } from './server-info.js';
 import {
+  initSdkWasm,
+  isSdkWasmReady,
   requireSdkWasm,
   type WasmAnnounceVerification,
   type WasmAttestVerification,
@@ -1184,6 +1186,7 @@ export class HarmonyPirClientAdapter {
    */
   async loadWasm(): Promise<void> {
     if (this.wasmClient) return;
+    await this.ensureSdkWasmInitialized();
     const sdk = requireSdkWasm();
     this.wasmClient = new sdk.WasmHarmonyClient(
       this.config.hintServerUrl,
@@ -1203,6 +1206,22 @@ export class HarmonyPirClientAdapter {
     this.wasmClient.setMasterKey(masterKey);
     const backendName = ['HMR12', 'FastPRP'][backend] ?? 'HMR12';
     this.log(`WASM loaded: ${backendName}`);
+  }
+
+  /**
+   * Harmony has no TypeScript fallback for its native transport. Await the
+   * shared SDK initializer here so every public setup path, including staged
+   * provider legs, fails closed before constructing or dialing the client.
+   */
+  private async ensureSdkWasmInitialized(): Promise<void> {
+    if (isSdkWasmReady()) return;
+    try {
+      if (await initSdkWasm()) return;
+    } catch {
+      // Normalize loader failures with the unavailable case. Do not touch the
+      // native SDK until initialization has completed successfully.
+    }
+    throw new Error('PIR SDK WASM initialization failed; cannot establish Harmony transport');
   }
 
   /**

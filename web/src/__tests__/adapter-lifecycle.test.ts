@@ -345,6 +345,81 @@ describe('adapter WASM lifecycle', () => {
     expect(connect1).not.toHaveBeenCalled();
   });
 
+  it('waits for SDK initialization before constructing or dialing a staged Harmony leg', async () => {
+    let resolveInit!: (ready: boolean) => void;
+    initSdkWasm.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveInit = resolve;
+    }));
+    isSdkWasmReady.mockReturnValue(false);
+    const nativeClient = {
+      setRequireVerifiedDatabaseRoots: vi.fn(),
+      setPrpBackend: vi.fn(),
+      setMasterKey: vi.fn(),
+      connectProvider: vi.fn(async () => { throw new Error('stop after Harmony native dial'); }),
+      disconnectProvider: vi.fn(async () => {}),
+      isProviderConnected: vi.fn(() => false),
+      free: vi.fn(),
+    };
+    const WasmHarmonyClient = vi.fn(() => nativeClient);
+    requireSdkWasm.mockReturnValue({ WasmHarmonyClient });
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+      strictVerification: true,
+      pinnedHintOperatorPubkey: OPERATOR_PIN_0,
+    });
+
+    const connecting = adapter.connectLeg(0);
+    await Promise.resolve();
+
+    expect(initSdkWasm).toHaveBeenCalledOnce();
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmHarmonyClient).not.toHaveBeenCalled();
+    expect(nativeClient.connectProvider).not.toHaveBeenCalled();
+
+    resolveInit(true);
+    await expect(connecting).rejects.toThrow('stop after Harmony native dial');
+
+    expect(WasmHarmonyClient).toHaveBeenCalledOnce();
+    expect(nativeClient.connectProvider).toHaveBeenCalledWith(0);
+  });
+
+  it('rejects unavailable Harmony SDK initialization without constructing a client', async () => {
+    initSdkWasm.mockResolvedValueOnce(false);
+    isSdkWasmReady.mockReturnValue(false);
+    const WasmHarmonyClient = vi.fn();
+    requireSdkWasm.mockReturnValue({ WasmHarmonyClient });
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+    });
+
+    await expect(adapter.loadWasm()).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish Harmony transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmHarmonyClient).not.toHaveBeenCalled();
+  });
+
+  it('rejects failed Harmony SDK initialization without constructing a client', async () => {
+    initSdkWasm.mockRejectedValueOnce(new Error('WASM fetch failed'));
+    isSdkWasmReady.mockReturnValue(false);
+    const WasmHarmonyClient = vi.fn();
+    requireSdkWasm.mockReturnValue({ WasmHarmonyClient });
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://hint.invalid',
+      queryServerUrl: '',
+    });
+
+    await expect(adapter.loadWasm()).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish Harmony transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmHarmonyClient).not.toHaveBeenCalled();
+  });
+
   it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {
     const dpf = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',
