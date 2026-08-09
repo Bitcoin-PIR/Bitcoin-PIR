@@ -12,10 +12,11 @@
 --service-rollback-authority /var/lib/bitcoinpir-provider-functional-beta/rollback.sqlite3
 --allow-local-service-rollback-authority-dev
 
-# These two provider-local adapters let the signed policy select either a
-# provider-operated BAT/ARC service or the shared-issuer routes below.
+# The provider-local BAT adapter remains available for a future provider-local
+# BAT offer. The current template selects shared-issuer BAT and ARC offers.
+# Do not load a provider-local ARC key unless the signed policy advertises a
+# provider-local ARC offer.
 --service-bat-key /etc/bitcoinpir/payment-v1/functional-beta/provider/cashu-bat.key
---service-arc-key @ARC_KEY_ID_HEX@=/etc/bitcoinpir/payment-v1/functional-beta/provider/arc-experimental.key
 --allow-experimental-arc
 
 # Standard Cashu eCash is an independent mint-online route.

@@ -18,12 +18,14 @@ advertise workload-specific offers for:
 - BitcoinPIR Cashu BAT;
 - experimental ARC.
 
-The provider argument superset loads both provider-local BAT/ARC adapters and
-one shared issuer. For the first beta, use `shared-issuer-online` in BAT and ARC
+The provider argument fragment retains a provider-local BAT adapter and one
+shared issuer. For the first beta, use `shared-issuer-online` in BAT and ARC
 offers: the issuer validates/redeems the capability and performs provider
-ledger bookkeeping. The same process can later advertise provider-local
-BAT/ARC offers without changing the runtime binary. ARC must remain
-`deployment_status = "experimental"` and requires the explicit opt-in flags.
+ledger bookkeeping. Do not configure `--service-arc-key` unless the signed
+policy actually advertises a provider-local ARC offer. The same process can
+later advertise provider-local BAT/ARC offers after rendering the matching
+adapter keys. ARC must remain `deployment_status = "experimental"` and requires
+the explicit opt-in flags.
 
 ## Required binaries and state
 
@@ -34,6 +36,11 @@ BAT/ARC offers without changing the runtime binary. ARC must remain
 - one Signet Core Lightning RPC socket for the issuer;
 - one HTTPS standard Cashu mint whose canonical manifest is embedded in the
   signed policy.
+
+Set `@DATABASE_MANIFEST_ROOT_HEX@` in every scope to the SHA-256 of the exact
+`MANIFEST.toml` for the database checkpoint actually loaded by the provider's
+`databases.toml`. It is the dataset binding, not a database class ID, Merkle
+root, or an attestation digest.
 
 ## Minimal isolated Hetzner service shape
 
@@ -97,16 +104,18 @@ payment-issuer init-store \
 
 ## Artifact order
 
-1. Generate independent operator, policy, issuer-root, quote, receipt, BAT,
-   ARC, clearing, provider-request, derivation, Cashu recovery/custody and
-   idempotency keys with `bpir-admin service-keygen`.
-2. Fill the operator public key and stable server ID in the unsigned policy
-   TOML, then run `bpir-admin service-policy scope-ids --config ...`. This
-   prints the provider ID and all five scope IDs without reading not-yet-built
-   credential bindings.
-3. Build one direct-receipt, BAT and ARC credential binding per scope. The same
-   receipt/BAT/ARC public key may be reused, but each binding is independently
-   bound to its exact scope and offer ID.
+1. Generate independent operator, policy, issuer-root, quote, clearing,
+   provider-request, derivation, Cashu recovery/custody and idempotency keys,
+   plus distinct direct-receipt, BAT and ARC keys for each of the five scopes,
+   with `bpir-admin service-keygen`.
+2. Fill the operator public key, stable server ID and the actual loaded
+   checkpoint's `MANIFEST.toml` SHA-256 in `@DATABASE_MANIFEST_ROOT_HEX@` in the
+   unsigned policy TOML, then run `bpir-admin service-policy scope-ids --config
+   ...`. This prints the provider ID and all five scope IDs without reading
+   not-yet-built credential bindings.
+3. Build one direct-receipt, BAT and ARC credential binding per scope. Each
+   scope uses its own direct-receipt, BAT and ARC key lineage; every binding is
+   independently bound to its exact scope and offer ID.
 4. Build the standard Cashu manifest. Put its mint ID and manifest digest in
    every standard-Cashu offer.
 5. Sign the complete policy and install the exact same canonical policy bytes

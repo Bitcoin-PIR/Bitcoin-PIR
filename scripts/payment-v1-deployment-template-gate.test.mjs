@@ -112,6 +112,21 @@ test("a copied positive fixture passes", () => {
   withFixture((root) => assert.equal(validateDeploymentTree(root), true));
 });
 
+test("functional-beta service templates use the exact reviewed path inventory", () => {
+  for (const relativePath of [
+    "deploy/payment-v1/functional-beta/bitcoinpir-payment-issuer-functional-beta.service.in",
+    "deploy/payment-v1/functional-beta/bitcoinpir-provider-functional-beta.service.in",
+  ]) {
+    assert.ok(REQUIRED_PREPARATION_FILES.includes(relativePath));
+  }
+
+  withFixture((root) => {
+    const path = join(root, "deploy/payment-v1/functional-beta/unreviewed.service.in");
+    writeFileSync(path, "[Unit]\nDescription=unreviewed template\n", "utf8");
+    assert.throws(() => validateDeploymentTree(root), /unreviewed path/);
+  });
+});
+
 test("global activation never substitutes for a role-specific approval", () => {
   for (const [relativePath, roleSentinel] of [
     [

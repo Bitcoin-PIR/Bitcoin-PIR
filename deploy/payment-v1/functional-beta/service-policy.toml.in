@@ -16,8 +16,8 @@ operation_profile = 11
 entitlement_profile = 101
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -55,7 +55,7 @@ authorization = "bolt11-direct-receipt"
 verification = "provider-local"
 deployment_status = "stable"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HEX@"
+key_id_hex = "@DIRECT_RECEIPT_KEY_ID_DPF_EVALUATE_JOB_V1_HEX@"
 credential_binding_path = "bindings/dpf-evaluate-job-v1/bolt11-direct-receipt.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -126,7 +126,7 @@ authorization = "arc-experimental"
 verification = "shared-issuer-online"
 deployment_status = "experimental"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@ARC_KEY_ID_HEX@"
+key_id_hex = "@ARC_KEY_ID_DPF_EVALUATE_JOB_V1_HEX@"
 credential_binding_path = "bindings/dpf-evaluate-job-v1/arc-experimental.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -149,8 +149,8 @@ operation_profile = 12
 entitlement_profile = 102
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -188,7 +188,7 @@ authorization = "bolt11-direct-receipt"
 verification = "provider-local"
 deployment_status = "stable"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HEX@"
+key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX@"
 credential_binding_path = "bindings/harmony-hint-bundle-v1/bolt11-direct-receipt.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -259,7 +259,7 @@ authorization = "arc-experimental"
 verification = "shared-issuer-online"
 deployment_status = "experimental"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@ARC_KEY_ID_HEX@"
+key_id_hex = "@ARC_KEY_ID_HARMONY_HINT_BUNDLE_V1_HEX@"
 credential_binding_path = "bindings/harmony-hint-bundle-v1/arc-experimental.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -282,8 +282,8 @@ operation_profile = 13
 entitlement_profile = 103
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -321,7 +321,7 @@ authorization = "bolt11-direct-receipt"
 verification = "provider-local"
 deployment_status = "stable"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HEX@"
+key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HARMONY_QUERY_JOB_V1_HEX@"
 credential_binding_path = "bindings/harmony-query-job-v1/bolt11-direct-receipt.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -392,7 +392,7 @@ authorization = "arc-experimental"
 verification = "shared-issuer-online"
 deployment_status = "experimental"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@ARC_KEY_ID_HEX@"
+key_id_hex = "@ARC_KEY_ID_HARMONY_QUERY_JOB_V1_HEX@"
 credential_binding_path = "bindings/harmony-query-job-v1/arc-experimental.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -415,8 +415,8 @@ operation_profile = 14
 entitlement_profile = 104
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 1
@@ -454,7 +454,7 @@ authorization = "bolt11-direct-receipt"
 verification = "provider-local"
 deployment_status = "stable"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HEX@"
+key_id_hex = "@DIRECT_RECEIPT_KEY_ID_ONION_EVALUATE_JOB_V1_HEX@"
 credential_binding_path = "bindings/onion-evaluate-job-v1/bolt11-direct-receipt.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -525,7 +525,7 @@ authorization = "arc-experimental"
 verification = "shared-issuer-online"
 deployment_status = "experimental"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@ARC_KEY_ID_HEX@"
+key_id_hex = "@ARC_KEY_ID_ONION_EVALUATE_JOB_V1_HEX@"
 credential_binding_path = "bindings/onion-evaluate-job-v1/arc-experimental.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -548,8 +548,8 @@ operation_profile = 15
 entitlement_profile = 105
 
 [scopes.dataset]
-kind = "class"
-class_id = 1
+kind = "manifest-root"
+root_hex = "@DATABASE_MANIFEST_ROOT_HEX@"
 
 [scopes.limits]
 max_logical_inputs = 25
@@ -587,7 +587,7 @@ authorization = "bolt11-direct-receipt"
 verification = "provider-local"
 deployment_status = "stable"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@DIRECT_RECEIPT_KEY_ID_HEX@"
+key_id_hex = "@DIRECT_RECEIPT_KEY_ID_TEE_ORAM_QUERY_V1_HEX@"
 credential_binding_path = "bindings/tee-oram-query-v1/bolt11-direct-receipt.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
@@ -658,7 +658,7 @@ authorization = "arc-experimental"
 verification = "shared-issuer-online"
 deployment_status = "experimental"
 issuer_id_hex = "@ISSUER_ID_HEX@"
-key_id_hex = "@ARC_KEY_ID_HEX@"
+key_id_hex = "@ARC_KEY_ID_TEE_ORAM_QUERY_V1_HEX@"
 credential_binding_path = "bindings/tee-oram-query-v1/arc-experimental.bin"
 endpoint = "@ISSUER_ORIGIN@"
 invoice_expiry_seconds = 600
