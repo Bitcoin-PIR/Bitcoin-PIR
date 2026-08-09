@@ -127,19 +127,22 @@ export interface ServerAttestPin {
 
 /**
  * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
- * 2026-08-02 after adding the independently priced Harmony query Free scope.
- * It serves verified DPF and Harmony-query workloads; it does not advertise
- * direct ORAM.
+ * 2026-08-07 after the 2026-08-06 harmony fix rollout: the UKI now embeds
+ * (a) `unified_server` with the Harmony batch response chunking fix
+ * (commit `9b7128f0`) and (b) an epoch-3 policy raising the harmony-query
+ * response budget to 128 MiB (UKI image id 227). It serves verified DPF
+ * and Harmony-query workloads; it does not advertise direct ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT captured from the live Tier 3 deploy after uploading the
-  // patched DPF + Harmony-query UKI with the embedded identity material, then
-  // validating REPORT_DATA plus the AMD chain.
+  // 831a5ea1 harmony-response-fix UKI (epoch-4 policy: harmony-response
+  // budget 128 MiB + DPF wall-time budget 120 s; measured-boot image id
+  // 229), then validating REPORT_DATA plus the AMD chain.
   measurementHex:
-    'cfae85d99232010a028b4dd820b0da67069c0685a1b8cb72520b0d884f678f3def19febe5cc18b0af3c976821791b897',
+    '1c375b265b669dc7d74cc1041fbe1cda97b2df1d2cd60439a11da8f69bad81657a74f954ae6fb7c0cfa38d390440947c',
   binarySha256Hex:
-    'ca5b5ec2b2c1eebcd02624d4a93d3bbcfe8a96afa718391d75b71777fc8ea9a4',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta)',
+    '4f51c64d1f66e73ec4904b370c69e0573e25c4a058f822b9b9b773d777c784d5',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta, harmony-response-fix epoch-4)',
 };
 
 /**
@@ -152,11 +155,12 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // The public Payment V1 provider uses the independently deployed
-  // d23b5841 build. This remains independent from the VPSBG Tier 3 pin.
+  // The public Payment V1 provider uses the build from commit 831a5ea1
+  // (2026-08-06 harmony fix rollout, 9b7128f0). This remains independent
+  // from the VPSBG Tier 3 pin.
   binarySha256Hex:
-    'd23b58410f52fede21d013fbcec279c42d02b69d4b32791265cfb38e331770d8',
-  description: 'weikeng1.bitcoinpir.org (Hetzner Payment V1 provider, no SEV)',
+    'c836e11ad2bd5854fe9015311a7540d06a4075371ac38052c810eeba62fe202e',
+  description: 'weikeng1.bitcoinpir.org (Hetzner Payment V1 provider, no SEV, harmony-response-fix)',
 };
 
 /**

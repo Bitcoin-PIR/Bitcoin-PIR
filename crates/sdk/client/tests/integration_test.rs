@@ -23,6 +23,12 @@
 //!   cargo run --release -p runtime --bin unified_server -- --port 8091 &
 //!   cargo run --release -p runtime --bin unified_server -- --port 8092 &
 
+// Live-server Payment-V1 admission helpers (attest → secure channel →
+// policy → PoW → authorize). The public deployment enforces
+// `--require-service-auth-v1`, so backend queries need these before any
+// INDEX/CHUNK frame is sent. See `tests/common/mod.rs`.
+mod common;
+
 use pir_sdk_client::{
     DatabaseProofPolicy, DpfClient, HarmonyClient, PirClient, PirError, QueryResult, RootPolicy,
     ScriptHash, SyncResult, VerifiedDatabaseRoots, WsConnection,
@@ -437,6 +443,13 @@ async fn test_dpf_client_sync_single() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     let script_hashes = vec![test_script_hash()];
     let result = client.sync(&script_hashes, None).await.expect("sync failed");
 
@@ -455,6 +468,13 @@ async fn test_dpf_client_query_batch() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
     client.fetch_catalog().await.expect("fetch_catalog failed");
+
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
 
     let script_hashes = vec![test_script_hash()];
     let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
@@ -483,6 +503,13 @@ async fn test_dpf_client_multiple_queries() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     // Create multiple distinct script hashes
     let script_hashes: Vec<ScriptHash> = (0..5)
         .map(|i| {
@@ -507,11 +534,28 @@ async fn test_dpf_client_sync_with_cached_height() {
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
     client.connect().await.expect("connect failed");
 
+    // The public deployment enforces Payment-V1 admission; complete the
+    // attest → secure channel → policy → authorize sequence first.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed");
+
     let script_hashes = vec![test_script_hash()];
 
     // First sync
     let result1 = client.sync(&script_hashes, None).await.expect("sync failed");
     let height = result1.synced_height;
+    client.disconnect().await.unwrap();
+
+    // Enforced servers grant exactly one query per connection (the grant
+    // completes after the query and the connection is terminal), so the
+    // delta sync needs a fresh connection + admission.
+    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+    client.connect().await.expect("reconnect failed");
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live DPF admission failed (delta)");
 
     // Second sync with cached height (should use delta if available)
     let result2 = client.sync(&script_hashes, Some(height)).await.expect("sync failed");
@@ -622,6 +666,14 @@ async fn test_dpf_strict_production_canary() {
             });
     }
 
+    // Backend frames on the enforced production servers require Payment-V1
+    // admission (attest → secure channel → policy → authorize) even for the
+    // strict canary path.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_dpf_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("strict DPF live admission failed");
+
     for pin in PRODUCTION_DATABASE_PINS {
         client
             .preflight_verified_database(pin.db_id)
@@ -702,11 +754,46 @@ async fn test_harmony_client_fetch_catalog() {
     client.disconnect().await.unwrap();
 }
 
+/// Live HarmonyPIR fresh sync over Payment-V1 admission.
+///
+/// Gated behind the strict-canary env flag rather than the ordinary live
+/// step: as of 2026-08-06 the granted `harmony-query-job-v1` phase does not
+/// return responses on the production providers. Root cause mapped the same
+/// day: the Payment-V1 platform (`962fd4c5`) configures
+/// `max_write_buffer_size = 2 MiB` (plus a 512 KiB message cap) for the
+/// listener's tungstenite layer, and `REQ_HARMONY_BATCH_QUERY` was the only
+/// backend arm still answering through the unchunked `send_resp` — a
+/// live-scale INDEX response is K × (T−1) × 52 B ≈ 4.15 MB, so tungstenite
+/// returned `WriteBufferFull`, the swallowed `let _ =` left the socket
+/// wedged, and the connection was idle-killed by the Cloudflare proxy at
+/// ~120–130 s (matching the client observations, NOT the scope's
+/// `max_wall_time_ms`; nothing in the server closes a wedged response on
+/// that timer). Reproduced locally against a HEAD-build unified_server
+/// serving the actual production db0/db1 (see
+/// `tests/local_production_repro.rs`); fixed by chunking this arm's response
+/// (`send_resp_chunked(..., true)`). The test therefore stays on the
+/// scheduled canary track so its log witnesses production catching up to
+/// the fix. Admission itself (hint V2Full grant, complete main+sibling
+/// download, query-leg authorize) is fully exercised before the pinned
+/// failure point.
 #[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn test_harmony_client_sync_single() {
+#[ignore = "scheduled/manual strict production canary"]
+async fn test_harmony_strict_production_canary_sync_single() {
+    if !strict_production_canary_enabled() {
+        eprintln!("strict HarmonyPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
+        return;
+    }
+
     let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
     client.connect().await.expect("connect failed");
+
+    // The public deployment enforces Payment-V1 admission on both legs:
+    // attest → secure channel → policy → free-offer authorize (hint on
+    // pir1/Hetzner, query on pir2/VPSBG).
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live HarmonyPIR admission failed");
 
     let script_hashes = vec![test_script_hash()];
     let result = client.sync(&script_hashes, None).await.expect("sync failed");
@@ -726,12 +813,28 @@ async fn test_harmony_client_sync_single() {
     client.disconnect().await.unwrap();
 }
 
+/// Live HarmonyPIR batch query over Payment-V1 admission. Same
+/// production-granted-query block as
+/// [`test_harmony_strict_production_canary_sync_single`]; see its docstring
+/// for the 2026-08-06 evidence.
 #[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn test_harmony_client_query_batch() {
+#[ignore = "scheduled/manual strict production canary"]
+async fn test_harmony_strict_production_canary_query_batch() {
+    if !strict_production_canary_enabled() {
+        eprintln!("strict HarmonyPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
+        return;
+    }
+
     let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
     client.connect().await.expect("connect failed");
     client.fetch_catalog().await.expect("fetch_catalog failed");
+
+    // The public deployment enforces Payment-V1 admission on both legs
+    // (attest → secure channel → policy → free-offer authorize).
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("live HarmonyPIR admission failed");
 
     let script_hashes = vec![test_script_hash()];
     let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
@@ -946,12 +1049,40 @@ mod onion_tests {
         client.disconnect().await.unwrap();
     }
 
+    /// Live OnionPIR batch query over Payment-V1 admission.
+    ///
+    /// Canary-gated: the production `onion-evaluate-job-v1` free scope
+    /// (offer 41) grants `max_request_bytes = 16 MiB`, but one complete
+    /// register-once + INDEX + CHUNK + INDEX/DATA Merkle-sibling session
+    /// emits ≈18.2 MB of grant-metered request bytes
+    /// (register 3.1 MB + INDEX 4.9 MB + CHUNK 2.6 MB + INDEX-sib
+    /// 2× 2.46 MB + DATA-sib 2.62 MB, measured 2026-08-06), so the final
+    /// DATA-sibling frame is rejected with
+    /// `service entitlement limit exceeded`. Everything up to that frame —
+    /// admission, key registration, INDEX, CHUNK, INDEX Merkle verification —
+    /// is exercised and passes; only the last verification roundtrip hits the
+    /// policy wall. Client-side workarounds (fewer sibling passes) would
+    /// weaken the Merkle coverage the leakage invariants mandate, so this
+    /// tracks the production policy instead of shrinking the test.
     #[tokio::test]
-    #[ignore = "requires running PIR servers"]
-    async fn test_onion_client_query_batch() {
+    #[ignore = "scheduled/manual strict production canary"]
+    async fn test_onion_strict_production_canary_query_batch() {
+        if !strict_production_canary_enabled() {
+            eprintln!("strict OnionPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
+            return;
+        }
+
         let mut client = OnionClient::new(&onion_url());
         client.connect().await.expect("connect failed");
         client.fetch_catalog().await.expect("fetch_catalog failed");
+
+        // The public deployment enforces Payment-V1 admission; complete the
+        // attest → secure channel → policy → free-offer authorize sequence
+        // before key registration (the ungranted chunk-policy upload would
+        // otherwise hard-close the connection).
+        common::admit_onion_live(&mut client, 0, &common::production_db0_onion_v2_proof_policy())
+            .await
+            .expect("live OnionPIR admission failed");
 
         let script_hashes = vec![test_script_hash()];
         let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");

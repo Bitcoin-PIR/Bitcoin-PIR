@@ -296,21 +296,9 @@ function verifyDeployWorkflow(workflowPath) {
 
   const triggers = requireExactKeys(
     workflow.on,
-    ['push', 'workflow_dispatch'],
+    ['workflow_dispatch'],
     'workflow triggers',
   );
-  const pushTrigger = requireExactKeys(
-    triggers.push,
-    ['branches'],
-    'push trigger',
-  );
-  if (
-    !Array.isArray(pushTrigger.branches) ||
-    pushTrigger.branches.length !== 1 ||
-    pushTrigger.branches[0] !== 'main'
-  ) {
-    fail('push trigger must contain exactly the main branch');
-  }
   const workflowDispatch = requireExactKeys(
     triggers.workflow_dispatch,
     ['inputs'],

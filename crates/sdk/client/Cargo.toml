@@ -183,6 +183,11 @@ futures-channel = "0.3"
 [dev-dependencies]
 env_logger = "0.11"
 hex = "0.4"
+# Used by tests/common/mod.rs to build the provider policy verifying key for
+# live-server Payment-V1 admission. Mirror of the main [dependencies] entry.
+ed25519-dalek = "2"
+# Used by tests/common/mod.rs to mint attestation nonces / handshake seeds.
+getrandom = "0.2"
 # Address → scriptPubKey → HASH160 derivation for the `fetch_addresses`
 # example. Matches the build pipeline (tools/db-builder/src/gen_0_utxo_set.rs), which
 # also keys the DB by `HASH160(scriptPubKey)` via `bitcoin::hashes`.

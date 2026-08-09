@@ -1,4 +1,11 @@
-# Server warmup removal rollout
+# Server warmup removal rollout (historical record)
+
+Status: **complete**. PR #42 removed the warmup/residency implementation and
+PR #43 published the matching production pins on 2026-07-12. This file records
+the rollout procedure and evidence; it is not a pending deployment checklist.
+The historical direct-ORAM acceptance below must not be read as a current paid
+TEE-ORAM activation claim. See `ORAM_LIVE_IMAGE_BINDING_PLAN.md` for current
+ORAM eligibility.
 
 This runbook deploys the removal of the public residency endpoint and the
 startup page-touch warmup. The server continues to use memory-mapped database
@@ -20,24 +27,25 @@ The frontend and backend changes are wire-compatible during rollout. A new
 frontend never sends the retired `0x04` request. A new server rejects an old
 client's `0x04` request as unsupported while continuing to serve PIR queries.
 
-The production frontend pins the `unified_server` binary hash for both public
-servers and additionally pins the VPSBG launch measurement. Rebuilding the
-binary therefore requires a coordinated pin update. Prepare the binary, UKI,
-hashes, and pin change before starting the maintenance window.
+The production frontend pinned the `unified_server` binary hash for both public
+servers and additionally pinned the VPSBG launch measurement. Rebuilding the
+binary therefore required a coordinated pin update. The rollout prepared the
+binary, UKI, hashes, and pin change before the maintenance window.
 
-Use this order:
+The completed rollout used this order:
 
-1. Merge the warmup-removal PR and let the GitHub Pages deployment finish.
-   The old servers remain compatible with the new frontend.
+1. Merge PR #42 and let the GitHub Pages deployment finish. The old servers
+   remained compatible with the new frontend.
 2. Build one ORAM-enabled release binary from the exact merge commit. Use this
    same binary for Hetzner and as the input to the Tier 3 UKI build.
 3. Build and archive the Tier 3 UKI. Do not upload an image that lacks the
    durable Hetzner archive copy and its `.sha256` and `.meta` sidecars.
-4. Prepare, but do not yet merge, the follow-up frontend pin change.
+4. Prepare the follow-up frontend pin change, but hold it until deployment
+   evidence is available.
 5. Deploy and verify VPSBG first. If it fails, restore the known-good UKI and
    leave Hetzner unchanged.
 6. Atomically replace the Hetzner binary, restart its services, and verify it.
-7. Merge the prepared pin change and wait for the web deployment.
+7. Merge PR #43 and wait for the web deployment.
 
 Between steps 5 and 7 the public frontend can report a binary-pin mismatch for
 an updated server. Treat this as a short maintenance window; do not weaken or
@@ -113,9 +121,10 @@ sed -i -E '/^[[:space:]]*(priority|warmup)[[:space:]]*=/d' \
 This cleanup does not require loading the database into memory and does not
 change the database files or Merkle roots.
 
-## 4. Prepare the attestation pin update
+## 4. Historical attestation pin update
 
-Prepare a small follow-up PR that updates:
+The follow-up pin update was completed in PR #43 after both deployment paths
+reported the new binary and VPSBG reported the new measurement. It updated:
 
 - `PIR1_PIN.binarySha256Hex` in `web/src/attest-pin.ts`;
 - `PIR2_TIER3_PIN.binarySha256Hex` in `web/src/attest-pin.ts`;
@@ -123,8 +132,8 @@ Prepare a small follow-up PR that updates:
 - the expected binary and measurement defaults in
   `scripts/verify_oram_tier3_deploy.sh`.
 
-Do not merge this follow-up until both production endpoints run the new binary
-and VPSBG reports the new measurement.
+Do not reuse the historical values as current pins. A later binary or UKI
+requires a new reviewed pin rotation and deployment record.
 
 ## 5. Deploy VPSBG first
 

@@ -1,15 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { policyFree } = vi.hoisted(() => ({ policyFree: vi.fn() }));
+const { policyFree, initSdkWasm, isSdkWasmReady, requireSdkWasm, defaultSdk } = vi.hoisted(() => {
+  const policyFree = vi.fn();
+  return {
+    policyFree,
+    initSdkWasm: vi.fn<() => Promise<boolean>>(),
+    isSdkWasmReady: vi.fn<() => boolean>(),
+    requireSdkWasm: vi.fn(),
+    defaultSdk: {
+      WasmPolicyRequirements: class {
+        free(): void {
+          policyFree();
+        }
+      },
+    },
+  };
+});
 
 vi.mock('../sdk-bridge.js', () => ({
-  requireSdkWasm: () => ({
-    WasmPolicyRequirements: class {
-      free(): void {
-        policyFree();
-      }
-    },
-  }),
+  initSdkWasm,
+  isSdkWasmReady,
+  requireSdkWasm: () => requireSdkWasm(),
 }));
 
 import { BatchPirClientAdapter } from '../dpf-adapter.js';
@@ -198,6 +209,12 @@ function strictHarmonyPair(client: any): HarmonyPirClientAdapter {
 describe('adapter WASM lifecycle', () => {
   beforeEach(() => {
     policyFree.mockClear();
+    initSdkWasm.mockReset();
+    initSdkWasm.mockResolvedValue(true);
+    isSdkWasmReady.mockReset();
+    isSdkWasmReady.mockReturnValue(true);
+    requireSdkWasm.mockReset();
+    requireSdkWasm.mockReturnValue(defaultSdk);
   });
 
   it('installs the selected peer ARK before its staged attestation', () => {
@@ -238,6 +255,94 @@ describe('adapter WASM lifecycle', () => {
     expect(() => adapter.setExpectedArkFingerprint(new Uint8Array(31))).toThrow(
       'exactly 32 bytes',
     );
+  });
+
+  it('waits for SDK initialization before constructing or dialing a staged DPF leg', async () => {
+    let resolveInit!: (ready: boolean) => void;
+    initSdkWasm.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveInit = resolve;
+    }));
+    isSdkWasmReady.mockReturnValue(false);
+    const diagnosticConnect = vi.fn(async () => {});
+    const nativeClient = {
+      setRequireVerifiedDatabaseRoots: vi.fn(),
+      onStateChange: vi.fn(),
+      connectServer: vi.fn(async () => { throw new Error('stop after native dial'); }),
+      disconnectServer: vi.fn(async () => {}),
+      isServerConnected: vi.fn(() => false),
+      free: vi.fn(),
+    };
+    const WasmDpfClient = vi.fn(() => nativeClient);
+    requireSdkWasm.mockReturnValue({ WasmDpfClient });
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+    });
+    (adapter as any).ws0 = {
+      connect: diagnosticConnect,
+      disconnect: vi.fn(),
+    };
+
+    const connecting = adapter.connectLeg(0);
+    await Promise.resolve();
+
+    expect(initSdkWasm).toHaveBeenCalledOnce();
+    expect(WasmDpfClient).not.toHaveBeenCalled();
+    expect(diagnosticConnect).not.toHaveBeenCalled();
+
+    resolveInit(true);
+    await expect(connecting).rejects.toThrow('stop after native dial');
+
+    expect(WasmDpfClient).toHaveBeenCalledOnce();
+    expect(diagnosticConnect).toHaveBeenCalledOnce();
+    expect(nativeClient.connectServer).toHaveBeenCalledWith(0);
+  });
+
+  it('rejects a failed SDK initialization without constructing or dialing a staged DPF leg', async () => {
+    initSdkWasm.mockResolvedValueOnce(false);
+    isSdkWasmReady.mockReturnValue(false);
+    const diagnosticConnect = vi.fn(async () => {});
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: '',
+      strictVerification: true,
+      pinnedOperatorPubkey0: OPERATOR_PIN_0,
+    });
+    (adapter as any).ws0 = {
+      connect: diagnosticConnect,
+      disconnect: vi.fn(),
+    };
+
+    await expect(adapter.connectLeg(0)).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish DPF transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(diagnosticConnect).not.toHaveBeenCalled();
+  });
+
+  it('rejects a failed SDK initialization before the public DPF connect path dials either socket', async () => {
+    initSdkWasm.mockRejectedValueOnce(new Error('WASM fetch failed'));
+    isSdkWasmReady.mockReturnValue(false);
+    const connect0 = vi.fn(async () => {});
+    const connect1 = vi.fn(async () => {});
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: true,
+    });
+    (adapter as any).ws0 = { connect: connect0, disconnect: vi.fn() };
+    (adapter as any).ws1 = { connect: connect1, disconnect: vi.fn() };
+
+    await expect(adapter.connect()).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish DPF transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(connect0).not.toHaveBeenCalled();
+    expect(connect1).not.toHaveBeenCalled();
   });
 
   it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {

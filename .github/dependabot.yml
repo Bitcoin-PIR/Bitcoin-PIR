@@ -35,6 +35,14 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # `web` depends on `pir-sdk-wasm` via a local `file:` path pointing at
+      # `crates/sdk/wasm/pkg` (the wasm-pack build output), which is not
+      # committed to the repository. Dependabot cannot fetch it, which fails
+      # the whole npm_and_yarn update job with `path_dependencies_not_reachable`.
+      # The package is a local build artifact with no registry version, so
+      # there is nothing for Dependabot to update.
+      - dependency-name: "pir-sdk-wasm"
 
   - package-ecosystem: github-actions
     directory: /

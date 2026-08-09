@@ -40,18 +40,20 @@ local acceptance into deployment approval.
 
 - run from the repository root;
 - use the repository-pinned Rust toolchain and lockfile;
-- have the `wasm32-unknown-unknown` target installed for full mode;
+- have the `wasm32-unknown-unknown` target installed for `--pr` and browser
+  profiles;
 - have `wasm-pack 0.14.0` (the CI-pinned version) and its compatible
-  `wasm-bindgen` tools preinstalled; full mode regenerates the ignored WASM
+  `wasm-bindgen` tools preinstalled; `--pr` and browser profiles regenerate the
+  ignored WASM
   package with Cargo locked and offline before TypeScript. The local script
   checks `wasm-pack` directly and fails closed if `wasm-bindgen` is absent or
   incompatible; it does not install or silently replace either tool;
 - have `web/node_modules` populated by `npm ci` from the pinned lockfile before
-  full mode; the static Pages guard loads its exact YAML parser from that
+  `--pr` or a browser profile; the static Pages guard loads its exact YAML parser from that
   dependency boundary, while the same install supplies the remaining Web and
   Playwright dependencies. Quick mode exits before this guard and does not need
   `node_modules`;
-- have the Playwright-pinned Chromium runtime installed before full mode
+- have the Playwright-pinned Chromium runtime installed before a browser profile
   (`cd web && npx playwright install chromium` installs it separately; the
   acceptance script never downloads a browser);
 - do not set production Lightning, mint, relay or server credentials in the
@@ -59,24 +61,30 @@ local acceptance into deployment approval.
 
 The acceptance script forces Cargo offline and does not edit source. Quick mode
 starts no persistent service process, although focused unit tests briefly bind
-loopback TCP or Unix-domain listeners. Full mode starts temporary
+loopback TCP or Unix-domain listeners. The `--pr` profile starts temporary
 `unified_server` children, a fake `payment-issuer` and Vite test servers whose
-listeners are explicitly bound to `127.0.0.1`; the process and Playwright
-runners kill and wait for every child before returning.
+listeners are explicitly bound to `127.0.0.1`; only browser profiles start
+Playwright/Chromium. The runners kill and wait for every child before returning.
 
 ## One-command checks
 
-Focused check:
+Default focused check (the agent default; no browser):
 
 ```sh
-scripts/payment-v1-local-check.sh --quick
+scripts/payment-v1-local-check.sh
 ```
 
-Full local check:
+Deterministic PR-equivalent check (Rust/process/WASM plus Web typecheck, unit
+tests and bundle; still no Playwright/Chromium):
 
 ```sh
-scripts/payment-v1-local-check.sh --full
+scripts/payment-v1-local-check.sh --pr
 ```
+
+The explicit browser profile remains `scripts/payment-v1-local-check.sh --browser`;
+`--full` is its compatibility alias. Use either only when browser coverage is
+explicitly required. Historical `--full` commands later in this document record
+past acceptance evidence, not the current default operating command.
 
 Optional real-CDK browser import, real-provider query, and native custody
 interoperability (outside the default offline suite) requires exact

@@ -49,6 +49,12 @@ use pir_core::hash::derive_groups_3;
 use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, PirError, RoundKind, RoundProfile};
 use pir_sdk_client::{DpfClient, HarmonyClient, PirClient, ScriptHash};
 
+// Live-server Payment-V1 admission helpers (attest → secure channel →
+// policy → PoW → authorize). The public deployment enforces
+// `--require-service-auth-v1`, so backend queries need these before any
+// INDEX/CHUNK frame is sent. See `tests/common/mod.rs`.
+mod common;
+
 #[cfg(feature = "onion")]
 use pir_sdk_client::OnionClient;
 
@@ -323,6 +329,8 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) =
             (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        // The public deployment enforces Payment-V1 admission.
+        common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile { profile: recorder.take_profile("dpf"), k_index, k_chunk })
@@ -331,6 +339,13 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 }
 
 /// Harmony equivalent of [`dpf_query_profile`].
+///
+/// Payment-V1 admission is completed before the batch (hint leg V2Full grant
+/// + query leg free offer). As of 2026-08-06 the production granted
+/// `harmony-query-job-v1` phase does not respond (see
+/// `test_harmony_strict_production_canary_sync_single`), so profiles fail at
+/// the first INDEX roundtrip — the shape the leakage canary steps surface
+/// while the server-side block lasts.
 async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("harmony query_batch", move || async move {
         let recorder = Arc::new(BufferingLeakageRecorder::new());
@@ -341,6 +356,9 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) =
             (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        // The public deployment enforces Payment-V1 admission.
+        common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy())
+            .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile { profile: recorder.take_profile("harmony"), k_index, k_chunk })
@@ -349,6 +367,13 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 }
 
 /// OnionPIR equivalent of [`dpf_query_profile`].
+///
+/// Payment-V1 admission is completed before the batch. As of 2026-08-06 the
+/// production `onion-evaluate-job-v1` free scope's 16 MiB request budget is
+/// smaller than one complete register-once + INDEX/CHUNK + Merkle session
+/// (~18.2 MB), so the final DATA-sibling roundtrips hit
+/// `service entitlement limit exceeded` — see
+/// `test_onion_strict_production_canary_query_batch`.
 #[cfg(feature = "onion")]
 async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("onion query_batch", move || async move {
@@ -360,6 +385,9 @@ async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) =
             (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        // The public deployment enforces Payment-V1 admission.
+        common::admit_onion_live(&mut client, db_id, &common::production_db0_onion_v2_proof_policy())
+            .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile { profile: recorder.take_profile("onion"), k_index, k_chunk })
@@ -387,19 +415,38 @@ async fn onion_catalog_k() -> (usize, usize) {
 
 // ─── DPF tests ──────────────────────────────────────────────────────────────
 
+/// Run one DPF batch as a cold session (fresh connection + Payment-V1
+/// admission) and return the query duration. The enforced production servers
+/// grant exactly one query per connection (the grant completes after the
+/// query and the connection is terminal), so benches must reconnect and
+/// re-admit per batch.
+async fn dpf_cold_batch_query(
+    shs: &[ScriptHash],
+    db_id: u8,
+) -> Result<std::time::Duration, PirError> {
+    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+    client.connect().await?;
+    common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
+    let started = std::time::Instant::now();
+    client.query_batch(shs, db_id).await?;
+    let elapsed = started.elapsed();
+    client.disconnect().await.ok();
+    Ok(elapsed)
+}
+
 /// Empirical amortization benchmark for DPF — same shape as
 /// `harmony_amortization_bench` so the two can be compared
 /// side-by-side. DPF has no hint phase (stateless servers), so the
-/// "cold session" cost is just connection + catalog. Per-query cost
+/// "cold session" cost is just connection + admission. Per-query cost
 /// should be roughly constant (no amortization curve like Harmony).
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_amortization_bench() {
     with_transport_retry("dpf amortization bench", || async {
-        let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-        client.connect().await?;
-        let catalog = client.fetch_catalog().await?;
-        let db_id = catalog.databases[0].db_id;
+        // The enforced production servers grant exactly one query per
+        // connection, so every batch below is measured as a cold session:
+        // connect + Payment-V1 admission + one query_batch.
+        let db_id = 0;
 
         // Same 10 distinct not-found scripthashes as the Harmony bench.
         let scripthashes: Vec<ScriptHash> = (0..10u8)
@@ -411,19 +458,13 @@ async fn dpf_amortization_bench() {
             })
             .collect();
 
-        let t0 = std::time::Instant::now();
-        client.query_batch(&scripthashes[..1], db_id).await?;
-        let cold = t0.elapsed();
+        let cold = dpf_cold_batch_query(&scripthashes[..1], db_id).await?;
         println!("[BENCH] DPF 1st query (cold session): {:.2?}", cold);
 
-        let t1 = std::time::Instant::now();
-        client.query_batch(&scripthashes[1..2], db_id).await?;
-        let warm_single = t1.elapsed();
+        let warm_single = dpf_cold_batch_query(&scripthashes[1..2], db_id).await?;
         println!("[BENCH] DPF 2nd query: {:.2?}", warm_single);
 
-        let t2 = std::time::Instant::now();
-        client.query_batch(&scripthashes[2..], db_id).await?;
-        let batch_of_8 = t2.elapsed();
+        let batch_of_8 = dpf_cold_batch_query(&scripthashes[2..], db_id).await?;
         println!("[BENCH] DPF 8-batch query: {:.2?}", batch_of_8);
         println!(
             "[BENCH] DPF per-scripthash: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
@@ -432,7 +473,6 @@ async fn dpf_amortization_bench() {
             batch_of_8 / 8,
         );
 
-        client.disconnect().await.ok();
         Ok::<(), PirError>(())
     })
     .await
@@ -754,18 +794,37 @@ async fn dpf_simulator_property_multi_query_collision() {
 
 // ─── Harmony tests ──────────────────────────────────────────────────────────
 
-/// Empirical amortization benchmark: 1 fresh session, sequential
-/// queries with growing batch sizes. Demonstrates that HarmonyPIR's
-/// per-query cost is *not* the cold-session number — it's the
-/// per-scripthash work after the one-time hint load amortizes.
+/// Run one Harmony batch as a cold session (fresh connection + Payment-V1
+/// admission, incl. the complete main+sibling hint download) and return its
+/// duration. The enforced production servers grant one query job per
+/// connection (`max_logical_inputs = 1` on the live
+/// `harmony-query-job-v1` scope), so multi-batch measurement requires a
+/// fresh admitted session per batch — see `dpf_cold_batch_query`.
+async fn harmony_cold_batch_query(
+    shs: &[ScriptHash],
+    db_id: u8,
+) -> Result<std::time::Duration, PirError> {
+    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+    client.connect().await?;
+    common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
+    let started = std::time::Instant::now();
+    client.query_batch(shs, db_id).await?;
+    let elapsed = started.elapsed();
+    client.disconnect().await.ok();
+    Ok(elapsed)
+}
+
+/// Empirical amortization benchmark. Pre-Payment-V1 this measured one fresh
+/// session plus warm follow-up batches on the same connection (hint load
+/// amortization). Under admission enforcement every batch is a cold session
+/// (connect + admit + full hint download + one batch), so the bench now
+/// reports three cold-session data points with growing batch sizes. Runs via
+/// the same granted production path as `test_harmony_strict_production_canary_*`.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn harmony_amortization_bench() {
     with_transport_retry("harmony amortization bench", || async {
-        let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-        client.connect().await?;
-        let catalog = client.fetch_catalog().await?;
-        let db_id = catalog.databases[0].db_id;
+        let db_id = 0;
 
         // 10 distinct not-found scripthashes (one byte differs each).
         let scripthashes: Vec<ScriptHash> = (0..10u8)
@@ -777,28 +836,21 @@ async fn harmony_amortization_bench() {
             })
             .collect();
 
-        let t0 = std::time::Instant::now();
-        client.query_batch(&scripthashes[..1], db_id).await?;
-        let cold = t0.elapsed();
+        let cold = harmony_cold_batch_query(&scripthashes[..1], db_id).await?;
         println!("[BENCH] 1st query (cold session, hint download): {:.2?}", cold);
 
-        let t1 = std::time::Instant::now();
-        client.query_batch(&scripthashes[1..2], db_id).await?;
-        let warm_single = t1.elapsed();
-        println!("[BENCH] 2nd query (hints cached): {:.2?}", warm_single);
+        let warm_single = harmony_cold_batch_query(&scripthashes[1..2], db_id).await?;
+        println!("[BENCH] 2nd query (cold session again): {:.2?}", warm_single);
 
-        let t2 = std::time::Instant::now();
-        client.query_batch(&scripthashes[2..], db_id).await?;
-        let batch_of_8 = t2.elapsed();
-        println!("[BENCH] 8-batch query (hints cached): {:.2?}", batch_of_8);
+        let batch_of_8 = harmony_cold_batch_query(&scripthashes[2..], db_id).await?;
+        println!("[BENCH] 8-batch query (cold session again): {:.2?}", batch_of_8);
         println!(
-            "[BENCH] per-scripthash amortized: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
+            "[BENCH] per-scripthash: cold={:.2?}, second-cold={:.2?}, batch-of-8={:.2?}/sh",
             cold,
             warm_single,
             batch_of_8 / 8,
         );
 
-        client.disconnect().await.ok();
         Ok::<(), PirError>(())
     })
     .await
@@ -1692,6 +1744,9 @@ async fn harmony_data_correctness_diagnostic() {
             "[DBG_CORR] DB synced_height={} index_bins={} chunk_bins={}",
             db.height, db.index_bins, db.chunk_bins,
         );
+        // The public deployment enforces Payment-V1 admission.
+        common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy())
+            .await?;
         let results = client.query_batch(&[sh_a, sh_b], db_id).await?;
         client.disconnect().await.ok();
         Ok(results)

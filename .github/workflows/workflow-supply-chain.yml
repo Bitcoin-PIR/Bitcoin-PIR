@@ -10,6 +10,10 @@ on:
       - 'web/package.json'
       - 'web/package-lock.json'
       - 'web/npm-shrinkwrap.json'
+      - 'verification/locks/formal-proofs.json'
+      - 'verification/scripts/verify_formal_lock.py'
+      - 'verification/scripts/test_verify_formal_lock.py'
+      - 'verification/toolchains/easycrypt.Dockerfile'
   # Keep the PR event unfiltered so this job can become a required check
   # without unrelated PRs remaining permanently Pending.
   pull_request:
@@ -58,3 +62,5 @@ jobs:
           node --check scripts/github-workflow-supply-chain-gate.test.mjs
           node --test scripts/github-workflow-supply-chain-gate.test.mjs
           node scripts/github-workflow-supply-chain-gate.mjs
+          python3 -m py_compile verification/scripts/verify_formal_lock.py verification/scripts/test_verify_formal_lock.py
+          python3 -m unittest verification/scripts/test_verify_formal_lock.py

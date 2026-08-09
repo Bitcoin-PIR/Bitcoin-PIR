@@ -347,6 +347,12 @@ YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
 
 ## Key Files
 
+- `crates/sdk/client/tests/common/mod.rs` — live-server Payment-V1 admission
+  helpers for the integration/leakage suites (`admit_dpf_live`,
+  `admit_harmony_live`, `admit_onion_live`, free-offer selection + Free-PoW
+  solver). Harmony/onion granted-query paths are production-blocked as of
+  2026-08-06; their live tests are `PIR_STRICT_PRODUCTION_CANARY`-gated
+  (see `docs/PR_CLEANUP_TRACKER.md` P0-1).
 - `crates/sdk/core/src/lib.rs`, `crates/sdk/core/src/error.rs`, `crates/sdk/core/src/metrics.rs`,
   `crates/sdk/core/src/sync.rs`.
 - `crates/sdk/client/src/`: `admin.rs`, `attest.rs`, `channel.rs`,
@@ -404,7 +410,7 @@ Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on fi
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
 - SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
 
-### Attestation pins (current as of 2026-07-22)
+### Attestation pins (current as of 2026-08-07)
 `web/src/attest-pin.ts` is the authoritative source — values below are a quick reference.
-- **pir1 (Hetzner)**: binary `4cf7d467...` (commit `d126f36a`, Cargo release build with `cuckoo-oram`) — no SEV, no measurement
-- **pir2 (VPSBG) Tier 3**: binary `61d74a9c...` (commit `837108b6`) baked into UKI sha256 `3d511f88...`, measurement `478fb4ac...` — pir2 serves `--serve-queries` plus direct ORAM for db_id 0/1, with no OnionPIR
+- **pir1 (Hetzner)**: binary `c836e11a...` (commit `831a5ea1`, Cargo release build, default features incl. `9b7128f0` harmony response chunk fix) — no SEV, no measurement
+- **pir2 (VPSBG) Tier 3**: binary `4f51c64d...` (commit `831a5ea1`, same fix source, `--features cuckoo-oram`) baked into UKI sha256 `dcb5c867...` (measured-boot image id 229, epoch-4 policy `093f078f` embedded: harmony-query `max_response_bytes` 64→128 MiB + DPF `max_wall_time_ms` 20→120 s), measurement `1c375b26...` — pir2 serves `--serve-queries`; previous images 223/225/227 kept as rollback targets. weikeng1's policy was also re-signed to epoch 10 (same caps on pir1: harmony 128 MiB, onion 64→24 MiB request/response, DPF 120 s)
