@@ -79,6 +79,9 @@ deploy/payment-v1/edge/*
 !deploy/payment-v1/edge/directory-public-haproxy.cfg.in
 !deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in
 !deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in
+!deploy/payment-v1/lightning/
+!deploy/payment-v1/lightning/mainnet-lightning-v1/
+!deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example
 !deploy/payment-v1/vpsbg/
 !deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in
 !deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in
@@ -92,6 +95,10 @@ deploy/payment-v1/systemd/*
 !deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in
 !deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in
 !deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in
+!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in
+!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in
+!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in
+!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in
 !deploy/payment-v1/network/
 deploy/payment-v1/network/*
 !deploy/payment-v1/network/README.md

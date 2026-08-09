@@ -51,6 +51,8 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
     "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "b5def27d9d5df397af5fafb91f0e64404b62a5c8131b9b3ae4aea187fbbcd6be",
+  "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example":
+    "d6d5579823365081bfc38ff8b26847db58262c3da166c4128e54428343985f5d",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
     "70a74e60514adaf5fb89b1461ffddc20c66a10dd127973d42d2144074011f3fc",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
@@ -65,6 +67,14 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
     "87eef911c6c42bd1cb350b1990e4545ffe08ff2217d8b47aa806db33f6d0a93d",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in":
     "150a073551f13a195ba52dc292a6aea10f80719fec32893c5394f8261f2a3f32",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in":
+    "f7a7d73a60037fa8b832ece0c3ac962507a9cc9ad48c214f7bbea8fae0a79e49",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in":
+    "a2a5efb1bf94da6dc62e6585b26f2d8de11f03204f2d2891ee4469d2e6eabd80",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in":
+    "1421b2615ed4e5bdfd773bf4c6cd9100c25426d393504135ad1e5c9b22218130",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in":
+    "69d1cb2b3e5cc380c97cceecd7d29a7612b130243672c5de836f14ac44cd1d9b",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "2f3392c6326c0c458b925effb23707d40c43eed7c78af7c3e89aa66f36342e08",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
@@ -102,6 +112,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
   "deploy/payment-v1/lightning/README.md",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
+  "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
   "deploy/payment-v1/lightning/issuer-cln.args.in",
   "deploy/payment-v1/lightning/lightningd.conf.in",
@@ -109,6 +120,10 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
   "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
   "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in",
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
   "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-edge.service.in",
@@ -137,6 +152,7 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
 ]);
 
 const TEMPLATE_ROOT = "deploy/payment-v1";
+const FINDER_METADATA_BASENAME = ".DS_Store";
 const ACTIVATION_SENTINEL =
   "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED";
 const UNSAFE_RELAY_COMMITS = new Set([
@@ -362,7 +378,9 @@ const COMMON_UNIT_KEYS = new Set([
   "After",
   "Wants",
   "Requires",
+  "Requisite",
   "BindsTo",
+  "PartOf",
   "Before",
   "ConditionPathExists",
 ]);
@@ -1239,6 +1257,87 @@ function validateLightningPreflightUnit(text) {
     ["/run/bitcoinpir-lightning-preflight /run/bitcoinpir-lightning-operator-approvals"],
     label,
   );
+}
+
+function validateMainnetLightningV1PreflightUnit(text) {
+  const label = "Mainnet Lightning V1 live preflight template";
+  const unit = validateInactiveSystemdTemplate(
+    text,
+    label,
+    [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    ],
+    { requireStateDirectoryMode: false },
+  );
+  rejectPattern(text, /^\s*\[Install\]\s*$/mu, label, "install activation");
+  rejectPattern(text, /MAINNET-LIGHTNING-V1-PREFLIGHT-APPROVED/u, label, "self-approval sentinel");
+  rejectPattern(
+    text,
+    /(?:--(?:cashu|arc|payout)[a-z-]*(?:\s|=|$)|\/(?:cashu|arc|payout)(?:[\/-]|$))/iu,
+    label,
+    "non-V1 payment method",
+  );
+  exactDirectiveValues(unit, "Unit", "Requisite", ["bitcoinpir-mainnet-lightning-v1-core.service"], label);
+  exactDirectiveValues(unit, "Unit", "PartOf", ["bitcoinpir-mainnet-lightning-v1-core.service"], label);
+  exactDirectiveValues(unit, "Unit", "Requires", [], label);
+  exactDirectiveValues(unit, "Unit", "BindsTo", [], label);
+  exactDirectiveValues(unit, "Service", "RemainAfterExit", ["yes"], label);
+  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-mainnet-lightning-preflight"], label);
+  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-mainnet-lightning-preflight"], label);
+  exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
+  exactDirectiveValues(unit, "Service", "ExecStartPre", [
+    "/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/bpir-admin.sha256",
+    "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight-config.sha256",
+    "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin mainnet-lightning-v1 lint-profile --config /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml --config-protected-parent /etc/bitcoinpir/payment-v1/mainnet-lightning-v1 --config-expected-uid 0 --config-expected-gid @MAINNET_PREFLIGHT_GID@ --config-reader-expected-uid @MAINNET_PREFLIGHT_UID@",
+  ], label);
+  validateExactCommand(
+    onlyDirectiveValue(unit, "Service", "ExecStart", label),
+    ["/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin", "mainnet-lightning-v1", "preflight"],
+    [
+      ["--config", "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml"],
+      ["--config-protected-parent", "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1"],
+      ["--config-expected-uid", "0"],
+      ["--config-expected-gid", "@MAINNET_PREFLIGHT_GID@"],
+      ["--config-reader-expected-uid", "@MAINNET_PREFLIGHT_UID@"],
+    ],
+    label,
+  );
+}
+
+function validateMainnetLightningV1RuntimeUnit(text, kind) {
+  const label = `Mainnet Lightning V1 ${kind} template`;
+  rejectPattern(text, /^\s*\[Install\]\s*$/mu, label, "install activation");
+  rejectPattern(text, /MAINNET-LIGHTNING-V1-PREFLIGHT-APPROVED/u, label, "self-approval sentinel");
+  rejectPattern(text, /(?:--bat-key|--cashu-|--require-cashu|--arc-|--payout)/iu, label, "Cashu, ARC, or payout option");
+  const unit = parseSystemdUnit(text, label);
+  validateDirectiveShape(unit, label);
+  exactDirectiveValues(unit, "Service", "NoNewPrivileges", ["true"], label);
+  exactDirectiveValues(unit, "Service", "ProtectSystem", ["strict"], label);
+  const command = onlyDirectiveValue(unit, "Service", "ExecStart", label);
+  if (kind === "core") {
+    exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/srv/lightning/bitcoin"], label);
+    requireText(command, "--conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf", label);
+    return;
+  }
+  const dependency = "bitcoinpir-mainnet-lightning-v1-preflight.service";
+  for (const relation of ["After", "Requires", "BindsTo"]) {
+    const values = directiveValues(unit, "Unit", relation).join(" ").split(/\s+/u);
+    if (!values.includes(dependency)) fail(`${label} must ${relation} the live mainnet preflight`);
+  }
+  exactDirectiveValues(unit, "Unit", "Requisite", ["bitcoinpir-mainnet-lightning-v1-core.service"], label);
+  exactDirectiveValues(unit, "Unit", "PartOf", ["bitcoinpir-mainnet-lightning-v1-core.service"], label);
+  if (kind === "guard") {
+    requireText(command, "--upstream-socket /srv/lightning/bitcoin/lightning-rpc", label);
+    return;
+  }
+  requireText(command, "serve-cln", label);
+  requireText(command, "--quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin", label);
+  rejectPattern(command, /(?:cashu|arc|payout)/iu, label, "Cashu, ARC, or payout argument");
 }
 
 function validatePaymentEdgeUnit(text) {
@@ -2836,7 +2935,11 @@ function recursiveFiles(root) {
       const absolute = join(directory, entry.name);
       if (entry.isSymbolicLink()) fail(`deployment template tree contains symlink: ${absolute}`);
       if (entry.isDirectory()) walk(absolute);
-      else if (entry.isFile()) output.push(absolute);
+      else if (entry.isFile()) {
+        // Finder writes this per-directory metadata file on macOS. It is not a
+        // deployment input and must not make source-only checks non-portable.
+        if (entry.name !== FINDER_METADATA_BASENAME) output.push(absolute);
+      }
       else fail(`deployment template tree contains non-regular entry: ${absolute}`);
     }
   };
@@ -2965,6 +3068,20 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
   );
   validateLightningPreflightUnit(lightningPreflight.text);
+
+  const mainnetLightningV1Preflight = readRequired(
+    root,
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+  );
+  validateMainnetLightningV1PreflightUnit(mainnetLightningV1Preflight.text);
+
+  for (const [path, kind] of [
+    ["deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in", "core"],
+    ["deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in", "guard"],
+    ["deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in", "issuer"],
+  ]) {
+    validateMainnetLightningV1RuntimeUnit(readRequired(root, path).text, kind);
+  }
 
   const paymentEdge = readRequired(
     root,

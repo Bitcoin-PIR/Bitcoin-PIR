@@ -14,9 +14,11 @@ separate remote-host and bounded private-service-activation approvals, and end
 by stopping the edge and revoking its profile sentinel. Starting the issuer's
 CLN would create persistent Lightning state and therefore belongs to Public
 Signet. Public Signet adds persistent staging-only wallets/channels, test coins
-and public staging surfaces under their own approvals. Production mainnet is
-not currently renderable: the implemented deployment preflight is default-
-Signet-specific and no reviewed mainnet preflight exists.
+and public staging surfaces under their own approvals. Production mainnet has a
+separate source-level profile and read-only local Core/CLN preflight, but no
+private Mainnet plan, target host, CLN node, liquidity/funds, installation,
+activation or live evidence is approved. See
+[MAINNET_LIGHTNING_V1_RUNBOOK.md](MAINNET_LIGHTNING_V1_RUNBOOK.md).
 
 Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) as the non-secret
 input inventory and begin each proposed closed render plan from

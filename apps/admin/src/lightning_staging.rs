@@ -387,14 +387,14 @@ impl fmt::Display for PreflightFailureV1 {
 }
 
 #[derive(Clone, Debug)]
-struct CommandRequestV1 {
-    program: PathBuf,
-    args: Vec<OsString>,
-    timeout: Duration,
+pub(crate) struct CommandRequestV1 {
+    pub(crate) program: PathBuf,
+    pub(crate) args: Vec<OsString>,
+    pub(crate) timeout: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RunnerFailureV1 {
+pub(crate) enum RunnerFailureV1 {
     Spawn,
     Timeout,
     Exit,
@@ -403,7 +403,7 @@ enum RunnerFailureV1 {
 }
 
 impl RunnerFailureV1 {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Spawn => "command-spawn",
             Self::Timeout => "command-timeout",
@@ -415,11 +415,11 @@ impl RunnerFailureV1 {
 }
 
 #[async_trait(?Send)]
-trait CommandRunnerV1 {
+pub(crate) trait CommandRunnerV1 {
     async fn execute(&mut self, request: CommandRequestV1) -> Result<Vec<u8>, RunnerFailureV1>;
 }
 
-struct SystemCommandRunnerV1;
+pub(crate) struct SystemCommandRunnerV1;
 
 #[async_trait(?Send)]
 impl CommandRunnerV1 for SystemCommandRunnerV1 {
@@ -1208,13 +1208,8 @@ fn systemd_notify_to_v1(
     let socket_flags = SocketFlags::CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let socket_flags = SocketFlags::empty();
-    let socket = socket_with(
-        AddressFamily::UNIX,
-        SocketType::DGRAM,
-        socket_flags,
-        None,
-    )
-    .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
+    let socket = socket_with(AddressFamily::UNIX, SocketType::DGRAM, socket_flags, None)
+        .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
     let sent = sendto(&socket, message, SendFlags::empty(), &address)
         .map_err(|_| PreflightFailureV1::new(check, "notify-failed"))?;
     if sent != message.len() {
@@ -2138,6 +2133,26 @@ fn read_protected_config_at_v1(
     }
 }
 
+/// Reuse the staging preflight's descriptor-pinned protected-file boundary for
+/// another read-only deployment profile. The caller receives only a coarse
+/// error string so this helper cannot leak protected path or metadata details.
+pub(crate) fn read_protected_profile_input_v1(
+    config: &Path,
+    config_protected_parent: &Path,
+    config_expected_uid: u32,
+    config_expected_gid: u32,
+    config_reader_expected_uid: u32,
+) -> Result<Vec<u8>, String> {
+    read_protected_config_at_v1(
+        config,
+        config_protected_parent,
+        config_expected_uid,
+        config_expected_gid,
+        config_reader_expected_uid,
+    )
+    .map_err(|_| "protected-profile-input-rejected".to_owned())
+}
+
 fn validate_core_rpc_cookie_v1(config: &CoreRpcCookieConfigV1) -> Result<(), PreflightFailureV1> {
     let check = "core.rpc-cookie";
     #[cfg(unix)]
@@ -2603,6 +2618,29 @@ fn validate_pinned_binary_v1(
         .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
     validate_same_file_v1(&before, &after, check)?;
     Ok(())
+}
+
+/// Validate an executable through the staging preflight's protected-tree,
+/// metadata, descriptor-stability and SHA-256 pinning boundary without
+/// exporting its Signet-specific configuration types.
+pub(crate) fn validate_pinned_executable_input_v1(
+    path: &Path,
+    protected_parent: &Path,
+    sha256_hex: &str,
+    expected_uid: u32,
+    expected_gid: u32,
+) -> Result<(), String> {
+    validate_pinned_binary_v1(
+        &PinnedBinaryV1 {
+            path: path.to_path_buf(),
+            protected_parent: protected_parent.to_path_buf(),
+            sha256_hex: sha256_hex.to_owned(),
+            expected_uid,
+            expected_gid,
+        },
+        "binary.profile-cli",
+    )
+    .map_err(|_| "pinned-executable-rejected".to_owned())
 }
 
 #[cfg(unix)]
@@ -3801,6 +3839,19 @@ fn digest_staticbackup_with_empty_policy_v1<S: AsRef<str>>(
         hasher.update(entry.as_slice());
     }
     Ok((hasher.finalize().into(), entries.len()))
+}
+
+/// Apply the same canonical, order-independent SCB digest used by the Signet
+/// backup ceremony to another read-only Lightning preflight. Keeping this
+/// primitive shared prevents a network profile from silently inventing an
+/// incompatible receipt format while leaving all topology policy local to the
+/// caller.
+pub(crate) fn digest_staticbackup_input_v1(
+    encoded_entries: &[String],
+    allow_empty: bool,
+) -> Result<([u8; 32], usize), String> {
+    digest_staticbackup_with_empty_policy_v1(encoded_entries, allow_empty)
+        .map_err(|_| "staticbackup-input-rejected".to_owned())
 }
 
 struct RuntimeSnapshotViewV1<'a> {

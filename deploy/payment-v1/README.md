@@ -18,7 +18,7 @@ deployment phases:
 | Source merge | run source/CI gates only; do not render or install |
 | Private no-funds | any approved closed plan may be rendered offline; remote install/start is edge-only, requires separate remote-host and bounded activation approvals, and ends by stopping the edge and revoking `EDGE-ACTIVATION-APPROVED` |
 | Public Signet | only a separately approved default-Signet profile with staging-only persistent identities/test coins and separately approved public surfaces |
-| Production mainnet | blocked; no reviewed mainnet deployment preflight/profile exists |
+| Production mainnet | source profile and read-only preflight exist, but no private plan has been materialized and no target host, Mainnet CLN, liquidity/funds, install, activation or live evidence is approved |
 
 The role gate is machine-enforced per unit:
 
@@ -27,6 +27,8 @@ The role gate is machine-enforced per unit:
 | `edge-hetzner-v1` | `EDGE-ACTIVATION-APPROVED` | — |
 | `issuer-lightning-signet-v1` Core Lightning bootstrap | `SIGNET-LIGHTNING-STAGING-APPROVED`, `LIGHTNING-CUSTODY-APPROVED`, `LIGHTNING-IDENTITY-RESTORE-APPROVED` | — |
 | `issuer-lightning-signet-v1` RPC guard, full preflight and issuer | the three bootstrap sentinels plus `LIGHTNING-BACKUP-RESTORE-APPROVED` and `SIGNET-ISSUER-ACTIVATION-APPROVED` | — |
+| `issuer-lightning-mainnet-v1` Core Lightning | `MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED`, `LIGHTNING-CUSTODY-APPROVED`, `LIGHTNING-IDENTITY-RESTORE-APPROVED` | — |
+| `issuer-lightning-mainnet-v1` preflight, RPC guard and issuer | the Mainnet Core sentinels plus `LIGHTNING-BACKUP-RESTORE-APPROVED` | — |
 | `provider-v1` | `PROVIDER-ACTIVATION-APPROVED` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
 | `provider-no-standard-cashu-v1` | `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-DIRECT-ACTIVATION-APPROVED` |
 | `provider-direct-v1` | `PROVIDER-DIRECT-ACTIVATION-APPROVED` | `PROVIDER-ACTIVATION-APPROVED`, `PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED` |

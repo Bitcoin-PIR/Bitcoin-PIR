@@ -9,6 +9,7 @@
     "dev": "vite",
     "build-web": "vite build && node scripts/verify-csp.mjs",
     "test": "npm run test:production-canary-readiness && vitest run",
+    "test:contract:direct-bolt11-two-provider": "vitest run src/__tests__/product-admission-controller.test.ts -t \"Direct BOLT11 DPF\" && vitest run src/__tests__/adapter-lifecycle.test.ts -t \"restores DPF fields from the verified native handle and consumes the batch once\"",
     "test:production-canary-readiness": "node scripts/verify-production-canary-readiness.mjs",
     "test:e2e:payment-cdk-cashu": "tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false && playwright test --config playwright.payment-cdk-cashu.config.ts",
     "test:e2e:payment-real-issuer": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-real-issuer.config.ts",

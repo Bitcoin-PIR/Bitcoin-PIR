@@ -29,6 +29,9 @@
 //!   for two providers, five payment methods, and five workloads.
 //! - `lightning-staging` — strict default-Signet/CLN bootstrap/full preflights
 //!   plus an explicit local, digest-only backup-receipt ceremony.
+//! - `mainnet-lightning-v1` — offline lint plus a read-only live Core/CLN
+//!   preflight for the versioned Direct-BOLT11/DPF mainnet profile. It cannot
+//!   create an invoice, authorize a payment, or mutate wallet state.
 //! - `rollback-authority-deployment-lint` — offline bounded deployment-set
 //!   public-config independence validation without reading client secrets.
 //!
@@ -47,6 +50,7 @@ mod directory_publish;
 mod generate_identity;
 mod keygen;
 mod lightning_staging;
+mod mainnet_lightning_v1;
 mod payment_artifact;
 mod payment_fixture;
 mod payment_v1_signet_smoke;
@@ -131,6 +135,9 @@ enum Command {
     /// Strict default-Signet/CLN bootstrap/full preflights and backup ceremony.
     #[command(name = "lightning-staging")]
     LightningStaging(lightning_staging::LightningStagingArgs),
+    /// Lint or run the read-only live Mainnet Lightning V1 preflight.
+    #[command(name = "mainnet-lightning-v1")]
+    MainnetLightningV1(mainnet_lightning_v1::MainnetLightningV1Args),
     /// Validate 2..=16 authority configs pairwise offline without reading
     /// referenced secrets or printing paths, roles, or identifiers.
     #[command(name = "rollback-authority-deployment-lint")]
@@ -260,6 +267,13 @@ async fn main() {
                 1
             }
         },
+        Command::MainnetLightningV1(args) => match mainnet_lightning_v1::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("mainnet-lightning-v1: {e}");
+                1
+            }
+        },
         Command::RollbackAuthorityDeploymentLint(args) => {
             match rollback_authority_deployment_lint::run(args) {
                 Ok(()) => 0,
@@ -293,6 +307,7 @@ mod cli_tests {
             "payment-v1-no-funds-fixture",
             "directory-artifact",
             "lightning-staging",
+            "mainnet-lightning-v1",
             "rollback-authority-deployment-lint",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const acquisitionMock = vi.hoisted(() => ({
   startMode: 'success' as 'success' | 'lost' | 'deferred',
   deferredStart: null as null | ((assertReady: () => void) => Promise<void>),
+  uniqueInvoices: false,
+  invoiceSequence: 0,
+  starts: [] as any[],
   resume: vi.fn(),
 }));
 
@@ -18,27 +21,54 @@ vi.mock('../service-acquisition.js', () => {
     name = 'Bolt11RecoveryRequiredErrorV1';
     constructor(readonly recoveryId: string) { super('lost quote response'); }
   }
-  const handle = () => ({
-    recoveryId: '99'.repeat(32),
-    ensureQuote: vi.fn(async () => 'lnbc1fixture'),
-    invoice: () => 'lnbc1fixture',
-    status: () => 'invoice-open',
-    invoiceExpiresAtUnix: () => 9_999_999_999n,
-    claimDeadlineUnix: () => 9_999_999_999n,
-    pollStatus: vi.fn(async () => 'payment-settled'),
-    claim: vi.fn(async () => 1),
-    close: vi.fn(),
-  });
+  const handle = (options: any) => {
+    const invoice = acquisitionMock.uniqueInvoices
+      ? `lnbc1fixture${++acquisitionMock.invoiceSequence}`
+      : 'lnbc1fixture';
+    const acquisitionContext = {
+      kind: 'bolt11' as const,
+      issuerEndpoint: new URL(options.offer.endpoint).origin,
+      issuerIdHex: options.offer.issuerIdHex,
+      network: options.network,
+      expectedPayeePubkeyHex: Array.from(
+        options.expectedPayeePubkey,
+        (byte: number) => byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    };
+    return {
+      recoveryId: '99'.repeat(32),
+      ensureQuote: vi.fn(async () => invoice),
+      invoice: () => invoice,
+      status: () => 'invoice-open',
+      invoiceExpiresAtUnix: () => 9_999_999_999n,
+      claimDeadlineUnix: () => 9_999_999_999n,
+      pollStatus: vi.fn(async () => 'payment-settled'),
+      claim: vi.fn(async () => {
+        await options.vault.putCapability({
+          providerIdHex: options.policy.providerIdHex,
+          policyDigestHex: options.policy.policyDigestHex,
+          scopeIdHex: options.scope.scopeIdHex,
+          offerId: options.offer.offerId,
+          scheme: options.offer.authorization,
+          payload: new Uint8Array([1, 2, 3]),
+          acquisitionContext,
+        });
+        return 1;
+      }),
+      close: vi.fn(),
+    };
+  };
   return {
     Bolt11RecoveryRequiredErrorV1: RecoveryRequired,
     Bolt11AcquisitionControllerV1: {
       start: vi.fn(async (options: { assertReady: () => void }) => {
+        acquisitionMock.starts.push(options);
         if (acquisitionMock.startMode === 'lost') throw new RecoveryRequired('88'.repeat(32));
         if (acquisitionMock.startMode === 'deferred') {
           if (!acquisitionMock.deferredStart) throw new Error('missing deferred start fixture');
           await acquisitionMock.deferredStart(options.assertReady);
         }
-        return handle();
+        return handle(options);
       }),
     },
     resumeBolt11AcquisitionV1: acquisitionMock.resume,
@@ -360,6 +390,9 @@ function fakeVault(): { vault: AdmissionCredentialVaultV1; state: FakeVaultState
     putCapability: async (capability: any) => {
       const id = key(capability);
       state.inventory.set(id, (state.inventory.get(id) ?? 0) + 1);
+      if (capability.acquisitionContext !== undefined) {
+        state.inventoryContexts.set(id, capability.acquisitionContext);
+      }
       return 'aa'.repeat(32);
     },
     listBolt11Recoveries: async () => state.recoveries,
@@ -456,10 +489,50 @@ function currentShapes(controller: ProductAdmissionControllerV1) {
   }));
 }
 
+function mockBolt11Handle(recoveryId: string, invoice: string) {
+  return {
+    recoveryId,
+    ensureQuote: vi.fn(async () => invoice),
+    invoice: () => invoice,
+    status: () => 'invoice-open' as const,
+    invoiceExpiresAtUnix: () => 9_999_999_999n,
+    claimDeadlineUnix: () => 9_999_999_999n,
+    pollStatus: vi.fn(async () => 'payment-settled' as const),
+    claim: vi.fn(async () => 1),
+    close: vi.fn(),
+  };
+}
+
+function directRecovery(
+  id: string,
+  providerIdHex: string,
+  policyDigestHex: string,
+  scopeIdHex: string,
+  offer: ServiceOfferViewV1,
+  payee: Uint8Array,
+) {
+  return {
+    id,
+    issuerEndpoint: offer.endpoint,
+    issuerIdHex: offer.issuerIdHex,
+    network: 'bitcoin' as const,
+    expectedPayeePubkeyHex: lightningTrust(offer, payee)[0].expectedPayeePubkeyHex,
+    providerIdHex,
+    policyDigestHex,
+    scopeIdHex,
+    offerId: offer.offerId,
+    expectedScheme: 'bolt11-direct-receipt' as const,
+    state: new Uint8Array([1]),
+  };
+}
+
 describe('product admission lifecycle', () => {
   beforeEach(() => {
     acquisitionMock.startMode = 'success';
     acquisitionMock.deferredStart = null;
+    acquisitionMock.uniqueInvoices = false;
+    acquisitionMock.invoiceSequence = 0;
+    acquisitionMock.starts.length = 0;
     acquisitionMock.resume.mockReset();
   });
 
@@ -695,6 +768,187 @@ describe('product admission lifecycle', () => {
     await controller.startBolt11('server0');
     expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
     expect(controller.canQuery()).toBe(false);
+    await controller.close();
+  });
+
+  it('completes an independent Direct BOLT11 DPF pair through verified batch release', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = paidOffer(81, 'bolt11-direct-receipt');
+    const secondOffer = paidOffer(82, 'bolt11-direct-receipt');
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [secondOffer])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+          lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.second),
+        },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: firstOffer.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: secondOffer.offerId });
+
+    const firstContext = boltContext(firstOffer, LIGHTNING_PAYEE.first);
+    const secondContext = boltContext(secondOffer, LIGHTNING_PAYEE.second);
+    expect(HEX.provider0).not.toBe(HEX.provider1);
+    expect(HEX.policy0).not.toBe(HEX.policy1);
+    expect(HEX.scope0).not.toBe(HEX.scope1);
+    expect(firstOffer.issuerIdHex).not.toBe(secondOffer.issuerIdHex);
+    expect(firstOffer.keyIdHex).not.toBe(secondOffer.keyIdHex);
+    expect(firstContext).not.toEqual(secondContext);
+    expect(firstContext.expectedPayeePubkeyHex).not.toBe(secondContext.expectedPayeePubkeyHex);
+
+    acquisitionMock.uniqueInvoices = true;
+    await controller.startBolt11('server0');
+    await controller.startBolt11('server1');
+    const opened = controller.snapshot();
+    expect(opened.legs.map((leg) => leg.quoteStatus)).toEqual(['invoice-open', 'invoice-open']);
+    expect(opened.legs[0].invoice).not.toBe(opened.legs[1].invoice);
+    expect(opened.legs[0].invoice).toMatch(/^lnbc1fixture/);
+    expect(opened.legs[1].invoice).toMatch(/^lnbc1fixture/);
+    expect(acquisitionMock.starts).toHaveLength(2);
+    const [firstStart, secondStart] = acquisitionMock.starts;
+    expect(firstStart).toMatchObject({
+      policy: { providerIdHex: HEX.provider0, policyDigestHex: HEX.policy0 },
+      scope: { scopeIdHex: HEX.scope0 },
+      offer: {
+        offerId: firstOffer.offerId,
+        issuerIdHex: firstOffer.issuerIdHex,
+        endpoint: firstOffer.endpoint,
+        keyIdHex: firstOffer.keyIdHex,
+      },
+      network: 'bitcoin',
+    });
+    expect(secondStart).toMatchObject({
+      policy: { providerIdHex: HEX.provider1, policyDigestHex: HEX.policy1 },
+      scope: { scopeIdHex: HEX.scope1 },
+      offer: {
+        offerId: secondOffer.offerId,
+        issuerIdHex: secondOffer.issuerIdHex,
+        endpoint: secondOffer.endpoint,
+        keyIdHex: secondOffer.keyIdHex,
+      },
+      network: 'bitcoin',
+    });
+    expect(firstStart.expectedPayeePubkey).toEqual(LIGHTNING_PAYEE.first);
+    expect(secondStart.expectedPayeePubkey).toEqual(LIGHTNING_PAYEE.second);
+
+    await controller.pollBolt11('server0');
+    await controller.pollBolt11('server1');
+    expect(controller.snapshot().legs.map((leg) => leg.quoteStatus)).toEqual([
+      'payment-settled',
+      'payment-settled',
+    ]);
+
+    // The acquisition seam writes a provider-local capability from its own
+    // frozen start options, mirroring the post-claim vault boundary.
+    const firstInventory = inventoryKey(HEX.provider0, HEX.policy0, HEX.scope0, firstOffer);
+    const secondInventory = inventoryKey(HEX.provider1, HEX.policy1, HEX.scope1, secondOffer);
+    await controller.claimBolt11('server0');
+    await controller.claimBolt11('server1');
+    expect(controller.snapshot().legs.map((leg) => leg.inventory)).toEqual([1, 1]);
+    expect(state.inventoryContexts.get(firstInventory)).toEqual(firstContext);
+    expect(state.inventoryContexts.get(secondInventory)).toEqual(secondContext);
+
+    await controller.authorize('server0');
+    await controller.authorize('server1');
+    expect(first.authorize).toHaveBeenCalledOnce();
+    expect(second.authorize).toHaveBeenCalledOnce();
+    expect(state.takes).toBe(2);
+    expect(controller.canQuery()).toBe(true);
+
+    const queryBatchVerified = vi.fn(async () => ({ verified: true, batchComplete: true }));
+    await expect(controller.executeQuery(currentShapes(controller), queryBatchVerified)).resolves.toEqual({
+      verified: true,
+      batchComplete: true,
+    });
+    expect(queryBatchVerified).toHaveBeenCalledOnce();
+    await controller.close();
+  });
+
+  it('restores both independent Direct BOLT11 DPF invoices after a refresh', async () => {
+    const { vault, state } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = paidOffer(83, 'bolt11-direct-receipt');
+    const secondOffer = paidOffer(84, 'bolt11-direct-receipt');
+    const firstRecoveryId = 'a1'.repeat(32);
+    const secondRecoveryId = 'a2'.repeat(32);
+    state.recoveries.push(
+      directRecovery(firstRecoveryId, HEX.provider0, HEX.policy0, HEX.scope0, firstOffer, LIGHTNING_PAYEE.first),
+      directRecovery(secondRecoveryId, HEX.provider1, HEX.policy1, HEX.scope1, secondOffer, LIGHTNING_PAYEE.second),
+    );
+    acquisitionMock.resume.mockResolvedValueOnce(mockBolt11Handle(firstRecoveryId, 'lnbc1restoredfirst'));
+    acquisitionMock.resume.mockResolvedValueOnce(mockBolt11Handle(secondRecoveryId, 'lnbc1restoredsecond'));
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [secondOffer])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+          lightningPayeeTrust: lightningTrust(firstOffer, LIGHTNING_PAYEE.first),
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          lightningPayeeTrust: lightningTrust(secondOffer, LIGHTNING_PAYEE.second),
+        },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: firstOffer.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: secondOffer.offerId });
+    expect(controller.snapshot().legs.map((leg) => leg.recoveryIds)).toEqual([
+      [firstRecoveryId],
+      [secondRecoveryId],
+    ]);
+
+    await controller.resumeBolt11('server0', firstRecoveryId);
+    await controller.resumeBolt11('server1', secondRecoveryId);
+    const restored = controller.snapshot();
+    expect(restored.legs.map((leg) => leg.invoice)).toEqual([
+      'lnbc1restoredfirst',
+      'lnbc1restoredsecond',
+    ]);
+    expect(restored.legs.map((leg) => leg.quoteStatus)).toEqual(['invoice-open', 'invoice-open']);
+    expect(acquisitionMock.resume).toHaveBeenCalledTimes(2);
     await controller.close();
   });
 
