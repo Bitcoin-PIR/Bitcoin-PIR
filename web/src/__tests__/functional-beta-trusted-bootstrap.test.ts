@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import bundledFunctionalBetaBootstrap from '../functional-beta-trusted-bootstrap.json';
@@ -46,5 +47,17 @@ describe('bundled functional-beta trusted bootstrap', () => {
     expect(() => parseProductTrustedBootstrapV1(JSON.stringify(replacement))).toThrow(
       /must declare supported workloads/,
     );
+  });
+
+  it('routes strict OnionPIR through the reviewed v2 proof pins', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const start = html.indexOf('async function opConnect(provider)');
+    const end = html.indexOf('function opDisconnect', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    const onionConnect = html.slice(start, end);
+    expect(onionConnect).toContain('databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS');
+    expect(onionConnect).not.toContain('databaseProofPins: provider.databaseProofPins');
   });
 });
