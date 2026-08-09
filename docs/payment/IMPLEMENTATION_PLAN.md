@@ -1,239 +1,191 @@
 # Payment platform implementation plan
 
-Status: active coordinator plan. This file sequences implementation; it does
-not authorize production deployment, remote-host access, or real Lightning
-funds.
+Status: functional-beta browser acceptance completed on 2026-08-09. This plan
+prioritizes a usable payment path and user acceptance over exhaustive security
+hardening. It does not authorize production deployment, remote-host mutation,
+public service changes or real Lightning funds.
 
-## Repository and release shape
+The previous plan mixed basic implementation, production hardening and broad
+security research into one critical path. That encouraged increasingly complex
+gates before the main user flow was complete. This revision separates:
 
-V1 stays in the BitcoinPIR monorepo. The service-policy wire, provider gate,
-Rust/WASM SDK, browser and integration fixtures must evolve atomically, and a
-single workspace lockfile gives dependency and MSRV review one boundary.
+1. functionality required for a Payment V1 functional beta;
+2. the smallest tests needed to keep it correct; and
+3. production/mainnet work that belongs in a later, separately approved plan.
 
-The payment/credential issuer is nevertheless an independent process with an
-independent database, keys, configuration and deployable binary. Its Rust
-library, protocol types and first binary live in this repository until the
-HTTP API and migration contract are stable. A later repository split must not
-change the signed or canonical wire encodings and is not on V1's critical
-path.
+## Functional-beta target
 
-Development uses `codex/payment-platform` with auditable checkpoint commits.
-Parallel agents own disjoint crates/files; the coordinator reviews shared
-boundaries and runs the combined matrix before each checkpoint. A draft PR is
-opened only after the local fake-backend end-to-end gate is green. Production
-configuration remains impossible by default.
+A user can discover two independent PIR providers, strictly verify each one,
+independently choose an offered payment method, acquire or select a capability,
+authorize one bounded operation, complete the PIR query and verify its result.
+Failures during payment, issuance, authorization or query execution have an
+explicit recoverable or terminal outcome.
 
-## Dependency graph
+The supported methods are Free, direct BOLT11 receipt, standard Cashu eCash,
+BitcoinPIR Cashu BAT and experimental ARC. The first release target is a
+no-funds or Signet functional beta. Mainnet, real-value settlement and automatic
+provider payouts are separate products.
 
-```text
-signed policy + canonical service wire
-            |
-            +--> provider store + anti-rollback floor
-            |             |
-            |             +--> encrypted runtime admission DFA
-            |                          |
-            |                          +--> DPF / Harmony / Onion / ORAM grants
-            |
-            +--> quote / issuance / clearing protocol
-                          |
-                          +--> issuer store + fake Lightning backend
-                          |             |
-                          |             +--> issuer HTTP service
-                          |
-                          +--> BIP340 / Cashu / ARC adapters
-                                        |
-                                        +--> Rust SDK / WASM / browser vault
+## Required invariants
 
-directory schema + publisher/client --> discovery only; never a trust root
+Only properties that would make the basic implementation incorrect remain on
+the functional critical path:
 
-all lanes ---------------------------> fault tests + security review + ops docs
-```
+- PIR providers never receive an invoice, payment hash, preimage, payer
+  identity or issuer quote identifier;
+- provider 0 and provider 1 have independent selection, authorization, keys
+  and spent state; the default flow has no shared raw token or pair identifier;
+- price and entitlement come from a verified provider-signed policy or offer,
+  never from client-supplied amounts or limits;
+- capability consumption is bounded and at-most-once at an authoritative
+  durable boundary; replay and cross-provider use fail closed;
+- identity, secure channel, database proof and policy verification happen
+  before capability presentation or payment;
+- an unavailable verifier or payment adapter never downgrades to plaintext,
+  unverified or accidentally unpaid service.
 
-## Workstreams
+ARC stays optional and visibly experimental. An independent review is required
+only before promoting it to stable or making it a production-required method.
 
-### A. Protocol, persistence and cryptography
+## Delivery priorities
 
-Deliver canonical bounded types, signed policy and delegation chains, concrete
-BOLT11/BIP340/Cashu verification, issuer/provider durable stores, replay
-protection and independent rollback floors. This lane must expose verified
-private-field typestates rather than boolean assertions or public unchecked
-constructors.
+### P0 — complete the user path
 
-Exit criteria:
+P0 items may block the functional beta.
 
-- every method has one canonical wire shape and one authoritative spent state;
-- stale restore, same-version fork, duplicate/concurrent spend and lost-response
-  tests pass;
-- native Clippy is warning-free and browser-facing crates build for wasm32;
-- ARC stays `experimental` and cannot be configured as stable.
+| Workstream | Deliverable | Minimum evidence |
+| --- | --- | --- |
+| Policy and wire | One bounded policy/auth envelope shared by server, issuer, SDK, WASM and Web; grants bind provider, database, backend, workload and limits | Canonical codec tests; unsupported methods and legacy demo frames reject |
+| Issuer and methods | Recoverable quote/status/claim lifecycle; fake Lightning; optional Signet CLN; Free/direct/Cashu/BAT/ARC adapters | Amount comes from signed offer; restart/lost-response recovery; duplicate and cross-provider rejection |
+| Provider admission | Encrypted bounded grant replaces connection-wide credential booleans; admission precedes expensive work | Representative real-process tests reach DPF, Harmony hint/query, Onion and TEE-ORAM; wrong scope and replay do not burn a valid capability |
+| Rust/WASM/Web | Real client performs policy verification, acquisition, IndexedDB storage, authorization, query and result verification | Two providers may use different methods; page reopen recovers issuance; multiple tabs cannot reserve one capability twice |
+| Directory and operator | Versioned Nostr discovery plus minimum key/policy/store tooling; directory remains discovery, not a trust root | Publish/readback works; stale checkpoint rejects; tooling does not print secrets |
 
-ARC's confirmed demo gaps, fixed-context construction and independent-review
-gate are specified in `ARC_EXPERIMENTAL_REVIEW.md`.
+For the functional beta, provider ledger accrual and a signed balance are a
+sufficient shared-settlement product. Real payouts and Settlement Cashu deposit
+routes are not required until their operator and custody model is selected.
 
-### B. Provider admission and backend grants
+### P1 — minimal sufficient validation
 
-Replace the legacy connection-local ARC/Cashu booleans with an encrypted
-connection DFA. Policy retrieval follows verified identity/channel/database
-setup; authorization occurs before scarce/expensive work. A grant binds the
-exact operation, database, backend, workload, protocol/profile and limits.
+P1 protects the P0 path and should remain smaller than the implementation.
+Required validation is:
 
-Harmony hint generation and Harmony query are separate scopes. A half-hint
-operation may attach two transport halves to one already-consumed logical
-grant without introducing a peer-provider identifier. DPF, Onion and TEE-ORAM
-each have their own bounded operation transitions.
+- focused unit/contract tests for canonical encoding, quote entitlement,
+  replay, cross-provider rejection and durable recovery;
+- one representative real-process path per payment adapter;
+- shared backend grant contract tests plus targeted process coverage, rather
+  than duplicating every method/workload combination in every harness;
+- one strict two-provider end-to-end query with mandatory result verification;
+- Web typecheck, unit tests and production bundle build;
+- a small startup/migration/rollback smoke for the selected beta profile; and
+- exact-head CI for the boundaries changed by the PR.
 
-Exit criteria:
+The complete method/workload matrix may run as a scheduled or release gate. It
+is not a reason to create several overlapping E2E suites or rerun Chromium for
+unrelated server-only changes.
 
-- unencrypted policy/auth and every pre-grant expensive opcode fail closed;
-- all Free modes, direct receipt, standard Cashu, BAT, shared online redeem and
-  ARC-experimental dispatch explicitly; an unavailable adapter rejects rather
-  than falls back;
-- one successful durable/authoritative consume creates at most one bounded
-  connection grant;
-- old `0x08`/`0x09` demo frames cannot authorize production work.
+### P2 — deploy and obtain acceptance
 
-### C. Issuer and settlement service
+After P0 and P1:
 
-Build the HTTP service over the issuer store with authenticated status polling,
-exact idempotency, fake Lightning settlement events, direct receipt/BAT/ARC
-issuance, shared online redeem, provider ledger credit and payout outbox.
-Define the blind settlement-note deposit and keyset surfaces in the canonical
-protocol/store, but keep their HTTP routes disabled until a retained-keyset
-operations ceremony is reviewed. Real payout execution remains disabled.
+1. render one reproducible no-funds or Signet beta configuration;
+2. deploy only explicitly approved services and topology;
+3. verify catalog readback, service health, one strict two-provider Free query
+   and one approved paid-admission smoke;
+4. retain a concrete rollback path without enabling real-value payout;
+5. ask the user to perform the documented browser acceptance; and
+6. record observed evidence and limitations without making stronger production
+   claims.
 
-Exit criteria:
+## Test and audit policy
 
-- invoice amount and entitlement come only from a verified signed offer;
-- a settled quote can be recovered after lost HTTP responses and restart;
-- claim signature, exact issuance request and credential count/order are
-  verified inside the transaction boundary;
-- serial/nullifier uniqueness is issuer-global where required;
-- payment hash/preimage never enters PIR wire or provider storage;
-- fake-backend crash/replay/concurrency tests are green.
+### Default profiles
 
-### D. Standard Cashu merchant adapter
+- normal agent work uses the quick browserless check;
+- the PR profile runs Rust/process/WASM, Web typecheck, unit tests and bundle
+  generation without Playwright or Chromium;
+- browser checks run only when the user asks, browser-only behavior changed, or
+  a named release candidate needs acceptance;
+- public relays, external mints, Lightning nodes, remote servers and funds are
+  always opt-in and separately approved.
 
-Implement exact-value NUT-03 merchant swaps against the mint committed by the
-signed offer. Persist encrypted output recovery material before submission,
-verify NUT-12 and local blinding transcripts, and use the same outputs for
-NUT-09 recovery. NUT-07 can diagnose input state but never authorizes a second
-swap with different outputs.
+### Add a test only when it protects
 
-Exit criteria:
+- a previously observed regression;
+- a shared canonical wire or persistence contract;
+- an at-most-once money/capability transition;
+- a direct privacy or fail-closed boundary; or
+- the primary user path and its recovery behavior.
 
-- no plaintext proof secret, output secret or blinding scalar is persisted or
-  logged;
-- timeout/lost response/restart recovers the same promises;
-- underpayment, overpayment-without-extra-entitlement, wrong keyset/order/amount, partial restore and bad
-  DLEQ all fail closed;
-- mint commit is the only authoritative input spend; no duplicate provider
-  spent-set write exists.
+Do not add a gate merely because another static assertion is possible. Avoid
+duplicate tests for the same property, exhaustive mutation of template fields,
+full browser matrices for server-only changes, and long manual command lists
+that an AI agent must follow. Prefer one authoritative script with named
+profiles.
 
-### E. SDK, WASM and browser
+Security review is milestone-driven. Changes to credential verification, spent
+state, key separation, strict-channel ordering or provider independence receive
+focused review. Other hardening ideas go to the backlog unless concrete
+evidence shows that they block the current user path.
 
-Expose strict policy verification and method selection in the native SDK and
-WASM. Store claim keys, quote snapshots and anonymous capabilities in
-IndexedDB; use Web Locks plus transactional reservations for multiple tabs.
-Never write invoice-to-query linkage to `localStorage`.
+When the acceptance criteria pass, stop. Do not convert every discovered
+defence-in-depth idea into a new prerequisite.
 
-The client selects and pays each provider independently. It may find provider
-0 first and provider 1 later; neither policy nor request contains the other
-provider's identity. The client rejects raw BAT- or ARC-verification-key reuse
-across the two selected verified policies before it considers an explicit
-shared-issuer override.
+## Deferred from the functional-beta critical path
 
-Exit criteria:
+These items may be selected for a later production/mainnet plan, but must not
+delay the basic Payment V1 path:
 
-- strict identity/binary/attestation/channel/database/root/policy ordering is
-  enforced before capability presentation;
-- each provider can independently select a different supported method;
-- page close/reopen recovers paid issuance without associating a capability
-  with a Bitcoin address or query;
-- multi-tab tests cannot double-reserve a one-use capability;
-- verification failure never downgrades to plaintext or unpaid service.
+- paid-priority/QoS scheduling beyond signed metadata;
+- real-funds payout execution and Settlement Cashu deposit activation;
+- reviewed mainnet Lightning preflight and real-money operation;
+- production TLS edge, distributed abuse controls, overload benchmarking,
+  metrics and alerting;
+- independently hosted production rollback authorities, HA/failover and
+  production custody ceremonies;
+- external public-WebPKI Cashu mint and long-lived public-network canaries;
+- promotion of ARC from experimental to stable;
+- long-running fuzzing, exhaustive fault injection, broad log audits and an
+  independent end-to-end security assessment;
+- complete ELF/loader provenance, coredump/PID1 evidence, immutable-root proofs
+  and unrelated system-wide host isolation; and
+- repository governance and credential-administration projects, unless chosen
+  separately as release-management work.
 
-### F. Directory and operator tooling
-
-Define versioned Nostr events for provider endpoints, backend/workload scopes,
-the exact live-policy epoch/digest and coarse health. Policies themselves are
-retrieved only through the strictly verified provider connection; the central
-directory signs with a key
-distinct from every provider/operator/payment key. Clients still verify the
-provider's own signed policy and trust chain. The canonical v1 event,
-inner-operator assertion and client rollback rules are specified in
-`DIRECTORY_PROTOCOL.md`.
-
-Provide offline key-generation, policy validation/signing, epoch rotation and
-store initialization tools. Secret keys never appear in Nostr events or normal
-command output.
-
-Exit criteria:
-
-- stale/replayed/equivocating directory events cannot override provider trust;
-- every provider advertises independent keys and pricing per workload;
-- policy lint rejects shared BAT raw keys, ARC stable status, missing recovery
-  horizons and unsupported method combinations.
-
-### G. Integration, security and operations
-
-Run method-by-method end-to-end tests with two independently configured fake
-providers, a fake issuer/Lightning backend and a fake Cashu mint. Add network
-fault injection at every durable boundary, then perform a fresh adversarial
-review of correlation, replay, rollback, confused-deputy and strict-mode
-downgrade risks.
-
-Exit criteria:
-
-- the full failure matrix in `TEST_PLAN.md` passes on native and applicable
-  browser targets;
-- logs and database schemas pass a forbidden-field audit;
-- explicit-legacy/enforced compatibility, fresh-store initialization and
-  rollback runbooks are rehearsed locally;
-- a draft PR contains focused commits and an explicit residual-risk register;
-- no production deployment or real-fund command has run.
-
-## Checkpoints
-
-1. **Core checkpoint:** protocol, crypto, provider/issuer stores and rollback
-   floors pass their isolated matrices.
-2. **Fake service checkpoint:** issuer HTTP plus fake Lightning/Cashu transports
-   and provider admission work end to end without real funds.
-3. **Client checkpoint:** Rust/WASM/Web complete independent two-provider
-   purchase and query flows, including crash and multi-tab tests.
-4. **Discovery checkpoint:** signed Nostr directory and policy tooling interop
-   with the same fixtures.
-5. **Security checkpoint:** independent review findings are fixed or recorded;
-   ARC remains experimental regardless of functional tests.
-6. **PR checkpoint:** draft PR, CI, migration/rollback/operator/user docs and a
-   reproducible local demo are ready.
-7. **Manual acceptance:** the user runs the documented fake-funds browser test
-   and reviews privacy-visible records.
-8. **Deployment decision:** only then request separate approval for each
-   production/remote/live-funds action and name its exact host, service, key and
-   rollback step.
+Deferral is not a claim that these items are complete or unnecessary for a
+real-money production service. The beta must state the corresponding limits.
 
 ## Compatibility and rollback
 
-The server has two explicit modes: legacy admission selected by omitting all V1
-service configuration, and enforced V1 selected with
-`--require-service-auth-v1`. There is deliberately no credential-consuming
-"shadow" mode: verifying or reserving bearer material while still allowing a
-legacy query would create ambiguous spend and downgrade semantics. Enforced
-mode requires a valid signed policy, external rollback authority and every
-advertised method adapter at startup; partial V1 configuration is fatal.
+The server retains explicit legacy and enforced Payment V1 modes. There is no
+credential-consuming shadow mode. Rollback restores the previous binary and
+configuration while preserving credential/spent databases; it does not lower
+floors or restore stale spend state. A beta deployment uses fresh stores unless
+an explicit tested migration belongs to that release.
 
-Legacy `0x08` ARC and `0x09` BAT messages remain demo-only during migration.
-They are never translated into a production grant. Rollback from enforced mode
-means restoring the previous binary/configuration while keeping new credential
-and spent databases intact; it never means lowering policy/store floors or
-restoring a stale spent database.
+## Checkpoints
 
-## Decisions deliberately deferred
+1. **Core path:** policy, issuer lifecycle, provider grant and client
+   acquisition pass focused tests.
+2. **Method path:** each of the five methods passes one authoritative adapter or
+   process boundary.
+3. **Two-provider path:** independently selected providers complete one strict,
+   verified query with no shared payment identifier.
+4. **Beta deployment:** the approved no-funds/Signet topology publishes and
+   reads back its catalog and passes bounded smoke tests.
+5. **Manual acceptance — complete (2026-08-09):** the user completed the live
+   browser flow with two verified servers; the result showed `Verified` and the
+   log reached `Batch complete`.
+6. **Production decision:** after beta acceptance, create a separate plan only
+   for the selected mainnet, payout, hardening and operations scope.
 
-The protocol does not depend on a particular production Lightning node API or
-rollback-floor vendor. A Core Lightning Unix-RPC adapter is implemented as the
-first executable backend, but choosing it (or a future backend), its custody
-model, network and backup/HA contract remains an operator decision. Before
-deployment, each provider must also choose a separately administered
-rollback-floor authority whose metadata leakage is acceptable. These are
-operational trust decisions, not pricing-policy fields.
+## Definition of done
+
+Payment V1 is functionally complete when checkpoints 1–5 pass, the default
+browserless PR checks are green, known user-path blockers are fixed, and
+remaining hardening is recorded as non-blocking backlog with honest scope
+labels.
+
+The beta is not incomplete merely because every possible audit or production
+hardening task has not been performed. Conversely, passing local or CI tests is
+not evidence of mainnet readiness, real-funds safety or user acceptance.

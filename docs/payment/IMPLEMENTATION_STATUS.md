@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-08-02. This document describes repository code, focused
+Status snapshot: 2026-08-09. This document describes repository code, focused
 tests, and the current functional-beta evidence; it is not a mainnet-production
 readiness claim. “Implemented” means that a code path exists; “tested” names
 the boundary actually exercised. It does not mean that an operator has
@@ -36,9 +36,10 @@ activated the path with real money.
   client verified the provider, paid a Signet invoice through an isolated
   payer, observed issuer settlement, claimed a provider-bound direct receipt,
   and received pre-query admission. That smoke deliberately sent no PIR query
-  and retained no invoice or capability fixture. User manual acceptance remains
-  the next external acceptance step. No mainnet funds or production Cashu mint
-  operation are implied by this status.
+  and retained no invoice or capability fixture. On 2026-08-09, the user also
+  completed the live browser Free flow: both servers verified successfully, the
+  result showed `Verified`, and the log reached `Batch complete`. No mainnet
+  funds or production Cashu mint operation are implied by this status.
 
 ## Frozen protocol decisions
 
@@ -1276,7 +1277,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       ARC offers.  This is a functional-beta deployment, not a mainnet-money
       launch: no real Lightning payment, external Cashu mint settlement or
       provider payout was performed for this evidence.
-- [ ] No explicit user manual-acceptance sign-off has been recorded yet.
+- [x] User manual acceptance was recorded on 2026-08-09: the live browser flow
+      verified both servers, displayed a `Verified` result and reached `Batch
+      complete`.
 
 ## Production release blockers and gates
 
