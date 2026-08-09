@@ -78,8 +78,8 @@ test('DPF-PIR verifies both servers, the result, and tears down transport', asyn
   await expectVerifiedResult(results);
   await expectLogContains(
     page,
-    'operator-endorsed identity verified (pir1)',
-    'operator-endorsed identity verified (pir2)',
+    'operator-endorsed identity verified (pir1-payment-beta)',
+    'operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
     'Bitcoin/MuHash anchor verified',
     'Batch complete: 1/1 found',
   );
