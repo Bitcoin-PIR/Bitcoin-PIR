@@ -108,8 +108,18 @@ test("repository deployment preparation passes its fail-closed gate", () => {
   assert.equal(validateDeploymentTree(REPOSITORY), true);
 });
 
-test("a copied positive fixture passes", () => {
-  withFixture((root) => assert.equal(validateDeploymentTree(root), true));
+test("a copied fixture ignores Finder metadata but rejects adjacent unexpected files", () => {
+  withFixture((root) => {
+    const deploymentRoot = join(root, "deploy/payment-v1");
+    writeFileSync(join(deploymentRoot, ".DS_Store"), "Finder metadata\n", "utf8");
+    assert.equal(validateDeploymentTree(root), true);
+
+    writeFileSync(join(deploymentRoot, "unexpected.txt"), "unexpected\n", "utf8");
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /unreviewed file type: deploy\/payment-v1\/unexpected\.txt/,
+    );
+  });
 });
 
 test("functional-beta service templates use the exact reviewed path inventory", () => {

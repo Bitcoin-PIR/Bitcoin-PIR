@@ -6,6 +6,25 @@ readiness claim. “Implemented” means that a code path exists; “tested” n
 the boundary actually exercised. It does not mean that an operator has
 activated the path with real money.
 
+## Mainnet Lightning V1 source boundary
+
+- [x] A versioned Mainnet `direct-bolt11-dpf` profile, inert systemd dependency
+      chain, offline profile lint, and RPC-read-only local Core/CLN preflight are
+      present in source. The systemd route does not start Mainnet Core: an
+      operator must explicitly start and inspect Core before preflight, guard,
+      or issuer. The focused browserless source entry is
+      `scripts/payment-v1-mainnet-lightning-v1-check.sh`; it covers the Rust
+      profile/CLI contract, source/render contracts, and the Web independent
+      Direct BOLT11/DPF pair contract.
+- [ ] **Live approval pending.** No rendered profile, target-host preflight,
+      Mainnet CLN node, liquidity/funds, remote installation, activation
+      sentinel, invoice, payment, or production service evidence is recorded.
+      The required non-secret input and approval boundary is
+      `MAINNET_LIGHTNING_V1_RUNBOOK.md`. The intended Direct+Direct flow needs
+      two independently rendered issuer instances and two matching
+      `provider-direct-v1` instances with distinct provider/issuer IDs, origins,
+      CLN payees, receipt keys and invoices; no such live pair exists yet.
+
 ## Functional-beta update
 
 - A centrally curated, explicitly degraded single-relay directory has published

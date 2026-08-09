@@ -840,6 +840,152 @@ function makeIssuerFixture(t) {
   return { ...fixture, plan };
 }
 
+function makeMainnetIssuerFixture(t) {
+  const fixture = makeIssuerFixture(t);
+  const templates = [
+    "deploy/payment-v1/lightning/lightningd.conf.in",
+    "deploy/payment-v1/lightning/verify-layout.sh.in",
+    "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
+  ];
+  for (const source of templates.slice(2)) copySource(fixture.sourceRoot, source);
+
+  const plan = fixture.plan;
+  const oldPlaceholders = plan.placeholders;
+  const admin = plan.payload_artifacts.find((artifact) =>
+    /^\/opt\/bitcoinpir\/bpir-admin\/[0-9a-f]{64}\/bpir-admin$/u.test(artifact.target_path));
+  const bitcoinCli = plan.payload_artifacts.find((artifact) => artifact.target_path.endsWith("/bin/bitcoin-cli"));
+  const lightningCli = plan.payload_artifacts.find((artifact) => artifact.target_path.endsWith("/bin/lightning-cli"));
+  assert.ok(admin);
+  assert.ok(bitcoinCli);
+  assert.ok(lightningCli);
+  const quoteBytes = Buffer.from("reviewed-mainnet-quote-delegation\n");
+  const backupBytes = Buffer.from(
+    "schema_version = 1\n" +
+    "node_id_hex = \"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"\n" +
+    "recorded_at_unix = 1\nstaticbackup_digest_hex = \"" + "77".repeat(32) + "\"\n" +
+    "staticbackup_count = 1\nidentity_secret_backup_confirmed = true\n" +
+    "channel_state_backup_confirmed = true\n",
+  );
+  const candidates = {
+    ...oldPlaceholders,
+    LIGHTNING_NETWORK: "bitcoin",
+    MAINNET_BACKUP_RECEIPT_SHA256: hashBytes(backupBytes),
+    MAINNET_BITCOIN_CLI_SHA256: bitcoinCli.expected_sha256,
+    MAINNET_CHANNEL_RECOVERY_EVIDENCE_SHA256: "44".repeat(32),
+    MAINNET_DATASTORE_RESTORE_EVIDENCE_SHA256: "55".repeat(32),
+    MAINNET_EXPECTED_ISSUER_ID_HEX: "66".repeat(32),
+    MAINNET_IDENTITY_RESTORE_EVIDENCE_SHA256: "33".repeat(32),
+    MAINNET_LIGHTNING_CLI_SHA256: lightningCli.expected_sha256,
+    MAINNET_MAX_TOTAL_EXPOSURE_MSAT: "100000000000",
+    MAINNET_PAYEE_NODE_ID_HEX:
+      "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    MAINNET_PREFLIGHT_GID: "738",
+    MAINNET_PREFLIGHT_UID: "739",
+    MAINNET_QUOTE_DELEGATION_SHA256: hashBytes(quoteBytes),
+  };
+  const required = new Set();
+  for (const source of templates) {
+    const text = readFileSync(join(fixture.sourceRoot, source), "utf8");
+    for (const match of text.matchAll(/@([A-Z][A-Z0-9_]+)@/gu)) required.add(match[1]);
+  }
+  plan.placeholders = Object.fromEntries(
+    [...required].sort().map((name) => [name, candidates[name]]),
+  );
+  assert.equal(Object.values(plan.placeholders).includes(undefined), false);
+
+  const removed = new Set([
+    "/etc/bitcoinpir/payment-v1/issuer/cashu-bat.key",
+    "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin",
+    "/etc/bitcoinpir/payment-v1/lightning/preflight.toml",
+    "/etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256",
+    "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256",
+    "/etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
+    "/etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
+  ]);
+  plan.payload_artifacts = plan.payload_artifacts.filter(
+    (artifact) => !removed.has(artifact.target_path),
+  );
+  const configTarget = "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml";
+  const configBytes = Buffer.from(renderText(
+    fixture.sourceRoot,
+    "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example",
+    plan.placeholders,
+  ));
+  const lightningConfigTarget = "/etc/bitcoinpir/payment-v1/lightning/lightningd.conf";
+  const lightningConfigBytes = Buffer.from(renderText(
+    fixture.sourceRoot,
+    "deploy/payment-v1/lightning/lightningd.conf.in",
+    plan.placeholders,
+  ));
+  const verifierTarget = "/usr/local/libexec/bitcoinpir/verify-lightning-layout";
+  const verifierBytes = Buffer.from(renderText(
+    fixture.sourceRoot,
+    "deploy/payment-v1/lightning/verify-layout.sh.in",
+    plan.placeholders,
+  ));
+  const additions = [
+    ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin", quoteBytes,
+      { class: "policy", gid: 738, mode: "0440", uid: 0 }],
+    ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/backup-receipt.toml", backupBytes,
+      { class: "policy", gid: 738, mode: "0440", uid: 0 }],
+    ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/bpir-admin.sha256",
+      Buffer.from(`${admin.expected_sha256}  ${admin.target_path}\n`), {}],
+    ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight-config.sha256",
+      Buffer.from([
+        `${hashBytes(backupBytes)}  /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/backup-receipt.toml`,
+        `${hashBytes(configBytes)}  ${configTarget}`,
+        `${hashBytes(quoteBytes)}  /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin`,
+      ].join("\n") + "\n"), {}],
+    ["/etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256",
+      Buffer.from(`${hashBytes(lightningConfigBytes)}  ${lightningConfigTarget}\n`), {}],
+    ["/etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256",
+      Buffer.from(`${hashBytes(verifierBytes)}  ${verifierTarget}\n`), {}],
+  ];
+  additions.forEach(([target, bytes, metadata], index) => {
+    plan.payload_artifacts.push(addPayload(fixture, target, bytes, 900 + index, metadata));
+  });
+  plan.payload_artifacts.sort((left, right) => left.target_path.localeCompare(right.target_path));
+
+  const targets = {
+    "deploy/payment-v1/lightning/lightningd.conf.in": lightningConfigTarget,
+    "deploy/payment-v1/lightning/verify-layout.sh.in": verifierTarget,
+    "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example": configTarget,
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in":
+      "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-core.service",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in":
+      "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-preflight.service",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in":
+      "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service",
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in":
+      "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-payment-issuer.service",
+  };
+  plan.rendered_artifacts = templates.map((sourcePath) => ({
+    gid: sourcePath.endsWith("preflight.toml.example")
+      ? 738
+      : sourcePath.endsWith("lightningd.conf.in") ? 734 : 0,
+    mode: sourcePath.endsWith("preflight.toml.example") || sourcePath.endsWith("lightningd.conf.in")
+      ? "0440"
+      : sourcePath.endsWith("verify-layout.sh.in") ? "0755" : "0644",
+    source_path: sourcePath,
+    source_sha256: hashFile(join(fixture.sourceRoot, sourcePath)),
+    target_path: targets[sourcePath],
+    uid: 0,
+  }));
+  plan.deployment_id = "issuer-lightning-mainnet-v1-test";
+  plan.deployment_profile = "issuer-lightning-mainnet-v1";
+  plan.service_identities = [
+    { gid: 734, group_name: "bitcoinpir-mainnet-cln-guard", uid: 735, unit_name: "bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service", user_name: "bitcoinpir-mainnet-cln-rpc-guard" },
+    { gid: 734, group_name: "bitcoinpir-mainnet-cln-guard", uid: 733, unit_name: "bitcoinpir-mainnet-lightning-v1-core.service", user_name: "bitcoinpir-mainnet-lightning" },
+    { gid: 738, group_name: "bitcoinpir-mainnet-lightning-preflight", uid: 739, unit_name: "bitcoinpir-mainnet-lightning-v1-preflight.service", user_name: "bitcoinpir-mainnet-lightning-preflight" },
+    { gid: 732, group_name: "bitcoinpir-mainnet-issuer", uid: 731, unit_name: "bitcoinpir-mainnet-lightning-v1-payment-issuer.service", user_name: "bitcoinpir-mainnet-issuer" },
+  ].sort((left, right) => left.unit_name < right.unit_name ? -1 : left.unit_name > right.unit_name ? 1 : 0);
+  return fixture;
+}
+
 function makeProviderFixture(t, { direct = false, noStandardCashu = false } = {}) {
   const fixture = temporaryRoots(t);
   const source = direct
@@ -2164,6 +2310,8 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
         "bitcoinpir-core-lightning.service",
         "bitcoinpir-lightning-preflight.service",
       ],
+      PartOf: [],
+      Requisite: [],
     },
   );
   assert.deepEqual(
@@ -2202,6 +2350,104 @@ test("complete issuer profile closes core, guard, tmpfiles, preflight, issuer, a
     2,
   );
   assert.equal(verifyFixture(fixture).manifestSha256, model.manifestSha256);
+});
+
+test("mainnet Lightning V1 renders live preflight and the strict core-preflight-guard-issuer chain", (t) => {
+  const fixture = makeMainnetIssuerFixture(t);
+  const model = renderFixture(fixture);
+  assert.equal(model.manifest.deployment_profile, "issuer-lightning-mainnet-v1");
+  assert.equal(model.request.units.length, 4);
+  const byName = new Map(model.request.units.map((unit) => [unit.unit_name, unit]));
+  assert.match(
+    byName.get("bitcoinpir-mainnet-lightning-v1-preflight.service").exec_start[0],
+    /mainnet-lightning-v1 preflight/u,
+  );
+  const core = "bitcoinpir-mainnet-lightning-v1-core.service";
+  for (const consumer of [
+    "bitcoinpir-mainnet-lightning-v1-preflight.service",
+    "bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service",
+    "bitcoinpir-mainnet-lightning-v1-payment-issuer.service",
+  ]) {
+    const dependencies = byName.get(consumer).unit_dependencies;
+    assert.equal(dependencies.Requisite.includes(core), true);
+    assert.equal(dependencies.PartOf.includes(core), true);
+    assert.equal(dependencies.After.includes(core), true);
+    assert.equal(dependencies.Requires.includes(core), false);
+    assert.equal(dependencies.BindsTo.includes(core), false);
+  }
+  assert.equal(
+    byName.get("bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service")
+      .unit_dependencies.BindsTo.includes("bitcoinpir-mainnet-lightning-v1-preflight.service"),
+    true,
+  );
+  assert.doesNotMatch(
+    byName.get("bitcoinpir-mainnet-lightning-v1-payment-issuer.service").exec_start[0],
+    /(?:cashu|arc|payout)/iu,
+  );
+});
+
+test("mainnet preflight render binds UID GID config metadata and exact admin manifests", (t) => {
+  const mismatchedGid = makeMainnetIssuerFixture(t);
+  mismatchedGid.plan.rendered_artifacts.find((artifact) =>
+    artifact.target_path === "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml").gid = 732;
+  assert.throws(() => renderFixture(mismatchedGid), /MAINNET_PREFLIGHT_GID/u);
+
+  const mismatchedUid = makeMainnetIssuerFixture(t);
+  mismatchedUid.plan.service_identities.find((identity) =>
+    identity.unit_name === "bitcoinpir-mainnet-lightning-v1-preflight.service").uid = 740;
+  assert.throws(() => renderFixture(mismatchedUid), /UID\/GID placeholders|config-reader-expected-uid/u);
+
+  const missingManifest = makeMainnetIssuerFixture(t);
+  missingManifest.plan.payload_artifacts = missingManifest.plan.payload_artifacts.filter(
+    (artifact) => artifact.target_path !==
+      "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/bpir-admin.sha256",
+  );
+  assert.throws(() => renderFixture(missingManifest), /missing artifact|dependency/u);
+
+  const wrongManifest = makeMainnetIssuerFixture(t);
+  const manifest = wrongManifest.plan.payload_artifacts.find((artifact) =>
+    artifact.target_path === "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/bpir-admin.sha256");
+  const wrongBytes = Buffer.from(`${"aa".repeat(32)}  /opt/bitcoinpir/bpir-admin/${"aa".repeat(32)}/bpir-admin\n`);
+  writeFileSync(join(wrongManifest.inputRoot, manifest.source_path), wrongBytes);
+  manifest.expected_sha256 = hashBytes(wrongBytes);
+  assert.throws(() => renderFixture(wrongManifest), /must bind only/u);
+});
+
+test("mainnet render rejects circular approval dependencies and Cashu ARC payout drift", (t) => {
+  const coreAutoStart = makeMainnetIssuerFixture(t);
+  updateTemplate(
+    coreAutoStart,
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+    (text) => text.replace(
+      "Requisite=bitcoinpir-mainnet-lightning-v1-core.service",
+      "Requires=bitcoinpir-mainnet-lightning-v1-core.service",
+    ),
+  );
+  assert.throws(
+    () => renderFixture(coreAutoStart),
+    /already-running mainnet Core|must not Requires.*mainnet Core/u,
+  );
+
+  const circular = makeMainnetIssuerFixture(t);
+  updateTemplate(
+    circular,
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+    (text) => text.replace(
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-PREFLIGHT-APPROVED",
+    ),
+  );
+  assert.throws(() => renderFixture(circular), /activation conditions|self-approval/u);
+
+  for (const forbidden of ["--cashu-keyset x", "--arc-key x", "--payout-target x"]) {
+    const fixture = makeMainnetIssuerFixture(t);
+    updateTemplate(
+      fixture,
+      "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
+      (text) => text.replace(" --cln-rpc-timeout-seconds 10", ` ${forbidden} --cln-rpc-timeout-seconds 10`),
+    );
+    assert.throws(() => renderFixture(fixture), /Cashu, ARC and payout/u);
+  }
 });
 
 test("issuer profile keeps the CLN guard deadman non-restarting", (t) => {

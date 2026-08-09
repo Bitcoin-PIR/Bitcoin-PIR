@@ -127,6 +127,7 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "Description",
   "PartOf",
   "Requires",
+  "Requisite",
   "Wants",
 ]);
 
@@ -134,7 +135,9 @@ const SYSTEMD_RUNTIME_RELATION_KEYS = Object.freeze([
   "After",
   "Before",
   "BindsTo",
+  "PartOf",
   "Requires",
+  "Requisite",
 ]);
 
 const SYSTEMD_SERVICE_KEYS = Object.freeze([
@@ -205,6 +208,17 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
       "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+    ]),
+  }),
+  "issuer-lightning-mainnet-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      "deploy/payment-v1/lightning/verify-layout.sh.in",
+      "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example",
+      "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in",
+      "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in",
+      "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in",
+      "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
     ]),
   }),
   "directory-publisher-netns-v1": Object.freeze({
@@ -587,6 +601,30 @@ const TEMPLATE_CATALOG = Object.freeze({
     modes: ["0644"],
     rootOwned: true,
   },
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-preflight.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-core.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath: "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-payment-issuer.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/systemd/hetzner-provider.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-provider.service",
@@ -677,6 +715,12 @@ const TEMPLATE_CATALOG = Object.freeze({
     modes: ["0644"],
     rootOwned: true,
   },
+  "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml",
+    modes: ["0440"],
+    rootOwned: false,
+  },
   "deploy/payment-v1/directory-relay.toml.example": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/directory-relay/config.toml",
@@ -702,6 +746,14 @@ const HEX64_PLACEHOLDERS = new Set([
   "HETZNER_POLICY_PUBKEY_HEX",
   "HETZNER_PROVIDER_ID_HEX",
   "ISSUER_SETTLEMENT_PUBKEY_HEX",
+  "MAINNET_BACKUP_RECEIPT_SHA256",
+  "MAINNET_BITCOIN_CLI_SHA256",
+  "MAINNET_CHANNEL_RECOVERY_EVIDENCE_SHA256",
+  "MAINNET_DATASTORE_RESTORE_EVIDENCE_SHA256",
+  "MAINNET_EXPECTED_ISSUER_ID_HEX",
+  "MAINNET_IDENTITY_RESTORE_EVIDENCE_SHA256",
+  "MAINNET_LIGHTNING_CLI_SHA256",
+  "MAINNET_QUOTE_DELEGATION_SHA256",
   "PAYMENT_ISSUER_SHA256",
   "PUBLISHER_NETNS_HELPER_SHA256",
   "ROLLBACK_AUTHORITY_SHA256",
@@ -732,6 +784,8 @@ const UID_GID_PLACEHOLDERS = new Set([
   "CLN_GUARD_UID",
   "PREFLIGHT_GID",
   "PREFLIGHT_UID",
+  "MAINNET_PREFLIGHT_GID",
+  "MAINNET_PREFLIGHT_UID",
 ]);
 
 const POSITIVE_SERVICE_VALUE_PLACEHOLDERS = new Set([
@@ -761,6 +815,8 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   "DIRECTORY_PUBLISH_NOW_UNIX",
   "PROVIDER_0_ENTRY_ARTIFACT",
   "PROVIDER_1_ENTRY_ARTIFACT",
+  "MAINNET_PAYEE_NODE_ID_HEX",
+  "MAINNET_MAX_TOTAL_EXPOSURE_MSAT",
 ]);
 
 function fail(message) {
@@ -1259,6 +1315,11 @@ function validatePlaceholderValue(name, value) {
     return;
   }
   switch (name) {
+    case "MAINNET_PAYEE_NODE_ID_HEX":
+      if (!/^(?:02|03)[0-9a-f]{64}$/u.test(value)) {
+        fail(`${label} must be one lowercase compressed secp256k1 public key`);
+      }
+      return;
     case "BITCOIND_SYSTEMD_UNIT":
       if (!/^[A-Za-z0-9_.-]{1,128}\.service$/u.test(value)) {
         fail(`${label} must be one literal systemd .service unit name`);
@@ -1285,6 +1346,9 @@ function validatePlaceholderValue(name, value) {
     case "CLN_GUARD_MAX_INVOICES_PER_RUNTIME":
       parseUnsignedDecimal(value, label, 1n, 100_000n);
       return;
+    case "MAINNET_MAX_TOTAL_EXPOSURE_MSAT":
+      parseUnsignedDecimal(value, label, 1n, 2_100_000_000_000_000n);
+      return;
     case "CLN_P2P_ANNOUNCE_ADDR":
       parseHostPort(value, label, { announce: true });
       return;
@@ -1297,7 +1361,9 @@ function validatePlaceholderValue(name, value) {
       }
       return;
     case "LIGHTNING_NETWORK":
-      if (value !== "signet") fail(`${label} must equal signet for Payment V1 staging`);
+      if (!["signet", "bitcoin"].includes(value)) {
+        fail(`${label} must equal signet or bitcoin for a reviewed Lightning profile`);
+      }
       return;
     case "DIRECTORY_PUBLISH_NOW_UNIX":
       parseUnsignedDecimal(value, label, 1n, 9_007_199_254_740_991n);
@@ -1424,6 +1490,11 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
       ["/etc/bitcoinpir/payment-v1/issuer/", "bitcoinpir-payment-issuer.service"],
       ["/etc/bitcoinpir/payment-v1/lightning/", "bitcoinpir-core-lightning.service"],
     ],
+    "issuer-lightning-mainnet-v1": [
+      ["/etc/bitcoinpir/payment-v1/issuer/", "bitcoinpir-mainnet-lightning-v1-payment-issuer.service"],
+      ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/", "bitcoinpir-mainnet-lightning-v1-payment-issuer.service"],
+      ["/etc/bitcoinpir/payment-v1/lightning/", "bitcoinpir-mainnet-lightning-v1-core.service"],
+    ],
     "provider-v1": [["/etc/bitcoinpir/payment-v1/provider/", "bitcoinpir-provider.service"]],
     "provider-no-standard-cashu-v1": [[
       "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/",
@@ -1474,6 +1545,7 @@ function validateSecretOwnerBindings(plan) {
 function remoteRollbackPathsForProfile(profile) {
   const roots = {
     "issuer-lightning-signet-v1": "/etc/bitcoinpir/payment-v1/issuer",
+    "issuer-lightning-mainnet-v1": "/etc/bitcoinpir/payment-v1/issuer",
     "provider-v1": "/etc/bitcoinpir/payment-v1/provider",
     "provider-no-standard-cashu-v1":
       "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
@@ -1755,25 +1827,28 @@ function validateDirectoryRelayPayloadClosure({
 }
 
 function validateIssuerLightningPreflightPayloadContract(plan) {
-  if (plan.deployment_profile !== "issuer-lightning-signet-v1") return;
-  const preflightPath = "/etc/bitcoinpir/payment-v1/lightning/preflight.toml";
-  const preflight = plan.payload_artifacts.find(
+  if (!["issuer-lightning-signet-v1", "issuer-lightning-mainnet-v1"].includes(plan.deployment_profile)) return;
+  const mainnet = plan.deployment_profile === "issuer-lightning-mainnet-v1";
+  const preflightPath = mainnet
+    ? "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml"
+    : "/etc/bitcoinpir/payment-v1/lightning/preflight.toml";
+  const preflight = (mainnet ? plan.rendered_artifacts : plan.payload_artifacts).find(
     (artifact) => artifact.target_path === preflightPath,
   );
   if (!preflight) {
     fail("issuer Lightning profile is missing its static preflight config");
   }
   if (
-    preflight.class !== "config" ||
+    (!mainnet && preflight.class !== "config") ||
     preflight.uid !== 0 ||
-    preflight.gid !== Number(plan.placeholders.PREFLIGHT_GID) ||
+    preflight.gid !== Number(plan.placeholders[mainnet ? "MAINNET_PREFLIGHT_GID" : "PREFLIGHT_GID"]) ||
     preflight.mode !== "0440"
   ) {
     fail(
-      "issuer Lightning preflight config must be root:PREFLIGHT_GID mode 0440",
+      `issuer Lightning preflight config must be root:${mainnet ? "MAINNET_PREFLIGHT_GID" : "PREFLIGHT_GID"} mode 0440`,
     );
   }
-  if (
+  if (!mainnet &&
     plan.payload_artifacts.some((artifact) =>
       /(?:^|\/)backup-receipt(?:\.|$)/u.test(artifact.target_path),
     )
@@ -2298,6 +2373,35 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SIGNET-LIGHTNING-STAGING-APPROVED",
     ]),
   }),
+  "issuer-lightning-mainnet-v1": Object.freeze({
+    "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-core.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-preflight.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    ]),
+    "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-payment-issuer.service": Object.freeze([
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED",
+      "ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED",
+    ]),
+  }),
   "provider-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-provider.service": Object.freeze([
       "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
@@ -2391,6 +2495,21 @@ function validateProfileUnitPolicy(
     ]).has(fragmentPath);
   if (!approvalConsumer && execStartPreEx.some((command) => command.flags.length !== 0)) {
     fail(`${label} contains closed-world forbidden directive: privileged ExecStartPre flags`);
+  }
+  if (deploymentProfile === "issuer-lightning-mainnet-v1") {
+    const command = execStart.join("\n");
+    if (/(?:--(?:cashu|arc|payout)[a-z-]*(?:\s|=|$)|\/(?:cashu|arc|payout)(?:[\/-]|$))/iu.test(command)) {
+      fail(`${label} must keep Cashu, ARC and payout surfaces unavailable`);
+    }
+    const preflightUnit = "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-preflight.service";
+    if (fragmentPath === preflightUnit) {
+      if (!command.includes("mainnet-lightning-v1 preflight")) {
+        fail(`${label} must execute the live mainnet preflight`);
+      }
+      if (conditions.some((condition) => condition.includes("PREFLIGHT-APPROVED"))) {
+        fail(`${label} must not consume a circular self-approval sentinel`);
+      }
+    }
   }
   if (
     deploymentProfile === "issuer-lightning-signet-v1" &&
@@ -2797,6 +2916,10 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
     "bitcoinpir-core-lightning.service": ["LIGHTNING_UID", "LIGHTNING_GID"],
     "bitcoinpir-lightning-preflight.service": ["PREFLIGHT_UID", "PREFLIGHT_GID"],
     "bitcoinpir-payment-issuer.service": ["ISSUER_UID", "ISSUER_GID"],
+    "bitcoinpir-mainnet-lightning-v1-core.service": ["LIGHTNING_UID", "LIGHTNING_GID"],
+    "bitcoinpir-mainnet-lightning-v1-preflight.service": ["MAINNET_PREFLIGHT_UID", "MAINNET_PREFLIGHT_GID"],
+    "bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service": ["CLN_GUARD_UID", "LIGHTNING_GID"],
+    "bitcoinpir-mainnet-lightning-v1-payment-issuer.service": ["ISSUER_UID", "ISSUER_GID"],
   };
   for (const unit of runtimeUnits) {
     const identity = plan.service_identities.find((entry) => entry.unit_name === unit.unit_name);
@@ -2808,7 +2931,7 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
       fail(`service identity does not match rendered User=/Group=: ${unit.unit_name}`);
     }
     const pins = issuerPins[unit.unit_name];
-    if (plan.deployment_profile === "issuer-lightning-signet-v1" && pins) {
+    if (["issuer-lightning-signet-v1", "issuer-lightning-mainnet-v1"].includes(plan.deployment_profile) && pins) {
       if (
         identity.uid !== Number(plan.placeholders[pins[0]]) ||
         identity.gid !== Number(plan.placeholders[pins[1]])
@@ -2818,10 +2941,48 @@ function validateRuntimeServiceIdentities(plan, runtimeUnits) {
     }
     validatePreflightConfigReaderIdentity(unit, identity, "rendered runtime unit");
   }
+  if (plan.deployment_profile === "issuer-lightning-mainnet-v1") {
+    const byName = new Map(runtimeUnits.map((unit) => [unit.unit_name, unit]));
+    const requiredChain = [
+      ["bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service", "bitcoinpir-mainnet-lightning-v1-preflight.service"],
+      ["bitcoinpir-mainnet-lightning-v1-payment-issuer.service", "bitcoinpir-mainnet-lightning-v1-preflight.service"],
+      ["bitcoinpir-mainnet-lightning-v1-payment-issuer.service", "bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service"],
+    ];
+    for (const [consumer, dependency] of requiredChain) {
+      const unit = byName.get(consumer);
+      if (!unit) fail(`mainnet Lightning dependency chain is missing ${consumer}`);
+      for (const relation of ["After", "Requires", "BindsTo"]) {
+        if (!(unit.unit_dependencies[relation] ?? []).includes(dependency)) {
+          fail(`${consumer} must ${relation} ${dependency}`);
+        }
+      }
+    }
+    const core = "bitcoinpir-mainnet-lightning-v1-core.service";
+    for (const consumer of [
+      "bitcoinpir-mainnet-lightning-v1-preflight.service",
+      "bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service",
+      "bitcoinpir-mainnet-lightning-v1-payment-issuer.service",
+    ]) {
+      const relations = byName.get(consumer)?.unit_dependencies;
+      for (const relation of ["After", "PartOf", "Requisite"]) {
+        if (!(relations?.[relation] ?? []).includes(core)) {
+          fail(`${consumer} must ${relation} the already-running mainnet Core unit`);
+        }
+      }
+      for (const pullingRelation of ["Requires", "BindsTo"]) {
+        if ((relations?.[pullingRelation] ?? []).includes(core)) {
+          fail(`${consumer} must not ${pullingRelation} the mainnet Core unit because that would auto-start it`);
+        }
+      }
+    }
+  }
 }
 
 function validatePreflightConfigReaderIdentity(unit, identity, label) {
-  if (unit.unit_name !== "bitcoinpir-lightning-preflight.service") return;
+  if (![
+    "bitcoinpir-lightning-preflight.service",
+    "bitcoinpir-mainnet-lightning-v1-preflight.service",
+  ].includes(unit.unit_name)) return;
   const tokens = (unit.exec_start?.[0] ?? "").trim().split(/\s+/u);
   const exactArgument = (flag, expected) => {
     const indexes = tokens.flatMap((token, index) => token === flag ? [index] : []);
@@ -3375,6 +3536,20 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256":
       oneExact(`/opt/bitcoinpir/bpir-admin/${plan.placeholders.BPIR_ADMIN_SHA256}/bpir-admin`);
       return;
+    case "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/bpir-admin.sha256":
+      oneExact(`/opt/bitcoinpir/bpir-admin/${plan.placeholders.BPIR_ADMIN_SHA256}/bpir-admin`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight-config.sha256":
+      assertSameStringSet(
+        entries.map((entry) => entry.target_path),
+        [
+          "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/backup-receipt.toml",
+          "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/preflight.toml",
+          "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin",
+        ],
+        `hash manifest ${manifestPath} targets`,
+      );
+      return;
     case "/etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256":
       oneExact(`/opt/bitcoinpir/cln-rpc-guard/${plan.placeholders.CLN_RPC_GUARD_SHA256}/bitcoinpir-cln-rpc-guard`);
       return;
@@ -3582,6 +3757,18 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   exactKeys(plan.placeholders, [...requiredPlaceholders], "render plan placeholders");
   for (const name of requiredPlaceholders) validatePlaceholderValue(name, plan.placeholders[name]);
   if (
+    plan.deployment_profile === "issuer-lightning-signet-v1" &&
+    plan.placeholders.LIGHTNING_NETWORK !== "signet"
+  ) {
+    fail("issuer-lightning-signet-v1 must render LIGHTNING_NETWORK=signet");
+  }
+  if (
+    plan.deployment_profile === "issuer-lightning-mainnet-v1" &&
+    plan.placeholders.LIGHTNING_NETWORK !== "bitcoin"
+  ) {
+    fail("issuer-lightning-mainnet-v1 must render LIGHTNING_NETWORK=bitcoin");
+  }
+  if (
     plan.deployment_profile === "edge-hetzner-v1" &&
     new Set([
       plan.placeholders.PUBLIC_HTTPS_BIND,
@@ -3605,11 +3792,17 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
   ) {
     fail("rollback-authority private bind and sole-client addresses must differ");
   }
-  if (plan.deployment_profile === "issuer-lightning-signet-v1") {
-    const uidValues = ["ISSUER_UID", "LIGHTNING_UID", "CLN_GUARD_UID", "PREFLIGHT_UID"].map(
+  if (["issuer-lightning-signet-v1", "issuer-lightning-mainnet-v1"].includes(plan.deployment_profile)) {
+    const uidValues = [
+      "ISSUER_UID", "LIGHTNING_UID", "CLN_GUARD_UID",
+      plan.deployment_profile === "issuer-lightning-mainnet-v1" ? "MAINNET_PREFLIGHT_UID" : "PREFLIGHT_UID",
+    ].map(
       (name) => plan.placeholders[name],
     );
-    const gidValues = ["ISSUER_GID", "LIGHTNING_GID", "PREFLIGHT_GID"].map(
+    const gidValues = [
+      "ISSUER_GID", "LIGHTNING_GID",
+      plan.deployment_profile === "issuer-lightning-mainnet-v1" ? "MAINNET_PREFLIGHT_GID" : "PREFLIGHT_GID",
+    ].map(
       (name) => plan.placeholders[name],
     );
     if (new Set(uidValues).size !== uidValues.length || new Set(gidValues).size !== gidValues.length) {
@@ -3622,6 +3815,14 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       BigInt(plan.placeholders.CLN_GUARD_MAX_INVOICES_PER_MINUTE)
   ) {
     fail("CLN guard invoice burst must not exceed its per-minute rate");
+  }
+  if (
+    plan.deployment_profile === "issuer-lightning-mainnet-v1" &&
+    BigInt(plan.placeholders.CLN_GUARD_MAX_INVOICE_MSAT) *
+      BigInt(plan.placeholders.CLN_GUARD_MAX_INVOICES_PER_RUNTIME) >
+      BigInt(plan.placeholders.MAINNET_MAX_TOTAL_EXPOSURE_MSAT)
+  ) {
+    fail("mainnet CLN guard invoice envelope must not exceed total custody exposure");
   }
   const publisherRelayBinding = directoryPublisherRelayBinding(
     plan,

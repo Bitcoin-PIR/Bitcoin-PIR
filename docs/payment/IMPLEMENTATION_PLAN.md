@@ -138,7 +138,7 @@ delay the basic Payment V1 path:
 
 - paid-priority/QoS scheduling beyond signed metadata;
 - real-funds payout execution and Settlement Cashu deposit activation;
-- reviewed mainnet Lightning preflight and real-money operation;
+- approved live Mainnet Lightning operation and real-money operation;
 - production TLS edge, distributed abuse controls, overload benchmarking,
   metrics and alerting;
 - independently hosted production rollback authorities, HA/failover and
@@ -154,6 +154,22 @@ delay the basic Payment V1 path:
 
 Deferral is not a claim that these items are complete or unnecessary for a
 real-money production service. The beta must state the corresponding limits.
+
+## Mainnet Lightning V1 handoff boundary
+
+The repository now has a bounded source-readiness lane for the Mainnet
+`direct-bolt11-dpf` profile. Run
+`scripts/payment-v1-mainnet-lightning-v1-check.sh` for the focused offline Rust,
+source/render, and Web Direct+Direct contract; do not substitute it for full
+CI or a live deployment check.
+
+This lane is **source-ready; live approval pending**. A later, explicitly
+approved operation must supply the public identifiers/path/hash pins, selected
+Mainnet CLN node, risk caps and liquidity/funding envelope, then separately
+approve rendering, remote mutation, custody/funds, activation, and any invoice
+or payment action. The runbook deliberately keeps secrets out of source and is
+the authoritative short handoff:
+[`MAINNET_LIGHTNING_V1_RUNBOOK.md`](MAINNET_LIGHTNING_V1_RUNBOOK.md).
 
 ## Compatibility and rollback
 

@@ -18,8 +18,11 @@ funds**, **public Signet**, or **production mainnet**.
   persistent Lightning state or public publication.
 - Public Signet uses staging-only persistent wallet/node/channel identities,
   test coins and public staging surfaces.
-- Production mainnet is currently blocked because the repository's deployment
-  preflight is default-Signet-specific; no reviewed mainnet preflight exists.
+- Production mainnet has a source-level `direct-bolt11-dpf` profile and a
+  read-only local Core/CLN preflight, but remains blocked pending a private
+  rendered plan, target-host approval, selected Mainnet CLN, risk/liquidity and
+  funds approvals, installation, activation and observed live evidence. See
+  [MAINNET_LIGHTNING_V1_RUNBOOK.md](MAINNET_LIGHTNING_V1_RUNBOOK.md).
 
 Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory every
 non-secret input and [render-plan-skeletons/](render-plan-skeletons/) as the

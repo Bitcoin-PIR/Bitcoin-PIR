@@ -1,0 +1,59 @@
+# Mainnet CLN runtime template. No [Install] section: remote activation and
+# real key/fund operations remain outside this source-completion profile.
+[Unit]
+Description=BitcoinPIR Mainnet Lightning V1 Core Lightning (template only)
+After=network-online.target @BITCOIND_SYSTEMD_UNIT@
+Wants=network-online.target
+Requires=@BITCOIND_SYSTEMD_UNIT@
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-LIGHTNING-V1-ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-IDENTITY-RESTORE-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-mainnet-lightning
+Group=bitcoinpir-mainnet-cln-guard
+SupplementaryGroups=bitcoinpir-bitcoin-rpc
+UMask=0077
+RuntimeDirectory=bitcoinpir-mainnet-core-lightning
+RuntimeDirectoryMode=0700
+WorkingDirectory=/srv/lightning/bitcoin
+Environment=LD_LIBRARY_PATH=/opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-libpq.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256
+ExecStartPre=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf --test-daemons-only --offline
+ExecStartPre=/usr/local/libexec/bitcoinpir/verify-lightning-layout
+ExecStart=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=120
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=/srv/lightning/plugins
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/ /opt/bitcoinpir/core-lightning-libpq/@CLN_LIBPQ_SHA256@/ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/
+ReadWritePaths=/srv/lightning/bitcoin /run/bitcoinpir-mainnet-core-lightning

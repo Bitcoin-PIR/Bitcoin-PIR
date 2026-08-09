@@ -17,9 +17,10 @@ use, mainnet funds or production-key operation.
   channels and may acquire test coins, but only under separate approvals for
   remote mutation, persistent custody, faucet/test-coin handling and any public
   ingress or Nostr publication.
-- **Production mainnet** is blocked on current source. The implemented
-  deployment preflight is default-Signet-specific; no reviewed mainnet
-  preflight or render profile exists.
+- **Production mainnet** has a separate source-level Mainnet V1 profile and
+  read-only local Core/CLN preflight. This Signet-only document neither renders
+  it nor authorizes a target host, node contact, liquidity/funds, installation,
+  activation, invoice or payment; see `MAINNET_LIGHTNING_V1_RUNBOOK.md`.
 
 No approval in one phase implies another. Use
 [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) for non-secret network,
