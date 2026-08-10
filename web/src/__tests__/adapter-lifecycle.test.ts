@@ -25,6 +25,7 @@ vi.mock('../sdk-bridge.js', () => ({
 
 import { BatchPirClientAdapter } from '../dpf-adapter.js';
 import { HarmonyPirClientAdapter } from '../harmonypir-adapter.js';
+import { OramPirClientAdapter } from '../oram-adapter.js';
 import type { WasmAnnounceVerification, WasmAttestVerification } from '../sdk-bridge.js';
 
 function fakeAttestation(free: () => void): WasmAttestVerification {
@@ -418,6 +419,67 @@ describe('adapter WASM lifecycle', () => {
 
     expect(requireSdkWasm).not.toHaveBeenCalled();
     expect(WasmHarmonyClient).not.toHaveBeenCalled();
+  });
+
+  it('waits for SDK initialization before constructing or dialing an ORAM client', async () => {
+    let resolveInit!: (ready: boolean) => void;
+    initSdkWasm.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveInit = resolve;
+    }));
+    isSdkWasmReady.mockReturnValue(false);
+    const nativeClient = {
+      connect: vi.fn(async () => { throw new Error('stop after ORAM native dial'); }),
+      disconnect: vi.fn(async () => {}),
+      free: vi.fn(),
+    };
+    const WasmOramClient = vi.fn(() => nativeClient);
+    requireSdkWasm.mockReturnValue({ WasmOramClient });
+    const adapter = new OramPirClientAdapter({ serverUrl: 'wss://oram.invalid' });
+
+    const connecting = adapter.connect();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(initSdkWasm).toHaveBeenCalledOnce();
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmOramClient).not.toHaveBeenCalled();
+    expect(nativeClient.connect).not.toHaveBeenCalled();
+
+    resolveInit(true);
+    await expect(connecting).rejects.toThrow('stop after ORAM native dial');
+
+    expect(WasmOramClient).toHaveBeenCalledOnce();
+    expect(nativeClient.connect).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unavailable ORAM SDK initialization without constructing or dialing a client', async () => {
+    initSdkWasm.mockResolvedValueOnce(false);
+    isSdkWasmReady.mockReturnValue(false);
+    const WasmOramClient = vi.fn();
+    requireSdkWasm.mockReturnValue({ WasmOramClient });
+    const adapter = new OramPirClientAdapter({ serverUrl: 'wss://oram.invalid' });
+
+    await expect(adapter.connect()).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish ORAM transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmOramClient).not.toHaveBeenCalled();
+  });
+
+  it('rejects failed ORAM SDK initialization without constructing or dialing a client', async () => {
+    initSdkWasm.mockRejectedValueOnce(new Error('WASM fetch failed'));
+    isSdkWasmReady.mockReturnValue(false);
+    const WasmOramClient = vi.fn();
+    requireSdkWasm.mockReturnValue({ WasmOramClient });
+    const adapter = new OramPirClientAdapter({ serverUrl: 'wss://oram.invalid' });
+
+    await expect(adapter.connect()).rejects.toThrow(
+      'PIR SDK WASM initialization failed; cannot establish ORAM transport',
+    );
+
+    expect(requireSdkWasm).not.toHaveBeenCalled();
+    expect(WasmOramClient).not.toHaveBeenCalled();
   });
 
   it('publishes a verified first-leg DPF root before pair preflight without authorizing use', async () => {

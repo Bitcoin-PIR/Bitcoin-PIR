@@ -30,6 +30,8 @@ import {
   type DatabaseCatalogEntry,
 } from './server-info.js';
 import {
+  initSdkWasm,
+  isSdkWasmReady,
   requireSdkWasm,
   type WasmAnnounceVerification,
   type WasmAtomicMetrics,
@@ -184,6 +186,7 @@ export class OramPirClientAdapter {
         throw new Error('strict ORAM requires the secure channel');
       }
 
+      await this.ensureSdkWasmInitialized();
       const sdk = requireSdkWasm();
       client = new sdk.WasmOramClient(this.config.serverUrl);
       this.wasmClient = client;
@@ -515,6 +518,22 @@ export class OramPirClientAdapter {
       }
       client.free();
     }
+  }
+
+  /**
+   * The page boot path starts the shared SDK loader, but a direct adapter
+   * connection can otherwise race it. Keep the transport boundary fail-closed:
+   * no native client is constructed or dialed until the module is ready.
+   */
+  private async ensureSdkWasmInitialized(): Promise<void> {
+    if (isSdkWasmReady()) return;
+    try {
+      if (await initSdkWasm()) return;
+    } catch {
+      // Normalize loader failures with the unavailable case. The native SDK
+      // must not be touched until it has completed initialization.
+    }
+    throw new Error('PIR SDK WASM initialization failed; cannot establish ORAM transport');
   }
 
   private async verifyConfiguredDatabaseProofs(
