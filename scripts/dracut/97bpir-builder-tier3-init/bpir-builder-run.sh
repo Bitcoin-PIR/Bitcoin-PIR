@@ -9,7 +9,10 @@ export PATH
 BAKED_ENV=/etc/bpir-builder/baked.env
 CONFIG=${BPIR_BUILDER_CONFIG:-/home/pir/data/attested-builder/config.env}
 BIN=/usr/local/bin/pir-attested-builder
-PIPELINE=/usr/local/lib/attested-builder/scripts/build-snapshot-database.sh
+ONIONFFI_BIN=/usr/local/bin/onionffi
+PIPELINE_DIR=/usr/local/lib/attested-builder/scripts
+SNAPSHOT_PIPELINE=$PIPELINE_DIR/build-snapshot-database.sh
+DELTA_PIPELINE=$PIPELINE_DIR/build-delta-database.sh
 
 fail() {
     printf '[bpir-builder-run] FATAL: %s\n' "$*" >&2
@@ -88,74 +91,6 @@ verified_evidence_field() {
             if (count == 1) print value
         }
     ' "$report"
-}
-
-augment_server_db_manifest_with_direct_oram() {
-    local manifest=$1
-    local index_source=$2
-    local chunk_source=$3
-    local index_sha chunk_sha index_bytes chunk_bytes index_records chunk_records
-    local files_sections manifest_tmp section_tmp
-
-    [[ -f "$manifest" ]] || fail "server DB manifest missing before Direct ORAM binding: $manifest"
-    [[ -f "$index_source" ]] || fail "Direct ORAM INDEX source missing: $index_source"
-    [[ -f "$chunk_source" ]] || fail "Direct ORAM CHUNK source missing: $chunk_source"
-    if grep -Eq '^\[direct_oram\][[:space:]]*$' "$manifest"; then
-        fail "server DB manifest already contains [direct_oram]; refusing ambiguous rewrite: $manifest"
-    fi
-    files_sections=$(awk '$0 == "[files]" { count++ } END { print count + 0 }' "$manifest")
-    [[ "$files_sections" == 1 ]] ||
-        fail "server DB manifest must contain exactly one [files] section: $manifest"
-
-    index_sha=$(sha256sum "$index_source" | awk '{print $1}')
-    chunk_sha=$(sha256sum "$chunk_source" | awk '{print $1}')
-    index_bytes=$(wc -c < "$index_source" | tr -d ' ')
-    chunk_bytes=$(wc -c < "$chunk_source" | tr -d ' ')
-    ((index_bytes > 0 && index_bytes % 25 == 0)) ||
-        fail "Direct ORAM INDEX source size must be a positive multiple of 25 bytes"
-    ((chunk_bytes > 0 && chunk_bytes % 40 == 0)) ||
-        fail "Direct ORAM CHUNK source size must be a positive multiple of 40 bytes"
-    index_records=$((index_bytes / 25))
-    chunk_records=$((chunk_bytes / 40))
-
-    manifest_tmp=$(mktemp "${manifest}.tmp.XXXXXX")
-    section_tmp=$(mktemp "${manifest}.direct-oram.XXXXXX")
-    if ! {
-        printf '[direct_oram]\n'
-        printf 'version = 1\n'
-        printf 'index_sha256 = "%s"\n' "$index_sha"
-        printf 'index_bytes = %s\n' "$index_bytes"
-        printf 'index_records = %s\n' "$index_records"
-        printf 'chunk_sha256 = "%s"\n' "$chunk_sha"
-        printf 'chunk_bytes = %s\n' "$chunk_bytes"
-        printf 'chunk_records = %s\n' "$chunk_records"
-        printf 'index_slots_per_bin = %s\n' "$DIRECT_ORAM_INDEX_SLOTS_PER_BIN"
-        printf 'index_hash_fns = %s\n' "$DIRECT_ORAM_INDEX_HASH_FNS"
-        printf 'index_load_factor_ppb = %s\n' "$DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB"
-        printf 'index_seed = %s\n\n' "$DIRECT_ORAM_INDEX_SEED"
-    } > "$section_tmp"; then
-        rm -f -- "$manifest_tmp" "$section_tmp"
-        fail "could not render Direct ORAM manifest section"
-    fi
-    if ! awk -v section="$section_tmp" '
-        $0 == "[files]" && !inserted {
-            while ((getline line < section) > 0) print line
-            close(section)
-            inserted = 1
-        }
-        { print }
-        END { if (!inserted) exit 42 }
-    ' "$manifest" > "$manifest_tmp"; then
-        rm -f -- "$manifest_tmp" "$section_tmp"
-        fail "could not atomically augment server DB manifest"
-    fi
-    rm -f -- "$section_tmp"
-    chmod 0644 "$manifest_tmp"
-    mv -f -- "$manifest_tmp" "$manifest"
-
-    printf 'server_db_direct_oram_bound=1\n' >> "$OUT_DIR/build-summary.txt"
-    printf 'server_db_manifest_bound_sha256=%s\n' \
-        "$(sha256sum "$manifest" | awk '{print $1}')" >> "$OUT_DIR/build-summary.txt"
 }
 
 run_reattest_v2_job() {
@@ -270,36 +205,71 @@ run_reattest_v2() {
 
 [[ -r "$BAKED_ENV" ]] || fail "missing baked metadata: $BAKED_ENV"
 load_kv_file "$BAKED_ENV" \
-    "BAKED_BUILDER_REPO BAKED_BUILDER_GIT_COMMIT BAKED_BUILDER_BIN_SHA256"
+    "BAKED_BUILDER_REPO BAKED_BUILDER_GIT_COMMIT BAKED_BUILDER_REQUIRED_GIT_COMMIT BAKED_BUILDER_BIN_SHA256"
+[[ "${BAKED_BUILDER_REQUIRED_GIT_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] ||
+    fail "baked builder required commit is missing or malformed"
+[[ "${BAKED_BUILDER_GIT_COMMIT:-}" == "$BAKED_BUILDER_REQUIRED_GIT_COMMIT" ]] ||
+    fail "baked builder commit does not match required native-full-build-v2 pin"
 
 [[ -r "$CONFIG" ]] || fail "missing runtime config: $CONFIG"
 load_kv_file "$CONFIG" \
-    "MODE SNAPSHOT EXPECTED_MUHASH NETWORK_MAGIC ANCHOR_HEIGHT ANCHOR_HASH CORE_VERSION OUT_BASE OUT_DIR RUN_ID MIN_FREE_KB REFERENCE_DATABASE_MANIFEST REFERENCE_ALL_ARTIFACTS_MANIFEST ONION_ENTRY_SIZE PARTITIONS ISSUED_AT PUSH_BATCH_ENTRIES ORAM_DIRECT_INPUT_DIR KEEP_ORAM_DIRECT_INPUTS DIRECT_ORAM_INDEX_SLOTS_PER_BIN DIRECT_ORAM_INDEX_HASH_FNS DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB DIRECT_ORAM_INDEX_SEED V2_JOB_COUNT V2_DB0_PREDECESSOR_PROOF_DIR V2_DB0_ARTIFACT_DIR V2_DB0_OUT_DIR V2_DB1_PREDECESSOR_PROOF_DIR V2_DB1_ARTIFACT_DIR V2_DB1_OUT_DIR"
+    "MODE SNAPSHOT EXPECTED_MUHASH NETWORK_MAGIC ANCHOR_HEIGHT ANCHOR_HASH FROM_SNAPSHOT FROM_EXPECTED_MUHASH FROM_ANCHOR_HEIGHT FROM_ANCHOR_HASH TO_SNAPSHOT TO_EXPECTED_MUHASH TO_ANCHOR_HEIGHT TO_ANCHOR_HASH CORE_VERSION OUT_BASE OUT_DIR RUN_ID MIN_FREE_KB REFERENCE_DATABASE_MANIFEST REFERENCE_ALL_ARTIFACTS_MANIFEST ONION_ENTRY_SIZE PARTITIONS ISSUED_AT PUSH_BATCH_ENTRIES ORAM_DIRECT_INPUT_DIR DIRECT_ORAM_INDEX_SLOTS_PER_BIN DIRECT_ORAM_INDEX_HASH_FNS DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB DIRECT_ORAM_INDEX_SEED V2_JOB_COUNT V2_DB0_PREDECESSOR_PROOF_DIR V2_DB0_ARTIFACT_DIR V2_DB0_OUT_DIR V2_DB1_PREDECESSOR_PROOF_DIR V2_DB1_ARTIFACT_DIR V2_DB1_OUT_DIR"
 
 [[ -x "$BIN" ]] || fail "builder binary missing or not executable: $BIN"
+[[ -x "$ONIONFFI_BIN" ]] || fail "onionffi binary missing or not executable: $ONIONFFI_BIN"
 [[ -c /dev/sev-guest ]] || fail "/dev/sev-guest missing"
 
-MODE=${MODE:-full-build}
+MODE=${MODE:-}
 if [[ "$MODE" == reattest-existing-v2 ]]; then
     run_reattest_v2
     exit 0
 fi
-[[ "$MODE" == full-build ]] || fail "unsupported MODE: $MODE"
+case "$MODE" in
+    native-full-build-v2-snapshot)
+        BUILD_KIND=snapshot
+        PIPELINE=$SNAPSHOT_PIPELINE
+        require_env SNAPSHOT
+        require_env EXPECTED_MUHASH
+        require_env NETWORK_MAGIC
+        require_env ANCHOR_HEIGHT
+        require_data_path SNAPSHOT
+        [[ -f "$SNAPSHOT" ]] || fail "snapshot not found: $SNAPSHOT"
+        [[ "$EXPECTED_MUHASH" =~ ^[0-9a-fA-F]{64}$ ]] || fail "EXPECTED_MUHASH must be 64 hex chars"
+        [[ "$NETWORK_MAGIC" =~ ^[0-9a-fA-F]{8}$ ]] || fail "NETWORK_MAGIC must be 8 hex chars"
+        [[ "$ANCHOR_HEIGHT" =~ ^[0-9]+$ ]] || fail "ANCHOR_HEIGHT must be an integer"
+        ;;
+    native-full-build-v2-delta)
+        BUILD_KIND=delta
+        PIPELINE=$DELTA_PIPELINE
+        require_env FROM_SNAPSHOT
+        require_env FROM_EXPECTED_MUHASH
+        require_env FROM_ANCHOR_HEIGHT
+        require_env TO_SNAPSHOT
+        require_env TO_EXPECTED_MUHASH
+        require_env TO_ANCHOR_HEIGHT
+        require_env NETWORK_MAGIC
+        require_data_path FROM_SNAPSHOT
+        require_data_path TO_SNAPSHOT
+        [[ -f "$FROM_SNAPSHOT" ]] || fail "from snapshot not found: $FROM_SNAPSHOT"
+        [[ -f "$TO_SNAPSHOT" ]] || fail "to snapshot not found: $TO_SNAPSHOT"
+        [[ "$FROM_EXPECTED_MUHASH" =~ ^[0-9a-fA-F]{64}$ ]] || fail "FROM_EXPECTED_MUHASH must be 64 hex chars"
+        [[ "$TO_EXPECTED_MUHASH" =~ ^[0-9a-fA-F]{64}$ ]] || fail "TO_EXPECTED_MUHASH must be 64 hex chars"
+        [[ "$NETWORK_MAGIC" =~ ^[0-9a-fA-F]{8}$ ]] || fail "NETWORK_MAGIC must be 8 hex chars"
+        [[ "$FROM_ANCHOR_HEIGHT" =~ ^[0-9]+$ && "$TO_ANCHOR_HEIGHT" =~ ^[0-9]+$ ]] ||
+            fail "delta anchor heights must be integers"
+        ((FROM_ANCHOR_HEIGHT < TO_ANCHOR_HEIGHT)) || fail "FROM_ANCHOR_HEIGHT must be < TO_ANCHOR_HEIGHT"
+        SNAPSHOT=$TO_SNAPSHOT
+        EXPECTED_MUHASH=$TO_EXPECTED_MUHASH
+        ANCHOR_HEIGHT=$TO_ANCHOR_HEIGHT
+        ANCHOR_HASH=${TO_ANCHOR_HASH:-}
+        ;;
+    *) fail "MODE must be native-full-build-v2-snapshot, native-full-build-v2-delta, or reattest-existing-v2" ;;
+esac
 
-require_env SNAPSHOT
-require_env EXPECTED_MUHASH
-require_env NETWORK_MAGIC
-require_env ANCHOR_HEIGHT
 require_env CORE_VERSION
 
-require_data_path SNAPSHOT
 require_data_path REFERENCE_DATABASE_MANIFEST
 require_data_path REFERENCE_ALL_ARTIFACTS_MANIFEST
-
-[[ -f "$SNAPSHOT" ]] || fail "snapshot not found: $SNAPSHOT"
-[[ "$EXPECTED_MUHASH" =~ ^[0-9a-fA-F]{64}$ ]] || fail "EXPECTED_MUHASH must be 64 hex chars"
-[[ "$NETWORK_MAGIC" =~ ^[0-9a-fA-F]{8}$ ]] || fail "NETWORK_MAGIC must be 8 hex chars"
-[[ "$ANCHOR_HEIGHT" =~ ^[0-9]+$ ]] || fail "ANCHOR_HEIGHT must be an integer"
 [[ -x "$PIPELINE" ]] || fail "pipeline script missing or not executable: $PIPELINE"
 
 OUT_BASE=${OUT_BASE:-/home/pir/data/attested-builder-runs}
@@ -309,7 +279,11 @@ mkdir -p "$OUT_BASE"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._=-]+$ ]] || fail "RUN_ID contains unsafe characters: $RUN_ID"
 
-OUT_DIR=${OUT_DIR:-"$OUT_BASE/mainnet_${ANCHOR_HEIGHT}_${RUN_ID}"}
+if [[ "$BUILD_KIND" == delta ]]; then
+    OUT_DIR=${OUT_DIR:-"$OUT_BASE/delta_${FROM_ANCHOR_HEIGHT}_${TO_ANCHOR_HEIGHT}_${RUN_ID}"}
+else
+    OUT_DIR=${OUT_DIR:-"$OUT_BASE/mainnet_${ANCHOR_HEIGHT}_${RUN_ID}"}
+fi
 require_data_path OUT_DIR
 case "$OUT_DIR" in
     "$OUT_BASE"/*) ;;
@@ -319,10 +293,8 @@ esac
 
 ORAM_DIRECT_INPUT_DIR=${ORAM_DIRECT_INPUT_DIR:-"$OUT_DIR/oram-direct-inputs"}
 require_data_path ORAM_DIRECT_INPUT_DIR
-case "$ORAM_DIRECT_INPUT_DIR" in
-    "$OUT_DIR"/*) ;;
-    *) fail "ORAM_DIRECT_INPUT_DIR must be under OUT_DIR ($OUT_DIR): $ORAM_DIRECT_INPUT_DIR" ;;
-esac
+[[ "$ORAM_DIRECT_INPUT_DIR" == "$OUT_DIR/oram-direct-inputs" ]] ||
+    fail "ORAM_DIRECT_INPUT_DIR must be the native pipeline path $OUT_DIR/oram-direct-inputs"
 
 DIRECT_ORAM_INDEX_SLOTS_PER_BIN=${DIRECT_ORAM_INDEX_SLOTS_PER_BIN:-4}
 DIRECT_ORAM_INDEX_HASH_FNS=${DIRECT_ORAM_INDEX_HASH_FNS:-2}
@@ -340,7 +312,8 @@ require_unsigned_integer DIRECT_ORAM_INDEX_SEED
 STATUS_FILE="$OUT_BASE/builder-tier3-$RUN_ID.status"
 {
     printf 'status=running\n'
-    printf 'mode=full-snapshot-build\n'
+    printf 'mode=%s\n' "$MODE"
+    printf 'build_kind=%s\n' "$BUILD_KIND"
     printf 'direct_oram_eligible=pending\n'
     printf 'run_id=%s\n' "$RUN_ID"
     printf 'out_dir=%s\n' "$OUT_DIR"
@@ -376,17 +349,14 @@ export SNAPSHOT EXPECTED_MUHASH NETWORK_MAGIC ANCHOR_HEIGHT CORE_VERSION
 export OUT_DIR
 export SKIP_CARGO_BUILD=1
 export BIN
+export ONIONFFI_BIN
 export RELEASE=1
-export RUN_ONION_FFI=0
+export RUN_ONION_FFI=1
 export ROOTS_ONLY=0
 export STAGE_SERVER_DB=1
-export KEEP_ORAM_DIRECT_INPUTS=1
-export ORAM_DIRECT_INPUT_DIR
-# BuildEvidence must commit the final typed server-db manifest. The pipeline
-# stages the exact server-loadable tree first; this wrapper adds [direct_oram]
-# and only then writes evidence/report_data and asks /dev/sev-guest for a quote.
-export WRITE_BUILD_EVIDENCE=0
-export EMIT_SEV_SNP_QUOTE=0
+export BUILD_EVIDENCE_VERSION=2
+export WRITE_BUILD_EVIDENCE=1
+export EMIT_SEV_SNP_QUOTE=1
 export TEE_PLATFORM=sev-snp
 export TEE_IMAGE_MEASUREMENT=none
 export BUILDER_GIT_COMMIT=${BAKED_BUILDER_GIT_COMMIT:-unknown}
@@ -394,6 +364,13 @@ export ONION_ENTRY_SIZE=${ONION_ENTRY_SIZE:-3328}
 export PARTITIONS=${PARTITIONS:-4}
 export ISSUED_AT=${ISSUED_AT:-0}
 export PUSH_BATCH_ENTRIES=${PUSH_BATCH_ENTRIES:-256}
+export DIRECT_ORAM_INDEX_SLOTS_PER_BIN DIRECT_ORAM_INDEX_HASH_FNS
+export DIRECT_ORAM_INDEX_LOAD_FACTOR_PPB DIRECT_ORAM_INDEX_SEED
+
+if [[ "$BUILD_KIND" == delta ]]; then
+    export FROM_SNAPSHOT FROM_EXPECTED_MUHASH FROM_ANCHOR_HEIGHT
+    export TO_SNAPSHOT TO_EXPECTED_MUHASH TO_ANCHOR_HEIGHT
+fi
 
 if [[ -n "${REFERENCE_DATABASE_MANIFEST:-}" ]]; then
     export REFERENCE_DATABASE_MANIFEST
@@ -405,29 +382,6 @@ fi
 echo "[bpir-builder-run] running attested-builder pipeline"
 echo "[bpir-builder-run] out_dir=$OUT_DIR"
 /bin/bash "$PIPELINE"
-
-augment_server_db_manifest_with_direct_oram \
-    "$OUT_DIR/server-db/MANIFEST.toml" \
-    "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin" \
-    "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
-
-echo "[bpir-builder-run] writing evidence after Direct ORAM manifest binding"
-"$BIN" write-build-evidence \
-    "$OUT_DIR" \
-    "$SNAPSHOT" \
-    "$CORE_VERSION" \
-    "$BUILDER_GIT_COMMIT" \
-    "$BIN" \
-    "$TEE_PLATFORM" \
-    "$TEE_IMAGE_MEASUREMENT" \
-    "$OUT_DIR/build-evidence.bin"
-"$BIN" write-tee-report-data \
-    "$OUT_DIR/build-evidence.bin" \
-    "$OUT_DIR/build-evidence.report-data"
-"$BIN" emit-sev-snp-quote \
-    "$OUT_DIR/build-evidence.bin" \
-    "$OUT_DIR/build-evidence.sev-snp-report.bin" \
-    "$OUT_DIR/build-evidence.report-data"
 
 VERIFY_ARGS=(
     "$OUT_DIR/build-evidence.bin"
@@ -448,12 +402,9 @@ fi
 echo "[bpir-builder-run] verifying build evidence and SEV-SNP report_data"
 "$BIN" verify-build-evidence "${VERIFY_ARGS[@]}" | tee "$OUT_DIR/build-evidence.verify.txt"
 
-# Production Direct ORAM requires a native full-build-v2 producer.  Merely
-# augmenting a v1 pipeline's manifest and asking its legacy
-# `write-build-evidence` command for another quote does not upgrade the root
-# payload or params domain to v2.  Fail closed before publishing `latest` or an
-# eligibility claim.  The predecessor checks also prevent re-attestation from
-# being mistaken for a fresh measured build.
+# Production Direct ORAM requires the native pipeline to have emitted
+# predecessor-free full-build-v2 evidence. Fail closed before publishing
+# `latest` or an eligibility claim.
 evidence_version=$(verified_evidence_field "$OUT_DIR/build-evidence.verify.txt" evidence_version)
 evidence_mode=$(verified_evidence_field "$OUT_DIR/build-evidence.verify.txt" evidence_mode)
 predecessor_evidence=$(verified_evidence_field \
@@ -475,7 +426,8 @@ ln -sfn "$OUT_DIR" "$OUT_BASE/latest"
 {
     printf 'status=ok\n'
     printf 'exit_code=0\n'
-    printf 'mode=full-snapshot-build\n'
+    printf 'mode=%s\n' "$MODE"
+    printf 'build_kind=%s\n' "$BUILD_KIND"
     printf 'direct_oram_eligible=yes\n'
     printf 'out_dir=%s\n' "$OUT_DIR"
     printf 'summary=%s\n' "$OUT_DIR/build-summary.txt"
