@@ -641,32 +641,28 @@ fn measured_boot_copies_exact_manifest_and_sources_before_strict_build() {
 }
 
 #[test]
-fn measured_builder_binds_direct_sources_before_evidence_and_quote() {
+fn measured_builder_requires_native_full_build_v2_before_staging() {
     let script =
         include_str!("../../../scripts/dracut/97bpir-builder-tier3-init/bpir-builder-run.sh");
     assert!(script.contains("export ROOTS_ONLY=0"));
     assert!(script.contains("export STAGE_SERVER_DB=1"));
-    assert!(script.contains("export WRITE_BUILD_EVIDENCE=0"));
-    assert!(script.contains("export EMIT_SEV_SNP_QUOTE=0"));
-    assert!(script
-        .contains("PIPELINE=/usr/local/lib/attested-builder/scripts/build-snapshot-database.sh"));
+    assert!(script.contains("export RUN_ONION_FFI=1"));
+    assert!(script.contains("export BUILD_EVIDENCE_VERSION=2"));
+    assert!(script.contains("export WRITE_BUILD_EVIDENCE=1"));
+    assert!(script.contains("export EMIT_SEV_SNP_QUOTE=1"));
+    assert!(script.contains("native-full-build-v2-snapshot"));
+    assert!(script.contains("native-full-build-v2-delta"));
+    assert!(script.contains("PIPELINE=$SNAPSHOT_PIPELINE"));
+    assert!(script.contains("PIPELINE=$DELTA_PIPELINE"));
     assert!(script.contains("direct_oram_eligible=no"));
     assert!(script.contains(
         "direct_oram_blocker=requires-new-measured-snapshot-or-delta-build-with-typed-manifest-before-evidence"
     ));
     assert!(script.contains("direct_oram_blocker=attested-builder-full-build-v2-required"));
     assert!(script.contains("direct_oram_eligible=yes"));
-    assert!(script.contains("augment_server_db_manifest_with_direct_oram"));
-    assert!(script.contains("Direct ORAM INDEX source size must be a positive multiple of 25"));
-    assert!(script.contains("Direct ORAM CHUNK source size must be a positive multiple of 40"));
+    assert!(!script.contains("augment_server_db_manifest_with_direct_oram"));
 
     let pipeline = script.find("/bin/bash \"$PIPELINE\"").unwrap();
-    let bind = script
-        .rfind("augment_server_db_manifest_with_direct_oram \\")
-        .unwrap();
-    let evidence = script.rfind("\"$BIN\" write-build-evidence \\").unwrap();
-    let report_data = script.rfind("\"$BIN\" write-tee-report-data \\").unwrap();
-    let quote = script.rfind("\"$BIN\" emit-sev-snp-quote \\").unwrap();
     let version_gate = script
         .rfind("evidence_version=$(verified_evidence_field")
         .unwrap();
@@ -677,14 +673,23 @@ fn measured_builder_binds_direct_sources_before_evidence_and_quote() {
         .rfind("ln -sfn \"$OUT_DIR\" \"$OUT_BASE/latest\"")
         .unwrap();
     let eligible = script.rfind("direct_oram_eligible=yes").unwrap();
-    assert!(pipeline < bind && bind < evidence && evidence < report_data && report_data < quote);
     assert!(
-        quote < version_gate && version_gate < blocker && blocker < publish && publish < eligible
+        pipeline < version_gate
+            && version_gate < blocker
+            && blocker < publish
+            && publish < eligible
     );
     assert!(script.contains("\"$evidence_version\" != 2"));
     assert!(script.contains("\"$evidence_mode\" != full_build"));
     assert!(script.contains("\"$predecessor_evidence\" != none"));
     assert!(script.contains("\"$predecessor_report\" != none"));
+
+    let recipe = include_str!("../../../scripts/build_uki_attested_builder_tier3.sh");
+    assert!(recipe.contains(
+        "ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-e0870e84e40bd8fd94c8a78b2a73f8c0bc6eed9d}"
+    ));
+    assert!(recipe.contains("build-delta-database.sh"));
+    assert!(recipe.contains("usr/local/bin/onionffi"));
 }
 
 #[test]

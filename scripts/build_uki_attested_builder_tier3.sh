@@ -80,8 +80,11 @@ OUT=${OUT:-/tmp/bpir-attested-builder-tier3.efi}
 CUSTOM_INITRD=${CUSTOM_INITRD:-/tmp/bpir-attested-builder-tier3-initrd.img}
 ATTESTED_BUILDER_REPO=${ATTESTED_BUILDER_REPO:-/home/pir/bitcoin-pir/attested-builder}
 ATTESTED_BUILDER_BIN=${ATTESTED_BUILDER_BIN:-$ATTESTED_BUILDER_REPO/target/release/pir-attested-builder}
+ATTESTED_BUILDER_ONIONFFI_BIN=${ATTESTED_BUILDER_ONIONFFI_BIN:-$ATTESTED_BUILDER_REPO/target/release/onionffi}
 SKIP_BUILDER_CARGO_BUILD=${SKIP_BUILDER_CARGO_BUILD:-0}
-ATTESTED_BUILDER_GIT_COMMIT=${ATTESTED_BUILDER_GIT_COMMIT:-}
+# Phase A/B stacked head. This is deliberately an explicit external pin, not
+# a claim that the unmerged attested-builder work is available from main.
+ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-e0870e84e40bd8fd94c8a78b2a73f8c0bc6eed9d}
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
@@ -95,9 +98,9 @@ if [ ! -d "$ATTESTED_BUILDER_REPO" ]; then
     echo "error: attested-builder repo not found: $ATTESTED_BUILDER_REPO" >&2
     exit 1
 fi
-if [ ! -f "$ATTESTED_BUILDER_REPO/scripts/build-snapshot-database.sh" ]; then
-    echo "error: missing attested-builder pipeline script" >&2
-    echo "       $ATTESTED_BUILDER_REPO/scripts/build-snapshot-database.sh" >&2
+if [ ! -f "$ATTESTED_BUILDER_REPO/scripts/build-snapshot-database.sh" ] ||
+    [ ! -f "$ATTESTED_BUILDER_REPO/scripts/build-delta-database.sh" ]; then
+    echo "error: missing native full-build-v2 attested-builder pipeline script" >&2
     exit 1
 fi
 
@@ -108,6 +111,8 @@ if ! is_truthy "$SKIP_BUILDER_CARGO_BUILD"; then
         cd "$ATTESTED_BUILDER_REPO"
         run_as_path_owner "$ATTESTED_BUILDER_REPO" \
             cargo build -q --release -p pir-attested-builder
+        run_as_path_owner "$ATTESTED_BUILDER_REPO" \
+            cargo build -q --release -p onionffi --features ffi
     )
 fi
 
@@ -115,9 +120,20 @@ fi
     echo "error: $ATTESTED_BUILDER_BIN not executable" >&2
     exit 1
 }
+[ -x "$ATTESTED_BUILDER_ONIONFFI_BIN" ] || {
+    echo "error: $ATTESTED_BUILDER_ONIONFFI_BIN not executable" >&2
+    exit 1
+}
 
-if [ -z "$ATTESTED_BUILDER_GIT_COMMIT" ]; then
-    ATTESTED_BUILDER_GIT_COMMIT=$(current_git_commit "$ATTESTED_BUILDER_REPO")
+ATTESTED_BUILDER_GIT_COMMIT=$(current_git_commit "$ATTESTED_BUILDER_REPO")
+[[ "$ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "error: ATTESTED_BUILDER_REQUIRED_GIT_COMMIT must be a 40-char lowercase SHA" >&2
+    exit 1
+}
+if [ "$ATTESTED_BUILDER_GIT_COMMIT" != "$ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" ]; then
+    echo "error: native full-build-v2 requires attested-builder $ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" >&2
+    echo "       build host has $ATTESTED_BUILDER_GIT_COMMIT (Phase B is not merged into upstream main)" >&2
+    exit 1
 fi
 ATTESTED_BUILDER_BIN_SHA256=$(hash_one "$ATTESTED_BUILDER_BIN")
 
@@ -175,7 +191,9 @@ done
 
 export ATTESTED_BUILDER_REPO
 export ATTESTED_BUILDER_BIN
+export ATTESTED_BUILDER_ONIONFFI_BIN
 export ATTESTED_BUILDER_GIT_COMMIT
+export ATTESTED_BUILDER_REQUIRED_GIT_COMMIT
 export ATTESTED_BUILDER_BIN_SHA256
 
 echo "kernel:                     $KERNEL"
@@ -183,6 +201,7 @@ echo "kernel version:             $KVER"
 echo "attested-builder repo:      $ATTESTED_BUILDER_REPO"
 echo "attested-builder commit:    $ATTESTED_BUILDER_GIT_COMMIT"
 echo "attested-builder binary:    $ATTESTED_BUILDER_BIN"
+echo "attested-builder onionffi:  $ATTESTED_BUILDER_ONIONFFI_BIN"
 echo "attested-builder sha256:    $ATTESTED_BUILDER_BIN_SHA256"
 echo "SEV modules:                $REQUIRED_SEV_MODS"
 echo
@@ -203,8 +222,10 @@ INITRD_LISTING=$(/usr/bin/lsinitrd "$CUSTOM_INITRD" 2>/dev/null)
 MISSING_ITEMS=""
 for item in \
     "usr/local/bin/pir-attested-builder" \
+    "usr/local/bin/onionffi" \
     "usr/local/bin/bpir-builder-run" \
     "usr/local/lib/attested-builder/scripts/build-snapshot-database.sh" \
+    "usr/local/lib/attested-builder/scripts/build-delta-database.sh" \
     "sbin/bpir-builder-tier3-init" \
     "etc/bpir-builder/baked.env"; do
     if ! grep -q "$item" <<< "$INITRD_LISTING"; then
@@ -242,6 +263,7 @@ echo "builder Tier 3 UKI sha256:  $UKI_SHA"
     "kernel_version=$KVER" \
     "builder_repo=$ATTESTED_BUILDER_REPO" \
     "builder_git_commit=$ATTESTED_BUILDER_GIT_COMMIT" \
+    "builder_required_git_commit=$ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" \
     "builder_binary_sha256=$ATTESTED_BUILDER_BIN_SHA256"
 echo
 cat <<EOF
@@ -266,10 +288,11 @@ The v2 mode scans and hashes the retained final serving images; it does not
 rebuild the snapshot or delta. On success, both output directories contain the
 new evidence, SNP report, verifier transcript, and SHA256SUMS.
 
-For a full roots-only snapshot rebuild instead:
+For a native full-build-v2 snapshot generation suitable for Tier 3 staging:
 
   sudo mkdir -p /home/pir/data/attested-builder/inputs /home/pir/data/attested-builder-runs
   sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
+MODE=native-full-build-v2-snapshot
 SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<height>.dat
 EXPECTED_MUHASH=<64-byte-Core-display-muhash>
 NETWORK_MAGIC=f9beb4d9
@@ -280,6 +303,24 @@ RUN_ID=mainnet_<height>_sev_snp
 MIN_FREE_KB=50000000
 CONFIG
 
+For a native full-build-v2 delta generation, use the same config file with:
+
+  MODE=native-full-build-v2-delta
+  FROM_SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<from-height>.dat
+  FROM_EXPECTED_MUHASH=<64-byte-Core-display-muhash>
+  FROM_ANCHOR_HEIGHT=<from-height>
+  TO_SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<to-height>.dat
+  TO_EXPECTED_MUHASH=<64-byte-Core-display-muhash>
+  TO_ANCHOR_HEIGHT=<to-height>
+  NETWORK_MAGIC=f9beb4d9
+  CORE_VERSION=<bitcoind-version-string>
+  RUN_ID=delta_<from-height>_<to-height>_sev_snp
+  MIN_FREE_KB=50000000
+
+The wrapper rejects every other full-build mode. The native pipeline must emit
+the server DB, proof sidecars, Direct ORAM inputs, final BuildEvidence v2, and
+SNP quote before this runner marks its output eligible for staging.
+
 Upload $OUT in VPSBG Measured Boot as a temporary UKI and reboot.
 The UKI will power off after completion. Then switch Measured Boot back to
 "None", boot Slice 2, and collect:
@@ -288,9 +329,6 @@ The UKI will power off after completion. Then switch Measured Boot back to
   /home/pir/data/attested-builder-runs/latest/build-evidence.bin
   /home/pir/data/attested-builder-runs/latest/build-evidence.sev-snp-report.bin
   /home/pir/data/attested-builder-runs/latest/server-db/MANIFEST.toml
-
-This UKI runs ROOTS_ONLY=1. server-db/MANIFEST.toml is an evidence manifest,
-not a server-loadable database manifest.
 
 Archive policy:
 
