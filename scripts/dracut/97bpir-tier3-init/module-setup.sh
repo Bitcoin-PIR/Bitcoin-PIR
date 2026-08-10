@@ -68,9 +68,10 @@ install() {
     # explicitly is idempotent (inst_multiple no-ops if already there).
     # nc is needed by cloudflared-run.sh's port-wait gate (Phase 3.2);
     # blkid for the FATAL-path diagnostic when rootfs mount fails.
-    # awk/dd/od/tr/tail/rm/mv are used by unified-server-run.sh to derive fresh
-    # ORAM seeds, parse direct-input hash files, and publish boot images.
-    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk dd od tr tail rm mv
+    # awk/cmp/dd/od/tr/tail/rm/mv are used by unified-server-run.sh to derive
+    # fresh ORAM seeds, parse the active catalog, bind its runtime/proof
+    # manifests byte-for-byte, and publish boot images.
+    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk cmp dd od tr tail rm mv
 
     # udhcpc is a busybox applet, NOT a standalone binary on Ubuntu.
     # Bake busybox itself in (statically linked, ~1.5 MB) and create

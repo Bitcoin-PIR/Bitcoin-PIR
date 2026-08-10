@@ -123,6 +123,26 @@ Hetzner and VPSBG. Verify file hashes after transfer. Prepare a new
 `databases.toml` for each host and retain a timestamped copy of the active
 configuration.
 
+For VPSBG Tier 3 Direct ORAM, stage each complete attested-builder output as
+one generation; do not pair a serving database tree with a proof directory
+from another run. The helper below copies the complete db0/db1 outputs beneath
+`/home/pir/data/generations/<generation>/`, verifies the staged manifest bytes,
+and writes a candidate catalog. It never replaces the active
+`/home/pir/data/databases.toml`:
+
+```bash
+./scripts/stage_vpsbg_tier3_generation.sh \
+  --generation <reviewed-generation> \
+  --db0-output <complete-db0-build-output> \
+  --db0-name <name> --db0-type full --db0-base-height 0 --db0-height <height> \
+  --db1-output <complete-db1-build-output> \
+  --db1-name <name> --db1-type delta --db1-base-height <height> --db1-height <height>
+```
+
+The resulting candidate points `path` at that generation's `server-db` tree
+and `proof_dir` at the same generation root. Review it and use the maintenance
+window activation step below; never edit its generated path/proof pairing.
+
 Hetzner can be staged over its normal SSH/operator path. VPSBG Tier 3 has no
 SSH, so a complete proof/root rotation must use a planned portal maintenance
 boot: select `UKI: None`, reboot into the maintenance system, stage the

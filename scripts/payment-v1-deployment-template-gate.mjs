@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "87db8a202e5e5366aba5fdda28b13d07a177e5fa24f0eea6b3975517f62b4c7c",
+    "12dd0af352e7d6706f9249150c1c5d5f82995d1ac088ca30dd6277e0edcabca5",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
