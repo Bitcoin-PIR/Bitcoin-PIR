@@ -686,7 +686,7 @@ fn measured_builder_requires_native_full_build_v2_before_staging() {
 
     let recipe = include_str!("../../../scripts/build_uki_attested_builder_tier3.sh");
     assert!(recipe.contains(
-        "ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-e0870e84e40bd8fd94c8a78b2a73f8c0bc6eed9d}"
+        "ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-8d9d21a6be560236cb666269cf1f93a3de53bb1f}"
     ));
     assert!(recipe.contains("build-delta-database.sh"));
     assert!(recipe.contains("usr/local/bin/onionffi"));

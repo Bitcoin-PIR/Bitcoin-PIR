@@ -82,9 +82,9 @@ ATTESTED_BUILDER_REPO=${ATTESTED_BUILDER_REPO:-/home/pir/bitcoin-pir/attested-bu
 ATTESTED_BUILDER_BIN=${ATTESTED_BUILDER_BIN:-$ATTESTED_BUILDER_REPO/target/release/pir-attested-builder}
 ATTESTED_BUILDER_ONIONFFI_BIN=${ATTESTED_BUILDER_ONIONFFI_BIN:-$ATTESTED_BUILDER_REPO/target/release/onionffi}
 SKIP_BUILDER_CARGO_BUILD=${SKIP_BUILDER_CARGO_BUILD:-0}
-# Phase A/B stacked head. This is deliberately an explicit external pin, not
-# a claim that the unmerged attested-builder work is available from main.
-ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-e0870e84e40bd8fd94c8a78b2a73f8c0bc6eed9d}
+# Merged attested-builder main containing the native snapshot and delta v2
+# full-build producers. Keep the measured UKI recipe pinned to this exact tree.
+ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-8d9d21a6be560236cb666269cf1f93a3de53bb1f}
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
@@ -132,7 +132,7 @@ ATTESTED_BUILDER_GIT_COMMIT=$(current_git_commit "$ATTESTED_BUILDER_REPO")
 }
 if [ "$ATTESTED_BUILDER_GIT_COMMIT" != "$ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" ]; then
     echo "error: native full-build-v2 requires attested-builder $ATTESTED_BUILDER_REQUIRED_GIT_COMMIT" >&2
-    echo "       build host has $ATTESTED_BUILDER_GIT_COMMIT (Phase B is not merged into upstream main)" >&2
+    echo "       build host has $ATTESTED_BUILDER_GIT_COMMIT" >&2
     exit 1
 fi
 ATTESTED_BUILDER_BIN_SHA256=$(hash_one "$ATTESTED_BUILDER_BIN")
