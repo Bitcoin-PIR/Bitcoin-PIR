@@ -52,6 +52,9 @@ ORAMCTL=/usr/local/bin/oramctl
 if [ ! -x "$ORAMCTL" ] && [ -x /home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl ]; then
     ORAMCTL=/home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl
 fi
+
+TIER3_DATA_ROOT=/home/pir/data
+TIER3_DATABASES_CONFIG="$TIER3_DATA_ROOT/databases.toml"
 UNIFIED_SERVER=/usr/local/bin/unified_server
 if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unified_server ]; then
     UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
@@ -129,32 +132,81 @@ require_file() {
     [ -r "$1" ] || fatal "required file missing or unreadable: $1"
 }
 
-first_existing_dir() {
-    for path in "$@"; do
-        if [ -d "$path" ]; then
-            echo "$path"
-            return 0
-        fi
-    done
-    return 1
-}
-
-first_existing_file() {
-    for path in "$@"; do
-        if [ -r "$path" ]; then
-            echo "$path"
-            return 0
-        fi
-    done
-    return 1
-}
-
 direct_input_hash() {
     awk -v name="$1" '$2 == name || $2 == "./" name { print $1; exit }' "$2"
 }
 
 sha256_path() {
     sha256sum "$1" | awk '{ print $1 }'
+}
+
+# Extract a quoted path from the selected [[database]] entry without evaluating
+# mutable-rootfs TOML as shell.  The generation helper emits this canonical
+# shape; rejecting exotic TOML is intentional because this measured boot path
+# must fail closed rather than guess a different database/proof pairing.
+toml_database_path() {
+    database_index="$1"
+    field_name="$2"
+    awk -v target="$database_index" -v field="$field_name" '
+        BEGIN { current = -1; seen = 0 }
+        /^[[:space:]]*\[\[database\]\][[:space:]]*(#.*)?$/ { current++; next }
+        current == target {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+            if (line ~ ("^" field "[[:space:]]*=")) {
+                sub(("^" field "[[:space:]]*=[[:space:]]*"), "", line)
+                if (line !~ /^"[^"]*"[[:space:]]*(#.*)?$/ || seen) exit 2
+                sub(/^"/, "", line)
+                sub(/"[[:space:]]*(#.*)?$/, "", line)
+                value = line
+                seen = 1
+            }
+        }
+        END {
+            if (seen != 1) exit 1
+            print value
+        }
+    ' "$TIER3_DATABASES_CONFIG"
+}
+
+resolve_tier3_data_path() {
+    raw_path="$1"
+    case "$raw_path" in
+        ''|*[!A-Za-z0-9_./-]*) fatal "database catalog path contains unsupported characters" ;;
+    esac
+    case "/$raw_path/" in
+        */../*|*/./*) fatal "database catalog path must not contain dot segments: $raw_path" ;;
+    esac
+    case "$raw_path" in
+        /*) resolved_path="$raw_path" ;;
+        *) resolved_path="$TIER3_DATA_ROOT/$raw_path" ;;
+    esac
+    case "$resolved_path" in
+        "$TIER3_DATA_ROOT"/*) ;;
+        *) fatal "database catalog path escapes $TIER3_DATA_ROOT: $raw_path" ;;
+    esac
+    printf '%s\n' "$resolved_path"
+}
+
+load_active_database_generation() {
+    database_index="$1"
+    database_label="$2"
+    runtime_raw="$(toml_database_path "$database_index" path)" \
+        || fatal "$database_label path missing or non-canonical in $TIER3_DATABASES_CONFIG"
+    proof_raw="$(toml_database_path "$database_index" proof_dir)" \
+        || fatal "$database_label proof_dir missing or non-canonical in $TIER3_DATABASES_CONFIG"
+    ACTIVE_DB_RUNTIME_DIR="$(resolve_tier3_data_path "$runtime_raw")"
+    ACTIVE_DB_PROOF_DIR="$(resolve_tier3_data_path "$proof_raw")"
+    require_file "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml"
+    require_file "$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
+    cmp -s "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml" \
+        "$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml" \
+        || fatal "$database_label runtime/proof MANIFEST bytes differ"
+    require_file "$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
+    require_file "$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
+    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/utxo_chunks_index_nodust.bin"
+    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/utxo_chunks_nodust.bin"
+    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/direct-inputs.sha256"
 }
 
 random_seed_hex() {
@@ -401,41 +453,17 @@ mkdir -p "$TRUSTED_INPUT_ROOT" "$TRUSTED_STATE_ROOT" \
 ORAM_PAGE_KEY_HEX="$(random_seed_hex)"
 trap cleanup_build_staging EXIT
 
-MAINNET_SOURCE_DIR="$(first_existing_dir \
-    /home/pir/data/oram-inputs/checkpoints/948454 \
-    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/oram-direct-inputs \
-    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs)" \
-    || fatal "mainnet direct-input directory missing"
-MAINNET_DB_EVIDENCE="$(first_existing_file \
-    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/build-evidence.bin \
-    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/build-evidence.bin)" \
-    || fatal "mainnet build-evidence.bin missing"
-MAINNET_DB_MANIFEST="$(first_existing_file \
-    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/server-db/MANIFEST.toml \
-    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/server-db/MANIFEST.toml)" \
-    || fatal "mainnet exact server-db/MANIFEST.toml missing"
-MAINNET_ROOT_BUNDLE="$(first_existing_file \
-    /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/root-bundle-payload.bin \
-    /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/root-bundle-payload.bin)" \
-    || fatal "mainnet root-bundle-payload.bin missing"
+load_active_database_generation 0 db0
+MAINNET_SOURCE_DIR="$ACTIVE_DB_PROOF_DIR/oram-direct-inputs"
+MAINNET_DB_EVIDENCE="$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
+MAINNET_DB_MANIFEST="$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
+MAINNET_ROOT_BUNDLE="$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
 
-DELTA_SOURCE_DIR="$(first_existing_dir \
-    /home/pir/data/oram-inputs/deltas/940611_948454_canonical_20260615 \
-    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/oram-direct-inputs \
-    /home/pir/data/attestations/delta_940611_948454_sev_snp/oram-direct-inputs)" \
-    || fatal "delta direct-input directory missing"
-DELTA_DB_EVIDENCE="$(first_existing_file \
-    /home/pir/data/attestations/delta_940611_948454_sev_snp/build-evidence.bin \
-    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/build-evidence.bin)" \
-    || fatal "delta build-evidence.bin missing"
-DELTA_DB_MANIFEST="$(first_existing_file \
-    /home/pir/data/attestations/delta_940611_948454_sev_snp/server-db/MANIFEST.toml \
-    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/server-db/MANIFEST.toml)" \
-    || fatal "delta exact server-db/MANIFEST.toml missing"
-DELTA_ROOT_BUNDLE="$(first_existing_file \
-    /home/pir/data/attestations/delta_940611_948454_sev_snp/root-bundle-payload.bin \
-    /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/root-bundle-payload.bin)" \
-    || fatal "delta root-bundle-payload.bin missing"
+load_active_database_generation 1 db1
+DELTA_SOURCE_DIR="$ACTIVE_DB_PROOF_DIR/oram-direct-inputs"
+DELTA_DB_EVIDENCE="$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
+DELTA_DB_MANIFEST="$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
+DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
 
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
     "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \

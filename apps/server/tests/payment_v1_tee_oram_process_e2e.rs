@@ -597,7 +597,13 @@ fn production_direct_oram_startup_rejects_unbound_or_unsafe_configurations() {
 #[test]
 fn measured_boot_copies_exact_manifest_and_sources_before_strict_build() {
     let script = include_str!("../../../scripts/dracut/97bpir-tier3-init/unified-server-run.sh");
-    assert!(script.contains("server-db/MANIFEST.toml missing"));
+    assert!(script.contains("load_active_database_generation 0 db0"));
+    assert!(script.contains("load_active_database_generation 1 db1"));
+    assert!(script.contains("runtime/proof MANIFEST bytes differ"));
+    assert!(!script.contains("first_existing_dir"));
+    assert!(!script.contains("first_existing_file"));
+    assert!(!script.contains("attested-builder-runs/mainnet_948454_oram_948454_sev_snp"));
+    assert!(!script.contains("attestations/delta_940611_948454_sev_snp"));
     assert!(script.contains("$trusted_input_dir/server-db-MANIFEST.toml"));
     assert_eq!(
         script
@@ -628,6 +634,9 @@ fn measured_boot_copies_exact_manifest_and_sources_before_strict_build() {
     let strict_build = script
         .find("--server-db-manifest \"$db_manifest\"")
         .unwrap();
+    let active_generation = script.find("load_active_database_generation 0 db0").unwrap();
+    let build_invocation = script.rfind("build_direct_oram mainnet-948454").unwrap();
+    assert!(active_generation < build_invocation);
     assert!(copy < trusted_rebind && trusted_rebind < strict_build);
 }
 
