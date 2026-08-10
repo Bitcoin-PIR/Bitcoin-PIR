@@ -302,6 +302,26 @@ if [ -n "$MISSING_MODS" ]; then
 fi
 echo "SEV modules confirmed in initramfs: $REQUIRED_SEV_MODS"
 
+# The full Direct profile is not eligible for upload unless the measured
+# initramfs contains the exact runit entry points and bounded supervisor that
+# the startup script invokes. This is inventory validation only; it does not
+# execute the production database build.
+REQUIRED_TIER3_ITEMS=(
+    'usr/local/bin/unified_server$'
+    'usr/local/bin/oramctl$'
+    'usr/local/bin/direct-oram-supervisor$'
+    'etc/sv/unified_server/run$'
+    'etc/sv/unified_server/finish$'
+    'usr/share/bitcoinpir/proofs/height-940611\.leaf-proof\.json$'
+)
+for expected in "${REQUIRED_TIER3_ITEMS[@]}"; do
+    if ! grep -Eq -- "$expected" <<< "$INITRD_LISTING"; then
+        echo "ERROR: required Tier 3 measured item missing: $expected" >&2
+        exit 1
+    fi
+done
+echo "Direct ORAM supervisor, runit hooks, binaries, and BHTM proof confirmed in initramfs"
+
 # A measured identity key is optional, but when supplied it must retain the
 # exact private-parent permissions required by unified_server's private-file
 # loader.  Otherwise the guest can attest and serve an encrypted channel while

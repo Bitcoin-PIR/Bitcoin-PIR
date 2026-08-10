@@ -26,7 +26,9 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "12dd0af352e7d6706f9249150c1c5d5f82995d1ac088ca30dd6277e0edcabca5",
+    "9fae280658e6c133ca8c613c394698b9ad4e92dc76eb5fe02b15754e7f5a6fbb",
+  "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
+    "571fd7005f5941abaeecdbcf4e363bb0bcd6ff005f471d3d4f0402306c0b8181",
 });
 
 const VPSBG_MEASURED_RUN_PATH =
@@ -2431,12 +2433,25 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
   ) {
     fail(`${label} must contain exactly one db0 DPF-only and one Direct ORAM fallback exec`);
   }
-  if (!/^VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1$/mu.test(text)) {
-    fail(`${label} must keep the reviewed DPF-only functional-beta switch enabled`);
+  if (!/^VPSBG_RUNTIME_PROFILE=direct-oram-v1$/mu.test(text)) {
+    fail(`${label} must select the reviewed Direct ORAM runtime profile`);
   }
+  requireText(
+    text,
+    [
+      "ORAM_DB0_MAX_SECONDS=480",
+      "ORAM_DB1_MAX_SECONDS=180",
+      "ORAM_TOTAL_MAX_SECONDS=900",
+      "ORAM_HEARTBEAT_INTERVAL_SECONDS=15",
+      "ORAM_HEARTBEAT_DEADLINE_SECONDS=90",
+      "ORAM_KILL_GRACE_SECONDS=5",
+      "ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor",
+    ].join("\n"),
+    label,
+  );
   const dpfOnlyExec = dpfOnlyExecLines[0];
   const dpfOnlyBranchOffset = text.indexOf(
-    'if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then',
+    'case "$VPSBG_RUNTIME_PROFILE" in',
   );
   const directOramBootstrapOffset = text.indexOf('[ -x "$ORAMCTL" ] || fatal');
   if (

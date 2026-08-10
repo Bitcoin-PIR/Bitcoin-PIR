@@ -70,9 +70,9 @@ install() {
     # blkid for the FATAL-path diagnostic when rootfs mount fails.
     # awk/cmp/dd/od/tr/tail/rm/mv are used by unified-server-run.sh to derive
     # fresh ORAM seeds, parse the active catalog, bind its runtime/proof
-    # manifests byte-for-byte, and publish boot images. date is used by the
-    # runit finish hook's bounded consecutive-failure window.
-    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk cmp dd od tr tail rm mv date
+    # manifests byte-for-byte, and publish boot images. date and du are used by
+    # the bounded Direct ORAM supervisor and runit failure guard.
+    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk cmp dd od tr tail rm mv date du
 
     # udhcpc is a busybox applet, NOT a standalone binary on Ubuntu.
     # Bake busybox itself in (statically linked, ~1.5 MB) and create
@@ -111,6 +111,8 @@ install() {
     inst_dir /etc/sv/unified_server
     inst_simple "$moddir/unified-server-run.sh" /etc/sv/unified_server/run
     inst_simple "$moddir/unified-server-finish.sh" /etc/sv/unified_server/finish
+    inst_simple "$moddir/direct-oram-supervisor.sh" /usr/local/bin/direct-oram-supervisor
     chmod 0755 "${initdir}/etc/sv/unified_server/run"
     chmod 0755 "${initdir}/etc/sv/unified_server/finish"
+    chmod 0755 "${initdir}/usr/local/bin/direct-oram-supervisor"
 }

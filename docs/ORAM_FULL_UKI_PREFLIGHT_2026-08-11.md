@@ -1,6 +1,6 @@
 # Full Direct ORAM UKI preflight — 2026-08-11
 
-Status: **NOT READY — preflight only; no full build was started.**
+Status: **BUILD BLOCKED — control path prepared; no full build was started.**
 
 This report freezes the exact input, capacity, time, observability, and VPSBG
 conditions for a future full db0/db1 Direct ORAM UKI. It is not deployment
@@ -47,8 +47,8 @@ No candidate-generation pointer was present; this is the active generation.
 | --- | --- | ---: | --- |
 | db0 | `utxo_chunks_index_nodust.bin` | 1,345,875,975 | `d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c` |
 | db0 | `utxo_chunks_nodust.bin` | 3,239,380,480 | `9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521` |
-| db1 | `utxo_chunks_index_nodust.bin` | 125,867,300 | `e06fc3c9f79919fd3d4e501337cf2797b88853835d2a6a9a8f06a24f827a6a16` |
-| db1 | `utxo_chunks_nodust.bin` | 340,230,840 | `536acba7438940577e84c098d3d7c72f59f32536d4fdc84193c2d166883d3e0a` |
+| db1 | `utxo_chunks_index_nodust.bin` | 125,867,300 | `e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16` |
+| db1 | `utxo_chunks_nodust.bin` | 340,230,840 | `536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a` |
 
 The two `direct-inputs.sha256` manifests passed. Every nonzero file named by
 each runtime `server-db/MANIFEST.toml` also passed. The read-only runtime-closure
@@ -112,33 +112,50 @@ cycle should budget 8–12 minutes and enforce these failure boundaries:
 Crossing a limit is a failure requiring interruption and diagnosis. It is not
 permission to wait longer.
 
-## Blocking conditions
+## Control-path implementation update
 
-The future full build is **not ready** until all of the following are closed:
+The follow-up change on PR #168 now:
 
-1. `scripts/dracut/97bpir-tier3-init/unified-server-run.sh` currently fixes
-   `VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1`. A newly built production UKI would remain
-   DPF-only and would not execute the Direct ORAM construction path.
-2. The full runtime path lacks the debug image's phase heartbeat and per-db /
-   overall watchdog. The new runit finish hook limits repeated process exits,
-   but cannot interrupt one hung builder invocation. Observability and hard
-   timeouts must be ported before building.
-3. VPSBG has 5/5 image slots occupied. One obsolete image must be explicitly
+1. fixes the measured runtime profile to `direct-oram-v1`, while retaining the
+   old DPF-only branch only as dormant rollback source code;
+2. supervises db0 and db1 separately with 480-second and 180-second limits,
+   15-second heartbeats, and a 90-second stale-heartbeat cutoff;
+3. adds an independent 900-second full-bootstrap watchdog and preserves
+   per-database status, heartbeat, progress, and build logs; and
+4. exercises both database paths with a small fake builder, verifies the final
+   server receives both Direct ORAM bindings, and proves a hung worker exits
+   with status 124 rather than running indefinitely; and
+5. makes the UKI builder reject an initrd missing the supervisor, runit run or
+   finish hooks, `unified_server`, `oramctl`, or the locked BHTM leaf proof.
+
+These are browserless control-path tests. They do not claim that a new UKI has
+been built or that production db0/db1 have run inside it.
+
+## Remaining blocking conditions
+
+The future full build remains blocked until all of the following are closed:
+
+1. The PR update must pass CI and be reviewed/merged; a fresh checkout and
+   exact binary hashes must then be recorded before building.
+2. VPSBG has 5/5 image slots occupied. One obsolete image must be explicitly
    selected and deleted by the operator before an upload can succeed.
-4. The staged runtime closure is complete and verified, but its broader
+3. The staged runtime closure is complete and verified, but its broader
    `all-artifacts.manifest.sha256` refers to historical build-only intermediates
    not retained in the active generation. This does not block runtime startup;
    it is an archival reproducibility gap that must be documented or satisfied
    before claiming a self-contained rebuild archive.
+4. Building, deleting an image, uploading, attaching, and rebooting each still
+   require explicit operator authorization. This report grants none of them.
 
 ## Required go/no-go sequence
 
 Before a later full build, produce one fresh report that:
 
 1. re-confirms stock/none mode, capacity, no running builder, and source hashes;
-2. closes the DPF-only flag and validates that db0 and db1 take the Direct path;
-3. demonstrates heartbeat fields and automatic 8/3/15-minute hard stops on a
-   bounded fixture without running production data;
+2. confirms the merged script still selects `direct-oram-v1` and that its
+   bounded dual-database fixture remains green;
+3. confirms the 8/3/15-minute hard stops and 15/90-second heartbeat policy in
+   the measured initrd inventory;
 4. records the exact release commit, `unified_server`/`oramctl` hashes, BHTM
    proof hash, UKI path/size/hash, and selected rollback image;
 5. obtains explicit operator authorization for image deletion, upload, attach,

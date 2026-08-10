@@ -668,6 +668,16 @@ test("VPSBG measured final exec fixes the premium suffix while accepting rendere
   assert.doesNotThrow(() =>
     validateVpsbgPremiumFreePowMeasuredFinalExec(alternateRun),
   );
+
+  const dpfOnlyRun = measuredRun.replace(
+    "VPSBG_RUNTIME_PROFILE=direct-oram-v1",
+    "VPSBG_RUNTIME_PROFILE=dpf-only-functional-beta-v1",
+  );
+  assert.notEqual(dpfOnlyRun, measuredRun);
+  assert.throws(
+    () => validateVpsbgPremiumFreePowMeasuredFinalExec(dpfOnlyRun),
+    /must select the reviewed Direct ORAM runtime profile/,
+  );
 });
 
 test("VPSBG measured final exec rejects placeholders and forbidden payment material", () => {

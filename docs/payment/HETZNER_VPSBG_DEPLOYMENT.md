@@ -113,7 +113,10 @@ The preparation leaves the following active definitions unchanged:
 - `deploy/systemd/dev-issuer.service`;
 - `deploy/systemd/cloudflared.service`; or
 - `scripts/dracut/97bpir-tier3-init/unified-server-run.sh`, except for the
-  separately reviewed VPSBG Premium + Free-PoW measured suffix described below.
+  separately reviewed VPSBG Premium + Free-PoW measured suffix described below;
+  and
+- `scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh`, the separately
+  reviewed measured worker watchdog and heartbeat recorder.
 
 The deployment-template gate pins the SHA-256 of each file. It rejects Payment
 V1 enforcement flags in every other active definition and, for the measured
