@@ -19,6 +19,10 @@ const tier3RunScript = path.join(
   scriptsDir,
   "dracut/97bpir-tier3-init/unified-server-run.sh",
 );
+const tier3FinishScript = path.join(
+  scriptsDir,
+  "dracut/97bpir-tier3-init/unified-server-finish.sh",
+);
 
 function write(pathname, contents = "fixture\n") {
   mkdirSync(path.dirname(pathname), { recursive: true });
@@ -132,8 +136,48 @@ try {
   assert.match(mismatch.stderr, /db0 runtime\/proof MANIFEST bytes differ/);
   assert.equal(existsSync(marker), false, "oramctl must not run after manifest mismatch");
 
+  const guardRoot = path.join(tempRoot, "runit-guard");
+  const guardState = path.join(guardRoot, "state");
+  const guardStatus = path.join(guardRoot, "status");
+  const guardService = path.join(guardRoot, "service");
+  const svLog = path.join(guardRoot, "sv.log");
+  const fakeSv = path.join(guardRoot, "sv");
+  write(fakeSv, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${svLog}"\n`);
+  chmodSync(fakeSv, 0o755);
+  mkdirSync(guardService, { recursive: true });
+  const guardEnv = {
+    ...process.env,
+    BPIR_RUNIT_GUARD_STATE_DIR: guardState,
+    BPIR_RUNIT_GUARD_STATUS_DIR: guardStatus,
+    BPIR_RUNIT_GUARD_SV_BIN: fakeSv,
+    BPIR_RUNIT_GUARD_SERVICE_DIR: guardService,
+  };
+  for (let failure = 1; failure <= 3; failure += 1) {
+    const result = run("sh", [tier3FinishScript, "134", "6"], { env: guardEnv });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), `${failure}\n`);
+    assert.equal(existsSync(svLog), failure === 3);
+  }
+  assert.equal(readFileSync(svLog, "utf8"), `-w 1 down ${guardService}\n`);
+  assert.match(
+    readFileSync(path.join(guardStatus, "unified-server-runit.status"), "utf8"),
+    /status=restart_suppressed[\s\S]*failure_count=3[\s\S]*action=down/,
+  );
+
+  writeFileSync(path.join(guardState, "failure_count"), "2\n");
+  writeFileSync(
+    path.join(guardState, "last_failure_at"),
+    `${Math.floor(Date.now() / 1000) - 601}\n`,
+  );
+  rmSync(svLog);
+  const afterStableWindow = run("sh", [tier3FinishScript, "1", "0"], { env: guardEnv });
+  assert.equal(afterStableWindow.status, 0, afterStableWindow.stdout + afterStableWindow.stderr);
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+  assert.equal(existsSync(svLog), false);
+
   execFileSync("sh", ["-n", stageHelper]);
   execFileSync("sh", ["-n", tier3RunScript]);
+  execFileSync("sh", ["-n", tier3FinishScript]);
   console.log("vpsbg Tier3 generation fixtures: ok");
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
