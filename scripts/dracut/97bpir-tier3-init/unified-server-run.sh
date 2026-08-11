@@ -199,6 +199,17 @@ require_file() {
     [ -r "$1" ] || fatal "required file missing or unreadable: $1"
 }
 
+require_runtime_identity_and_policy() {
+    require_file "$IDENTITY_KEY_PATH"
+    require_file "$IDENTITY_CERT_PATH"
+    require_file "$SERVICE_POLICY_PATH"
+    [ -f "$IDENTITY_KEY_PATH" ] || fatal "identity key is not a regular file: $IDENTITY_KEY_PATH"
+    [ -f "$IDENTITY_CERT_PATH" ] || fatal "identity certificate is not a regular file: $IDENTITY_CERT_PATH"
+    identity_key_bytes=$(wc -c <"$IDENTITY_KEY_PATH" | tr -d '[:space:]')
+    [ "$identity_key_bytes" = 32 ] || fatal "identity key must be exactly 32 bytes"
+    [ -s "$IDENTITY_CERT_PATH" ] || fatal "identity certificate is empty"
+}
+
 direct_input_hash() {
     awk -v name="$1" '$2 == name || $2 == "./" name { print $1; exit }' "$2"
 }
@@ -561,6 +572,11 @@ verify_direct_oram_publish() {
 }
 
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
+# Identity announcement and admission policy are mandatory for both measured
+# runtime profiles. Check them before Direct ORAM regeneration so a missing
+# persistent secret or public policy cannot waste the bounded build window and
+# then leave the server silently unannounced.
+require_runtime_identity_and_policy
 case "$VPSBG_RUNTIME_PROFILE" in
 dpf-only-functional-beta-v1)
     umask 077
