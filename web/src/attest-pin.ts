@@ -231,9 +231,9 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 
-/** Strict v2 pins for OnionPIR and Direct ORAM. Unlike the v1 pins above
+/** Strict v2 pins for the Hetzner OnionPIR service. Unlike the v1 pins above
  * (retained for DPF/Harmony compatibility), these bind the complete typed
- * Onion query layout and the native full-build producer. */
+ * Onion query layout and the reviewed re-attestation producer. */
 export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
   {
     dbId: 0,
@@ -247,8 +247,8 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
     onionSuperRootHex: MAINNET_948454_DB_PROOF_PIN.onionSuperRootHex,
     paramsHashHex: 'a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563',
     networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
-    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
+    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
+    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
     onionEntrySize: 3_328,
     proofVersion: 2,
     onionTotalPackedEntries: 948_640,
@@ -271,8 +271,8 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
     onionSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.onionSuperRootHex,
     paramsHashHex: 'fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d',
     networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
-    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
+    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
+    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
     onionEntrySize: 3_328,
     proofVersion: 2,
     onionTotalPackedEntries: 116_030,
@@ -283,6 +283,17 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
     description: 'delta_940611_948454 database proof v2 with complete OnionPIR layout binding',
   },
 ];
+
+/** Strict v2 pins for the VPSBG Direct ORAM service. The layout and database
+ * roots match the Onion service, while the native full-build producer is
+ * independently bound to the proof-registry lock. */
+export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
+  PRODUCTION_ONION_DB_PROOF_V2_PINS.map((pin) => ({
+    ...pin,
+    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
+    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
+    description: `${pin.description}; VPSBG native full-build producer`,
+  }));
 
 /**
  * Operator identity pin (Tier-1) for the REQ_ANNOUNCE operator-signed

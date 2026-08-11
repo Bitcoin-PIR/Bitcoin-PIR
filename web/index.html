@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-0w7YjVZghOpfY94aY/B7EWr1yo/4P3uiYRVia4hzajE=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-tmZneQSAFslgwVqYZIJvzMdgjthIbWI+Q2YdKzx2424=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1674,7 +1674,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
         import FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP from './src/functional-beta-trusted-bootstrap.json';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -2982,7 +2982,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.innerHTML = rows.join('');
         }
 
-        async function verifyAndRenderBitcoinAnchorBadge(idElem, label, dbInfo) {
+        async function verifyAndRenderBitcoinAnchorBadge(
+            idElem,
+            label,
+            dbInfo,
+            v2PinSet = PRODUCTION_ONION_DB_PROOF_V2_PINS,
+        ) {
             if (!dbInfo || dbInfo.state !== 'verified' || !dbInfo.proof) {
                 renderBitcoinAnchorBadge(idElem, label, {
                     state: 'unavailable',
@@ -3027,7 +3032,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             });
 
             const expectedPinSet = dbInfo.proof.proofVersion === 2
-                ? PRODUCTION_ONION_DB_PROOF_V2_PINS
+                ? v2PinSet
                 : PRODUCTION_DB_PROOF_PINS;
             const expectedPin = expectedPinSet.find(pin => pin.dbId === dbInfo.proof.dbId);
             if (!expectedPin) {
@@ -6113,7 +6118,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     expectedServerId: provider.stableServerId,
                     pinnedOperatorPubkey: providerOperatorKeyV1(provider),
                     verifyOperatorIdentity: true,
-                    databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS,
+                    databaseProofPins: PRODUCTION_ORAM_DB_PROOF_V2_PINS,
                     batchPlanner: {
                         accessBudget: 75,
                         indexReadsPerScriptHash: 2,
@@ -6147,7 +6152,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 error: info.error || 'live db 0 proof was not verified',
                             });
                         }
-                        verifyAndRenderBitcoinAnchorBadge('oram-bitcoinAnchorBadge', 'ORAM TEE', info)
+                        verifyAndRenderBitcoinAnchorBadge(
+                            'oram-bitcoinAnchorBadge',
+                            'ORAM TEE',
+                            info,
+                            PRODUCTION_ORAM_DB_PROOF_V2_PINS,
+                        )
                             .catch(e => log(`ORAM Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
                     },
                     onAttestation: (info) => {

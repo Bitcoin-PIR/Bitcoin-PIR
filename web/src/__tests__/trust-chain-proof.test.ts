@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   DELTA_940611_948454_DB_PROOF_PIN,
-  PRODUCTION_ONION_DB_PROOF_V2_PINS,
+  PRODUCTION_ORAM_DB_PROOF_V2_PINS,
 } from '../attest-pin.js';
 import {
   DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
@@ -96,7 +96,7 @@ describe('database trust-chain proof', () => {
   });
 
   it('bridges the historical trust-chain manifest to a fully pinned v2 proof', async () => {
-    const v2Pin = PRODUCTION_ONION_DB_PROOF_V2_PINS.find(({ dbId }) => dbId === 1);
+    const v2Pin = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find(({ dbId }) => dbId === 1);
     expect(v2Pin).toBeDefined();
 
     const status = await verifyProductionTrustChain({
