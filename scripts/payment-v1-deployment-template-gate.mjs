@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "74ff42981b4528e2e287b5df024308faa393add3cfa8cfc132a0db44788cc67c",
+    "aba3eed639a1c119784b1709cbc3c5ba80d780e6872c2a2db76eb6b7789337a4",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "06b763099ce2828603763ec45e1cdcec406659a3fb0cd413c28ac85af9cf6444",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
@@ -2463,13 +2463,18 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
   const dpfOnlyBranchOffset = text.indexOf(
     'case "$VPSBG_RUNTIME_PROFILE" in',
   );
+  const identityPolicyPreflightOffset = text.indexOf(
+    "\nrequire_runtime_identity_and_policy\n",
+  );
   const directOramBootstrapOffset = text.indexOf('[ -x "$ORAMCTL" ] || fatal');
   if (
     dpfOnlyBranchOffset < 0 ||
+    identityPolicyPreflightOffset < 0 ||
+    identityPolicyPreflightOffset > dpfOnlyBranchOffset ||
     directOramBootstrapOffset < 0 ||
     directOramBootstrapOffset < dpfOnlyBranchOffset
   ) {
-    fail(`${label} must start the DPF-only path before Direct ORAM bootstrap`);
+    fail(`${label} must require identity and policy before either runtime profile and Direct ORAM bootstrap`);
   }
   const statePolicyPath = `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/service-policy.bin`;
   requireText(

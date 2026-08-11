@@ -144,6 +144,12 @@ try {
   writeFileSync(mismatchBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
   write(path.join(mismatchData, "runtime-db0/MANIFEST.toml"), "runtime manifest\n");
   write(path.join(mismatchData, "proof-db0/server-db/MANIFEST.toml"), "proof manifest\n");
+  write(path.join(mismatchData, "pir2-identity.key"), "k".repeat(32));
+  write(path.join(mismatchData, "pir2.cert"), "fixture certificate\n");
+  write(
+    path.join(mismatchData, "payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin"),
+    "fixture policy\n",
+  );
   write(
     path.join(mismatchData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-db1"\nbase_height = 940611\nheight = 948454\n`,
@@ -210,6 +216,12 @@ try {
 
   writeDirectDb("db0", "db0 runtime manifest\n", db0Index, db0Chunks);
   writeDirectDb("db1", "db1 runtime manifest\n", db1Index, db1Chunks);
+  write(path.join(directData, "pir2-identity.key"), "k".repeat(32));
+  write(path.join(directData, "pir2.cert"), "fixture certificate\n");
+  write(
+    path.join(directData, "payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin"),
+    "fixture policy\n",
+  );
   write(
     path.join(directData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "db0-runtime"\nproof_dir = "db0-proof"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "db1-runtime"\nproof_dir = "db1-proof"\nbase_height = 940611\nheight = 948454\n`,
@@ -316,6 +328,13 @@ exit 1
     BPIR_ORAM_BOOT_ID_FILE: bootIdFile,
     PATH: `${fixtureBin}:${process.env.PATH}`,
   };
+  rmSync(path.join(directData, "pir2.cert"));
+  const missingIdentity = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(missingIdentity.status, 0, missingIdentity.stdout + missingIdentity.stderr);
+  assert.match(missingIdentity.stderr, /required file missing or unreadable: .*pir2\.cert/);
+  assert.equal(existsSync(directMarker), false, "oramctl must not run without the identity pair");
+  assert.equal(existsSync(unifiedStarts), false, "unified_server must not start without the identity pair");
+  write(path.join(directData, "pir2.cert"), "fixture certificate\n");
   const directSuccess = run("sh", [directRunScript], { env: directEnv });
   assert.equal(directSuccess.status, 0, directSuccess.stdout + directSuccess.stderr);
   const directCalls = readFileSync(directMarker, "utf8");
