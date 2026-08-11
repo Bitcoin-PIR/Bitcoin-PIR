@@ -14,7 +14,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
@@ -186,11 +186,10 @@ impl OramClient {
         }
     }
 
-    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    /// Fetch and verify the V2 attested-builder proof bundle for `db_id`.
     ///
-    /// ORAM uses the same catalog and proof envelope as the DPF/Harmony
-    /// backends; this method keeps the single-server browser path on the
-    /// same attested-root policy surface.
+    /// Direct ORAM is bound to the native V2 layout and must not silently
+    /// consume the legacy V1 proof slot used by DPF/Harmony clients.
     pub async fn verify_database_proof(
         &mut self,
         db_id: u8,
@@ -209,8 +208,8 @@ impl OramClient {
             .find(|db| db.db_id == db_id)
             .cloned()
             .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
-        let bundle = fetch_database_proof(self.conn_mut()?.as_mut(), db_id).await?;
-        verify_database_proof(&db_info, &bundle, policy)
+        let bundle = fetch_database_proof_v2(self.conn_mut()?.as_mut(), db_id).await?;
+        verify_database_proof_v2(&db_info, &bundle, policy)
     }
 
     pub fn root_policy(&self) -> RootPolicy {

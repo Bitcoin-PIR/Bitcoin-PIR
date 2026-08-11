@@ -127,17 +127,17 @@ export interface ServerAttestPin {
 
 /**
  * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
- * 2026-08-12 after restoring the db1 bucket-Merkle proof auxiliaries. Image
- * 255 serves DPF, Harmony-query and TEE ORAM with the reviewed epoch-6 policy.
+ * 2026-08-12 after separating the legacy V1 and native V2 proof slots. Image
+ * 259 serves DPF, Harmony-query and TEE ORAM with the reviewed epoch-7 policy.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from image 255 after validating the AMD chain, REPORT_DATA,
+  // Captured from image 259 after validating the AMD chain, REPORT_DATA,
   // exact unified_server binary and both attested database manifest roots.
   measurementHex:
-    '4474af1ae2eb49f8a4d9bdf9285abf91a30bee47ac3dd0614634790402500e503208d2e4a36074d3c822d24ea089046a',
+    'a8191c82a62b2ffdfe6d6deafaef16dda150f0b87810cf1c6526677c224450ef5e779fbad041cc4e41147a14697ddfbd',
   binarySha256Hex:
     '8aa6928c866aaed396c8d2ffe70520ba1dd7e650c4e5bfdaea87f38eb42ea355',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 255, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-6)',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 259, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-7)',
 };
 
 /**
