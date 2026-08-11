@@ -47,4 +47,17 @@ if (!/locator\('#bitcoinPirApp'\)[\s\S]*data-module-readiness', 'ready'[\s\S]*ar
   throw new Error('openBackend must wait for the explicit interaction-ready state');
 }
 
-process.stdout.write('verified strict production canary waits for post-listener module readiness\n');
+const noFatalLog = strictCanary.match(
+  /async function expectNoFatalLog[\s\S]*?\n}\n\n(?:test|async function)/,
+)?.[0];
+if (!noFatalLog) throw new Error('strict production canary has no expectNoFatalLog helper');
+if (!/locator\('#log \.log-entry'\)\.filter\(\{ hasText: fatalPattern \}\)/.test(noFatalLog)) {
+  throw new Error('fatal canary matching must stay scoped to individual log entries');
+}
+if (/locator\('#log'\)\.getByText/.test(noFatalLog)) {
+  throw new Error('fatal canary matching must not aggregate text across the log container');
+}
+
+process.stdout.write(
+  'verified strict production canary readiness and line-scoped fatal log matching\n',
+);

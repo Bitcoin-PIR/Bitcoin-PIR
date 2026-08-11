@@ -63,9 +63,9 @@ async function expectLogContains(page: Page, ...messages: string[]): Promise<voi
 }
 
 async function expectNoFatalLog(page: Page): Promise<void> {
-  const fatal = page.locator('#log').getByText(
-    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|WASM module required|query error:|batch error:|(?:connection|connect) failed:)/i,
-  );
+  const fatalPattern =
+    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|WASM module required|query error:|batch error:|(?:connection|connect) failed:)/i;
+  const fatal = page.locator('#log .log-entry').filter({ hasText: fatalPattern });
   await expect(fatal).toHaveCount(0);
 }
 
