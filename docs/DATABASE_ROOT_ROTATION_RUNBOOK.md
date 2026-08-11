@@ -134,14 +134,19 @@ and writes a candidate catalog. It never replaces the active
 ./scripts/stage_vpsbg_tier3_generation.sh \
   --generation <reviewed-generation> \
   --db0-output <complete-db0-build-output> \
+  --db0-proof-v1 <locked-db0-v1-proof-sidecars> \
   --db0-name <name> --db0-type full --db0-base-height 0 --db0-height <height> \
   --db1-output <complete-db1-build-output> \
+  --db1-proof-v1 <locked-db1-v1-proof-sidecars> \
   --db1-name <name> --db1-type delta --db1-base-height <height> --db1-height <height>
 ```
 
-The resulting candidate points `path` at that generation's `server-db` tree
-and `proof_dir` at the same generation root. Review it and use the maintenance
-window activation step below; never edit its generated path/proof pairing.
+The resulting candidate keeps the proof generations explicit: `path` points
+at the V2 generation's `server-db` tree, `proof_dir` points at the locked V1
+sidecars used by DPF/Harmony clients, and `proof_v2_dir` points at the complete
+V2 output used by Onion/ORAM and Direct ORAM reconstruction. Review it and use
+the maintenance-window activation step below; never collapse or manually edit
+these generated path/proof pairings.
 
 Hetzner can be staged over its normal SSH/operator path. VPSBG Tier 3 has no
 SSH, so a complete proof/root rotation must use a planned portal maintenance

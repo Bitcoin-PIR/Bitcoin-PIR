@@ -65,6 +65,21 @@ function createCompleteOutput(root, name, manifest) {
   return output;
 }
 
+function createProofV1(root, name, manifest = "v1 manifest\n") {
+  const proof = path.join(root, name);
+  for (const relative of [
+    "server-db/MANIFEST.toml",
+    "build-evidence.bin",
+    "root-bundle-payload.bin",
+    "build-evidence.sev-snp-report.bin",
+    "database.manifest.sha256",
+    "all-artifacts.manifest.sha256",
+  ]) {
+    write(path.join(proof, relative), relative.includes("MANIFEST") ? manifest : "v1 fixture\n");
+  }
+  return proof;
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", ...options });
   if (result.error) throw result.error;
@@ -116,6 +131,8 @@ esac
 
   const db0 = createCompleteOutput(tempRoot, "db0-output", "db0 manifest\n");
   const db1 = createCompleteOutput(tempRoot, "db1-output", "db1 manifest\n");
+  const db0ProofV1 = createProofV1(tempRoot, "db0-proof-v1", "db0 v1 manifest\n");
+  const db1ProofV1 = createProofV1(tempRoot, "db1-proof-v1", "db1 v1 manifest\n");
   const stage = run("bash", [
     stageHelper,
     "--generation",
@@ -124,6 +141,10 @@ esac
     db0,
     "--db1-output",
     db1,
+    "--db0-proof-v1",
+    db0ProofV1,
+    "--db1-proof-v1",
+    db1ProofV1,
     "--db0-name",
     "main",
     "--db0-type",
@@ -149,10 +170,18 @@ esac
   assert.ok(existsSync(candidate));
   const candidateText = readFileSync(candidate, "utf8");
   assert.ok(candidateText.includes(`path = "${dataRoot}/generations/fixture-1/db0/server-db"`));
-  assert.ok(candidateText.includes(`proof_dir = "${dataRoot}/generations/fixture-1/db1"`));
+  assert.ok(candidateText.includes(`proof_dir = "${dataRoot}/generations/fixture-1/proof-v1/db1"`));
+  assert.ok(candidateText.includes(`proof_v2_dir = "${dataRoot}/generations/fixture-1/db1"`));
   assert.equal(
     readFileSync(path.join(dataRoot, "generations/fixture-1/db0/server-db/MANIFEST.toml"), "utf8"),
     "db0 manifest\n",
+  );
+  assert.equal(
+    readFileSync(
+      path.join(dataRoot, "generations/fixture-1/proof-v1/db1/root-bundle-payload.bin"),
+      "utf8",
+    ),
+    "v1 fixture\n",
   );
 
   const mismatchRoot = path.join(tempRoot, "mismatch");
@@ -169,7 +198,9 @@ esac
   write(bhtmProof, "{}\n");
   writeFileSync(mismatchBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
   write(path.join(mismatchData, "runtime-db0/MANIFEST.toml"), "runtime manifest\n");
-  write(path.join(mismatchData, "proof-db0/server-db/MANIFEST.toml"), "proof manifest\n");
+  createProofV1(mismatchData, "proof-v1-db0");
+  createProofV1(mismatchData, "proof-v1-db1");
+  write(path.join(mismatchData, "proof-v2-db0/server-db/MANIFEST.toml"), "proof manifest\n");
   const mismatchIdentityRoot = path.join(mismatchRoot, "identity");
   write(path.join(mismatchIdentityRoot, "server.key"), "k".repeat(32));
   write(path.join(mismatchIdentityRoot, "server.cert"), "fixture certificate\n");
@@ -181,7 +212,7 @@ esac
   );
   write(
     path.join(mismatchData, "databases.toml"),
-    `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-db1"\nbase_height = 940611\nheight = 948454\n`,
+    `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-v1-db0"\nproof_v2_dir = "proof-v2-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-v1-db1"\nproof_v2_dir = "proof-v2-db1"\nbase_height = 940611\nheight = 948454\n`,
   );
 
   const fixtureRunScript = path.join(mismatchRoot, "unified-server-run.sh");
@@ -209,7 +240,7 @@ esac
     },
   });
   assert.notEqual(mismatch.status, 0, mismatch.stdout + mismatch.stderr);
-  assert.match(mismatch.stderr, /db0 runtime\/proof MANIFEST bytes differ/);
+  assert.match(mismatch.stderr, /db0 runtime\/proof-v2 MANIFEST bytes differ/);
   assert.equal(existsSync(marker), false, "oramctl must not run after manifest mismatch");
 
   const directRoot = path.join(tempRoot, "direct-success");
@@ -251,6 +282,8 @@ esac
 
   writeDirectDb("db0", "db0 runtime manifest\n", db0Index, db0Chunks);
   writeDirectDb("db1", "db1 runtime manifest\n", db1Index, db1Chunks);
+  createProofV1(directData, "db0-proof-v1");
+  createProofV1(directData, "db1-proof-v1");
   const directIdentityRoot = path.join(directRoot, "identity");
   write(path.join(directIdentityRoot, "server.key"), "k".repeat(32));
   write(path.join(directIdentityRoot, "server.cert"), "fixture certificate\n");
@@ -262,7 +295,7 @@ esac
   );
   write(
     path.join(directData, "databases.toml"),
-    `[[database]]\nname = "main"\ntype = "full"\npath = "db0-runtime"\nproof_dir = "db0-proof"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "db1-runtime"\nproof_dir = "db1-proof"\nbase_height = 940611\nheight = 948454\n`,
+    `[[database]]\nname = "main"\ntype = "full"\npath = "db0-runtime"\nproof_dir = "db0-proof-v1"\nproof_v2_dir = "db0-proof"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "db1-runtime"\nproof_dir = "db1-proof-v1"\nproof_v2_dir = "db1-proof"\nbase_height = 940611\nheight = 948454\n`,
   );
   write(directBhtmProof, "{}\n");
   write(
