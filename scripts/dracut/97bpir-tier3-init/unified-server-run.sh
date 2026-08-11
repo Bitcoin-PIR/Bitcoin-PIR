@@ -87,6 +87,10 @@ VPSBG_RUNTIME_PROFILE=direct-oram-v1
 
 ORAM_BOOT_ROOT=/home/pir/data/.oram-boot
 ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
+ORAM_BOOT_ID_FILE=${BPIR_ORAM_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+ORAM_PUBLISHED_MARKER="$ORAM_BUILD_LOG_DIR/oram-published.boot-id.env"
+ORAM_WATCHDOG_PHASE_FILE="$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.phase"
+ORAM_SERVER_RUNTIME_LOG="$ORAM_BUILD_LOG_DIR/unified-server.runtime.log"
 ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
 ORAM_CURRENT_DIR="$ORAM_BOOT_ROOT/current"
 ORAM_FULL_DIR="$ORAM_CURRENT_DIR/db0-mainnet-948454"
@@ -110,6 +114,8 @@ ORAM_HEARTBEAT_INTERVAL_SECONDS=15
 ORAM_HEARTBEAT_DEADLINE_SECONDS=90
 ORAM_KILL_GRACE_SECONDS=5
 ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor
+ORAM_SERVER_READY_HOST=127.0.0.1
+ORAM_SERVER_READY_PORT=8091
 ORAM_ACTIVE_SUPERVISOR_PID_FILE="$TRUSTED_STATE_ROOT/active-supervisor.pid"
 DIRECT_INDEX_SLOTS_PER_BIN=4
 DIRECT_INDEX_HASH_FNS=2
@@ -132,6 +138,61 @@ fatal() {
     echo "[unified-server-run] FATAL: $*" >&2
     sleep 5
     exit 1
+}
+
+read_current_boot_id() {
+    ORAM_BOOT_ID=$(cat "$ORAM_BOOT_ID_FILE" 2>/dev/null || true)
+    case "$ORAM_BOOT_ID" in
+        ????????-????-????-????-????????????) ;;
+        *) return 1 ;;
+    esac
+    case "$ORAM_BOOT_ID" in
+        *[!0-9a-f-]*) return 1 ;;
+    esac
+}
+
+published_marker_matches_current_boot() {
+    [ -e "$ORAM_PUBLISHED_MARKER" ] || return 1
+    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$ORAM_PUBLISHED_MARKER") \
+        || fatal "published ORAM marker is malformed; refusing destructive retry"
+    marker_status=$(awk -F= '$1 == "status" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$ORAM_PUBLISHED_MARKER") \
+        || fatal "published ORAM marker is malformed; refusing destructive retry"
+    [ "$marker_status" = published ] \
+        || fatal "published ORAM marker has unsupported status; refusing destructive retry"
+    [ "$marker_boot_id" = "$ORAM_BOOT_ID" ]
+}
+
+write_current_boot_published_marker() {
+    marker_tmp="$ORAM_PUBLISHED_MARKER.tmp.$$"
+    umask 077
+    {
+        printf 'boot_id=%s\n' "$ORAM_BOOT_ID"
+        printf 'status=published\n'
+        printf 'published_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >"$marker_tmp" || fatal "failed to write published ORAM marker"
+    chmod 600 "$marker_tmp" || fatal "failed to protect published ORAM marker"
+    mv "$marker_tmp" "$ORAM_PUBLISHED_MARKER" || fatal "failed to publish ORAM marker"
+}
+
+write_watchdog_phase() {
+    watchdog_phase="$1"
+    {
+        printf 'phase=%s\n' "$watchdog_phase"
+        printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >"$ORAM_WATCHDOG_PHASE_FILE.tmp" || fatal "failed to write watchdog phase"
+    mv "$ORAM_WATCHDOG_PHASE_FILE.tmp" "$ORAM_WATCHDOG_PHASE_FILE" \
+        || fatal "failed to publish watchdog phase"
+}
+
+start_unified_server_runtime_log() {
+    umask 077
+    : >>"$ORAM_SERVER_RUNTIME_LOG" || fatal "failed to open unified_server runtime log"
+    chmod 600 "$ORAM_SERVER_RUNTIME_LOG" || fatal "failed to protect unified_server runtime log"
+    {
+        printf '\n[unified-server-run] attempt boot_id=%s started_at=%s\n' \
+            "$ORAM_BOOT_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >>"$ORAM_SERVER_RUNTIME_LOG" || fatal "failed to write unified_server runtime log header"
+    exec >>"$ORAM_SERVER_RUNTIME_LOG" 2>&1
 }
 
 require_file() {
@@ -266,11 +327,29 @@ start_total_watchdog() {
     (
         total_deadline=$(( $(date -u +%s) + ORAM_TOTAL_MAX_SECONDS ))
         while [ "$(date -u +%s)" -lt "$total_deadline" ]; do
+            kill -0 "$parent_pid" 2>/dev/null || exit 0
+            if nc -z -w 1 "$ORAM_SERVER_READY_HOST" "$ORAM_SERVER_READY_PORT" >/dev/null 2>&1; then
+                {
+                    printf 'status=ready\n'
+                    printf 'phase=server-readiness\n'
+                    printf 'reason=port-ready\n'
+                    printf 'timeout_seconds=%s\n' "$ORAM_TOTAL_MAX_SECONDS"
+                    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                } >"$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env.tmp"
+                mv "$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env.tmp" \
+                    "$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env"
+                exit 0
+            fi
             sleep 1
         done
+        watchdog_phase=direct-oram-bootstrap
+        if [ -r "$ORAM_WATCHDOG_PHASE_FILE" ]; then
+            recorded_phase=$(awk -F= '$1 == "phase" { print $2; exit }' "$ORAM_WATCHDOG_PHASE_FILE" 2>/dev/null || true)
+            case "$recorded_phase" in direct-oram-build|server-readiness) watchdog_phase=$recorded_phase ;; esac
+        fi
         {
             printf 'status=timed_out\n'
-            printf 'phase=direct-oram-bootstrap\n'
+            printf 'phase=%s\n' "$watchdog_phase"
             printf 'reason=total-timeout\n'
             printf 'timeout_seconds=%s\n' "$ORAM_TOTAL_MAX_SECONDS"
             printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -286,6 +365,8 @@ start_total_watchdog() {
         [ "${supervisor_pid:-0}" -gt 1 ] \
             && kill -KILL "$supervisor_pid" 2>/dev/null || true
         kill -TERM "$parent_pid" 2>/dev/null || true
+        sleep "$ORAM_KILL_GRACE_SECONDS"
+        kill -KILL "$parent_pid" 2>/dev/null || true
     ) </dev/null >/dev/null 2>&1 &
     ORAM_TOTAL_WATCHDOG_PID=$!
 }
@@ -479,6 +560,11 @@ verify_direct_oram_publish() {
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
 case "$VPSBG_RUNTIME_PROFILE" in
 dpf-only-functional-beta-v1)
+    umask 077
+    mkdir -p "$ORAM_BUILD_LOG_DIR" || fatal "failed to create unified_server runtime log directory"
+    chmod 700 "$ORAM_BUILD_LOG_DIR" || fatal "failed to protect unified_server runtime log directory"
+    read_current_boot_id || fatal "kernel boot_id missing or invalid"
+    start_unified_server_runtime_log
     echo "[unified-server-run] starting VPSBG db0 functional beta; Direct ORAM is not advertised" >&2
     exec "$UNIFIED_SERVER" \
         --port 8091 \
@@ -521,7 +607,14 @@ esac
 [ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$ORAM_SUPERVISOR" ] || fatal "$ORAM_SUPERVISOR missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
+umask 077
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
+chmod 700 "$ORAM_BUILD_LOG_DIR" || fatal "failed to protect ORAM boot log directory"
+read_current_boot_id || fatal "kernel boot_id missing or invalid"
+if published_marker_matches_current_boot; then
+    echo "[unified-server-run] ORAM was already published for boot $ORAM_BOOT_ID; refusing destructive retry" >&2
+    exit 0
+fi
 for stale_staging in "$ORAM_BOOT_ROOT"/staging.*; do
     [ -e "$stale_staging" ] || continue
     safe_remove_boot_path "$stale_staging"
@@ -536,6 +629,7 @@ ORAM_PAGE_KEY_HEX="$(random_seed_hex)"
 ORAM_TOTAL_WATCHDOG_PID=
 trap cleanup_build_staging EXIT
 trap 'exit 124' HUP INT TERM
+write_watchdog_phase direct-oram-build
 start_total_watchdog
 
 load_active_database_generation 0 db0
@@ -563,9 +657,11 @@ mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerat
 verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-948454
 verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" delta-940611-948454
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
-stop_total_watchdog
+write_current_boot_published_marker
+write_watchdog_phase server-readiness
 trap - EXIT
 trap - HUP INT TERM
+start_unified_server_runtime_log
 
 # VPSBG is query-only and has no Harmony V2 hint pool, so the measured
 # invocation keeps online V2Full authorization disabled (limit 0).

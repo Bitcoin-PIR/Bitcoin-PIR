@@ -204,6 +204,16 @@ The generated direct ORAM image directories are disposable:
 Boot-time build logs are written under:
   /home/pir/data/oram-boot-logs/
 
+After both images have been verified and atomically published, the measured
+startup writes a boot-id-bound publication marker in that directory. A later
+`unified_server` exit in the same Linux boot is immediately taken down by the
+runit finish hook; a new boot has a new kernel boot id and rebuilds normally.
+`unified-server.runtime.log` is mode 0600 and records only a boot-id/timestamp
+attempt header plus server stdout/stderr (never the server command line or
+ORAM page key). The 900-second bootstrap watchdog remains active through
+`127.0.0.1:8091` readiness, writes `direct-oram-bootstrap.status.env`, and
+terminates the exec-preserved server PID on timeout.
+
 Trusted runtime state is held only in SEV-protected tmpfs:
   /run/bitcoinpir-oram-state/db0-mainnet-948454
   /run/bitcoinpir-oram-state/db1-delta-940611-948454

@@ -26,7 +26,9 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "9fae280658e6c133ca8c613c394698b9ad4e92dc76eb5fe02b15754e7f5a6fbb",
+    "b59809a643a618a5c06b01656d432d1467ca244497570b87805b077ec3f2bc67",
+  "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
+    "06b763099ce2828603763ec45e1cdcec406659a3fb0cd413c28ac85af9cf6444",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
     "571fd7005f5941abaeecdbcf4e363bb0bcd6ff005f471d3d4f0402306c0b8181",
 });
@@ -2446,6 +2448,14 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
       "ORAM_HEARTBEAT_DEADLINE_SECONDS=90",
       "ORAM_KILL_GRACE_SECONDS=5",
       "ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor",
+    ].join("\n"),
+    label,
+  );
+  requireText(
+    text,
+    [
+      "ORAM_SERVER_READY_HOST=127.0.0.1",
+      "ORAM_SERVER_READY_PORT=8091",
     ].join("\n"),
     label,
   );
