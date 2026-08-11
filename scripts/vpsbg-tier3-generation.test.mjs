@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -116,11 +117,13 @@ try {
   const oramctl = path.join(mismatchRoot, "oramctl");
   const unifiedServer = path.join(mismatchRoot, "unified_server");
   const bhtmProof = path.join(mismatchRoot, "height-940611.leaf-proof.json");
+  const mismatchBootId = path.join(mismatchRoot, "boot_id");
   write(oramctl, `#!/bin/sh\nprintf invoked > "${marker}"\n`);
   write(unifiedServer, "#!/bin/sh\nexit 0\n");
   chmodSync(oramctl, 0o755);
   chmodSync(unifiedServer, 0o755);
   write(bhtmProof, "{}\n");
+  writeFileSync(mismatchBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
   write(path.join(mismatchData, "runtime-db0/MANIFEST.toml"), "runtime manifest\n");
   write(path.join(mismatchData, "proof-db0/server-db/MANIFEST.toml"), "proof manifest\n");
   write(
@@ -143,7 +146,9 @@ try {
     .replaceAll("sleep 5", ":");
   writeFileSync(fixtureRunScript, transformed);
   chmodSync(fixtureRunScript, 0o755);
-  const mismatch = run("sh", [fixtureRunScript]);
+  const mismatch = run("sh", [fixtureRunScript], {
+    env: { ...process.env, BPIR_ORAM_BOOT_ID_FILE: mismatchBootId },
+  });
   assert.notEqual(mismatch.status, 0, mismatch.stdout + mismatch.stderr);
   assert.match(mismatch.stderr, /db0 runtime\/proof MANIFEST bytes differ/);
   assert.equal(existsSync(marker), false, "oramctl must not run after manifest mismatch");
@@ -152,6 +157,10 @@ try {
   const directData = path.join(directRoot, "data");
   const directMarker = path.join(directRoot, "oramctl.calls");
   const unifiedArgs = path.join(directRoot, "unified-server.args");
+  const unifiedStarts = path.join(directRoot, "unified-server.starts");
+  const readySignal = path.join(directRoot, "unified-server.ready");
+  const bootIdFile = path.join(directRoot, "boot_id");
+  const fixtureBin = path.join(directRoot, "bin");
   const directOramctl = path.join(directRoot, "oramctl");
   const directUnifiedServer = path.join(directRoot, "unified_server");
   const directBhtmProof = path.join(directRoot, "height-940611.leaf-proof.json");
@@ -217,10 +226,24 @@ printf '%s|%s\n' "$out" "$state" >> "${directMarker}"
     directUnifiedServer,
     `#!/bin/sh
 printf '%s\n' "$@" > "${unifiedArgs}"
+printf started >> "${unifiedStarts}"
+printf ready > "${readySignal}"
+printf 'fixture server stdout\n'
+printf 'fixture server stderr\n' >&2
+sleep 1
 `,
   );
+  write(
+    path.join(fixtureBin, "nc"),
+    `#!/bin/sh
+[ -e "${readySignal}" ] && exit 0
+exit 1
+`,
+  );
+  writeFileSync(bootIdFile, "11111111-1111-1111-1111-111111111111\n");
   chmodSync(directOramctl, 0o755);
   chmodSync(directUnifiedServer, 0o755);
+  chmodSync(path.join(fixtureBin, "nc"), 0o755);
 
   const directRunScript = path.join(directRoot, "unified-server-run.sh");
   const directTransformed = readFileSync(tier3RunScript, "utf8")
@@ -245,10 +268,11 @@ printf '%s\n' "$@" > "${unifiedArgs}"
     )
     .replace("ORAM_DB0_MAX_SECONDS=480", "ORAM_DB0_MAX_SECONDS=5")
     .replace("ORAM_DB1_MAX_SECONDS=180", "ORAM_DB1_MAX_SECONDS=5")
-    .replace("ORAM_TOTAL_MAX_SECONDS=900", "ORAM_TOTAL_MAX_SECONDS=20")
+    .replace("ORAM_TOTAL_MAX_SECONDS=900", "ORAM_TOTAL_MAX_SECONDS=5")
     .replace("ORAM_HEARTBEAT_INTERVAL_SECONDS=15", "ORAM_HEARTBEAT_INTERVAL_SECONDS=1")
     .replace("ORAM_HEARTBEAT_DEADLINE_SECONDS=90", "ORAM_HEARTBEAT_DEADLINE_SECONDS=3")
     .replace("ORAM_KILL_GRACE_SECONDS=5", "ORAM_KILL_GRACE_SECONDS=0")
+    .replace('ORAM_PAGE_KEY_HEX="$(random_seed_hex)"', "ORAM_PAGE_KEY_HEX=test-page-key")
     .replace(
       /MAINNET_EXPECTED_INDEX_SHA256=[0-9a-f]{64}/,
       `MAINNET_EXPECTED_INDEX_SHA256=${sha256(db0Index)}`,
@@ -268,7 +292,12 @@ printf '%s\n' "$@" > "${unifiedArgs}"
     .replaceAll("sleep 5", ":");
   writeFileSync(directRunScript, directTransformed);
   chmodSync(directRunScript, 0o755);
-  const directSuccess = run("sh", [directRunScript]);
+  const directEnv = {
+    ...process.env,
+    BPIR_ORAM_BOOT_ID_FILE: bootIdFile,
+    PATH: `${fixtureBin}:${process.env.PATH}`,
+  };
+  const directSuccess = run("sh", [directRunScript], { env: directEnv });
   assert.equal(directSuccess.status, 0, directSuccess.stdout + directSuccess.stderr);
   const directCalls = readFileSync(directMarker, "utf8");
   assert.match(directCalls, /db0-mainnet-948454/);
@@ -282,6 +311,60 @@ printf '%s\n' "$@" > "${unifiedArgs}"
       /status=success[\s\S]*reason=none/,
     );
   }
+  assert.match(
+    readFileSync(path.join(directData, "oram-boot-logs", "direct-oram-bootstrap.status.env"), "utf8"),
+    /status=ready[\s\S]*phase=server-readiness[\s\S]*reason=port-ready/,
+  );
+  const runtimeLog = path.join(directData, "oram-boot-logs", "unified-server.runtime.log");
+  const runtimeLogText = readFileSync(runtimeLog, "utf8");
+  assert.match(runtimeLogText, /attempt boot_id=11111111-1111-1111-1111-111111111111/);
+  assert.match(runtimeLogText, /fixture server stdout[\s\S]*fixture server stderr/);
+  assert.doesNotMatch(runtimeLogText, /test-page-key/);
+  assert.equal(statSync(runtimeLog).mode & 0o777, 0o600);
+  assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
+
+  const callsBeforeSameBootRetry = readFileSync(directMarker, "utf8");
+  const sameBootRetry = run("sh", [directRunScript], { env: directEnv });
+  assert.equal(sameBootRetry.status, 0, sameBootRetry.stdout + sameBootRetry.stderr);
+  assert.equal(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
+  assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
+  assert.match(sameBootRetry.stderr, /already published.*refusing destructive retry/);
+
+  writeFileSync(bootIdFile, "22222222-2222-2222-2222-222222222222\n");
+  rmSync(readySignal);
+  const newBootRun = run("sh", [directRunScript], { env: directEnv });
+  assert.equal(newBootRun.status, 0, newBootRun.stdout + newBootRun.stderr);
+  assert.notEqual(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
+  assert.equal(readFileSync(directMarker, "utf8").trim().split("\n").length, 4);
+  assert.equal(readFileSync(unifiedStarts, "utf8"), "startedstarted");
+
+  const timeoutUnifiedServer = path.join(directRoot, "timeout-unified_server");
+  write(
+    timeoutUnifiedServer,
+    `#!/bin/sh
+printf 'timeout server stdout\\n'
+printf 'timeout server stderr\\n' >&2
+exec sleep 5
+`,
+  );
+  chmodSync(timeoutUnifiedServer, 0o755);
+  writeFileSync(bootIdFile, "33333333-3333-3333-3333-333333333333\n");
+  rmSync(readySignal);
+  const timeoutRunScript = path.join(directRoot, "unified-server-timeout-run.sh");
+  writeFileSync(
+    timeoutRunScript,
+    directTransformed
+      .replace(`UNIFIED_SERVER=${directUnifiedServer}`, `UNIFIED_SERVER=${timeoutUnifiedServer}`)
+      .replace("ORAM_TOTAL_MAX_SECONDS=5", "ORAM_TOTAL_MAX_SECONDS=1"),
+  );
+  chmodSync(timeoutRunScript, 0o755);
+  const serverReadinessTimeout = run("sh", [timeoutRunScript], { env: directEnv });
+  assert.notEqual(serverReadinessTimeout.status, 0, serverReadinessTimeout.stdout + serverReadinessTimeout.stderr);
+  assert.match(
+    readFileSync(path.join(directData, "oram-boot-logs", "direct-oram-bootstrap.status.env"), "utf8"),
+    /status=timed_out[\s\S]*phase=server-readiness[\s\S]*reason=total-timeout[\s\S]*timeout_seconds=1/,
+  );
+  assert.doesNotMatch(readFileSync(runtimeLog, "utf8"), /test-page-key/);
 
   const guardRoot = path.join(tempRoot, "runit-guard");
   const guardState = path.join(guardRoot, "state");
@@ -321,6 +404,35 @@ printf '%s\n' "$@" > "${unifiedArgs}"
   assert.equal(afterStableWindow.status, 0, afterStableWindow.stdout + afterStableWindow.stderr);
   assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
   assert.equal(existsSync(svLog), false);
+
+  const markerBootId = path.join(guardRoot, "boot_id");
+  const markerPath = path.join(guardStatus, "oram-published.boot-id.env");
+  rmSync(guardState, { recursive: true, force: true });
+  writeFileSync(markerBootId, "44444444-4444-4444-4444-444444444444\n");
+  write(
+    markerPath,
+    "boot_id=44444444-4444-4444-4444-444444444444\nstatus=published\npublished_at=fixture\n",
+  );
+  const fixtureFinishScript = path.join(guardRoot, "unified-server-finish.sh");
+  writeFileSync(
+    fixtureFinishScript,
+    readFileSync(tier3FinishScript, "utf8")
+      .replaceAll("/home/pir/data/oram-boot-logs", guardStatus),
+  );
+  chmodSync(fixtureFinishScript, 0o755);
+  const publishedAbort = run("sh", [fixtureFinishScript, "134", "6"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: markerBootId,
+      BPIR_ORAM_PUBLISHED_MARKER: markerPath,
+    },
+  });
+  assert.equal(publishedAbort.status, 0, publishedAbort.stdout + publishedAbort.stderr);
+  assert.equal(readFileSync(svLog, "utf8"), `-w 1 down ${guardService}\n`);
+  assert.match(
+    readFileSync(path.join(guardStatus, "unified-server-runit.status"), "utf8"),
+    /status=restart_suppressed[\s\S]*failure_count=1[\s\S]*action=down[\s\S]*reason=oram-published-same-boot/,
+  );
 
   const supervisorRoot = path.join(tempRoot, "direct-oram-supervisor");
   const supervisorStatus = path.join(supervisorRoot, "status");

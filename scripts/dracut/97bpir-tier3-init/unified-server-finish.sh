@@ -15,6 +15,22 @@ STATE_DIR=${BPIR_RUNIT_GUARD_STATE_DIR:-/run/bitcoinpir-runit/unified_server}
 STATUS_DIR=${BPIR_RUNIT_GUARD_STATUS_DIR:-/home/pir/data/oram-boot-logs}
 SV_BIN=${BPIR_RUNIT_GUARD_SV_BIN:-/usr/bin/sv}
 SERVICE_DIR=${BPIR_RUNIT_GUARD_SERVICE_DIR:-/etc/service/unified_server}
+ORAM_BOOT_ID_FILE=${BPIR_ORAM_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+ORAM_PUBLISHED_MARKER=${BPIR_ORAM_PUBLISHED_MARKER:-/home/pir/data/oram-boot-logs/oram-published.boot-id.env}
+
+published_marker_matches_current_boot() {
+    [ -r "$ORAM_PUBLISHED_MARKER" ] || return 1
+    boot_id=$(cat "$ORAM_BOOT_ID_FILE" 2>/dev/null || true)
+    case "$boot_id" in
+        ????????-????-????-????-????????????) ;;
+        *) return 1 ;;
+    esac
+    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$ORAM_PUBLISHED_MARKER") \
+        || return 1
+    marker_status=$(awk -F= '$1 == "status" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$ORAM_PUBLISHED_MARKER") \
+        || return 1
+    [ "$marker_status" = published ] && [ "$marker_boot_id" = "$boot_id" ]
+}
 
 mkdir -p "$STATE_DIR" || exit 0
 
@@ -40,9 +56,15 @@ mv "$STATE_DIR/failure_count.tmp" "$STATE_DIR/failure_count"
 
 status=retrying
 action=restart
-if [ "$count" -ge "$MAX_FAILURES" ]; then
+reason=failure-threshold-not-reached
+if published_marker_matches_current_boot; then
     status=restart_suppressed
     action=down
+    reason=oram-published-same-boot
+elif [ "$count" -ge "$MAX_FAILURES" ]; then
+    status=restart_suppressed
+    action=down
+    reason=failure-threshold-reached
 fi
 
 if mkdir -p "$STATUS_DIR" 2>/dev/null; then
@@ -55,12 +77,13 @@ if mkdir -p "$STATUS_DIR" 2>/dev/null; then
         printf 'exit_code=%s\n' "${1:-unknown}"
         printf 'signal=%s\n' "${2:-unknown}"
         printf 'action=%s\n' "$action"
+        printf 'reason=%s\n' "$reason"
     } >"$STATUS_DIR/unified-server-runit.status.tmp"
     mv "$STATUS_DIR/unified-server-runit.status.tmp" "$STATUS_DIR/unified-server-runit.status"
 fi
 
 if [ "$action" = down ]; then
-    echo "[unified-server-finish] suppressing restart after $count failures within ${FAILURE_WINDOW_SECONDS}s" >&2
+    echo "[unified-server-finish] suppressing restart: $reason" >&2
     # `sv down` sends the control byte immediately. The one-second wait may
     # expire because this finish hook must return before runsv becomes down.
     "$SV_BIN" -w 1 down "$SERVICE_DIR" >/dev/null 2>&1 || true
