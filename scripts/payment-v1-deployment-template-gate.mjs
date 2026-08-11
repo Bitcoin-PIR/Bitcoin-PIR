@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "aba3eed639a1c119784b1709cbc3c5ba80d780e6872c2a2db76eb6b7789337a4",
+    "6b5343bf478716cd2cc5df8b6b17808788c2c160a5a4c5722acb0464ba742bf8",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "06b763099ce2828603763ec45e1cdcec406659a3fb0cd413c28ac85af9cf6444",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
@@ -2477,6 +2477,14 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     fail(`${label} must require identity and policy before either runtime profile and Direct ORAM bootstrap`);
   }
   const statePolicyPath = `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/service-policy.bin`;
+  requireText(
+    text,
+    [
+      "IDENTITY_ROOT=${BPIR_TIER3_IDENTITY_ROOT:-/sysroot/root/bitcoinpir-identity}",
+      "IDENTITY_OWNER_UID=${BPIR_TIER3_IDENTITY_UID:-0}",
+    ].join("\n"),
+    label,
+  );
   requireText(
     text,
     `SERVICE_POLICY_PATH=${statePolicyPath}\nif [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then\n    SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin\nfi`,

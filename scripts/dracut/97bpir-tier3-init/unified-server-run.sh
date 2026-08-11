@@ -60,15 +60,19 @@ if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unifie
     UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
 fi
 
-# Prefer an explicitly measured identity pair when one is present. The
-# persistent data-mount fallback remains for existing Tier 3 deployments.
-# The selected cert is signed for the public Payment V1 stable server ID.
-IDENTITY_KEY_PATH=/home/pir/data/pir2-identity.key
-IDENTITY_CERT_PATH=/home/pir/data/pir2.cert
+# Prefer an explicitly measured identity pair when one is present. Otherwise
+# read the persistent pair from a private root-owned directory on the mounted
+# stock rootfs. Keeping the secret below /sysroot/root avoids both embedding a
+# long-lived identity key in the public UKI and the intentionally non-private
+# /home/pir/data parent that the shared private-file loader rejects.
+IDENTITY_ROOT=${BPIR_TIER3_IDENTITY_ROOT:-/sysroot/root/bitcoinpir-identity}
+IDENTITY_OWNER_UID=${BPIR_TIER3_IDENTITY_UID:-0}
 if [ -r /etc/bitcoinpir/identity/server.key ] && [ -r /etc/bitcoinpir/identity/server.cert ]; then
-    IDENTITY_KEY_PATH=/etc/bitcoinpir/identity/server.key
-    IDENTITY_CERT_PATH=/etc/bitcoinpir/identity/server.cert
+    IDENTITY_ROOT=/etc/bitcoinpir/identity
+    IDENTITY_OWNER_UID=0
 fi
+IDENTITY_KEY_PATH="$IDENTITY_ROOT/server.key"
+IDENTITY_CERT_PATH="$IDENTITY_ROOT/server.cert"
 
 # Existing deployments load their signed policy from the mutable data mount.
 # A release may instead embed the same public policy in the UKI so its exact
@@ -200,14 +204,32 @@ require_file() {
 }
 
 require_runtime_identity_and_policy() {
+    [ -d "$IDENTITY_ROOT" ] && [ ! -L "$IDENTITY_ROOT" ] \
+        || fatal "identity directory missing, not a directory, or a symlink: $IDENTITY_ROOT"
+    identity_root_uid=$(stat -c %u "$IDENTITY_ROOT") \
+        || fatal "failed to inspect identity directory owner"
+    identity_root_mode=$(stat -c %a "$IDENTITY_ROOT") \
+        || fatal "failed to inspect identity directory mode"
+    [ "$identity_root_uid" = "$IDENTITY_OWNER_UID" ] && [ "$identity_root_mode" = 700 ] \
+        || fatal "identity directory must be owner-matched mode 0700"
     require_file "$IDENTITY_KEY_PATH"
     require_file "$IDENTITY_CERT_PATH"
-    require_file "$SERVICE_POLICY_PATH"
-    [ -f "$IDENTITY_KEY_PATH" ] || fatal "identity key is not a regular file: $IDENTITY_KEY_PATH"
-    [ -f "$IDENTITY_CERT_PATH" ] || fatal "identity certificate is not a regular file: $IDENTITY_CERT_PATH"
+    [ -f "$IDENTITY_KEY_PATH" ] && [ ! -L "$IDENTITY_KEY_PATH" ] \
+        || fatal "identity key is not a non-symlink regular file: $IDENTITY_KEY_PATH"
+    [ -f "$IDENTITY_CERT_PATH" ] && [ ! -L "$IDENTITY_CERT_PATH" ] \
+        || fatal "identity certificate is not a non-symlink regular file: $IDENTITY_CERT_PATH"
+    identity_key_stat=$(stat -c '%u:%a:%h' "$IDENTITY_KEY_PATH") \
+        || fatal "failed to inspect identity key metadata"
+    identity_cert_stat=$(stat -c '%u:%a:%h' "$IDENTITY_CERT_PATH") \
+        || fatal "failed to inspect identity certificate metadata"
+    [ "$identity_key_stat" = "$IDENTITY_OWNER_UID:600:1" ] \
+        || fatal "identity key must be owner-matched mode 0600 with one link"
+    [ "$identity_cert_stat" = "$IDENTITY_OWNER_UID:644:1" ] \
+        || fatal "identity certificate must be owner-matched mode 0644 with one link"
     identity_key_bytes=$(wc -c <"$IDENTITY_KEY_PATH" | tr -d '[:space:]')
     [ "$identity_key_bytes" = 32 ] || fatal "identity key must be exactly 32 bytes"
     [ -s "$IDENTITY_CERT_PATH" ] || fatal "identity certificate is empty"
+    require_file "$SERVICE_POLICY_PATH"
 }
 
 direct_input_hash() {
