@@ -699,7 +699,6 @@ exec "$UNIFIED_SERVER" \
     --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
     --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
     --service-shared-minimum-authorization-epoch 1 \
-    --allow-experimental-arc \
     --service-max-concurrent-auth 4 \
     --service-max-concurrent-online-v2full-auth 0 \
     --connection-idle-timeout-ms 300000 \
