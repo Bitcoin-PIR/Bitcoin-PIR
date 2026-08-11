@@ -328,7 +328,10 @@ start_total_watchdog() {
         total_deadline=$(( $(date -u +%s) + ORAM_TOTAL_MAX_SECONDS ))
         while [ "$(date -u +%s)" -lt "$total_deadline" ]; do
             kill -0 "$parent_pid" 2>/dev/null || exit 0
-            if nc -z -w 1 "$ORAM_SERVER_READY_HOST" "$ORAM_SERVER_READY_PORT" >/dev/null 2>&1; then
+            # The initramfs busybox nc does not implement OpenBSD nc's -z.
+            # An EOF-only connection is portable across both implementations
+            # and still proves that the server has completed TCP bind/listen.
+            if nc -w 1 "$ORAM_SERVER_READY_HOST" "$ORAM_SERVER_READY_PORT" </dev/null >/dev/null 2>&1; then
                 {
                     printf 'status=ready\n'
                     printf 'phase=server-readiness\n'
