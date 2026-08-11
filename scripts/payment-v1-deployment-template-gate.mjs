@@ -26,7 +26,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "b59809a643a618a5c06b01656d432d1467ca244497570b87805b077ec3f2bc67",
+    "10a10b4b8449a4c9545fd3adf16526df4d98cf3b76e492abcf9b032ceb3d7a09",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "06b763099ce2828603763ec45e1cdcec406659a3fb0cd413c28ac85af9cf6444",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
@@ -2499,9 +2499,9 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ["--connection-idle-timeout-ms", "300000"],
     ["--service-pre-auth-timeout-ms", "300000"],
   ];
-  for (const [profile, command] of [
-    ["db0 DPF-only", dpfOnlyExec],
-    ["Direct ORAM fallback", directOramExecLines[0]],
+  for (const [profile, command, allowsExperimentalArc] of [
+    ["db0 DPF-only", dpfOnlyExec, true],
+    ["Direct ORAM fallback", directOramExecLines[0], false],
   ]) {
     const profileLabel = `${label} ${profile}`;
     const tokens = command.split(/\s+/u);
@@ -2542,7 +2542,10 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
       rejectPattern(command, pattern, profileLabel, description);
     }
     let cursor = paymentStart;
-    for (const [flag, expectedValue] of expected) {
+    const profileExpected = allowsExperimentalArc
+      ? expected
+      : expected.filter(([flag]) => flag !== "--allow-experimental-arc");
+    for (const [flag, expectedValue] of profileExpected) {
       if (argv[cursor] !== flag) {
         fail(`${profileLabel} must contain ${flag} exactly once and in canonical order`);
       }
