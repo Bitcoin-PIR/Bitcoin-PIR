@@ -12,17 +12,13 @@ name: PIR SDK Integration Tests
 # keeps TLS handshakes from stepping on each other and keeps the fresh-sync
 # chunk-batch traffic under the Cloudflare connection limit.
 #
-# Required vs advisory split (2026-08): the required live steps exercise the
-# DPF query path, which the production `dpf-evaluate-job-v1` Free scope
-# serves end-to-end. The Harmony/OnionPIR live query tests and the
-# schedule-only strict-canary / Harmony/OnionPIR leakage steps are
-# `continue-on-error` advisory: production-side policy/runtime facts
-# currently block them before client behavior matters (granted
-# harmony-query never responds; the free onion-evaluate 16 MiB request
-# budget is smaller than one verified session; db1 tree-tops is 23.4 MB vs
-# the 16 MiB pre-auth egress budget). They keep running so the logs witness
-# when those production paths start serving again. Discovery/evidence lives
-# in `docs/PR_CLEANUP_TRACKER.md` P0-1.
+# Required vs live split (2026-08): pull requests and main pushes compile the
+# SDK and run its deterministic unit tests. Tests that depend on the public
+# deployment run only on the daily canary or an explicit workflow dispatch.
+# Production availability and admission offers can change independently of a
+# client patch (the current VPSBG beta offers Free-PoW for Direct ORAM, not
+# DPF), so they must not make an otherwise deterministic PR check fail.
+# Scheduled/manual live failures remain visible as canary failures.
 
 on:
   push:
@@ -110,18 +106,13 @@ jobs:
       # simultaneous handshakes from a single runner IP can briefly
       # trip rate limits and surface as "Handshake not finished" errors.
       #
-      # Live coverage in this step (2026-08): DPF live tests completed the
-      # Payment-V1 admission sequence and pass; the Harmony query/sync and
-      # OnionPIR query tests are gated behind PIR_STRICT_PRODUCTION_CANARY
-      # (see the canary steps and docs/PR_CLEANUP_TRACKER.md P0-1) because
-      # the production granted harmony-query phase currently drops the
-      # connection and the free onion-evaluate scope's 16 MiB request budget
-      # is smaller than one complete verified session (~18.2 MB), so they
-      # would fail regardless of client correctness. In this step they run
-      # as no-op passes.
+      # Public-deployment coverage is deliberately separate from the required
+      # PR/main path. It is still exercised by the scheduled/manual canary,
+      # where a production policy or availability change is useful signal.
       - name: Run unit tests
         run: cargo test -p pir-sdk-client
-      - name: Run ignored integration tests against live PIR servers
+      - name: Run ignored integration tests against live PIR servers (scheduled/manual only)
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture
 
       # Advisory (continue-on-error): the strict live tests exercise the

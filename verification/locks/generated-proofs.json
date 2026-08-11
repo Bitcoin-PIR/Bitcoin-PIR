@@ -2,21 +2,21 @@
   "schemaVersion": 1,
   "registry": {
     "repository": "https://github.com/Bitcoin-PIR/proof-registry",
-    "commit": "4e19b0bc675715c88e5c11364ac9e0236c2cb359"
+    "commit": "d122a1842ded181de5f80026ec81523fcc0abdc7"
   },
-  "verificationProfile": "bitcoinpir/database-proof-v2/reattest-existing",
+  "verificationProfile": "bitcoinpir/database-proof-v2/full-build",
   "acceptedVerifier": {
-    "repository": "https://github.com/Bitcoin-PIR/attested-builder",
-    "commit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
-    "tool": "pir-attested-builder verify-build-evidence",
-    "toolSha256": "9a8ed087487de16757865470a2ffbceff02ab5dac69cd54fcf4dd49fc2a8d092"
+    "repository": "https://github.com/Bitcoin-PIR/Bitcoin-PIR",
+    "commit": "0d3a05f30f51e8109db56d40cfd179570f284621",
+    "tool": "verify-proof-directory",
+    "toolSha256": "4f85cc9be1115a01e1a32105cabdacd3fda42f8e2e9c0aaf61252a69cd9bedf9"
   },
   "bundles": [
     {
       "dbId": 0,
-      "manifestSha256": "895d15ec8b9d62c20e2ece98481144b2b0de0d390d150046bfbc46205ea7488f",
-      "verificationRecordSha256": "0e5f718fc742bb6110e7b3c5380c87949a5ff3ef8f12628be025b430e0d5842d",
-      "deploymentRecordSha256": "97e9684ac320d6df9e5523649adb74dc0d46740206e2355426de8ee96a722a9c",
+      "manifestSha256": "1ec9e4ba86f671b851e9aa5fe0367891f644a102803cc813a5aede343f789a4a",
+      "verificationRecordSha256": "7e89b932294e1690a3994949a6115a5b377daf4a5c736a5e30669c2359b574ae",
+      "deploymentRecordSha256": "1124345054982f36847446b284b8bcc188bccd4302dd08c9407b3e6f615e3c45",
       "proofFields": {
         "proofVersion": 2,
         "buildKind": "snapshot",
@@ -29,8 +29,8 @@
         "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
         "paramsHashHex": "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
         "networkMagicHex": "f9beb4d9",
-        "builderBinarySha256Hex": "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
-        "builderGitCommit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
+        "builderBinarySha256Hex": "cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f",
+        "builderGitCommit": "8d9d21a6be560236cb666269cf1f93a3de53bb1f",
         "onionEntrySize": 3328,
         "onionTotalPackedEntries": 948640,
         "onionIndexBinsPerTable": 10273,
@@ -41,9 +41,9 @@
     },
     {
       "dbId": 1,
-      "manifestSha256": "7d235d1abfa96a208d28f0ac1d189af19c3856fb21871d7b51410ee858d921aa",
-      "verificationRecordSha256": "86ad8e2d5578f277255e918f918bd71c16157d436e9f236079139e7efee61ad0",
-      "deploymentRecordSha256": "2ec2a7439b0e6c3c7d21a82aba580474f7a5217b7616f737a93d05223abc6025",
+      "manifestSha256": "086d5b36f64e73fee4d40f5954dcc3e83c5b20700618200d0dbeb9649a7071a2",
+      "verificationRecordSha256": "113a65205cac3d581ff4b0cc943fb35391a9ea588da1b0064c2493971a3ffb3e",
+      "deploymentRecordSha256": "ac316986a5d231c4e5a16d49c3c484cebe5b870f433b695ad5229226a5957b17",
       "proofFields": {
         "proofVersion": 2,
         "buildKind": "delta",
@@ -56,8 +56,8 @@
         "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
         "paramsHashHex": "fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d",
         "networkMagicHex": "f9beb4d9",
-        "builderBinarySha256Hex": "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
-        "builderGitCommit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
+        "builderBinarySha256Hex": "cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f",
+        "builderGitCommit": "8d9d21a6be560236cb666269cf1f93a3de53bb1f",
         "onionEntrySize": 3328,
         "onionTotalPackedEntries": 116030,
         "onionIndexBinsPerTable": 965,

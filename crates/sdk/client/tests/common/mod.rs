@@ -109,10 +109,10 @@ pub fn production_db0_onion_v2_proof_policy() -> DatabaseProofPolicy {
         "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
     ));
     policy.allowed_builder_binary_sha256 = vec![decode_hex_array(
-        "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
+        "cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f",
     )];
     policy.allowed_builder_git_commits =
-        vec!["d49a199e290ccbb05b6481c5ba691cb516aa76bb".to_owned()];
+        vec!["8d9d21a6be560236cb666269cf1f93a3de53bb1f".to_owned()];
     policy
 }
 
@@ -589,4 +589,3 @@ pub async fn admit_onion_live(
         .await?;
     Ok(())
 }
-

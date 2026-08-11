@@ -161,8 +161,8 @@ fn production_onion_v2_pin(mut pin: ProductionDatabasePin) -> ProductionDatabase
         id => panic!("no production OnionPIR v2 pin for db {id}"),
     };
     pin.builder_binary_sha256_hex =
-        "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c";
-    pin.builder_git_commit = "d49a199e290ccbb05b6481c5ba691cb516aa76bb";
+        "cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f";
+    pin.builder_git_commit = "8d9d21a6be560236cb666269cf1f93a3de53bb1f";
     pin
 }
 

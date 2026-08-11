@@ -127,22 +127,17 @@ export interface ServerAttestPin {
 
 /**
  * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
- * 2026-08-07 after the 2026-08-06 harmony fix rollout: the UKI now embeds
- * (a) `unified_server` with the Harmony batch response chunking fix
- * (commit `9b7128f0`) and (b) an epoch-3 policy raising the harmony-query
- * response budget to 128 MiB (UKI image id 227). It serves verified DPF
- * and Harmony-query workloads; it does not advertise direct ORAM.
+ * 2026-08-11 after the native full-build-v2 Direct ORAM rollout. Image 249
+ * serves DPF, Harmony-query and TEE ORAM with the reviewed epoch-5 policy.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // MEASUREMENT captured from the live Tier 3 deploy after uploading the
-  // 831a5ea1 harmony-response-fix UKI (epoch-4 policy: harmony-response
-  // budget 128 MiB + DPF wall-time budget 120 s; measured-boot image id
-  // 229), then validating REPORT_DATA plus the AMD chain.
+  // Captured from image 249 after validating the AMD chain, REPORT_DATA,
+  // exact unified_server binary and both attested database manifest roots.
   measurementHex:
-    '1c375b265b669dc7d74cc1041fbe1cda97b2df1d2cd60439a11da8f69bad81657a74f954ae6fb7c0cfa38d390440947c',
+    'ccc1d71f4a8619e9663baf6c008f1325b0c8ba13690f8ec31a32f50f73a261f8eeb7174128ce6431c2887623dd6b4ea9',
   binarySha256Hex:
-    '4f51c64d1f66e73ec4904b370c69e0573e25c4a058f822b9b9b773d777c784d5',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 DPF + Harmony-query Payment V1 beta, harmony-response-fix epoch-4)',
+    'cc82574e3547eea5176f7ecd1813c9dc8b8cc247ab8cc20a0cde3837fc8de65d',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 249, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-5)',
 };
 
 /**
@@ -236,9 +231,9 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 
-/** Strict OnionPIR pins for the v2-only proof opcode. Unlike the v1 pins
- * above (retained for DPF/Harmony compatibility), these bind the complete
- * typed Onion query layout and replace the temporary per-field layout pins. */
+/** Strict v2 pins for OnionPIR and Direct ORAM. Unlike the v1 pins above
+ * (retained for DPF/Harmony compatibility), these bind the complete typed
+ * Onion query layout and the native full-build producer. */
 export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
   {
     dbId: 0,
@@ -252,8 +247,8 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
     onionSuperRootHex: MAINNET_948454_DB_PROOF_PIN.onionSuperRootHex,
     paramsHashHex: 'a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563',
     networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
-    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
+    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
+    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
     onionEntrySize: 3_328,
     proofVersion: 2,
     onionTotalPackedEntries: 948_640,
@@ -276,8 +271,8 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
     onionSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.onionSuperRootHex,
     paramsHashHex: 'fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d',
     networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
-    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
+    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
+    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
     onionEntrySize: 3_328,
     proofVersion: 2,
     onionTotalPackedEntries: 116_030,

@@ -24,7 +24,7 @@ describe('bundled functional-beta trusted bootstrap', () => {
       '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      '1c375b265b669dc7d74cc1041fbe1cda97b2df1d2cd60439a11da8f69bad81657a74f954ae6fb7c0cfa38d390440947c',
+      'ccc1d71f4a8619e9663baf6c008f1325b0c8ba13690f8ec31a32f50f73a261f8eeb7174128ce6431c2887623dd6b4ea9',
     );
     expect(parsed.providers[0].supportedWorkloads).toEqual([
       'dpf-query', 'harmony-hint', 'onion-session',
@@ -59,5 +59,17 @@ describe('bundled functional-beta trusted bootstrap', () => {
     const onionConnect = html.slice(start, end);
     expect(onionConnect).toContain('databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS');
     expect(onionConnect).not.toContain('databaseProofPins: provider.databaseProofPins');
+  });
+
+  it('routes strict Direct ORAM through the reviewed full-build v2 proof pins', () => {
+    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    const start = html.indexOf('async function oramConnect(provider)');
+    const end = html.indexOf('function oramDisconnect', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    const oramConnect = html.slice(start, end);
+    expect(oramConnect).toContain('databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS');
+    expect(oramConnect).not.toContain('databaseProofPins: provider.databaseProofPins');
   });
 });

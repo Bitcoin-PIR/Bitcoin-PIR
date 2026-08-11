@@ -37,7 +37,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Bitcoin-PIR/proof-registry
-          ref: 4e19b0bc675715c88e5c11364ac9e0236c2cb359
+          ref: d122a1842ded181de5f80026ec81523fcc0abdc7
           path: proof-registry
 
       - name: Install pinned Rust toolchain
