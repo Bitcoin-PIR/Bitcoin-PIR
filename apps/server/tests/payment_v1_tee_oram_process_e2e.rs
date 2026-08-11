@@ -476,6 +476,28 @@ async fn paid_gate_reaches_real_direct_tee_oram_handler_and_replay_survives_rest
 }
 
 #[test]
+fn direct_oram_startup_hides_incomplete_bucket_merkle_backend() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root, oram) =
+        build_direct_oram_fixture_with_bucket_merkle(root.path(), true);
+    let provider = build_provider(root.path(), manifest_root, unix_now(), None);
+    let port = unused_loopback_port();
+    let server = ServerProcess::spawn(root.path(), &db_path, &oram, &provider, port, 20);
+    let (stdout, stderr) = server.stop();
+
+    assert!(
+        stderr.contains("Bucket Merkle unavailable for Direct-ORAM-only use")
+            && stderr.contains("will not be advertised or served"),
+        "missing direct-only suppression boundary\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("Direct ORAM: enabled for db_id=0"),
+        "Direct ORAM did not open after suppressing its unused mmap proof backend\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn production_direct_oram_startup_rejects_unbound_or_unsafe_configurations() {
     let root = tempfile::tempdir().expect("test root");
     chmod(root.path(), 0o700);
@@ -1290,6 +1312,13 @@ fn service_scope(
 }
 
 fn build_direct_oram_fixture(root: &Path) -> (PathBuf, [u8; 32], DirectOramFixture) {
+    build_direct_oram_fixture_with_bucket_merkle(root, false)
+}
+
+fn build_direct_oram_fixture_with_bucket_merkle(
+    root: &Path,
+    include_incomplete_bucket_merkle: bool,
+) -> (PathBuf, [u8; 32], DirectOramFixture) {
     let source_dir = root.join("direct-oram-source");
     let image_dir = root.join("direct-oram-images");
     let trusted_state_dir = root.join("direct-oram-trusted-state");
@@ -1336,6 +1365,7 @@ fn build_direct_oram_fixture(root: &Path) -> (PathBuf, [u8; 32], DirectOramFixtu
         chunk_sha256,
         chunk_bytes.len() as u64,
         chunks.len() as u64,
+        include_incomplete_bucket_merkle,
     );
     let binding = DirectOramDatasetBindingV1 {
         server_db_manifest_sha256: manifest_root,
@@ -1586,6 +1616,7 @@ fn write_tiny_manifest_database(
     chunk_sha256: [u8; 32],
     chunk_bytes: u64,
     chunk_records: u64,
+    include_incomplete_bucket_merkle: bool,
 ) -> (PathBuf, [u8; 32]) {
     let db = root.join("tiny-db");
     fs::create_dir(&db).unwrap();
@@ -1599,14 +1630,67 @@ fn write_tiny_manifest_database(
         &CHUNK_PARAMS.with_master_seed(0x5555_6666_7777_8888),
         0,
     );
+    let bucket_merkle_entries = if include_incomplete_bucket_merkle {
+        write_incomplete_bucket_merkle_fixture(&db)
+    } else {
+        String::new()
+    };
     let zero_hash = "0".repeat(64);
     let manifest = format!(
-        "[manifest]\nversion = 1\ngenerated_at = \"2026-07-29T00:00:00Z\"\n\n[direct_oram]\nversion = 1\nindex_sha256 = \"{}\"\nindex_bytes = {index_bytes}\nindex_records = {index_records}\nchunk_sha256 = \"{}\"\nchunk_bytes = {chunk_bytes}\nchunk_records = {chunk_records}\nindex_slots_per_bin = 4\nindex_hash_fns = 2\nindex_load_factor_ppb = 200000000\nindex_seed = 7235440056133222401\n\n[files]\n\"batch_pir_cuckoo.bin\" = \"{zero_hash}\"\n\"chunk_pir_cuckoo.bin\" = \"{zero_hash}\"\n",
+        "[manifest]\nversion = 1\ngenerated_at = \"2026-07-29T00:00:00Z\"\n\n[direct_oram]\nversion = 1\nindex_sha256 = \"{}\"\nindex_bytes = {index_bytes}\nindex_records = {index_records}\nchunk_sha256 = \"{}\"\nchunk_bytes = {chunk_bytes}\nchunk_records = {chunk_records}\nindex_slots_per_bin = 4\nindex_hash_fns = 2\nindex_load_factor_ppb = 200000000\nindex_seed = 7235440056133222401\n\n[files]\n\"batch_pir_cuckoo.bin\" = \"{zero_hash}\"\n\"chunk_pir_cuckoo.bin\" = \"{zero_hash}\"\n{bucket_merkle_entries}",
         hex::encode(index_sha256),
         hex::encode(chunk_sha256),
     );
     fs::write(db.join("MANIFEST.toml"), manifest.as_bytes()).unwrap();
     (db, sha256(manifest.as_bytes()))
+}
+
+fn write_incomplete_bucket_merkle_fixture(db: &Path) -> String {
+    let tree_count = INDEX_PARAMS.k + CHUNK_PARAMS.k;
+    let mut tree_tops = Vec::new();
+    tree_tops.extend_from_slice(&(tree_count as u32).to_le_bytes());
+    let mut roots = Vec::with_capacity(tree_count * 32);
+    for tree_index in 0..tree_count {
+        let mut nodes = TINY_BINS_PER_TABLE.div_ceil(8);
+        let mut level_sizes = vec![nodes];
+        while nodes > 1 {
+            nodes = nodes.div_ceil(8);
+            level_sizes.push(nodes);
+        }
+        let root = [(tree_index as u8).wrapping_add(1); 32];
+        roots.extend_from_slice(&root);
+        tree_tops.push(1); // L0 sibling table is intentionally absent.
+        tree_tops
+            .extend_from_slice(&(level_sizes.iter().copied().sum::<usize>() as u32).to_le_bytes());
+        tree_tops.extend_from_slice(&8u16.to_le_bytes());
+        tree_tops.push(level_sizes.len() as u8);
+        for (level, size) in level_sizes.into_iter().enumerate() {
+            tree_tops.extend_from_slice(&(size as u32).to_le_bytes());
+            for node in 0..size {
+                let hash = if size == 1 {
+                    root
+                } else {
+                    [((tree_index + level + node) as u8).wrapping_add(17); 32]
+                };
+                tree_tops.extend_from_slice(&hash);
+            }
+        }
+    }
+    let super_root = sha256(&roots);
+    let files = [
+        ("merkle_bucket_tree_tops.bin", tree_tops),
+        ("merkle_bucket_roots.bin", roots),
+        ("merkle_bucket_root.bin", super_root.to_vec()),
+    ];
+    let mut entries = String::new();
+    for (name, bytes) in files {
+        fs::write(db.join(name), &bytes).unwrap();
+        entries.push_str(&format!(
+            "\"{name}\" = \"{}\"\n",
+            hex::encode(sha256(&bytes))
+        ));
+    }
+    entries
 }
 
 fn write_tiny_table(path: &Path, params: &pir_core::params::TableParams, tag_seed: u64) {

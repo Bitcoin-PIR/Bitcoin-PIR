@@ -677,3 +677,60 @@ Disk rollback is not prevented by SEV-SNP itself. The authenticated page store
 detects tampering relative to the trusted state it has, but a full rollback of
 disk image plus trusted state requires an external freshness source or a
 regeneration-on-start policy.
+
+## Full UKI image 243 startup incident (2026-08-11)
+
+The first full db0/db1 boot from release `e23d3c3498a4362db687cf3ff95b140aff5652d8`
+completed both encrypted Direct ORAM builds successfully:
+
+```text
+db0 build: 241 seconds
+db1 build: 25 seconds
+publish:   2026-08-11T10:10:51Z
+```
+
+The later runtime abort was not a Direct ORAM build failure. The delta
+`server-db` contained `merkle_bucket_tree_tops.bin` with tree tops beginning at
+level 1, but no `merkle_bucket_*_sib_L0.bin` files. The mmap DPF/Harmony proof
+backend therefore was incomplete and the ordinary `MappedDatabase::load`
+correctly rejected it before the Direct ORAM images were opened:
+
+```text
+[DB:delta_940611_948454] incomplete or malformed bucket Merkle artifact set:
+bucket Merkle INDEX tree-top 0 starts at level 1, but 0 sibling tables are loaded.
+Refusing to serve.
+```
+
+Direct ORAM lookup does not consume those mmap sibling tables. The follow-up
+runtime fix therefore does not weaken the ordinary loader. Only a database id
+explicitly configured with `--direct-oram-db` may mark an invalid optional
+bucket-Merkle backend unavailable; it is not advertised, and startup still
+must open the encrypted Direct ORAM image and prove its exact binding to the
+verified `[direct_oram]` manifest before the listener is created. A database
+without that explicit Direct ORAM configuration continues to reject the same
+artifact set.
+
+The same-boot restart guard also behaved as designed after the abort:
+
+```text
+status=restart_suppressed
+failure_count=1
+signal=6
+action=down
+reason=oram-published-same-boot
+```
+
+No second database build ran. The server was returned to stock/none mode and
+all 21 boot-log files were copied before further work to:
+
+```text
+/Volumes/Bitcoin/data/archive/uki-release/
+  tier3-e23d3c34-full-direct-20260811T092319Z/
+  live-attempt-image-243-20260811T101412Z/
+```
+
+That directory's `README.md` records the boot id and failure boundary;
+`CURRENT_SHA256SUMS` verifies the current evidence files. Preserve the
+generation data and this archive until a corrected image has passed startup
+and query smoke. Do not regenerate db0/db1 merely to address this loader-mode
+misclassification.

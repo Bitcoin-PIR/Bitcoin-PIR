@@ -500,6 +500,31 @@ impl MappedDatabase {
     ///
     /// Automatically detects and loads Merkle sub-tables if present.
     pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
+        Self::load_inner(base_dir, descriptor, false)
+    }
+
+    /// Load a database that is explicitly backed by production Direct ORAM.
+    ///
+    /// The Direct ORAM image is bound to the verified `[direct_oram]` manifest
+    /// by the server before it starts listening. Some Direct ORAM build
+    /// products also contain bucket-Merkle files for the mmap query backend,
+    /// but omit the lower sibling tables that backend needs. In that one
+    /// configuration, keep the database and Direct ORAM binding available but
+    /// do not advertise or serve the incomplete bucket-Merkle backend.
+    ///
+    /// Callers must still open and validate the configured Direct ORAM image
+    /// before exposing the database to requests. Ordinary mmap-backed callers
+    /// must use [`Self::load`], which remains fail-closed on every malformed or
+    /// incomplete bucket-Merkle artifact set.
+    pub fn load_for_direct_oram(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
+        Self::load_inner(base_dir, descriptor, true)
+    }
+
+    fn load_inner(
+        base_dir: &Path,
+        descriptor: DatabaseDescriptor,
+        direct_oram_configured: bool,
+    ) -> Self {
         println!(
             "[DB:{}] Loading from {}",
             descriptor.name,
@@ -628,7 +653,7 @@ impl MappedDatabase {
             bucket_merkle_chunk_siblings.push(MappedSubTable::load(&path, params));
         }
 
-        let bucket_merkle_tree_tops =
+        let mut bucket_merkle_tree_tops =
             read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_tree_tops.bin"))
                 .unwrap_or_else(|error| {
                     panic!(
@@ -636,7 +661,7 @@ impl MappedDatabase {
                         descriptor.name, error
                     )
                 });
-        let bucket_merkle_roots =
+        let mut bucket_merkle_roots =
             read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_roots.bin"))
                 .unwrap_or_else(|error| {
                     panic!(
@@ -644,7 +669,7 @@ impl MappedDatabase {
                         descriptor.name, error
                     )
                 });
-        let bucket_merkle_root =
+        let mut bucket_merkle_root =
             read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_root.bin"))
                 .unwrap_or_else(|error| {
                     panic!(
@@ -653,7 +678,7 @@ impl MappedDatabase {
                     )
                 });
 
-        let bucket_merkle_complete = validate_bucket_merkle_layout(
+        let bucket_merkle_result = validate_bucket_merkle_layout(
             index.bins_per_table,
             chunk.bins_per_table,
             descriptor.index_params.k,
@@ -663,13 +688,34 @@ impl MappedDatabase {
             bucket_merkle_tree_tops.as_deref(),
             bucket_merkle_roots.as_deref(),
             bucket_merkle_root.as_deref(),
-        )
-        .unwrap_or_else(|error| {
-            panic!(
-                "[DB:{}] incomplete or malformed bucket Merkle artifact set: {}. Refusing to serve.",
-                descriptor.name, error
-            )
-        });
+        );
+
+        let direct_manifest_bound = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.direct_oram.as_ref())
+            .is_some();
+        let bucket_merkle_complete = match bucket_merkle_result {
+            Ok(complete) => complete,
+            Err(error) if direct_oram_configured && direct_manifest_bound => {
+                eprintln!(
+                    "[DB:{}] Bucket Merkle unavailable for Direct-ORAM-only use: {}. \
+                     The incomplete mmap proof backend will not be advertised or served.",
+                    descriptor.name, error
+                );
+                bucket_merkle_index_siblings.clear();
+                bucket_merkle_chunk_siblings.clear();
+                bucket_merkle_tree_tops = None;
+                bucket_merkle_roots = None;
+                bucket_merkle_root = None;
+                false
+            }
+            Err(error) => {
+                panic!(
+                    "[DB:{}] incomplete or malformed bucket Merkle artifact set: {}. Refusing to serve.",
+                    descriptor.name, error
+                )
+            }
+        };
 
         if bucket_merkle_complete {
             println!("  Bucket Merkle: {} INDEX sib levels, {} CHUNK sib levels, tree-tops={}, super-root={}",
@@ -858,11 +904,12 @@ mod tests {
     use pir_core::seeds::{ChainAnchor, CHAIN_ANCHOR_BYTES};
     use std::io::Write as _;
 
-    fn full_cached_bucket_merkle_fixture(
+    fn cached_bucket_merkle_fixture(
         index_bins: usize,
         chunk_bins: usize,
         index_k: usize,
         chunk_k: usize,
+        cache_from_level: usize,
     ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let mut tree_tops = Vec::new();
         let tree_count = index_k + chunk_k;
@@ -874,6 +921,9 @@ mod tests {
             } else {
                 chunk_bins
             };
+            for _ in 0..cache_from_level {
+                nodes = nodes.div_ceil(8);
+            }
             let mut level_sizes = vec![nodes];
             while nodes > 1 {
                 nodes = nodes.div_ceil(8);
@@ -881,7 +931,7 @@ mod tests {
             }
             let root = [(tree_index as u8).wrapping_add(1); 32];
             roots.extend_from_slice(&root);
-            tree_tops.push(0); // complete tree is cached, no sibling tables
+            tree_tops.push(cache_from_level as u8);
             tree_tops.extend_from_slice(
                 &(level_sizes.iter().copied().sum::<usize>() as u32).to_le_bytes(),
             );
@@ -905,7 +955,7 @@ mod tests {
 
     #[test]
     fn fully_cached_bucket_merkle_without_sibling_tables_is_complete() {
-        let (tree_tops, roots, super_root) = full_cached_bucket_merkle_fixture(128, 128, 2, 3);
+        let (tree_tops, roots, super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 0);
         assert!(validate_bucket_merkle_layout(
             128,
             128,
@@ -925,7 +975,7 @@ mod tests {
         assert!(
             !validate_bucket_merkle_layout(128, 128, 2, 3, &[], &[], None, None, None).unwrap()
         );
-        let (tree_tops, roots, mut super_root) = full_cached_bucket_merkle_fixture(128, 128, 2, 3);
+        let (tree_tops, roots, mut super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 0);
         assert!(validate_bucket_merkle_layout(
             128,
             128,
@@ -953,6 +1003,27 @@ mod tests {
         )
         .unwrap_err()
         .contains("does not bind"));
+    }
+
+    #[test]
+    fn strict_bucket_merkle_rejects_level_one_cache_without_sibling_tables() {
+        let (tree_tops, roots, super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 1);
+        let error = validate_bucket_merkle_layout(
+            128,
+            128,
+            2,
+            3,
+            &[],
+            &[],
+            Some(&tree_tops),
+            Some(&roots),
+            Some(&super_root),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("starts at level 1, but 0 sibling tables are loaded"),
+            "{error}"
+        );
     }
 
     #[test]
