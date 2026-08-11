@@ -128,7 +128,7 @@ test('ORAM TEE verifies the runtime, completes a lookup, and disconnects', async
   await expectLogContains(
     page,
     'ORAM upgraded to encrypted channel',
-    'ORAM: operator-endorsed identity verified (pir2)',
+    'ORAM: operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
     'ORAM batch complete: 1/1 found',
   );
   await expectTornDown(page, '#oram-connectBtn', '#oram-disconnectBtn');
