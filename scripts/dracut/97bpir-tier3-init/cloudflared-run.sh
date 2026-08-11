@@ -47,10 +47,11 @@ fi
 
 # Wait for unified_server to listen on 8091 before starting cloudflared.
 # Without this gate, the tunnel comes up to a dead origin and we serve
-# 502s for the first ~10s of every boot. busybox nc supports -z (port
-# scan, no data) — exit 0 if open, non-zero otherwise.
+# 502s for the first ~10s of every boot. The initramfs busybox nc does not
+# implement OpenBSD nc's -z, so use an EOF-only TCP connection: exit 0 if the
+# port is open, non-zero otherwise.
 i=0
-while ! nc -z 127.0.0.1 8091 2>/dev/null; do
+while ! nc -w 1 127.0.0.1 8091 </dev/null >/dev/null 2>&1; do
     if [ "$i" -ge 60 ]; then
         echo "[cloudflared-run] WARN: unified_server still not listening on 8091 after 60s — starting cloudflared anyway" >&2
         break

@@ -25,6 +25,10 @@ const tier3FinishScript = path.join(
   scriptsDir,
   "dracut/97bpir-tier3-init/unified-server-finish.sh",
 );
+const tier3CloudflaredScript = path.join(
+  scriptsDir,
+  "dracut/97bpir-tier3-init/cloudflared-run.sh",
+);
 const directOramSupervisor = path.join(
   scriptsDir,
   "dracut/97bpir-tier3-init/direct-oram-supervisor.sh",
@@ -65,6 +69,20 @@ function run(command, args, options = {}) {
 
 const tempRoot = mkdtempSync(path.join(os.tmpdir(), "bpir-tier3-generation-"));
 try {
+  const tier3RunText = readFileSync(tier3RunScript, "utf8");
+  const tier3CloudflaredText = readFileSync(tier3CloudflaredScript, "utf8");
+  for (const [label, script] of [
+    ["unified_server watchdog", tier3RunText],
+    ["cloudflared readiness gate", tier3CloudflaredText],
+  ]) {
+    assert.doesNotMatch(script, /\bnc\s+-z\b/, `${label} must work with busybox nc`);
+    assert.match(
+      script,
+      /\bnc\s+-w\s+1\s+[^\n]+<\/dev\/null\s+>\/dev\/null\s+2>&1/,
+      `${label} must use the EOF-only portable TCP readiness probe`,
+    );
+  }
+
   const dataRoot = path.join(tempRoot, "data");
   mkdirSync(dataRoot, { recursive: true });
   const activeCatalog = path.join(dataRoot, "databases.toml");
@@ -236,6 +254,7 @@ sleep 1
   write(
     path.join(fixtureBin, "nc"),
     `#!/bin/sh
+case " $* " in *" -z "*) exit 64 ;; esac
 [ -e "${readySignal}" ] && exit 0
 exit 1
 `,
