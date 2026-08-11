@@ -24,7 +24,7 @@ describe('bundled functional-beta trusted bootstrap', () => {
       '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      'a8191c82a62b2ffdfe6d6deafaef16dda150f0b87810cf1c6526677c224450ef5e779fbad041cc4e41147a14697ddfbd',
+      'b8b9e724b244a52a2f87dfcde3edb895cbf5eec1c9b08f964eaefc8160c8be4988c7814fe424cbbd3158ff2e7928db53',
     );
     expect(parsed.providers[1].serverPin.binarySha256Hex).toBe(
       '8aa6928c866aaed396c8d2ffe70520ba1dd7e650c4e5bfdaea87f38eb42ea355',
