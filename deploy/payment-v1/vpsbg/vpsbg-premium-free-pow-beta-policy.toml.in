@@ -130,6 +130,8 @@ root_hex = "@VPSBG_DPF_DB0_MANIFEST_ROOT_HEX@"
 max_logical_inputs = @VPSBG_HARMONY_QUERY_MAX_LOGICAL_INPUTS@
 max_frames = @VPSBG_HARMONY_QUERY_MAX_FRAMES@
 max_request_bytes = @VPSBG_HARMONY_QUERY_MAX_REQUEST_BYTES@
+# This is cumulative across the four main responses and strict Merkle
+# follow-ups. The reviewed production beta uses 134217728 (128 MiB).
 max_response_bytes = @VPSBG_HARMONY_QUERY_MAX_RESPONSE_BYTES@
 max_wall_time_ms = @VPSBG_HARMONY_QUERY_MAX_WALL_TIME_MS@
 max_concurrent_sockets = @VPSBG_HARMONY_QUERY_MAX_CONCURRENT_SOCKETS@
