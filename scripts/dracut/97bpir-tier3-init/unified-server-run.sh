@@ -79,13 +79,11 @@ if [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then
     SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
 fi
 
-# Do not hold the usable db0 query path behind the separate Direct-ORAM ceremony: the
-# currently mounted db0 proof is V1 and deliberately lacks the typed
-# `direct_oram` data required by the newer Direct-ORAM bootstrap.  Direct ORAM
-# remains below as an explicit future path once a new attested full-build has
-# supplied that evidence; changing this constant requires a new measured UKI
-# review and release.
-VPSBG_DPF_ONLY_FUNCTIONAL_BETA=1
+# This measured constant selects exactly one startup path. The active v2
+# generation now carries proof-bound Direct inputs for both databases, so a
+# future UKI built from this script must fail closed into the Direct profile.
+# Changing the profile requires a new measured UKI review and release.
+VPSBG_RUNTIME_PROFILE=direct-oram-v1
 
 ORAM_BOOT_ROOT=/home/pir/data/.oram-boot
 ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
@@ -105,6 +103,14 @@ ORAM_STASH_CAPACITY=128
 ORAM_CACHE_LEVELS=0
 ORAM_AUTH_TRUSTED_LEVELS=1
 ORAM_AUTH_HASH_PAGE_SIZE=4096
+ORAM_DB0_MAX_SECONDS=480
+ORAM_DB1_MAX_SECONDS=180
+ORAM_TOTAL_MAX_SECONDS=900
+ORAM_HEARTBEAT_INTERVAL_SECONDS=15
+ORAM_HEARTBEAT_DEADLINE_SECONDS=90
+ORAM_KILL_GRACE_SECONDS=5
+ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor
+ORAM_ACTIVE_SUPERVISOR_PID_FILE="$TRUSTED_STATE_ROOT/active-supervisor.pid"
 DIRECT_INDEX_SLOTS_PER_BIN=4
 DIRECT_INDEX_HASH_FNS=2
 DIRECT_INDEX_LOAD_FACTOR=0.95
@@ -238,9 +244,76 @@ safe_remove_runtime_path() {
 }
 
 cleanup_build_staging() {
+    [ -n "${ORAM_TOTAL_WATCHDOG_PID:-}" ] \
+        && kill "$ORAM_TOTAL_WATCHDOG_PID" 2>/dev/null || true
+    [ -n "${ORAM_TOTAL_WATCHDOG_PID:-}" ] \
+        && wait "$ORAM_TOTAL_WATCHDOG_PID" 2>/dev/null || true
+    if [ -r "$ORAM_ACTIVE_SUPERVISOR_PID_FILE" ]; then
+        active_supervisor_pid=$(cat "$ORAM_ACTIVE_SUPERVISOR_PID_FILE" 2>/dev/null || echo 0)
+        case "$active_supervisor_pid" in ''|*[!0-9]*) active_supervisor_pid=0 ;; esac
+        [ "$active_supervisor_pid" -gt 1 ] \
+            && kill -TERM "$active_supervisor_pid" 2>/dev/null || true
+        [ "$active_supervisor_pid" -gt 1 ] \
+            && wait "$active_supervisor_pid" 2>/dev/null || true
+    fi
     safe_remove_boot_path "$ORAM_STAGING_DIR"
     safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
     safe_remove_runtime_path "$TRUSTED_STATE_ROOT"
+}
+
+start_total_watchdog() {
+    parent_pid=$$
+    (
+        total_deadline=$(( $(date -u +%s) + ORAM_TOTAL_MAX_SECONDS ))
+        while [ "$(date -u +%s)" -lt "$total_deadline" ]; do
+            sleep 1
+        done
+        {
+            printf 'status=timed_out\n'
+            printf 'phase=direct-oram-bootstrap\n'
+            printf 'reason=total-timeout\n'
+            printf 'timeout_seconds=%s\n' "$ORAM_TOTAL_MAX_SECONDS"
+            printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        } >"$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env.tmp"
+        mv "$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env.tmp" \
+            "$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.status.env"
+        if [ -r "$ORAM_ACTIVE_SUPERVISOR_PID_FILE" ]; then
+            supervisor_pid=$(cat "$ORAM_ACTIVE_SUPERVISOR_PID_FILE" 2>/dev/null || echo 0)
+            case "$supervisor_pid" in ''|*[!0-9]*) supervisor_pid=0 ;; esac
+            [ "$supervisor_pid" -gt 1 ] && kill -TERM "$supervisor_pid" 2>/dev/null || true
+        fi
+        sleep "$ORAM_KILL_GRACE_SECONDS"
+        [ "${supervisor_pid:-0}" -gt 1 ] \
+            && kill -KILL "$supervisor_pid" 2>/dev/null || true
+        kill -TERM "$parent_pid" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 &
+    ORAM_TOTAL_WATCHDOG_PID=$!
+}
+
+stop_total_watchdog() {
+    [ -n "${ORAM_TOTAL_WATCHDOG_PID:-}" ] || return 0
+    kill "$ORAM_TOTAL_WATCHDOG_PID" 2>/dev/null || true
+    wait "$ORAM_TOTAL_WATCHDOG_PID" 2>/dev/null || true
+    ORAM_TOTAL_WATCHDOG_PID=
+}
+
+run_supervised_direct_build() {
+    supervised_label=$1
+    supervised_timeout=$2
+    supervised_out_dir=$3
+    supervised_log_file=$4
+    shift 4
+    "$ORAM_SUPERVISOR" "$supervised_label" "$supervised_timeout" \
+        "$ORAM_HEARTBEAT_INTERVAL_SECONDS" "$ORAM_HEARTBEAT_DEADLINE_SECONDS" \
+        "$ORAM_KILL_GRACE_SECONDS" "$ORAM_BUILD_LOG_DIR" "$supervised_out_dir" \
+        "$supervised_log_file" -- "$@" &
+    supervisor_pid=$!
+    printf '%s\n' "$supervisor_pid" >"$ORAM_ACTIVE_SUPERVISOR_PID_FILE.tmp"
+    mv "$ORAM_ACTIVE_SUPERVISOR_PID_FILE.tmp" "$ORAM_ACTIVE_SUPERVISOR_PID_FILE"
+    wait "$supervisor_pid"
+    supervised_status=$?
+    rm -f "$ORAM_ACTIVE_SUPERVISOR_PID_FILE"
+    return "$supervised_status"
 }
 
 copy_to_trusted_runtime() {
@@ -263,6 +336,7 @@ build_direct_oram() {
     expected_index_sha="$9"
     expected_chunks_sha="${10}"
     trusted_state_dir="${11}"
+    build_timeout_seconds="${12}"
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
     source_index_file="$source_dir/utxo_chunks_index_nodust.bin"
     source_chunks_file="$source_dir/utxo_chunks_nodust.bin"
@@ -311,7 +385,8 @@ build_direct_oram() {
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
     echo "[unified-server-run] regenerating $db_label direct ORAM from trusted tmpfs into $out_dir; trusted state: $trusted_state_dir" >&2
     if [ -n "$expected_from_muhash" ]; then
-        "$ORAMCTL" build-direct \
+        run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
+            "$out_dir" "$log_file" "$ORAMCTL" build-direct \
             --index-file "$index_file" \
             --chunks-file "$chunks_file" \
             --out-dir "$out_dir" \
@@ -343,13 +418,13 @@ build_direct_oram() {
             --expected-bhtm-tree-root "$DELTA_EXPECTED_BHTM_TREE_ROOT" \
             --expected-index-sha256 "$expected_index_sha" \
             --expected-chunks-sha256 "$expected_chunks_sha" \
-            --strict-source-binding \
-            >"$log_file" 2>&1 || {
+            --strict-source-binding || {
                 tail -80 "$log_file" >&2 || true
                 fatal "$db_label direct ORAM regeneration failed; full log: $log_file"
             }
     else
-        "$ORAMCTL" build-direct \
+        run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
+            "$out_dir" "$log_file" "$ORAMCTL" build-direct \
             --index-file "$index_file" \
             --chunks-file "$chunks_file" \
             --out-dir "$out_dir" \
@@ -376,8 +451,7 @@ build_direct_oram() {
             --expected-muhash "$expected_muhash" \
             --expected-index-sha256 "$expected_index_sha" \
             --expected-chunks-sha256 "$expected_chunks_sha" \
-            --strict-source-binding \
-            >"$log_file" 2>&1 || {
+            --strict-source-binding || {
                 tail -80 "$log_file" >&2 || true
                 fatal "$db_label direct ORAM regeneration failed; full log: $log_file"
             }
@@ -403,7 +477,8 @@ verify_direct_oram_publish() {
 }
 
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
-if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
+case "$VPSBG_RUNTIME_PROFILE" in
+dpf-only-functional-beta-v1)
     echo "[unified-server-run] starting VPSBG db0 functional beta; Direct ORAM is not advertised" >&2
     exec "$UNIFIED_SERVER" \
         --port 8091 \
@@ -435,9 +510,16 @@ if [ "$VPSBG_DPF_ONLY_FUNCTIONAL_BETA" = 1 ]; then
         --connection-idle-timeout-ms 300000 \
         --service-pre-auth-timeout-ms 300000 \
         2>&1
-fi
+    ;;
+direct-oram-v1)
+    ;;
+*)
+    fatal "unsupported measured VPSBG runtime profile: $VPSBG_RUNTIME_PROFILE"
+    ;;
+esac
 
 [ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
+[ -x "$ORAM_SUPERVISOR" ] || fatal "$ORAM_SUPERVISOR missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
 for stale_staging in "$ORAM_BOOT_ROOT"/staging.*; do
@@ -451,7 +533,10 @@ mkdir -p "$ORAM_STAGING_DIR" || fatal "failed to create $ORAM_STAGING_DIR"
 mkdir -p "$TRUSTED_INPUT_ROOT" "$TRUSTED_STATE_ROOT" \
     || fatal "failed to create SEV-protected ORAM runtime directories"
 ORAM_PAGE_KEY_HEX="$(random_seed_hex)"
+ORAM_TOTAL_WATCHDOG_PID=
 trap cleanup_build_staging EXIT
+trap 'exit 124' HUP INT TERM
+start_total_watchdog
 
 load_active_database_generation 0 db0
 MAINNET_SOURCE_DIR="$ACTIVE_DB_PROOF_DIR/oram-direct-inputs"
@@ -468,17 +553,19 @@ DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
     "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
     "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
-    "$ORAM_FULL_TRUSTED_STATE_DIR"
+    "$ORAM_FULL_TRUSTED_STATE_DIR" "$ORAM_DB0_MAX_SECONDS"
 build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
     "$DELTA_DB_EVIDENCE" "$DELTA_DB_MANIFEST" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
     "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
-    "$ORAM_DELTA_TRUSTED_STATE_DIR"
+    "$ORAM_DELTA_TRUSTED_STATE_DIR" "$ORAM_DB1_MAX_SECONDS"
 
 mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerated ORAM image"
 verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-948454
 verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" delta-940611-948454
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
+stop_total_watchdog
 trap - EXIT
+trap - HUP INT TERM
 
 # VPSBG is query-only and has no Harmony V2 hint pool, so the measured
 # invocation keeps online V2Full authorization disabled (limit 0).

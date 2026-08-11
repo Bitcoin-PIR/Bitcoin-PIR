@@ -473,25 +473,58 @@ impl<S: PageStore, H: PageStore> TieredMerklePageStore<S, H> {
     }
 
     fn rebuild_hashes(&mut self) -> Result<()> {
+        // Initial image construction is trusted and non-oblivious. Build the
+        // tree in memory, then write each packed hash page exactly once. The
+        // runtime update path below remains disk-backed.
+        //
+        // Writing each 32-byte node through `write_disk_hash` would otherwise
+        // turn every update into a full encrypted-page read/modify/write. For
+        // production-sized trees that means millions of redundant AEAD and IO
+        // operations even though the complete tree comfortably fits in the
+        // builder's trusted memory.
+        let total_nodes = self
+            .leaf_base
+            .checked_mul(2)
+            .ok_or_else(|| Error::InvalidInput("Merkle tree is too large".into()))?;
+        let mut hashes = Vec::new();
+        hashes
+            .try_reserve_exact(total_nodes)
+            .map_err(|_| Error::InvalidInput("Merkle tree does not fit in memory".into()))?;
+        hashes.resize(total_nodes, [0u8; 32]);
+
         let mut page = vec![0u8; self.page_size];
         for page_idx in 0..self.leaf_base {
-            let hash = if page_idx < self.page_count {
+            hashes[self.leaf_base + page_idx] = if page_idx < self.page_count {
                 self.inner.read_page(page_idx, &mut page)?;
                 hash_leaf(self.store_id, page_idx, &page)
             } else {
                 hash_empty_leaf(self.store_id, page_idx, self.page_size)
             };
-            self.write_hash(self.leaf_base + page_idx, hash)?;
         }
 
-        let height = self.height();
-        for level in (0..height).rev() {
-            for node_idx in (1usize << level)..(1usize << (level + 1)) {
-                let left = self.read_hash(node_idx * 2)?;
-                let right = self.read_hash(node_idx * 2 + 1)?;
-                self.write_hash(node_idx, hash_node(node_idx, left, right))?;
-            }
+        for node_idx in (1..self.leaf_base).rev() {
+            hashes[node_idx] = hash_node(node_idx, hashes[node_idx * 2], hashes[node_idx * 2 + 1]);
         }
+
+        self.trusted_hashes[1..self.trusted_node_limit]
+            .copy_from_slice(&hashes[1..self.trusted_node_limit]);
+
+        let hash_page_size = self.hash_store.page_size();
+        let mut hash_page = vec![0u8; hash_page_size];
+        let required_hash_pages = pages_for_hash_nodes(self.disk_hash_nodes, self.hashes_per_page);
+        let mut disk_offset = 0usize;
+        for hash_page_idx in 0..required_hash_pages {
+            hash_page.fill(0);
+            let page_nodes = (self.disk_hash_nodes - disk_offset).min(self.hashes_per_page);
+            for slot in 0..page_nodes {
+                let node_idx = self.trusted_node_limit + disk_offset + slot;
+                let offset = slot * 32;
+                hash_page[offset..offset + 32].copy_from_slice(&hashes[node_idx]);
+            }
+            self.hash_store.write_page(hash_page_idx, &hash_page)?;
+            disk_offset += page_nodes;
+        }
+        debug_assert_eq!(disk_offset, self.disk_hash_nodes);
         Ok(())
     }
 
@@ -509,10 +542,6 @@ impl<S: PageStore, H: PageStore> TieredMerklePageStore<S, H> {
             )));
         }
         Ok(())
-    }
-
-    fn height(&self) -> usize {
-        self.leaf_base.trailing_zeros() as usize
     }
 
     fn read_hash(&mut self, node_idx: usize) -> Result<[u8; 32]> {
