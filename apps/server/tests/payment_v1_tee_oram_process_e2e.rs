@@ -621,7 +621,7 @@ fn measured_boot_copies_exact_manifest_and_sources_before_strict_build() {
     let script = include_str!("../../../scripts/dracut/97bpir-tier3-init/unified-server-run.sh");
     assert!(script.contains("load_active_database_generation 0 db0"));
     assert!(script.contains("load_active_database_generation 1 db1"));
-    assert!(script.contains("runtime/proof MANIFEST bytes differ"));
+    assert!(script.contains("runtime/proof-v2 MANIFEST bytes differ"));
     assert!(!script.contains("first_existing_dir"));
     assert!(!script.contains("first_existing_file"));
     assert!(!script.contains("attested-builder-runs/mainnet_948454_oram_948454_sev_snp"));

@@ -10,6 +10,7 @@ usage() {
     cat <<'USAGE'
 usage: stage_vpsbg_tier3_generation.sh \
   --generation NAME --db0-output DIR --db1-output DIR \
+  --db0-proof-v1 DIR --db1-proof-v1 DIR \
   --db0-name NAME --db0-type full|delta --db0-base-height N --db0-height N \
   --db1-name NAME --db1-type full|delta --db1-base-height N --db1-height N \
   [--data-root DIR] [--candidate-config PATH]
@@ -19,8 +20,15 @@ Each --dbN-output must be one complete attested build output containing:
   build-evidence.sev-snp-report.bin, database.manifest.sha256,
   all-artifacts.manifest.sha256, and oram-direct-inputs/.
 
-The helper stages each output under DATA_ROOT/generations/NAME/dbN and writes
-a candidate catalog.  It never replaces DATA_ROOT/databases.toml.
+Each --dbN-proof-v1 must contain the locked V1 database-proof sidecars:
+  server-db/MANIFEST.toml, build-evidence.bin, root-bundle-payload.bin,
+  build-evidence.sev-snp-report.bin, database.manifest.sha256, and
+  all-artifacts.manifest.sha256.
+
+The helper stages V2 build outputs under DATA_ROOT/generations/NAME/dbN, V1
+sidecars under DATA_ROOT/generations/NAME/proof-v1/dbN, and writes a candidate
+catalog with separate proof_dir/proof_v2_dir fields.  It never replaces
+DATA_ROOT/databases.toml.
 USAGE
 }
 
@@ -79,9 +87,25 @@ validate_output() {
     done
 }
 
+validate_proof_v1() {
+    proof="$1"
+    require_directory "$proof"
+    for rel in \
+        server-db/MANIFEST.toml \
+        build-evidence.bin \
+        root-bundle-payload.bin \
+        build-evidence.sev-snp-report.bin \
+        database.manifest.sha256 \
+        all-artifacts.manifest.sha256; do
+        require_file "$proof/$rel"
+    done
+}
+
 GENERATION=''
 DB0_OUTPUT=''
 DB1_OUTPUT=''
+DB0_PROOF_V1=''
+DB1_PROOF_V1=''
 DB0_NAME=''
 DB1_NAME=''
 DB0_TYPE=''
@@ -98,6 +122,8 @@ while [ "$#" -gt 0 ]; do
         --generation) GENERATION="$(require_value "$@")"; shift 2 ;;
         --db0-output) DB0_OUTPUT="$(require_value "$@")"; shift 2 ;;
         --db1-output) DB1_OUTPUT="$(require_value "$@")"; shift 2 ;;
+        --db0-proof-v1) DB0_PROOF_V1="$(require_value "$@")"; shift 2 ;;
+        --db1-proof-v1) DB1_PROOF_V1="$(require_value "$@")"; shift 2 ;;
         --db0-name) DB0_NAME="$(require_value "$@")"; shift 2 ;;
         --db1-name) DB1_NAME="$(require_value "$@")"; shift 2 ;;
         --db0-type) DB0_TYPE="$(require_value "$@")"; shift 2 ;;
@@ -131,6 +157,8 @@ done
 
 validate_output "$DB0_OUTPUT" db0
 validate_output "$DB1_OUTPUT" db1
+validate_proof_v1 "$DB0_PROOF_V1"
+validate_proof_v1 "$DB1_PROOF_V1"
 
 STAGE_ROOT="$DATA_ROOT/generations"
 FINAL_DIR="$STAGE_ROOT/$GENERATION"
@@ -152,9 +180,12 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir "$STAGING_DIR"
-mkdir "$STAGING_DIR/db0" "$STAGING_DIR/db1"
+mkdir "$STAGING_DIR/db0" "$STAGING_DIR/db1" "$STAGING_DIR/proof-v1"
+mkdir "$STAGING_DIR/proof-v1/db0" "$STAGING_DIR/proof-v1/db1"
 cp -a "$DB0_OUTPUT/." "$STAGING_DIR/db0/"
 cp -a "$DB1_OUTPUT/." "$STAGING_DIR/db1/"
+cp -a "$DB0_PROOF_V1/." "$STAGING_DIR/proof-v1/db0/"
+cp -a "$DB1_PROOF_V1/." "$STAGING_DIR/proof-v1/db1/"
 
 for db in db0 db1; do
     source_output="$DB0_OUTPUT"
@@ -177,7 +208,8 @@ cat >"$candidate_tmp" <<EOF
 name = "$DB0_NAME"
 type = "$DB0_TYPE"
 path = "$STAGE_ROOT/$GENERATION/db0/server-db"
-proof_dir = "$STAGE_ROOT/$GENERATION/db0"
+proof_dir = "$STAGE_ROOT/$GENERATION/proof-v1/db0"
+proof_v2_dir = "$STAGE_ROOT/$GENERATION/db0"
 base_height = $DB0_BASE_HEIGHT
 height = $DB0_HEIGHT
 
@@ -185,7 +217,8 @@ height = $DB0_HEIGHT
 name = "$DB1_NAME"
 type = "$DB1_TYPE"
 path = "$STAGE_ROOT/$GENERATION/db1/server-db"
-proof_dir = "$STAGE_ROOT/$GENERATION/db1"
+proof_dir = "$STAGE_ROOT/$GENERATION/proof-v1/db1"
+proof_v2_dir = "$STAGE_ROOT/$GENERATION/db1"
 base_height = $DB1_BASE_HEIGHT
 height = $DB1_HEIGHT
 EOF

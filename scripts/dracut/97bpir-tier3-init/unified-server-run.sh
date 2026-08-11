@@ -293,20 +293,29 @@ load_active_database_generation() {
     database_label="$2"
     runtime_raw="$(toml_database_path "$database_index" path)" \
         || fatal "$database_label path missing or non-canonical in $TIER3_DATABASES_CONFIG"
-    proof_raw="$(toml_database_path "$database_index" proof_dir)" \
+    proof_v1_raw="$(toml_database_path "$database_index" proof_dir)" \
         || fatal "$database_label proof_dir missing or non-canonical in $TIER3_DATABASES_CONFIG"
+    proof_v2_raw="$(toml_database_path "$database_index" proof_v2_dir)" \
+        || fatal "$database_label proof_v2_dir missing or non-canonical in $TIER3_DATABASES_CONFIG"
     ACTIVE_DB_RUNTIME_DIR="$(resolve_tier3_data_path "$runtime_raw")"
-    ACTIVE_DB_PROOF_DIR="$(resolve_tier3_data_path "$proof_raw")"
+    ACTIVE_DB_PROOF_V1_DIR="$(resolve_tier3_data_path "$proof_v1_raw")"
+    ACTIVE_DB_PROOF_V2_DIR="$(resolve_tier3_data_path "$proof_v2_raw")"
     require_file "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml"
-    require_file "$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/server-db/MANIFEST.toml"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/build-evidence.bin"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/root-bundle-payload.bin"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/build-evidence.sev-snp-report.bin"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/database.manifest.sha256"
+    require_file "$ACTIVE_DB_PROOF_V1_DIR/all-artifacts.manifest.sha256"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
     cmp -s "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml" \
-        "$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml" \
-        || fatal "$database_label runtime/proof MANIFEST bytes differ"
-    require_file "$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
-    require_file "$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
-    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/utxo_chunks_index_nodust.bin"
-    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/utxo_chunks_nodust.bin"
-    require_file "$ACTIVE_DB_PROOF_DIR/oram-direct-inputs/direct-inputs.sha256"
+        "$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml" \
+        || fatal "$database_label runtime/proof-v2 MANIFEST bytes differ"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs/utxo_chunks_index_nodust.bin"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs/utxo_chunks_nodust.bin"
+    require_file "$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs/direct-inputs.sha256"
 }
 
 random_seed_hex() {
@@ -674,16 +683,16 @@ write_watchdog_phase direct-oram-build
 start_total_watchdog
 
 load_active_database_generation 0 db0
-MAINNET_SOURCE_DIR="$ACTIVE_DB_PROOF_DIR/oram-direct-inputs"
-MAINNET_DB_EVIDENCE="$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
-MAINNET_DB_MANIFEST="$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
-MAINNET_ROOT_BUNDLE="$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
+MAINNET_SOURCE_DIR="$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs"
+MAINNET_DB_EVIDENCE="$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
+MAINNET_DB_MANIFEST="$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
+MAINNET_ROOT_BUNDLE="$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
 
 load_active_database_generation 1 db1
-DELTA_SOURCE_DIR="$ACTIVE_DB_PROOF_DIR/oram-direct-inputs"
-DELTA_DB_EVIDENCE="$ACTIVE_DB_PROOF_DIR/build-evidence.bin"
-DELTA_DB_MANIFEST="$ACTIVE_DB_PROOF_DIR/server-db/MANIFEST.toml"
-DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_DIR/root-bundle-payload.bin"
+DELTA_SOURCE_DIR="$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs"
+DELTA_DB_EVIDENCE="$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
+DELTA_DB_MANIFEST="$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
+DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
 
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
     "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
