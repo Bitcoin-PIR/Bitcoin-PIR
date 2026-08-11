@@ -43,7 +43,7 @@ use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
@@ -8532,6 +8532,19 @@ fn cashu_inventory_within_limits_v1(
         && unsettled_notes <= limits.max_unsettled_notes())
 }
 
+fn load_runtime_database_v1(
+    db_id: u8,
+    base_dir: &Path,
+    descriptor: DatabaseDescriptor,
+    direct_oram_db_ids: &BTreeSet<u8>,
+) -> MappedDatabase {
+    if direct_oram_db_ids.contains(&db_id) {
+        MappedDatabase::load_for_direct_oram(base_dir, descriptor)
+    } else {
+        MappedDatabase::load(base_dir, descriptor)
+    }
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -8611,6 +8624,21 @@ async fn main() {
 
     let total_start = Instant::now();
 
+    // A database explicitly configured for Direct ORAM may contain optional
+    // bucket-Merkle artifacts for the mmap backend without the sibling tables
+    // that backend requires. Only these exact DB ids may suppress that unused
+    // backend; the Direct ORAM image is still opened and manifest-bound before
+    // the listener starts. Builds without ORAM support never take this path.
+    #[cfg(feature = "cuckoo-oram")]
+    let direct_oram_db_ids: BTreeSet<u8> = args
+        .direct_oram_dir
+        .iter()
+        .map(|_| 0u8)
+        .chain(args.direct_oram_dbs.iter().map(|(db_id, _)| *db_id))
+        .collect();
+    #[cfg(not(feature = "cuckoo-oram"))]
+    let direct_oram_db_ids = BTreeSet::<u8>::new();
+
     // ── Load databases ─────────────────────────────────────────────────
     let mut all_databases: Vec<MappedDatabase> = Vec::new();
     // Per-DB source directories for OnionPIR loading (db_id, label, path).
@@ -8632,7 +8660,8 @@ async fn main() {
                 _ => DatabaseType::Full,
             };
             let db_path = config.db_path(i);
-            let mut db = MappedDatabase::load(
+            let mut db = load_runtime_database_v1(
+                i as u8,
                 &db_path,
                 DatabaseDescriptor {
                     name: db_cfg.name.clone(),
@@ -8642,6 +8671,7 @@ async fn main() {
                     index_params: INDEX_PARAMS,
                     chunk_params: CHUNK_PARAMS,
                 },
+                &direct_oram_db_ids,
             );
             if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
                 db.db_proof = Some(
@@ -8698,7 +8728,8 @@ async fn main() {
     } else {
         // Legacy CLI mode: --data-dir + --checkpoint + --delta
 
-        let main_db = MappedDatabase::load(
+        let main_db = load_runtime_database_v1(
+            0,
             &args.data_dir,
             DatabaseDescriptor {
                 name: "main".to_string(),
@@ -8708,6 +8739,7 @@ async fn main() {
                 index_params: INDEX_PARAMS,
                 chunk_params: CHUNK_PARAMS,
             },
+            &direct_oram_db_ids,
         );
 
         db_paths.push((0u8, "main".to_string(), args.data_dir.clone()));
@@ -8715,7 +8747,9 @@ async fn main() {
 
         for (path, height) in &args.checkpoints {
             let name = format!("checkpoint_{}", height);
-            let db = MappedDatabase::load(
+            let db_id = all_databases.len() as u8;
+            let db = load_runtime_database_v1(
+                db_id,
                 path,
                 DatabaseDescriptor {
                     name: name.clone(),
@@ -8725,6 +8759,7 @@ async fn main() {
                     index_params: INDEX_PARAMS,
                     chunk_params: CHUNK_PARAMS,
                 },
+                &direct_oram_db_ids,
             );
             println!(
                 "[Checkpoint:{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
@@ -8740,7 +8775,9 @@ async fn main() {
 
         for (path, base, tip) in &args.deltas {
             let name = format!("delta_{}_{}", base, tip);
-            let db = MappedDatabase::load(
+            let db_id = all_databases.len() as u8;
+            let db = load_runtime_database_v1(
+                db_id,
                 path,
                 DatabaseDescriptor {
                     name: name.clone(),
@@ -8750,6 +8787,7 @@ async fn main() {
                     index_params: INDEX_PARAMS,
                     chunk_params: CHUNK_PARAMS,
                 },
+                &direct_oram_db_ids,
             );
             println!(
                 "[Delta:{}→{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
