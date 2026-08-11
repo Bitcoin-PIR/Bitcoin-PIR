@@ -72,7 +72,8 @@ describe('bundled functional-beta trusted bootstrap', () => {
     expect(end).toBeGreaterThan(start);
 
     const oramConnect = html.slice(start, end);
-    expect(oramConnect).toContain('databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS');
+    expect(oramConnect).toContain('databaseProofPins: PRODUCTION_ORAM_DB_PROOF_V2_PINS');
+    expect(oramConnect).not.toContain('databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS');
     expect(oramConnect).not.toContain('databaseProofPins: provider.databaseProofPins');
   });
 });
