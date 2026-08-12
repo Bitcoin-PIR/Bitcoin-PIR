@@ -4,21 +4,22 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/payment-v1-local-check.sh [--quick|--pr|--browser|--full]
+Usage: scripts/payment-v1-local-check.sh [--quick|--pr|--deploy-template-audit|--browser|--full]
 
 Runs BitcoinPIR payment-v1 checks without contacting payment infrastructure or
 using real funds. Cargo is forced offline; `--pr` and browser profiles require
 a preinstalled `wasm-pack`/`wasm-bindgen` toolchain and refuse to bootstrap it
 from the network.
 
-  --quick  Default. Five-method × five-workload matrix plus focused persistence,
-           directory-relay, deployment-template and fake-Lightning checks.
-           It starts no service process; unit tests may briefly bind loopback
-           TCP or Unix-domain listeners.
-  --pr     Quick checks plus the deterministic offline payment-platform Rust
-           suite, operator tooling, loopback-only process E2E, WASM validation,
-           generated binding boundary, Web typecheck, Web unit tests, and Web
-           bundle. It does not install or run Playwright/Chromium.
+  --quick  Default. One focused service-admission Rust test; no deployment
+           template audit, browser, external network, or service process.
+  --pr     Deterministic offline payment-platform Rust suite, loopback-only
+           process E2E, WASM validation, Web typecheck, unit tests, and bundle.
+           It does not run --quick first, deployment-template audits, or a browser.
+  --deploy-template-audit
+           Explicit opt-in static deployment/template, renderer, runtime-evidence,
+           publisher, namespace, Caddy, and directory-relay gate audit. It does
+           not build, deploy, contact infrastructure, or run Chromium.
   --browser
            Explicit opt-in: run the --pr profile, then local Chromium payment
            boundaries. Requires preinstalled web dependencies and Chromium.
@@ -50,6 +51,7 @@ case "${1:-}" in
   "") ;;
   --quick) mode="quick" ;;
   --pr) mode="pr" ;;
+  --deploy-template-audit) mode="deploy-template-audit" ;;
   --browser) mode="browser" ;;
   --full) mode="full" ;;
   -h|--help) usage; exit 0 ;;
@@ -65,83 +67,8 @@ if [[ ! -f Cargo.toml || ! -f docs/payment/IMPLEMENTATION_STATUS.md ]]; then
 fi
 
 run_quick_checks() {
-echo "[quick] canonical five-method x five-workload admission matrix"
+echo "[quick] focused service-admission matrix"
 cargo test --locked --offline -p pir-runtime-core --test service_admission_matrix
-
-echo "[quick] real provider-store receipt/BAT adapters and durable replay boundary"
-cargo test --locked --offline -p pir-strict-https
-cargo test --locked --offline -p pir-private-files
-cargo test --locked --offline -p pir-rollback-authority-protocol
-cargo test --locked --offline -p pir-rollback-authority-client
-cargo test --locked --offline -p pir-rollback-authority-store
-cargo test --locked --offline -p rollback-authority
-cargo test --locked --offline -p pir-payment-crypto --features provider-store \
-  --test provider_store_bat_adapter
-cargo test --locked --offline -p pir-runtime-core --test service_admission_matrix \
-  direct_receipt_production_committer_spend_survives_store_restart
-
-echo "[quick] Free, standard Cashu, and experimental ARC persistence/concurrency"
-cargo test --locked --offline -p pir-service-store free_ip_rate_limit
-cargo test --locked --offline -p pir-cashu-client
-cargo test --locked --offline -p pir-cashu-custody
-cargo test --locked --offline -p pir-arc-adapter --features provider-store
-
-echo "[quick] fake-Lightning, quote/claim lifecycle, and native/WASM client boundaries"
-cargo test --locked --offline -p bitcoinpir-directory-relay
-cargo test --locked --offline -p bitcoinpir-cln-rpc-guard
-cargo test --locked --offline -p pir-lightning-backend
-cargo test --locked --offline -p pir-issuer-core
-cargo test --locked --offline -p pir-issuer-service
-cargo test --locked --offline -p payment-issuer
-cargo test --locked --offline -p payment-issuer --features test-only-fake-lightning
-cargo run --locked --offline -p payment-issuer \
-  --features test-only-fake-lightning -- serve-fake --help >/dev/null
-cargo test --locked --offline -p pir-sdk-client --all-targets
-cargo test --locked --offline -p pir-sdk-wasm --lib
-node --check scripts/payment-v1-deployment-template-gate.mjs
-node --test scripts/payment-v1-deployment-template-gate.test.mjs
-node scripts/payment-v1-deployment-template-gate.mjs
-bash -n scripts/build-payment-v1-directory-relay.sh
-bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
-node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
-node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-node --check scripts/payment-v1-rendered-artifact-gate.mjs
-node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-publisher-netns-gate.mjs
-node --check scripts/payment-v1-publisher-netns-gate.test.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
-node --check scripts/payment-v1-publisher-netns-schema.test.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
-bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
-bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
-bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
-bash -n scripts/payment-v1-systemd-255-pid1.test.sh
-bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
-bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
-bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
-node scripts/payment-v1-publisher-netns-gate.mjs
-node --test \
-  scripts/payment-v1-publisher-netns-gate.test.mjs \
-  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
-  scripts/payment-v1-publisher-netns-schema.test.mjs \
-  scripts/payment-v1-publisher-private-health-probe.test.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
-node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
-  scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --check scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs
 }
 
 run_pr_checks() {
@@ -175,6 +102,13 @@ cargo test --locked --offline \
   -p payment-issuer \
   -p rollback-authority \
   -p bpir-admin
+# These feature-only boundaries are not covered by the default package run above.
+cargo test --locked --offline -p pir-payment-crypto --features provider-store \
+  --test provider_store_bat_adapter
+cargo test --locked --offline -p pir-arc-adapter --features provider-store
+cargo test --locked --offline -p payment-issuer --features test-only-fake-lightning
+cargo run --locked --offline -p payment-issuer \
+  --features test-only-fake-lightning -- serve-fake --help >/dev/null
 cargo test --locked --offline -p runtime --lib hint_pool
 cargo test --locked --offline -p runtime --bin unified_server
 cargo test --locked --offline -p runtime \
@@ -408,53 +342,6 @@ fi
 node --check scripts/payment-v1-nostr-readback.mjs
 node --test scripts/payment-v1-nostr-readback.test.mjs
 node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
-node --check scripts/payment-v1-pages-deploy-gate.mjs
-node scripts/payment-v1-pages-deploy-gate.mjs
-node --check scripts/payment-v1-deployment-template-gate.mjs
-node --test scripts/payment-v1-deployment-template-gate.test.mjs
-node scripts/payment-v1-deployment-template-gate.mjs
-bash -n scripts/build-payment-v1-directory-relay.sh
-bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
-node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
-node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-node --check scripts/payment-v1-rendered-artifact-gate.mjs
-node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-publisher-netns-gate.mjs
-node --check scripts/payment-v1-publisher-netns-gate.test.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
-node --check scripts/payment-v1-publisher-netns-schema.test.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
-bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
-bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
-bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
-bash -n scripts/payment-v1-systemd-255-pid1.test.sh
-bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
-bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
-bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
-node scripts/payment-v1-publisher-netns-gate.mjs
-node --test \
-  scripts/payment-v1-publisher-netns-gate.test.mjs \
-  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
-  scripts/payment-v1-publisher-netns-schema.test.mjs \
-  scripts/payment-v1-publisher-private-health-probe.test.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
-node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
-  scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --check scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs
-
 echo "[pr] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
   -p pir-strict-https \
@@ -513,6 +400,76 @@ CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm \
   -- --locked --offline
 }
 
+run_deploy_template_audit() {
+echo "[deploy-template-audit] static deployment and renderer contracts"
+node --check scripts/payment-v1-pages-deploy-gate.mjs
+node scripts/payment-v1-pages-deploy-gate.mjs
+node --check scripts/payment-v1-deployment-template-gate.mjs
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node scripts/payment-v1-deployment-template-gate.mjs
+bash -n scripts/build-payment-v1-directory-relay.sh
+bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
+node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
+node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-publisher-netns-gate.mjs
+node --check scripts/payment-v1-publisher-netns-gate.test.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.mjs
+node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
+node --check scripts/payment-v1-publisher-netns-schema.test.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.mjs
+node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
+bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
+bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
+bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
+bash -n scripts/payment-v1-systemd-255-pid1.test.sh
+bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
+bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
+bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
+node scripts/payment-v1-publisher-netns-gate.mjs
+node --test \
+  scripts/payment-v1-publisher-netns-gate.test.mjs \
+  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
+  scripts/payment-v1-publisher-netns-schema.test.mjs \
+  scripts/payment-v1-publisher-private-health-probe.test.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
+node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
+node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
+  scripts/payment-v1-directory-public-overlay-assets.test.mjs
+node --check scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
+node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
+node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
+node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
+node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+node --test --test-concurrency=1 \
+  scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
+  scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
+  scripts/payment-v1-integrated-caddy-lock.test.mjs \
+  scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
+node --check scripts/payment-v1-caddy-admin-uds-gate.mjs
+node --check scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
+node --check scripts/payment-v1-caddy-admin-uds-transaction.mjs
+node --check scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
+node --check scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
+node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
+node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
+node --test scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
+node --test scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
+}
+
 run_web_checks() {
 echo "[web] typecheck, unit tests, and production bundle"
 (cd web \
@@ -529,16 +486,19 @@ echo "[browser] local Chromium payment boundaries"
   && npm run test:e2e:payment-two-provider)
 }
 
-run_quick_checks
-
 case "$mode" in
   quick)
+    run_quick_checks
     echo "payment-v1-local-check: quick profile complete (no external network, no funds, no browser)"
     ;;
   pr)
     run_pr_checks
     run_web_checks
     echo "payment-v1-local-check: pr profile complete (no external network, no funds, no browser)"
+    ;;
+  deploy-template-audit)
+    run_deploy_template_audit
+    echo "payment-v1-local-check: deploy-template-audit profile complete (no external network, no funds, no browser)"
     ;;
   browser|full)
     run_pr_checks

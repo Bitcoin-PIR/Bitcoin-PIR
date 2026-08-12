@@ -1,0 +1,106 @@
+name: Directory relay selection artifact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
+      - 'apps/directory-relay/**'
+      - 'crates/directory/nostr/**'
+      - 'crates/protocol/service/**'
+      - 'crates/security/private-files/**'
+      - 'deploy/payment-v1/relay-selection.toml.example'
+      - 'deploy/payment-v1/directory-relay.toml.example'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-deployment-template-gate.mjs'
+      - '.github/workflows/directory-relay-artifact.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
+      - 'apps/directory-relay/**'
+      - 'crates/directory/nostr/**'
+      - 'crates/protocol/service/**'
+      - 'crates/security/private-files/**'
+      - 'deploy/payment-v1/relay-selection.toml.example'
+      - 'deploy/payment-v1/directory-relay.toml.example'
+      - 'scripts/build-payment-v1-directory-relay.sh'
+      - 'scripts/payment-v1-renameat2-noreplace.rs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
+      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-deployment-template-gate.mjs'
+      - '.github/workflows/directory-relay-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  directory-relay-artifact:
+    name: Reproduce directory-relay selection artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.18.0'
+      - name: Pull the exact reviewed build image
+        run: >-
+          docker pull
+          docker.io/library/rust@sha256:4ec71e955e6c08aeb238885083222ddff79d82eb87654a96c76e38e94da1a53b
+      - name: Build, atomically publish, and fully reverify the preparation artifact
+        run: |
+          mapfile -t bpir_relay_selection < <(
+            node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { validateRelaySelection } from "./scripts/payment-v1-deployment-template-gate.mjs";
+          const selection = validateRelaySelection(
+            readFileSync("deploy/payment-v1/relay-selection.toml.example", "utf8"),
+          );
+          console.log(selection.status);
+          console.log(selection.status === "RESOLVED" ? selection.sourceCommit : "");
+          NODE
+          )
+          bpir_selection_status="${bpir_relay_selection[0]}"
+          if [[ "$bpir_selection_status" == "RESOLVED" ]]; then
+            bpir_source_commit="${bpir_relay_selection[1]}"
+          elif [[ "$bpir_selection_status" == "UNRESOLVED" ]]; then
+            bpir_source_commit="$(git rev-parse HEAD)"
+          else
+            echo 'directory relay selection parser returned an impossible status' >&2
+            exit 1
+          fi
+          test "$(git rev-parse --verify "$bpir_source_commit^{commit}")" = "$bpir_source_commit"
+          bpir_artifact_parent="$(mktemp -d "${RUNNER_TEMP}/bpir-directory-relay-build.XXXXXX")"
+          bash scripts/build-payment-v1-directory-relay.sh \
+            --repository "$GITHUB_WORKSPACE" \
+            --source-commit "$bpir_source_commit" \
+            --output "$bpir_artifact_parent/artifact"
+          test -f "$bpir_artifact_parent/artifact/build-manifest.json"
+          test -x "$bpir_artifact_parent/artifact/bitcoinpir-directory-relay"
+          if [[ "$bpir_selection_status" == "RESOLVED" ]]; then
+            node scripts/payment-v1-directory-relay-artifact-gate.mjs verify-selection \
+              --repository "$GITHUB_WORKSPACE" \
+              --artifacts "$bpir_artifact_parent/artifact" \
+              --source-commit "$bpir_source_commit" \
+              --docker "$(command -v docker)" \
+              --selection "$GITHUB_WORKSPACE/deploy/payment-v1/relay-selection.toml.example" \
+              --config "$GITHUB_WORKSPACE/deploy/payment-v1/directory-relay.toml.example"
+          fi
