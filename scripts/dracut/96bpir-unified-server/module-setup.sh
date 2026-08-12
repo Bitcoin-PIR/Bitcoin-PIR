@@ -101,18 +101,17 @@ install() {
         chmod 0644 "$initdir/etc/bitcoinpir/identity/server.cert"
     fi
 
-    # A Tier 3 release can bind a public, signed admission policy to the
-    # measured image without putting issuer, payment, or identity secrets in
-    # it.  The runner keeps its historical rootfs policy fallback for existing
-    # deployments; this optional copy is for releases that must atomically
-    # change the attested runtime and its advertised Free scopes.
-    if [ -n "$service_policy" ]; then
-        if [ ! -r "$service_policy" ]; then
-            derror "bpir-unified-server: BPIR_TIER3_SERVICE_POLICY is not readable"
-            return 1
-        fi
-        inst_dir /etc/bitcoinpir/payment
-        inst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin
-        chmod 0644 "$initdir/etc/bitcoinpir/payment/service-policy.bin"
+    # The public signed admission policy must change atomically with the
+    # measured runtime.  A missing input must fail the build instead of
+    # allowing the guest to select a stale mutable-rootfs policy at boot.
+    if [ -z "$service_policy" ] \
+        || [ ! -f "$service_policy" ] \
+        || [ ! -r "$service_policy" ] \
+        || [ ! -s "$service_policy" ]; then
+        derror "bpir-unified-server: BPIR_TIER3_SERVICE_POLICY must name a readable non-empty file"
+        return 1
     fi
+    inst_dir /etc/bitcoinpir/payment
+    inst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin
+    chmod 0644 "$initdir/etc/bitcoinpir/payment/service-policy.bin"
 }
