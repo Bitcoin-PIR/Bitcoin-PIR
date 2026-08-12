@@ -111,6 +111,32 @@ esac
     /inst_multiple[^\n]*\bstat\b/,
     "Tier3 initramfs must install stat for the identity preflight",
   );
+  assert.match(
+    tier3ModuleSetupText,
+    /busybox --list \| grep -qx httpd/,
+    "Tier3 initramfs must refuse a BusyBox build without the httpd applet",
+  );
+  assert.match(
+    tier3RunText,
+    /"\$ORAM_STATUS_HTTPD" httpd -f/,
+    "status API must use BusyBox httpd",
+  );
+  assert.match(tier3RunText, /status\.json/, "status API root must contain status.json");
+  assert.match(
+    tier3RunText,
+    /start_direct_oram_status_api\nstart_total_watchdog[\s\S]*build_direct_oram mainnet/,
+    "status API must start before Direct ORAM builds",
+  );
+  assert.match(
+    tier3RunText,
+    /stop_direct_oram_status_api[\s\S]*remove_direct_oram_status_api_root[\s\S]*exec "\$UNIFIED_SERVER"/,
+    "status API must stop and remove its root before unified_server exec",
+  );
+  assert.doesNotMatch(
+    tier3RunText.match(/write_direct_oram_status_json\(\)[\s\S]*?^}/m)?.[0] ?? "",
+    /ORAM_PAGE_KEY_HEX/,
+    "status JSON must not contain the ORAM page key",
+  );
   const tier3CloudflaredText = readFileSync(tier3CloudflaredScript, "utf8");
   for (const [label, script] of [
     ["unified_server watchdog", tier3RunText],
@@ -227,6 +253,7 @@ esac
     .replace("UNIFIED_SERVER=/usr/local/bin/unified_server", `UNIFIED_SERVER=${unifiedServer}`)
     .replace("TRUSTED_INPUT_ROOT=/run/bitcoinpir-oram-inputs", `TRUSTED_INPUT_ROOT=${mismatchRoot}/trusted-inputs`)
     .replace("TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state", `TRUSTED_STATE_ROOT=${mismatchRoot}/trusted-state`)
+    .replaceAll("/run/bitcoinpir-oram-status-api", `${mismatchRoot}/status-api`)
     .replaceAll("sleep 5", ":");
   writeFileSync(fixtureRunScript, transformed);
   chmodSync(fixtureRunScript, 0o755);
@@ -254,6 +281,7 @@ esac
   const directOramctl = path.join(directRoot, "oramctl");
   const directUnifiedServer = path.join(directRoot, "unified_server");
   const directBhtmProof = path.join(directRoot, "height-940611.leaf-proof.json");
+  const directStatusApiRoot = path.join(directRoot, "status-api");
   const db0Index = "db0-index-fixture\n";
   const db0Chunks = "db0-chunks-fixture\n";
   const db1Index = "db1-index-fixture\n";
@@ -331,7 +359,7 @@ printf started >> "${unifiedStarts}"
 printf ready > "${readySignal}"
 printf 'fixture server stdout\n'
 printf 'fixture server stderr\n' >&2
-sleep 1
+sleep 2
 `,
   );
   write(
@@ -352,6 +380,12 @@ exit 1
     .replaceAll("/home/pir/data", directData)
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", directBhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${directOramctl}`)
+    .replaceAll("/run/bitcoinpir-oram-status-api", directStatusApiRoot)
+    .replace("start_direct_oram_status_api\nstart_total_watchdog", ":\nstart_total_watchdog")
+    .replace(
+      'stop_direct_oram_status_api || fatal "Direct ORAM status API did not release port 8091"\nremove_direct_oram_status_api_root || fatal "failed to remove Direct ORAM status API root"',
+      ":\nremove_direct_oram_status_api_root",
+    )
     .replace(
       "ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor",
       `ORAM_SUPERVISOR=${directOramSupervisor}`,
@@ -370,7 +404,7 @@ exit 1
     )
     .replace("ORAM_DB0_MAX_SECONDS=480", "ORAM_DB0_MAX_SECONDS=5")
     .replace("ORAM_DB1_MAX_SECONDS=180", "ORAM_DB1_MAX_SECONDS=5")
-    .replace("ORAM_TOTAL_MAX_SECONDS=900", "ORAM_TOTAL_MAX_SECONDS=5")
+    .replace("ORAM_TOTAL_MAX_SECONDS=900", "ORAM_TOTAL_MAX_SECONDS=8")
     .replace("ORAM_HEARTBEAT_INTERVAL_SECONDS=15", "ORAM_HEARTBEAT_INTERVAL_SECONDS=1")
     .replace("ORAM_HEARTBEAT_DEADLINE_SECONDS=90", "ORAM_HEARTBEAT_DEADLINE_SECONDS=3")
     .replace("ORAM_KILL_GRACE_SECONDS=5", "ORAM_KILL_GRACE_SECONDS=0")
@@ -466,13 +500,13 @@ exec sleep 5
   );
   chmodSync(timeoutUnifiedServer, 0o755);
   writeFileSync(bootIdFile, "33333333-3333-3333-3333-333333333333\n");
-  rmSync(readySignal);
+  rmSync(readySignal, { force: true });
   const timeoutRunScript = path.join(directRoot, "unified-server-timeout-run.sh");
   writeFileSync(
     timeoutRunScript,
     directTransformed
       .replace(`UNIFIED_SERVER=${directUnifiedServer}`, `UNIFIED_SERVER=${timeoutUnifiedServer}`)
-      .replace("ORAM_TOTAL_MAX_SECONDS=5", "ORAM_TOTAL_MAX_SECONDS=1"),
+      .replace("ORAM_TOTAL_MAX_SECONDS=8", "ORAM_TOTAL_MAX_SECONDS=1"),
   );
   chmodSync(timeoutRunScript, 0o755);
   const serverReadinessTimeout = run("sh", [timeoutRunScript], { env: directEnv });

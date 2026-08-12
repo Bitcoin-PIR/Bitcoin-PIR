@@ -108,6 +108,11 @@ For a quick taste:
 
 ## Documentation
 
+- [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) — current
+  operator/agent entry point for read-only control-plane status, release,
+  rollback, and canary routing
+- [`docs/history/README.md`](docs/history/README.md) — historical preflights,
+  incidents, and plans; evidence only, not operating instructions
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
 - [`doc/WEB.md`](doc/WEB.md) — Web client details
 - [`docs/RATELIMIT_INTEGRATION.md`](docs/RATELIMIT_INTEGRATION.md) — Payment V1
