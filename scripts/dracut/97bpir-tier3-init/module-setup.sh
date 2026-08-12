@@ -41,6 +41,11 @@ check() {
             return 1
         fi
     done
+    if [ ! -x /usr/bin/busybox ] || ! /usr/bin/busybox --list | grep -qx httpd; then
+        derror "bpir-tier3-init: /usr/bin/busybox with the httpd applet is required"
+        derror "  install with: apt install busybox-static"
+        return 1
+    fi
     return 0
 }
 
@@ -77,7 +82,9 @@ install() {
 
     # udhcpc is a busybox applet, NOT a standalone binary on Ubuntu.
     # Bake busybox itself in (statically linked, ~1.5 MB) and create
-    # a /sbin/udhcpc symlink to it. busybox dispatches based on argv[0].
+    # a /sbin/udhcpc symlink to it. busybox dispatches based on argv[0]. Its
+    # httpd applet also serves the transient loopback-only Direct ORAM status
+    # JSON before unified_server takes over port 8091.
     if [ -x /usr/bin/busybox ]; then
         inst_simple /usr/bin/busybox
         ln_r /usr/bin/busybox /sbin/udhcpc

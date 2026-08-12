@@ -94,6 +94,13 @@ ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
 ORAM_BOOT_ID_FILE=${BPIR_ORAM_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 ORAM_PUBLISHED_MARKER="$ORAM_BUILD_LOG_DIR/oram-published.boot-id.env"
 ORAM_WATCHDOG_PHASE_FILE="$ORAM_BUILD_LOG_DIR/direct-oram-bootstrap.phase"
+ORAM_STATUS_HTTP_ROOT=/run/bitcoinpir-oram-status-api
+ORAM_STATUS_JSON_FILE="$ORAM_STATUS_HTTP_ROOT/status.json"
+ORAM_STATUS_HTTPD_PID_FILE=/run/bitcoinpir-oram-status-api.pid
+ORAM_STATUS_HTTPD=/usr/bin/busybox
+ORAM_STATUS_HTTPD_HOST=127.0.0.1
+ORAM_STATUS_HTTPD_PORT=8091
+ORAM_STATUS_HTTPD_PID=
 ORAM_SERVER_RUNTIME_LOG="$ORAM_BUILD_LOG_DIR/unified-server.runtime.log"
 ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
 ORAM_CURRENT_DIR="$ORAM_BOOT_ROOT/current"
@@ -121,6 +128,7 @@ ORAM_SUPERVISOR=/usr/local/bin/direct-oram-supervisor
 ORAM_SERVER_READY_HOST=127.0.0.1
 ORAM_SERVER_READY_PORT=8091
 ORAM_ACTIVE_SUPERVISOR_PID_FILE="$TRUSTED_STATE_ROOT/active-supervisor.pid"
+ORAM_STATUS_STARTED_AT_EPOCH=
 DIRECT_INDEX_SLOTS_PER_BIN=4
 DIRECT_INDEX_HASH_FNS=2
 DIRECT_INDEX_LOAD_FACTOR=0.95
@@ -139,9 +147,64 @@ DELTA_EXPECTED_INDEX_SHA256=e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aa
 DELTA_EXPECTED_CHUNKS_SHA256=536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a
 
 fatal() {
-    echo "[unified-server-run] FATAL: $*" >&2
+    if [ -n "${ORAM_STATUS_STARTED_AT_EPOCH:-}" ] && [ -d "$ORAM_STATUS_HTTP_ROOT" ]; then
+        write_direct_oram_status_json failed "${2:-$ORAM_TOTAL_MAX_SECONDS}" "${3:-bootstrap-failed}" || true
+    fi
+    echo "[unified-server-run] FATAL: $1" >&2
     sleep 5
     exit 1
+}
+
+write_direct_oram_status_json() {
+    stage_name=$1
+    hard_stop_seconds=$2
+    status_reason=$3
+    now_epoch=$(date -u +%s)
+    status_tmp="$ORAM_STATUS_JSON_FILE.tmp.$$"
+    {
+        printf '{"schema_version":1,"stage":"%s","started_at_epoch":%s,' \
+            "$stage_name" "$ORAM_STATUS_STARTED_AT_EPOCH"
+        printf '"updated_at_epoch":%s,"hard_stop_seconds":%s,"reason":"%s"}\n' \
+            "$now_epoch" "$hard_stop_seconds" "$status_reason"
+    } >"$status_tmp" || return 1
+    chmod 600 "$status_tmp" || return 1
+    mv "$status_tmp" "$ORAM_STATUS_JSON_FILE"
+}
+
+prepare_direct_oram_status_api() {
+    case "$ORAM_STATUS_HTTP_ROOT" in
+        /run/bitcoinpir-oram-status-api) ;;
+        *) fatal "unsupported Direct ORAM status API root: $ORAM_STATUS_HTTP_ROOT" ;;
+    esac
+    rm -rf "$ORAM_STATUS_HTTP_ROOT" || fatal "failed to clear Direct ORAM status API root"
+    mkdir -p "$ORAM_STATUS_HTTP_ROOT" || fatal "failed to create Direct ORAM status API root"
+    chmod 700 "$ORAM_STATUS_HTTP_ROOT" || fatal "failed to protect Direct ORAM status API root"
+}
+
+stop_direct_oram_status_api() {
+    [ -n "${ORAM_STATUS_HTTPD_PID:-}" ] || return 0
+    kill "$ORAM_STATUS_HTTPD_PID" 2>/dev/null || true
+    wait "$ORAM_STATUS_HTTPD_PID" 2>/dev/null || true
+    ORAM_STATUS_HTTPD_PID=
+    rm -f "$ORAM_STATUS_HTTPD_PID_FILE"
+}
+
+start_direct_oram_status_api() {
+    [ -x "$ORAM_STATUS_HTTPD" ] || fatal "$ORAM_STATUS_HTTPD missing from UKI"
+    "$ORAM_STATUS_HTTPD" httpd -f \
+        -p "$ORAM_STATUS_HTTPD_HOST:$ORAM_STATUS_HTTPD_PORT" \
+        -h "$ORAM_STATUS_HTTP_ROOT" </dev/null >/dev/null 2>&1 &
+    ORAM_STATUS_HTTPD_PID=$!
+    printf '%s\n' "$ORAM_STATUS_HTTPD_PID" >"$ORAM_STATUS_HTTPD_PID_FILE" \
+        || fatal "failed to record Direct ORAM status API process"
+    chmod 600 "$ORAM_STATUS_HTTPD_PID_FILE" || fatal "failed to protect Direct ORAM status API process"
+}
+
+remove_direct_oram_status_api_root() {
+    case "$ORAM_STATUS_HTTP_ROOT" in
+        /run/bitcoinpir-oram-status-api) rm -rf "$ORAM_STATUS_HTTP_ROOT" || return 1 ;;
+        *) return 1 ;;
+    esac
 }
 
 read_current_boot_id() {
@@ -347,6 +410,8 @@ safe_remove_runtime_path() {
 }
 
 cleanup_build_staging() {
+    stop_direct_oram_status_api || true
+    remove_direct_oram_status_api_root || true
     [ -n "${ORAM_TOTAL_WATCHDOG_PID:-}" ] \
         && kill "$ORAM_TOTAL_WATCHDOG_PID" 2>/dev/null || true
     [ -n "${ORAM_TOTAL_WATCHDOG_PID:-}" ] \
@@ -373,7 +438,8 @@ start_total_watchdog() {
             # The initramfs busybox nc does not implement OpenBSD nc's -z.
             # An EOF-only connection is portable across both implementations
             # and still proves that the server has completed TCP bind/listen.
-            if nc -w 1 "$ORAM_SERVER_READY_HOST" "$ORAM_SERVER_READY_PORT" </dev/null >/dev/null 2>&1; then
+            if [ ! -r "$ORAM_STATUS_HTTPD_PID_FILE" ] \
+                && nc -w 1 "$ORAM_SERVER_READY_HOST" "$ORAM_SERVER_READY_PORT" </dev/null >/dev/null 2>&1; then
                 {
                     printf 'status=ready\n'
                     printf 'phase=server-readiness\n'
@@ -546,7 +612,8 @@ build_direct_oram() {
             --expected-chunks-sha256 "$expected_chunks_sha" \
             --strict-source-binding || {
                 tail -80 "$log_file" >&2 || true
-                fatal "$db_label direct ORAM regeneration failed; full log: $log_file"
+                fatal "$db_label direct ORAM regeneration failed; full log: $log_file" \
+                    "$build_timeout_seconds" build-failed
             }
     else
         run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
@@ -579,7 +646,8 @@ build_direct_oram() {
             --expected-chunks-sha256 "$expected_chunks_sha" \
             --strict-source-binding || {
                 tail -80 "$log_file" >&2 || true
-                fatal "$db_label direct ORAM regeneration failed; full log: $log_file"
+                fatal "$db_label direct ORAM regeneration failed; full log: $log_file" \
+                    "$build_timeout_seconds" build-failed
             }
     fi
     safe_remove_runtime_path "$trusted_input_dir"
@@ -680,7 +748,6 @@ ORAM_TOTAL_WATCHDOG_PID=
 trap cleanup_build_staging EXIT
 trap 'exit 124' HUP INT TERM
 write_watchdog_phase direct-oram-build
-start_total_watchdog
 
 load_active_database_generation 0 db0
 MAINNET_SOURCE_DIR="$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs"
@@ -694,21 +761,35 @@ DELTA_DB_EVIDENCE="$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
 DELTA_DB_MANIFEST="$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
 DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
 
+prepare_direct_oram_status_api
+ORAM_STATUS_STARTED_AT_EPOCH=$(date -u +%s)
+write_direct_oram_status_json input-validation "$ORAM_DB0_MAX_SECONDS" none \
+    || fatal "failed to publish Direct ORAM input-validation status"
+start_direct_oram_status_api
+start_total_watchdog
+write_direct_oram_status_json db0-build "$ORAM_DB0_MAX_SECONDS" none \
+    || fatal "failed to publish Direct ORAM db0-build status"
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
     "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
     "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_FULL_TRUSTED_STATE_DIR" "$ORAM_DB0_MAX_SECONDS"
+write_direct_oram_status_json db1-build "$ORAM_DB1_MAX_SECONDS" none \
+    || fatal "failed to publish Direct ORAM db1-build status"
 build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
     "$DELTA_DB_EVIDENCE" "$DELTA_DB_MANIFEST" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
     "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_DELTA_TRUSTED_STATE_DIR" "$ORAM_DB1_MAX_SECONDS"
 
+write_direct_oram_status_json publish "$ORAM_TOTAL_MAX_SECONDS" none \
+    || fatal "failed to publish Direct ORAM publish status"
 mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerated ORAM image"
 verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-948454
 verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" delta-940611-948454
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 write_current_boot_published_marker
 write_watchdog_phase server-readiness
+stop_direct_oram_status_api || fatal "Direct ORAM status API did not release port 8091"
+remove_direct_oram_status_api_root || fatal "failed to remove Direct ORAM status API root"
 trap - EXIT
 trap - HUP INT TERM
 start_unified_server_runtime_log

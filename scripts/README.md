@@ -2,6 +2,18 @@
 
 Helper scripts for running and testing the PIR system.
 
+## Production status
+
+For production diagnosis, run this read-only command first:
+
+```bash
+./scripts/vpsbg-production-status.sh
+```
+
+It only GETs the VPSBG control plane and public `/status.json`; it never uses SSH.
+It reports control-plane state, boot mode, and attached image. The ORAM endpoint exists only during build/switch; after `unified_server` owns 8091, its fields are expected to be `unavailable`.
+Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
+
 ## Scripts
 
 ### `start_pir_servers.sh`
