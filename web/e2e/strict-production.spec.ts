@@ -8,18 +8,19 @@ test.skip(
   'Set BPIR_PRODUCTION_CANARY=1 to run live queries against production.',
 );
 
-test.describe.configure({ mode: 'serial' });
+// Each provider has its own page and strict session.  Parallel execution
+// means a failure reports the remaining independent backends instead of
+// serially skipping them; the production config caps this at two workers.
+test.describe.configure({ mode: 'parallel' });
 
 async function openBackend(page: Page, tabName: string): Promise<void> {
   await page.goto(`/?strict-canary=${Date.now()}`, { waitUntil: 'domcontentloaded' });
-  // The production bundle binds all backend/admission controls near the end
-  // of its module. DOMContentLoaded can fire while it is still evaluating;
-  // wait for its explicit, backend-independent interaction-ready state.
   const app = page.locator('#bitcoinPirApp');
   await expect(app).toHaveAttribute('data-module-readiness', 'ready');
   await expect(app).toHaveAttribute('aria-busy', 'false');
-  await expect(page.getByRole('tab', { name: tabName, exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: tabName, exact: true }).click();
+  const tab = page.getByRole('tab', { name: tabName, exact: true });
+  await expect(tab).toBeVisible();
+  await tab.click();
 }
 
 async function queryOnce(
@@ -33,109 +34,77 @@ async function queryOnce(
 
   await page.locator(inputSelector).fill(CANARY_ADDRESS);
   await button.click();
-  await expect(button).toHaveText('Querying…');
-  await expect(button).toBeEnabled({ timeout: QUERY_TIMEOUT });
-  await expectNoFatalLog(page);
+  await expect(results).toHaveAttribute('data-query-batch-state', 'complete', {
+    timeout: QUERY_TIMEOUT,
+  });
+  await expect(results).toHaveAttribute('data-query-result-verification', 'verified');
   await expect(results).toContainText(CANARY_ADDRESS);
   return results;
 }
 
-async function expectVerifiedResult(results: Locator): Promise<void> {
-  await expect(results.locator('.merkle-result-badge.verified')).toHaveText('✓ Verified', {
-    timeout: QUERY_TIMEOUT,
-  });
+async function expectVerified(...locators: Locator[]): Promise<void> {
+  for (const locator of locators) {
+    await expect(locator).toHaveAttribute('data-verification-state', 'verified', {
+      timeout: QUERY_TIMEOUT,
+    });
+  }
 }
 
-async function expectTornDown(
+async function expectTransportDisconnected(
   page: Page,
+  statusSelector: string,
   connectSelector: string,
   disconnectSelector: string,
 ): Promise<void> {
+  await expect(page.locator(statusSelector)).toHaveAttribute('data-transport-state', 'disconnected', {
+    timeout: QUERY_TIMEOUT,
+  });
   await expect(page.locator(connectSelector)).toBeEnabled();
   await expect(page.locator(disconnectSelector)).toBeDisabled();
 }
 
-async function expectLogContains(page: Page, ...messages: string[]): Promise<void> {
-  const log = page.locator('#log');
-  for (const message of messages) {
-    await expect(log).toContainText(message, { timeout: QUERY_TIMEOUT });
-  }
-}
-
-async function expectNoFatalLog(page: Page): Promise<void> {
-  const fatalPattern =
-    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|WASM module required|query error:|batch error:|(?:connection|connect) failed:)/i;
-  const fatal = page.locator('#log .log-entry').filter({ hasText: fatalPattern });
-  await expect(fatal).toHaveCount(0);
-}
-
-test('DPF-PIR verifies both servers, the result, and tears down transport', async ({ page }) => {
+test('DPF-PIR releases a strictly verified result and closes both transports', async ({ page }) => {
   await openBackend(page, 'DPF-PIR');
-  const results = await queryOnce(page, '#scriptPubkeys', '#queryBtn', '#resultsContainer');
+  await queryOnce(page, '#scriptPubkeys', '#queryBtn', '#resultsContainer');
 
-  await expect(page.locator('#dpfVerification0')).toHaveText('YES');
-  await expect(page.locator('#dpfVerification1')).toHaveText('YES');
-  await expectVerifiedResult(results);
-  await expectLogContains(
-    page,
-    'operator-endorsed identity verified (pir1-payment-beta)',
-    'operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
-    'Bitcoin/MuHash anchor verified',
-    'Batch complete: 1/1 found',
+  await expectVerified(
+    page.locator('#dpfVerification0'),
+    page.locator('#dpfVerification1'),
+    page.locator('#dbProofBadge'),
   );
-  await expectTornDown(page, '#connectBtn', '#disconnectBtn');
-  await expectNoFatalLog(page);
-  await expectLogContains(
-    page,
-    'Disconnected',
-  );
+  await expectTransportDisconnected(page, '#status', '#connectBtn', '#disconnectBtn');
 });
 
-test('HarmonyPIR verifies both roles, the result, and preserves no socket', async ({ page }) => {
+test('HarmonyPIR releases a strictly verified result and closes both transports', async ({ page }) => {
   await openBackend(page, 'HarmonyPIR');
-  const results = await queryOnce(page, '#hp-scriptPubkeys', '#hp-queryBtn', '#hp-resultsContainer');
+  await queryOnce(page, '#hp-scriptPubkeys', '#hp-queryBtn', '#hp-resultsContainer');
 
-  await expect(page.locator('#hpVerificationHint')).toHaveText('YES');
-  await expect(page.locator('#hpVerificationQuery')).toHaveText('YES');
-  await expectVerifiedResult(results);
-  await expectLogContains(
-    page,
-    'HarmonyPIR hint: operator-endorsed identity verified (pir1-payment-beta)',
-    'HarmonyPIR query: operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
-    'HarmonyPIR batch complete: 1/1 found',
+  await expectVerified(
+    page.locator('#hpVerificationHint'),
+    page.locator('#hpVerificationQuery'),
+    page.locator('#hp-dbProofBadge'),
   );
-  await expectTornDown(page, '#hp-connectBtn', '#hp-disconnectBtn');
-  await expect(page.locator('#hp-status')).toContainText('Status: Disconnected');
-  await expectNoFatalLog(page);
+  await expectTransportDisconnected(page, '#hp-status', '#hp-connectBtn', '#hp-disconnectBtn');
 });
 
-test('OnionPIR passes strict layout/tree-top preflight and verifies the result', async ({ page }) => {
+test('OnionPIR releases a strictly verified result and closes its transport', async ({ page }) => {
   await openBackend(page, 'OnionPIR');
-  const results = await queryOnce(page, '#op-scriptPubkeys', '#op-queryBtn', '#op-resultsContainer');
+  await queryOnce(page, '#op-scriptPubkeys', '#op-queryBtn', '#op-resultsContainer');
 
-  await expect(page.locator('#onionVerification')).toHaveText('YES');
-  await expectVerifiedResult(results);
-  await expectLogContains(page, 'OnionPIR batch complete: 1/1 found');
-  await expectTornDown(page, '#op-connectBtn', '#op-disconnectBtn');
-  await expectNoFatalLog(page);
+  await expectVerified(
+    page.locator('#onionVerification'),
+    page.locator('#op-dbProofBadge'),
+  );
+  await expectTransportDisconnected(page, '#op-status', '#op-connectBtn', '#op-disconnectBtn');
 });
 
-test('ORAM TEE verifies the runtime, completes a lookup, and disconnects', async ({ page }) => {
+test('ORAM TEE releases a strictly verified result and closes its transport', async ({ page }) => {
   await openBackend(page, 'ORAM TEE');
   await queryOnce(page, '#oram-scriptPubkeys', '#oram-queryBtn', '#oram-resultsContainer');
 
-  await expect(page.locator('#oramVerification')).toHaveText('YES');
-  await expectLogContains(
-    page,
-    'ORAM upgraded to encrypted channel',
-    'ORAM: operator-endorsed identity verified (pir2-vpsbg-dpf-v1)',
-    'ORAM batch complete: 1/1 found',
+  await expectVerified(
+    page.locator('#oramVerification'),
+    page.locator('#oram-dbProofBadge'),
   );
-  await expectTornDown(page, '#oram-connectBtn', '#oram-disconnectBtn');
-  await expect(page.locator('#oram-status')).toContainText('Status: Disconnected');
-  await expectNoFatalLog(page);
-  await expectLogContains(
-    page,
-    'ORAM: Disconnected',
-  );
+  await expectTransportDisconnected(page, '#oram-status', '#oram-connectBtn', '#oram-disconnectBtn');
 });

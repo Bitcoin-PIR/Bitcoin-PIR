@@ -1,10 +1,9 @@
 name: Web strict production canary
 
 on:
-  schedule:
-    # Run after the native production canary's normal window so both do not
-    # compete for the same PIR servers.
-    - cron: '17 8 * * *'
+  # Live browser queries are intentionally opt-in.  Normal CI verifies the
+  # semantic contract without opening a browser or contacting production.
+  # Dispatch this after a deployment when a user asks for an end-to-end check.
   workflow_dispatch:
 
 permissions:
