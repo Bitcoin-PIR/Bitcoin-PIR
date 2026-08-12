@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-9Y7n9JqpWxP+sVYJckTEEFEdALgfBlY9OjsqctYtO5I=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Y4fPxpcC/z9YcgXTKVCgAwe88Bs1XudeGnQfv3V5W8g=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -964,7 +964,7 @@
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="status" class="status disconnected" hidden>Disconnected</div>
+                        <div id="status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1138,7 +1138,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="resultsContainer" class="results-container"></div>
+                    <div id="resultsContainer" class="results-container" data-query-batch-state="idle"></div>
                 </div>
             </section>
           </div>
@@ -1151,7 +1151,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="op-status" class="status disconnected" hidden>Disconnected</div>
+                        <div id="op-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1310,7 +1310,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="op-resultsContainer" class="results-container"></div>
+                    <div id="op-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
                 </div>
             </section>
           </div>
@@ -1323,7 +1323,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="hp-status" class="status disconnected" hidden>Disconnected</div>
+                        <div id="hp-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1519,7 +1519,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="hp-resultsContainer" class="results-container"></div>
+                    <div id="hp-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
                 </div>
             </section>
           </div>
@@ -1532,7 +1532,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="oram-status" class="status disconnected" hidden>Disconnected</div>
+                        <div id="oram-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1638,7 +1638,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="oram-resultsContainer" class="results-container"></div>
+                    <div id="oram-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
                 </div>
             </section>
           </div>
@@ -2699,12 +2699,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (state.attestation === false || state.operator === false) {
                 el.textContent = 'NO';
                 el.className = 'verification-result no';
+                el.dataset.verificationState = 'unverified';
             } else if (state.attestation === true && state.operator === true) {
                 el.textContent = 'YES';
                 el.className = 'verification-result yes';
+                el.dataset.verificationState = 'verified';
             } else {
                 el.textContent = 'Not checked';
                 el.className = 'verification-result pending';
+                el.dataset.verificationState = 'pending';
             }
         }
 
@@ -2764,6 +2767,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         function setButtons(connected) {
             document.getElementById('connectBtn').disabled = connected;
             document.getElementById('disconnectBtn').disabled = !connected;
+        }
+
+        function publishTransportDisconnected(statusId) {
+            const statusDiv = document.getElementById(statusId);
+            if (!statusDiv) return;
+            statusDiv.textContent = 'Status: Disconnected';
+            statusDiv.className = 'status disconnected';
+            statusDiv.dataset.transportState = 'disconnected';
         }
 
         // Slice 3: persistent attestation badge per server. Called from
@@ -2905,6 +2916,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     : `DB proof unavailable — ${anchor}`;
 
             el.className = `attest-badge attest-badge-db-${info.state}`;
+            el.dataset.verificationState = info.state;
             el.style.display = 'block';
 
             const rows = [];
@@ -3564,6 +3576,29 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             badge.textContent = labels[state] || state;
         }
 
+        // Stable outcome contract for the explicit production canary.  A
+        // completed batch means the backend released a result only after its
+        // strict query path succeeded; `verified` is never set for a partial
+        // or failed batch.  The visible result badges remain the detailed
+        // user-facing evidence for PBC backends.
+        function beginQueryBatch(container) {
+            if (!container) return;
+            container.dataset.queryBatchState = 'running';
+            delete container.dataset.queryResultVerification;
+        }
+
+        function completeVerifiedQueryBatch(container) {
+            if (!container) return;
+            container.dataset.queryResultVerification = 'verified';
+            container.dataset.queryBatchState = 'complete';
+        }
+
+        function failQueryBatch(container) {
+            if (!container) return;
+            container.dataset.queryBatchState = 'failed';
+            delete container.dataset.queryResultVerification;
+        }
+
         function waitForResultPaint() {
             return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         }
@@ -3749,6 +3784,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         const statusDiv = document.getElementById('status');
                         statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
                         statusDiv.className = `status ${state}`;
+                        statusDiv.dataset.transportState = state;
 
                         if (state === 'connected') setButtons(true);
                         else if (state === 'disconnected') setButtons(false);
@@ -3862,6 +3898,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log('Disconnected', 'info');
                 setButtons(false);
             }
+            publishTransportDisconnected('status');
             dpfAdmissionProviders[0] = null;
             dpfAdmissionProviders[1] = null;
             dpfAdmissionDbId = null;
@@ -3926,6 +3963,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             // Reset results
             const resultsContainer = document.getElementById('resultsContainer');
             resultsContainer.innerHTML = '';
+            beginQueryBatch(resultsContainer);
             document.getElementById('queryBtn').disabled = true;
 
             const N = lines.length;
@@ -4019,11 +4057,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     }
                 }
 
+                completeVerifiedQueryBatch(resultsContainer);
                 const verb = isDelta ? 'changed' : 'found';
                 setProgress(100, `Done! ${found}/${N} addresses ${verb}`);
                 setTimeout(hideProgress, 2000);
                 log(`Batch complete: ${found}/${N} ${verb}`, 'success');
             } catch (error) {
+                failQueryBatch(resultsContainer);
                 log(`Batch error: ${error.message}`, 'error');
                 setProgress(0, '');
                 hideProgress();
@@ -4415,12 +4455,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (state === 'yes') {
                 el.textContent = 'YES';
                 el.className = 'verification-result yes';
+                el.dataset.verificationState = 'verified';
             } else if (state === 'no') {
                 el.textContent = 'NO';
                 el.className = 'verification-result no';
+                el.dataset.verificationState = 'unverified';
             } else {
                 el.textContent = state === 'checking' ? 'Checking' : 'Not checked';
                 el.className = 'verification-result pending';
+                el.dataset.verificationState = 'pending';
             }
             el.title = title;
         }
@@ -4573,6 +4616,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         const statusDiv = document.getElementById('op-status');
                         statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
                         statusDiv.className = `status ${state}`;
+                        statusDiv.dataset.transportState = state;
                         if (state === 'connected') opSetButtons(true);
                         else if (state === 'disconnected') opSetButtons(false);
                     },
@@ -4615,6 +4659,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('op-syncBtn').disabled = true;
             opPendingSync = null;
             opSetButtons(false);
+            publishTransportDisconnected('op-status');
         }
 
         // ─── OnionPIR sync flow (mirrors DPF) ─────────────────────────────
@@ -4860,6 +4905,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('op-resultsContainer');
             resultsContainer.innerHTML = '';
+            beginQueryBatch(resultsContainer);
             document.getElementById('op-queryBtn').disabled = true;
 
             const N = lines.length;
@@ -4903,10 +4949,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     setResultMerkleState(section, 'verified');
                 }
 
+                completeVerifiedQueryBatch(resultsContainer);
                 opSetProgress(100, `Done! ${found}/${N} addresses found`);
                 setTimeout(opHideProgress, 2000);
                 log(`OnionPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
+                failQueryBatch(resultsContainer);
                 log(`OnionPIR error: ${error.message}`, 'error');
                 opSetDataIntegrity('no', error.message);
                 opSetProgress(0, '');
@@ -5206,6 +5254,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Connecting...';
                 statusDiv.className = 'status connecting';
+                statusDiv.dataset.transportState = 'connecting';
                 log(`HarmonyPIR: connecting ${providerIndex === 0 ? 'hint' : 'query'} provider only...`);
 
                 // A prior wrapper without usable hints is not a reconnect
@@ -5317,6 +5366,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'Status: Hint provider verified; hint admission required'
                     : 'Status: Pair verified; capability admission required before preflight';
                 statusDiv.className = 'status connected';
+                statusDiv.dataset.transportState = 'connected';
                 if (providerIndex === 0) {
                     document.getElementById('hp-offlineContainer').style.display = 'none';
                 } else {
@@ -5325,6 +5375,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         if (hpClient !== connectedCandidate) return;
                         statusDiv.textContent = 'Status: Query provider disconnected (hints preserved)';
                         statusDiv.className = 'status disconnected';
+                        statusDiv.dataset.transportState = 'disconnected';
                     });
                 }
 
@@ -5345,6 +5396,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'Status: Disconnected'
                     : 'Status: Hint provider remains authorized; query provider failed';
                 statusDiv.className = 'status disconnected';
+                statusDiv.dataset.transportState = 'disconnected';
                 if (providerIndex === 0) {
                     hpSetButtons(false);
                     document.getElementById('hp-offlineContainer').style.display = 'none';
@@ -5387,6 +5439,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 ? 'Status: Disconnected (hints preserved)'
                 : 'Status: Disconnected';
             statusDiv.className = 'status disconnected';
+            statusDiv.dataset.transportState = 'disconnected';
             hpSetButtons(false);
             document.getElementById('hp-connectBtn').disabled = false;
             hpHideProgress();
@@ -5838,6 +5891,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('hp-resultsContainer');
             resultsContainer.innerHTML = '';
+            beginQueryBatch(resultsContainer);
             document.getElementById('hp-queryBtn').disabled = true;
 
             const N = lines.length;
@@ -5911,10 +5965,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     setResultMerkleState(section, 'verified');
                 }
 
+                completeVerifiedQueryBatch(resultsContainer);
                 hpSetProgress(100, `Done! ${found}/${N} addresses found`);
                 setTimeout(hpHideProgress, 2000);
                 log(`HarmonyPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
+                failQueryBatch(resultsContainer);
                 log(`HarmonyPIR error: ${error.message}`, 'error');
                 hpSetProgress(0, '');
                 hpHideProgress();
@@ -6109,6 +6165,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const statusDiv = document.getElementById('oram-status');
                 statusDiv.textContent = 'Status: Connecting';
                 statusDiv.className = 'status connecting';
+                statusDiv.dataset.transportState = 'connecting';
                 document.getElementById('oram-connectBtn').disabled = true;
 
                 oramClient = new OramPirClientAdapter({
@@ -6179,6 +6236,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             state === 'disconnected' ? 'error' : 'info');
                         statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
                         statusDiv.className = `status ${state}`;
+                        statusDiv.dataset.transportState = state;
                         if (state === 'connected') oramSetButtons(true);
                         else if (state === 'disconnected') oramSetButtons(false);
                     },
@@ -6198,7 +6256,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (sourceDbStatus?.state !== 'verified' || !sourceDbStatus.proof || !manifestRootHex) {
                     throw new Error('strict ORAM connection did not produce a source db proof and attested manifest root');
                 }
-                await verifyAndRenderOramSourceProofBadge(
+                // The source ceremony is useful historical provenance, but
+                // the live attestation, verified database proof, and
+                // attested manifest root above are the query admission
+                // boundary.  Do not close an otherwise strict connection if
+                // optional source-proof artifacts are unavailable.
+                void verifyAndRenderOramSourceProofBadge(
                     'oram-sourceProofBadge',
                     'ORAM TEE',
                     sourceDbStatus.proof,
@@ -6209,13 +6272,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         pinStatus: oramClient.attestation.pinStatus,
                         manifestRootHex,
                     },
-                );
+                ).catch(error => {
+                    const message = error?.message || String(error);
+                    renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                        state: 'unavailable',
+                        checks: [],
+                        mismatches: [],
+                        error: `informational source proof unavailable: ${message}`,
+                    });
+                    log(`ORAM source proof unavailable (informational): ${message}`, 'info');
+                });
             } catch (error) {
                 log(`ORAM connection failed: ${error.message}`, 'error');
                 oramClient = null;
                 const statusDiv = document.getElementById('oram-status');
                 statusDiv.textContent = 'Status: Disconnected';
                 statusDiv.className = 'status disconnected';
+                statusDiv.dataset.transportState = 'disconnected';
                 oramSetButtons(false);
                 throw error;
             }
@@ -6234,6 +6307,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
             document.getElementById('oram-advancedDbDetails').style.display = 'none';
             oramSetButtons(false);
+            publishTransportDisconnected('oram-status');
         }
 
         async function oramQueryUtxos() {
@@ -6278,6 +6352,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('oram-resultsContainer');
             resultsContainer.innerHTML = '';
+            beginQueryBatch(resultsContainer);
             document.getElementById('oram-queryBtn').disabled = true;
 
             const N = lines.length;
@@ -6325,11 +6400,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     }
                 }
 
+                completeVerifiedQueryBatch(resultsContainer);
                 const verb = isDelta ? 'changed' : 'found';
                 oramSetProgress(100, `Done! ${found}/${N} addresses ${verb}`);
                 setTimeout(oramHideProgress, 2000);
                 log(`ORAM batch complete: ${found}/${N} ${verb}`, 'success');
             } catch (error) {
+                failQueryBatch(resultsContainer);
                 log(`ORAM query error: ${error.message}`, 'error');
                 oramSetProgress(0, '');
                 oramHideProgress();

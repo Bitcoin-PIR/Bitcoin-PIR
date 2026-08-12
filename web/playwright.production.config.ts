@@ -5,8 +5,10 @@ const productionUrl = process.env.BPIR_WEB_URL ?? 'https://www.bitcoinpir.org/';
 export default defineConfig({
   testDir: './e2e',
   testMatch: 'strict-production.spec.ts',
-  fullyParallel: false,
-  workers: 1,
+  // A failing provider must not suppress the other independent backends, but
+  // keep live production load bounded.
+  fullyParallel: true,
+  workers: 2,
   retries: 0,
   timeout: 12 * 60 * 1000,
   expect: {
