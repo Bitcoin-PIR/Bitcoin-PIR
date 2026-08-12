@@ -33,6 +33,14 @@ VPSBG release and rollback use the measured-boot procedure in the
 Use the reported attached image as the rollback reference; do not substitute a
 historical preflight for current state.
 
+Production Tier 3 builds must set `BPIR_TIER3_SERVICE_POLICY` to the exact
+currently approved signed policy. The build fails when it is missing and
+rejects anything except the reviewed digest locked in `build_uki_tier3.sh`; it
+then verifies that the initramfs contains byte-identical policy data before
+emitting an uploadable UKI. A policy-epoch rotation must update that source lock
+in a reviewed change. Never rely on the mutable-rootfs policy fallback for a
+new release.
+
 Run a manual production canary only after a deliberate web or VPSBG release,
 never as the first diagnostic step.
 

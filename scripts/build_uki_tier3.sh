@@ -25,7 +25,8 @@
 #
 # Operator usage (must run as root — /boot/vmlinuz-* is mode 0600):
 #   ssh vpsbg-pir 'apt install -y runit'   # one-time build dep
-#   ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+#   ssh vpsbg-pir 'BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin \
+#       /home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
 #   scp vpsbg-pir:/tmp/bpir-tier3.efi ./bpir-tier3.efi
 #
 # Recovery if Tier 3 boot fails: VPSBG portal → Measured Boot → UKI
@@ -44,6 +45,10 @@ fi
 KERNEL=${KERNEL:-}
 OUT=${OUT:-/tmp/bpir-tier3.efi}
 CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
+# The currently deployed image accepts service-policy epoch 8 with this exact
+# digest. A policy rotation is a production behavior change and must update
+# this reviewed lock in source before a new UKI can be emitted.
+TIER3_SERVICE_POLICY_SHA256=ef076d5fcb4ccc89c7ad4b883d332005ef59cfa09617e1ea66359d37f962dc14
 
 # Resolve dracut module dir relative to this script.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -111,15 +116,26 @@ BHTM_FROM_LEAF_PROOF=${BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/pro
 }
 export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
 
-# Optional public, signed policy to bind to this measured image.  It is not a
-# credential key or issuer secret; the provider still verifies its signature
-# at runtime.  Leaving it unset preserves the established mutable-rootfs
-# policy fallback.
-if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
-    [ -r "$BPIR_TIER3_SERVICE_POLICY" ] || {
-        echo "error: BPIR_TIER3_SERVICE_POLICY is not readable: $BPIR_TIER3_SERVICE_POLICY" >&2
-        exit 1
-    }
+# The public signed policy is part of the measured production identity.  It is
+# not a credential key or issuer secret.  Requiring an explicit input prevents
+# a release from silently falling back to an older mutable-rootfs policy whose
+# epoch has already been superseded by the rollback authority.
+[ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ] || {
+    echo "error: BPIR_TIER3_SERVICE_POLICY is required for a production Tier 3 UKI" >&2
+    exit 1
+}
+[ -f "$BPIR_TIER3_SERVICE_POLICY" ] \
+    && [ -r "$BPIR_TIER3_SERVICE_POLICY" ] \
+    && [ -s "$BPIR_TIER3_SERVICE_POLICY" ] || {
+    echo "error: BPIR_TIER3_SERVICE_POLICY is not a readable non-empty file: $BPIR_TIER3_SERVICE_POLICY" >&2
+    exit 1
+}
+SERVICE_POLICY_HASH=$(sha256sum "$BPIR_TIER3_SERVICE_POLICY" | awk '{print $1}')
+if [ "$SERVICE_POLICY_HASH" != "$TIER3_SERVICE_POLICY_SHA256" ]; then
+    echo "error: BPIR_TIER3_SERVICE_POLICY is not the reviewed production policy" >&2
+    echo "  expected sha256: $TIER3_SERVICE_POLICY_SHA256" >&2
+    echo "  actual sha256:   $SERVICE_POLICY_HASH" >&2
+    exit 1
 fi
 
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
@@ -230,11 +246,8 @@ echo "BHTM from-leaf proof:     $BHTM_FROM_LEAF_PROOF"
 echo "binary sha256:            $BIN_HASH"
 echo "oramctl sha256:           $ORAMCTL_HASH"
 echo "BHTM proof sha256:        $BHTM_PROOF_HASH"
-if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
-    SERVICE_POLICY_HASH=$(sha256sum "$BPIR_TIER3_SERVICE_POLICY" | awk '{print $1}')
-    echo "service policy:          $BPIR_TIER3_SERVICE_POLICY"
-    echo "service policy sha256:   $SERVICE_POLICY_HASH"
-fi
+echo "service policy:          $BPIR_TIER3_SERVICE_POLICY"
+echo "service policy sha256:   $SERVICE_POLICY_HASH"
 
 # ─── Generate initramfs ────────────────────────────────────────────────────
 # --add network            : pulls in dracut's network plumbing (mostly
@@ -341,13 +354,23 @@ if [ -n "${BPIR_TIER3_IDENTITY_KEY:-}" ] || [ -n "${BPIR_TIER3_IDENTITY_CERT:-}"
     echo "measured identity confirmed in initramfs (private parent + key + cert)"
 fi
 
-if [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ]; then
-    if ! grep -Eq -- '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/payment/service-policy\.bin$' <<< "$INITRD_LISTING"; then
-        echo "ERROR: measured service policy missing or has an unsafe mode" >&2
-        exit 1
-    fi
-    echo "measured service policy confirmed in initramfs"
+if ! grep -Eq -- '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/payment/service-policy\.bin$' <<< "$INITRD_LISTING"; then
+    echo "ERROR: measured service policy missing or has an unsafe mode" >&2
+    exit 1
 fi
+EMBEDDED_SERVICE_POLICY_HASH=$(
+    /usr/bin/lsinitrd -f /etc/bitcoinpir/payment/service-policy.bin \
+        "$CUSTOM_INITRD" 2>/dev/null \
+        | sha256sum \
+        | awk '{print $1}'
+)
+if [ "$EMBEDDED_SERVICE_POLICY_HASH" != "$SERVICE_POLICY_HASH" ]; then
+    echo "ERROR: measured service policy bytes do not match BPIR_TIER3_SERVICE_POLICY" >&2
+    echo "  input sha256:    $SERVICE_POLICY_HASH" >&2
+    echo "  embedded sha256: $EMBEDDED_SERVICE_POLICY_HASH" >&2
+    exit 1
+fi
+echo "measured service policy confirmed in initramfs: $SERVICE_POLICY_HASH"
 
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1
@@ -387,7 +410,8 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "unified_server=$BINARY" \
     "binary_sha256=$BIN_HASH" \
     "oramctl_sha256=$ORAMCTL_HASH" \
-    "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH"
+    "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH" \
+    "service_policy_sha256=$SERVICE_POLICY_HASH"
 echo
 echo "Next steps (Phase 3.2 acceptance):"
 echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"
@@ -407,8 +431,8 @@ echo "       UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/tier3"
 echo "     Download $OUT only as an operator convenience:"
 echo "       scp vpsbg-pir:$OUT ./bpir-tier3.efi"
 echo
-echo "  2. VPSBG dashboard → Confidentiality & Protection →"
-echo "     Advanced: Measured Boot → UKI → Upload → Save & Reboot."
+echo "  2. Upload and attach the UKI through the reviewed VPSBG measured-boot"
+echo "     API procedure in .agents/skills/vpsbg-measured-boot/SKILL.md."
 echo
 echo "  3. Verify the binary and AMD signature on the same attestation response:"
 echo "       bpir-admin attest wss://weikeng2.bitcoinpir.org \\"
