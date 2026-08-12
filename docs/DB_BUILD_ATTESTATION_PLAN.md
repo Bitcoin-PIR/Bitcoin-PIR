@@ -150,21 +150,24 @@ Known cleanups:
   `super_root`.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
   with the pinned expected values below.
-- `web/src/oram-source-proof.ts::verifyOramSourceProof` reserves
-  `/proofs/oram-source/current.json` for a future production artifact. It
-  strictly decodes BuildEvidence v1/v2 and the root payload, recomputes the
-  versioned report-data and v2 params domains, hashes every referenced
-  artifact, and binds the exact database/all-artifacts/server-manifest bytes to
-  the hashes inside BuildEvidence. A production ORAM proof must be
-  predecessor-free full-build v2.
+- `web/src/oram-source-proof.ts::verifyOramSourceProof` verifies the published
+  `/proofs/oram-source/current.json`. It accepts only predecessor-free
+  full-build BuildEvidence v2, recomputes the v2 report-data and params domains,
+  and binds the exact database/all-artifacts/server-manifest bytes to the
+  hashes inside BuildEvidence.
 - By default the verifier also validates the raw builder SNP report with the
   AMD ARK/ASK/VCEK artifacts and requires the already verified live db0 proof
-  to have the exact attested server-manifest root and pinned database fields.
-  Disabling signature verification is fixture-only and can never return
-  `verified`. The verifier is invoked only after the normal runtime identity,
-  secure-channel, and database-proof gates; it does not replace those gates.
-- No `current.json` is published yet. The historical v1 artifact disclosed an
-  ORAM seed and now lives only under test fixtures; it is always unverified.
+  and strict live runtime attestation to have the exact attested
+  server-manifest root and pinned database fields. Disabling signature
+  verification is fixture-only and can never return `verified`.
+- The typed `[direct_oram]` table in that attested server manifest is the
+  source of truth for input hashes, sizes, record counts, and lookup layout.
+  The public proof deliberately excludes ORAM output hashes, build logs,
+  controller state, controller authentication roots, RNG seeds, and page keys.
+  Runtime page/controller authentication remains enforced inside the measured
+  TEE; it is not a browser source-proof artifact.
+- The historical v1 artifact disclosed an ORAM seed and now lives only under
+  test fixtures; it is always unverified.
 
 ### 7. Deployment
 
@@ -200,9 +203,9 @@ both `wss://weikeng1.bitcoinpir.org` and
 - [x] Web/WASM proof policy for DPF and HarmonyPIR.
 - [x] Dedicated UI badge/status rendering for DPF and HarmonyPIR database
       build attestation.
-- [x] Static mainnet snapshot -> direct-input -> ORAM-output source-binding
-      proof and frontend verifier, including binary BuildEvidence REPORT_DATA
-      recomputation and an explicit expected DB pin.
+- [x] Static mainnet BuildEvidence v2 -> typed Direct ORAM input binding and
+      frontend verifier, including REPORT_DATA recomputation, AMD signature,
+      explicit expected DB pin, live db0 root, and live runtime binding.
 - [x] Merkle verification consumes verified roots in strict native query paths.
 - [x] DPF/Harmony Web/WASM typed root installation and tree-top preflight
       before queries.

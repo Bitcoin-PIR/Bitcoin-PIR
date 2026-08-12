@@ -159,9 +159,9 @@ export {
 
 export {
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
-  oramSourcePinFromManifest,
   verifyOramSourceProof,
   type OramSourceProofManifest,
+  type OramSourceLiveRuntime,
   type OramSourceProofStatus,
 } from './oram-source-proof.js';
 

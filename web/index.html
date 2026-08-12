@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-tmZneQSAFslgwVqYZIJvzMdgjthIbWI+Q2YdKzx2424=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-9Y7n9JqpWxP+sVYJckTEEFEdALgfBlY9OjsqctYtO5I=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1674,7 +1674,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
         import FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP from './src/functional-beta-trusted-bootstrap.json';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -3068,15 +3068,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const truncate = (hex, n = 16) =>
                 hex && hex.length > n ? `${hex.slice(0, n)}...` : (hex || '—');
             const state = status?.state || 'unavailable';
-            const manifest = status?.manifest || status?.verified?.manifest;
-            const anchor = manifest?.anchor;
-            const source = manifest?.directInputs;
-            const oram = manifest?.oramBuild;
-            const deployment = manifest?.liveDeployment;
+            const evidence = status?.verified?.buildEvidence;
+            const source = status?.verified?.directInputs;
             const stateLabel = state === 'verified'
-                ? 'Verified ORAM source binding — strict rebuild'
+                ? 'Verified Direct ORAM input binding'
                 : state === 'unverified'
-                    ? 'ORAM source binding mismatch'
+                    ? 'Direct ORAM input binding mismatch'
                     : 'ORAM source proof unavailable';
 
             el.className = `attest-badge attest-badge-chain-${state}`;
@@ -3084,20 +3081,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const rows = [];
             rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
-            if (anchor) {
-                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${escapeHtml(anchor.blockHashHex)}">${escapeHtml(anchor.height?.toLocaleString?.() || anchor.height)} · ${escapeHtml(truncate(anchor.blockHashHex, 24))}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${escapeHtml(anchor.muhashHex)}">${escapeHtml(truncate(anchor.muhashHex, 24))}</span></div>`);
+            if (evidence) {
+                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${escapeHtml(evidence.anchor.blockHashHex)}">${escapeHtml(evidence.anchor.height?.toLocaleString?.() || evidence.anchor.height)} · ${escapeHtml(truncate(evidence.anchor.blockHashHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${escapeHtml(evidence.utxoMuhashHex)}">${escapeHtml(truncate(evidence.utxoMuhashHex, 24))}</span></div>`);
             }
-            if (source?.index?.sha256 && source?.chunks?.sha256) {
-                rows.push(`<div class="ab-row"><span class="ab-label">direct inputs</span><span class="ab-val" title="${escapeHtml(`${source.index.sha256}\\n${source.chunks.sha256}`)}">index ${escapeHtml(truncate(source.index.sha256, 16))} · chunk ${escapeHtml(truncate(source.chunks.sha256, 16))}</span></div>`);
-            }
-            if (oram?.commit) {
-                rows.push(`<div class="ab-row"><span class="ab-label">oram commit</span><span class="ab-val" title="${escapeHtml(oram.commit)}">${escapeHtml(truncate(oram.commit, 12))}</span></div>`);
-            }
-            if (deployment?.status) {
-                rows.push(`<div class="ab-row"><span class="ab-label">deployment</span><span class="ab-val" title="${escapeHtml(deployment.note || deployment.status)}">${escapeHtml(deployment.status)}</span></div>`);
+            if (source?.index_sha256 && source?.chunk_sha256) {
+                rows.push(`<div class="ab-row"><span class="ab-label">direct inputs</span><span class="ab-val" title="${escapeHtml(`${source.index_sha256}\\n${source.chunk_sha256}`)}">index ${escapeHtml(truncate(source.index_sha256, 16))} · chunk ${escapeHtml(truncate(source.chunk_sha256, 16))}</span></div>`);
             }
             if (state === 'verified') {
+                rows.push(`<div class="ab-row"><span class="ab-label">scope</span><span class="ab-val">regenerate-on-boot inputs; not mutable ORAM byte identity</span></div>`);
                 rows.push(`<div class="ab-row"><span class="ab-label">artifacts</span><span class="ab-val"><a href="/reproduce.html#oram-source" target="_blank" rel="noopener">ORAM source proof</a></span></div>`);
             }
             if (status?.mismatches?.length) {
@@ -3108,10 +3100,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.innerHTML = rows.join('');
         }
 
-        async function verifyAndRenderOramSourceProofBadge(idElem, label, liveDatabaseProof) {
-            if (!liveDatabaseProof) {
-                throw new Error('ORAM source proof requires the current strictly verified live database proof');
+        async function verifyAndRenderOramSourceProofBadge(idElem, label, liveDatabaseProof, liveRuntime) {
+            if (!liveDatabaseProof || !liveRuntime) {
+                throw new Error('ORAM source proof requires the current strictly verified live database proof and runtime');
             }
+            const expectedDbPin = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find(
+                pin => pin.dbId === liveDatabaseProof.dbId,
+            );
+            if (!expectedDbPin) throw new Error(`no production ORAM v2 pin for db ${liveDatabaseProof.dbId}`);
             renderOramSourceProofBadge(idElem, label, {
                 state: 'unavailable',
                 checks: [],
@@ -3119,13 +3115,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 error: 'checking attested ORAM source artifacts against the live database proof...',
             });
             const status = await verifyOramSourceProof({
-                expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
+                expectedDbPin,
                 liveDatabaseProof,
+                liveRuntime,
                 verifyAmdSignature: true,
             });
             renderOramSourceProofBadge(idElem, label, status);
             if (status.state === 'verified') {
-                log(`${label}: ORAM source binding verified against AMD-signed builder evidence and the live DB proof`, 'success');
+                log(`${label}: Direct ORAM inputs verified against AMD-signed BuildEvidence V2 and the live measured runtime`, 'success');
             } else if (status.state === 'unverified') {
                 log(`${label}: ORAM source binding UNVERIFIED — ${status.mismatches?.[0] || status.error || 'check failed'}`, 'error');
             } else {
@@ -6087,6 +6084,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 throw new Error('ORAM query access requires a complete trusted provider bootstrap');
             }
             const serverUrl = provider.endpoint;
+            const sourceDbPin = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find(
+                pin => pin.dbId === 0 && pin.buildKind === 'snapshot',
+            );
+            if (!sourceDbPin) throw new Error('production Direct ORAM source db pin is missing');
             document.getElementById('oram-serverUrl').value = serverUrl;
 
             resetBasicVerification(['oram']);
@@ -6135,16 +6136,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             log(`ORAM DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
                         }
                         renderDatabaseProofBadge('oram-dbProofBadge', 'ORAM TEE', info);
-                        if (
-                            info.state === 'verified'
-                            && dbId === MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN.dbId
-                        ) {
-                            verifyAndRenderOramSourceProofBadge(
-                                'oram-sourceProofBadge',
-                                'ORAM TEE',
-                                info.proof,
-                            ).catch(e => log(`ORAM source-binding proof check failed: ${e?.message || e}`, 'error'));
-                        } else if (dbId === MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN.dbId) {
+                        if (dbId === sourceDbPin.dbId && info.state !== 'verified') {
                             renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
                                 state: info.state === 'unavailable' ? 'unavailable' : 'unverified',
                                 checks: [],
@@ -6195,6 +6187,29 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 await oramClient.connect();
                 oramPopulateDbSelector();
+                const sourceDbStatus = oramClient.getDatabaseProofStatus(sourceDbPin.dbId);
+                const catalog = oramClient.getCatalog();
+                const sourceDbPosition = catalog?.databases.findIndex(
+                    database => database.dbId === sourceDbPin.dbId,
+                ) ?? -1;
+                const manifestRootHex = sourceDbPosition >= 0
+                    ? oramClient.attestation.manifestRootsHex?.[sourceDbPosition]
+                    : undefined;
+                if (sourceDbStatus?.state !== 'verified' || !sourceDbStatus.proof || !manifestRootHex) {
+                    throw new Error('strict ORAM connection did not produce a source db proof and attested manifest root');
+                }
+                await verifyAndRenderOramSourceProofBadge(
+                    'oram-sourceProofBadge',
+                    'ORAM TEE',
+                    sourceDbStatus.proof,
+                    {
+                        state: oramClient.attestation.state,
+                        sevStatus: oramClient.attestation.sevStatus,
+                        vcekChain: oramClient.attestation.vcekChain,
+                        pinStatus: oramClient.attestation.pinStatus,
+                        manifestRootHex,
+                    },
+                );
             } catch (error) {
                 log(`ORAM connection failed: ${error.message}`, 'error');
                 oramClient = null;
