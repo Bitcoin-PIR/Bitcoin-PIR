@@ -85,7 +85,7 @@ therefore within the established operational range.
 The irreplaceable inputs and small evidence are retained; generated ORAM images
 are disposable.
 
-Retain:
+Retain offline for operational diagnosis only:
 
 - `/Volumes/Bitcoin/data/archive/local-oram-repro-20260811/db0/oram-direct-inputs/`
 - db0 `build-evidence.bin`, `root-bundle-payload.bin`, and exact
@@ -100,8 +100,9 @@ Safe to remove after evidence is copied:
 - VPSBG `/home/pir/data/oram-debug/stock-none-20260811/db0-encrypted-batched`
 - local external `builds/current-unencrypted`
 
-These paths contain derived, reproducible images only. Deleting them is not a
-database or proof deletion.
+These paths contain derived, disposable ORAM images only. They are not inputs
+to the browser source proof. Deleting them is not a database or source-proof
+deletion.
 
 ## Bounded workflow
 

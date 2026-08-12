@@ -1,340 +1,130 @@
-# ORAM live-image binding
+# Direct ORAM input and live-runtime binding
 
-Status: **production paid TEE-ORAM activation blocked as of 2026-07-29**. The
-regenerate-on-boot mechanics from BitcoinPIR PRs #70/#71 exist, but the
-historical db0/db1 manifests and evidence predate the typed dataset binding and
-cannot be upgraded after BuildEvidence/quote creation. Historical public ORAM
-evidence also disclosed a reproducible initialization seed. BitcoinPIR now has
-the strict manifest/runtime mechanics for a fresh measured build, but the
-separate attested-builder producer still hard-codes BuildEvidence v1. The
-runner therefore fails closed and cannot yet produce an eligible db0 artifact.
-db1 additionally needs a new measured delta build; the current
-`reattest-existing-v2` workflow cannot provide this commitment.
+Status: **regenerate-on-boot model active; public db0 input proof implemented**
+as of 2026-08-12.
 
-The selected target model still discards prior mutable ORAM state and rebuilds
-from proof-bound inputs before listening. This document also retains the more
-complex persistent-lineage design for any future node that cannot afford
-regeneration.
+Production VPSBG image 261 starts Direct ORAM from fixed database inputs inside
+the measured SEV-SNP runtime. It does not reuse a previously published ORAM
+image as the user's trust anchor. This choice determines what the browser proof
+must establish and removes the need for a byte-reproducible ORAM output
+ceremony.
 
-## Regenerate-on-boot implementation history and remaining gates
+## Security statement
 
-The checked items below record historical implementation/deployment work; they
-do **not** constitute a current production-activation claim.
-
-- [x] Regenerate db 0 and db 1 ORAM images from fixed-hash direct inputs before
-      the server listens.
-- [x] Copy direct inputs and proof artifacts into SEV-protected `/run` tmpfs
-      before hashing/building, eliminating the disk hash/build TOCTOU.
-- [x] Keep controller state, authenticated roots, and lookup metadata in
-      `/run`; only authenticated bulk ORAM pages remain on persistent disk.
-- [x] Embed and verify the existing 940611 BHTM inclusion proof for the delta
-      starting MuHash, block hash, height, and pinned tree root.
-- [x] Bind the BHTM starting anchor to the attested-builder DB evidence and add
-      source/proof mutation tests.
-- [x] Require the frontend trust-chain manifest and production pin to agree on
-      `fromMuhashHex`.
-- [x] Merge the implementation and build the final binaries from the merged
-      commit.
-- [x] Build, archive, upload, and boot the final Tier 3 UKI.
-- [x] Pass AMD attestation, encrypted-channel, operator-identity, db 0/db 1
-      proof, padded ORAM, and strict browser acceptance gates.
-- [x] Publish the final binary/UKI/MEASUREMENT pins and deployment record.
-- [ ] Rebuild db0 with the typed `[direct_oram]` section inserted before new
-      BuildEvidence/report data/SEV-SNP quote creation.
-- [ ] Upgrade and independently review the external attested-builder producer
-      so a fresh snapshot emits predecessor-free full-build-v2 evidence and a
-      v2 root payload. BitcoinPIR's runner rejects its current v1 output.
-- [ ] Add/run the measured delta build path and produce equivalent new db1
-      manifest/evidence/quote artifacts; re-attestation alone is insufficient.
-- [ ] Rebuild and review the runtime UKI with strict OS-generated secret seed,
-      encrypted/authenticated bulk pages, and trusted state confined to
-      `/run/bitcoinpir-oram-state`.
-- [ ] Complete negative mutation/secret-leak scans and operator/client
-      acceptance against both new proof sets before enabling paid TEE-ORAM.
-
-The historical deployment record and reviewed values are in
-[`STRICT_VERIFICATION_PROGRESS.md`](STRICT_VERIFICATION_PROGRESS.md) and
-[`PHASE3_ROADMAP.md`](PHASE3_ROADMAP.md). The archived production UKI is
-`main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi`.
-
-## The missing link
-
-The source-binding proof establishes a statement of the following form:
+The browser establishes this chain:
 
 ```text
-approved inputs + approved builder code + committed parameters
-    -> archived ORAM image identity A
+AMD-signed database BuildEvidence V2 (full-build, no predecessor)
+  -> exact server database MANIFEST.toml
+  -> typed [direct_oram] input hashes, sizes, record counts, and layout
+  -> live db0 proof for the same manifest root
+  -> live AMD-verified, production-pinned runtime for the same manifest root
+  -> measured startup path regenerates Direct ORAM before serving queries
 ```
 
-Runtime attestation establishes a different statement:
+The user therefore learns which database inputs the measured runtime is
+required to use. The TEE is responsible for generating and maintaining the
+mutable ORAM state and for authenticating later page accesses.
 
-```text
-approved UKI/runtime binary + channel key
-    -> live process B
-```
+This proof does **not** claim that the current mutable ORAM files are
+byte-for-byte equal to an archived build output. Such equality is neither
+stable after ORAM accesses nor required by the selected security model.
 
-Neither statement, by itself, says that process B opened image A. A deployment
-could present a valid proof for archive A, boot the expected measured binary,
-and configure that binary to open a different but internally consistent image
-C. A successful ORAM query only shows that C is usable; it does not close the
-A-to-C identity gap.
+## Runtime responsibilities
 
-This is why a source-binding proof cannot, on its own, prove byte-for-byte
-identity of the files currently opened by the service.
+The public input proof does not replace these measured-runtime controls:
 
-The gap is concrete in the current implementation:
+- copy fixed direct inputs and database evidence into SEV-protected `/run`
+  before hashing/building, avoiding a disk hash/build TOCTOU;
+- require predecessor-free BuildEvidence V2 and the typed `[direct_oram]`
+  binding before `oramctl` starts;
+- generate secret ORAM initialization randomness from OS entropy and never
+  publish or log it;
+- keep controller state, authenticated roots, lookup metadata, keys, stash,
+  and other trusted mutable state inside `/run`;
+- authenticate persistent bulk meta/payload/hash pages against that trusted
+  state; and
+- refuse to listen until runtime attestation, secure-channel setup, database
+  proof checks, and Direct ORAM initialization succeed.
 
-- `mainnet_948454.json` commits SHA-256 and size for the fourteen initial
-  `direct-index.*` / `direct-chunk.*` artifacts, plus the initial controller
-  state and authenticated meta/payload roots;
-- `unified_server` opens the configured paths and validates pages against the
-  `CircuitStoreAuthState` loaded beside those paths; and
-- runtime attestation commits the UKI/binary, channel key, and database
-  manifests, but not the source-proof manifest digest, ORAM genesis identity,
-  or the roots in the opened `CircuitStoreAuthState`.
+Controller authentication roots remain security-critical inside the TEE. They
+are intentionally not static browser proof inputs: each boot produces fresh
+runtime state, and an outer JSON copy of a root would not prove that the live
+measured process installed that copy.
 
-Consequently, the page authentication protects a live process against a page
-that disagrees with the roots it loaded, but the client has no attested reason
-to believe those loaded roots are the roots certified by the source proof. A
-substituted image can bring its own internally consistent auth-state file.
+## Public source-proof contract
 
-## Why hashing the archive on every query is not the right fix
+`web/public/proofs/oram-source/current.json` is a closed manifest. It references
+only these non-sensitive artifacts:
 
-ORAM storage is stateful. Reads normally reshuffle or rewrite paths, and the
-position map, stash, metadata, and authenticated storage state advance. After
-the first access, a healthy live image need not be byte-identical to its
-initial archive.
+1. `build-evidence.bin`;
+2. its raw AMD SEV-SNP report;
+3. `root-bundle-payload.bin`;
+4. `database.manifest.sha256`;
+5. `all-artifacts.manifest.sha256`;
+6. the exact server database `MANIFEST.toml`; and
+7. the AMD ARK, ASK, and VCEK certificates already used by the trust-chain
+   verifier.
 
-There are therefore two useful but distinct checks:
+Every reference has an exact path, SHA-256, and size. The verifier rejects an
+expanded or incomplete artifact set.
 
-1. **Point-in-time byte equality:** while the service is quiesced, hash every
-   file in a stable snapshot and compare the manifest digest with an archived
-   copy. This is expensive, blocks writes, and proves only that snapshot.
-2. **Cryptographic lineage:** bind the initialized image identity and each
-   authenticated state transition to the attested runtime. This is the normal
-   online security property and does not require reading every byte after each
-   query.
+The browser then checks:
 
-The production design should implement lineage. A full snapshot hash remains
-an operator audit and disaster-recovery check. In particular, the archived
-initial image has already diverged from any production copy that has answered
-queries; literal equality is neither expected nor a suitable steady-state
-badge.
+1. artifact SHA-256 and size;
+2. strict BuildEvidence V2 decoding and `evidence_mode=full_build`;
+3. no predecessor evidence/report hashes;
+4. the BuildParamsV2 digest;
+5. root bundle and all three manifest hashes committed by BuildEvidence;
+6. the narrow typed `[direct_oram]` table, including exact 64-bit decimal
+   values and bytes/record consistency;
+7. domain-separated `REPORT_DATA` recomputation;
+8. AMD ARK/ASK/VCEK chain and report signature against the pinned builder
+   measurement;
+9. the production db0 V2 pin, including builder binary and commit;
+10. the current live db0 proof's server-manifest root; and
+11. the current runtime's `verified-vcek`, `reportDataMatch`, VCEK-chain,
+    production-pin, and manifest-root results.
 
-## Proposed protocol
+The verifier runs after strict ORAM connection preflight. A static artifact
+bundle alone cannot produce a verified source badge.
 
-### 1. Canonical image identity
+## Deliberately excluded from Web
 
-Define a fixed-width, versioned `OramImageIdentityV1` containing at least:
+The following are not browser source-proof artifacts:
 
-- network and `db_id`;
-- source evidence/root-payload digest and archive-manifest digest;
-- ORAM implementation revision and complete layout parameters;
-- ordered file roles, sizes, and genesis digests for every immutable or
-  initialized component;
-- initial authenticated ORAM/controller roots; and
-- a domain-separated `genesis_image_id` computed over all fields.
+- ORAM output file hashes or sizes;
+- `SHA256SUMS` for a historical ORAM output directory;
+- ORAM build logs or operator run metadata;
+- static controller state or controller authentication roots;
+- a historical ORAM implementation commit that is not part of the live
+  measured runtime pin;
+- an operator-authored `liveDeployment` assertion;
+- raw database contents; or
+- RNG seeds, page keys, controller/service/admission/payment private keys, and
+  memory dumps.
 
-The archive, expanded runtime directory, and configuration must all name the
-same `genesis_image_id`. Paths are diagnostic only and must not be committed as
-identity.
+Output hashes and controller roots may remain in offline operational archives
+for debugging, recovery, and performance comparison. They do not gate the
+browser badge and must not be described as additional user security.
 
-### 2. Verify the opened storage
+## Negative fixtures
 
-When opening a database, the attested runtime must:
+`web/src/__tests__/fixtures/oram-source-proof-v1-leaked/` preserves the exact
+legacy v1 evidence only to prove fail-closed handling. Its disclosed RNG seed
+makes it permanently ineligible for Web publication or production proof use.
 
-1. open all files through one database handle and reject substitutions,
-   missing roles, duplicate roles, unexpected sizes, or unsupported formats;
-2. validate immutable components against the image manifest;
-3. validate the persistent ORAM controller metadata and authenticated roots;
-4. require those roots either to equal the genesis roots or to continue a
-   valid state chain rooted at `genesis_image_id`; and
-5. refuse to serve ORAM requests until the binding succeeds.
+Focused mutation tests cover the actual trust chain: wrong builder
+commit/binary pin, substituted input manifest, changed REPORT_DATA, mismatched
+live database/runtime manifest root, insufficient live runtime attestation,
+and v1 evidence. Output-hash and static-controller-root mutations were removed
+because those fields are no longer part of the security claim.
 
-The verified handle, not a config path or self-reported root, must be passed to
-the query engine.
+## When a stronger design would be needed
 
-### 3. Bind the live handle into runtime attestation
-
-Extend the attested runtime commitment with an ordered per-database value:
-
-```text
-live_image_binding = SHA256(
-    "BitcoinPIR/oram-live-image/v1" ||
-    db_id || genesis_image_id || state_epoch ||
-    current_authenticated_roots || state_chain_head
-)
-```
-
-Commit the set of `live_image_binding` values, together with the runtime binary
-and encrypted-channel public key, into the SEV-SNP `REPORT_DATA` derivation.
-The server must expose the corresponding typed fields in a versioned runtime
-attestation response. Clients recompute the commitment; a server-reported
-string is not evidence.
-
-Because the quote describes a moment in time, the secure session must be bound
-to the attested channel key. The database handle may not be swapped after the
-quote without invalidating or rotating the attestation state.
-
-### 4. Authenticate state transitions
-
-Persist a crash-consistent transition record after each complete ORAM
-transaction:
-
-```text
-state_chain[n + 1] = SHA256(
-    "BitcoinPIR/oram-state/v1" || genesis_image_id ||
-    (n + 1) || authenticated_roots[n + 1] || state_chain[n]
-)
-```
-
-The files, controller metadata, epoch, and chain head must become durable as
-one recoverable transaction. Startup must reject torn or internally
-inconsistent state instead of silently rolling back part of it. This binding
-also needs to cover any position map, stash, or journal whose substitution can
-change ORAM semantics.
-
-This step builds on, rather than replaces, the existing authenticated meta and
-payload page stores. `CircuitStoreAuthState` already supplies useful live
-roots. The missing work is to bind its genesis roots to the source proof, make
-its mutable controller/auth-state transaction crash-consistent, and expose the
-verified binding through attestation.
-
-### 5. Add a typed client check
-
-Add a versioned `REQ_GET_ORAM_LIVE_IMAGE_PROOF` response or include the fields
-in the existing runtime attestation response. Strict clients should require,
-in order:
-
-1. valid runtime identity, operator policy, and (on VPSBG) AMD SEV-SNP chain;
-2. an encrypted channel bound to the attested channel key;
-3. a source proof whose `genesis_image_id`/manifest digest matches the live
-   image binding for every ORAM database in the query plan; and
-4. a well-formed current state commitment under that genesis identity.
-
-Only then may an ORAM query start. The frontend can summarize this as
-`ORAM image: VERIFIED`, with the genesis ID, epoch, current roots, and evidence
-chain available in the verification-details panel.
-
-## Rollback is a separate trust problem
-
-A valid SNP quote can attest an old but internally valid disk snapshot after a
-reboot. A hash chain detects torn or unrelated state, but a client that has
-never seen a newer head cannot know that the server rolled back.
-
-If freshness across reboots is required, publish `(genesis_image_id, epoch,
-state_chain_head)` to an external witness or append-only transparency log, or
-use a trusted monotonic counter with suitable durability and availability.
-Returning clients may additionally pin the highest accepted epoch locally.
-Without one of these mechanisms, the precise claim is **live image consistency
-and lineage**, not global anti-rollback freshness.
-
-There is a simpler alternative when startup cost is acceptable: discard prior
-mutable ORAM state at every boot, read the immutable proof-bound direct source
-tables, and generate a fresh ORAM image inside the measured Tier 3 startup
-path. In that model the attested claim changes to “this measured runtime path
-generated the live ORAM from source identity X,” and an external monotonic
-counter is unnecessary. The archived ORAM output is then a reproducibility
-witness, not the byte-for-byte runtime image. This is the model implemented by
-`scripts/dracut/97bpir-tier3-init/unified-server-run.sh`; the persistent
-lineage protocol above is needed only if nodes must reuse an existing large
-image across restarts.
-
-The implementation must not hand the generated controller state back through
-untrusted persistent storage between `oramctl` and `unified_server`. Direct
-inputs and DB evidence are first copied from disk into the SEV-protected
-`/run` tmpfs; `oramctl` hashes and reads those same trusted copies. It writes
-the small controller states, authenticated roots, and direct lookup metadata
-directly into `/run/bitcoinpir-oram-state`. `unified_server` opens and updates
-those trusted files while accessing only the large authenticated
-payload/meta/hash page images on persistent disk. This closes both the source
-hash/build TOCTOU and the process-boundary whole-image substitution window.
-
-The initialization seed is trusted state too. Revealing it lets the host
-reconstruct the initial logical-block to leaf/path mapping and correlate early
-bulk-page accesses. Strict builds therefore generate it inside `oramctl` from
-OS entropy and omit it from logs and ORAM build evidence. An explicit seed is
-available only in non-strict reproducibility/benchmark mode. Historical
-evidence containing `oram_rng_seed_hex` is not eligible for production.
-
-The sidecar Merkle roots are also bound to the page bytes emitted by that same
-trusted build. While writing each metadata and payload page in order,
-`oramctl` accumulates its expected domain-separated Merkle root using only
-`O(log N)` trusted memory. It then builds the disk-backed sidecar tree and
-requires both resulting roots to equal those expected roots before saving the
-trusted controller state. A host replacement between ORAM generation and the
-sidecar scan therefore fails closed instead of becoming the installed trust
-root. Strict source-bound authenticated builds use the sidecar layout; the
-embedded-tree layout is rejected for that mode until it has an equivalent
-construction-time binding.
-
-For a future compliant production delta, the measured startup path also embeds and verifies
-the existing BHTM inclusion proof for height 940611. `oramctl` recomputes the
-Core MuHash from the proof's complete 384-byte MuHash, recomputes the leaf and
-Merkle path, and requires the resulting tree root, height, block hash, and
-starting MuHash to equal the reviewed UKI pins. It also requires the
-attested-builder DB evidence to name the same starting height and block hash.
-This closes the previous gap where `--expected-from-muhash` was recorded but
-not compared to certified proof material, without regenerating the expensive
-database or BHTM proof.
-
-This BHTM validation alone is insufficient for activation. The current
-reattested db1 evidence did not commit a typed `[direct_oram]` section before
-BuildEvidence/quote creation. A new measured delta build is therefore still a
-production blocker.
-
-## External producer contract
-
-BitcoinPIR intentionally does not treat post-processing a legacy evidence
-bundle as an upgrade. Before either database is production eligible, the
-separate attested-builder repository must provide and test a native producer
-with all of these properties:
-
-1. Emit canonical BuildEvidence v2 with `evidence_mode=full_build` and both
-   predecessor hashes absent. `reattest_existing` is never eligible.
-2. Construct the canonical BuildParamsV2/root-bundle payload in the measured
-   pipeline, before any manifest, evidence, report data, or quote is finalized.
-3. Stage the complete server database and insert the typed `[direct_oram]`
-   digest, byte/record counts, and lookup layout before hashing the exact
-   server manifest into BuildEvidence.
-4. Regenerate and content-verify `database.manifest.sha256` and
-   `all-artifacts.manifest.sha256` after all payload/manifest changes. Hashing
-   stale sidecar files is insufficient.
-5. Derive the v2 domain-separated `REPORT_DATA`, obtain the SNP report, and
-   publish the AMD ARK/ASK/VCEK chain required by the browser verifier.
-6. Include compatibility negatives proving v1, re-attestation, predecessor,
-   stale-sidecar, and mutated-manifest artifacts are rejected, plus a golden
-   full-build-v2 acceptance vector.
-
-The Tier 3 runner parses the producer's own verification report and refuses to
-publish `latest` or `direct_oram_eligible=yes` unless the evidence is exactly
-predecessor-free full-build v2. This is a hard integration boundary, not an
-operator override. Strict `oramctl build-direct` independently enforces the
-same version/mode/predecessor rule, so bypassing the runner cannot turn v1 or
-re-attested evidence into production metadata.
-
-## Persistent-reuse delivery sequence
-
-1. Inventory the ORAM file/controller format and identify the authoritative
-   `CircuitStoreAuthState` roots, position map, stash, and journal boundaries;
-   choose explicitly between regenerate-on-boot and persistent reuse.
-2. Freeze `OramImageIdentityV1` and golden vectors in the ORAM library and
-   source-proof producer.
-3. Add an offline quiesced-image verifier so retained archives can be checked
-   before any runtime changes.
-4. Make runtime open return a verified image handle and fail closed before
-   listening; add corruption, substitution, torn-write, and wrong-image tests.
-5. Extend runtime attestation and native/WASM verification with live image
-   bindings, then rebuild and remeasure the VPSBG UKI and update reviewed pins.
-6. Deploy one database in audit mode, compare offline and live identities,
-   then enforce strict mode for both databases and run padded direct-ORAM
-   canaries.
-7. Add an external freshness witness only if rollback resistance is part of
-   the public claim.
-
-The first implementation decision should be made after step 1. The library
-already exposes authenticated meta/payload roots, but those roots do not by
-themselves cover freshness or prove that controller, stash, position-map, and
-journal state advance atomically with the page images. Any uncovered mutable
-component must be added to an authenticated checkpoint before runtime
-attestation can make a complete live-image claim.
+A genesis image identity, authenticated state-transition lineage, or external
+anti-rollback witness is relevant only if a future deployment reuses mutable
+ORAM state across boots and wants to make that reuse a public claim. Such a
+change would require a new threat model, runtime attestation fields, protocol
+schema, UKI rebuild, and production authorization. It is not part of the
+current regenerate-on-boot product requirement.

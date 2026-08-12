@@ -34,122 +34,11 @@ export interface OramSourceProofManifest {
   proofType: string;
   id: string;
   description?: string;
-  anchor: {
-    network: string;
-    dbId: number;
-    buildKind: 'snapshot' | 'delta' | string;
-    fromHeight: number;
-    fromBlockHashHex: string;
-    height: number;
-    blockHashHex: string;
-    muhashHex: string;
-    bucketSuperRootHex: string;
-    onionSuperRootHex: string;
-    paramsHashHex: string;
-    networkMagicHex: string;
-  };
   attestedBuilder: {
-    builderGitCommit: string;
-    builderBinarySha256Hex: string;
-    coreVersion: string;
-    snapshotSha256: string;
-    snapshotBytes: number;
-    teePlatform: string;
-    uki: {
-      fileName: string;
-      sha256: string;
-      archivePath: string;
-      reproducibleBuild: string;
-    };
-    sevSnp: {
-      reportDataHex: string;
-      measurementHex: string;
-      reportSha256: string;
-    };
-    manifests: {
-      databaseManifestSha256: string;
-      allArtifactsManifestSha256: string;
-      serverDbManifestSha256: string;
-    };
+    /** Browser policy pin for the AMD-signed builder image. */
+    measurementHex: string;
     artifacts: Record<string, OramSourceArtifactRef>;
   };
-  directInputs: {
-    archivePath: string;
-    rootsOnlySha256: Record<string, string>;
-    index: OramDirectSourcePin;
-    chunks: OramDirectSourcePin;
-    artifacts: Record<string, OramSourceArtifactRef>;
-  };
-  oramBuild: {
-    repository: string;
-    commit: string;
-    oramctlSha256Hex: string;
-    outputArchivePath: string;
-    sha256SumsSha256: string;
-    strictSourceBinding: boolean;
-    params: OramBuildParamsPin;
-    outputArtifacts: OramOutputArtifactPin[];
-    controllerAuthRoots: Record<string, OramControllerAuthRootPin>;
-    artifacts: Record<string, OramSourceArtifactRef>;
-  };
-  liveDeployment: {
-    status: string;
-    verifiedAtUtc: string;
-    currentPir2RuntimeBitcoinPirCommit: string;
-    currentPir2RuntimeOramCommit: string;
-    strictRebuildOramCommit: string;
-    pir2UkiSha256: string;
-    pir2BinarySha256: string;
-    pir2MeasurementHex: string;
-    pir2ChannelPubkeyHex: string;
-    hetznerArchivePath: string;
-    note?: string;
-  };
-}
-
-export interface OramDirectSourcePin {
-  fileName: string;
-  sha256: string;
-  bytes: number;
-  records: number;
-  recordSize: number;
-}
-
-export interface OramBuildParamsPin {
-  pack: number;
-  leafDivisor: number;
-  bucketSize: number;
-  stashCapacity: number;
-  cacheLevels: number;
-  authStore: boolean;
-  authLayout: string;
-  authTrustedLevels: number;
-  authHashPageSize: number;
-  indexSlotsPerBin: number;
-  indexHashFns: number;
-  indexLoadFactor: number;
-  indexSeedDecimal: string;
-  indexSeedHex: string;
-  /** Legacy v1 reproducible evidence only. Never present for strict v2 builds. */
-  oramRngSeedHex?: string;
-  /** Strict v2 evidence records only the non-secret entropy source. */
-  oramRngSeedSource?: string;
-}
-
-export interface OramOutputArtifactPin {
-  fileName: string;
-  sha256: string;
-  size: number;
-}
-
-export interface OramControllerAuthRootPin {
-  controllerStateSha256: string;
-  controllerStateBytes: number;
-  layout: string;
-  metaRootHex: string;
-  payloadRootHex: string;
-  metaTrustedHashesSha256: string;
-  payloadTrustedHashesSha256: string;
 }
 
 export interface OramSourceProofCheck {
@@ -160,7 +49,8 @@ export interface OramSourceProofCheck {
 
 export interface VerifiedOramSourceProof {
   manifest: OramSourceProofManifest;
-  evidence: OramBuildEvidenceJson;
+  buildEvidence: AttestedBuildEvidence;
+  directInputs: DirectOramManifestBinding;
 }
 
 export interface OramSourceProofStatus {
@@ -178,71 +68,19 @@ export interface VerifyOramSourceProofOptions {
   expectedDbPin?: DatabaseProofPin;
   /** The proof verified on the current ORAM server connection. Required. */
   liveDatabaseProof?: VerifiedDatabaseProof;
+  /** The current strict runtime attestation and its db-local manifest root. Required. */
+  liveRuntime?: OramSourceLiveRuntime;
   /** Defaults to true. False is restricted to forensic/offline fixture tests. */
   verifyAmdSignature?: boolean;
 }
 
-interface OramBuildEvidenceJson {
-  version: number;
-  build: string;
-  strict_source_binding: boolean;
-  db_certification: {
-    build_kind: string;
-    network_magic_hex: string;
-    from_anchor: {
-      height: number;
-      block_hash_hex: string;
-    };
-    anchor: {
-      height: number;
-      block_hash_hex: string;
-    };
-    from_muhash_hex: string | null;
-    to_muhash_hex: string;
-  };
-  db_build_evidence: EvidenceFileRef;
-  root_bundle_payload: EvidenceFileRef;
-  server_db_manifest?: EvidenceFileRef;
-  source_files: {
-    index: EvidenceSourceFile;
-    chunks: EvidenceSourceFile;
-  };
-  oram_params: Record<string, unknown>;
-  output_artifacts: EvidenceFileRef[];
-  controller_states: EvidenceControllerState[];
-}
-
-interface EvidenceFileRef {
-  path: string;
-  file_name: string;
-  sha256: string;
-  bytes: number;
-}
-
-interface EvidenceSourceFile {
-  level: string;
-  path: string;
-  sha256: string;
-  bytes: number;
-  records: number;
-  record_size: number;
-}
-
-interface EvidenceControllerState {
-  level: string;
-  state_path: string;
-  controller_state_bincode_sha256: string;
-  controller_state_bincode_bytes: number;
-  auth_roots: {
-    layout: string;
-    meta: EvidenceAuthRoot;
-    payload: EvidenceAuthRoot;
-  };
-}
-
-interface EvidenceAuthRoot {
-  root_hash_hex: string;
-  trusted_hashes_sha256: string;
+export interface OramSourceLiveRuntime {
+  state: string;
+  sevStatus?: string;
+  vcekChain?: string;
+  pinStatus?: string;
+  /** Root for this exact db, selected from the attested catalog by the caller. */
+  manifestRootHex?: string;
 }
 
 export interface DirectOramManifestBinding {
@@ -668,41 +506,17 @@ export async function verifyOramSourceProof(
     checks.push({ name: 'manifest loaded', state: 'verified', message: manifest.id });
 
     const artifacts = await verifyManifestArtifacts(manifest, loader, checks);
-    const evidenceJsonText = decodeUtf8(requiredArtifact(artifacts, 'oram.evidenceJson'));
-    const evidence = JSON.parse(evidenceJsonText) as OramBuildEvidenceJson;
-    const rawIndexSeed = extractRawJsonInteger(evidenceJsonText, 'index_seed');
     const buildEvidenceBytes = requiredArtifact(artifacts, 'attestedBuilder.buildEvidence');
     const attestedBuildEvidence = parseAttestedBuildEvidence(buildEvidenceBytes);
 
-    const structureBefore = mismatches.length;
-    compareEvidenceStructure(evidence, manifest, rawIndexSeed, mismatches);
-    checks.push(checkFromMismatches('ORAM evidence matches manifest', mismatches, structureBefore));
-
     const dbBefore = mismatches.length;
-    compareAttestedDbEvidence(
-      evidence,
+    const directInputs = compareAttestedDbEvidence(
       attestedBuildEvidence,
       manifest,
       artifacts,
       mismatches,
     );
-    checks.push(checkFromMismatches('attested DB source binding matched', mismatches, dbBefore));
-
-    const sourceBefore = mismatches.length;
-    compareDirectSourceHashes(evidence, manifest, artifacts, mismatches);
-    checks.push(checkFromMismatches('direct input hashes matched', mismatches, sourceBefore));
-
-    const outputBefore = mismatches.length;
-    compareOutputArtifacts(evidence, manifest, artifacts, mismatches);
-    checks.push(checkFromMismatches('ORAM output hashes matched', mismatches, outputBefore));
-
-    const stateBefore = mismatches.length;
-    compareControllerAuthRoots(evidence, manifest, mismatches);
-    checks.push(checkFromMismatches('controller auth roots matched', mismatches, stateBefore));
-
-    const logsBefore = mismatches.length;
-    compareBuildLogs(manifest, artifacts, mismatches);
-    checks.push(checkFromMismatches('build logs matched manifest', mismatches, logsBefore));
+    checks.push(checkFromMismatches('AMD-attested Direct ORAM inputs matched', mismatches, dbBefore));
 
     const reportBefore = mismatches.length;
     const expectedReportData = reportDataForBuildEvidence(buildEvidenceBytes);
@@ -710,28 +524,16 @@ export async function verifyOramSourceProof(
     compareHex(
       'BuildEvidence-derived REPORT_DATA',
       bytesToHex(expectedReportData),
-      manifest.attestedBuilder.sevSnp.reportDataHex,
-      mismatches,
-    );
-    compareHex(
-      'attested-builder SNP REPORT_DATA field',
       bytesToHex(extractSnpReportData(report)),
-      manifest.attestedBuilder.sevSnp.reportDataHex,
       mismatches,
     );
     compareHex(
       'attested-builder SNP MEASUREMENT field',
       bytesToHex(extractSnpMeasurement(report)),
-      manifest.attestedBuilder.sevSnp.measurementHex,
+      manifest.attestedBuilder.measurementHex,
       mismatches,
     );
-    compareHex(
-      'attested-builder report-data artifact',
-      bytesToHex(requiredArtifact(artifacts, 'attestedBuilder.reportData')),
-      manifest.attestedBuilder.sevSnp.reportDataHex,
-      mismatches,
-    );
-    checks.push(checkFromMismatches('attested-builder SNP fields matched', mismatches, reportBefore));
+    checks.push(checkFromMismatches('BuildEvidence REPORT_DATA matched', mismatches, reportBefore));
 
     if (options.verifyAmdSignature ?? true) {
       verifyStaticSnpReportSignature(artifacts, report, manifest);
@@ -745,67 +547,70 @@ export async function verifyOramSourceProof(
       });
     }
 
-    if (options.liveDatabaseProof) {
-      const liveBefore = mismatches.length;
-      const livePin: DatabaseProofPin = {
-        ...oramSourcePinFromManifest(manifest),
-        manifestRootHex: attestedBuildEvidence.serverDbManifestSha256Hex,
-        onionEntrySize: attestedBuildEvidence.onionEntrySize,
-        proofVersion: attestedBuildEvidence.version,
-        onionTotalPackedEntries: attestedBuildEvidence.onionLayoutV2?.totalPackedEntries,
-        onionIndexBinsPerTable: attestedBuildEvidence.onionLayoutV2?.indexBinsPerTable,
-        onionChunkBinsPerTable: attestedBuildEvidence.onionLayoutV2?.chunkBinsPerTable,
-        onionIndexSlotsPerBin: attestedBuildEvidence.version === 2
-          ? Math.floor(attestedBuildEvidence.onionEntrySize / 15)
-          : undefined,
-        onionIndexSlotSize: attestedBuildEvidence.version === 2 ? 15 : undefined,
-      };
-      const liveStatus = verifyDatabaseProofAgainstPin(options.liveDatabaseProof, livePin);
-      if (liveStatus.state !== 'verified') {
-        mismatches.push(
-          ...(liveStatus.mismatches ?? []).map((m) => `live ORAM DB proof: ${m}`),
-        );
-      }
-      checks.push(checkFromMismatches('live ORAM DB proof matches attested image', mismatches, liveBefore));
-    } else {
-      mismatches.push('liveDatabaseProof is required before an ORAM source proof can be trusted');
-      checks.push({
-        name: 'live ORAM DB proof matches attested image',
-        state: 'unverified',
-        message: 'no live verified database proof supplied',
-      });
-    }
+    const sourceProof = databaseProofFromAttestedBuildEvidence(
+      attestedBuildEvidence,
+      options.expectedDbPin?.dbId ?? options.liveDatabaseProof?.dbId ?? -1,
+    );
 
     if (options.expectedDbPin) {
       const pinBefore = mismatches.length;
-      const status = verifyDatabaseProofAgainstPin(
-        oramSourcePinFromManifest(manifest),
-        options.expectedDbPin,
-      );
+      const status = verifyDatabaseProofAgainstPin(sourceProof, options.expectedDbPin);
       if (status.state !== 'verified') {
-        mismatches.push(...(status.mismatches ?? []).map((m) => `manifest DB pin: ${m}`));
+        mismatches.push(...(status.mismatches ?? []).map((m) => `attested DB pin: ${m}`));
       }
-      checks.push(checkFromMismatches('manifest matches ORAM DB pin', mismatches, pinBefore));
+      checks.push(checkFromMismatches('attested DB matches production v2 pin', mismatches, pinBefore));
     } else {
       mismatches.push('expectedDbPin is required before an ORAM source proof can be trusted');
       checks.push({
-        name: 'manifest matches ORAM DB pin',
+        name: 'attested DB matches production v2 pin',
         state: 'unverified',
         message: 'no expectedDbPin supplied',
       });
     }
 
-    checks.push({
-      name: 'live deployment claim (informational)',
-      state: 'unverified',
-      message: `${manifest.liveDeployment.status}; verify the live runtime attestation separately`,
-    });
+    if (options.liveDatabaseProof) {
+      const liveBefore = mismatches.length;
+      const liveStatus = verifyDatabaseProofAgainstPin(options.liveDatabaseProof, sourceProof);
+      if (liveStatus.state !== 'verified') {
+        mismatches.push(
+          ...(liveStatus.mismatches ?? []).map((m) => `live ORAM DB proof: ${m}`),
+        );
+      }
+      checks.push(checkFromMismatches('live DB proof matches attested source', mismatches, liveBefore));
+    } else {
+      mismatches.push('liveDatabaseProof is required before an ORAM source proof can be trusted');
+      checks.push({
+        name: 'live DB proof matches attested source',
+        state: 'unverified',
+        message: 'no live verified database proof supplied',
+      });
+    }
+
+    if (options.liveRuntime) {
+      const runtimeBefore = mismatches.length;
+      compareLiveRuntimeBinding(
+        options.liveRuntime,
+        options.liveDatabaseProof,
+        attestedBuildEvidence.serverDbManifestSha256Hex,
+        mismatches,
+      );
+      checks.push(checkFromMismatches('live measured runtime binds the same manifest', mismatches, runtimeBefore));
+    } else {
+      mismatches.push('liveRuntime is required before an ORAM source proof can be trusted');
+      checks.push({
+        name: 'live measured runtime binds the same manifest',
+        state: 'unverified',
+        message: 'no live strict runtime attestation supplied',
+      });
+    }
 
     const state = mismatches.length === 0 ? 'verified' : 'unverified';
     return {
       state,
       manifest,
-      verified: state === 'verified' ? { manifest, evidence } : undefined,
+      verified: state === 'verified' && directInputs
+        ? { manifest, buildEvidence: attestedBuildEvidence, directInputs }
+        : undefined,
       checks,
       mismatches,
     };
@@ -823,6 +628,63 @@ export async function verifyOramSourceProof(
       mismatches,
       error: message,
     };
+  }
+}
+
+function databaseProofFromAttestedBuildEvidence(
+  evidence: AttestedBuildEvidence,
+  dbId: number,
+): DatabaseProofPin & VerifiedDatabaseProof {
+  return {
+    dbId,
+    manifestRootHex: evidence.serverDbManifestSha256Hex,
+    buildKind: evidence.buildKind,
+    fromHeight: evidence.fromAnchor.height,
+    fromBlockHashHex: evidence.fromAnchor.blockHashHex,
+    height: evidence.anchor.height,
+    blockHashHex: evidence.anchor.blockHashHex,
+    muhashHex: evidence.utxoMuhashHex,
+    bucketSuperRootHex: evidence.bucketSuperRootHex,
+    onionSuperRootHex: evidence.onionSuperRootHex,
+    paramsHashHex: evidence.paramsHashHex,
+    networkMagicHex: evidence.networkMagicHex,
+    builderBinarySha256Hex: evidence.builderBinarySha256Hex,
+    builderGitCommit: evidence.builderGitCommit,
+    onionEntrySize: evidence.onionEntrySize,
+    proofVersion: evidence.version,
+    onionTotalPackedEntries: evidence.onionLayoutV2?.totalPackedEntries,
+    onionIndexBinsPerTable: evidence.onionLayoutV2?.indexBinsPerTable,
+    onionChunkBinsPerTable: evidence.onionLayoutV2?.chunkBinsPerTable,
+    onionIndexSlotsPerBin: evidence.version === 2
+      ? Math.floor(evidence.onionEntrySize / 15)
+      : undefined,
+    onionIndexSlotSize: evidence.version === 2 ? 15 : undefined,
+  };
+}
+
+function compareLiveRuntimeBinding(
+  runtime: OramSourceLiveRuntime,
+  liveProof: VerifiedDatabaseProof | undefined,
+  attestedManifestRootHex: string,
+  mismatches: string[],
+): void {
+  compareString('live runtime attestation state', runtime.state, 'verified-vcek', mismatches);
+  compareString('live runtime REPORT_DATA', runtime.sevStatus ?? '', 'reportDataMatch', mismatches);
+  compareString('live runtime VCEK chain', runtime.vcekChain ?? '', 'pass', mismatches);
+  compareString('live runtime production pin', runtime.pinStatus ?? '', 'match', mismatches);
+  compareHex(
+    'live runtime manifest root',
+    runtime.manifestRootHex ?? '',
+    attestedManifestRootHex,
+    mismatches,
+  );
+  if (liveProof) {
+    compareHex(
+      'live DB proof/runtime manifest root',
+      liveProof.manifestRootHex ?? '',
+      runtime.manifestRootHex ?? '',
+      mismatches,
+    );
   }
 }
 
@@ -855,25 +717,6 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-export function oramSourcePinFromManifest(manifest: OramSourceProofManifest): DatabaseProofPin {
-  return {
-    dbId: manifest.anchor.dbId,
-    buildKind: manifest.anchor.buildKind as 'snapshot' | 'delta',
-    fromHeight: manifest.anchor.fromHeight,
-    height: manifest.anchor.height,
-    fromBlockHashHex: manifest.anchor.fromBlockHashHex,
-    blockHashHex: manifest.anchor.blockHashHex,
-    muhashHex: manifest.anchor.muhashHex,
-    bucketSuperRootHex: manifest.anchor.bucketSuperRootHex,
-    onionSuperRootHex: manifest.anchor.onionSuperRootHex,
-    paramsHashHex: manifest.anchor.paramsHashHex,
-    networkMagicHex: manifest.anchor.networkMagicHex,
-    builderBinarySha256Hex: manifest.attestedBuilder.builderBinarySha256Hex,
-    builderGitCommit: manifest.attestedBuilder.builderGitCommit,
-    description: manifest.description,
-  };
-}
-
 async function verifyManifestArtifacts(
   manifest: OramSourceProofManifest,
   loader: (path: string) => Promise<Uint8Array>,
@@ -881,8 +724,6 @@ async function verifyManifestArtifacts(
 ): Promise<Map<string, Uint8Array>> {
   const refs: Array<[string, OramSourceArtifactRef]> = [];
   collectRefs('attestedBuilder', manifest.attestedBuilder.artifacts, refs);
-  collectRefs('directInputs', manifest.directInputs.artifacts, refs);
-  collectRefs('oram', manifest.oramBuild.artifacts, refs);
 
   const out = new Map<string, Uint8Array>();
   for (const [name, ref] of refs) {
@@ -924,7 +765,7 @@ function verifyStaticSnpReportSignature(
   const vcekPem = decodeUtf8(requiredArtifact(artifacts, 'attestedBuilder.vcekPem'));
   const sdk = requireSdkWasm();
   const policy = new sdk.WasmPolicyRequirements();
-  policy.setExpectedMeasurement(hexToBytes(normalizeHex(manifest.attestedBuilder.sevSnp.measurementHex)));
+  policy.setExpectedMeasurement(hexToBytes(normalizeHex(manifest.attestedBuilder.measurementHex)));
   sdk.verifyRawSnpReport(
     sevSnpReport,
     arkPem,
@@ -935,105 +776,22 @@ function verifyStaticSnpReportSignature(
   );
 }
 
-function compareEvidenceStructure(
-  evidence: OramBuildEvidenceJson,
-  manifest: OramSourceProofManifest,
-  rawIndexSeed: string,
-  mismatches: string[],
-): void {
-  if (evidence.version !== 2) {
-    mismatches.push(
-      `production ORAM source proof requires evidence v2; legacy v1 disclosed the ORAM RNG seed (got version ${evidence.version})`,
-    );
-  }
-  compareString('ORAM evidence build', evidence.build, 'bitcoinpir-oram/direct-build', mismatches);
-  compareBoolean('ORAM strict source binding', evidence.strict_source_binding, true, mismatches);
-  compareBoolean('manifest strict source binding', manifest.oramBuild.strictSourceBinding, true, mismatches);
-
-  compareString('DB certification build kind', evidence.db_certification.build_kind, manifest.anchor.buildKind, mismatches);
-  compareHex('DB certification network magic', evidence.db_certification.network_magic_hex, manifest.anchor.networkMagicHex, mismatches);
-  compareNumber('DB certification from height', evidence.db_certification.from_anchor.height, manifest.anchor.fromHeight, mismatches);
-  compareHex('DB certification from block hash', evidence.db_certification.from_anchor.block_hash_hex, manifest.anchor.fromBlockHashHex, mismatches);
-  compareNumber('DB certification height', evidence.db_certification.anchor.height, manifest.anchor.height, mismatches);
-  compareHex('DB certification block hash', evidence.db_certification.anchor.block_hash_hex, manifest.anchor.blockHashHex, mismatches);
-  compareHex('DB certification MuHash', evidence.db_certification.to_muhash_hex, manifest.anchor.muhashHex, mismatches);
-
-  const params = manifest.oramBuild.params;
-  compareScalar('ORAM param pack', evidence.oram_params.pack, params.pack, mismatches);
-  compareScalar('ORAM param leaf_divisor', evidence.oram_params.leaf_divisor, params.leafDivisor, mismatches);
-  compareScalar('ORAM param bucket_size', evidence.oram_params.bucket_size, params.bucketSize, mismatches);
-  compareScalar('ORAM param stash_capacity', evidence.oram_params.stash_capacity, params.stashCapacity, mismatches);
-  compareScalar('ORAM param cache_levels', evidence.oram_params.cache_levels, params.cacheLevels, mismatches);
-  compareScalar('ORAM param auth_store', evidence.oram_params.auth_store, params.authStore, mismatches);
-  compareString('ORAM param auth_layout', String(evidence.oram_params.auth_layout ?? ''), params.authLayout, mismatches);
-  compareScalar('ORAM param auth_trusted_levels', evidence.oram_params.auth_trusted_levels, params.authTrustedLevels, mismatches);
-  compareScalar('ORAM param auth_hash_page_size', evidence.oram_params.auth_hash_page_size, params.authHashPageSize, mismatches);
-  compareScalar('ORAM param index_slots_per_bin', evidence.oram_params.index_slots_per_bin, params.indexSlotsPerBin, mismatches);
-  compareScalar('ORAM param index_hash_fns', evidence.oram_params.index_hash_fns, params.indexHashFns, mismatches);
-  compareScalar('ORAM param index_load_factor', evidence.oram_params.index_load_factor, params.indexLoadFactor, mismatches);
-  compareString('ORAM param index_seed decimal', rawIndexSeed, params.indexSeedDecimal, mismatches);
-  if (evidence.version === 2) {
-    compareString(
-      'ORAM RNG seed source',
-      String(evidence.oram_params.oram_rng_seed_source ?? ''),
-      'os_rng',
-      mismatches,
-    );
-    if (Object.prototype.hasOwnProperty.call(evidence.oram_params, 'oram_rng_seed_hex')) {
-      mismatches.push('strict ORAM evidence v2 must not disclose oram_rng_seed_hex');
-    }
-    if (params.oramRngSeedSource !== undefined) {
-      compareString('manifest ORAM RNG seed source', params.oramRngSeedSource, 'os_rng', mismatches);
-    }
-    if (params.oramRngSeedHex !== undefined) {
-      mismatches.push('strict ORAM proof manifest v2 must not disclose oramRngSeedHex');
-    }
-  }
-}
-
 function compareAttestedDbEvidence(
-  evidence: OramBuildEvidenceJson,
   attested: AttestedBuildEvidence,
   manifest: OramSourceProofManifest,
   artifacts: Map<string, Uint8Array>,
   mismatches: string[],
-): void {
-  compareEvidenceFile('DB build evidence', evidence.db_build_evidence, manifest.attestedBuilder.artifacts.buildEvidence, mismatches);
-  compareEvidenceFile('root bundle payload', evidence.root_bundle_payload, manifest.attestedBuilder.artifacts.rootBundlePayload, mismatches);
-
-  compareString('attested builder git commit', attested.builderGitCommit, manifest.attestedBuilder.builderGitCommit, mismatches);
-  compareHex('attested builder binary sha256', attested.builderBinarySha256Hex, manifest.attestedBuilder.builderBinarySha256Hex, mismatches);
-  compareString('attested builder TEE platform', attested.teePlatform, manifest.attestedBuilder.teePlatform, mismatches);
-  compareString('attested Bitcoin Core version', attested.coreVersion, manifest.attestedBuilder.coreVersion, mismatches);
-  compareHex('attested snapshot sha256', attested.snapshotSha256Hex, manifest.attestedBuilder.snapshotSha256, mismatches);
-  if (!Number.isSafeInteger(manifest.attestedBuilder.snapshotBytes)) {
-    mismatches.push('manifest snapshotBytes is not a safe integer');
-  } else {
-    compareString(
-      'attested snapshot bytes',
-      attested.snapshotBytesDecimal,
-      String(manifest.attestedBuilder.snapshotBytes),
-      mismatches,
-    );
+): DirectOramManifestBinding | undefined {
+  if (attested.version !== 2) {
+    mismatches.push(`production ORAM source proof requires BuildEvidence v2, got v${attested.version}`);
   }
-  compareHex('attested network magic', attested.networkMagicHex, manifest.anchor.networkMagicHex, mismatches);
-  compareString('attested build kind', attested.buildKind, manifest.anchor.buildKind, mismatches);
-  compareAttestedAnchor(
-    'attested from anchor',
-    attested.fromAnchor,
-    manifest.anchor.fromBlockHashHex,
-    manifest.anchor.fromHeight,
-    mismatches,
-  );
-  compareAttestedAnchor(
-    'attested anchor',
-    attested.anchor,
-    manifest.anchor.blockHashHex,
-    manifest.anchor.height,
-    mismatches,
-  );
-  compareHex('attested UTXO MuHash', attested.utxoMuhashHex, manifest.anchor.muhashHex, mismatches);
-  compareHex('attested params hash', attested.paramsHashHex, manifest.anchor.paramsHashHex, mismatches);
+  compareString('attested evidence mode', attested.evidenceMode, 'full-build', mismatches);
+  if (
+    attested.predecessorEvidenceSha256Hex !== undefined
+    || attested.predecessorReportSha256Hex !== undefined
+  ) {
+    mismatches.push('production ORAM source proof must not use reattestation predecessor hashes');
+  }
   if (attested.version === 2) {
     compareHex(
       'attested v2 build-params hash recomputation',
@@ -1042,13 +800,11 @@ function compareAttestedDbEvidence(
       mismatches,
     );
   }
-  compareHex('attested bucket super-root', attested.bucketSuperRootHex, manifest.anchor.bucketSuperRootHex, mismatches);
-  compareHex('attested Onion super-root', attested.onionSuperRootHex, manifest.anchor.onionSuperRootHex, mismatches);
   if (attested.teeImageMeasurementHex) {
     compareHex(
       'attested TEE image measurement',
       attested.teeImageMeasurementHex,
-      manifest.attestedBuilder.sevSnp.measurementHex,
+      manifest.attestedBuilder.measurementHex,
       mismatches,
     );
   }
@@ -1076,7 +832,6 @@ function compareAttestedDbEvidence(
   compareAttestedManifestArtifact(
     'database manifest',
     attested.databaseManifestSha256Hex,
-    manifest.attestedBuilder.manifests.databaseManifestSha256,
     manifest.attestedBuilder.artifacts.databaseManifest,
     requiredArtifact(artifacts, 'attestedBuilder.databaseManifest'),
     mismatches,
@@ -1084,7 +839,6 @@ function compareAttestedDbEvidence(
   compareAttestedManifestArtifact(
     'all-artifacts manifest',
     attested.allArtifactsManifestSha256Hex,
-    manifest.attestedBuilder.manifests.allArtifactsManifestSha256,
     manifest.attestedBuilder.artifacts.allArtifactsManifest,
     requiredArtifact(artifacts, 'attestedBuilder.allArtifactsManifest'),
     mismatches,
@@ -1094,38 +848,17 @@ function compareAttestedDbEvidence(
   compareAttestedManifestArtifact(
     'server DB manifest',
     attested.serverDbManifestSha256Hex,
-    manifest.attestedBuilder.manifests.serverDbManifestSha256,
     manifestRef,
     manifestBytes,
     mismatches,
   );
 
-  if (evidence.version !== 2) return;
-
-  if (attested.version !== 2) {
-    mismatches.push(`production ORAM proof requires attested BuildEvidence v2, got v${attested.version}`);
+  try {
+    return parseDirectOramManifestBinding(decodeUtf8(manifestBytes));
+  } catch (err) {
+    mismatches.push(`server DB manifest direct_oram: ${(err as Error).message}`);
+    return undefined;
   }
-  compareString('attested evidence mode', attested.evidenceMode, 'full-build', mismatches);
-  if (
-    attested.predecessorEvidenceSha256Hex !== undefined
-    || attested.predecessorReportSha256Hex !== undefined
-  ) {
-    mismatches.push('production ORAM proof must not use reattestation predecessor hashes');
-  }
-
-  if (!evidence.server_db_manifest) {
-    mismatches.push('ORAM evidence v2 is missing server_db_manifest');
-  } else {
-    compareEvidenceFile(
-      'server DB manifest',
-      evidence.server_db_manifest,
-      manifestRef,
-      mismatches,
-    );
-  }
-  mismatches.push(
-    ...directOramManifestBindingMismatches(decodeUtf8(manifestBytes), manifest),
-  );
 }
 
 function compareAttestedAnchor(
@@ -1142,13 +875,11 @@ function compareAttestedAnchor(
 function compareAttestedManifestArtifact(
   name: string,
   attestedHash: string,
-  outerHash: string,
   artifactRef: OramSourceArtifactRef | undefined,
   bytes: Uint8Array,
   mismatches: string[],
 ): void {
   compareHex(`attested ${name} bytes sha256`, attestedHash, bytesToHex(sha256(bytes)), mismatches);
-  compareHex(`attested ${name} outer manifest pin`, attestedHash, outerHash, mismatches);
   if (!artifactRef) {
     mismatches.push(`${name}: missing manifest artifact reference`);
   } else {
@@ -1325,205 +1056,36 @@ export function parseDirectOramManifestBinding(text: string): DirectOramManifest
   return Object.fromEntries(values) as unknown as DirectOramManifestBinding;
 }
 
-/** Compare the measured server manifest's typed Direct ORAM binding to all pins. */
-export function directOramManifestBindingMismatches(
-  text: string,
-  manifest: OramSourceProofManifest,
-): string[] {
-  const mismatches: string[] = [];
-  let binding: DirectOramManifestBinding;
-  try {
-    binding = parseDirectOramManifestBinding(text);
-  } catch (err) {
-    return [`server DB manifest direct_oram: ${(err as Error).message}`];
-  }
-
-  compareString('server DB direct_oram version', binding.version, '1', mismatches);
-  compareHex(
-    'server DB direct_oram index sha256',
-    binding.index_sha256,
-    manifest.directInputs.index.sha256,
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index bytes',
-    binding.index_bytes,
-    String(manifest.directInputs.index.bytes),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index records',
-    binding.index_records,
-    String(manifest.directInputs.index.records),
-    mismatches,
-  );
-  compareHex(
-    'server DB direct_oram chunk sha256',
-    binding.chunk_sha256,
-    manifest.directInputs.chunks.sha256,
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram chunk bytes',
-    binding.chunk_bytes,
-    String(manifest.directInputs.chunks.bytes),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram chunk records',
-    binding.chunk_records,
-    String(manifest.directInputs.chunks.records),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index slots per bin',
-    binding.index_slots_per_bin,
-    String(manifest.oramBuild.params.indexSlotsPerBin),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index hash functions',
-    binding.index_hash_fns,
-    String(manifest.oramBuild.params.indexHashFns),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index load factor ppb',
-    binding.index_load_factor_ppb,
-    String(Math.round(manifest.oramBuild.params.indexLoadFactor * 1_000_000_000)),
-    mismatches,
-  );
-  compareString(
-    'server DB direct_oram index seed',
-    binding.index_seed,
-    manifest.oramBuild.params.indexSeedDecimal,
-    mismatches,
-  );
-  return mismatches;
-}
-
-function compareDirectSourceHashes(
-  evidence: OramBuildEvidenceJson,
-  manifest: OramSourceProofManifest,
-  artifacts: Map<string, Uint8Array>,
-  mismatches: string[],
-): void {
-  const directInputs = parseSha256List(decodeUtf8(requiredArtifact(artifacts, 'directInputs.directInputsSha256')));
-  compareHex('direct-inputs index sha256', directInputs[manifest.directInputs.index.fileName] ?? '', manifest.directInputs.index.sha256, mismatches);
-  compareHex('direct-inputs chunks sha256', directInputs[manifest.directInputs.chunks.fileName] ?? '', manifest.directInputs.chunks.sha256, mismatches);
-  compareSourceFile('index source file', evidence.source_files.index, manifest.directInputs.index, mismatches);
-  compareSourceFile('chunks source file', evidence.source_files.chunks, manifest.directInputs.chunks, mismatches);
-}
-
-function compareOutputArtifacts(
-  evidence: OramBuildEvidenceJson,
-  manifest: OramSourceProofManifest,
-  artifacts: Map<string, Uint8Array>,
-  mismatches: string[],
-): void {
-  const shaSums = parseSha256List(decodeUtf8(requiredArtifact(artifacts, 'oram.sha256Sums')));
-  compareHex('SHA256SUMS manifest digest', manifest.oramBuild.sha256SumsSha256, manifest.oramBuild.artifacts.sha256Sums.sha256, mismatches);
-  compareHex('SHA256SUMS evidence JSON', shaSums['oram-build-evidence.json'] ?? '', manifest.oramBuild.artifacts.evidenceJson.sha256, mismatches);
-  compareHex('SHA256SUMS evidence bin', shaSums['oram-build-evidence.bin'] ?? '', manifest.oramBuild.artifacts.evidenceBin.sha256, mismatches);
-
-  const evidenceOutputs = new Map(evidence.output_artifacts.map((artifact) => [artifact.file_name, artifact]));
-  if (evidenceOutputs.size !== manifest.oramBuild.outputArtifacts.length) {
-    mismatches.push(`ORAM output artifact count: expected ${manifest.oramBuild.outputArtifacts.length}, got ${evidenceOutputs.size}`);
-  }
-  for (const artifact of manifest.oramBuild.outputArtifacts) {
-    const fromEvidence = evidenceOutputs.get(artifact.fileName);
-    if (!fromEvidence) {
-      mismatches.push(`ORAM output artifact missing from evidence: ${artifact.fileName}`);
-      continue;
-    }
-    compareHex(`ORAM output ${artifact.fileName} sha256`, fromEvidence.sha256, artifact.sha256, mismatches);
-    compareNumber(`ORAM output ${artifact.fileName} size`, fromEvidence.bytes, artifact.size, mismatches);
-    compareHex(`SHA256SUMS ${artifact.fileName}`, shaSums[artifact.fileName] ?? '', artifact.sha256, mismatches);
-  }
-}
-
-function compareControllerAuthRoots(
-  evidence: OramBuildEvidenceJson,
-  manifest: OramSourceProofManifest,
-  mismatches: string[],
-): void {
-  const states = new Map(evidence.controller_states.map((state) => [state.level.toLowerCase(), state]));
-  for (const [level, root] of Object.entries(manifest.oramBuild.controllerAuthRoots)) {
-    const state = states.get(level);
-    if (!state) {
-      mismatches.push(`controller auth state missing from evidence: ${level}`);
-      continue;
-    }
-    compareHex(`${level} controller state sha256`, state.controller_state_bincode_sha256, root.controllerStateSha256, mismatches);
-    compareNumber(`${level} controller state size`, state.controller_state_bincode_bytes, root.controllerStateBytes, mismatches);
-    compareString(`${level} auth layout`, state.auth_roots.layout, root.layout, mismatches);
-    compareHex(`${level} meta auth root`, state.auth_roots.meta.root_hash_hex, root.metaRootHex, mismatches);
-    compareHex(`${level} payload auth root`, state.auth_roots.payload.root_hash_hex, root.payloadRootHex, mismatches);
-    compareHex(`${level} meta trusted hashes`, state.auth_roots.meta.trusted_hashes_sha256, root.metaTrustedHashesSha256, mismatches);
-    compareHex(`${level} payload trusted hashes`, state.auth_roots.payload.trusted_hashes_sha256, root.payloadTrustedHashesSha256, mismatches);
-  }
-}
-
-function compareBuildLogs(
-  manifest: OramSourceProofManifest,
-  artifacts: Map<string, Uint8Array>,
-  mismatches: string[],
-): void {
-  const metadata = parseKeyValues(decodeUtf8(requiredArtifact(artifacts, 'oram.buildRunMetadata')));
-  const buildLog = parseKeyValues(decodeUtf8(requiredArtifact(artifacts, 'oram.buildLog')));
-  compareString('ORAM metadata commit', metadata.oram_commit ?? '', manifest.oramBuild.commit, mismatches);
-  compareHex('ORAM metadata oramctl sha256', metadata.oramctl_sha256 ?? '', manifest.oramBuild.oramctlSha256Hex, mismatches);
-  compareHex('ORAM metadata expected index sha256', metadata.expected_index_sha256 ?? '', manifest.directInputs.index.sha256, mismatches);
-  compareHex('ORAM metadata expected chunks sha256', metadata.expected_chunks_sha256 ?? '', manifest.directInputs.chunks.sha256, mismatches);
-  compareHex('ORAM metadata expected MuHash', metadata.expected_muhash ?? '', manifest.anchor.muhashHex, mismatches);
-  compareHex('ORAM build log index sha256', buildLog.index_sha256 ?? '', manifest.directInputs.index.sha256, mismatches);
-  compareHex('ORAM build log chunks sha256', buildLog.chunks_sha256 ?? '', manifest.directInputs.chunks.sha256, mismatches);
-  compareHex('ORAM build log certified MuHash', buildLog.certified_muhash ?? '', manifest.anchor.muhashHex, mismatches);
-  compareString('ORAM build log index seed hex', buildLog.index_seed ?? '', manifest.oramBuild.params.indexSeedHex, mismatches);
-}
-
-function compareEvidenceFile(
-  name: string,
-  evidenceRef: EvidenceFileRef,
-  manifestRef: OramSourceArtifactRef | undefined,
-  mismatches: string[],
-): void {
-  if (!manifestRef) {
-    mismatches.push(`${name}: missing manifest artifact reference`);
-    return;
-  }
-  if (!manifestRef.path.endsWith(`/${evidenceRef.file_name}`)) {
-    mismatches.push(`${name}: expected manifest path ending in ${evidenceRef.file_name}, got ${manifestRef.path}`);
-  }
-  compareHex(`${name} sha256`, evidenceRef.sha256, manifestRef.sha256, mismatches);
-  compareNumber(`${name} size`, evidenceRef.bytes, manifestRef.size, mismatches);
-}
-
-function compareSourceFile(
-  name: string,
-  evidenceSource: EvidenceSourceFile,
-  pin: OramDirectSourcePin,
-  mismatches: string[],
-): void {
-  compareHex(`${name} sha256`, evidenceSource.sha256, pin.sha256, mismatches);
-  compareNumber(`${name} bytes`, evidenceSource.bytes, pin.bytes, mismatches);
-  compareNumber(`${name} records`, evidenceSource.records, pin.records, mismatches);
-  compareNumber(`${name} record size`, evidenceSource.record_size, pin.recordSize, mismatches);
-}
-
 async function loadJson<T>(path: string, loader: (path: string) => Promise<Uint8Array>): Promise<T> {
   return JSON.parse(decodeUtf8(await loader(path))) as T;
 }
 
 function validateManifestShape(manifest: OramSourceProofManifest): void {
-  if (manifest.schemaVersion !== 1) {
+  if (manifest.schemaVersion !== 2) {
     throw new Error(`unsupported ORAM source-proof manifest schemaVersion ${manifest.schemaVersion}`);
   }
-  if (manifest.proofType !== 'BitcoinPIR/oram-source-binding/v1') {
+  if (manifest.proofType !== 'BitcoinPIR/oram-source-binding/v2') {
     throw new Error(`unsupported ORAM source-proof manifest proofType ${manifest.proofType}`);
   }
-  if (!manifest.anchor || !manifest.attestedBuilder || !manifest.directInputs || !manifest.oramBuild) {
-    throw new Error('ORAM source-proof manifest missing anchor/attestedBuilder/directInputs/oramBuild');
+  if (!manifest.attestedBuilder?.measurementHex || !manifest.attestedBuilder.artifacts) {
+    throw new Error('ORAM source-proof manifest missing attested builder policy/artifacts');
+  }
+  const expectedArtifacts = [
+    'allArtifactsManifest',
+    'arkPem',
+    'askPem',
+    'buildEvidence',
+    'databaseManifest',
+    'rootBundlePayload',
+    'serverDbManifest',
+    'sevSnpReport',
+    'vcekPem',
+  ];
+  const actualArtifacts = Object.keys(manifest.attestedBuilder.artifacts).sort();
+  if (actualArtifacts.join('\0') !== expectedArtifacts.join('\0')) {
+    throw new Error(
+      `ORAM source-proof artifact set must be closed: expected ${expectedArtifacts.join(', ')}`,
+    );
   }
 }
 
@@ -1531,49 +1093,6 @@ function requiredArtifact(artifacts: Map<string, Uint8Array>, name: string): Uin
   const bytes = artifacts.get(name);
   if (!bytes) throw new Error(`missing artifact ${name}`);
   return bytes;
-}
-
-function parseKeyValues(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue;
-    const idx = line.indexOf('=');
-    if (idx === -1) continue;
-    out[line.slice(0, idx)] = line.slice(idx + 1);
-  }
-  return out;
-}
-
-function parseSha256List(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const match = /^([0-9a-fA-F]{64})\s+(.+)$/.exec(trimmed);
-    if (!match) continue;
-    out[match[2].replace(/^\.\//, '')] = match[1].toLowerCase();
-  }
-  return out;
-}
-
-function extractRawJsonInteger(json: string, key: string): string {
-  const match = new RegExp(`"${key}"\\s*:\\s*(\\d+)`).exec(json);
-  if (!match) {
-    throw new Error(`missing raw JSON integer ${key}`);
-  }
-  return match[1];
-}
-
-function compareScalar(name: string, actual: unknown, expected: string | number | boolean, mismatches: string[]): void {
-  if (actual !== expected) {
-    mismatches.push(`${name}: expected ${String(expected)}, got ${String(actual)}`);
-  }
-}
-
-function compareBoolean(name: string, actual: boolean, expected: boolean, mismatches: string[]): void {
-  if (actual !== expected) {
-    mismatches.push(`${name}: expected ${expected}, got ${actual}`);
-  }
 }
 
 function compareNumber(name: string, actual: number, expected: number, mismatches: string[]): void {

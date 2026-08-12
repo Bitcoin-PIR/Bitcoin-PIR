@@ -1,18 +1,24 @@
 import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
-import {
-  MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-} from '../attest-pin.js';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+const { requireSdkWasm } = vi.hoisted(() => ({
+  requireSdkWasm: vi.fn(),
+}));
+
+vi.mock('../sdk-bridge.js', () => ({ requireSdkWasm }));
+import { PRODUCTION_ORAM_DB_PROOF_V2_PINS } from '../attest-pin.js';
+import type { VerifiedDatabaseProof } from '../db-proof.js';
+import { bytesToHex, sha256 } from '../hash.js';
 import {
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
-  directOramManifestBindingMismatches,
   paramsHashV2ForAttestedBuildEvidence,
   parseAttestedBuildEvidence,
   parseDirectOramManifestBinding,
   reportDataForBuildEvidence,
   verifyOramSourceProof,
+  type OramSourceLiveRuntime,
+  type OramSourceProofManifest,
 } from '../oram-source-proof.js';
-import { bytesToHex, sha256 } from '../hash.js';
 
 const publicRoot = new URL('../../public/', import.meta.url);
 const legacyFixtureRoot = new URL(
@@ -20,12 +26,20 @@ const legacyFixtureRoot = new URL(
   import.meta.url,
 );
 const LEGACY_V1_MANIFEST_PATH = '/proofs/oram-source/mainnet_948454.json';
-// This forensic fixture documents the superseded ORAM deployment. It must not
-// follow the current DPF-only VPSBG runtime pin.
-const LEGACY_V1_PIR2_BINARY_SHA256 =
-  'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e';
-const LEGACY_V1_PIR2_MEASUREMENT_HEX =
-  'd7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245';
+const SERVER_MANIFEST_ROOT =
+  '91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6';
+const DB0_PIN = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find((pin) => pin.dbId === 0)!;
+const LIVE_DB0_PROOF: VerifiedDatabaseProof = {
+  ...DB0_PIN,
+  manifestRootHex: SERVER_MANIFEST_ROOT,
+};
+const LIVE_RUNTIME: OramSourceLiveRuntime = {
+  state: 'verified-vcek',
+  sevStatus: 'reportDataMatch',
+  vcekChain: 'pass',
+  pinStatus: 'match',
+  manifestRootHex: SERVER_MANIFEST_ROOT,
+};
 
 async function publicArtifactLoader(path: string): Promise<Uint8Array> {
   const clean = path.startsWith('/') ? path.slice(1) : path;
@@ -37,90 +51,250 @@ async function legacyArtifactLoader(path: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(clean, legacyFixtureRoot)));
 }
 
+async function readCurrentManifest(): Promise<OramSourceProofManifest> {
+  return JSON.parse(
+    new TextDecoder().decode(
+      await publicArtifactLoader(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH),
+    ),
+  ) as OramSourceProofManifest;
+}
+
 async function readBase64Fixture(name: string): Promise<Uint8Array> {
   const encoded = await readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
   return new Uint8Array(Buffer.from(encoded.trim(), 'base64'));
 }
 
-describe('ORAM source-binding proof', () => {
-  it('rejects the relocated forensic v1 proof even when all historical artifacts match', async () => {
+describe('ORAM source input binding', () => {
+  beforeAll(async () => {
+    const sdk = await import('pir-sdk-wasm');
+    const wasm = await readFile(
+      new URL('../../../crates/sdk/wasm/pkg/pir_sdk_wasm_bg.wasm', import.meta.url),
+    );
+    sdk.initSync({ module: wasm });
+    requireSdkWasm.mockReturnValue(sdk);
+  });
+
+  it('verifies the published BuildEvidence V2 against live db0 and measured runtime', async () => {
+    expect(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH).toBe('/proofs/oram-source/current.json');
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
+    });
+
+    expect(status.state).toBe('verified');
+    expect(status.mismatches).toEqual([]);
+    expect(status.verified?.buildEvidence.version).toBe(2);
+    expect(status.verified?.buildEvidence.evidenceMode).toBe('full-build');
+    expect(status.verified?.buildEvidence.builderGitCommit).toBe(
+      '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
+    );
+    expect(status.verified?.directInputs).toMatchObject({
+      index_sha256: 'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
+      index_records: '53835039',
+      chunk_sha256: '9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521',
+      chunk_records: '80984512',
+      index_seed: '8030603977422561841',
+    });
+  });
+
+  it.each([
+    ['builder commit', { builderGitCommit: '0'.repeat(40) }],
+    ['builder binary', { builderBinarySha256Hex: '0'.repeat(64) }],
+  ])('rejects a wrong production %s pin', async (_name, mutation) => {
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: { ...DB0_PIN, ...mutation },
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches.some((m) => m.includes('attested DB pin'))).toBe(true);
+  });
+
+  it('rejects a substituted Direct ORAM input hash even when current.json is changed with it', async () => {
+    const manifest = await readCurrentManifest();
+    const ref = manifest.attestedBuilder.artifacts.serverDbManifest;
+    const original = new TextDecoder().decode(await publicArtifactLoader(ref.path));
+    const substituted = new TextEncoder().encode(
+      original.replace(
+        'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
+        '1'.repeat(64),
+      ),
+    );
+    ref.sha256 = bytesToHex(sha256(substituted));
+    ref.size = substituted.length;
+    const outer = new TextEncoder().encode(JSON.stringify(manifest));
+
+    const status = await verifyOramSourceProof({
+      artifactLoader: async (path) => {
+        if (path === DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH) return outer;
+        if (path === ref.path) return substituted;
+        return publicArtifactLoader(path);
+      },
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(
+      status.mismatches.some((m) => m.includes('attested server DB manifest bytes sha256')),
+    ).toBe(true);
+  });
+
+  it('rejects changed SNP REPORT_DATA', async () => {
+    const manifest = await readCurrentManifest();
+    const ref = manifest.attestedBuilder.artifacts.sevSnpReport;
+    const report = (await publicArtifactLoader(ref.path)).slice();
+    report[80] ^= 1;
+    ref.sha256 = bytesToHex(sha256(report));
+    const outer = new TextEncoder().encode(JSON.stringify(manifest));
+
+    const status = await verifyOramSourceProof({
+      artifactLoader: async (path) => {
+        if (path === DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH) return outer;
+        if (path === ref.path) return report;
+        return publicArtifactLoader(path);
+      },
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches.some((m) => m.includes('BuildEvidence-derived REPORT_DATA'))).toBe(true);
+  });
+
+  it('rejects a live DB proof or runtime bound to another manifest root', async () => {
+    const wrongRoot = '0'.repeat(64);
+    const dbStatus = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: { ...LIVE_DB0_PROOF, manifestRootHex: wrongRoot },
+      liveRuntime: LIVE_RUNTIME,
+    });
+    expect(dbStatus.state).toBe('unverified');
+    expect(dbStatus.mismatches.some((m) => m.includes('live ORAM DB proof: manifestRootHex'))).toBe(true);
+
+    const runtimeStatus = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: { ...LIVE_RUNTIME, manifestRootHex: wrongRoot },
+    });
+    expect(runtimeStatus.state).toBe('unverified');
+    expect(runtimeStatus.mismatches.some((m) => m.includes('live runtime manifest root'))).toBe(true);
+  });
+
+  it('requires the live AMD-verified, production-pinned runtime context', async () => {
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: { ...LIVE_RUNTIME, state: 'verified', pinStatus: 'no-pin' },
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches.some((m) => m.includes('attestation state'))).toBe(true);
+    expect(status.mismatches.some((m) => m.includes('production pin'))).toBe(true);
+  });
+
+  it('rejects the leaked v1 forensic fixture before it can become a production proof', async () => {
     const status = await verifyOramSourceProof({
       manifestPath: LEGACY_V1_MANIFEST_PATH,
       artifactLoader: legacyArtifactLoader,
-      expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-      verifyAmdSignature: false,
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
     expect(status.verified).toBeUndefined();
-    expect(
-      status.mismatches.some((m) => m.includes('requires evidence v2')),
-    ).toBe(true);
+    expect(status.error).toContain('schemaVersion 1');
+  });
+
+  it('requires all three live trust inputs', async () => {
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches).toContain(
+      'expectedDbPin is required before an ORAM source proof can be trusted',
+    );
     expect(status.mismatches).toContain(
       'liveDatabaseProof is required before an ORAM source proof can be trusted',
     );
-    expect(status.manifest?.anchor.height).toBe(948454);
-    expect(status.manifest?.oramBuild.commit).toBe(
-      '5f366492504d8e853cbd60d25a6adbf021a78746',
-    );
-    expect(status.manifest?.oramBuild.params.indexSeedDecimal).toBe(
-      '8030603977422561841',
-    );
-    expect(status.manifest?.liveDeployment.status).toBe(
-      'strict-source-bound-boot-regeneration-live-on-pir2',
-    );
-    expect(status.manifest?.liveDeployment.pir2BinarySha256).toBe(
-      LEGACY_V1_PIR2_BINARY_SHA256,
-    );
-    expect(status.manifest?.liveDeployment.pir2MeasurementHex).toBe(
-      LEGACY_V1_PIR2_MEASUREMENT_HEX,
-    );
-    expect(status.manifest?.liveDeployment.pir2UkiSha256).toBe(
-      '34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681',
-    );
-    expect(status.manifest?.liveDeployment.currentPir2RuntimeBitcoinPirCommit).toBe(
-      '81dd96d442d39200fee7e6c97f5c308f38126756',
+    expect(status.mismatches).toContain(
+      'liveRuntime is required before an ORAM source proof can be trusted',
     );
   });
 
-  it('parses and verifies the exact typed direct_oram manifest binding without rounding u64', async () => {
-    const manifest = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    const directOram = `
-[manifest]
-version = 1
+  it('rejects an expanded public artifact set', async () => {
+    const manifest = await readCurrentManifest();
+    manifest.attestedBuilder.artifacts.oramOutput = {
+      ...manifest.attestedBuilder.artifacts.buildEvidence,
+    };
+    const outer = new TextEncoder().encode(JSON.stringify(manifest));
+    const status = await verifyOramSourceProof({
+      artifactLoader: async (path) => (
+        path === DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH
+          ? outer
+          : publicArtifactLoader(path)
+      ),
+      expectedDbPin: DB0_PIN,
+      liveDatabaseProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_RUNTIME,
+    });
 
-[direct_oram]
-version = 1
-index_sha256 = "${manifest.directInputs.index.sha256}"
-index_bytes = ${manifest.directInputs.index.bytes}
-index_records = ${manifest.directInputs.index.records}
-chunk_sha256 = "${manifest.directInputs.chunks.sha256}"
-chunk_bytes = ${manifest.directInputs.chunks.bytes}
-chunk_records = ${manifest.directInputs.chunks.records}
-index_slots_per_bin = ${manifest.oramBuild.params.indexSlotsPerBin}
-index_hash_fns = ${manifest.oramBuild.params.indexHashFns}
-index_load_factor_ppb = ${Math.round(manifest.oramBuild.params.indexLoadFactor * 1_000_000_000)}
-index_seed = ${manifest.oramBuild.params.indexSeedDecimal}
-
-[files]
-"ignored.bin" = "${'0'.repeat(64)}"
-`;
-
-    expect(parseDirectOramManifestBinding(directOram).index_seed).toBe(
-      '8030603977422561841',
-    );
-    expect(directOramManifestBindingMismatches(directOram, manifest)).toEqual([]);
-    expect(
-      directOramManifestBindingMismatches(
-        directOram.replace('index_seed = 8030603977422561841', 'index_seed = 8030603977422561842'),
-        manifest,
-      ).some((m) => m.includes('index seed')),
-    ).toBe(true);
+    expect(status.state).toBe('unverified');
+    expect(status.error).toContain('artifact set must be closed');
   });
 
-  it('rejects ambiguous or extended direct_oram manifest tables', () => {
+  it('recomputes the production V2 REPORT_DATA and typed build params', async () => {
+    const manifest = await readCurrentManifest();
+    const evidence = await publicArtifactLoader(
+      manifest.attestedBuilder.artifacts.buildEvidence.path,
+    );
+    const report = await publicArtifactLoader(
+      manifest.attestedBuilder.artifacts.sevSnpReport.path,
+    );
+    const parsed = parseAttestedBuildEvidence(evidence);
+
+    expect(parsed.version).toBe(2);
+    expect(parsed.snapshotBytesDecimal).toBe('9422874286');
+    expect(parsed.anchor.height).toBe(948454);
+    expect(parsed.serverDbManifestSha256Hex).toBe(SERVER_MANIFEST_ROOT);
+    expect(paramsHashV2ForAttestedBuildEvidence(parsed)).toBe(parsed.paramsHashHex);
+    expect(bytesToHex(reportDataForBuildEvidence(evidence))).toBe(
+      bytesToHex(report.slice(80, 144)),
+    );
+    expect(() => parseAttestedBuildEvidence(evidence.slice(0, -1))).toThrow('truncated');
+    expect(() => parseAttestedBuildEvidence(Uint8Array.from([...evidence, 0]))).toThrow(
+      'trailing bytes',
+    );
+  });
+
+  it('matches the Rust V2 reattestation parser golden while rejecting it for production', async () => {
+    const evidence = await readBase64Fixture('build-evidence-v2-reattest.base64');
+    const reportData = await readBase64Fixture(
+      'build-evidence-v2-reattest.report-data.base64',
+    );
+    const parsed = parseAttestedBuildEvidence(evidence);
+
+    expect(bytesToHex(sha256(evidence))).toBe(
+      'e9795887805769525d484824d85d8b3fcda008340c1b2332de7b46a59f055517',
+    );
+    expect(parsed.version).toBe(2);
+    expect(parsed.evidenceMode).toBe('reattest-existing');
+    expect(paramsHashV2ForAttestedBuildEvidence(parsed)).toBe(parsed.paramsHashHex);
+    expect(reportDataForBuildEvidence(evidence)).toEqual(reportData);
+  });
+
+  it('parses the narrow direct_oram table without rounding its u64 seed', () => {
     const valid = `
 [direct_oram]
 version = 1
@@ -136,6 +310,7 @@ index_load_factor_ppb = 950000000
 index_seed = 9223372036854775807
 `;
 
+    expect(parseDirectOramManifestBinding(valid).index_seed).toBe('9223372036854775807');
     expect(() => parseDirectOramManifestBinding(`${valid}\n${valid}`)).toThrow(
       'duplicate [direct_oram] section',
     );
@@ -143,222 +318,12 @@ index_seed = 9223372036854775807
       'unknown [direct_oram] key extra',
     );
     expect(() =>
-      parseDirectOramManifestBinding(valid.replace('index_records = 1\n', '')),
-    ).toThrow('missing [direct_oram] key index_records');
-    expect(() =>
-      parseDirectOramManifestBinding(valid.replace('index_seed = 9223372036854775807', 'index_seed = "123"')),
-    ).toThrow('must be canonical unquoted decimal');
-    expect(() =>
-      parseDirectOramManifestBinding(valid.replace('index_seed = 9223372036854775807', 'index_seed = 18446744073709551615')),
-    ).toThrow('exceeds its integer range');
-    expect(() =>
       parseDirectOramManifestBinding(valid.replace('index_bytes = 25', 'index_bytes = 26')),
     ).toThrow('INDEX bytes/records mismatch');
-  });
-
-  it('reports unverified when the manifest MuHash is changed', async () => {
-    const original = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    original.anchor.muhashHex =
-      '00' + original.anchor.muhashHex.slice(2);
-    const mutatedManifest = new TextEncoder().encode(JSON.stringify(original));
-
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-      verifyAmdSignature: false,
-      artifactLoader: async (path) => (
-        path === LEGACY_V1_MANIFEST_PATH ? mutatedManifest : legacyArtifactLoader(path)
-      ),
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(status.mismatches.some((m) => m.includes('DB certification MuHash'))).toBe(true);
-    expect(status.mismatches.some((m) => m.includes('manifest DB pin'))).toBe(true);
-  });
-
-  it('recomputes the SNP REPORT_DATA binding from build-evidence.bin', async () => {
-    const manifest = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    const evidence = await legacyArtifactLoader(
-      manifest.attestedBuilder.artifacts.buildEvidence.path,
-    );
-
-    expect(bytesToHex(reportDataForBuildEvidence(evidence))).toBe(
-      manifest.attestedBuilder.sevSnp.reportDataHex,
-    );
-
-    const parsed = parseAttestedBuildEvidence(evidence);
-    expect(parsed.version).toBe(1);
-    expect(parsed.snapshotBytesDecimal).toBe('9422874286');
-    expect(parsed.anchor.height).toBe(948454);
-    expect(parsed.anchor.blockHashHex).toBe(manifest.anchor.blockHashHex);
-    expect(parsed.serverDbManifestSha256Hex).toBe(
-      manifest.attestedBuilder.manifests.serverDbManifestSha256,
-    );
-
-    expect(() => parseAttestedBuildEvidence(evidence.slice(0, -1))).toThrow('truncated');
     expect(() =>
-      parseAttestedBuildEvidence(Uint8Array.from([...evidence, 0])),
-    ).toThrow('trailing bytes');
-    const badOptionTag = evidence.slice();
-    badOptionTag[badOptionTag.length - 97] = 2;
-    expect(() => parseAttestedBuildEvidence(badOptionTag)).toThrow('bad signed_root_bundle');
-
-    const syntheticV2 = {
-      ...parsed,
-      version: 2 as const,
-      paramsHashHex: 'a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563',
-      onionLayoutV2: {
-        totalPackedEntries: 948640,
-        indexBinsPerTable: 10273,
-        chunkBinsPerTable: 37954,
-      },
-    };
-    expect(paramsHashV2ForAttestedBuildEvidence(syntheticV2)).toBe(
-      syntheticV2.paramsHashHex,
-    );
-  });
-
-  it('matches the Rust producer v2 parser, params hash, and REPORT_DATA golden', async () => {
-    const evidence = await readBase64Fixture('build-evidence-v2-reattest.base64');
-    const reportData = await readBase64Fixture(
-      'build-evidence-v2-reattest.report-data.base64',
-    );
-    const parsed = parseAttestedBuildEvidence(evidence);
-
-    expect(bytesToHex(sha256(evidence))).toBe(
-      'e9795887805769525d484824d85d8b3fcda008340c1b2332de7b46a59f055517',
-    );
-    expect(parsed.version).toBe(2);
-    expect(parsed.evidenceMode).toBe('reattest-existing');
-    expect(parsed.utxoMuhashHex).toBe(
-      'cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee',
-    );
-    expect(paramsHashV2ForAttestedBuildEvidence(parsed)).toBe(parsed.paramsHashHex);
-    expect(reportDataForBuildEvidence(evidence)).toEqual(reportData);
-  });
-
-  it('rejects a consistent outer substitution of the server manifest and every JSON pin', async () => {
-    const manifest = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    const serverManifestPath = manifest.attestedBuilder.artifacts.serverDbManifest.path;
-    const originalServerManifest = await legacyArtifactLoader(serverManifestPath);
-    const suffix = new TextEncoder().encode('\n# attacker-controlled consistent substitution\n');
-    const substituted = new Uint8Array(originalServerManifest.length + suffix.length);
-    substituted.set(originalServerManifest);
-    substituted.set(suffix, originalServerManifest.length);
-    const substitutedSha256 = bytesToHex(sha256(substituted));
-    manifest.attestedBuilder.artifacts.serverDbManifest.sha256 = substitutedSha256;
-    manifest.attestedBuilder.artifacts.serverDbManifest.size = substituted.length;
-    manifest.attestedBuilder.manifests.serverDbManifestSha256 = substitutedSha256;
-    const substitutedOuterManifest = new TextEncoder().encode(JSON.stringify(manifest));
-
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-      verifyAmdSignature: false,
-      artifactLoader: async (path) => {
-        if (path === LEGACY_V1_MANIFEST_PATH) return substitutedOuterManifest;
-        if (path === serverManifestPath) return substituted;
-        return legacyArtifactLoader(path);
-      },
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(
-      status.mismatches.some((m) => m.includes('attested server DB manifest bytes sha256')),
-    ).toBe(true);
-  });
-
-  it('does not call an unpinned source proof verified', async () => {
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      artifactLoader: legacyArtifactLoader,
-      verifyAmdSignature: false,
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(status.mismatches).toContain(
-      'expectedDbPin is required before an ORAM source proof can be trusted',
-    );
-  });
-
-  it('keeps the production current proof unavailable until a v2 ceremony publishes it', async () => {
-    expect(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH).toBe('/proofs/oram-source/current.json');
-    const status = await verifyOramSourceProof({ artifactLoader: publicArtifactLoader });
-    expect(status.state).toBe('unavailable');
-    expect(status.verified).toBeUndefined();
-    await expect(publicArtifactLoader(LEGACY_V1_MANIFEST_PATH)).rejects.toThrow();
-  });
-
-  it('requires AMD certificate artifacts by default even for a byte-consistent fixture', async () => {
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      artifactLoader: legacyArtifactLoader,
-      expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-    });
-    expect(status.state).toBe('unavailable');
-    expect(status.error).toContain('attestedBuilder.arkPem');
-    expect(status.verified).toBeUndefined();
-  });
-
-  it('binds the current live DB proof to the exact attested server manifest root', async () => {
-    const manifest = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    const evidence = parseAttestedBuildEvidence(
-      await legacyArtifactLoader(manifest.attestedBuilder.artifacts.buildEvidence.path),
-    );
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      artifactLoader: legacyArtifactLoader,
-      expectedDbPin: MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
-      verifyAmdSignature: false,
-      liveDatabaseProof: {
-        dbId: manifest.anchor.dbId,
-        manifestRootHex: '00'.repeat(32),
-        buildKind: manifest.anchor.buildKind,
-        fromHeight: manifest.anchor.fromHeight,
-        fromBlockHashHex: manifest.anchor.fromBlockHashHex,
-        height: manifest.anchor.height,
-        blockHashHex: manifest.anchor.blockHashHex,
-        muhashHex: manifest.anchor.muhashHex,
-        bucketSuperRootHex: manifest.anchor.bucketSuperRootHex,
-        onionSuperRootHex: manifest.anchor.onionSuperRootHex,
-        paramsHashHex: manifest.anchor.paramsHashHex,
-        networkMagicHex: manifest.anchor.networkMagicHex,
-        builderBinarySha256Hex: manifest.attestedBuilder.builderBinarySha256Hex,
-        builderGitCommit: manifest.attestedBuilder.builderGitCommit,
-        onionEntrySize: evidence.onionEntrySize,
-        proofVersion: evidence.version,
-      },
-    });
-    expect(status.state).toBe('unverified');
-    expect(
-      status.mismatches.some((m) => m.includes('live ORAM DB proof: manifestRootHex')),
-    ).toBe(true);
-  });
-
-  it('keeps the 64-bit ORAM index seed exact instead of rounding in JavaScript', async () => {
-    const original = JSON.parse(
-      new TextDecoder().decode(await legacyArtifactLoader(LEGACY_V1_MANIFEST_PATH)),
-    );
-    original.oramBuild.params.indexSeedDecimal = '8030603977422561842';
-    const mutatedManifest = new TextEncoder().encode(JSON.stringify(original));
-
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      verifyAmdSignature: false,
-      artifactLoader: async (path) => (
-        path === LEGACY_V1_MANIFEST_PATH ? mutatedManifest : legacyArtifactLoader(path)
+      parseDirectOramManifestBinding(
+        valid.replace('index_seed = 9223372036854775807', 'index_seed = 18446744073709551615'),
       ),
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(status.mismatches.some((m) => m.includes('index_seed decimal'))).toBe(true);
+    ).toThrow('exceeds its integer range');
   });
 });
