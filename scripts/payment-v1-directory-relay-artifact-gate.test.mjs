@@ -305,7 +305,7 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
 
 test("CI rebuilds the selected source commit and fully verifies resolved selection", () => {
   const workflow = readFileSync(
-    join(SCRIPT_DIRECTORY, "..", ".github", "workflows", "payment-platform.yml"),
+    join(SCRIPT_DIRECTORY, "..", ".github", "workflows", "directory-relay-artifact.yml"),
     "utf8",
   );
   assert.match(workflow, /directory-relay-artifact:[\s\S]*?fetch-depth: 0/u);
@@ -321,6 +321,35 @@ test("CI rebuilds the selected source commit and fully verifies resolved selecti
     workflow,
     /if \[\[ "\$bpir_selection_status" == "RESOLVED" \]\]; then\s+bpir_source_commit="\$\{bpir_relay_selection\[1\]\}"/u,
   );
+});
+
+test("relay rebuild is isolated to relay inputs and its own workflow", () => {
+  const relayWorkflow = readFileSync(
+    join(SCRIPT_DIRECTORY, "..", ".github", "workflows", "directory-relay-artifact.yml"),
+    "utf8",
+  );
+  const paymentWorkflow = readFileSync(
+    join(SCRIPT_DIRECTORY, "..", ".github", "workflows", "payment-platform.yml"),
+    "utf8",
+  );
+  assert.match(relayWorkflow, /workflow_dispatch:/u);
+  for (const requiredPath of [
+    "apps/directory-relay/**",
+    "crates/protocol/service/**",
+    "crates/security/private-files/**",
+    "deploy/payment-v1/relay-selection.toml.example",
+    "scripts/build-payment-v1-directory-relay.sh",
+    "scripts/payment-v1-renameat2-noreplace.rs",
+    "scripts/payment-v1-directory-relay-artifact-gate.mjs",
+  ]) {
+    assert.match(relayWorkflow, new RegExp(requiredPath.replaceAll("*", "\\\\*"), "u"));
+  }
+  assert.doesNotMatch(relayWorkflow, /web\/\*\*/u);
+  assert.doesNotMatch(relayWorkflow, /docs\/payment\/\*\*/u);
+  assert.doesNotMatch(paymentWorkflow, /directory-relay-artifact:/u);
+  assert.doesNotMatch(paymentWorkflow, /\.github\/workflows\/\*\*/u);
+  assert.doesNotMatch(paymentWorkflow, /web\/\*\*/u);
+  assert.doesNotMatch(paymentWorkflow, /docs\/payment\/\*\*/u);
 });
 
 test("build recipe help executes before any environment or artifact preflight", () => {

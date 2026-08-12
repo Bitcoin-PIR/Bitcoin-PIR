@@ -6,19 +6,23 @@ Use the repository-owned payment check as the default local and agent entry:
 scripts/payment-v1-local-check.sh
 ```
 
-It is the `--quick` profile: locked/offline, no browser, no external network,
-and no privileged environment. It is the only profile agents should run by
-default.
+It is the `--quick` profile: one focused locked/offline service-admission test,
+no browser, no external network, and no privileged environment. It is the only
+profile agents should run by default.
 
 ```text
---quick    Default focused deterministic checks; no browser.
---pr       Quick plus deterministic offline Rust, process, WASM, Web typecheck,
-           Web unit tests, and production bundle; no Playwright/Chromium.
+--quick    Default focused service-admission check; no browser or deployment audit.
+--pr       Deterministic offline Rust, process, WASM, Web typecheck, Web unit
+           tests, and production bundle; it does not first run --quick.
+--deploy-template-audit
+           Explicit static deployment/template, renderer, runtime-evidence,
+           publisher, namespace, Caddy, and relay-gate audit; no deployment.
 --browser  Explicit opt-in: --pr plus local headless Chromium payment checks.
 --full     Explicit compatibility alias for --browser.
 ```
 
-Run `--browser` or `--full` only when browser coverage is explicitly requested.
+Run `--deploy-template-audit` only while changing or preparing a Payment
+deployment template. Run `--browser` or `--full` only when browser coverage is explicitly requested.
 AI manual browser inspection also requires an explicit user request. Automatic
 headless browser checks belong only to an explicit browser profile, nightly, or
 release validation.

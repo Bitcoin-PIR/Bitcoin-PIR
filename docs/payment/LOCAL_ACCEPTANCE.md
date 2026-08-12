@@ -60,8 +60,9 @@ local acceptance into deployment approval.
   shell used for this check.
 
 The acceptance script forces Cargo offline and does not edit source. Quick mode
-starts no persistent service process, although focused unit tests briefly bind
-loopback TCP or Unix-domain listeners. The `--pr` profile starts temporary
+runs only the focused service-admission matrix and starts no persistent service
+process, although that unit test may briefly bind loopback TCP or Unix-domain
+listeners. The `--pr` profile does not first rerun quick mode; it starts temporary
 `unified_server` children, a fake `payment-issuer` and Vite test servers whose
 listeners are explicitly bound to `127.0.0.1`; only browser profiles start
 Playwright/Chromium. The runners kill and wait for every child before returning.
@@ -79,6 +80,14 @@ tests and bundle; still no Playwright/Chromium):
 
 ```sh
 scripts/payment-v1-local-check.sh --pr
+```
+
+Deployment/template renderer, runtime-evidence, publisher, namespace, Caddy and
+directory-relay static audits are deliberately separate from both default and
+PR checks:
+
+```sh
+scripts/payment-v1-local-check.sh --deploy-template-audit
 ```
 
 The explicit browser profile remains `scripts/payment-v1-local-check.sh --browser`;
