@@ -50,3 +50,8 @@ are not proof of a deployed mainnet Lightning service. See
 
 Historical preflights, incidents, and plans are evidence only; use the
 [history index](history/README.md).
+
+Before rebuilding a database or Direct ORAM generation, use the
+[database artifact retention map](DATABASE_ARTIFACT_RETENTION.md). It records
+the two raw snapshots, both Direct input sets, current V2 manifest roots, and
+the external/Hetzner handoff locations.

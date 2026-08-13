@@ -85,6 +85,12 @@ BitcoinPIR/
 └── verification/      External proof locks and implementation contracts
 ```
 
+Production diagnosis starts at
+[`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md). Database and
+Direct ORAM source/intermediate retention is mapped in
+[`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md);
+consult it before deleting artifacts or starting an expensive rebuild.
+
 The repository is being reorganized into stable `apps/`, `crates/`, `tools/`,
 and `verification/` boundaries. Reusable protocols, formal proofs, generated
 proof bundles, demos, and research sources live in separate repositories under

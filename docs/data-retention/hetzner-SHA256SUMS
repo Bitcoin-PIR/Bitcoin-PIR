@@ -1,0 +1,11 @@
+f864896ea6d9789a7d0f7d21e1405096f4e44a7bd674cdeca1b8ac354980d8c8  /home/pir/data/snapshots/txoutset_940611.dat
+e5ed70c794830d6db2d7ebb7ad3965b126067457a977f370ec5e876139dcf6ff  /home/pir/data/snapshots/txoutset_948454.dat
+d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c  /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin
+9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521  /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin
+e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16  /home/pir/data/debug-handoff/production-940611-948454/direct-inputs/db1/utxo_chunks_index_nodust.bin
+536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a  /home/pir/data/debug-handoff/production-940611-948454/direct-inputs/db1/utxo_chunks_nodust.bin
+c19e96751139093b016fbcce130bbda24f1e3193b5bb82b44ed5a0a46b96a483  /home/pir/data/checkpoints/948454_deterministic/MANIFEST.toml
+6775f9c4f31d1643bc5aa6a040cb496d34268d9465a3ca43ee5e50f474f00d04  /home/pir/data/deltas/940611_948454_canonical_20260615/MANIFEST.toml
+91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6  /home/pir/data/debug-handoff/production-940611-948454/v2-evidence/db0/server-db-MANIFEST.toml
+047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c  /home/pir/data/debug-handoff/production-940611-948454/v2-evidence/db1/server-db-MANIFEST.toml
+4eda0d969f7f3163789941a38f76b50e9445a099243f3df492e39ee3b03e71d5  /home/pir/uki-archive/tier3/tier3-98234285-policy8-20260812T233924Z-4eda0d969f7f.efi
