@@ -14,6 +14,12 @@ It only GETs the VPSBG control plane and public `/status.json`; it never uses SS
 It reports control-plane state, boot mode, and attached image. The ORAM endpoint exists only during build/switch; after `unified_server` owns 8091, its fields are expected to be `unavailable`.
 Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
 
+Before a database or Direct ORAM rebuild, read
+[`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md).
+It names the retained snapshots, Direct input sets, exact manifests, and the
+external/Hetzner handoff directories; do not rebuild merely because a path was
+not checked there first.
+
 ## Scripts
 
 ### `start_pir_servers.sh`

@@ -1,5 +1,15 @@
 # BitcoinPIR Project Memory
 
+> **Current agent policy (2026-08-13).** Read [`AGENTS.md`](AGENTS.md) first.
+> Prioritize the smallest working user path; do not turn P2/P3 security,
+> reproducibility, or audit ideas into release blockers. Long builds require an
+> expected duration, observable progress, and a hard stop. Production operations
+> start at [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md), and
+> retained database/Direct ORAM inputs are indexed in
+> [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md).
+> Older sections below preserve protocol history; they do not authorize a
+> deployment or override current runbooks.
+
 ## Project Overview
 Bitcoin Private Information Retrieval (PIR) system with three backends:
 DPF-PIR, OnionPIR, HarmonyPIR. Supports full snapshots and delta

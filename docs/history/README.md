@@ -20,3 +20,10 @@ the current status command can infer.
   — historical recovery procedure; not the supported measured-boot release path.
 - [ORAM live image binding plan](../ORAM_LIVE_IMAGE_BINDING_PLAN.md)
   — design plan, not proof of a current live binding.
+
+Current artifact paths and retention decisions do not live in this historical
+index. Use the maintained
+[database artifact retention map](../DATABASE_ARTIFACT_RETENTION.md).
+
+- [Git cleanup record (2026-08-13)](GIT_CLEANUP_2026-08-13.md)
+  — records what was removed and why dirty/unmerged worktrees were preserved.

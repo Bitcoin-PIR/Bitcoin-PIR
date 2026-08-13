@@ -1,0 +1,29 @@
+{
+  "skill_name": "vpsbg-measured-boot",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "确认 VPSBG 现在是否仍在 stock rootfs；不要重启或上传任何东西。",
+      "expected_output": "Only read server and measured-boot state, then report the result without exposing the token.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "新的 BitcoinPIR UKI 已经构建好，请上传到 VPSBG 并切换到它。",
+      "expected_output": "Require an explicit release authorization and artifact path, run the preflight, upload, attach, poll, and perform strict post-boot verification without deleting the previous image.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "刚升级的 VPSBG attestation 不匹配，回滚到上一版 UKI。",
+      "expected_output": "Use the recorded prior image ID, explain that attachment reboots immediately, poll state, and repeat strict verification; do not delete either image.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "VPSBG 新 UKI 已验收成功，请收尾并保存未来排障所需材料。",
+      "expected_output": "Preserve the UKI triplet and non-secret runtime, policy, measurement, and database identities on both retention locations using the documented artifact map; never store the API token or payment secrets.",
+      "files": []
+    }
+  ]
+}
