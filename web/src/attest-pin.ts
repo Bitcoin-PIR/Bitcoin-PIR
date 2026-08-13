@@ -127,17 +127,17 @@ export interface ServerAttestPin {
 
 /**
  * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
- * 2026-08-12 after separating the legacy V1 and native V2 proof slots. Image
- * 261 serves DPF, Harmony-query and TEE ORAM with the reviewed epoch-8 policy.
+ * 2026-08-12 after embedding the reviewed epoch-8 policy in the measured
+ * initramfs. Image 265 serves DPF, Harmony-query and TEE ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from image 261 after validating the AMD chain, REPORT_DATA,
+  // Captured from image 265 after validating the AMD chain, REPORT_DATA,
   // exact unified_server binary and both attested database manifest roots.
   measurementHex:
-    'b8b9e724b244a52a2f87dfcde3edb895cbf5eec1c9b08f964eaefc8160c8be4988c7814fe424cbbd3158ff2e7928db53',
+    'e3f6b4df452512b871dd00aa53fa1e887e8c52e8c4e258e233d6b656b1afaa69a71ead21e836c9717c0af0c012684c18',
   binarySha256Hex:
-    '8aa6928c866aaed396c8d2ffe70520ba1dd7e650c4e5bfdaea87f38eb42ea355',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 261, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-8)',
+    '4b05fc9030b63fe75ae59a9f80c9a449d620d16f56f969c0b43ff15bd98df6e2',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 265, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-8)',
 };
 
 /**
