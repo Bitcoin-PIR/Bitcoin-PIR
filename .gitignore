@@ -3,10 +3,9 @@ target/
 
 # Workspace-root /Cargo.lock IS tracked for reproducibility (required by
 # PHASE3_SLICE3_REPRO_PLAN.md sub-tasks 2 + 4). Stray sub-crate lockfiles
-# (workspace members + excluded sub-projects like
-# electrum_plugin/harmonypir-python) shouldn't be tracked — Cargo writes
-# a single root lockfile for the workspace, and excluded sub-projects
-# have their own reproducibility story.
+# (workspace members + excluded sub-projects) shouldn't be tracked —
+# Cargo writes a single root lockfile for the workspace, and excluded
+# sub-projects have their own reproducibility story.
 Cargo.lock
 !/Cargo.lock
 
@@ -37,10 +36,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.dylib
-
-# Electrum plugin build artifacts
-pir_privacy-*.zip
-electrum_plugin/pir_privacy/_vendor/
 
 # Java / Gradle
 .gradle/

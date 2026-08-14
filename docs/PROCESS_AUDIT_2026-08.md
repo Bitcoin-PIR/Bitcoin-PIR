@@ -187,6 +187,9 @@ No CI change, no file moves, no new gates, no pin/policy/proof changes.
    features, the Nix flake, or `build_unified_server.sh`?
 3. Are `explorer/` and `electrum_plugin/` still product surfaces, or
    experiments that should be demoted in the README?
+   *(Half-answered 2026-08-14: owner decided to remove `electrum_plugin/`
+   — it had fallen behind the protocol. Removed the same day. The
+   `explorer/` decision is still open.)*
 4. Should the three builder identities (v1 DPF/Harmony, Onion v2 re-attest,
    ORAM native) be collapsed to one at the next root rotation?
 5. Is an aggregate required-check for `main` wanted, or is manual merge

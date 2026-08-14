@@ -40,7 +40,7 @@ members = [
     "apps/rollback-authority",
     "apps/directory-relay",
 ]
-exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
+exclude = ["vendor/bitcoinpir-oram"]
 
 [profile.release]
 opt-level = 3

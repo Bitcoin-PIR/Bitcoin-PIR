@@ -33,7 +33,6 @@ All three backends expose the same high-level API — clients can switch between
 Bitcoin PIR plugs into the existing Bitcoin ecosystem rather than replacing it:
 
 - **Web browser** — a TypeScript + WASM client runs entirely in-browser, no extension needed
-- **Electrum** — a drop-in plugin for Electrum 4.7+ that replaces the normal Electrum server calls with private PIR queries
 - **bitcoinjs ecosystem** — a drop-in replacement for `@bitcoinerlab/explorer`, so any bitcoinjs wallet can use PIR by swapping one import
 - **Rust CLI** — a reference command-line client for testing and scripting
 
@@ -79,7 +78,6 @@ BitcoinPIR/
 │   └── block-reader/  Bitcoin Core block/UTXO inspection utilities
 ├── web/               Production browser query application
 ├── explorer/          bitcoinjs adapter
-├── electrum_plugin/   Electrum plugin
 ├── deploy/            Reproducible build and deployment integration
 ├── docs/              Design, verification, and operating documentation
 └── verification/      External proof locks and implementation contracts
@@ -109,7 +107,7 @@ For a quick taste:
    git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git
    cd Bitcoin-PIR && cargo build --release
    ```
-2. **Point clients at the live demo servers** (no database build needed) — see `web/` for the browser client or `electrum_plugin/` for the Electrum plugin.
+2. **Point clients at the live demo servers** (no database build needed) — see `web/` for the browser client.
 3. **Or host your own**: generate the databases from a UTXO snapshot, then start the PIR servers. See [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md).
 
 ## Documentation
