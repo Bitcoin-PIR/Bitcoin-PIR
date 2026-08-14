@@ -73,6 +73,9 @@ a browser or log search.
   incidents, and completed plans. Evidence only.
 - [`data-retention/`](data-retention/) — point-in-time inventories and
   release identity records (e.g. `production-release-image-265.env`).
+  Every production release gets one record: generate it with
+  `scripts/generate-release-record.sh` (schema:
+  [`data-retention/release-record.env.template`](data-retention/release-record.env.template)).
 - [`PROCESS_AUDIT_2026-08.md`](PROCESS_AUDIT_2026-08.md) — the audit that
   produced this index; includes the known documentation-drift list.
 - Dated plans and completed rollout records still in this directory
