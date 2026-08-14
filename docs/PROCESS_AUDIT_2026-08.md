@@ -87,6 +87,10 @@ Rule going forward: **do not copy pin values into prose documents** — link
 the owner: which path built the live pir1 binary, so the losing instructions
 can be deleted rather than merely bannered.
 
+*(Resolved 2026-08-15 — see Q2 below. Two bare-Cargo profiles are now the
+declared production authority; the flake is a development/reproducibility
+harness only. CLAUDE.md, `build_unified_server.sh`, and `flake.nix` updated.)*
+
 ### P2-F — `deploy/` is half-tracked; ops facts are not clone-recoverable
 
 *(Corrected 2026-08-14 during Step 2: the five `deploy/systemd/*.service`
@@ -183,8 +187,62 @@ No CI change, no file moves, no new gates, no pin/policy/proof changes.
 
 1. Is the local `scripts/build_full.sh` pipeline still permitted for a
    production database build, or is attested-builder the only producer?
+
+   *(Answered 2026-08-15, from the owner's session-record investigation.)*
+   **The current serving generations are of mixed provenance, and no
+   "attested-builder is the exclusive producer" decision was ever made —
+   that status cannot be claimed retroactively.** Facts:
+   - Catalog: db0 = full at height 948454; db1 = delta 940611→948454
+     (940611 is the delta base, not the serving full height).
+   - weikeng1 db0 (June 2026 generation) is a hybrid: local-pipeline
+     `utxo_set.bin` input → attested-builder rebuild of the
+     DPF/Harmony/Merkle stages → OnionPIR serving files copied from the
+     2026-05-24 local checkpoint (roots byte-equal) → manifest written by
+     this repo's `build_db_manifest.sh`.
+   - weikeng1 db1 is attested-builder from two raw Core snapshots for the
+     core stages, but `gen_2_onion`/`gen_3_onion`/`gen_4_build_merkle_onion`
+     + the manifest came from this repo's tools (2026-06-16).
+   - weikeng2 (August 2026, image 265) serves native-V2 `server-db`
+     output built end-to-end by attested-builder commit `8d9d21a6…` —
+     weikeng1 and weikeng2 no longer serve identical physical files.
+   - Last confirmed fully-local production generation: 2026-05-24
+     (manifests dated 2026-05-23). Later use of the three local wrappers:
+     no record either way.
+
+   **Agreed forward path for roadmap item 3.2:** first extend
+   attested-builder to produce the complete server-loadable output
+   (including the OnionPIR serving preprocessing and the manifest), run
+   one end-to-end consistency acceptance against the hybrid generation,
+   and only from that dated point declare "local wrappers are
+   development/regression-only; attested-builder is the sole production
+   producer". Until then the local pipeline stays bannered (not
+   forbidden), as `scripts/README.md` already states.
+
 2. How was the live pir1 binary (`c836e11a…`) actually built — cargo with
    features, the Nix flake, or `build_unified_server.sh`?
+
+   *(Answered 2026-08-15, verified on the build host.)* Bare Cargo on
+   `pir-hetzner`, worktree `/home/pir/build-831a5ea1` at commit
+   `831a5ea1`, default features (`default` + `fastprp`), **no**
+   `cuckoo-oram`, not Nix, not the wrapper script. Evidence: the deployed
+   binary embeds `/home/pir/build-831a5ea1/vendor/...` source paths
+   (the wrapper remaps those via `--remap-path-prefix`; Nix sources live
+   in the store) and the cargo feature fingerprint recorded
+   `["default","fastprp"]`; a later same-checkout `cuckoo-oram` build
+   produced a different hash (`8d892590…`, never deployed to pir1).
+   Exact flag string and an explicit `strip --strip-debug` invocation
+   are unrecorded (binary state is consistent with strip-debug). pir1's
+   roles (DPF-0 + OnionPIR + Harmony hint) do not need `cuckoo-oram`;
+   that feature gates the Direct/Circuit ORAM path only (pir2).
+
+   **Decision:** two bare-Cargo profiles are the production build
+   authority —
+   pir1: `cargo build --locked --release -p runtime --bin unified_server`;
+   pir2: `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server`;
+   each followed by `strip --strip-debug`. The Nix flake is retained as a
+   development/reproducibility harness only and is no longer described as
+   a production authority anywhere; restoring it would require adding the
+   feature plus fresh cross-host hash and runtime acceptance.
 3. Are `explorer/` and `electrum_plugin/` still product surfaces, or
    experiments that should be demoted in the README?
    *(Answered 2026-08-14/15: owner decided to remove both —

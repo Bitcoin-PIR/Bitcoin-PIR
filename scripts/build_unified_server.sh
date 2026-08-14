@@ -27,24 +27,29 @@
 #     pins the rustc selected via rustup; the rustup harness itself
 #     can vary)
 #
-# ── PRODUCTION AUTHORITY (2026-08) ──────────────────────────────────
-# NEITHER this script NOR the Nix flake builds the current Tier 3
-# production binary: both invoke cargo without `--features cuckoo-oram`,
-# which the Direct ORAM production path requires. For the binary that
-# gets baked into the Tier 3 UKI / pinned in web/src/attest-pin.ts,
-# follow CLAUDE.md "Hetzner — UKI build host": clean checkout at the
-# exact deploy commit, then
-#   cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
-# and `strip --strip-debug`. Do not pin this script's (or the flake's)
-# output sha256 for a Tier 3 release.
+# ── PRODUCTION AUTHORITY (decided 2026-08-15) ───────────────────────
+# Production binaries are built with bare Cargo on a clean checkout at
+# the exact deploy commit (CLAUDE.md "Hetzner — UKI build host"):
+#   pir1 (no ORAM):  cargo build --locked --release -p runtime --bin unified_server
+#   pir2 (Tier 3):   cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+# followed by `strip --strip-debug`. Do not pin this script's (or the
+# flake's) output sha256 for any production release.
 #
-# Historical note (2026-05-20, pre-cuckoo-oram): the hermetic flake
-# build (`nix build .#unified-server`) was verified bit-reproducible
-# via `nix-store --realise --check` (unified-server, hexl, onionpir
-# derivations all rebuilt byte-identical), links Intel HEXL into
-# OnionPIR's C++ engine, and was what pir1/pir2 ran at that time. It
-# remains the reproducibility harness; it is just not feature-complete
-# for the current production ORAM configuration.
+# Provenance verification (2026-08, docs/PROCESS_AUDIT_2026-08.md Q2):
+# the deployed pir1 binary embeds /home/pir/build-<commit>/vendor/...
+# source paths and a default+fastprp cargo feature fingerprint — i.e. a
+# bare Cargo build. It was NOT produced by this script (which remaps
+# those paths via --remap-path-prefix and prints a build header) and
+# NOT by the Nix flake (whose source lives in the Nix store). The
+# earlier claim in this header that the flake output "is what pir1/pir2
+# actually run" was wrong for the deployed binaries.
+#
+# Historical note (2026-05-20): the hermetic flake build
+# (`nix build .#unified-server`) was verified bit-reproducible via
+# `nix-store --realise --check` (unified-server, hexl, onionpir
+# derivations all rebuilt byte-identical) and links Intel HEXL into
+# OnionPIR's C++ engine. It remains a development/reproducibility
+# harness only.
 #
 # This script is a no-Nix DEVELOPMENT convenience. By default it builds
 # OnionPIR's C++ engine with the in-crate scalar/SIMD shim
