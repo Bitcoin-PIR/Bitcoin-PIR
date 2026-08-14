@@ -232,7 +232,12 @@ jobs:
           cargo test -p runtime --bin unified_server harmony_dos_guard_tests
           cargo test -p runtime --no-default-features --bin unified_server harmony_dos_guard_tests
 
-      - name: Run ignored OnionPIR integration tests against live PIR servers
+      - name: Run ignored OnionPIR integration tests against live PIR servers (scheduled/manual only)
+        # Same policy as the DPF/Harmony live step in the `integration` job
+        # (see the header comment): PRs and main run only deterministic
+        # tests; live-production coverage belongs to the scheduled/manual
+        # canary so production availability changes cannot fail a PR.
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         # The `onion_tests` filter scopes this to the OnionPIR module
         # introduced in integration_test.rs — the DPF / Harmony tests
         # already ran in the `integration` job without the feature.
