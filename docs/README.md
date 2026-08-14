@@ -23,7 +23,7 @@ Do not copy those values into prose documents; link them.
 
 | Operation | Entry point | Notes |
 |---|---|---|
-| Ordinary development | [`TESTING.md`](TESTING.md) change-class matrix → PR → manual merge after inspecting the path-filtered Actions results | No aggregate required check exists; see `PROJECT_CLOSEOUT_TODO.md:124-126` |
+| Ordinary development | [`TESTING.md`](TESTING.md) change-class matrix → PR → manual merge once the advisory "CI summary" check is green | The summary check aggregates all triggered workflows but is deliberately not required; see `TESTING.md` |
 | Database / root rotation | [`DATABASE_ROOT_ROTATION_RUNBOOK.md`](DATABASE_ROOT_ROTATION_RUNBOOK.md), with [`DATABASE_ARTIFACT_RETENTION.md`](DATABASE_ARTIFACT_RETENTION.md) read first | The legacy refresh flow in `scripts/README.md` is **not** the production path |
 | Web release | Manual `deploy-web.yml` dispatch from `main` with the production confirmation ([`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md)) | The workflow deployment record is the release evidence |
 | Tier 3 UKI / VPSBG release | [VPSBG measured-boot skill](../.agents/skills/vpsbg-measured-boot/SKILL.md) + `scripts/build_uki_tier3.sh` (policy digest is locked in the script) | Upload/switch/reboot require explicit authorization |

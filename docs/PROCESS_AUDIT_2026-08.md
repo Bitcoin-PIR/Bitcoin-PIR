@@ -251,5 +251,23 @@ No CI change, no file moves, no new gates, no pin/policy/proof changes.
    future wallet path instead. Both removed.)*
 4. Should the three builder identities (v1 DPF/Harmony, Onion v2 re-attest,
    ORAM native) be collapsed to one at the next root rotation?
+
+   *(Answered 2026-08-15 — actually four pinned builder commits:
+   `01e8db91` delta v1, `b692aec1` ORAM source, `d49a199e` Onion v2
+   strict, `8d9d21a6` native V2 producer.)* **Yes, but deferred to the
+   next root rotation** — a from-scratch rebuild of every proof family is
+   too heavy to run as a standalone exercise. When the next rotation
+   happens (after the 3.2 attested-builder extension), one builder commit
+   should produce all proof families in a single run, collapsing the pins
+   to one `builderGitCommit`.
 5. Is an aggregate required-check for `main` wanted, or is manual merge
    inspection the deliberate long-term state?
+
+   *(Answered 2026-08-15: aggregate signal first, not required.)* The
+   "CI summary (advisory)" workflow (`.github/workflows/ci-summary.yml` +
+   `scripts/ci-summary-wait.sh`) runs on every PR and waits for all
+   sibling workflow runs GitHub created for the head SHA — no duplicated
+   path mapping, so no filter drift. Merges stay manual and the check is
+   deliberately not required; the recorded escalation path is to upgrade
+   it to a required branch-protection check only if a red check ever
+   slips through a manual merge.
