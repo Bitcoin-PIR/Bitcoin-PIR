@@ -89,22 +89,27 @@ can be deleted rather than merely bannered.
 
 ### P2-F — `deploy/` is half-tracked; ops facts are not clone-recoverable
 
-`git ls-files deploy` returns only `deploy/payment-v1/**`, but the working
-tree also contains untracked `installimage.conf`, `known_hosts`,
-`vpsbg_known_hosts`, `systemd/`, `uki/`, `logs/`, and a sensitive
-`cloudflared_tunnel.env`. Consequences:
+*(Corrected 2026-08-14 during Step 2: the five `deploy/systemd/*.service`
+units were already tracked — tracked files bypass the `deploy/*` ignore.
+The genuinely untracked items are as below.)*
 
-- the Hetzner skill's "source of truth" links point at files a fresh clone
-  does not have;
+`git ls-files deploy` returns `deploy/payment-v1/**` and
+`deploy/systemd/*.service`, but the working tree also contains untracked
+`installimage.conf`, `known_hosts`, `vpsbg_known_hosts`, `uki/`, `logs/`,
+`attested-builder-runs/`, and a sensitive `cloudflared_tunnel.env`.
+Consequences:
+
+- the Hetzner skill's "source of truth" links point partly at files a
+  fresh clone does not have;
 - the SSH host-key pinning defense depends on an untracked `known_hosts`,
   so the defense itself is not reproducible from the repository;
 - `deploy/uki/` (where CLAUDE.md says release UKIs are archived) is
   local-only state.
 
 Suggested follow-up (separate PR, owner decision): track the non-secret
-fixed values (`known_hosts`, `vpsbg_known_hosts`, `installimage.conf`,
-systemd units); document the locations and backup story of the secret and
-artifact entries in a `deploy/README.md`.
+fixed values (`known_hosts`, `vpsbg_known_hosts`, `installimage.conf`);
+document the locations and backup story of the secret and artifact entries
+in a `deploy/README.md`.
 
 ### P2-G — Documentation layering
 

@@ -72,6 +72,21 @@ deploy/
 # pass local tests while silently disappearing from a commit.
 !deploy/
 deploy/*
+# Secret-free operational facts (host keys, install config, service units)
+# are tracked so a fresh clone can verify hosts and reconstruct services.
+# Secrets (cloudflared_tunnel.env), logs/, and UKI release artifacts stay
+# local-only — see deploy/README.md.
+!deploy/README.md
+!deploy/installimage.conf
+!deploy/known_hosts
+!deploy/vpsbg_known_hosts
+!deploy/systemd/
+deploy/systemd/*
+!deploy/systemd/cloudflared.service
+!deploy/systemd/dev-issuer.service
+!deploy/systemd/pir-primary.service
+!deploy/systemd/pir-secondary.service
+!deploy/systemd/pir-vpsbg.service
 !deploy/payment-v1/
 deploy/payment-v1/*
 !deploy/payment-v1/edge/
