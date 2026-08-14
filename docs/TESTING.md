@@ -26,9 +26,13 @@ and passing it says nothing about non-Payment changes.
 | UKI scripts, `.github/workflows/**` | `node --test scripts/github-workflow-supply-chain-gate.test.mjs scripts/tier3-uki-policy-contract.test.mjs` | `workflow-supply-chain.yml` (every PR, unfiltered) | UKI builds themselves are operator actions on the build host, not CI |
 | Documentation only | none | `formal-proof.yml` + `workflow-supply-chain.yml` still run (unfiltered PR events) | CI does not check documentation truth; identity values (hashes, image IDs) must be pointers to `web/src/attest-pin.ts` / `docs/data-retention/`, not copies |
 
-Merges are manual: there is no aggregate required check on `main`, so inspect
-every applicable Actions result before merging
-(`PROJECT_CLOSEOUT_TODO.md:124-126`).
+Merges are manual: there is no aggregate **required** check on `main`
+(`PROJECT_CLOSEOUT_TODO.md:124-126`, reaffirmed 2026-08-15). The advisory
+"CI summary (advisory)" workflow runs on every PR and waits for all sibling
+workflow runs on the head SHA, so its single green/red status is the one
+signal to inspect before merging; it does not block a merge. If a red check
+ever slips through a manual merge, upgrading it to a required check is the
+recorded escalation path.
 
 ## Payment V1 profiles
 

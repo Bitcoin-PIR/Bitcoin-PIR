@@ -1,0 +1,41 @@
+name: CI summary (advisory)
+
+# Single-signal aggregate for pull requests (process-audit Q5, decided
+# 2026-08-15: "aggregate signal first, not required").
+#
+# GitHub applies each workflow's own path filters when it creates runs
+# for a PR head SHA, so instead of duplicating any path mapping here,
+# this job simply waits for every OTHER workflow run that GitHub
+# created for this exact head SHA and reports one green/red status.
+# Zero path-config drift by construction.
+#
+# Deliberately NOT a required check: merges stay manual. If a red check
+# ever slips through a manual merge, upgrading this to a required
+# branch-protection check is the recorded escalation path.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  summary:
+    name: All triggered workflows green
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Wait for sibling workflow runs on this head SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SELF_NAME: CI summary (advisory)
+        run: bash scripts/ci-summary-wait.sh
