@@ -235,6 +235,14 @@ For each run, record that:
 - sync state is merged only after all database results verify;
 - the connection ends disconnected.
 
+After acceptance, write the release record: generate
+`docs/data-retention/production-release-image-<id>.env` with
+`scripts/generate-release-record.sh` (schema and field reference:
+`docs/data-retention/release-record.env.template`), fill any remaining
+TODO fields (measurement, served manifest hashes, acceptance tag), and
+commit it with or immediately after the pin change. Every production
+release — UKI switch, database rotation, or both — gets one record.
+
 HarmonyPIR hints may remain browser-cached. Their native blob fingerprint
 includes database height, geometry, tag seed, and master seeds; a stale blob is
 rejected and fetched again. Confirm that behavior rather than manually
