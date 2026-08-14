@@ -33,8 +33,11 @@ All three backends expose the same high-level API — clients can switch between
 Bitcoin PIR plugs into the existing Bitcoin ecosystem rather than replacing it:
 
 - **Web browser** — a TypeScript + WASM client runs entirely in-browser, no extension needed
-- **bitcoinjs ecosystem** — a drop-in replacement for `@bitcoinerlab/explorer`, so any bitcoinjs wallet can use PIR by swapping one import
 - **Rust CLI** — a reference command-line client for testing and scripting
+
+Wallet-library integration (BDK) is a possible future direction; earlier
+adapter experiments (an Electrum plugin, a bitcoinjs explorer adapter) were
+removed in 2026-08 after falling behind the protocol.
 
 ## Key Features
 
@@ -77,7 +80,6 @@ BitcoinPIR/
 │   ├── db-builder/    Database generation pipeline
 │   └── block-reader/  Bitcoin Core block/UTXO inspection utilities
 ├── web/               Production browser query application
-├── explorer/          bitcoinjs adapter
 ├── deploy/            Reproducible build and deployment integration
 ├── docs/              Design, verification, and operating documentation
 └── verification/      External proof locks and implementation contracts
