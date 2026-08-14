@@ -27,17 +27,24 @@
 #     pins the rustc selected via rustup; the rustup harness itself
 #     can vary)
 #
-# Note (2026-05-20): for any binary whose sha256 you intend to PUBLISH
-# or PIN — including the one baked into the Tier 3 UKI and the one
-# pinned in web/src/attest-pin.ts — use the hermetic Nix flake:
+# ── PRODUCTION AUTHORITY (2026-08) ──────────────────────────────────
+# NEITHER this script NOR the Nix flake builds the current Tier 3
+# production binary: both invoke cargo without `--features cuckoo-oram`,
+# which the Direct ORAM production path requires. For the binary that
+# gets baked into the Tier 3 UKI / pinned in web/src/attest-pin.ts,
+# follow CLAUDE.md "Hetzner — UKI build host": clean checkout at the
+# exact deploy commit, then
+#   cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+# and `strip --strip-debug`. Do not pin this script's (or the flake's)
+# output sha256 for a Tier 3 release.
 #
-#   nix build .#unified-server
-#
-# Empirically bit-reproducible (verified 2026-05-20 via
-# `nix-store --realise --check` on the unified-server, hexl, and onionpir
-# derivations — all three rebuilt byte-identical to existing store
-# outputs), links Intel HEXL into OnionPIR's C++ engine, and is what
-# pir1/pir2 actually run.
+# Historical note (2026-05-20, pre-cuckoo-oram): the hermetic flake
+# build (`nix build .#unified-server`) was verified bit-reproducible
+# via `nix-store --realise --check` (unified-server, hexl, onionpir
+# derivations all rebuilt byte-identical), links Intel HEXL into
+# OnionPIR's C++ engine, and was what pir1/pir2 ran at that time. It
+# remains the reproducibility harness; it is just not feature-complete
+# for the current production ORAM configuration.
 #
 # This script is a no-Nix DEVELOPMENT convenience. By default it builds
 # OnionPIR's C++ engine with the in-crate scalar/SIMD shim
