@@ -5,10 +5,17 @@ exactly what a client learns when it verifies one. This covers the
 end-to-end **operator runbook** (generate → sign → deploy) and the
 **client trust model** (what each check proves, and what it does not).
 
-> **Status (2026-05-28).** **LIVE.** Deployed and live-verified end-to-end
-> on both production servers: pir1 + pir2 serve REQ_ANNOUNCE on the
-> announce-enabled binary (v22 `f7df82d0…` → current v23 `57ac525b…`). The
-> pinned operator pubkey in `web/src/attest-pin.ts` is the **real**
+> **Status (2026-05-28, historical).** The rollout below completed and the
+> mechanism remains deployed, but every concrete identity value in this
+> document (binary versions/hashes such as v22 `f7df82d0…` / v23
+> `57ac525b…`) is a point-in-time record that has since rotated. The only
+> authority for the currently pinned operator key and server
+> binary/measurement pins is [`web/src/attest-pin.ts`](../web/src/attest-pin.ts);
+> release-time evidence lives in [`data-retention/`](data-retention/). Do
+> not copy values from this document into code or operations.
+>
+> Original record: deployed and live-verified end-to-end on both production
+> servers; the pinned operator pubkey in `web/src/attest-pin.ts` is the
 > published key (`256fb106…`), and the "verified operator" badge is wired
 > into the www client (DPF + HarmonyPIR cards) and the playground, gated on
 > `state === 'verified'`. See [Current status](#current-status).
