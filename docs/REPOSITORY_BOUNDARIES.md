@@ -203,9 +203,11 @@ After that milestone merges, use this order:
 5. Extract a reusable `packages/web-client` while keeping the production Web
    application and strict trust policy here. Make `playground` consume that
    package instead of vendored source.
-6. Only then consider standalone repositories for `explorer`, the Electrum
-   plugin, and the development issuer. Each must consume the shared strict
-   client flow before becoming an official external repository.
+6. Only then consider standalone repositories for `explorer` and the
+   development issuer. Each must consume the shared strict client flow
+   before becoming an official external repository. (The Electrum plugin
+   was removed 2026-08-14 — it had fallen behind the protocol; owner
+   decision recorded in `docs/PROCESS_AUDIT_2026-08.md` Q3.)
 7. Treat full builder extraction and `vendor/` replacement as the final phase,
    gated on byte-identical output and a fresh hermetic offline build.
 

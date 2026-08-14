@@ -23,7 +23,7 @@ and passing it says nothing about non-Payment changes.
 | Payment V1 (crates/payment, issuer apps, deploy templates) | Profiles below (`--quick` / `--pr`; `--deploy-template-audit` only for template work) | `payment-platform.yml`, sometimes `directory-relay-artifact.yml` | Source-ready ≠ deployed; see `payment/IMPLEMENTATION_STATUS.md` |
 | `verification/locks`, contracts, verifier scripts | `cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract`; `python3 -m unittest verification/scripts/test_verify_formal_lock.py`; `cd web && npm test` (lock↔pin tests) | `formal-proof.yml` (every PR, unfiltered); `generated-proof-lock.yml` (lock paths) | Protocol framing / round-shape / padding changes must update the contract and proof lock (`REPOSITORY_BOUNDARIES.md`) |
 | `tools/db-builder`, `scripts/build_*.sh` | `cargo build -p build`; there is no test suite | **None** | Production databases come from the locked attested-builder, not these scripts; see `DATABASE_ARTIFACT_RETENTION.md` before any rebuild |
-| `explorer/`, `electrum_plugin/` | `cd explorer && npm run build`; `python electrum_plugin/test_pir_client.py` (local only) | **None** | Both can drift from the SDK silently; the Electrum plugin reimplements the protocol in Python |
+| `explorer/` | `cd explorer && npm run build` | **None** | Can drift from the SDK silently (no CI, no tests in CI) |
 | UKI scripts, `.github/workflows/**` | `node --test scripts/github-workflow-supply-chain-gate.test.mjs scripts/tier3-uki-policy-contract.test.mjs` | `workflow-supply-chain.yml` (every PR, unfiltered) | UKI builds themselves are operator actions on the build host, not CI |
 | Documentation only | none | `formal-proof.yml` + `workflow-supply-chain.yml` still run (unfiltered PR events) | CI does not check documentation truth; identity values (hashes, image IDs) must be pointers to `web/src/attest-pin.ts` / `docs/data-retention/`, not copies |
 
@@ -56,8 +56,8 @@ profile agents should run by default.
 ```
 
 `--pr` approximates the Payment-platform CI lanes plus the Web gates. It does
-**not** cover `pir-core`, `tools/db-builder`, `explorer/`, `electrum_plugin/`,
-or UKI contracts — use the matrix above for those.
+**not** cover `pir-core`, `tools/db-builder`, `explorer/`, or UKI contracts —
+use the matrix above for those.
 
 Run `--deploy-template-audit` only while changing or preparing a Payment
 deployment template. Run `--browser` or `--full` only when browser coverage is explicitly requested.
