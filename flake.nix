@@ -79,14 +79,20 @@
       # ─── packages.tier3-uki ────────────────────────────────────────
       # Production Tier 3 UKI for pir2 (weikeng2 — VPSBG, SEV-SNP).
       #
-      # ── NOT the current production recipe (2026-08) ────────────────
+      # ── NOT a production recipe (decided 2026-08-15) ───────────────
+      # This flake is a development/reproducibility harness only.
+      # Provenance verification of the deployed binaries showed neither
+      # pir1 nor pir2 was ever Nix-built (bare Cargo builds on the
+      # Hetzner build host; see docs/PROCESS_AUDIT_2026-08.md Q2), and
       # packages.unified-server builds WITHOUT `--features cuckoo-oram`
-      # (see cargoBuildFlags below), which the Direct ORAM production
-      # path requires — so this UKI is NOT what production pir2 boots.
-      # The production build procedure is CLAUDE.md "Hetzner — UKI
-      # build host" (cargo with `--features cuckoo-oram` at the exact
-      # deploy commit + scripts/build_uki_tier3.sh); release identity
-      # authority is web/src/attest-pin.ts.
+      # (see cargoBuildFlags below), which the pir2 Direct ORAM path
+      # requires — so this UKI is NOT what production pir2 boots.
+      # Production build procedure: CLAUDE.md "Hetzner — UKI build
+      # host" (two bare-Cargo profiles + scripts/build_uki_tier3.sh);
+      # release identity authority: web/src/attest-pin.ts. Restoring
+      # this flake as a hermetic production authority would require
+      # adding the cuckoo-oram feature plus fresh cross-host hash and
+      # runtime acceptance.
       #
       # Assembles the whole UKI inside Nix — VPSBG kernel + initramfs +
       # cmdline objcopy'd into systemd's EFI stub — embedding the exact
@@ -95,7 +101,8 @@
       # recipe bakes a *system-linked* binary via dracut; this one
       # bundles the full /nix/store closure via makeInitrdNG, so the
       # baked-in binary is bit-identical to `nix build .#unified-server`
-      # (hence byte-identical to what pir1 ran pre-cuckoo-oram).
+      # (a dev/repro property only — production binaries are bare-Cargo
+      # builds, see the note above).
       #
       #   nix build --impure .#tier3-uki    # on pir-hetzner, as root
       #   → ./result/bpir-tier3.efi
@@ -402,11 +409,11 @@
         echo "unified_server: ${unifiedServer}/bin/unified_server"
       '';
 
-      # Hermetic, bit-reproducible build — but WITHOUT the
-      # `cuckoo-oram` feature the current Tier 3 production binary
-      # requires (see the tier3-uki note above). Use it for
-      # reproducibility work and development; do not pin its sha256 as
-      # a production release identity.
+      # Hermetic, bit-reproducible build — development/reproducibility
+      # use only (and it lacks the `cuckoo-oram` feature the pir2
+      # production binary requires; see the tier3-uki note above).
+      # Production binaries are bare-Cargo builds per CLAUDE.md; do not
+      # pin this derivation's sha256 as a production release identity.
       unified-server = pkgs.rustPlatform.buildRustPackage {
         pname = "unified-server";
         version = "0.1.0";

@@ -404,7 +404,10 @@ cargo test -p pir-sdk-wasm --lib
 
 ### Hetzner (pir-hetzner) — UKI build host
 - **SSH**: `ssh pir-hetzner` (root@65.21.91.217, key `~/.ssh/id_ed25519`)
-- **Build production binary**: use a clean checkout at the exact deploy commit, then run `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server` and `strip --strip-debug`. Do not use the current `build_unified_server.sh` or `flake.nix` output for Tier 3; neither enables `cuckoo-oram`.
+- **Build production binaries** (bare Cargo on a clean checkout at the exact deploy commit, then `strip --strip-debug`; decided 2026-08-15 after provenance verification of the deployed binaries — see `docs/PROCESS_AUDIT_2026-08.md` Q2):
+  - **pir1** (Hetzner: DPF-0 + OnionPIR + Harmony hint — no ORAM): `cargo build --locked --release -p runtime --bin unified_server` (default features).
+  - **pir2** (VPSBG Tier 3: Direct/Circuit ORAM query path): `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server`.
+  - Do **not** use `build_unified_server.sh` or `nix build .#unified-server` for a production binary. The flake is a development/reproducibility harness only; the deployed pir1/pir2 binaries were never Nix-built (verified via embedded source paths and cargo feature fingerprints on the build host).
 - **Build UKI** (with VPSBG kernel): `sudo env KERNEL=/boot/vmlinuz-7.0.0-15-generic BINARY=/absolute/path/to/unified_server BPIR_UNIFIED_SERVER_BIN=/absolute/path/to/unified_server ./scripts/build_uki_tier3.sh`
 - **Deploy UKI**: `scp pir-hetzner:/tmp/bpir-tier3.efi deploy/uki/bpir-tier3-vN.efi`, then portal → Upload → Save & Reboot
 - **Cross-build stack**: kernel 7.0.0-15, kmod 34.2, libkmod 2.5.1, dracut 110 (all backported from Ubuntu 25.04 plucky)
