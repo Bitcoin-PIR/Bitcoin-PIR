@@ -1,5 +1,16 @@
 # Bitcoin PIR Deployment Guide
 
+> **Historical / self-hosting sketch (bannered 2026-08).** This guide
+> predates the current production architecture (`unified_server`, database
+> catalogs, attested database proofs, strict frontend pins, and the Tier 3
+> measured-boot path). It does **not** describe how pir1/pir2 are released.
+> Current entry points:
+> [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for
+> operations, [`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md)
+> for database rotations, and [`docs/README.md`](../docs/README.md) for the
+> full index. Use this file only as a rough starting sketch for an
+> independent self-hosted deployment.
+
 This guide explains how to deploy the Bitcoin PIR system on two servers.
 
 ## Architecture Overview

@@ -2,6 +2,15 @@
 
 Helper scripts for running and testing the PIR system.
 
+> **Scope note (2026-08).** The database build and refresh sections below
+> describe the local development pipeline. They are **not** the production
+> database release path: production rotations use the locked
+> `Bitcoin-PIR/attested-builder` producer and
+> [`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md),
+> and every retention/cleanup decision is governed by
+> [`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md).
+> Where this file and those documents disagree, those documents win.
+
 ## Production status
 
 For production diagnosis, run this read-only command first:
@@ -113,7 +122,13 @@ web client's OnionPIR tab can query `db_id=1`.
 
 ---
 
-## Regular database refresh runbook
+## Regular database refresh runbook (LEGACY — not the production path)
+
+> **Superseded.** This flow (local build → rsync → SSH → restart) predates
+> the attested-builder proof chain, dual-host staging, frontend proof pins,
+> and the fail-closed activation window. For any production rotation use
+> [`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
+> It is retained only as a sketch of the local/dev pipeline stages.
 
 Refresh production with a new full snapshot at height `B` plus a delta
 from the previous full-snapshot height `A` to `B`. Keep the existing
@@ -156,7 +171,16 @@ ssh pir-hetzner "systemctl restart pir-primary pir-secondary"
 ssh pir-hetzner 'journalctl -u pir-primary -n 50 --no-pager | grep -E "Loaded|height"'
 ```
 
-After verifying live queries against `wss://weikeng1.bitcoinpir.org`, you
-can clean up the previous checkpoint dir on the host
+> **Do not follow this cleanup advice for production data.**
+> [`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md)
+> requires keeping the prior complete generation until the rollback window
+> closes, both raw Core snapshots permanently (a delta cannot reconstruct
+> the earlier snapshot's spent Coin fields), and the Direct ORAM inputs and
+> exact manifests. Only purely local, non-retained intermediates may be
+> deleted after checking that map.
+
+After verifying live queries against `wss://weikeng1.bitcoinpir.org`, the
+old flow deleted the previous checkpoint dir on the host
 (`/home/pir/data/checkpoints/<A>/`) and the local intermediate dir
-(`/Volumes/Bitcoin/data/intermediate/full_<B>/`).
+(`/Volumes/Bitcoin/data/intermediate/full_<B>/`) — see the retention
+warning above before deleting anything.
