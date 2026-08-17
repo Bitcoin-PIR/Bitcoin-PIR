@@ -1,5 +1,12 @@
 # Production rollout remainder — after the 2026-08-06/07 harmony fix
 
+> **Historical handoff — not an active checklist.** This file preserves the
+> 2026-08-07 observations and hypotheses. Do not use its image IDs, policy
+> epochs, failure explanations, cleanup list, or commands as current operating
+> instructions. Start at [`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md),
+> query live identity with `scripts/vpsbg-production-status.sh`, and use
+> [`history/README.md`](history/README.md) to interpret dated rollout evidence.
+
 Status: 2026-08-07. This file is the handoff for the next session. Everything below is
 a *remaining* item; nothing here is already finished. For the decided root-cause
 verdicts see PR #139/#146 and `docs/PR_CLEANUP_TRACKER.md` (P0-1, state DEPLOYED).

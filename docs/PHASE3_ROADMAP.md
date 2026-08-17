@@ -1,5 +1,12 @@
 # Phase 3 (Attested Lockdown) — Roadmap
 
+> **Historical roadmap, not current operating instructions.** The deployment
+> snapshots and concrete identities below are dated evidence. Current status and
+> release routing start at [`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md);
+> current pins live in `web/src/attest-pin.ts`, and retained release evidence
+> lives in `docs/data-retention/`. Do not deploy, roll back, or copy pin values
+> from this file.
+
 Snapshot of work that landed across the 2026-05-02 / 2026-05-03
 deployment cycle:
 - Slices 1–4 of the dynamic attestation surface (DB manifests,
@@ -24,9 +31,8 @@ deployment cycle:
   [PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md) for operator
   recovery if a future Tier 3 UKI bricks the box.
 
-This document is the canonical to-do for the next sessions on this
-work. Pick up by re-reading the "Current state" summary, then jumping
-to whichever slice you want to start on.
+This document preserves the original phase ordering and dated deployment
+snapshots. It is not the current to-do list.
 
 ---
 
