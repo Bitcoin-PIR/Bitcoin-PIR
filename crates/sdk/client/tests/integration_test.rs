@@ -358,25 +358,6 @@ fn assert_fresh_sync_verified(backend: &str, sync: &SyncResult) {
     assert_db0_found_and_not_found_verified(backend, &sync.results);
 }
 
-fn assert_delta_sync_verified(backend: &str, sync: &SyncResult) {
-    assert!(!sync.was_fresh_sync, "{backend} did not execute the delta plan");
-    assert_eq!(
-        sync.synced_height, PRODUCTION_DATABASE_PINS[1].height,
-        "{backend} delta sync stopped at the wrong height",
-    );
-    assert_eq!(
-        sync.results.len(),
-        2,
-        "{backend} delta sync returned the wrong result count",
-    );
-    for result in sync.results.iter().flatten() {
-        assert!(
-            result.merkle_verified,
-            "{backend} delta result failed Merkle verification",
-        );
-    }
-}
-
 fn assert_missing_verified_root(error: PirError, backend: &str, db_id: u8) {
     assert!(
         matches!(error, PirError::VerificationFailed(ref message)
@@ -591,9 +572,10 @@ async fn test_dpf_client_compute_sync_plan() {
 
 // ─── HarmonyPIR Integration Tests (require running servers) ─────────────────
 
-/// Scheduled native database-root canary for the complete DPF root flow:
-/// catalog -> cryptographic proof verification -> exact production pin match
-/// -> explicit install -> tree-top preflight -> verified query -> disconnect.
+/// Scheduled native database-root canary for the supported DPF production flow:
+/// verify and preflight both pinned databases, then admit and query db0. The
+/// current signed policies intentionally expose no DPF db1 query scope, so this
+/// canary does not send a predictably rejected db1 backend frame.
 #[tokio::test]
 #[ignore = "scheduled/manual strict production canary"]
 async fn test_dpf_strict_production_canary() {
@@ -689,12 +671,6 @@ async fn test_dpf_strict_production_canary() {
         .expect("strict DPF fresh sync failed");
     assert_fresh_sync_verified("DPF", &fresh_sync);
 
-    let delta_sync = client
-        .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
-        .await
-        .expect("strict DPF delta sync failed");
-    assert_delta_sync_verified("DPF", &delta_sync);
-
     client
         .disconnect()
         .await
@@ -756,26 +732,10 @@ async fn test_harmony_client_fetch_catalog() {
 
 /// Live HarmonyPIR fresh sync over Payment-V1 admission.
 ///
-/// Gated behind the strict-canary env flag rather than the ordinary live
-/// step: as of 2026-08-06 the granted `harmony-query-job-v1` phase does not
-/// return responses on the production providers. Root cause mapped the same
-/// day: the Payment-V1 platform (`962fd4c5`) configures
-/// `max_write_buffer_size = 2 MiB` (plus a 512 KiB message cap) for the
-/// listener's tungstenite layer, and `REQ_HARMONY_BATCH_QUERY` was the only
-/// backend arm still answering through the unchunked `send_resp` — a
-/// live-scale INDEX response is K × (T−1) × 52 B ≈ 4.15 MB, so tungstenite
-/// returned `WriteBufferFull`, the swallowed `let _ =` left the socket
-/// wedged, and the connection was idle-killed by the Cloudflare proxy at
-/// ~120–130 s (matching the client observations, NOT the scope's
-/// `max_wall_time_ms`; nothing in the server closes a wedged response on
-/// that timer). Reproduced locally against a HEAD-build unified_server
-/// serving the actual production db0/db1 (see
-/// `tests/local_production_repro.rs`); fixed by chunking this arm's response
-/// (`send_resp_chunked(..., true)`). The test therefore stays on the
-/// scheduled canary track so its log witnesses production catching up to
-/// the fix. Admission itself (hint V2Full grant, complete main+sibling
-/// download, query-leg authorize) is fully exercised before the pinned
-/// failure point.
+/// This remains strict-canary gated because it completes production admission
+/// and sends a real db0 query. The historical unchunked-response failure from
+/// 2026-08-06 is retained in the dated rollout evidence, not treated as the
+/// current expected result here.
 #[tokio::test]
 #[ignore = "scheduled/manual strict production canary"]
 async fn test_harmony_strict_production_canary_sync_single() {
@@ -813,10 +773,7 @@ async fn test_harmony_strict_production_canary_sync_single() {
     client.disconnect().await.unwrap();
 }
 
-/// Live HarmonyPIR batch query over Payment-V1 admission. Same
-/// production-granted-query block as
-/// [`test_harmony_strict_production_canary_sync_single`]; see its docstring
-/// for the 2026-08-06 evidence.
+/// Live HarmonyPIR batch query over Payment-V1 admission.
 #[tokio::test]
 #[ignore = "scheduled/manual strict production canary"]
 async fn test_harmony_strict_production_canary_query_batch() {
@@ -848,9 +805,10 @@ async fn test_harmony_strict_production_canary_query_batch() {
 
 // ─── WsConnection Resilience Tests ───────────────────────────────────────
 
-/// Scheduled native database-root canary for HarmonyPIR. Persisted hints may
-/// be reused, but database roots and verified
-/// tree-tops are session-bound and must be installed afresh.
+/// Scheduled native database-root canary for the supported HarmonyPIR
+/// production flow. Both pinned databases are proof-verified and preflighted,
+/// while Payment-V1 admission and the backend query stay on db0 because the
+/// current signed policies expose no Harmony db1 query or hint scope.
 #[tokio::test]
 #[ignore = "scheduled/manual strict production canary"]
 async fn test_harmony_strict_production_canary() {
@@ -938,17 +896,19 @@ async fn test_harmony_strict_production_canary() {
             });
     }
 
+    // The public deployment enforces Payment-V1 on both Harmony legs. Complete
+    // the exact browser ordering only after the public db0/db1 preflights, then
+    // exercise the supported db0 query path.
+    let pin = PRODUCTION_DATABASE_PINS[0];
+    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
+        .await
+        .expect("strict HarmonyPIR live admission failed");
+
     let fresh_sync = client
         .sync(&probes, None)
         .await
         .expect("strict HarmonyPIR fresh sync failed");
     assert_fresh_sync_verified("HarmonyPIR", &fresh_sync);
-
-    let delta_sync = client
-        .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
-        .await
-        .expect("strict HarmonyPIR delta sync failed");
-    assert_delta_sync_verified("HarmonyPIR", &delta_sync);
 
     client
         .disconnect()
@@ -1051,19 +1011,9 @@ mod onion_tests {
 
     /// Live OnionPIR batch query over Payment-V1 admission.
     ///
-    /// Canary-gated: the production `onion-evaluate-job-v1` free scope
-    /// (offer 41) grants `max_request_bytes = 16 MiB`, but one complete
-    /// register-once + INDEX + CHUNK + INDEX/DATA Merkle-sibling session
-    /// emits ≈18.2 MB of grant-metered request bytes
-    /// (register 3.1 MB + INDEX 4.9 MB + CHUNK 2.6 MB + INDEX-sib
-    /// 2× 2.46 MB + DATA-sib 2.62 MB, measured 2026-08-06), so the final
-    /// DATA-sibling frame is rejected with
-    /// `service entitlement limit exceeded`. Everything up to that frame —
-    /// admission, key registration, INDEX, CHUNK, INDEX Merkle verification —
-    /// is exercised and passes; only the last verification roundtrip hits the
-    /// policy wall. Client-side workarounds (fewer sibling passes) would
-    /// weaken the Merkle coverage the leakage invariants mandate, so this
-    /// tracks the production policy instead of shrinking the test.
+    /// Canary-gated because it completes production admission and sends a real
+    /// db0 query. Historical offer-budget failures belong to dated rollout
+    /// evidence rather than this test's current expected behavior.
     #[tokio::test]
     #[ignore = "scheduled/manual strict production canary"]
     async fn test_onion_strict_production_canary_query_batch() {
@@ -1094,9 +1044,10 @@ mod onion_tests {
         client.disconnect().await.unwrap();
     }
 
-    /// Scheduled native database-root canary for OnionPIR. The public
-    /// preflight binds tree-tops to the installed proof's Onion super-root;
-    /// `server-info.super_root` remains diagnostic input only.
+    /// Scheduled native database-root canary for the supported OnionPIR
+    /// production flow. The public preflight binds both databases' tree-tops to
+    /// their installed Onion super-roots; admission and the real query remain
+    /// on db0 because the current signed policy exposes no Onion db1 scope.
     #[tokio::test]
     #[ignore = "scheduled/manual strict production canary"]
     async fn test_onion_strict_production_canary() {
@@ -1188,17 +1139,19 @@ mod onion_tests {
                 });
         }
 
+        common::admit_onion_live(
+            &mut client,
+            0,
+            &common::production_db0_onion_v2_proof_policy(),
+        )
+        .await
+        .expect("strict OnionPIR live admission failed");
+
         let fresh_sync = client
             .sync(&probes, None)
             .await
             .expect("strict OnionPIR fresh sync failed");
         assert_fresh_sync_verified("OnionPIR", &fresh_sync);
-
-        let delta_sync = client
-            .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
-            .await
-            .expect("strict OnionPIR delta sync failed");
-        assert_delta_sync_verified("OnionPIR", &delta_sync);
 
         client
             .disconnect()

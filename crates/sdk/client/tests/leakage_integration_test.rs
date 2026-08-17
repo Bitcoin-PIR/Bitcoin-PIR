@@ -341,11 +341,8 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 /// Harmony equivalent of [`dpf_query_profile`].
 ///
 /// Payment-V1 admission is completed before the batch (hint leg V2Full grant
-/// + query leg free offer). As of 2026-08-06 the production granted
-/// `harmony-query-job-v1` phase does not respond (see
-/// `test_harmony_strict_production_canary_sync_single`), so profiles fail at
-/// the first INDEX roundtrip — the shape the leakage canary steps surface
-/// while the server-side block lasts.
+/// + query leg free offer). The profile is intentionally broader than the
+/// strict health canary and remains advisory in scheduled CI.
 async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("harmony query_batch", move || async move {
         let recorder = Arc::new(BufferingLeakageRecorder::new());
@@ -368,12 +365,9 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 
 /// OnionPIR equivalent of [`dpf_query_profile`].
 ///
-/// Payment-V1 admission is completed before the batch. As of 2026-08-06 the
-/// production `onion-evaluate-job-v1` free scope's 16 MiB request budget is
-/// smaller than one complete register-once + INDEX/CHUNK + Merkle session
-/// (~18.2 MB), so the final DATA-sibling roundtrips hit
-/// `service entitlement limit exceeded` — see
-/// `test_onion_strict_production_canary_query_batch`.
+/// Payment-V1 admission is completed before the batch. The profile is
+/// intentionally broader than the strict health canary and remains advisory
+/// in scheduled CI.
 #[cfg(feature = "onion")]
 async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("onion query_batch", move || async move {

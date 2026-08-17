@@ -115,26 +115,12 @@ jobs:
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture
 
-      # Advisory (continue-on-error): the strict live tests exercise the
-      # production query path directly, and two production-side policy
-      # realities currently block them before any client behavior matters:
-      #   * db1 (delta) tree-tops is a 23.4 MB blob; the connection's
-      #     16 MiB pre-auth egress budget closes it mid-preflight, and
-      #     no free scope admits db1 backend frames at all
-      #     (VPSBG DPF + harmony scopes are manifest-root-bound to db0).
-      #   * the granted harmony-query phase does not respond on production
-      #     (root cause: Payment-V1's 2 MiB max WS write-buffer caps the
-      #     ~4.15 MB unchunked Harmony batch response; swallowed
-      #     WriteBufferFull wedges the socket — see
-      #     `harmony_batch_response_at_live_scale_*` in unified_server.rs
-      #     and tests/local_production_repro.rs; fixed in-repo, pending
-      #     production binary/UKI rollout).
-      # They keep running on schedule so the logs witness when production
-      # admission starts serving these paths again. See
-      # docs/PR_CLEANUP_TRACKER.md P0-1.
+      # Strict scheduled signal for the currently supported product boundary:
+      # verify and preflight both pinned roots, then complete Payment-V1
+      # admission and a real db0 query. DPF/Harmony db1 backend queries are not
+      # attempted because the signed production policies expose no db1 scope.
       - name: Run native database-root canary (DPF + HarmonyPIR)
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-        continue-on-error: true
         env:
           PIR_STRICT_PRODUCTION_CANARY: "1"
         run: cargo test -p pir-sdk-client --features fastprp --test integration_test strict_production_canary -- --ignored --test-threads=1 --nocapture
@@ -246,13 +232,8 @@ jobs:
 
       - name: Run native database-root canary (OnionPIR)
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-        # Advisory: the free onion-evaluate scope's 16 MiB request budget is
-        # smaller than one complete verified session (~18.2 MB), so the
-        # DATA-sibling verification trips `service entitlement limit
-        # exceeded`; the onion db1 tree-top preflight hits the same 23.4 MB
-        # pre-auth egress wall as the DPF canary. See the DPF canary step
-        # comment and docs/PR_CLEANUP_TRACKER.md P0-1.
-        continue-on-error: true
+        # Same supported boundary as the DPF/Harmony canary: both roots are
+        # verified/preflighted, while admission and the real query use db0.
         env:
           PIR_STRICT_PRODUCTION_CANARY: "1"
         run: "cargo test -p pir-sdk-client --features onion,fastprp --test integration_test onion_tests::test_onion_strict_production_canary -- --ignored --test-threads=1 --nocapture"
@@ -320,11 +301,9 @@ jobs:
           done
 
       - name: Run HarmonyPIR leakage invariants (one retry)
-        # Advisory: profiles reach the INDEX phase and stop at the
-        # production granted harmony-query block (see the DPF canary step
-        # comment and docs/PR_CLEANUP_TRACKER.md P0-1). Admission, the
-        # V2Full hint download, and the sibling streams are exercised before
-        # the pinned failure point.
+        # Advisory privacy-regression signal. It is deliberately not a release
+        # gate because it opens several production sessions and is broader than
+        # the user-facing db0 health canary above.
         continue-on-error: true
         run: |
           run_harmony_invariants() {
@@ -341,10 +320,8 @@ jobs:
           run_harmony_invariants || run_harmony_invariants
 
       - name: Run OnionPIR leakage invariants
-        # Advisory: one admitted register-once session costs ~18.2 MB of
-        # grant-metered requests, above the free onion-evaluate scope's
-        # 16 MiB budget, so profiles stop at the DATA-sibling roundtrips
-        # (`service entitlement limit exceeded`).
+        # Advisory for the same reason as Harmony: useful privacy drift signal,
+        # not an additional production release gate.
         continue-on-error: true
         run: |
           for test_name in \

@@ -3,11 +3,13 @@
 Status: **regenerate-on-boot model active; public db0 input proof implemented**
 as of 2026-08-12.
 
-Production VPSBG image 261 starts Direct ORAM from fixed database inputs inside
-the measured SEV-SNP runtime. It does not reuse a previously published ORAM
-image as the user's trust anchor. This choice determines what the browser proof
-must establish and removes the need for a byte-reproducible ORAM output
-ceremony.
+The measured VPSBG production runtime starts Direct ORAM from fixed database
+inputs inside SEV-SNP. The attached image is volatile operational state: query
+it with `scripts/vpsbg-production-status.sh` and use `web/src/attest-pin.ts` plus
+`docs/data-retention/` for the reviewed identity and point-in-time release
+record. The runtime does not reuse a previously published ORAM image as the
+user's trust anchor. This choice determines what the browser proof must
+establish and removes the need for a byte-reproducible ORAM output ceremony.
 
 ## Security statement
 
