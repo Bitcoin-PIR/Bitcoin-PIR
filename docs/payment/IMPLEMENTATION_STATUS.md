@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-08-09. This document describes repository code, focused
+Status snapshot: 2026-08-18. This document describes repository code, focused
 tests, and the current functional-beta evidence; it is not a mainnet-production
 readiness claim. “Implemented” means that a code path exists; “tested” names
 the boundary actually exercised. It does not mean that an operator has
@@ -41,9 +41,14 @@ activated the path with real money.
       with provider, backend, workload, protocol, exact dataset root and
       operation profile, so this source step does not add a new payment wire or
       server runtime branch.
+- [x] The Web source now carries a closed db1 Direct ORAM source-proof manifest
+      and the six retained V2 delta artifacts. Selection is exact by db ID;
+      db0-for-db1 substitution and unknown IDs fail closed, while the selected
+      db1 survives catalog repopulation for the next admission attempt.
 - [ ] **Activation pending.** The source templates contain placeholders and
-      have not been rendered, signed, installed or activated. No issuer use,
-      funds, production mutation, VPSBG image change or pir1 parity rebuild is
+      have not been rendered, signed, installed or activated, and the new Web
+      artifacts have not been publicly deployed. No issuer use, funds,
+      production mutation, VPSBG image change or pir1 parity rebuild is
       authorized by this source work.
 
 ## Functional-beta update

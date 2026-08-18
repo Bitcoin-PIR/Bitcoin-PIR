@@ -1,8 +1,8 @@
 # db1 Free-PoW + BAT implementation plan
 
-Status: approved product direction; source implementation in progress. This
-document is not production deployment, policy-rotation, database-rebuild, or
-funds authorization.
+Status: source implementation complete and focused PR validation passed on
+2026-08-18. This document is not production deployment, policy rotation,
+database rebuild, public Web publication, or funds authorization.
 
 ## Product contract
 
@@ -51,17 +51,26 @@ The two providers keep independent identities, policies, stores, BAT key
 lineages and admission decisions. The browser acquires and presents one
 provider-specific authorization for each provider involved in a query.
 
-## Current gaps
+## Source result and remaining release boundary
 
-- The production-oriented DPF and Harmony templates are intentionally db0-only;
-  Harmony hint and Onion do not yet have equivalent db1 production entries.
-- Direct ORAM already has a db1 Free-PoW runtime scope, but it has no stable BAT
-  offer.
-- The published Direct ORAM source proof currently covers db0 only. db1 cannot
-  be described as formally supported until its retained V2 delta evidence and
-  Direct input binding are exposed through the same fail-closed public verifier.
-- The active database lineage has accepted mixed provenance. It is not being
-  rebuilt merely to rewrite that history.
+- Complete pir1/pir2 policies now cover every matrix row for db0 and db1, with
+  exactly Free-PoW and stable shared-issuer BAT in each scope.
+- Read-only implementation inspection confirmed that Payment V1 already binds
+  arbitrary exact `db_id` together with provider, backend, workload, protocol,
+  dataset root and profile. No db0-special runtime branch or missing payment
+  wire needed to be changed; the new static gate validates the complete source
+  policy matrix instead of duplicating that generic admission machinery.
+- The retained db1 native V2 delta evidence and Direct input binding are now in
+  the Web source tree. The verifier selects db0 or db1 by exact ID, rejects
+  cross-selected artifacts and unknown IDs, and the ORAM catalog refresh keeps
+  the user's selected db for the next admission attempt.
+- The active database lineage keeps its accepted mixed provenance. The 4A
+  runbook rule applies prospectively to the next candidate and does not rebuild
+  or relabel the current lineage.
+- Remaining work is operational: render/review/sign the policies, create BAT
+  lineages and issuer authorization, publish the Web artifacts, and coordinate
+  the pir1/pir2 release under separate approvals. Nothing in this PR activates
+  a provider, issuer, payment, database, UKI or public site.
 
 ## Implementation sequence
 
@@ -97,6 +106,12 @@ Acceptance:
   another;
 - preflight remains non-consuming and expensive work remains behind admission.
 
+Implementation result: no admission/client payment code change was necessary.
+The new source gate checks all six provider workloads across db0/db1, unique
+roots/bindings/offers, and the exact two-method profile. Existing runtime tests
+already exercise exact arbitrary-db isolation, so a duplicate db1-special Rust
+matrix was intentionally not added.
+
 ### Step 3 — Publish and verify the Direct ORAM db1 source proof
 
 Publish only the small retained V2 evidence needed to bind db1 Direct inputs to
@@ -113,6 +128,11 @@ Acceptance:
   fails closed;
 - the db1 proof records delta build semantics and its base/current anchors;
 - only the closed, reviewed public artifact set is accepted.
+
+Implementation result: the immutable db1 directory contains only the six
+reviewed small artifacts (12,401 bytes total); mutable ORAM pages, logs, build
+summary and controller state remain excluded. The source is ready for a later
+Web deployment but has not been published by this work.
 
 ### Step 4 — Record the future builder boundary (decision 4A)
 
@@ -131,6 +151,10 @@ Acceptance:
   the active lineage;
 - no CI database build or production rebuild is introduced.
 
+Implementation result: the prospective rule, retention requirements and
+correct native V2 snapshot/delta runbook are recorded without changing builder
+code, database tooling or CI.
+
 ### Step 5 — Focused verification and PR handoff
 
 Run tests by changed boundary, not by repository size:
@@ -144,6 +168,20 @@ Do not run a production browser check, public canary, full database build, UKI
 build, deployment, or real-funds flow as part of source development. A broader
 Payment `--pr` profile is justified once, before PR handoff, only if the final
 diff crosses multiple Payment/WASM boundaries.
+
+Actual focused evidence for this source implementation:
+
+- `node scripts/payment-v1-deployment-template-gate.mjs` — PASS;
+- `node --test scripts/payment-v1-deployment-template-gate.test.mjs` — 31/31;
+- `npm exec vitest run src/__tests__/oram-source-proof.test.ts` — 16/16;
+- `npm run test:production-canary-readiness` — PASS;
+- `npm run build && npm run build-web` — TypeScript, Vite and CSP PASS; and
+- `git diff --check` — PASS at each commit boundary.
+
+No Cargo/Payment `--pr`, broad deploy audit, browser, database build, ORAM bulk
+rebuild, UKI build or production test was run. There was no Rust admission or
+proof-format change to justify Cargo, and the dedicated template gate already
+covered the new directory without re-running unrelated Caddy/netns audits.
 
 ## Commit and review boundaries
 
