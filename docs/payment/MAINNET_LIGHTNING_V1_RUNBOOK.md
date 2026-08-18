@@ -1,15 +1,24 @@
 # Mainnet Lightning V1 source-readiness runbook
 
-Status: **source work only; production activation is blocked**. This is the
-operator handoff for the Mainnet shared-BAT topology. It does not authorize
+Status: **superseded source handoff; do not materialize or activate the current
+Mainnet skeletons**. The 2026-08-18 owner decision changed BAT from a
+provider-specific credential to an issuer-wide credential with global
+first-spend and no provider payment store. The replacement source sequence is
+normative in
+[`MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](MAINNET_SHARED_BAT_PRODUCTION_PLAN.md).
+The 2026-08-19 pir2 decision additionally retains distinct identity and
+clearing seeds only in a measurement-bound sealed envelope; it does not make
+the existing VPSBG rootfs an encrypted disk.
+This runbook remains useful only for old-Direct inventory and approval
+boundaries until its profiles and commands are rewritten. It authorizes no
 private rendering, remote installation, VPSBG image work, node contact,
 invoice creation, payment, funding, channel changes, publication, or service
 activation.
 
-## Frozen production shape
+## Superseded draft shape
 
-The production product has one shared online BOLT11-to-BAT issuer and two
-independently selected PIR providers:
+The current checked-in units and gates describe the following **rejected
+draft**, not the production target:
 
 - `pir1` is the ordinary Hetzner provider for DPF evaluate, Harmony hint and
   Onion evaluate, for both db0 and db1;
@@ -27,23 +36,25 @@ BAT acquisition mechanism: neither provider receives invoice, payment-hash,
 preimage, route or payer data. Direct BOLT11 receipts, Standard Cashu, ARC and
 payout inputs are outside this production profile.
 
-Using one issuer is an explicit correlation and availability tradeoff. It does
-not merge provider identities, policies, ProviderStores, idempotency material,
-rollback-authority namespaces or query requests, and it never creates a pair
-identifier or shared raw credential.
+The approved replacement keeps the two provider roles but uses issuer-wide BAT
+acceptance classes. One BAT may be submitted to any compatible provider and is
+consumed exactly once globally by the issuer. pir1 and pir2 have no durable BAT
+spent/delivery store. The fixed twelve-lineage requirement, provider-specific
+raw credentials and pir2 payment ProviderStore in the rejected draft must not
+be carried into a release.
 
 ## Focused source check
 
-From the repository root, run the existing browserless entry point:
+The existing browserless entry point checks only the superseded draft:
 
 ```sh
 scripts/payment-v1-mainnet-lightning-v1-check.sh
 ```
 
-It uses locked/offline Cargo plus focused source/template, rendered-artifact
-and Web shared-BAT contracts. It is not full Payment V1 CI and produces no
-private plan, deployment artifact or live evidence. A pass does not close the
-pir2 custody blocker below and does not make the checked-in empty Mainnet plan
+Do not cite a pass as evidence for the issuer-wide contract. The script remains
+a regression aid for code retained from the draft until Phase D of the revised
+plan replaces its provider-specific assertions. It produces no private plan,
+deployment artifact or live evidence and does not make the checked-in Mainnet
 skeleton renderable.
 
 The installed `bpir-admin mainnet-lightning-v1 lint-profile` command is
@@ -83,30 +94,35 @@ issuer history with an empty provider claim namespace, or reuse an identity or
 rollback namespace unless a separately reviewed migration preserves its full
 spend/replay/floor history.
 
-## pir2 hostile-host custody blocker
+## pir2 V2 sealed-credential blocker
 
-The stateful pir2 shared-BAT provider needs provider identity material, its
-clearing/idempotency secrets, ProviderStore keys and remote rollback-authority
-client secrets. The repository does not yet identify a reviewed way to
-provision and retain those secrets inside the measured guest while treating
-the VPSBG host as hostile. They must not be embedded in a public UKI or treated
-as confidential merely because they are placed on an unprotected mutable host
-path.
+The revised pir2 profile has no payment ProviderStore, shared-idempotency
+secret or payment rollback client. The selected V2 design retains distinct
+service-identity and clearing signing seeds in one measurement-bound AEAD
+envelope on the untrusted persistent rootfs. Only the measured initramfs may
+derive its VCEK-root sealing key through `/dev/sev-guest`; plaintext exists only
+in zeroizing process memory. The two signing roles must not reuse one key, and the envelope
+must not contain BAT/payment state.
 
-This is a production P1 blocker. Until a reviewed measured-guest
-provisioning/sealing and recovery contract exists, no pir2 shared-BAT plan or
-UKI may be called production-activatable, and the complete two-provider product
-may not be called production-ready. The existing storeless Free-PoW and
-functional-beta VPSBG images are not substitutes for this stateful profile.
+This remains a production P1 until the derived-key/envelope implementation,
+strict report-policy and signed exact-release checks, pre-ORAM sealed preflight,
+fresh-key enrollment, fail-closed plaintext-fallback rejection, an
+observation-only boot whose measurement is independently reproduced from the
+exact reviewed UKI, and the fresh-nonce Boot-0 plus exact-final-UKI
+two-clean-reboot canary pass before either public key is authorized. Every boot
+receipt must bind the current attested channel and reject an earlier nonce. A
+different measurement, physical host, TCB environment or VM instance is a
+credential rotation, not an assumed unlock path. The existing plaintext
+identity, Free-PoW and functional-beta images are not substitutes.
 
 ## Private materialization and live boundary
 
-The checked-in `issuer-lightning-mainnet-v1` plan skeleton deliberately has no
-payloads, identities, hashes, risk limits or node inputs and must fail the
-render gate unchanged. After the old-state inventory and pir2 P1 are closed, a
-separately authorized owner-only plan must bind the exact issuer, pir1 and pir2
-binaries/configuration, two policies, twelve BAT lineages, two clearing
-relationships, three independent store/rollback domains, service identities,
+The checked-in `issuer-lightning-mainnet-v1` and provider skeletons encode the
+superseded draft and must fail unchanged. They cannot be privately completed.
+After the V2 source, old-state inventory and pir2 P1 are closed, new owner-only
+plans must bind the exact binaries/configuration, two policies, reviewed
+acceptance classes and fresh key epochs, provider accounting/authentication
+relationships, the issuer's sole BAT store/rollback domain, service identities,
 database roots, quote delegation, CLN identity/backups and risk limits. Secret
 values never belong in Git, CI output or this runbook.
 

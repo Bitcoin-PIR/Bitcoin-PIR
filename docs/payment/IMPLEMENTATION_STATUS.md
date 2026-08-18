@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-08-18. This document describes repository code, focused
+Status snapshot: 2026-08-19. This document describes repository code, focused
 tests, and the current functional-beta evidence; it is not a mainnet-production
 readiness claim. “Implemented” means that a code path exists; “tested” names
 the boundary actually exercised. It does not mean that an operator has
@@ -8,23 +8,24 @@ activated the path with real money.
 
 ## Mainnet shared-BAT source boundary
 
-- [x] The approved topology is one Mainnet BOLT11-to-BAT issuer shared by pir1
-      and pir2. The issuer source unit uses two signed policies, twelve BAT key
-      inputs and two clearing authorization/approval/request-key triplets in
-      pir1/pir2 order. It retains ledger-only settlement, quote material and a
-      remote rollback authority while excluding Direct receipt, Standard
-      Cashu, ARC and payout inputs. Startup also rejects operator, clearing or
-      request-verification role-key reuse across the two relationships.
-- [x] The pir1 closed provider source profile covers db0+db1 DPF evaluate,
-      Harmony hint and Onion evaluate with only Free-PoW plus shared BAT. The
-      intended measured pir2 provider covers db0+db1 DPF evaluate, Harmony
-      query and Direct TEE-ORAM under a separate identity, ProviderStore,
-      clearing relationship and rollback domain.
-- [x] The focused browserless entry remains
-      `scripts/payment-v1-mainnet-lightning-v1-check.sh`; it covers the Rust
-      profile/CLI boundary, focused source/render contracts and the Web
-      shared-issuer BAT/BOLT11 acquisition contracts. It neither expands to the
-      full Payment V1 suite nor produces deployment evidence.
+- [x] **Revised product decision recorded.** A new issuer-wide BAT may be
+      presented to any compatible pir1/pir2 acceptance-class member, while the
+      issuer's first successful commit consumes that credential globally. One
+      paid two-provider query uses two BATs. Providers do not keep a durable BAT
+      spent set or delivery claim. See `MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`.
+- [x] pir1 exact-db Harmony multi-pool routing and cross-db continuation
+      isolation are implemented independently of the BAT audience decision.
+- [ ] **Issuer-wide V2 protocol pending.** Current policy bindings, issuer
+      unit, SDK/Web selection and render gates still implement the superseded
+      provider-specific 2-policy/12-key/2-clearing draft. Current V1 lineage
+      rules deliberately reject a shared raw BAT key across providers. The
+      existing focused Mainnet script tests that old contract and is not V2
+      readiness evidence.
+- [ ] **Payment-storeless provider mode pending.** The current shared-BAT
+      committer still uses ProviderStore for a local delivery claim and the
+      existing storeless mode accepts only Free-PoW. The V2 path must make the
+      issuer the only durable spend/replay authority and must not return a
+      grantable success after first commit.
 - [ ] **Old Direct transition pending.** Before replacing the old Mainnet
       source profile, an owner must inventory every private plan, installed
       bundle, store/floor, identity/key lineage, backup and outstanding quote/
@@ -32,28 +33,36 @@ activated the path with real money.
       admission must stop and the exact recovery state must drain or remain
       isolated and retained through its final horizon. The empty checked-in
       skeleton is not evidence that no private state exists.
-- [ ] **pir2 production P1 open.** There is no reviewed measured-guest
-      provisioning/sealing and recovery contract for pir2 provider identity,
-      clearing/idempotency, ProviderStore and rollback-client secrets against a
-      hostile VPSBG host. Those secrets may not enter a public UKI or an
-      unprotected mutable host path. Until this closes, pir2 and the complete
-      two-provider product are not production-activatable or production-ready.
+- [ ] **pir2 sealed-credential P1 open.** V2 removes pir2's payment
+      ProviderStore, shared idempotency secret and payment rollback client. The
+      selected replacement keeps distinct long-lived service-identity and
+      clearing seeds in one measurement-bound AEAD envelope on the untrusted
+      persistent rootfs. A measured-initramfs helper must use the fixed
+      VCEK-root `SNP_GET_DERIVED_KEY` request, enforce the strict report policy,
+      verify the signed exact-release artifact, run before Direct ORAM
+      construction, decrypt only into zeroizing process memory and reject every
+      plaintext/UKI fallback. Neither implementation nor the separately
+      authorized observation/reproduction boot, fresh-nonce Boot-0 and
+      exact-final-UKI two-clean-reboot enrollment canary exists yet. The seeds
+      are not BAT spend state and must not be reused across roles.
 - [ ] **Materialization/live approval pending.** The Mainnet plan skeleton is
-      deliberately empty and gate-rejected, not a complete render input set.
+      both incomplete and based on the superseded draft, not a render input.
       No private complete plan, target-host preflight, Mainnet CLN liquidity/
       funds, remote installation, VPSBG image change, activation sentinel,
       invoice, payment or production service evidence is recorded. See
-      `MAINNET_LIGHTNING_V1_RUNBOOK.md`.
+      `MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`.
 
 ## db0 + db1 Free-PoW and BAT source boundary
 
 - [x] Complete pir1 and pir2 source-policy templates cover every provider-local
       workload for both db0 and db1. Each scope is bound to that backend's
-      strict verified dataset root and contains exactly provider-local
-      Free-PoW plus stable Cashu BAT redeemed through the shared online issuer.
-      DPF/Harmony use their DB-proof-v1 sidecar root, Onion uses its
-      DB-proof-v2 sidecar root, and TEE ORAM uses the loaded server-database
-      manifest root.
+      strict verified dataset root and contains provider-local Free-PoW plus a
+      BAT placeholder. DPF/Harmony use their DB-proof-v1 sidecar root, Onion
+      uses its DB-proof-v2 sidecar root, and TEE ORAM uses the loaded
+      server-database manifest root.
+- [ ] Their checked-in BAT bindings remain provider-specific V1 draft input.
+      They must not be rendered for production and do not become complete
+      until V2 acceptance-class membership replaces those bindings.
 - [x] The templates exclude direct BOLT11 receipts, Standard Cashu eCash and
       ARC. BOLT11 remains an issuer-side BAT acquisition route; no invoice,
       payment hash, preimage or payer data is added to a provider query offer.
@@ -1414,9 +1423,11 @@ findings and must not be collapsed into that count.
    rollback defense. Provider payout also has a durable detailed-state adapter
    and a no-funds worker, but no approved real-funds executor; neither the
    transport-neutral library nor any local/test floor activates one.
-4. **First production store ceremony.** Payment V1 has no released v6 store to
-   migrate and the shared-delivery fix does not bump schema v7. The first
-   production activation must use a clean store and a forward-only binary. If
+4. **Legacy/current V1 store ceremony.** Payment V1 has no released v6 store to
+   migrate and the shared-delivery fix does not bump schema v7. These rules
+   continue to describe stateful V1 profiles and recovery; they are not the V2
+   issuer-wide production target. A first V1 activation must use a clean store
+   and a forward-only binary. If
    an older ProviderStore or issuer redeem-history database could contain an
    exact issuer replay without matching local-delivery claims, stop every old
    process and rotate either the per-provider shared-idempotency secret or the
@@ -1438,13 +1449,13 @@ findings and must not be collapsed into that count.
    attestation/binary/client-pin acceptance. Policy expiry/renewal, difficulty,
    scope, limit or dataset changes all require another UKI; host-side edits fail
    closed.
-   That storeless exception cannot implement production pir2 shared BAT. The
-   production profile needs a ProviderStore, clearing/idempotency material and
-   remote rollback client secrets. Its P1 remains open until a reviewed
-   measured-guest provisioning/sealing, restart, backup and recovery contract
-   protects those secrets from the hostile host without embedding them in the
-   public UKI. Until then, no pir2 plan, UKI or complete shared-BAT topology may
-   be described as production-activatable.
+   The current storeless exception cannot implement issuer-wide V2 BAT either,
+   because its runtime contract accepts only Free-PoW. V2 must add an
+   exact-policy, issuer-online BAT mode with no payment ProviderStore,
+   shared-idempotency material or provider payment rollback client. pir2's
+   selected sealed identity/clearing implementation and capability canary are
+   tracked separately above. Until that code and evidence exist, no pir2 V2
+   plan or UKI is source-ready.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent
@@ -1523,10 +1534,12 @@ accepts that the issuer can correlate provider, scope and timing across both
 redemption streams. Different blind capabilities remove a direct token join;
 they do not remove common-infrastructure traffic analysis.
 
-The approved Mainnet shared-BAT profile records that explicit acceptance and
-uses one issuer for pir1 and pir2. It still requires separate provider
-identities, policies, ProviderStores, clearing/idempotency material and rollback
-domains; it does not create a pair ID or let either provider learn the peer.
+The revised Mainnet issuer-wide BAT plan records that explicit correlation
+acceptance and uses one issuer for pir1 and pir2. It still requires separate
+provider identities, policies and live query sessions, but the issuer is the
+only durable BAT spend/replay domain. The providers have no BAT ProviderStore,
+shared-idempotency material or payment rollback domain. One BAT has one global
+winner and does not create a pair ID or reveal the peer to either provider.
 
 ## Functional-beta deployment guard
 

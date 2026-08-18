@@ -157,22 +157,21 @@ real-money production service. The beta must state the corresponding limits.
 
 ## Mainnet Lightning V1 handoff boundary
 
-The approved Mainnet handoff is now the one-issuer/two-provider shared-BAT
-profile covering db0 and db1. Run
-`scripts/payment-v1-mainnet-lightning-v1-check.sh` for the focused offline Rust,
-source/render and Web shared-BAT contracts; do not substitute it for full CI or
-a live deployment check.
+The 2026-08-18 production decision selects an issuer-wide BAT: one credential
+may be submitted to any compatible pir1/pir2 offer, and the issuer's first
+successful commit consumes it globally. The providers do not keep durable BAT
+spent or delivery state. The existing provider-specific 2/12/2 profile and its
+focused check are superseded draft evidence, not the approved handoff.
 
-This lane is **source work only; production activation blocked**. In particular,
-pir2 has no reviewed hostile-host secret-provisioning/sealing contract yet, and
-the checked-in Mainnet plan skeleton is intentionally incomplete. After that
-P1 and any old Direct state transition are closed, later explicitly approved
-operations must supply the private plan, selected Mainnet CLN node, risk caps
-and liquidity/funding envelope, then separately approve rendering, remote
-mutation, custody/funds, activation, and any invoice or payment action. The
-runbook deliberately keeps secrets out of source and is the authoritative short
-handoff:
-[`MAINNET_LIGHTNING_V1_RUNBOOK.md`](MAINNET_LIGHTNING_V1_RUNBOOK.md).
+This lane is **protocol/source work only; production activation blocked**. The
+next source slice must add the versioned acceptance-class contract, issuer
+global first-spend with no grantable replay, payment-storeless provider mode,
+SDK/Web vault changes and pir2's measurement-bound sealed identity/clearing
+credentials with an exact derived-key capability canary. Old Direct and
+provider-specific BAT state must remain isolated. Later private
+rendering, host mutation, VPSBG operations, publication and funds each retain
+their separate approvals. The authoritative sequence is:
+[`MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](MAINNET_SHARED_BAT_PRODUCTION_PLAN.md).
 
 ## Compatibility and rollback
 

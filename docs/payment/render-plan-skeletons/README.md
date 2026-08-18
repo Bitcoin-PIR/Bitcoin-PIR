@@ -1,5 +1,13 @@
 # Payment V1 private render-plan skeletons
 
+Mainnet note (2026-08-18): the checked-in shared-BAT provider/issuer skeletons
+implement the superseded provider-specific 2/12/2 draft. They must remain
+invalid and must not be privately completed or rendered. The replacement
+issuer-wide acceptance-class and payment-storeless provider profiles are
+specified in
+[`../MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](../MAINNET_SHARED_BAT_PRODUCTION_PLAN.md)
+but do not exist yet.
+
 The main Payment V1 render-plan skeletons mirror schema version `2` and the
 closed profile catalog in `scripts/payment-v1-rendered-artifact-gate.mjs`.
 The Caddy site-inventory and directory-publisher namespace prerequisite inputs
@@ -34,17 +42,15 @@ hardened-preimage digest; `managed_block.candidate_adapted_json_sha256` is the
 exact post-overlay digest. Both use the admin-UDS gate canonicalizer, not the
 newline-terminated overlay plan/receipt encoding.
 
-The three provider skeletons are separate closed profiles, not optional-field
-variants. `provider-v1` retains its complete Standard Cashu inputs unchanged.
-`provider-no-standard-cashu-v1` is now the closed pir1 db0+db1 Free-PoW plus
-shared-BAT profile. It uses a distinct unit, service identity, state directory,
-configuration root and activation sentinel, and loads two exact Harmony pools.
-Its current policy must be the reviewed complete pir1 policy. The template and
-rendered gates reject retained-policy flags/payloads, provider-local BAT mint
-material, Direct receipt, Standard Cashu and ARC. Current method coverage
-therefore checks the only configured policy; there is no old-policy redemption
-route in this profile. Do not copy local BAT, Cashu custody/recovery/exposure
-or direct-receipt fields into this plan.
+The three checked-in provider skeletons are separate V1 profiles, not
+optional-field variants. `provider-v1` retains its complete Standard Cashu
+inputs unchanged. `provider-no-standard-cashu-v1` records the superseded
+stateful pir1 db0+db1 Free-PoW plus provider-specific shared-issuer BAT draft.
+Its distinct unit, identity and two Harmony-pool structure remain useful source
+reference, and its gates still reject retained policy, local BAT mint, Direct,
+Standard Cashu and ARC material. It is not the V2 payment-storeless pir1
+profile, cannot be materialized for Mainnet, and must not be described as the
+current production skeleton.
 `provider-direct-v1` has another distinct unit, identity, state/configuration
 root and sentinel. Its nine payloads contain only the unified-server binary and
 manifest, database config, provider identity key/certificate, signed policy,
@@ -56,16 +62,21 @@ BOLT11 receipts. In this checked-in zero-retained profile the gate rejects retai
 policies entirely. Startup method coverage rejects every other applicable
 current route.
 
-The approved Mainnet product does not pair two `provider-direct-v1` instances.
-It has one `issuer-lightning-mainnet-v1` shared issuer, the pir1
-`provider-no-standard-cashu-v1` provider, and a separate measured pir2 provider.
-The issuer consumes two policies, twelve BAT lineages and two clearing
-relationships in pir1/pir2 order; no Direct receipt, Standard Cashu or ARC
-material belongs in that profile. There is currently no checked-in production
-pir2 render skeleton. Its stateful shared-BAT profile remains P1-blocked until
-a reviewed measured-guest provisioning/sealing and recovery contract protects
-provider, clearing/idempotency, store and rollback-client secrets from the
-hostile VPSBG host without embedding them in a public UKI.
+The revised Mainnet product still has one issuer and the two pir1/pir2 service
+roles, but none of the current provider-specific skeletons is its closed
+profile. The issuer will consume two policies, a reviewed nonzero set of
+issuer-wide acceptance-class keysets, and two provider accounting/
+authentication relationships. pir1 and pir2 will have no payment ProviderStore,
+shared-idempotency secret or provider payment rollback client. pir2 will keep
+distinct service-identity and clearing seeds only inside one measurement-bound
+AEAD sealed envelope; the ordinary rootfs holds ciphertext and the measured
+initramfs decrypts only into zeroizing process memory after the exact
+derived-key and strict report-policy gates. That source path and its separately
+authorized observation/reproduction boot, fresh-nonce/current-channel Boot-0
+and exact-final-UKI two-reboot canary remain P1 work. Do not
+solve them by completing the obsolete stateful skeleton or by embedding a
+private key in the public UKI. No Direct receipt, Standard Cashu or ARC material
+belongs in the replacement profile.
 
 The three provider plans are mutually exclusive on one host. Each unit requires
 the other two profile sentinels to be absent when it starts. Because systemd
@@ -117,9 +128,9 @@ separately reviewed owner-only record; a skeleton cannot establish it.
 | `publisher-netns-ceremony-v1.failed-recovery-approval.json.example` | separate failed-generation recovery authority | At-most-one-hour schema-v1 approval binding one durable start intent, its original activation approval and one complete terminal `failed/failed` InvocationID to the fixed `systemctl reset-failed` argv. A durable reset intent can survive approval expiry only under a fresh approval for the identical tuple, and its receipt preserves both approval digests. It grants no start, stop, restart or reload. |
 | `publisher-netns-ceremony-v1.rollback-approval.json.example` | separate rollback authority | At-most-one-hour schema-v2 plan/executor/launcher/manifest/committed-receipt approval for stopping only the exact namespace unit. |
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
-| `issuer-lightning-mainnet-v1.plan.json.example` | `issuer-lightning-mainnet-v1` | Deliberately empty, gate-rejected placeholder for the one shared Mainnet BOLT11-to-BAT issuer. It supplies none of the required two-policy, twelve-BAT-lineage, two-clearing-relationship, payload, identity, hash, risk, liquidity, node or activation inputs and cannot render or deploy. Materialize a private complete plan only after the old-Direct transition, pir2 custody P1 and separate approvals in `MAINNET_LIGHTNING_V1_RUNBOOK.md` are closed. |
+| `issuer-lightning-mainnet-v1.plan.json.example` | `issuer-lightning-mainnet-v1` | Deliberately empty, gate-rejected placeholder for the superseded provider-specific 2/12/2 draft. It cannot render or deploy and must not be completed. A future V2 issuer-wide skeleton is not yet checked in. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
-| `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Complete pir1 db0+db1 Free-PoW plus shared-issuer BAT, without provider-local BAT, Direct receipt, Standard Cashu or ARC. |
+| `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Superseded provider-specific pir1 draft. Its db0/db1 and Harmony-pool structure may inform V2, but this stateful profile is not the issuer-wide production skeleton and must not be materialized. |
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 

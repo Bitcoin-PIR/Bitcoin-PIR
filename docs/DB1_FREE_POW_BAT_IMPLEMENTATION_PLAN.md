@@ -1,8 +1,11 @@
 # db1 Free-PoW + BAT implementation plan
 
-Status: source implementation complete and focused PR validation passed on
-2026-08-18. This document is not production deployment, policy rotation,
-database rebuild, public Web publication, or funds authorization.
+Status: db1 dataset/proof and Free-PoW source work completed on 2026-08-18; the
+provider-specific BAT production contract was superseded later that day and
+requires the issuer-wide V2 work in
+[`payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md).
+This document is not production deployment, policy rotation, database rebuild,
+public Web publication, or funds authorization.
 
 ## Product contract
 
@@ -16,8 +19,9 @@ DPF, Harmony, Onion and Direct ORAM must all support db1. Every production db1
 query scope offers exactly these two stable entitlement paths:
 
 1. provider-local Free proof of work;
-2. a blinded, provider-specific BitcoinPIR Cashu BAT redeemed through the
-   approved shared issuer.
+2. a blinded issuer-wide BitcoinPIR Cashu BAT whose reviewed acceptance class
+   includes the selected provider offer and whose first successful redemption
+   is consumed globally by the shared issuer.
 
 BOLT11 is the issuer-side way to purchase the blind BAT. It is not a separate
 provider query entitlement: the PIR provider must not receive the invoice,
@@ -35,8 +39,11 @@ strict verified dataset root selected for db1. DPF/Harmony use their verified
 DB-proof sidecar root, Onion uses its V2 proof root, and Direct ORAM uses the
 verified loaded server-manifest root. These roots describe the same logical
 db1 catalog entry but must not be collapsed into one placeholder. A db1 scope
-must not reuse the db0 scope ID, offer IDs, BAT binding, BAT key lineage, price,
-or resource limits merely because the workload name is the same.
+must not reuse the db0 scope ID, offer ID, price or resource limits merely
+because the workload name is the same. Its BAT offer must name an exact
+acceptance-class membership. A raw BAT lineage may be shared across provider
+scopes only inside one reviewed class with identical BAT-relevant terms; it
+must not be copied across classes.
 
 | Backend | Provider role | db1 workload | Required stable offers |
 | --- | --- | --- | --- |
@@ -47,14 +54,17 @@ or resource limits merely because the workload name is the same.
 | Onion | pir1 evaluate leg | `onion-evaluate-job-v1` | Free-PoW + BAT |
 | Direct ORAM | pir2 measured runtime | `tee-oram-query-v1` | Free-PoW + BAT |
 
-The two providers keep independent identities, policies, stores, BAT key
-lineages and admission decisions. The browser acquires and presents one
-provider-specific authorization for each provider involved in a query.
+The two providers keep independent identities, policies and live admission
+decisions. The issuer keeps the only durable BAT spent set. The browser may use
+one issuer-wide BAT at either compatible provider, but a paid two-provider
+query still consumes two independent BATs.
 
 ## Source result and remaining release boundary
 
-- Complete pir1/pir2 policies now cover every matrix row for db0 and db1, with
-  exactly Free-PoW and stable shared-issuer BAT in each scope.
+- Complete pir1/pir2 source templates cover every matrix row for db0 and db1,
+  with exactly Free-PoW and a BAT placeholder in each scope. Their current
+  provider-specific BAT bindings are inert superseded draft input, not a
+  production-ready policy; Phase D of the issuer-wide plan must replace them.
 - Read-only implementation inspection confirmed that Payment V1 already binds
   arbitrary exact `db_id` together with provider, backend, workload, protocol,
   dataset root and profile. No db0-special runtime branch or missing payment
@@ -74,6 +84,13 @@ provider-specific authorization for each provider involved in a query.
   Nothing in this completed db1 source PR activates a provider, issuer,
   payment, database, UKI or public site.
 
+## Historical source sequence and superseding boundary
+
+The steps below record the completed db1 source slice. Any assertion that a
+BAT key, vault record or spent namespace must remain provider-specific is
+superseded by the issuer-wide plan. Dataset roots, db isolation, Free-PoW and
+Direct-proof work remain valid.
+
 ## Implementation sequence
 
 ### Step 1 — Freeze the policy shape
@@ -82,8 +99,9 @@ Add db1 variants to the source policy/profile templates. For every workload,
 bind the scope to the exact backend-specific db1 dataset root and include only
 Free-PoW and stable shared-issuer BAT offers. Use separate DPF/Harmony, Onion,
 and Direct ORAM root placeholders even when a retained release record shows
-related logical database metadata. Generate fresh placeholder namespaces for
-the db1 offer IDs and BAT bindings; do not copy the db0 audience coordinates.
+related logical database metadata. Generate fresh offer IDs. BAT class
+membership is added only by the new V2 plan; do not promote the current
+provider-specific binding placeholders.
 
 Acceptance:
 
@@ -104,15 +122,20 @@ Acceptance:
 - one focused matrix test admits both Free-PoW and BAT for every db1 workload;
 - a db0 authorization cannot admit db1 work, and a db1 authorization cannot
   admit db0 work;
-- a BAT for one provider, scope, workload, or offer cannot be reused for
-  another;
+- the historical V1 gate keeps its provider/scope/offer isolation until it is
+  replaced rather than silently weakening the old wire;
 - preflight remains non-consuming and expensive work remains behind admission.
 
-Implementation result: no admission/client payment code change was necessary.
-The new source gate checks all six provider workloads across db0/db1, unique
-roots/bindings/offers, and the exact two-method profile. Existing runtime tests
-already exercise exact arbitrary-db isolation, so a duplicate db1-special Rust
-matrix was intentionally not added.
+Implementation result: no admission/client payment code change was necessary
+for the db1 dataset slice. The old source gate checked all six workloads and
+the provider-specific bindings that existed at that time. The issuer-wide V2
+work must replace those binding assertions; existing arbitrary-db isolation
+remains valid and does not need a duplicate db1-special Rust matrix.
+
+Superseding V2 acceptance remains pending: one BAT may target any compatible
+acceptance-class member, but the issuer's first successful commit must make
+every later presentation globally spent. That is Phase B/D work in the
+issuer-wide plan, not evidence from this completed historical step.
 
 ### Step 3 — Publish and verify the Direct ORAM db1 source proof
 
@@ -195,7 +218,8 @@ Keep the work reviewable in this order:
 4. prospective attested-builder rotation documentation;
 5. focused verification evidence and final status updates.
 
-Production mutation remains separate. After the source PR is merged, a
-coordinated pir1/pir2 policy and binary release, issuer BAT lineage creation,
-public proof publication, and any real-value Lightning activation each require
-their normal explicit operator approvals.
+Production mutation remains separate. The provider-specific BAT templates must
+not be materialized. After the issuer-wide source work is merged, a coordinated
+pir1/pir2 policy and binary release, acceptance-class key creation, public
+proof publication, and any real-value Lightning activation each require their
+normal explicit operator approvals.
