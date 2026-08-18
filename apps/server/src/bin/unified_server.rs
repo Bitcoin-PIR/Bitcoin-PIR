@@ -472,7 +472,7 @@ fn normalize_harmony_pool_bindings(
 ) -> Result<Vec<HarmonyPoolBinding>, String> {
     if explicit.is_empty() {
         return Ok((pool_size > 0)
-            .then(|| HarmonyPoolBinding {
+            .then_some(HarmonyPoolBinding {
                 db_id: legacy_db_id,
                 pool_dir: legacy_pool_dir,
             })
