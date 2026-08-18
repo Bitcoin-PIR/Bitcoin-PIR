@@ -147,6 +147,14 @@ const sourceProofTask = oramConnect.slice(sourceProofStart, sourceProofEnd);
 if (sourceProofEnd < 0 || sourceProofTask.includes('oramClient = null')) {
   throw new Error('ORAM source-proof rejection must not clear the strict live client');
 }
+if (oramConnect.includes('pin => pin.dbId === 0')
+    || !oramConnect.includes('pin => pin.dbId === selectedDbId')) {
+  throw new Error('ORAM source proof must select the production pin for the chosen db');
+}
+if (!moduleSource.includes('const preferredDbId = Number.parseInt(select.value, 10);')
+    || !moduleSource.includes('if (db.dbId === preferredDbId) opt.selected = true;')) {
+  throw new Error('ORAM catalog refresh must preserve the requested db before admission');
+}
 
 if (/\bschedule\s*:/.test(workflow) || !/^\s*workflow_dispatch:\s*$/m.test(workflow)) {
   throw new Error('live browser canary must be manual-only');

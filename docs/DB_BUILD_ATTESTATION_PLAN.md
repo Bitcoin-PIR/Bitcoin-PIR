@@ -150,14 +150,15 @@ Known cleanups:
   `super_root`.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
   with the pinned expected values below.
-- `web/src/oram-source-proof.ts::verifyOramSourceProof` verifies the published
-  `/proofs/oram-source/current.json`. It accepts only predecessor-free
+- `web/src/oram-source-proof.ts::verifyOramSourceProof` selects and verifies the
+  published `/proofs/oram-source/current.json` for db0 or
+  `/proofs/oram-source/current-db1.json` for db1. It accepts only predecessor-free
   full-build BuildEvidence v2, recomputes the v2 report-data and params domains,
   and binds the exact database/all-artifacts/server-manifest bytes to the
   hashes inside BuildEvidence.
 - By default the verifier also validates the raw builder SNP report with the
-  AMD ARK/ASK/VCEK artifacts and requires the already verified live db0 proof
-  and strict live runtime attestation to have the exact attested
+  AMD ARK/ASK/VCEK artifacts and requires the already verified live proof for
+  the selected db plus strict live runtime attestation to have the exact attested
   server-manifest root and pinned database fields. Disabling signature
   verification is fixture-only and can never return `verified`.
 - The typed `[direct_oram]` table in that attested server manifest is the

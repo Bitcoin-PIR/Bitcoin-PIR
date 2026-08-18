@@ -24,6 +24,14 @@ evidence and follow-up are closed.
 
 Status values: `OPEN`, `BLOCKED`, `QUEUED`, `IN PROGRESS`, `DONE`, `CLOSED`.
 
+2026-08-18 source update: the db0 + db1 Free-PoW/BAT policy templates and the
+db1 Direct ORAM public source-proof bundle are now prepared in source. This
+supersedes the db0-only/source-decision wording in P0-1 and P1-2 below, while
+preserving those 2026-08-09 rows as the cleanup snapshot. Rendering, signing,
+Web publication, provider/issuer activation, funds, and coordinated pir1/pir2
+release remain pending and separately authorized; ARC is not part of the
+approved product profile.
+
 | ID | Priority | Item | Repository / PR | Status | Evidence and next action |
 | --- | --- | --- | --- | --- | --- |
 | P0-1 | P0 | Live SDK integration admission | [Bitcoin-PIR #139](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/139) | DEPLOYED (2026-08-07) | Root cause mapped + fixed + deployed 2026-08-06/07. (2) Harmony granted `harmony-query-job-v1` silent hang → RESOLVED: the Payment-V1 listener's 2 MiB `max_write_buffer_size` + 512 KiB message cap (962fd4c5) killed the only unchunked response arm (a live-scale 4.15–27 MB harmony batch response hit `WriteBufferFull`; the swallowed error wedged the connection, and the Cloudflare idle-kill caused the '~120 s 1006 close' seen by the browser). Fix = chunked response + fail-close logging (`9b7128f0` + two tungstenite-level regressions) PLUS a policy response-budget raise (a verified session aggregates ≈60–65 MiB of responses, so both hosts' harmony-query `max_response_bytes` went 64→128 MiB: weikeng2 epoch-3→4 (UKI image 229, MEASUREMENT `1c375b26…`), weikeng1 epoch-9→10). Witnesses live on production: `test_harmony_strict_production_canary_sync_single`, `…_query_batch`, and the raw-pair/driver probes in `tests/local_production_repro.rs` (4.15 MB INDEX + 27 MB CHUNK full round-trips in seconds through Cloudflare). (3) Onion free-scope 16 MiB request ceiling → RESOLVED by weikeng1 epoch-9/10 policy raise to 24 MiB (register-once + INDEX + CHUNK + INDEX/DATA Merkle sessions verified end-to-end; no metering defect and no protocol semantics change). (4) db1 tree-tops (23.4 MB) NOW SERVES on both hosts thanks to `9b7128f0`'s pre-auth budget raise (64 MiB/192 msg; witness 9,155,384 + 23,426,084 byte responses in <1 s E2E each). Remaining strict-canary gaps are NOT these items: the **db1-specific** stages in the root-tier canaries (DPF delta frames, harmony db1-context sync) are intentionally blocked until a separately priced db1 scope + fresh BAT/ARC bindings ship per the templates' stated plan; the DPF/harmony/onion db0 query flows themselves are deployable-green and can re-gate CI whenever governance wants |

@@ -10,7 +10,9 @@ import { PRODUCTION_ORAM_DB_PROOF_V2_PINS } from '../attest-pin.js';
 import type { VerifiedDatabaseProof } from '../db-proof.js';
 import { bytesToHex, sha256 } from '../hash.js';
 import {
+  DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH,
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+  oramSourceProofManifestPathForDbId,
   paramsHashV2ForAttestedBuildEvidence,
   parseAttestedBuildEvidence,
   parseDirectOramManifestBinding,
@@ -28,17 +30,28 @@ const legacyFixtureRoot = new URL(
 const LEGACY_V1_MANIFEST_PATH = '/proofs/oram-source/mainnet_948454.json';
 const SERVER_MANIFEST_ROOT =
   '91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6';
+const DB1_SERVER_MANIFEST_ROOT =
+  '047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c';
 const DB0_PIN = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find((pin) => pin.dbId === 0)!;
+const DB1_PIN = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find((pin) => pin.dbId === 1)!;
 const LIVE_DB0_PROOF: VerifiedDatabaseProof = {
   ...DB0_PIN,
   manifestRootHex: SERVER_MANIFEST_ROOT,
 };
-const LIVE_RUNTIME: OramSourceLiveRuntime = {
+const LIVE_DB1_PROOF: VerifiedDatabaseProof = {
+  ...DB1_PIN,
+  manifestRootHex: DB1_SERVER_MANIFEST_ROOT,
+};
+const LIVE_DB0_RUNTIME: OramSourceLiveRuntime = {
   state: 'verified-vcek',
   sevStatus: 'reportDataMatch',
   vcekChain: 'pass',
   pinStatus: 'match',
   manifestRootHex: SERVER_MANIFEST_ROOT,
+};
+const LIVE_DB1_RUNTIME: OramSourceLiveRuntime = {
+  ...LIVE_DB0_RUNTIME,
+  manifestRootHex: DB1_SERVER_MANIFEST_ROOT,
 };
 
 async function publicArtifactLoader(path: string): Promise<Uint8Array> {
@@ -51,10 +64,12 @@ async function legacyArtifactLoader(path: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(clean, legacyFixtureRoot)));
 }
 
-async function readCurrentManifest(): Promise<OramSourceProofManifest> {
+async function readCurrentManifest(
+  manifestPath = DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+): Promise<OramSourceProofManifest> {
   return JSON.parse(
     new TextDecoder().decode(
-      await publicArtifactLoader(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH),
+      await publicArtifactLoader(manifestPath),
     ),
   ) as OramSourceProofManifest;
 }
@@ -74,29 +89,98 @@ describe('ORAM source input binding', () => {
     requireSdkWasm.mockReturnValue(sdk);
   });
 
-  it('verifies the published BuildEvidence V2 against live db0 and measured runtime', async () => {
-    expect(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH).toBe('/proofs/oram-source/current.json');
+  it.each([
+    {
+      dbId: 0,
+      manifestPath: DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+      pin: DB0_PIN,
+      liveProof: LIVE_DB0_PROOF,
+      liveRuntime: LIVE_DB0_RUNTIME,
+      buildKind: 'snapshot',
+      fromHeight: 0,
+      directInputs: {
+        index_sha256: 'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
+        index_records: '53835039',
+        chunk_sha256: '9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521',
+        chunk_records: '80984512',
+        index_seed: '8030603977422561841',
+      },
+    },
+    {
+      dbId: 1,
+      manifestPath: DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+      pin: DB1_PIN,
+      liveProof: LIVE_DB1_PROOF,
+      liveRuntime: LIVE_DB1_RUNTIME,
+      buildKind: 'delta',
+      fromHeight: 940611,
+      directInputs: {
+        index_sha256: 'e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16',
+        index_records: '5034692',
+        chunk_sha256: '536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a',
+        chunk_records: '8505771',
+        index_seed: '8030603977422561841',
+      },
+    },
+  ])('verifies the published BuildEvidence V2 against live db$dbId and measured runtime', async ({
+    dbId,
+    manifestPath,
+    pin,
+    liveProof,
+    liveRuntime,
+    buildKind,
+    fromHeight,
+    directInputs,
+  }) => {
+    expect(oramSourceProofManifestPathForDbId(dbId)).toBe(manifestPath);
     const status = await verifyOramSourceProof({
       artifactLoader: publicArtifactLoader,
-      expectedDbPin: DB0_PIN,
-      liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      expectedDbPin: pin,
+      liveDatabaseProof: liveProof,
+      liveRuntime,
     });
 
     expect(status.state).toBe('verified');
     expect(status.mismatches).toEqual([]);
     expect(status.verified?.buildEvidence.version).toBe(2);
     expect(status.verified?.buildEvidence.evidenceMode).toBe('full-build');
+    expect(status.verified?.buildEvidence.buildKind).toBe(buildKind);
+    expect(status.verified?.buildEvidence.fromAnchor.height).toBe(fromHeight);
+    expect(status.verified?.buildEvidence.anchor.height).toBe(948454);
     expect(status.verified?.buildEvidence.builderGitCommit).toBe(
       '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
     );
-    expect(status.verified?.directInputs).toMatchObject({
-      index_sha256: 'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
-      index_records: '53835039',
-      chunk_sha256: '9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521',
-      chunk_records: '80984512',
-      index_seed: '8030603977422561841',
+    expect(status.verified?.directInputs).toMatchObject(directInputs);
+  });
+
+  it('maps only published ORAM source-proof database IDs', async () => {
+    expect(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH).toBe('/proofs/oram-source/current.json');
+    expect(DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH).toBe('/proofs/oram-source/current-db1.json');
+    expect(() => oramSourceProofManifestPathForDbId(2)).toThrow(
+      'unsupported ORAM source-proof db_id 2',
+    );
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: { ...DB1_PIN, dbId: 2 },
+      liveDatabaseProof: { ...LIVE_DB1_PROOF, dbId: 2 },
+      liveRuntime: LIVE_DB1_RUNTIME,
     });
+    expect(status.state).toBe('unverified');
+    expect(status.error).toContain('unsupported ORAM source-proof db_id 2');
+  });
+
+  it('rejects the published db0 source bundle when the selected live database is db1', async () => {
+    const status = await verifyOramSourceProof({
+      manifestPath: DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: DB1_PIN,
+      liveDatabaseProof: LIVE_DB1_PROOF,
+      liveRuntime: LIVE_DB1_RUNTIME,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches.some((m) => m.includes('attested DB pin'))).toBe(true);
+    expect(status.mismatches.some((m) => m.includes('live ORAM DB proof'))).toBe(true);
   });
 
   it.each([
@@ -107,7 +191,7 @@ describe('ORAM source input binding', () => {
       artifactLoader: publicArtifactLoader,
       expectedDbPin: { ...DB0_PIN, ...mutation },
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
@@ -136,7 +220,7 @@ describe('ORAM source input binding', () => {
       },
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
@@ -161,7 +245,7 @@ describe('ORAM source input binding', () => {
       },
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
@@ -174,7 +258,7 @@ describe('ORAM source input binding', () => {
       artifactLoader: publicArtifactLoader,
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: { ...LIVE_DB0_PROOF, manifestRootHex: wrongRoot },
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
     expect(dbStatus.state).toBe('unverified');
     expect(dbStatus.mismatches.some((m) => m.includes('live ORAM DB proof: manifestRootHex'))).toBe(true);
@@ -183,7 +267,7 @@ describe('ORAM source input binding', () => {
       artifactLoader: publicArtifactLoader,
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: { ...LIVE_RUNTIME, manifestRootHex: wrongRoot },
+      liveRuntime: { ...LIVE_DB0_RUNTIME, manifestRootHex: wrongRoot },
     });
     expect(runtimeStatus.state).toBe('unverified');
     expect(runtimeStatus.mismatches.some((m) => m.includes('live runtime manifest root'))).toBe(true);
@@ -194,7 +278,7 @@ describe('ORAM source input binding', () => {
       artifactLoader: publicArtifactLoader,
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: { ...LIVE_RUNTIME, state: 'verified', pinStatus: 'no-pin' },
+      liveRuntime: { ...LIVE_DB0_RUNTIME, state: 'verified', pinStatus: 'no-pin' },
     });
 
     expect(status.state).toBe('unverified');
@@ -208,7 +292,7 @@ describe('ORAM source input binding', () => {
       artifactLoader: legacyArtifactLoader,
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
@@ -247,7 +331,7 @@ describe('ORAM source input binding', () => {
       ),
       expectedDbPin: DB0_PIN,
       liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_RUNTIME,
+      liveRuntime: LIVE_DB0_RUNTIME,
     });
 
     expect(status.state).toBe('unverified');
