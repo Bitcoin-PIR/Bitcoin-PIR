@@ -755,6 +755,8 @@ const HEX64_PLACEHOLDERS = new Set([
   "MAINNET_LIGHTNING_CLI_SHA256",
   "MAINNET_QUOTE_DELEGATION_SHA256",
   "PAYMENT_ISSUER_SHA256",
+  "PIR1_POLICY_PUBKEY_HEX",
+  "PIR2_POLICY_PUBKEY_HEX",
   "PUBLISHER_NETNS_HELPER_SHA256",
   "ROLLBACK_AUTHORITY_SHA256",
   "UNIFIED_SERVER_SHA256",
@@ -1599,12 +1601,12 @@ function validateProviderPayloadClosure(plan) {
   const remote = remoteRollbackPathsForProfile(profile);
   const expected = new Set([
     ...(!direct ? [
-      `${root}/cashu-bat.key`,
       `${root}/provider-clearing-signing.key`,
       `${root}/shared-clearing-approval.bin`,
       `${root}/shared-clearing-authorization.bin`,
       `${root}/shared-redeem-idempotency.key`,
     ] : []),
+    ...(profile === "provider-v1" ? [`${root}/cashu-bat.key`] : []),
     ...(!noStandardCashu ? [
       `${root}/cashu-custody-epoch-1.key`,
       `${root}/cashu-recovery-epoch-1.key`,
@@ -2498,8 +2500,8 @@ function validateProfileUnitPolicy(
   }
   if (deploymentProfile === "issuer-lightning-mainnet-v1") {
     const command = execStart.join("\n");
-    if (/(?:--(?:cashu|arc|payout)[a-z-]*(?:\s|=|$)|\/(?:cashu|arc|payout)(?:[\/-]|$))/iu.test(command)) {
-      fail(`${label} must keep Cashu, ARC and payout surfaces unavailable`);
+    if (/(?:--receipt-signing-key|--(?:cashu|arc|payout)[a-z-]*(?:\s|=|$)|\/(?:cashu|arc|payout)(?:[\/-]|$))/iu.test(command)) {
+      fail(`${label} must keep Direct receipt, Standard Cashu, ARC and payout surfaces unavailable`);
     }
     const preflightUnit = "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-preflight.service";
     if (fragmentPath === preflightUnit) {
@@ -2508,6 +2510,29 @@ function validateProfileUnitPolicy(
       }
       if (conditions.some((condition) => condition.includes("PREFLIGHT-APPROVED"))) {
         fail(`${label} must not consume a circular self-approval sentinel`);
+      }
+    }
+    const issuerUnit =
+      "/etc/systemd/system/bitcoinpir-mainnet-lightning-v1-payment-issuer.service";
+    if (fragmentPath === issuerUnit) {
+      if (
+        canonicalize(hardening.SupplementaryGroups ?? []) !==
+        canonicalize(["bitcoinpir-mainnet-lightning-preflight"])
+      ) {
+        fail(`${label} must retain quote-delegation group readability`);
+      }
+      const expectedCounts = new Map([
+        ["service-policy", 2],
+        ["bat-key", 12],
+        ["clearing-authorization", 2],
+        ["clearing-approval", 2],
+        ["clearing-provider-request-verifying-key", 2],
+      ]);
+      for (const [option, expected] of expectedCounts) {
+        const actual = [...command.matchAll(new RegExp(`(?:^|\\s)--${option}(?:\\s|=)`, "gu"))].length;
+        if (actual !== expected) {
+          fail(`${label} must configure exactly ${expected} --${option} values`);
+        }
       }
     }
   }
@@ -2884,6 +2909,9 @@ function validateProfileUnitPolicy(
   }
   if (deploymentProfile === "provider-no-standard-cashu-v1") {
     const command = execStart.join("\n");
+    if (/--service-bat-key(?:\s|=|$)/u.test(command)) {
+      fail(`${label} must not configure provider-local BAT mint material`);
+    }
     if (
       /--service-cashu-(?:recovery-key|recovery-active-epoch|custody-key|custody-active-epoch|exposure-limit)(?:\s|=|$)/u.test(
         command,

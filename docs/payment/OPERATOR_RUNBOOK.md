@@ -18,10 +18,12 @@ funds**, **public Signet**, or **production mainnet**.
   persistent Lightning state or public publication.
 - Public Signet uses staging-only persistent wallet/node/channel identities,
   test coins and public staging surfaces.
-- Production mainnet has a source-level `direct-bolt11-dpf` profile and a
-  read-only local Core/CLN preflight, but remains blocked pending a private
-  rendered plan, target-host approval, selected Mainnet CLN, risk/liquidity and
-  funds approvals, installation, activation and observed live evidence. See
+- Production mainnet has a source-level shared-BAT profile: one BOLT11-to-BAT
+  issuer, the independent pir1/pir2 providers, db0+db1 and exactly Free-PoW plus
+  shared BAT. It has a read-only local Core/CLN preflight, but remains blocked
+  on pir2 hostile-host secret custody and then the separate private plan,
+  target-host, Mainnet CLN, risk/liquidity, funds, installation, activation and
+  observed-evidence approvals. See
   [MAINNET_LIGHTNING_V1_RUNBOOK.md](MAINNET_LIGHTNING_V1_RUNBOOK.md).
 
 Use [DEPLOYMENT_INPUT_MATRIX.md](DEPLOYMENT_INPUT_MATRIX.md) to inventory every
@@ -55,13 +57,14 @@ Harmony hint and Harmony query must be separate scopes/offers. A hint provider
 may charge more than a query provider. Do not reuse one capability across those
 roles.
 
-For Harmony V2Full, one `unified_server` process serves one cold-cache database
-binding. Start its pool with `--pool-size N --pool-db-id ID`; omitted
-`--pool-db-id` means the existing `db_id=0` behavior. The ID must exist in the
-loaded catalog or startup fails. Use a distinct process/port and a distinct
-`--pool-dir` for each additional delta database, and publish only the scope
-whose exact dataset binding that process can serve. First-version deployment
-does not share or multiplex one hint pool across database IDs.
+For Harmony V2Full, every pool serves one cold-cache database binding. The
+legacy single-pool form is `--pool-size N --pool-db-id ID --pool-dir DIR`;
+omitted `--pool-db-id` means `db_id=0`. A provider serving several catalog
+entries in one process uses the common per-pool target `--pool-size N` and one
+repeatable `--harmony-pool-db ID=DIR` per database. Do not combine that form
+with `--pool-db-id` or `--pool-dir`, repeat an ID, or reuse a directory. Every ID
+must exist in the loaded catalog or startup fails, and the signed policy may
+publish only exact dataset scopes backed by configured pools.
 
 ### Harmony V2Full pool filesystem and upgrade contract
 

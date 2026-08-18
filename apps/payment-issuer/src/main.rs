@@ -13,7 +13,7 @@
 #[cfg(all(feature = "test-only-fake-lightning", not(debug_assertions)))]
 compile_error!("test-only-fake-lightning must never be compiled into a production release");
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -1820,6 +1820,7 @@ fn load_ledger_clearing(
         .map_err(|error| format!("read issuer identity failed: {error}"))?;
     let mut prepared = Vec::with_capacity(args.clearing_authorizations.len());
     let mut seen_providers = BTreeMap::new();
+    let mut seen_provider_role_keys = BTreeSet::new();
     for ((authorization_path, approval_path), provider_request_key_path) in args
         .clearing_authorizations
         .iter()
@@ -1884,6 +1885,11 @@ fn load_ledger_clearing(
             &provider_request_verifying_key,
             &settlement_verifying_key,
             &retained_settlement_verifying_keys,
+        )?;
+        register_global_provider_role_keys_v1(
+            &mut seen_provider_role_keys,
+            &authorization,
+            &provider_request_verifying_key,
         )?;
         authorization
             .verify_for(
@@ -2020,6 +2026,31 @@ fn validate_clearing_role_key_separation_v1(
                 .to_owned(),
         );
     }
+    Ok(())
+}
+
+fn register_global_provider_role_keys_v1(
+    seen_provider_role_keys: &mut BTreeSet<[u8; 32]>,
+    authorization: &ProviderClearingAuthorizationV1,
+    provider_request_verifying_key: &[u8; 32],
+) -> Result<(), String> {
+    let role_keys = [
+        authorization.operator_verifying_key,
+        authorization.claims.clearing_verifying_key,
+        *provider_request_verifying_key,
+    ];
+    let distinct_role_keys = BTreeSet::from(role_keys);
+    if distinct_role_keys.len() != role_keys.len()
+        || distinct_role_keys
+            .iter()
+            .any(|key| seen_provider_role_keys.contains(key))
+    {
+        return Err(
+            "provider operator, clearing and request verifying keys must be globally distinct across all configured providers"
+                .to_owned(),
+        );
+    }
+    seen_provider_role_keys.extend(distinct_role_keys);
     Ok(())
 }
 
@@ -3300,6 +3331,37 @@ mod tests {
     }
 
     #[test]
+    fn production_clearing_registration_rejects_cross_provider_role_key_reuse() {
+        let fixture = SettlementHttpFixture::new();
+        let provider_request = SigningKey::from_bytes(&SETTLEMENT_HTTP_PROVIDER_REQUEST_KEY)
+            .verifying_key()
+            .to_bytes();
+        let mut seen_provider_role_keys = BTreeSet::new();
+        register_global_provider_role_keys_v1(
+            &mut seen_provider_role_keys,
+            &fixture.authorization,
+            &provider_request,
+        )
+        .expect("first provider role keys are unique");
+
+        let mut second_provider = fixture.authorization.clone();
+        second_provider.claims.provider_id = [0x81; 32];
+        second_provider.operator_verifying_key = SigningKey::from_bytes(&[0x82; 32])
+            .verifying_key()
+            .to_bytes();
+        second_provider.claims.clearing_verifying_key = SigningKey::from_bytes(&[0x83; 32])
+            .verifying_key()
+            .to_bytes();
+        let reused_first_provider_operator = fixture.authorization.operator_verifying_key;
+        assert!(register_global_provider_role_keys_v1(
+            &mut seen_provider_role_keys,
+            &second_provider,
+            &reused_first_provider_operator,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn payout_http_routes_are_unknown_and_side_effect_free_by_default() {
         let fixture = SettlementHttpFixture::new();
         let state = fixture.state(fixture.now_unix);
@@ -4088,6 +4150,93 @@ mod tests {
             args.common.reconciliation_batch_size,
             DEFAULT_RECONCILIATION_BATCH_SIZE
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_parses_exact_shared_bat_two_policy_twelve_key_two_clearing_shape() {
+        let mut argv = [
+            "payment-issuer",
+            "serve-cln",
+            "--store",
+            "/tmp/issuer.sqlite",
+            "--rollback-authority",
+            "/tmp/rollback.sqlite",
+            "--allow-local-rollback-authority-dev",
+            "--quote-delegation",
+            "/tmp/delegation.bin",
+            "--quote-signing-key",
+            "/tmp/quote.key",
+            "--credential-derivation-key",
+            "/tmp/credential.key",
+            "--cln-rpc-socket",
+            "/tmp/lightning-rpc",
+            "--cln-rpc-expected-uid",
+            "501",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let service_policies = (1_u8..=2)
+            .map(|provider| {
+                format!(
+                    "/tmp/pir{provider}-service-policy.bin={}",
+                    hex::encode([provider; 32])
+                )
+            })
+            .collect::<Vec<_>>();
+        let bat_keys = (0..12)
+            .map(|lineage| PathBuf::from(format!("/tmp/bat-{lineage}.key")))
+            .collect::<Vec<_>>();
+        let clearing_authorizations = (1..=2)
+            .map(|provider| PathBuf::from(format!("/tmp/pir{provider}-authorization.bin")))
+            .collect::<Vec<_>>();
+        let clearing_approvals = (1..=2)
+            .map(|provider| PathBuf::from(format!("/tmp/pir{provider}-approval.bin")))
+            .collect::<Vec<_>>();
+        let provider_request_keys = (1..=2)
+            .map(|provider| PathBuf::from(format!("/tmp/pir{provider}-request.pub")))
+            .collect::<Vec<_>>();
+
+        for policy in &service_policies {
+            argv.extend(["--service-policy".to_owned(), policy.clone()]);
+        }
+        for key in &bat_keys {
+            argv.extend(["--bat-key".to_owned(), key.to_string_lossy().into_owned()]);
+        }
+        for authorization in &clearing_authorizations {
+            argv.extend([
+                "--clearing-authorization".to_owned(),
+                authorization.to_string_lossy().into_owned(),
+            ]);
+        }
+        for approval in &clearing_approvals {
+            argv.extend([
+                "--clearing-approval".to_owned(),
+                approval.to_string_lossy().into_owned(),
+            ]);
+        }
+        for request_key in &provider_request_keys {
+            argv.extend([
+                "--clearing-provider-request-verifying-key".to_owned(),
+                request_key.to_string_lossy().into_owned(),
+            ]);
+        }
+
+        let cli = Cli::try_parse_from(argv).expect("parse complete shared-BAT issuer shape");
+        let Command::ServeCln(args) = cli.command else {
+            panic!("expected serve-cln command");
+        };
+        assert_eq!(args.common.service_policies, service_policies);
+        assert_eq!(args.common.bat_keys, bat_keys);
+        assert_eq!(args.common.clearing_authorizations, clearing_authorizations);
+        assert_eq!(args.common.clearing_approvals, clearing_approvals);
+        assert_eq!(
+            args.common.clearing_provider_request_verifying_keys,
+            provider_request_keys
+        );
+        assert!(args.common.receipt_signing_keys.is_empty());
+        assert!(args.common.arc_keys.is_empty());
     }
 
     #[cfg(unix)]

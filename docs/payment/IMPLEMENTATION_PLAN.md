@@ -157,18 +157,21 @@ real-money production service. The beta must state the corresponding limits.
 
 ## Mainnet Lightning V1 handoff boundary
 
-The repository now has a bounded source-readiness lane for the Mainnet
-`direct-bolt11-dpf` profile. Run
+The approved Mainnet handoff is now the one-issuer/two-provider shared-BAT
+profile covering db0 and db1. Run
 `scripts/payment-v1-mainnet-lightning-v1-check.sh` for the focused offline Rust,
-source/render, and Web Direct+Direct contract; do not substitute it for full
-CI or a live deployment check.
+source/render and Web shared-BAT contracts; do not substitute it for full CI or
+a live deployment check.
 
-This lane is **source-ready; live approval pending**. A later, explicitly
-approved operation must supply the public identifiers/path/hash pins, selected
-Mainnet CLN node, risk caps and liquidity/funding envelope, then separately
-approve rendering, remote mutation, custody/funds, activation, and any invoice
-or payment action. The runbook deliberately keeps secrets out of source and is
-the authoritative short handoff:
+This lane is **source work only; production activation blocked**. In particular,
+pir2 has no reviewed hostile-host secret-provisioning/sealing contract yet, and
+the checked-in Mainnet plan skeleton is intentionally incomplete. After that
+P1 and any old Direct state transition are closed, later explicitly approved
+operations must supply the private plan, selected Mainnet CLN node, risk caps
+and liquidity/funding envelope, then separately approve rendering, remote
+mutation, custody/funds, activation, and any invoice or payment action. The
+runbook deliberately keeps secrets out of source and is the authoritative short
+handoff:
 [`MAINNET_LIGHTNING_V1_RUNBOOK.md`](MAINNET_LIGHTNING_V1_RUNBOOK.md).
 
 ## Compatibility and rollback

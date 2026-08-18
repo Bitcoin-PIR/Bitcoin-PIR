@@ -21,15 +21,6 @@
       "uid": 0
     },
     {
-      "class": "secret",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 52934,
-      "mode": "0400",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/cashu-bat.key",
-      "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/cashu-bat.key",
-      "uid": 52933
-    },
-    {
       "class": "config",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 52934,

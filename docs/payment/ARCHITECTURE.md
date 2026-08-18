@@ -224,13 +224,14 @@ integration bound, not a quoted commercial price; production policies must be
 derived from the deployed database's sibling depths and response sizes.
 
 V2Full is not restricted by the wire protocol to the main database: its
-canonical request carries an optional non-zero `db_id`. The first release keeps
-the operational boundary smaller: each hint-provider process has one pool,
-bound by `--pool-db-id` (default `0`) to one loaded immutable database and one
-pool directory. A provider that sells cold hints for several deltas runs
-separate instances/ports and advertises a distinct exact dataset scope for each.
-The authorized client must use V2Full for the granted database and must not
-downgrade a committed grant to V1 if the pool becomes unavailable.
+canonical request carries an optional non-zero `db_id`. Each pool remains bound
+to one loaded immutable database and one private pool directory. The legacy
+single-pool form uses `--pool-db-id` (default `0`); a complete provider may
+instead repeat `--harmony-pool-db <db_id>=<pool-dir>` to install an explicit
+in-process map. Admission and dispatch look up the authenticated database ID,
+and a V2Half token retains the database selected by its first half. The
+authorized client must use V2Full for the granted database and must not
+downgrade a committed grant to V1 if that exact pool becomes unavailable.
 
 V2Full capacity is connection-bound before spend. After the untrusted request
 is structurally bound to the current signed offer and local database, the

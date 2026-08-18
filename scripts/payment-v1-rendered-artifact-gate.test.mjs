@@ -886,6 +886,8 @@ function makeMainnetIssuerFixture(t) {
     MAINNET_PREFLIGHT_GID: "738",
     MAINNET_PREFLIGHT_UID: "739",
     MAINNET_QUOTE_DELEGATION_SHA256: hashBytes(quoteBytes),
+    PIR1_POLICY_PUBKEY_HEX: "88".repeat(32),
+    PIR2_POLICY_PUBKEY_HEX: "99".repeat(32),
   };
   const required = new Set();
   for (const source of templates) {
@@ -899,7 +901,12 @@ function makeMainnetIssuerFixture(t) {
 
   const removed = new Set([
     "/etc/bitcoinpir/payment-v1/issuer/cashu-bat.key",
+    "/etc/bitcoinpir/payment-v1/issuer/direct-receipt-signing.key",
+    "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin",
+    "/etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin",
+    "/etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key",
     "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin",
+    "/etc/bitcoinpir/payment-v1/issuer/service-policy.bin",
     "/etc/bitcoinpir/payment-v1/lightning/preflight.toml",
     "/etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256",
     "/etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256",
@@ -927,7 +934,42 @@ function makeMainnetIssuerFixture(t) {
     "deploy/payment-v1/lightning/verify-layout.sh.in",
     plan.placeholders,
   ));
+  const batKeyNames = [
+    "pir1-db0-dpf-evaluate-job-v1",
+    "pir1-db1-dpf-evaluate-job-v1",
+    "pir1-db0-harmony-hint-bundle-v1",
+    "pir1-db1-harmony-hint-bundle-v1",
+    "pir1-db0-onion-evaluate-job-v1",
+    "pir1-db1-onion-evaluate-job-v1",
+    "pir2-db0-dpf-evaluate-job-v1",
+    "pir2-db1-dpf-evaluate-job-v1",
+    "pir2-db0-harmony-query-job-v1",
+    "pir2-db1-harmony-query-job-v1",
+    "pir2-db0-tee-oram-query-v1",
+    "pir2-db1-tee-oram-query-v1",
+  ];
+  const sharedBatFiles = [
+    ["/etc/bitcoinpir/payment-v1/issuer/pir1-service-policy.bin", "pir1-policy\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir2-service-policy.bin", "pir2-policy\n"],
+    ...batKeyNames.map((name, index) => [
+      `/etc/bitcoinpir/payment-v1/issuer/${name}-bat.key`,
+      `bat-key-${index}\n`,
+    ]),
+    ["/etc/bitcoinpir/payment-v1/issuer/pir1-clearing-authorization.bin", "pir1-authorization\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir2-clearing-authorization.bin", "pir2-authorization\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir1-clearing-approval.bin", "pir1-approval\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir2-clearing-approval.bin", "pir2-approval\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir1-provider-request-verifying.key", "pir1-request-key\n"],
+    ["/etc/bitcoinpir/payment-v1/issuer/pir2-provider-request-verifying.key", "pir2-request-key\n"],
+  ];
   const additions = [
+    ...sharedBatFiles.map(([target, bytes]) => [
+      target,
+      bytes,
+      payloadClass(target) === "secret"
+        ? { class: "secret", gid: 732, mode: "0400", uid: 731 }
+        : {},
+    ]),
     ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin", quoteBytes,
       { class: "policy", gid: 738, mode: "0440", uid: 0 }],
     ["/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/backup-receipt.toml", backupBytes,
@@ -1003,7 +1045,9 @@ function makeProviderFixture(t, { direct = false, noStandardCashu = false } = {}
   const binarySha = hashBytes(binaryBytes);
   const binaryTarget = `/opt/bitcoinpir/unified-server/${binarySha}/unified_server`;
   const directFiles = {
-    ...(!direct ? { [`${configRoot}/cashu-bat.key`]: "bat\n" } : {}),
+    ...(!direct && !noStandardCashu
+      ? { [`${configRoot}/cashu-bat.key`]: "bat\n" }
+      : {}),
     ...(!noStandardCashu ? {
       [`${configRoot}/cashu-custody-epoch-1.key`]: "custody\n",
       [`${configRoot}/cashu-recovery-epoch-1.key`]: "recovery\n",
@@ -2380,9 +2424,28 @@ test("mainnet Lightning V1 renders live preflight and the strict core-preflight-
       .unit_dependencies.BindsTo.includes("bitcoinpir-mainnet-lightning-v1-preflight.service"),
     true,
   );
+  const issuer = byName.get("bitcoinpir-mainnet-lightning-v1-payment-issuer.service");
+  const issuerCommand = issuer.exec_start[0];
+  assert.deepEqual(
+    issuer.hardening.SupplementaryGroups,
+    ["bitcoinpir-mainnet-lightning-preflight"],
+  );
+  for (const [option, count] of [
+    ["service-policy", 2],
+    ["bat-key", 12],
+    ["clearing-authorization", 2],
+    ["clearing-approval", 2],
+    ["clearing-provider-request-verifying-key", 2],
+  ]) {
+    assert.equal(
+      [...issuerCommand.matchAll(new RegExp(`(?:^|\\s)--${option}(?:\\s|=)`, "gu"))].length,
+      count,
+      option,
+    );
+  }
   assert.doesNotMatch(
-    byName.get("bitcoinpir-mainnet-lightning-v1-payment-issuer.service").exec_start[0],
-    /(?:cashu|arc|payout)/iu,
+    issuerCommand,
+    /(?:--receipt-signing-key|--cashu-|--arc-|--payout)/iu,
   );
 });
 
@@ -2413,7 +2476,7 @@ test("mainnet preflight render binds UID GID config metadata and exact admin man
   assert.throws(() => renderFixture(wrongManifest), /must bind only/u);
 });
 
-test("mainnet render rejects circular approval dependencies and Cashu ARC payout drift", (t) => {
+test("mainnet render rejects circular approval and forbidden payment drift", (t) => {
   const coreAutoStart = makeMainnetIssuerFixture(t);
   updateTemplate(
     coreAutoStart,
@@ -2439,15 +2502,28 @@ test("mainnet render rejects circular approval dependencies and Cashu ARC payout
   );
   assert.throws(() => renderFixture(circular), /activation conditions|self-approval/u);
 
-  for (const forbidden of ["--cashu-keyset x", "--arc-key x", "--payout-target x"]) {
+  for (const forbidden of [
+    "--receipt-signing-key x",
+    "--cashu-keyset x",
+    "--arc-key x",
+    "--payout-target x",
+  ]) {
     const fixture = makeMainnetIssuerFixture(t);
     updateTemplate(
       fixture,
       "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
       (text) => text.replace(" --cln-rpc-timeout-seconds 10", ` ${forbidden} --cln-rpc-timeout-seconds 10`),
     );
-    assert.throws(() => renderFixture(fixture), /Cashu, ARC and payout/u);
+    assert.throws(() => renderFixture(fixture), /receipt|Cashu, ARC and payout/iu);
   }
+
+  const missingBat = makeMainnetIssuerFixture(t);
+  updateTemplate(
+    missingBat,
+    "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
+    (text) => text.replace(/^.*pir2-db1-tee-oram-query-v1-bat\.key.*\n/mu, ""),
+  );
+  assert.throws(() => renderFixture(missingBat), /exactly 12 --bat-key/u);
 });
 
 test("issuer profile keeps the CLN guard deadman non-restarting", (t) => {
@@ -2517,8 +2593,10 @@ test("no-Standard-Cashu provider profile excludes mint custody material", (t) =>
     [],
   );
   assert.match(unit, /--require-service-auth-v1/u);
-  assert.match(unit, /--service-bat-key/u);
+  assert.doesNotMatch(unit, /--service-bat-key/u);
   assert.match(unit, /--service-shared-authorization/u);
+  assert.match(unit, /--harmony-pool-db 0=/u);
+  assert.match(unit, /--harmony-pool-db 1=/u);
 
   const expanded = clone(fixture.plan);
   expanded.payload_artifacts.push(addPayload(
@@ -2551,6 +2629,20 @@ test("no-Standard-Cashu provider profile rejects reintroduced mint material", (t
   assert.throws(
     () => renderFixture(fixture),
     /must not configure Standard Cashu custody, recovery or exposure material/,
+  );
+});
+
+test("no-Standard-Cashu provider profile rejects provider-local BAT material", (t) => {
+  const fixture = makeProviderNoStandardCashuFixture(t);
+  updateTemplate(fixture, PROVIDER_NO_STANDARD_CASHU_UNIT, (text) =>
+    text.replace(
+      "    --max-connections 128",
+      "    --service-bat-key /private/provider-local-bat.key \\\n    --max-connections 128",
+    ),
+  );
+  assert.throws(
+    () => renderFixture(fixture),
+    /must not configure provider-local BAT mint material/,
   );
 });
 
@@ -2604,7 +2696,7 @@ test("checked-in no-Standard-Cashu skeleton is explicit and deliberately unusabl
   assert.equal(plan.deployment_profile, "provider-no-standard-cashu-v1");
   assert.equal(
     plan.payload_artifacts.some((artifact) =>
-      /cashu-(?:recovery|custody)/u.test(artifact.target_path)),
+      /cashu-(?:bat|recovery|custody)/u.test(artifact.target_path)),
     false,
   );
   assert.deepEqual(

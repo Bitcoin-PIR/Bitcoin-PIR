@@ -1,6 +1,7 @@
 # Mainnet shared-BAT production plan
 
-Status: **source implementation in progress; no production activation is
+Status: **pir1 and issuer source profiles implemented; pir2 production profile
+blocked on hostile-host secret custody; no production activation is
 authorized**. This plan records the approved product shape and the smallest
 source-to-production sequence. It does not authorize rendering with private
 keys, installing files on a host, building or switching a VPSBG UKI, publishing
@@ -55,10 +56,10 @@ The following are correctness requirements, not optional hardening work.
 
 ### 1. pir1 must load both Harmony databases in one process
 
-The current `unified_server` accepts only one Harmony V2Full pool. A complete
-pir1 policy contains exact db0 and db1 Harmony-hint scopes, while startup
-validation requires every advertised scope to be locally serviceable. The
-current single-pool process therefore cannot start with the approved policy.
+Before Phase B, `unified_server` accepted only one Harmony V2Full pool. A
+complete pir1 policy contains exact db0 and db1 Harmony-hint scopes, while
+startup validation requires every advertised scope to be locally serviceable;
+the old single-pool process therefore could not start with the approved policy.
 
 Add a repeatable database-to-pool mapping while preserving the existing
 single-pool CLI for old profiles. Admission, reservation and dispatch must look
@@ -66,6 +67,11 @@ up the exact authenticated `db_id`. A pending V2Half token must also retain its
 database ID so two halves cannot cross databases. This is an internal server
 change; the existing Payment V1 and Harmony request wires already bind the
 database ID.
+
+Implementation result: the legacy single-pool flags remain compatible, while
+repeatable `--harmony-pool-db ID=DIR` bindings install distinct db0/db1 pools in
+one process. Exact admission/reservation/dispatch routing and V2Half database
+binding are covered by narrow unit tests and a real two-database startup test.
 
 ### 2. pir1 and pir2 need closed shared-BAT provider profiles
 

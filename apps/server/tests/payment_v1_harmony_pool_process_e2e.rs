@@ -122,10 +122,6 @@ impl ServerProcess {
         port: u16,
         generation: u8,
     ) -> Self {
-        let stdout_path = root.join(format!("harmony-pool-generation-{generation}-stdout.log"));
-        let stderr_path = root.join(format!("harmony-pool-generation-{generation}-stderr.log"));
-        let stdout = File::create(&stdout_path).expect("create server stdout log");
-        let stderr = File::create(&stderr_path).expect("create server stderr log");
         // The method matrix includes Standard Cashu (online authority). Keep
         // one pool entry reserved for provider-local methods while the online
         // authorization limiter owns the other; the receipt-only baseline
@@ -178,8 +174,16 @@ impl ServerProcess {
         if let Some(matrix) = &fixture.method_matrix {
             matrix.extend_server_args(&mut args);
         }
+        Self::spawn_with_args(root, port, generation, args)
+    }
+
+    fn spawn_with_args(root: &Path, port: u16, generation: u8, args: Vec<String>) -> Self {
+        let stdout_path = root.join(format!("harmony-pool-generation-{generation}-stdout.log"));
+        let stderr_path = root.join(format!("harmony-pool-generation-{generation}-stderr.log"));
+        let stdout = File::create(&stdout_path).expect("create server stdout log");
+        let stderr = File::create(&stderr_path).expect("create server stderr log");
         let child = Command::new(env!("CARGO_BIN_EXE_unified_server"))
-            .args(args)
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -245,6 +249,90 @@ impl Drop for ServerProcess {
             );
         }
     }
+}
+
+#[test]
+fn complete_two_database_policy_starts_with_two_exact_hint_pools() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db0_path, db0_root) = write_merkle_database_named(root.path(), "tiny-merkle-db0", 0);
+    let (db1_path, db1_root) = write_merkle_database_named(root.path(), "tiny-merkle-db1", 1);
+    let config_path = root.path().join("databases.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[[database]]\nname = \"db0\"\ntype = \"full\"\npath = \"{}\"\nbase_height = 0\nheight = 1\n\n[[database]]\nname = \"db1\"\ntype = \"delta\"\npath = \"{}\"\nbase_height = 1\nheight = 2\n",
+            db0_path.display(),
+            db1_path.display(),
+        ),
+    )
+    .unwrap();
+
+    let mut fixture = build_provider(root.path(), db0_root, unix_now(), None);
+    install_two_database_free_pow_policy(&mut fixture, [db0_root, db1_root], unix_now());
+    let pool0 = root.path().join("harmony-pool-db0");
+    let pool1 = root.path().join("harmony-pool-db1");
+    for pool in [&pool0, &pool1] {
+        fs::create_dir(pool).unwrap();
+        chmod(pool, 0o700);
+    }
+
+    let port = unused_loopback_port();
+    let args = vec![
+        "--bind-address".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--config".to_owned(),
+        config_path.display().to_string(),
+        "--role".to_owned(),
+        "secondary".to_owned(),
+        "--disable-onion".to_owned(),
+        "--serve-hints".to_owned(),
+        "--pool-size".to_owned(),
+        "1".to_owned(),
+        "--harmony-pool-db".to_owned(),
+        format!("0={}", pool0.display()),
+        "--harmony-pool-db".to_owned(),
+        format!("1={}", pool1.display()),
+        "--require-service-auth-v1".to_owned(),
+        "--service-policy".to_owned(),
+        fixture.policy_path.display().to_string(),
+        "--service-provider-id-hex".to_owned(),
+        hex::encode(fixture.provider_id),
+        "--service-policy-key-hex".to_owned(),
+        hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+        "--service-store".to_owned(),
+        fixture.store_path.display().to_string(),
+        "--service-rollback-authority".to_owned(),
+        fixture.rollback_path.display().to_string(),
+        "--allow-local-service-rollback-authority-dev".to_owned(),
+        "--max-connections".to_owned(),
+        "16".to_owned(),
+        "--service-max-concurrent-auth".to_owned(),
+        "4".to_owned(),
+        "--websocket-handshake-timeout-ms".to_owned(),
+        "1000".to_owned(),
+        "--connection-idle-timeout-ms".to_owned(),
+        "30000".to_owned(),
+        "--service-pre-auth-timeout-ms".to_owned(),
+        "30000".to_owned(),
+    ];
+    let mut server = ServerProcess::spawn_with_args(root.path(), port, 9, args);
+    wait_for_path(
+        &mut server,
+        &pool0.join(BINDING_MARKER),
+        "db0 pool binding marker",
+    );
+    wait_for_path(
+        &mut server,
+        &pool1.join(BINDING_MARKER),
+        "db1 pool binding marker",
+    );
+    let (stdout, stderr) = server.stop();
+    assert_server_log(&stdout, &stderr, port);
+    assert!(stdout.contains("HarmonyPIR V2 hint pool: db_id=0"));
+    assert!(stdout.contains("HarmonyPIR V2 hint pool: db_id=1"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -970,6 +1058,76 @@ fn build_provider(
     }
 }
 
+fn install_two_database_free_pow_policy(
+    fixture: &mut ProviderFixture,
+    manifest_roots: [[u8; 32]; 2],
+    now: u64,
+) {
+    let total_groups = u16::try_from(INDEX_PARAMS.k + CHUNK_PARAMS.k).unwrap();
+    let scopes = manifest_roots
+        .into_iter()
+        .enumerate()
+        .map(|(db_id, root)| ServiceScopePolicyV1 {
+            scope: ServiceScopeV1 {
+                provider_id: fixture.provider_id,
+                backend: BackendId::HarmonyPirV2,
+                workload: WorkloadId::HarmonyHintBundleV1,
+                protocol_version: 2,
+                dataset: DatasetBindingV1::ManifestRoot { root },
+                operation_profile: OPERATION_PROFILE,
+                entitlement_profile: ENTITLEMENT_PROFILE,
+            },
+            limits: EntitlementLimitsV1 {
+                max_logical_inputs: 0,
+                max_frames: 1,
+                max_request_bytes: 1_024,
+                max_response_bytes: 64 * 1024 * 1024,
+                max_wall_time_ms: 30_000,
+                max_concurrent_sockets: 1,
+                max_hint_groups: total_groups,
+                max_work_units: u64::from(total_groups),
+            },
+            offers: vec![ServiceOfferV1 {
+                offer_id: 70 + u32::try_from(db_id).unwrap(),
+                acquisition: AcquisitionMethod::FreeV1,
+                free_mode: FreeModeV1::ProofOfWork,
+                free_quota: 0,
+                free_window_seconds: 0,
+                free_pow_difficulty_bits: 1,
+                priority_class: 1,
+                authorization: AuthScheme::FreeV1,
+                verification: VerificationMode::ProviderLocal,
+                deployment_status: DeploymentStatus::Stable,
+                price: PriceV1::Free,
+                issuer_id: [0; 32],
+                key_id: Vec::new(),
+                credential_binding: None,
+                cashu_mint_manifest: None,
+                endpoint: String::new(),
+                invoice_expiry_seconds: 0,
+                claim_window_seconds: 0,
+                minimum_credential_validity_seconds: 60,
+                retired_policy_grace_seconds: 0,
+                credential_count: 1,
+                credential_presentation_limit: 1,
+                privacy_leakage: PrivacyLeakageV1::NONE,
+            }],
+        })
+        .collect();
+    let policy = ServicePolicyV1::sign(
+        fixture.provider_id,
+        1,
+        now.saturating_sub(60),
+        now.checked_add(3_600).unwrap(),
+        AuthPaddingClassV1::Class16KiB,
+        scopes,
+        &fixture.policy_signing_key,
+    )
+    .unwrap();
+    fixture.policy_digest = policy.policy_digest().unwrap();
+    fs::write(&fixture.policy_path, policy.encode().unwrap()).unwrap();
+}
+
 struct BucketMerkleArtifacts {
     super_root: [u8; 32],
     tree_tops: Vec<u8>,
@@ -977,12 +1135,20 @@ struct BucketMerkleArtifacts {
 }
 
 fn write_merkle_database(root: &Path) -> (PathBuf, [u8; 32]) {
-    let db = root.join("tiny-merkle-db");
+    write_merkle_database_named(root, "tiny-merkle-db", 0)
+}
+
+fn write_merkle_database_named(
+    root: &Path,
+    name: &str,
+    database_variant: u64,
+) -> (PathBuf, [u8; 32]) {
+    let db = root.join(name);
     fs::create_dir(&db).unwrap();
     let mut index = write_header_with_anchor(
-        &INDEX_PARAMS.with_master_seed(0x1111_2222_3333_4444),
+        &INDEX_PARAMS.with_master_seed(0x1111_2222_3333_4444 ^ database_variant),
         TINY_BINS_PER_TABLE,
-        0x9999_aaaa_bbbb_cccc,
+        0x9999_aaaa_bbbb_cccc ^ database_variant,
         None,
     );
     index.resize(
@@ -990,9 +1156,9 @@ fn write_merkle_database(root: &Path) -> (PathBuf, [u8; 32]) {
         0,
     );
     let mut chunk = write_header_with_anchor(
-        &CHUNK_PARAMS.with_master_seed(0x5555_6666_7777_8888),
+        &CHUNK_PARAMS.with_master_seed(0x5555_6666_7777_8888 ^ database_variant),
         TINY_BINS_PER_TABLE,
-        0,
+        database_variant,
         None,
     );
     chunk.resize(

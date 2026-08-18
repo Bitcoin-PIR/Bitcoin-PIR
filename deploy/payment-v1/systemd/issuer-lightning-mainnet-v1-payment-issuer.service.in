@@ -1,5 +1,5 @@
 [Unit]
-Description=BitcoinPIR Mainnet Lightning V1 Direct BOLT11 ledger-only issuer (template only)
+Description=BitcoinPIR Mainnet Lightning V1 shared-BAT ledger-only issuer (template only)
 After=network-online.target bitcoinpir-mainnet-lightning-v1-core.service bitcoinpir-mainnet-lightning-v1-preflight.service bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service
 Wants=network-online.target
 Requisite=bitcoinpir-mainnet-lightning-v1-core.service
@@ -16,13 +16,57 @@ ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
 Type=simple
 User=bitcoinpir-mainnet-issuer
 Group=bitcoinpir-mainnet-issuer
+SupplementaryGroups=bitcoinpir-mainnet-lightning-preflight
 UMask=0077
 StateDirectory=bitcoinpir-mainnet-payment-issuer
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/bitcoinpir-mainnet-payment-issuer
 ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer
 ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/issuer/payment-issuer.sha256
-ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer serve-cln --bind 127.0.0.1:5610 --max-connections 128 --quote-rate-per-minute 60 --status-rate-per-minute 600 --mutation-rate-per-minute 120 --reconciliation-rate-per-minute 120 --reconciliation-batch-size 32 --reconciliation-interval-seconds 15 --reconciliation-tick-budget-ms 5000 --max-outstanding-quotes 4096 --max-total-quotes 16384 --allow-origin @BITCOINPIR_WEB_ORIGIN@ --store /var/lib/bitcoinpir-mainnet-payment-issuer/issuer.sqlite3 --remote-rollback-authority-config /etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml --quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin --quote-signing-key /etc/bitcoinpir/payment-v1/issuer/quote-signing.key --credential-derivation-key /etc/bitcoinpir/payment-v1/issuer/credential-derivation.key --service-policy /etc/bitcoinpir/payment-v1/issuer/service-policy.bin=@HETZNER_POLICY_PUBKEY_HEX@ --receipt-signing-key /etc/bitcoinpir/payment-v1/issuer/direct-receipt-signing.key --clearing-authorization /etc/bitcoinpir/payment-v1/issuer/provider-clearing-authorization.bin --clearing-approval /etc/bitcoinpir/payment-v1/issuer/provider-clearing-approval.bin --clearing-provider-request-verifying-key /etc/bitcoinpir/payment-v1/issuer/provider-request-verifying.key --issuer-settlement-signing-key /etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key --redeem-response-derivation-key /etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key --cln-rpc-socket /run/bitcoinpir-mainnet-cln-rpc-guard/issuer/issuer-rpc --cln-rpc-expected-uid @CLN_GUARD_UID@ --cln-rpc-expected-gid @ISSUER_GID@ --cln-rpc-timeout-seconds 10
+ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer serve-cln \
+    --bind 127.0.0.1:5610 \
+    --max-connections 128 \
+    --quote-rate-per-minute 60 \
+    --status-rate-per-minute 600 \
+    --mutation-rate-per-minute 120 \
+    --reconciliation-rate-per-minute 120 \
+    --reconciliation-batch-size 32 \
+    --reconciliation-interval-seconds 15 \
+    --reconciliation-tick-budget-ms 5000 \
+    --max-outstanding-quotes 4096 \
+    --max-total-quotes 16384 \
+    --allow-origin @BITCOINPIR_WEB_ORIGIN@ \
+    --store /var/lib/bitcoinpir-mainnet-payment-issuer/issuer.sqlite3 \
+    --remote-rollback-authority-config /etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml \
+    --quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin \
+    --quote-signing-key /etc/bitcoinpir/payment-v1/issuer/quote-signing.key \
+    --credential-derivation-key /etc/bitcoinpir/payment-v1/issuer/credential-derivation.key \
+    --service-policy /etc/bitcoinpir/payment-v1/issuer/pir1-service-policy.bin=@PIR1_POLICY_PUBKEY_HEX@ \
+    --service-policy /etc/bitcoinpir/payment-v1/issuer/pir2-service-policy.bin=@PIR2_POLICY_PUBKEY_HEX@ \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db0-dpf-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db1-dpf-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db0-harmony-hint-bundle-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db1-harmony-hint-bundle-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db0-onion-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir1-db1-onion-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db0-dpf-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db1-dpf-evaluate-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db0-harmony-query-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db1-harmony-query-job-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db0-tee-oram-query-v1-bat.key \
+    --bat-key /etc/bitcoinpir/payment-v1/issuer/pir2-db1-tee-oram-query-v1-bat.key \
+    --clearing-authorization /etc/bitcoinpir/payment-v1/issuer/pir1-clearing-authorization.bin \
+    --clearing-authorization /etc/bitcoinpir/payment-v1/issuer/pir2-clearing-authorization.bin \
+    --clearing-approval /etc/bitcoinpir/payment-v1/issuer/pir1-clearing-approval.bin \
+    --clearing-approval /etc/bitcoinpir/payment-v1/issuer/pir2-clearing-approval.bin \
+    --clearing-provider-request-verifying-key /etc/bitcoinpir/payment-v1/issuer/pir1-provider-request-verifying.key \
+    --clearing-provider-request-verifying-key /etc/bitcoinpir/payment-v1/issuer/pir2-provider-request-verifying.key \
+    --issuer-settlement-signing-key /etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key \
+    --redeem-response-derivation-key /etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key \
+    --cln-rpc-socket /run/bitcoinpir-mainnet-cln-rpc-guard/issuer/issuer-rpc \
+    --cln-rpc-expected-uid @CLN_GUARD_UID@ \
+    --cln-rpc-expected-gid @ISSUER_GID@ \
+    --cln-rpc-timeout-seconds 10
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

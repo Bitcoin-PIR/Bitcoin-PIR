@@ -1,7 +1,9 @@
 //! Read-only Mainnet Lightning V1 profile lint and live preflight.
 //!
 //! The live command contacts only local Bitcoin Core and Core Lightning CLIs.
-//! It never creates an invoice, pays, mutates a wallet, or accepts Cashu/ARC.
+//! It never creates an invoice, pays, mutates a wallet, or accepts Direct
+//! receipt, Standard Cashu, or ARC provider entitlements. Shared BAT is the
+//! declared issuer product, but this read-only preflight does not acquire one.
 
 use clap::{Args, Subcommand};
 use pir_service_protocol::{Bolt11QuoteKeyDelegationV1, LightningNetworkV1};
@@ -17,7 +19,7 @@ use crate::lightning_staging::{
     validate_pinned_executable_input_v1, CommandRequestV1, CommandRunnerV1, SystemCommandRunnerV1,
 };
 
-const PROFILE_SCHEMA_V1: u32 = 1;
+const PROFILE_SCHEMA_V1: u32 = 2;
 const BACKUP_RECEIPT_SCHEMA_V1: u32 = 1;
 const MAINNET_GENESIS_V1: &str = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
 const MAX_PROFILE_BYTES_V1: usize = 16 * 1024;
@@ -66,10 +68,12 @@ struct MainnetLightningV1Profile {
     bitcoin_genesis_hash: String,
     bolt11_hrp: Bolt11HrpV1,
     capability: CapabilityV1,
-    credential_count: u8,
+    provider_count: u8,
+    bat_lineage_count: u8,
     settlement: SettlementV1,
     payout: PayoutV1,
-    cashu: ForbiddenV1,
+    direct_receipt: ForbiddenV1,
+    standard_cashu: ForbiddenV1,
     arc: ForbiddenV1,
     expected_issuer_id_hex: String,
     expected_payee_node_id_hex: String,
@@ -104,8 +108,8 @@ enum Bolt11HrpV1 {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 enum CapabilityV1 {
-    #[serde(rename = "direct-bolt11-dpf")]
-    DirectBolt11Dpf,
+    #[serde(rename = "shared-bat-db0-db1")]
+    SharedBatDb0Db1,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -298,7 +302,7 @@ pub async fn run(args: MainnetLightningV1Args) -> Result<(), MainnetProfileFailu
             let profile = read_profile_v1(&args)?;
             validate_profile_v1(&profile)?;
             println!(
-                "schema_version=1 phase=lint network=bitcoin capability=direct-bolt11-dpf settlement=ledger-only payout=disabled cashu=forbidden arc=forbidden result=PASS"
+                "schema_version=2 phase=lint network=bitcoin capability=shared-bat-db0-db1 providers=2 bat_lineages=12 settlement=ledger-only payout=disabled direct_receipt=forbidden standard_cashu=forbidden arc=forbidden result=PASS"
             );
             Ok(())
         }
@@ -326,7 +330,7 @@ pub async fn run(args: MainnetLightningV1Args) -> Result<(), MainnetProfileFailu
                 run_live_preflight_v1(&profile, &delegation_bytes, &receipt, now_unix, &mut runner)
                     .await?;
             println!(
-                "schema_version=1 phase=live network=bitcoin bitcoin_height={} cln_height={} active_public_inbound_channels={} staticbackup_entries={} backup_age_seconds={} result=PASS",
+                "schema_version=2 phase=live network=bitcoin bitcoin_height={} cln_height={} active_public_inbound_channels={} staticbackup_entries={} backup_age_seconds={} result=PASS",
                 success.bitcoin_height,
                 success.cln_height,
                 success.active_public_inbound_channels,
@@ -376,10 +380,13 @@ fn validate_profile_v1(profile: &MainnetLightningV1Profile) -> Result<(), Mainne
             "not-exact-mainnet",
         ));
     }
-    if profile.capability != CapabilityV1::DirectBolt11Dpf || profile.credential_count != 1 {
+    if profile.capability != CapabilityV1::SharedBatDb0Db1
+        || profile.provider_count != 2
+        || profile.bat_lineage_count != 12
+    {
         return Err(MainnetProfileFailureV1::new(
             "profile.capability",
-            "not-direct-bolt11-single-dpf",
+            "not-shared-bat-two-provider-twelve-lineage",
         ));
     }
     if profile.settlement != SettlementV1::LedgerOnly || profile.payout != PayoutV1::Disabled {
@@ -388,10 +395,13 @@ fn validate_profile_v1(profile: &MainnetLightningV1Profile) -> Result<(), Mainne
             "not-ledger-only-no-payout",
         ));
     }
-    if profile.cashu != ForbiddenV1::Forbidden || profile.arc != ForbiddenV1::Forbidden {
+    if profile.direct_receipt != ForbiddenV1::Forbidden
+        || profile.standard_cashu != ForbiddenV1::Forbidden
+        || profile.arc != ForbiddenV1::Forbidden
+    {
         return Err(MainnetProfileFailureV1::new(
             "profile.methods",
-            "cashu-or-arc-enabled",
+            "direct-receipt-standard-cashu-or-arc-enabled",
         ));
     }
     decode_hex_exact_v1::<32>(
@@ -1001,16 +1011,18 @@ mod tests {
     fn profile() -> MainnetLightningV1Profile {
         let (delegation, delegation_bytes) = delegation();
         MainnetLightningV1Profile {
-            schema_version: 1,
+            schema_version: 2,
             profile: MainnetProfileNameV1::MainnetLightningV1,
             network: MainnetNetworkV1::Bitcoin,
             bitcoin_genesis_hash: MAINNET_GENESIS_V1.to_owned(),
             bolt11_hrp: Bolt11HrpV1::Mainnet,
-            capability: CapabilityV1::DirectBolt11Dpf,
-            credential_count: 1,
+            capability: CapabilityV1::SharedBatDb0Db1,
+            provider_count: 2,
+            bat_lineage_count: 12,
             settlement: SettlementV1::LedgerOnly,
             payout: PayoutV1::Disabled,
-            cashu: ForbiddenV1::Forbidden,
+            direct_receipt: ForbiddenV1::Forbidden,
+            standard_cashu: ForbiddenV1::Forbidden,
             arc: ForbiddenV1::Forbidden,
             expected_issuer_id_hex: hex::encode(delegation.issuer_id),
             expected_payee_node_id_hex: NODE_ID.to_owned(),

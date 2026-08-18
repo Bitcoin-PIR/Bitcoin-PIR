@@ -13,7 +13,7 @@ Usage: scripts/payment-v1-mainnet-lightning-v1-check.sh
 Runs the smallest browserless source-readiness checks for Mainnet Lightning V1:
   - the versioned bpir-admin profile and read-only command contract;
   - deployment-template and rendered-artifact source contracts; and
-  - the Web independent Direct BOLT11/DPF pair contract.
+  - the Web shared-issuer BAT separation and BOLT11 acquisition contracts.
 
 All Cargo commands are locked and offline. This is not the full Payment V1 CI
 profile and is not evidence of a rendered bundle, remote host, Mainnet CLN
@@ -44,7 +44,7 @@ node scripts/payment-v1-deployment-template-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 node --test --test-concurrency=1 scripts/payment-v1-rendered-artifact-gate.test.mjs
 
-echo "[mainnet-lightning-v1] Web independent Direct BOLT11/DPF pair contract"
-(cd web && npm run test:contract:direct-bolt11-two-provider)
+echo "[mainnet-lightning-v1] Web shared-issuer BAT and BOLT11 acquisition contracts"
+(cd web && npm run test:contract:shared-bat-two-provider)
 
 echo "payment-v1-mainnet-lightning-v1-check: source-ready checks complete (offline Cargo; no browser, remote node, funds, or activation)"

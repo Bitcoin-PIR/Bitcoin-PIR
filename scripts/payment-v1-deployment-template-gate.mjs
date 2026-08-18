@@ -56,7 +56,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
     "b5def27d9d5df397af5fafb91f0e64404b62a5c8131b9b3ae4aea187fbbcd6be",
   "deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example":
-    "d6d5579823365081bfc38ff8b26847db58262c3da166c4128e54428343985f5d",
+    "2606beaf99709e0f9bc4c8a19cf36d7a04f79d7bb76d4955a38a7fdcd9557437",
   "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in":
     "70a74e60514adaf5fb89b1461ffddc20c66a10dd127973d42d2144074011f3fc",
   "deploy/payment-v1/lightning/issuer-cln.args.in":
@@ -78,7 +78,7 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in":
     "1421b2615ed4e5bdfd773bf4c6cd9100c25426d393504135ad1e5c9b22218130",
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in":
-    "69d1cb2b3e5cc380c97cceecd7d29a7612b130243672c5de836f14ac44cd1d9b",
+    "34d58c617355fe1efe3d7bba882c2b6d02c1221e39a30319bdb245af4389d764",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
     "2f3392c6326c0c458b925effb23707d40c43eed7c78af7c3e89aa66f36342e08",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
@@ -678,7 +678,7 @@ function validateHetznerProvider(
     direct
       ? "BitcoinPIR Hetzner Payment V1 direct provider (template only)"
       : noStandardCashu
-      ? "BitcoinPIR Hetzner Payment V1 provider without Standard Cashu (template only)"
+      ? "BitcoinPIR Hetzner Payment V1 shared-BAT provider (template only)"
       : "BitcoinPIR Hetzner Payment V1 provider (template only)",
   ], label);
   exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
@@ -722,7 +722,10 @@ function validateHetznerProvider(
       ["--serve-hints", null],
       ["--serve-queries", null],
       ["--pool-size", "8"],
-      ["--pool-dir", `/var/lib/${stateDirectory}/hint-pool`],
+      ...(noStandardCashu && !direct ? [
+        ["--harmony-pool-db", `0=/var/lib/${stateDirectory}/hint-pool/db0`],
+        ["--harmony-pool-db", `1=/var/lib/${stateDirectory}/hint-pool/db1`],
+      ] : [["--pool-dir", `/var/lib/${stateDirectory}/hint-pool`]]),
       ["--config", `${configRoot}/databases.toml`],
       ["--identity-key-path", `${configRoot}/provider-identity.key`],
       ["--identity-cert-path", `${configRoot}/provider-identity.cert`],
@@ -733,7 +736,9 @@ function validateHetznerProvider(
       ["--service-policy-key-hex", "@HETZNER_POLICY_PUBKEY_HEX@"],
       ["--service-store", `/var/lib/${stateDirectory}/provider.sqlite3`],
       ["--service-remote-rollback-authority-config", `${configRoot}/remote-rollback-authority.toml`],
-      ...(!direct ? [["--service-bat-key", `${configRoot}/cashu-bat.key`]] : []),
+      ...(!direct && !noStandardCashu
+        ? [["--service-bat-key", `${configRoot}/cashu-bat.key`]]
+        : []),
       ...(!noStandardCashu ? [
         ["--service-cashu-recovery-key", `1=${configRoot}/cashu-recovery-epoch-1.key`],
         ["--service-cashu-recovery-active-epoch", "1"],
@@ -1320,7 +1325,9 @@ function validateMainnetLightningV1RuntimeUnit(text, kind) {
   const label = `Mainnet Lightning V1 ${kind} template`;
   rejectPattern(text, /^\s*\[Install\]\s*$/mu, label, "install activation");
   rejectPattern(text, /MAINNET-LIGHTNING-V1-PREFLIGHT-APPROVED/u, label, "self-approval sentinel");
-  rejectPattern(text, /(?:--bat-key|--cashu-|--require-cashu|--arc-|--payout)/iu, label, "Cashu, ARC, or payout option");
+  if (kind !== "issuer") {
+    rejectPattern(text, /(?:--bat-key|--cashu-|--require-cashu|--arc-|--payout)/iu, label, "payment, ARC, or payout option");
+  }
   const unit = parseSystemdUnit(text, label);
   validateDirectiveShape(unit, label);
   exactDirectiveValues(unit, "Service", "NoNewPrivileges", ["true"], label);
@@ -1342,9 +1349,74 @@ function validateMainnetLightningV1RuntimeUnit(text, kind) {
     requireText(command, "--upstream-socket /srv/lightning/bitcoin/lightning-rpc", label);
     return;
   }
-  requireText(command, "serve-cln", label);
-  requireText(command, "--quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin", label);
-  rejectPattern(command, /(?:cashu|arc|payout)/iu, label, "Cashu, ARC, or payout argument");
+  exactDirectiveValues(
+    unit,
+    "Service",
+    "SupplementaryGroups",
+    ["bitcoinpir-mainnet-lightning-preflight"],
+    label,
+  );
+  rejectPattern(
+    command,
+    /(?:--receipt-signing-key|--cashu-|--require-cashu|--arc-|--payout)/iu,
+    label,
+    "direct receipt, Standard Cashu, ARC, or payout argument",
+  );
+  validateExactCommand(
+    command,
+    [
+      "/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer",
+      "serve-cln",
+    ],
+    [
+      ["--bind", "127.0.0.1:5610"],
+      ["--max-connections", "128"],
+      ["--quote-rate-per-minute", "60"],
+      ["--status-rate-per-minute", "600"],
+      ["--mutation-rate-per-minute", "120"],
+      ["--reconciliation-rate-per-minute", "120"],
+      ["--reconciliation-batch-size", "32"],
+      ["--reconciliation-interval-seconds", "15"],
+      ["--reconciliation-tick-budget-ms", "5000"],
+      ["--max-outstanding-quotes", "4096"],
+      ["--max-total-quotes", "16384"],
+      ["--allow-origin", "@BITCOINPIR_WEB_ORIGIN@"],
+      ["--store", "/var/lib/bitcoinpir-mainnet-payment-issuer/issuer.sqlite3"],
+      ["--remote-rollback-authority-config", "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml"],
+      ["--quote-delegation", "/etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin"],
+      ["--quote-signing-key", "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key"],
+      ["--credential-derivation-key", "/etc/bitcoinpir/payment-v1/issuer/credential-derivation.key"],
+      ["--service-policy", "/etc/bitcoinpir/payment-v1/issuer/pir1-service-policy.bin=@PIR1_POLICY_PUBKEY_HEX@"],
+      ["--service-policy", "/etc/bitcoinpir/payment-v1/issuer/pir2-service-policy.bin=@PIR2_POLICY_PUBKEY_HEX@"],
+      ...[
+        "pir1-db0-dpf-evaluate-job-v1",
+        "pir1-db1-dpf-evaluate-job-v1",
+        "pir1-db0-harmony-hint-bundle-v1",
+        "pir1-db1-harmony-hint-bundle-v1",
+        "pir1-db0-onion-evaluate-job-v1",
+        "pir1-db1-onion-evaluate-job-v1",
+        "pir2-db0-dpf-evaluate-job-v1",
+        "pir2-db1-dpf-evaluate-job-v1",
+        "pir2-db0-harmony-query-job-v1",
+        "pir2-db1-harmony-query-job-v1",
+        "pir2-db0-tee-oram-query-v1",
+        "pir2-db1-tee-oram-query-v1",
+      ].map((name) => ["--bat-key", `/etc/bitcoinpir/payment-v1/issuer/${name}-bat.key`]),
+      ["--clearing-authorization", "/etc/bitcoinpir/payment-v1/issuer/pir1-clearing-authorization.bin"],
+      ["--clearing-authorization", "/etc/bitcoinpir/payment-v1/issuer/pir2-clearing-authorization.bin"],
+      ["--clearing-approval", "/etc/bitcoinpir/payment-v1/issuer/pir1-clearing-approval.bin"],
+      ["--clearing-approval", "/etc/bitcoinpir/payment-v1/issuer/pir2-clearing-approval.bin"],
+      ["--clearing-provider-request-verifying-key", "/etc/bitcoinpir/payment-v1/issuer/pir1-provider-request-verifying.key"],
+      ["--clearing-provider-request-verifying-key", "/etc/bitcoinpir/payment-v1/issuer/pir2-provider-request-verifying.key"],
+      ["--issuer-settlement-signing-key", "/etc/bitcoinpir/payment-v1/issuer/issuer-settlement-signing.key"],
+      ["--redeem-response-derivation-key", "/etc/bitcoinpir/payment-v1/issuer/redeem-response-derivation.key"],
+      ["--cln-rpc-socket", "/run/bitcoinpir-mainnet-cln-rpc-guard/issuer/issuer-rpc"],
+      ["--cln-rpc-expected-uid", "@CLN_GUARD_UID@"],
+      ["--cln-rpc-expected-gid", "@ISSUER_GID@"],
+      ["--cln-rpc-timeout-seconds", "10"],
+    ],
+    label,
+  );
 }
 
 function validatePaymentEdgeUnit(text) {

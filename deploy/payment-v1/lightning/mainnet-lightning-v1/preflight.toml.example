@@ -3,16 +3,18 @@
 # pins only; it supplies no wallet secret, signing key, funds, or authority to
 # create/pay an invoice.
 
-schema_version = 1
+schema_version = 2
 profile = "mainnet-lightning-v1"
 network = "bitcoin"
 bitcoin_genesis_hash = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
 bolt11_hrp = "lnbc"
-capability = "direct-bolt11-dpf"
-credential_count = 1
+capability = "shared-bat-db0-db1"
+provider_count = 2
+bat_lineage_count = 12
 settlement = "ledger-only"
 payout = "disabled"
-cashu = "forbidden"
+direct_receipt = "forbidden"
+standard_cashu = "forbidden"
 arc = "forbidden"
 
 expected_issuer_id_hex = "@MAINNET_EXPECTED_ISSUER_ID_HEX@"

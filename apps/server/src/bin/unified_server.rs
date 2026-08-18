@@ -209,6 +209,12 @@ enum ServerRole {
     Secondary,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HarmonyPoolBinding {
+    db_id: u8,
+    pool_dir: Option<PathBuf>,
+}
+
 struct CliArgs {
     /// IP address to bind. The production-compatible default remains the
     /// dual-stack wildcard; local integration harnesses can explicitly bind
@@ -244,13 +250,12 @@ struct CliArgs {
     /// changes (kernel update, microcode update) — see
     /// docs/PHASE3_ROADMAP.md.
     vcek_dir: Option<PathBuf>,
-    /// HarmonyPIR V2 hint pool size (0 = pool disabled, use V1 on-demand).
+    /// HarmonyPIR V2 hint pool size per configured database (0 = disabled).
     pool_size: usize,
-    /// Database ID whose immutable tables back this process's single V2 hint
-    /// pool. One process deliberately owns one pool/database binding.
-    pool_db_id: u8,
-    /// Directory for pool file persistence.
-    pool_dir: Option<PathBuf>,
+    /// Exact immutable database/directory bindings for the V2 hint pools.
+    /// Legacy `--pool-db-id`/`--pool-dir` normalizes to one entry; repeated
+    /// `--harmony-pool-db <db_id>=<dir>` entries enable explicit multi-pool.
+    harmony_pool_bindings: Vec<HarmonyPoolBinding>,
     /// Require ARC credential presentation before serving PIR queries.
     require_arc: bool,
     /// Path to the 128-byte ARC private key (`arc_key.bin`) shared with the
@@ -445,6 +450,67 @@ fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
     Ok((db_id, PathBuf::from(dir_raw)))
 }
 
+fn parse_harmony_pool_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
+    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
+        return Err("--harmony-pool-db expects <db_id>=<dir>".into());
+    };
+    let db_id = db_id_raw
+        .parse::<u8>()
+        .map_err(|e| format!("invalid --harmony-pool-db db_id `{db_id_raw}`: {e}"))?;
+    if dir_raw.is_empty() {
+        return Err("--harmony-pool-db requires a non-empty directory".into());
+    }
+    Ok((db_id, PathBuf::from(dir_raw)))
+}
+
+fn normalize_harmony_pool_bindings(
+    pool_size: usize,
+    legacy_db_id: u8,
+    legacy_db_id_explicit: bool,
+    legacy_pool_dir: Option<PathBuf>,
+    explicit: Vec<(u8, PathBuf)>,
+) -> Result<Vec<HarmonyPoolBinding>, String> {
+    if explicit.is_empty() {
+        return Ok((pool_size > 0)
+            .then(|| HarmonyPoolBinding {
+                db_id: legacy_db_id,
+                pool_dir: legacy_pool_dir,
+            })
+            .into_iter()
+            .collect());
+    }
+    if pool_size == 0 {
+        return Err("--harmony-pool-db requires --pool-size greater than zero".into());
+    }
+    if legacy_db_id_explicit || legacy_pool_dir.is_some() {
+        return Err("--harmony-pool-db cannot be combined with --pool-db-id or --pool-dir".into());
+    }
+
+    let mut by_database = BTreeMap::new();
+    let mut directories = BTreeSet::new();
+    for (db_id, pool_dir) in explicit {
+        if by_database.contains_key(&db_id) {
+            return Err(format!(
+                "--harmony-pool-db configures database {db_id} more than once"
+            ));
+        }
+        if !directories.insert(pool_dir.clone()) {
+            return Err(format!(
+                "--harmony-pool-db reuses pool directory {}",
+                pool_dir.display()
+            ));
+        }
+        by_database.insert(
+            db_id,
+            HarmonyPoolBinding {
+                db_id,
+                pool_dir: Some(pool_dir),
+            },
+        );
+    }
+    Ok(by_database.into_values().collect())
+}
+
 fn parse_direct_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
     let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
         return Err("--direct-oram-db expects <db_id>=<dir>".into());
@@ -534,7 +600,9 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut vcek_dir: Option<PathBuf> = None;
     let mut pool_size: usize = 0; // 0 = pool disabled
     let mut pool_db_id: u8 = 0;
+    let mut pool_db_id_explicit = false;
     let mut pool_dir: Option<PathBuf> = None;
+    let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut require_arc = false;
     let mut arc_key_path: Option<PathBuf> = None;
     let mut require_cashu = false;
@@ -689,12 +757,21 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                         "--pool-db-id must be a u8 database ID, got {value}"
                     ))
                 });
+                pool_db_id_explicit = true;
                 i += 1;
             }
             "--pool-dir" => {
                 if let Some(dir) = args.get(i + 1) {
                     pool_dir = Some(PathBuf::from(dir));
                 }
+                i += 1;
+            }
+            "--harmony-pool-db" => {
+                let spec = args
+                    .get(i + 1)
+                    .unwrap_or_else(|| fatal_cli("--harmony-pool-db requires <db_id>=<dir>"));
+                harmony_pool_dbs
+                    .push(parse_harmony_pool_db_arg(spec).unwrap_or_else(|error| fatal_cli(error)));
                 i += 1;
             }
             "--require-arc" => {
@@ -1091,6 +1168,14 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     if !(10_000..=600_000).contains(&service_pre_auth_timeout_ms) {
         fatal_cli("--service-pre-auth-timeout-ms must be in 10000..=600000");
     }
+    let harmony_pool_bindings = normalize_harmony_pool_bindings(
+        pool_size,
+        pool_db_id,
+        pool_db_id_explicit,
+        pool_dir,
+        harmony_pool_dbs,
+    )
+    .unwrap_or_else(|error| fatal_cli(error));
 
     CliArgs {
         bind_address,
@@ -1104,8 +1189,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         disable_onion,
         vcek_dir,
         pool_size,
-        pool_db_id,
-        pool_dir,
+        harmony_pool_bindings,
         require_arc,
         arc_key_path,
         require_cashu,
@@ -3666,13 +3750,12 @@ fn validate_harmony_hints_request(
     Ok(())
 }
 
-/// A V2 hint pool is precomputed against exactly one immutable database.
-/// Never serve those hints for another catalog entry, even when that db_id is
-/// otherwise valid and loaded by the server.
-fn validate_harmony_v2_pool_database(bound_db_id: u8, requested_db_id: u8) -> Result<(), String> {
+/// A pending V2Half session is bound to the database that supplied its first
+/// half. The same client token must never splice halves from different pools.
+fn validate_harmony_v2_half_database(bound_db_id: u8, requested_db_id: u8) -> Result<(), String> {
     if requested_db_id != bound_db_id {
         return Err(format!(
-            "HarmonyPIR V2 hint pool is bound to db {}, not requested db {}",
+            "HarmonyPIR V2 half token is bound to db {}, not requested db {}",
             bound_db_id, requested_db_id
         ));
     }
@@ -3932,6 +4015,8 @@ fn harmony_batch_response_from_table<T: CuckooTableAccess>(
 /// only reads from it; once both halves have been served, the entry is
 /// simply dropped (the pool refills lazily).
 struct V2HalfPending {
+    /// Exact pool/database selected by the first half using this token.
+    db_id: u8,
     /// The pool entry feeding both halves of this session. Shared so
     /// the second half's serve loop can read its frames without
     /// having to coordinate with the first half's lifetime.
@@ -3990,8 +4075,9 @@ struct UnifiedServerData {
     /// `channel_keypair.new_handshake()` in the dispatch loop's
     /// REQ_HANDSHAKE branch.
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
-    /// Pre-computed HarmonyPIR V2 hint pool (None if pool_size=0).
-    hint_pool: Option<hint_pool::HintPool>,
+    /// Pre-computed HarmonyPIR V2 hint pools indexed by exact database ID.
+    /// Empty when `--pool-size=0`.
+    hint_pools: BTreeMap<u8, hint_pool::HintPool>,
     /// Optional legacy ORAM-backed INDEX/CHUNK cuckoo-table access indexed by
     /// db_id. This is kept only as a compatibility fallback for
     /// REQ_ORAM_LOOKUP; HarmonyPIR queries stay mmap-backed so ORAM state
@@ -4406,11 +4492,7 @@ impl UnifiedServerData {
                 self.serve_queries
             }
             OperationStartV1::HarmonyHint { .. } => {
-                self.serve_hints
-                    && self
-                        .hint_pool
-                        .as_ref()
-                        .is_some_and(|pool| pool.database_id() == db_id)
+                self.serve_hints && self.hint_pools.contains_key(&db_id)
             }
             OperationStartV1::OnionSession { .. } => {
                 self.serve_queries && self.onionpir_tx_for(db_id).is_some()
@@ -8595,7 +8677,7 @@ async fn main() {
     if !args.serve_hints && !args.serve_queries {
         eprintln!(
             "ERROR: must enable at least one of --serve-hints / --serve-queries.\n  \
-             Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N [--pool-db-id ID]\n  \
+             Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N [--pool-db-id ID | --harmony-pool-db ID=DIR ...]\n  \
              Query-only deployment (DPF / OnionPIR / HarmonyPIR query): --serve-queries\n  \
              Both (legacy single-host or pir1 Hetzner topology):       --serve-hints --serve-queries"
         );
@@ -9987,19 +10069,19 @@ async fn main() {
         (None, false)
     };
 
-    let hint_pool = if args.pool_size > 0 {
+    let mut hint_pools = BTreeMap::new();
+    for binding in &args.harmony_pool_bindings {
         let pool_config = hint_pool::HintPoolConfig {
             pool_size: args.pool_size,
             // Advertise exactly the backend compiled into this runtime:
             // FastPRP with the feature, HMR12 otherwise.
             prp_backend: hint_pool::default_prp_backend(),
-            pool_dir: args.pool_dir.clone(),
+            pool_dir: binding.pool_dir.clone(),
         };
-        let pool_db_id = args.pool_db_id;
-        let pool_db = state.get_db(pool_db_id).unwrap_or_else(|| {
+        let pool_db = state.get_db(binding.db_id).unwrap_or_else(|| {
             panic!(
                 "HarmonyPIR hint pool database db_id {} must be loaded",
-                pool_db_id
+                binding.db_id
             )
         });
         let backend_name = match pool_config.prp_backend {
@@ -10009,7 +10091,7 @@ async fn main() {
         };
         println!(
             "  HarmonyPIR V2 hint pool: db_id={}, size={}, backend={}, dir={}",
-            pool_db_id,
+            binding.db_id,
             pool_config.pool_size,
             backend_name,
             pool_config
@@ -10018,18 +10100,27 @@ async fn main() {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "memory-only".into())
         );
+        let pool =
+            hint_pool::HintPool::new(pool_config, binding.db_id, pool_db).unwrap_or_else(|e| {
+                panic!(
+                    "HarmonyPIR hint pool init failed for db {}: {e}",
+                    binding.db_id
+                )
+            });
+        let previous = hint_pools.insert(binding.db_id, pool);
+        debug_assert!(
+            previous.is_none(),
+            "pool bindings were normalized as unique"
+        );
+    }
+    if hint_pools.is_empty() {
+        println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
+    } else {
         println!(
             "  HarmonyPIR V2 online-authority AUTH limit: {} (provider-local headroom reserved)",
             online_v2full_auth_limit
         );
-        Some(
-            hint_pool::HintPool::new(pool_config, pool_db_id, pool_db)
-                .unwrap_or_else(|e| panic!("HarmonyPIR hint pool init failed: {}", e)),
-        )
-    } else {
-        println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
-        None
-    };
+    }
 
     let server = Arc::new(UnifiedServerData {
         state,
@@ -10040,7 +10131,7 @@ async fn main() {
         admin_config,
         data_root,
         channel_keypair,
-        hint_pool,
+        hint_pools,
         #[cfg(feature = "cuckoo-oram")]
         cuckoo_oram,
         #[cfg(feature = "cuckoo-oram")]
@@ -11046,11 +11137,8 @@ async fn main() {
                                             } else {
                                                 v2_full_reservation_db_id.and_then(|db_id| {
                                                     server
-                                                        .hint_pool
-                                                        .as_ref()
-                                                        .filter(|pool| {
-                                                            pool.database_id() == db_id
-                                                        })
+                                                        .hint_pools
+                                                        .get(&db_id)
                                                         .and_then(|pool| {
                                                             if requires_online_v2full_authority {
                                                                 pool.try_reserve_preserving_ready_floor(1)
@@ -12189,29 +12277,16 @@ async fn main() {
                             continue;
                         }
 
-                        let pool = match &server.hint_pool {
-                            Some(p) => p,
+                        let pool = match server.hint_pools.get(&db_id) {
+                            Some(pool) => pool,
                             None => {
                                 let resp = Response::Error(
-                                    "V2 hints not available: start server with --pool-size to enable".into()
+                                    format!("V2 hints not available for db_id {db_id}")
                                 );
                                 let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
-                        if let Err(message) = validate_harmony_v2_pool_database(
-                            pool.database_id(),
-                            db_id,
-                        ) {
-                            let resp = Response::Error(message);
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                resp.encode(),
-                            )
-                            .await;
-                            continue;
-                        }
 
                         let entry = if server.service_admission_enforcement
                             == AdmissionEnforcementV1::Enforced
@@ -12381,30 +12456,16 @@ async fn main() {
                             continue;
                         }
 
-                        let pool = match &server.hint_pool {
-                            Some(p) => p,
+                        let pool = match server.hint_pools.get(&db_id) {
+                            Some(pool) => pool,
                             None => {
                                 let resp = Response::Error(
-                                    "V2 half hints not available: start server with --pool-size to enable"
-                                        .into(),
+                                    format!("V2 half hints not available for db_id {db_id}"),
                                 );
                                 let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
-                        if let Err(message) = validate_harmony_v2_pool_database(
-                            pool.database_id(),
-                            db_id,
-                        ) {
-                            let resp = Response::Error(message);
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                resp.encode(),
-                            )
-                            .await;
-                            continue;
-                        }
 
                         let token = v2half_req.session_token;
                         let side = v2half_req.side;
@@ -12418,6 +12479,19 @@ async fn main() {
                             let mut map = server.v2_half_pending.lock().await;
                             match map.get_mut(&token) {
                                 Some(pend) => {
+                                    if let Err(message) =
+                                        validate_harmony_v2_half_database(pend.db_id, db_id)
+                                    {
+                                        drop(map);
+                                        let resp = Response::Error(message);
+                                        let _ = send_resp(
+                                            &mut sink,
+                                            channel_session.as_mut(),
+                                            resp.encode(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
                                     if pend.sides_served & side_bit != 0 {
                                         // Same side already served on
                                         // this token — protocol error.
@@ -12471,6 +12545,7 @@ async fn main() {
                                     map.insert(
                                         token,
                                         V2HalfPending {
+                                            db_id,
                                             entry: Arc::clone(&arc),
                                             sides_served: side_bit,
                                             created_at: Instant::now(),
@@ -13935,6 +14010,94 @@ mod service_admission_dispatch_tests {
         assert_eq!(online_v2full_auth_limit_v1(4, 8, Some(2)).unwrap(), 2);
         assert!(online_v2full_auth_limit_v1(4, 8, Some(4)).is_err());
         assert!(online_v2full_auth_limit_v1(8, 4, Some(4)).is_err());
+    }
+
+    #[test]
+    fn harmony_pool_cli_preserves_legacy_single_pool_binding() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--pool-size".to_owned(),
+            "8".to_owned(),
+            "--pool-db-id".to_owned(),
+            "7".to_owned(),
+            "--pool-dir".to_owned(),
+            "/private/pool-7".to_owned(),
+        ]);
+        assert_eq!(
+            args.harmony_pool_bindings,
+            vec![HarmonyPoolBinding {
+                db_id: 7,
+                pool_dir: Some(PathBuf::from("/private/pool-7")),
+            }]
+        );
+
+        let defaults = normalize_harmony_pool_bindings(8, 0, false, None, Vec::new()).unwrap();
+        assert_eq!(
+            defaults,
+            vec![HarmonyPoolBinding {
+                db_id: 0,
+                pool_dir: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn harmony_pool_cli_accepts_distinct_repeatable_database_bindings() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--pool-size".to_owned(),
+            "8".to_owned(),
+            "--harmony-pool-db".to_owned(),
+            "1=/private/pool-1".to_owned(),
+            "--harmony-pool-db".to_owned(),
+            "0=/private/pool-0".to_owned(),
+        ]);
+        assert_eq!(
+            args.harmony_pool_bindings,
+            vec![
+                HarmonyPoolBinding {
+                    db_id: 0,
+                    pool_dir: Some(PathBuf::from("/private/pool-0")),
+                },
+                HarmonyPoolBinding {
+                    db_id: 1,
+                    pool_dir: Some(PathBuf::from("/private/pool-1")),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn harmony_pool_cli_rejects_ambiguous_or_aliased_multi_pool_bindings() {
+        let one = vec![(0, PathBuf::from("/private/pool-0"))];
+        assert!(normalize_harmony_pool_bindings(0, 0, false, None, one.clone()).is_err());
+        assert!(normalize_harmony_pool_bindings(8, 0, true, None, one.clone(),).is_err());
+        assert!(
+            normalize_harmony_pool_bindings(8, 0, false, Some(PathBuf::from("/legacy")), one,)
+                .is_err()
+        );
+        assert!(normalize_harmony_pool_bindings(
+            8,
+            0,
+            false,
+            None,
+            vec![
+                (0, PathBuf::from("/private/pool-a")),
+                (0, PathBuf::from("/private/pool-b")),
+            ],
+        )
+        .is_err());
+        assert!(normalize_harmony_pool_bindings(
+            8,
+            0,
+            false,
+            None,
+            vec![
+                (0, PathBuf::from("/private/shared")),
+                (1, PathBuf::from("/private/shared")),
+            ],
+        )
+        .is_err());
     }
 
     #[test]
@@ -15696,10 +15859,10 @@ mod harmony_dos_guard_tests {
     }
 
     #[test]
-    fn v2_hint_pool_rejects_a_different_database_id() {
-        assert!(validate_harmony_v2_pool_database(0, 0).is_ok());
-        assert!(validate_harmony_v2_pool_database(7, 7).is_ok());
-        let error = validate_harmony_v2_pool_database(0, 1).unwrap_err();
+    fn v2_half_pending_token_rejects_a_different_database_id() {
+        assert!(validate_harmony_v2_half_database(0, 0).is_ok());
+        assert!(validate_harmony_v2_half_database(7, 7).is_ok());
+        let error = validate_harmony_v2_half_database(0, 1).unwrap_err();
         assert!(error.contains("bound to db 0"));
         assert!(error.contains("requested db 1"));
     }

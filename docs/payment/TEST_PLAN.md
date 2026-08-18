@@ -648,9 +648,11 @@ Cashu-specific:
 - cold cache consumes once, serves the V2Full main INDEX/CHUNK bundle, then
   accepts the same-db full-group legacy level-10+/20+ sibling-hint sequence on
   the same socket without marking the grant complete after the main request;
-- a provider process bound with `--pool-db-id N` accepts canonical V2Full only
-  for that loaded database, including non-zero delta IDs, and rejects another
-  database before any hint frame is served;
+- the legacy provider form bound with `--pool-db-id N` accepts canonical V2Full
+  only for that loaded database; the repeatable `--harmony-pool-db ID=DIR` form
+  starts one signed two-database policy with distinct db0/db1 pool bindings,
+  selects the authenticated database exactly, and rejects a cross-database
+  V2Half token before any hint frame is served;
 - after a Payment V1 V2Full grant, the SDK sends V2Full for that exact database
   even when `db_id != 0`; pool-unavailable never falls back to V1 and losing
   local main-hint state never retries the already-consumed main bundle;

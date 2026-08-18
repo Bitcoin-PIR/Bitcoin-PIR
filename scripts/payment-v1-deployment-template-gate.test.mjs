@@ -339,8 +339,10 @@ test("no-Standard-Cashu provider is an explicit closed method profile", () => {
     "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in";
   const source = readFileSync(join(REPOSITORY, provider), "utf8");
   assert.match(source, /--require-service-auth-v1/u);
-  assert.match(source, /--service-bat-key/u);
+  assert.doesNotMatch(source, /--service-bat-key/u);
   assert.match(source, /--service-shared-authorization/u);
+  assert.match(source, /--harmony-pool-db 0=/u);
+  assert.match(source, /--harmony-pool-db 1=/u);
   assert.doesNotMatch(
     source,
     /--service-cashu-(?:recovery|custody|exposure)/u,
@@ -348,8 +350,15 @@ test("no-Standard-Cashu provider is an explicit closed method profile", () => {
 
   for (const [mutation, expected] of [
     [
-      (text) => text.replace(/^.*--service-bat-key.*\n/m, ""),
-      /--service-bat-key/,
+      (text) => text.replace(
+        "    --service-shared-authorization",
+        "    --service-bat-key /private/provider-local-bat.key \\\n    --service-shared-authorization",
+      ),
+      /--service-shared-authorization|ExecStart option set differs/,
+    ],
+    [
+      (text) => text.replace(/^.*--harmony-pool-db 1=.*\n/m, ""),
+      /--harmony-pool-db/,
     ],
     [
       (text) => text.replace(/^.*--service-shared-idempotency-key.*\n/m, ""),
