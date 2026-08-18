@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Y4fPxpcC/z9YcgXTKVCgAwe88Bs1XudeGnQfv3V5W8g=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-mg+Rxmkm26a7L4IKVh9RsQ849jkKIqNyshRzO62etzw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -3112,7 +3112,22 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.innerHTML = rows.join('');
         }
 
-        async function verifyAndRenderOramSourceProofBadge(idElem, label, liveDatabaseProof, liveRuntime) {
+        function renderOramSourceProofWaitingForDb(dbId) {
+            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: `waiting for a strictly verified live db ${dbId} proof and its v2 source ceremony`,
+            });
+        }
+
+        async function verifyAndRenderOramSourceProofBadge(
+            idElem,
+            label,
+            liveDatabaseProof,
+            liveRuntime,
+            isCurrent = () => true,
+        ) {
             if (!liveDatabaseProof || !liveRuntime) {
                 throw new Error('ORAM source proof requires the current strictly verified live database proof and runtime');
             }
@@ -3120,6 +3135,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 pin => pin.dbId === liveDatabaseProof.dbId,
             );
             if (!expectedDbPin) throw new Error(`no production ORAM v2 pin for db ${liveDatabaseProof.dbId}`);
+            if (!isCurrent()) return;
             renderOramSourceProofBadge(idElem, label, {
                 state: 'unavailable',
                 checks: [],
@@ -3133,6 +3149,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 liveRuntime,
                 verifyAmdSignature: true,
             });
+            if (!isCurrent()) return;
             renderOramSourceProofBadge(idElem, label, status);
             if (status.state === 'verified') {
                 log(`${label}: Direct ORAM inputs verified against AMD-signed BuildEvidence V2 and the live measured runtime`, 'success');
@@ -6101,11 +6118,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('oram-progressContainer').classList.remove('active');
         }
 
+        function oramRefreshDbInfo() {
+            const select = document.getElementById('oram-dbSelect');
+            const infoSpan = document.getElementById('oram-dbInfo');
+            const selected = select.selectedOptions[0];
+            if (!selected?.dataset.dbType) {
+                infoSpan.textContent = '';
+                return;
+            }
+            const indexBins = Number.parseInt(selected.dataset.indexBins, 10);
+            const chunkBins = Number.parseInt(selected.dataset.chunkBins, 10);
+            infoSpan.textContent = `${selected.dataset.dbType}, index_bins=${indexBins.toLocaleString()}, chunk_bins=${chunkBins.toLocaleString()}`;
+        }
+
         function oramPopulateDbSelector() {
             const catalog = oramClient?.getCatalog();
             const select = document.getElementById('oram-dbSelect');
             const advancedDetails = document.getElementById('oram-advancedDbDetails');
-            const infoSpan = document.getElementById('oram-dbInfo');
             const preferredDbId = Number.parseInt(select.value, 10);
             select.innerHTML = '';
 
@@ -6122,19 +6151,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 } else {
                     opt.textContent = `[${db.dbId}] ${db.name} (delta, ${db.baseHeight.toLocaleString()} \u2192 ${db.height.toLocaleString()})`;
                 }
+                opt.dataset.dbType = db.dbType === 1 ? 'delta' : 'full';
+                opt.dataset.indexBins = String(db.indexBinsPerTable);
+                opt.dataset.chunkBins = String(db.chunkBinsPerTable);
                 if (db.dbId === preferredDbId) opt.selected = true;
                 select.appendChild(opt);
             }
 
-            const refreshInfo = () => {
-                const dbId = parseInt(select.value);
-                const entry = catalog.databases.find(d => d.dbId === dbId);
-                if (entry) {
-                    const type = entry.dbType === 1 ? 'delta' : 'full';
-                    infoSpan.textContent = `${type}, index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}`;
-                }
-            };
-            refreshInfo();
+            oramRefreshDbInfo();
             advancedDetails.style.display = 'block';
         }
 
@@ -6247,6 +6271,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 });
 
                 await oramClient.connect();
+                const sourceProofClient = oramClient;
                 oramPopulateDbSelector();
                 const selectedDbId = Number.parseInt(
                     document.getElementById('oram-dbSelect').value,
@@ -6258,13 +6283,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (!sourceDbPin) {
                     throw new Error(`production Direct ORAM source db ${selectedDbId} pin is missing`);
                 }
-                const sourceDbStatus = oramClient.getDatabaseProofStatus(sourceDbPin.dbId);
-                const catalog = oramClient.getCatalog();
+                const sourceDbStatus = sourceProofClient.getDatabaseProofStatus(sourceDbPin.dbId);
+                const catalog = sourceProofClient.getCatalog();
                 const sourceDbPosition = catalog?.databases.findIndex(
                     database => database.dbId === sourceDbPin.dbId,
                 ) ?? -1;
                 const manifestRootHex = sourceDbPosition >= 0
-                    ? oramClient.attestation.manifestRootsHex?.[sourceDbPosition]
+                    ? sourceProofClient.attestation.manifestRootsHex?.[sourceDbPosition]
                     : undefined;
                 if (sourceDbStatus?.state !== 'verified' || !sourceDbStatus.proof || !manifestRootHex) {
                     throw new Error(`strict ORAM connection did not produce a source db ${selectedDbId} proof and attested manifest root`);
@@ -6274,18 +6299,27 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // attested manifest root above are the query admission
                 // boundary.  Do not close an otherwise strict connection if
                 // optional source-proof artifacts are unavailable.
+                const sourceProofIsCurrent = () => (
+                    oramClient === sourceProofClient
+                    && (Number.parseInt(
+                        document.getElementById('oram-dbSelect').value,
+                        10,
+                    ) || 0) === selectedDbId
+                );
                 void verifyAndRenderOramSourceProofBadge(
                     'oram-sourceProofBadge',
                     'ORAM TEE',
                     sourceDbStatus.proof,
                     {
-                        state: oramClient.attestation.state,
-                        sevStatus: oramClient.attestation.sevStatus,
-                        vcekChain: oramClient.attestation.vcekChain,
-                        pinStatus: oramClient.attestation.pinStatus,
+                        state: sourceProofClient.attestation.state,
+                        sevStatus: sourceProofClient.attestation.sevStatus,
+                        vcekChain: sourceProofClient.attestation.vcekChain,
+                        pinStatus: sourceProofClient.attestation.pinStatus,
                         manifestRootHex,
                     },
+                    sourceProofIsCurrent,
                 ).catch(error => {
+                    if (!sourceProofIsCurrent()) return;
                     const message = error?.message || String(error);
                     renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
                         state: 'unavailable',
@@ -6318,7 +6352,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!preserveResults) {
                 document.getElementById('oram-resultsContainer').innerHTML = '';
             }
-            document.getElementById('oram-advancedDbDetails').style.display = 'none';
+            const select = document.getElementById('oram-dbSelect');
+            document.getElementById('oram-advancedDbDetails').style.display =
+                select.options.length > 1 ? 'block' : 'none';
             oramSetButtons(false);
             publishTransportDisconnected('oram-status');
         }
@@ -6471,30 +6507,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('oram-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('oram'));
         document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
         document.getElementById('oram-dbSelect').addEventListener('change', async () => {
-            if (admissionControllers.oram) {
+            const select = document.getElementById('oram-dbSelect');
+            const selectedDbId = Number.parseInt(select.value, 10) || 0;
+            const hadAdmission = Boolean(admissionControllers.oram);
+            if (hadAdmission) {
                 await closeAdmissionAttempt(
                     'oram',
                     'Database selection changed; start a new provider verification setup.',
                 );
-                log('ORAM: database change closed the exact admission before any query spend', 'info');
-                return;
             }
-            const catalog = oramClient?.getCatalog();
-            const select = document.getElementById('oram-dbSelect');
-            const infoSpan = document.getElementById('oram-dbInfo');
-            const entry = catalog?.databases.find(d => d.dbId === parseInt(select.value));
-            if (entry && infoSpan) {
-                const type = entry.dbType === 1 ? 'delta' : 'full';
-                infoSpan.textContent = `${type}, index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}`;
+            oramRefreshDbInfo();
+            renderOramSourceProofWaitingForDb(selectedDbId);
+            if (hadAdmission) {
+                log('ORAM: database change closed the exact admission before any query spend', 'info');
             }
         });
         oramSetButtons(false);
-        renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
-            state: 'unavailable',
-            checks: [],
-            mismatches: [],
-            error: 'waiting for a strictly verified selected database proof and its v2 source ceremony',
-        });
+        renderOramSourceProofWaitingForDb(0);
 
         // This is deliberately the final step in the application module.  It
         // means every backend tab, query control, and admission panel now has
