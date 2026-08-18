@@ -218,6 +218,19 @@ No CI change, no file moves, no new gates, no pin/policy/proof changes.
    producer". Until then the local pipeline stays bannered (not
    forbidden), as `scripts/README.md` already states.
 
+   **2026-08-18 owner decision 4A (prospective rule):** the dated facts above
+   remain the record of how the active mixed lineage was assembled; they are
+   not rewritten and do not trigger a rebuild. The external producer and
+   measured runner now have exact-commit-pinned native predecessor-free
+   full-build V2 snapshot and delta paths. Therefore, beginning with the next
+   new full, delta or rebuild candidate, only a separately reviewed exact
+   `attested-builder` commit may produce the complete server-loadable
+   generation. `scripts/build_full.sh`, the other local database wrappers and
+   `tools/db-builder` are permanently development/regression-only for future
+   production rotations. Preserve the complete builder output, verifier
+   transcript and end-to-end release acceptance; do not add a database build
+   to routine CI.
+
 2. How was the live pir1 binary (`c836e11a…`) actually built — cargo with
    features, the Nix flake, or `build_unified_server.sh`?
 

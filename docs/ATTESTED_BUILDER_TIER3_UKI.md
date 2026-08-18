@@ -4,14 +4,16 @@ This runbook is for the temporary VPSBG SEV-SNP builder image. It is separate
 from the production pir2 Tier 3 UKI. The builder UKI has no sshd, no
 cloudflared, and no runit service tree. It boots, mounts `/home/pir/data`, runs
 one selected attested-builder workflow, writes SEV-SNP evidence, then powers
-off. `MODE=full-build` performs a complete snapshot build and stages a
-server-loadable database. The runner inserts the typed Direct ORAM source/layout
-section into the exact `server-db/MANIFEST.toml` before requesting evidence and
-a quote. However, the independent attested-builder producer currently
-hard-codes BuildEvidence v1. The runner detects that output, records
-`attested-builder-full-build-v2-required`, and fails before publishing `latest`
-or an eligibility claim. `MODE=reattest-existing-v2` only re-attests retained
-serving images and is also ineligible for production TEE-ORAM.
+off. The image is pinned to reviewed `Bitcoin-PIR/attested-builder` commit
+`8d9d21a6be560236cb666269cf1f93a3de53bb1f`, which provides native
+predecessor-free full-build V2 pipelines for both snapshots and deltas.
+`MODE=native-full-build-v2-snapshot` and
+`MODE=native-full-build-v2-delta` stage the complete server-loadable database,
+typed Direct ORAM inputs/manifest, BuildEvidence V2 and SNP report as one
+output. The runner verifies the evidence and refuses to publish `latest` or an
+eligibility claim unless it observes V2, `evidence_mode=full_build`, and no
+predecessor hashes. `MODE=reattest-existing-v2` remains a proof migration tool
+only and is ineligible for production TEE-ORAM.
 
 ## Build the UKI on VPSBG Slice 2
 
@@ -104,7 +106,9 @@ built: doing so after BuildEvidence or quote creation would invalidate the
 commitment. These outputs may continue to serve non-ORAM proof use cases, but
 production TEE-ORAM must reject them.
 
-## Provision a complete snapshot rebuild
+## Provision a native full-build V2 generation
+
+Use the snapshot mode for a new full database:
 
 Prepare these while the server is still in Slice 2:
 
@@ -113,7 +117,7 @@ sudo mkdir -p /home/pir/data/attested-builder/inputs
 sudo mkdir -p /home/pir/data/attested-builder-runs
 sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
 SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<height>.dat
-MODE=full-build
+MODE=native-full-build-v2-snapshot
 EXPECTED_MUHASH=<64-byte-Core-display-muhash>
 NETWORK_MAGIC=f9beb4d9
 ANCHOR_HEIGHT=<height>
@@ -132,18 +136,35 @@ The config parser accepts plain `KEY=VALUE` lines only; it does not execute the
 file as shell. This keeps the unmeasured rootfs config in the role of data
 input, not runtime code.
 
-The baked runner exports `ROOTS_ONLY=0`, `STAGE_SERVER_DB=1`, and
-`RUN_ONION_FFI=0`. It intentionally defers `WRITE_BUILD_EVIDENCE` and
-`EMIT_SEV_SNP_QUOTE` until after it has atomically inserted `[direct_oram]` into
-the staged manifest. This establishes the required ordering, but the current
-producer still emits a v1 payload/evidence domain. Consequently this mode is a
-negative integration check today, not a production artifact recipe.
+For a delta, replace the snapshot-specific fields with:
 
-### Required external producer upgrade
+```text
+MODE=native-full-build-v2-delta
+FROM_SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<from-height>.dat
+FROM_EXPECTED_MUHASH=<64-byte-Core-display-muhash>
+FROM_ANCHOR_HEIGHT=<from-height>
+TO_SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<to-height>.dat
+TO_EXPECTED_MUHASH=<64-byte-Core-display-muhash>
+TO_ANCHOR_HEIGHT=<to-height>
+# TO_ANCHOR_HASH=<optional-block-hash>
+NETWORK_MAGIC=f9beb4d9
+CORE_VERSION=<bitcoind-version-string>
+RUN_ID=delta_<from-height>_<to-height>_sev_snp
+MIN_FREE_KB=50000000
+```
+
+The baked runner accepts only those two native build modes or the separately
+ineligible re-attestation mode. For a native build it exports
+`ROOTS_ONLY=0`, `STAGE_SERVER_DB=1`, `RUN_ONION_FFI=1`, and V2 evidence/quote
+settings before invoking the measured snapshot or delta pipeline. The producer
+must finish the server database, Direct inputs and exact typed manifest before
+creating BuildEvidence and the SNP report.
+
+### Native producer acceptance gate
 
 Do not remove the runner's final version/mode gate merely because the typed
-manifest is present. The external attested-builder must first ship a native
-full-build-v2 path that:
+manifest is present. The pinned external producer now supplies the native
+full-build V2 path, and producer review requires that it:
 
 - creates canonical BuildParamsV2 and the v2 root payload inside the measured
   full snapshot or delta pipeline;
@@ -152,12 +173,18 @@ full-build-v2 path that:
 - stages and hashes the final typed server manifest before evidence;
 - regenerates and validates the contents of both database and all-artifacts
   manifest sidecars after all payload/manifest changes;
-- derives v2 `REPORT_DATA` and emits the SNP report plus AMD ARK/ASK/VCEK
-  certificate artifacts; and
+- derives v2 `REPORT_DATA` and emits the raw SNP report; and
 - has migration tests showing that v1 and `reattest_existing` remain rejected
   while a golden full-build-v2 artifact is accepted.
 
-Changing BitcoinPIR's wrapper alone cannot satisfy this contract.
+The measured runner enforces the output/evidence properties at runtime;
+producer migration tests are review evidence, not an in-guest runtime
+assertion. The release/public-proof workflow separately retains and pins the
+matching AMD ARK/ASK/VCEK certificate chain; those certificates are not native
+builder output.
+
+Changing BitcoinPIR's wrapper alone cannot satisfy this contract, and a future
+producer commit requires its own review and UKI identity update.
 The measured strict `oramctl` rebuild also rejects anything other than
 predecessor-free full-build-v2 evidence as a defense-in-depth gate.
 
@@ -169,19 +196,25 @@ temporary materialization peak for that height with `df`/`du`, and raise
 `MIN_FREE_KB` accordingly. A builder UKI run that cannot demonstrate sufficient
 space must be treated as failed, not retried by deleting proof inputs.
 
-### Delta activation blocker
+### Native delta path
 
-The currently baked UKI installs only `build-snapshot-database.sh`. It does not
-run the measured `build-delta-database.sh` pipeline. Consequently the existing
-db1 delta manifest/evidence—even when produced by
-`MODE=reattest-existing-v2`—does not carry the pre-evidence typed Direct ORAM
-binding required by strict startup. db1 TEE-ORAM activation remains blocked
-until a new measured delta build stages a full `server-db`, inserts the typed
-section, and only then creates new BuildEvidence/report data/quote. A new full
-snapshot may replace db1 only after an explicit database/query-plan migration;
-it is not an automatic substitute for the current delta.
+The baked UKI includes both `build-snapshot-database.sh` and
+`build-delta-database.sh`. The delta mode consumes the two exact Core snapshots,
+checks both endpoint MuHash/height inputs, stages a complete delta `server-db`
+and Direct input set, and creates typed predecessor-free BuildEvidence V2 only
+after those bytes are final. The retained `940611 -> 948454` native output is
+the db1 evidence/source bundle used by the current source verifier.
+
+That capability removes the old producer-format blocker; it does not authorize
+a new build, measured-boot switch, database activation or policy release. A new
+full snapshot may replace db1 only after an explicit database/query-plan
+migration; it is not an automatic substitute for the current delta.
 
 ## Boot and Recover
+
+Building/uploading the UKI, switching measured boot and rebooting are separate
+production operations and require explicit authorization; the source runbook
+or a prepared config does not grant it.
 
 Upload `/tmp/bpir-attested-builder-tier3.efi` in the VPSBG Measured Boot UI and
 reboot. The image powers off after success or failure.
@@ -190,8 +223,8 @@ After it powers off:
 
 1. Switch Measured Boot back to `None`.
 2. Boot the normal Slice 2 rootfs.
-3. Collect outputs from the configured `OUT_DIR`. With the current v1 producer,
-   failure is expected and the runner deliberately does not update:
+3. Collect outputs from the configured `OUT_DIR`. A successful native V2 run
+   updates the convenience link only after its evidence gate passes:
 
 ```bash
 /home/pir/data/attested-builder-runs/latest/
@@ -209,14 +242,15 @@ root-bundle-payload.bin
 database.manifest.sha256
 all-artifacts.manifest.sha256
 server-db/MANIFEST.toml
+oram-direct-inputs/direct-inputs.sha256
 ```
 
-For `MODE=full-build`, `server-db/MANIFEST.toml` is a server-loadable manifest
-with a typed `[direct_oram]` section. Current output is nevertheless
-ineligible because `build-evidence.bin` is v1. A future compliant producer must
-commit the final manifest digest—not the pre-augmentation digest—and pass the
-runner's v2/full-build/no-predecessor gate before shutdown is considered
-successful.
+For either native mode, `server-db/MANIFEST.toml` is the server-loadable
+manifest with a typed `[direct_oram]` section. The producer commits that final
+manifest digest—not a pre-augmentation digest—and the runner requires
+V2/full-build/no-predecessor evidence before shutdown is considered successful.
+Re-attestation output remains ineligible even when its retained serving files
+are otherwise valid.
 
 The runner also writes coarse status/log files under:
 
