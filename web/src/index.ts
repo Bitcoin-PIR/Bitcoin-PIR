@@ -158,7 +158,9 @@ export {
 } from './trust-chain-proof.js';
 
 export {
+  DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH,
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+  oramSourceProofManifestPathForDbId,
   verifyOramSourceProof,
   type OramSourceProofManifest,
   type OramSourceLiveRuntime,

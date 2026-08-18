@@ -1,7 +1,8 @@
 # Direct ORAM input and live-runtime binding
 
-Status: **regenerate-on-boot model active; public db0 input proof implemented**
-as of 2026-08-12.
+Status: **regenerate-on-boot model active; public db0 and db1 input proofs
+implemented in source** as of 2026-08-18. Publication of the new db1 Web
+artifacts remains a separate deployment action.
 
 The measured VPSBG production runtime starts Direct ORAM from fixed database
 inputs inside SEV-SNP. The attached image is volatile operational state: query
@@ -19,7 +20,7 @@ The browser establishes this chain:
 AMD-signed database BuildEvidence V2 (full-build, no predecessor)
   -> exact server database MANIFEST.toml
   -> typed [direct_oram] input hashes, sizes, record counts, and layout
-  -> live db0 proof for the same manifest root
+  -> live proof for the selected db0 or db1 manifest root
   -> live AMD-verified, production-pinned runtime for the same manifest root
   -> measured startup path regenerates Direct ORAM before serving queries
 ```
@@ -56,8 +57,15 @@ measured process installed that copy.
 
 ## Public source-proof contract
 
-`web/public/proofs/oram-source/current.json` is a closed manifest. It references
-only these non-sensitive artifacts:
+`web/public/proofs/oram-source/current.json` is the backward-compatible db0
+entry and `current-db1.json` is the db1 entry. Each is a closed manifest that
+references only these non-sensitive artifacts:
+
+The db1 evidence is the retained predecessor-free native V2 delta build from
+height 940611 to 948454. Its attested server-manifest root is
+`047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c`;
+the browser still requires the selected live db1 proof and measured runtime to
+present that same root before the source badge can verify.
 
 1. `build-evidence.bin`;
 2. its raw AMD SEV-SNP report;
@@ -83,8 +91,9 @@ The browser then checks:
 7. domain-separated `REPORT_DATA` recomputation;
 8. AMD ARK/ASK/VCEK chain and report signature against the pinned builder
    measurement;
-9. the production db0 V2 pin, including builder binary and commit;
-10. the current live db0 proof's server-manifest root; and
+9. the selected production db0 or db1 V2 pin, including builder binary and
+   commit;
+10. the selected live database proof's server-manifest root; and
 11. the current runtime's `verified-vcek`, `reportDataMatch`, VCEK-chain,
     production-pin, and manifest-root results.
 
@@ -119,8 +128,10 @@ makes it permanently ineligible for Web publication or production proof use.
 Focused mutation tests cover the actual trust chain: wrong builder
 commit/binary pin, substituted input manifest, changed REPORT_DATA, mismatched
 live database/runtime manifest root, insufficient live runtime attestation,
-and v1 evidence. Output-hash and static-controller-root mutations were removed
-because those fields are no longer part of the security claim.
+cross-selecting the db0 bundle for db1, unknown database IDs, and v1 evidence.
+The db1 positive case also fixes the delta base/current anchors and Direct input
+hashes. Output-hash and static-controller-root mutations were removed because
+those fields are no longer part of the security claim.
 
 ## When a stronger design would be needed
 

@@ -1,0 +1,390 @@
+# pir2 db0+db1 Free-PoW + BAT policy
+#
+# Complete source template: render every @...@ placeholder, inspect the scope
+# IDs, create one fresh BAT binding per scope, then sign the complete policy.
+# This file is inert source and is not deployment or funds authorization.
+
+operator_pubkey_hex = "@PIR2_OPERATOR_PUBKEY_HEX@"
+stable_server_id = "@PIR2_STABLE_SERVER_ID@"
+policy_epoch = @PIR2_POLICY_EPOCH@
+issued_at = @POLICY_ISSUED_AT_UNIX@
+expires_at = @POLICY_EXPIRES_AT_UNIX@
+auth_padding_class = "16-kib"
+
+[[scopes]]
+backend = "dpf-pir-v1"
+workload = "dpf-evaluate-job-v1"
+protocol_version = 1
+operation_profile = @PIR2_DPF_DB0_OPERATION_PROFILE@
+entitlement_profile = @PIR2_DPF_DB0_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB0_PROOF_V1_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_DPF_DB0_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_DPF_DB0_MAX_FRAMES@
+max_request_bytes = @PIR2_DPF_DB0_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_DPF_DB0_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_DPF_DB0_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_DPF_DB0_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_DPF_DB0_MAX_HINT_GROUPS@
+max_work_units = @PIR2_DPF_DB0_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 401
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_DPF_DB0_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 402
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_DPF_DB0_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db0/dpf-evaluate-job-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_DPF_DB0_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_DPF_DB0_BAT_PRICE_MSAT@
+
+[[scopes]]
+backend = "dpf-pir-v1"
+workload = "dpf-evaluate-job-v1"
+protocol_version = 1
+operation_profile = @PIR2_DPF_DB1_OPERATION_PROFILE@
+entitlement_profile = @PIR2_DPF_DB1_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB1_PROOF_V1_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_DPF_DB1_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_DPF_DB1_MAX_FRAMES@
+max_request_bytes = @PIR2_DPF_DB1_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_DPF_DB1_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_DPF_DB1_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_DPF_DB1_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_DPF_DB1_MAX_HINT_GROUPS@
+max_work_units = @PIR2_DPF_DB1_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 411
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_DPF_DB1_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 412
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_DPF_DB1_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db1/dpf-evaluate-job-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_DPF_DB1_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_DPF_DB1_BAT_PRICE_MSAT@
+
+[[scopes]]
+backend = "harmony-pir-v2"
+workload = "harmony-query-job-v1"
+protocol_version = 2
+operation_profile = @PIR2_HARMONY_QUERY_DB0_OPERATION_PROFILE@
+entitlement_profile = @PIR2_HARMONY_QUERY_DB0_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB0_PROOF_V1_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_HARMONY_QUERY_DB0_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_HARMONY_QUERY_DB0_MAX_FRAMES@
+max_request_bytes = @PIR2_HARMONY_QUERY_DB0_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_HARMONY_QUERY_DB0_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_HARMONY_QUERY_DB0_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_HARMONY_QUERY_DB0_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_HARMONY_QUERY_DB0_MAX_HINT_GROUPS@
+max_work_units = @PIR2_HARMONY_QUERY_DB0_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 501
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_HARMONY_QUERY_DB0_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 502
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_HARMONY_QUERY_DB0_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db0/harmony-query-job-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_HARMONY_QUERY_DB0_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_HARMONY_QUERY_DB0_BAT_PRICE_MSAT@
+
+[[scopes]]
+backend = "harmony-pir-v2"
+workload = "harmony-query-job-v1"
+protocol_version = 2
+operation_profile = @PIR2_HARMONY_QUERY_DB1_OPERATION_PROFILE@
+entitlement_profile = @PIR2_HARMONY_QUERY_DB1_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB1_PROOF_V1_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_HARMONY_QUERY_DB1_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_HARMONY_QUERY_DB1_MAX_FRAMES@
+max_request_bytes = @PIR2_HARMONY_QUERY_DB1_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_HARMONY_QUERY_DB1_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_HARMONY_QUERY_DB1_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_HARMONY_QUERY_DB1_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_HARMONY_QUERY_DB1_MAX_HINT_GROUPS@
+max_work_units = @PIR2_HARMONY_QUERY_DB1_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 511
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_HARMONY_QUERY_DB1_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 512
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_HARMONY_QUERY_DB1_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db1/harmony-query-job-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_HARMONY_QUERY_DB1_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_HARMONY_QUERY_DB1_BAT_PRICE_MSAT@
+
+[[scopes]]
+backend = "tee-oram-v1"
+workload = "tee-oram-query-v1"
+protocol_version = 1
+operation_profile = @PIR2_TEE_ORAM_DB0_OPERATION_PROFILE@
+entitlement_profile = @PIR2_TEE_ORAM_DB0_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB0_SERVER_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_TEE_ORAM_DB0_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_TEE_ORAM_DB0_MAX_FRAMES@
+max_request_bytes = @PIR2_TEE_ORAM_DB0_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_TEE_ORAM_DB0_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_TEE_ORAM_DB0_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_TEE_ORAM_DB0_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_TEE_ORAM_DB0_MAX_HINT_GROUPS@
+max_work_units = @PIR2_TEE_ORAM_DB0_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 601
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_TEE_ORAM_DB0_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 602
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_TEE_ORAM_DB0_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db0/tee-oram-query-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_TEE_ORAM_DB0_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_TEE_ORAM_DB0_BAT_PRICE_MSAT@
+
+[[scopes]]
+backend = "tee-oram-v1"
+workload = "tee-oram-query-v1"
+protocol_version = 1
+operation_profile = @PIR2_TEE_ORAM_DB1_OPERATION_PROFILE@
+entitlement_profile = @PIR2_TEE_ORAM_DB1_ENTITLEMENT_PROFILE@
+
+[scopes.dataset]
+kind = "manifest-root"
+root_hex = "@PIR2_DB1_SERVER_MANIFEST_ROOT_HEX@"
+
+[scopes.limits]
+max_logical_inputs = @PIR2_TEE_ORAM_DB1_MAX_LOGICAL_INPUTS@
+max_frames = @PIR2_TEE_ORAM_DB1_MAX_FRAMES@
+max_request_bytes = @PIR2_TEE_ORAM_DB1_MAX_REQUEST_BYTES@
+max_response_bytes = @PIR2_TEE_ORAM_DB1_MAX_RESPONSE_BYTES@
+max_wall_time_ms = @PIR2_TEE_ORAM_DB1_MAX_WALL_TIME_MS@
+max_concurrent_sockets = @PIR2_TEE_ORAM_DB1_MAX_CONCURRENT_SOCKETS@
+max_hint_groups = @PIR2_TEE_ORAM_DB1_MAX_HINT_GROUPS@
+max_work_units = @PIR2_TEE_ORAM_DB1_MAX_WORK_UNITS@
+
+[[scopes.offers]]
+offer_id = 611
+acquisition = "free"
+free_mode = "proof-of-work"
+free_pow_difficulty_bits = @PIR2_TEE_ORAM_DB1_FREE_POW_DIFFICULTY_BITS@
+priority_class = 1
+authorization = "free"
+verification = "provider-local"
+deployment_status = "stable"
+minimum_credential_validity_seconds = 1
+retired_policy_grace_seconds = 0
+credential_count = 1
+credential_presentation_limit = 1
+privacy_leakage_bits = 0
+
+[scopes.offers.price]
+kind = "free"
+
+[[scopes.offers]]
+offer_id = 612
+acquisition = "bolt11"
+free_mode = "not-free"
+priority_class = 1
+authorization = "cashu-bat"
+verification = "shared-issuer-online"
+deployment_status = "stable"
+issuer_id_hex = "@BAT_ISSUER_ID_HEX@"
+key_id_hex = "@PIR2_TEE_ORAM_DB1_BAT_KEY_ID_HEX@"
+credential_binding_path = "bindings/db1/tee-oram-query-v1/cashu-bat.bin"
+endpoint = "@BAT_ISSUER_ORIGIN@"
+invoice_expiry_seconds = @BAT_INVOICE_EXPIRY_SECONDS@
+claim_window_seconds = @BAT_CLAIM_WINDOW_SECONDS@
+minimum_credential_validity_seconds = @BAT_MINIMUM_CREDENTIAL_VALIDITY_SECONDS@
+retired_policy_grace_seconds = @BAT_RETIRED_POLICY_GRACE_SECONDS@
+credential_count = @PIR2_TEE_ORAM_DB1_BAT_CREDENTIAL_COUNT@
+credential_presentation_limit = 1
+privacy_leakage_bits = 28
+
+[scopes.offers.price]
+kind = "msat"
+amount = @PIR2_TEE_ORAM_DB1_BAT_PRICE_MSAT@

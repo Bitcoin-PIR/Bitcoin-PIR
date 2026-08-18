@@ -92,6 +92,22 @@ Cashu-mint access, public Nostr/DNS publication, VPSBG UKI build/upload/reboot,
 production-key installation/use, or mainnet/real-value operation authorizes
 only that action.
 
+## db0 + db1 Free-PoW and BAT source policies
+
+[`db1-free-pow-bat/`](db1-free-pow-bat/) contains the complete source-policy
+templates for the approved pir1/pir2 product boundary. Every provider workload
+advertises db0 and db1 as separate, exact-dataset-bound scopes, and every scope
+contains exactly two methods: provider-local Free-PoW and stable Cashu BAT
+redeemed through the shared online issuer. BOLT11 is an issuer-side way to
+acquire BAT; it is not a direct provider query offer. Direct BOLT11 receipts,
+Standard Cashu eCash and ARC are outside this profile.
+
+These checked-in templates are review inputs only. They contain placeholders,
+have not been rendered or signed, and do not authorize installation,
+activation, issuer use, funds, a VPSBG image change, or a pir1 parity rebuild.
+The older functional-beta policies remain historical inputs and must not be
+merged or edited into this product profile.
+
 The templates divide responsibilities as follows:
 
 - `systemd/hetzner-provider.service.in` is the paid/provider process on Hetzner.

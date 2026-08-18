@@ -755,8 +755,12 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <div class="panel accent">
                             <table class="pin-table">
                                 <tr>
-                                    <td>manifest</td>
+                                    <td>db0 manifest</td>
                                     <td><a href="/proofs/oram-source/current.json" target="_blank" rel="noopener">/proofs/oram-source/current.json</a></td>
+                                </tr>
+                                <tr>
+                                    <td>db1 manifest</td>
+                                    <td><a href="/proofs/oram-source/current-db1.json" target="_blank" rel="noopener">/proofs/oram-source/current-db1.json</a></td>
                                 </tr>
                                 <tr>
                                     <td>builder MEASUREMENT</td>
@@ -771,16 +775,32 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                     <td>cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f</td>
                                 </tr>
                                 <tr>
-                                    <td>index source</td>
+                                    <td>db0 index source</td>
                                     <td>d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c · 1,345,875,975 bytes</td>
                                 </tr>
                                 <tr>
-                                    <td>chunk source</td>
+                                    <td>db0 chunk source</td>
                                     <td>9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521 · 3,239,380,480 bytes</td>
                                 </tr>
                                 <tr>
-                                    <td>server manifest</td>
+                                    <td>db0 server manifest</td>
                                     <td>91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6</td>
+                                </tr>
+                                <tr>
+                                    <td>db1 index source</td>
+                                    <td>e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16 · 125,867,300 bytes</td>
+                                </tr>
+                                <tr>
+                                    <td>db1 chunk source</td>
+                                    <td>536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a · 340,230,840 bytes</td>
+                                </tr>
+                                <tr>
+                                    <td>db1 delta anchors</td>
+                                    <td>940,611 → 948,454</td>
+                                </tr>
+                                <tr>
+                                    <td>db1 server manifest</td>
+                                    <td>047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c</td>
                                 </tr>
                             </table>
                         </div>
@@ -793,17 +813,23 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>The report's <code>REPORT_DATA</code> is recomputed from the exact full-build V2 <code>BuildEvidence</code>; V1, reattestation and predecessor hashes are rejected.</li>
                             <li>BuildEvidence binds the root payload, database/all-artifacts manifests and exact server <code>MANIFEST.toml</code>.</li>
                             <li>The narrow typed <code>[direct_oram]</code> table supplies the exact input hashes, lengths, record counts and lookup layout.</li>
-                            <li>The current live db0 proof and the AMD-verified, production-pinned runtime both bind that same server-manifest root.</li>
+                            <li>The current live proof for the selected db0 or db1 entry and the AMD-verified, production-pinned runtime both bind that same server-manifest root.</li>
                         </ul>
                     </section>
 
                     <section>
                         <h2>Published minimum artifacts</h2>
                         <div class="panel">
+                            <p><strong>db0 full snapshot</strong></p>
                             <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/build-evidence.bin" download>BuildEvidence V2</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/build-evidence.sev-snp-report.bin" download>builder SEV-SNP report</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/root-bundle-payload.bin" download>root bundle payload</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/server-db-MANIFEST.toml" target="_blank" rel="noopener">typed server manifest</a></p>
+                            <p><strong>db1 delta 940611 → 948454</strong></p>
+                            <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/build-evidence.bin" download>BuildEvidence V2</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/build-evidence.sev-snp-report.bin" download>builder SEV-SNP report</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/root-bundle-payload.bin" download>root bundle payload</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/server-db-MANIFEST.toml" target="_blank" rel="noopener">typed server manifest</a></p>
                         </div>
                     </section>
 
@@ -909,8 +935,9 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM 948454 leaf proof JSON</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin" download>BHTM SEV-SNP report</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin" download>DB build evidence</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/current.json" target="_blank" rel="noopener">Direct ORAM source-input manifest</a></p>
-                            <p>The ORAM verifier runs only after receiving a matching live db0 proof and strict runtime attestation. Every referenced artifact is individually pinned by SHA-256 and size.</p>
+                            <p><a class="download-link" href="/proofs/oram-source/current.json" target="_blank" rel="noopener">Direct ORAM db0 source-input manifest</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/current-db1.json" target="_blank" rel="noopener">Direct ORAM db1 source-input manifest</a></p>
+                            <p>The ORAM verifier selects the manifest by exact db ID and runs only after receiving that matching live database proof and strict runtime attestation. Every referenced artifact is individually pinned by SHA-256 and size.</p>
                         </div>
                     </section>
                 </section>

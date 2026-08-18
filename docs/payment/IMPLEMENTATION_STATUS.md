@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-08-09. This document describes repository code, focused
+Status snapshot: 2026-08-18. This document describes repository code, focused
 tests, and the current functional-beta evidence; it is not a mainnet-production
 readiness claim. “Implemented” means that a code path exists; “tested” names
 the boundary actually exercised. It does not mean that an operator has
@@ -24,6 +24,32 @@ activated the path with real money.
       two independently rendered issuer instances and two matching
       `provider-direct-v1` instances with distinct provider/issuer IDs, origins,
       CLN payees, receipt keys and invoices; no such live pair exists yet.
+
+## db0 + db1 Free-PoW and BAT source boundary
+
+- [x] Complete pir1 and pir2 source-policy templates cover every provider-local
+      workload for both db0 and db1. Each scope is bound to that backend's
+      strict verified dataset root and contains exactly provider-local
+      Free-PoW plus stable Cashu BAT redeemed through the shared online issuer.
+      DPF/Harmony use their DB-proof-v1 sidecar root, Onion uses its
+      DB-proof-v2 sidecar root, and TEE ORAM uses the loaded server-database
+      manifest root.
+- [x] The templates exclude direct BOLT11 receipts, Standard Cashu eCash and
+      ARC. BOLT11 remains an issuer-side BAT acquisition route; no invoice,
+      payment hash, preimage or payer data is added to a provider query offer.
+- [x] The existing admission path already binds arbitrary `db_id` together
+      with provider, backend, workload, protocol, exact dataset root and
+      operation profile, so this source step does not add a new payment wire or
+      server runtime branch.
+- [x] The Web source now carries a closed db1 Direct ORAM source-proof manifest
+      and the six retained V2 delta artifacts. Selection is exact by db ID;
+      db0-for-db1 substitution and unknown IDs fail closed, while the selected
+      db1 survives catalog repopulation for the next admission attempt.
+- [ ] **Activation pending.** The source templates contain placeholders and
+      have not been rendered, signed, installed or activated, and the new Web
+      artifacts have not been publicly deployed. No issuer use, funds,
+      production mutation, VPSBG image change or pir1 parity rebuild is
+      authorized by this source work.
 
 ## Functional-beta update
 

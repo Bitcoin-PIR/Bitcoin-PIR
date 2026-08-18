@@ -22,6 +22,14 @@ const DB_PARAMS_V2_DOMAIN = new TextEncoder().encode('BPIR_BUILD_PARAMS_V2\0');
 
 export const DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH =
   '/proofs/oram-source/current.json';
+export const DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH =
+  '/proofs/oram-source/current-db1.json';
+
+export function oramSourceProofManifestPathForDbId(dbId: number): string {
+  if (dbId === 0) return DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH;
+  if (dbId === 1) return DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH;
+  throw new Error(`unsupported ORAM source-proof db_id ${dbId}`);
+}
 
 export interface OramSourceArtifactRef {
   path: string;
@@ -498,9 +506,11 @@ export async function verifyOramSourceProof(
   const checks: OramSourceProofCheck[] = [];
   const mismatches: string[] = [];
   const loader = options.artifactLoader ?? fetchProofArtifactBytesV1;
-  const manifestPath = options.manifestPath ?? DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH;
 
   try {
+    const manifestPath = options.manifestPath ?? oramSourceProofManifestPathForDbId(
+      options.expectedDbPin?.dbId ?? options.liveDatabaseProof?.dbId ?? 0,
+    );
     const manifest = await loadJson<OramSourceProofManifest>(manifestPath, loader);
     validateManifestShape(manifest);
     checks.push({ name: 'manifest loaded', state: 'verified', message: manifest.id });

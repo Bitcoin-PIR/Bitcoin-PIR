@@ -651,6 +651,56 @@ test("VPSBG premium beta remains a separate stateful shared-issuer profile", () 
   });
 });
 
+test("db1 product policies keep every role-local scope on Free-PoW plus shared BAT", () => {
+  const pir1 = "deploy/payment-v1/db1-free-pow-bat/pir1-service-policy.toml.in";
+  const pir2 = "deploy/payment-v1/db1-free-pow-bat/pir2-service-policy.toml.in";
+
+  withFixture((root) => {
+    mutate(root, pir1, (text) => {
+      const marker = 'workload = "onion-evaluate-job-v1"';
+      const second = text.lastIndexOf(marker);
+      assert.notEqual(second, -1);
+      return `${text.slice(0, second)}workload = "dpf-evaluate-job-v1"${text.slice(second + marker.length)}`;
+    });
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /must contain one onion-evaluate-job-v1 db1 scope/,
+    );
+  });
+
+  for (const [path, before, after, expected] of [
+    [
+      pir1,
+      'root_hex = "@PIR1_DB1_PROOF_V2_MANIFEST_ROOT_HEX@"',
+      'root_hex = "@PIR1_DB0_PROOF_V2_MANIFEST_ROOT_HEX@"',
+      /onion-evaluate-job-v1 db[01] scope/,
+    ],
+    [
+      pir2,
+      'credential_binding_path = "bindings/db1/dpf-evaluate-job-v1/cashu-bat.bin"',
+      'credential_binding_path = "bindings/db0/dpf-evaluate-job-v1/cashu-bat.bin"',
+      /dpf-evaluate-job-v1 db1 BAT must contain credential_binding_path/,
+    ],
+    [
+      pir2,
+      'authorization = "cashu-bat"',
+      'authorization = "bolt11-direct-receipt"',
+      /must not contain authorization = "bolt11-direct-receipt"/,
+    ],
+    [
+      pir1,
+      'verification = "shared-issuer-online"',
+      'verification = "provider-local"',
+      /dpf-evaluate-job-v1 db0 BAT must contain verification = "shared-issuer-online"/,
+    ],
+  ]) {
+    withFixture((root) => {
+      mutate(root, path, (text) => text.replace(before, after));
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
 test("VPSBG measured final exec fixes the premium suffix while accepting rendered public keys", () => {
   const measuredRunPath =
     "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";

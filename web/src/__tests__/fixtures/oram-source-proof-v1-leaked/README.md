@@ -13,7 +13,8 @@ rewriting or re-hashing them. They are test fixtures, not production web assets:
 - never return a `verified` production status for v1 evidence;
 - do not use the historical deployment claims as current operational evidence.
 
-Production uses `/proofs/oram-source/current.json` schema v2. Its deliberately
+Production uses `/proofs/oram-source/current.json` for db0 and
+`/proofs/oram-source/current-db1.json` for db1, both schema v2. Their deliberately
 smaller contract accepts only secret-free BuildEvidence V2, the exact typed
 server manifest, AMD ARK/ASK/VCEK verification artifacts, and matching live
 database/runtime bindings. This leaked v1 tree remains a negative fixture only.

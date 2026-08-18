@@ -104,6 +104,9 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/functional-beta/issuer-all-methods.args.in",
   "deploy/payment-v1/functional-beta/provider-all-methods.args.in",
   "deploy/payment-v1/functional-beta/service-policy.toml.in",
+  "deploy/payment-v1/db1-free-pow-bat/README.md",
+  "deploy/payment-v1/db1-free-pow-bat/pir1-service-policy.toml.in",
+  "deploy/payment-v1/db1-free-pow-bat/pir2-service-policy.toml.in",
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
@@ -2754,6 +2757,140 @@ function validateVpsbgPremiumFreePowBetaPolicy(text, mode) {
   }
 }
 
+function validateDb1FreePowBatPolicy(text, mode, provider) {
+  const upper = provider.toUpperCase();
+  const label = `${provider} db0+db1 Free-PoW + BAT policy template`;
+  const active = activeTemplateLines(text, label);
+  const joined = active.join("\n");
+  if ((mode & 0o111) !== 0) {
+    fail(`${label} must remain non-executable`);
+  }
+  for (const forbidden of [
+    'authorization = "bolt11-direct-receipt"',
+    'authorization = "cashu-ecash"',
+    'authorization = "arc-experimental"',
+    'free_mode = "open-best-effort"',
+    'free_mode = "ip-rate-limited"',
+    'verification = "standard-cashu-mint-online"',
+  ]) {
+    if (active.includes(forbidden)) {
+      fail(`${label} must not contain ${forbidden}`);
+    }
+  }
+  for (const required of [
+    `operator_pubkey_hex = "@${upper}_OPERATOR_PUBKEY_HEX@"`,
+    `stable_server_id = "@${upper}_STABLE_SERVER_ID@"`,
+    `policy_epoch = @${upper}_POLICY_EPOCH@`,
+    'auth_padding_class = "16-kib"',
+  ]) {
+    if (!active.includes(required)) fail(`${label} must contain ${required}`);
+  }
+
+  const specs = provider === "pir1"
+    ? [
+        ["dpf-pir-v1", "dpf-evaluate-job-v1", 1, "DPF", 0, "PIR1_DB0_PROOF_V1_MANIFEST_ROOT_HEX", 101, 102],
+        ["dpf-pir-v1", "dpf-evaluate-job-v1", 1, "DPF", 1, "PIR1_DB1_PROOF_V1_MANIFEST_ROOT_HEX", 111, 112],
+        ["harmony-pir-v2", "harmony-hint-bundle-v1", 2, "HARMONY_HINT", 0, "PIR1_DB0_PROOF_V1_MANIFEST_ROOT_HEX", 201, 202],
+        ["harmony-pir-v2", "harmony-hint-bundle-v1", 2, "HARMONY_HINT", 1, "PIR1_DB1_PROOF_V1_MANIFEST_ROOT_HEX", 211, 212],
+        ["onion-pir-v1", "onion-evaluate-job-v1", 1, "ONION", 0, "PIR1_DB0_PROOF_V2_MANIFEST_ROOT_HEX", 301, 302],
+        ["onion-pir-v1", "onion-evaluate-job-v1", 1, "ONION", 1, "PIR1_DB1_PROOF_V2_MANIFEST_ROOT_HEX", 311, 312],
+      ]
+    : [
+        ["dpf-pir-v1", "dpf-evaluate-job-v1", 1, "DPF", 0, "PIR2_DB0_PROOF_V1_MANIFEST_ROOT_HEX", 401, 402],
+        ["dpf-pir-v1", "dpf-evaluate-job-v1", 1, "DPF", 1, "PIR2_DB1_PROOF_V1_MANIFEST_ROOT_HEX", 411, 412],
+        ["harmony-pir-v2", "harmony-query-job-v1", 2, "HARMONY_QUERY", 0, "PIR2_DB0_PROOF_V1_MANIFEST_ROOT_HEX", 501, 502],
+        ["harmony-pir-v2", "harmony-query-job-v1", 2, "HARMONY_QUERY", 1, "PIR2_DB1_PROOF_V1_MANIFEST_ROOT_HEX", 511, 512],
+        ["tee-oram-v1", "tee-oram-query-v1", 1, "TEE_ORAM", 0, "PIR2_DB0_SERVER_MANIFEST_ROOT_HEX", 601, 602],
+        ["tee-oram-v1", "tee-oram-query-v1", 1, "TEE_ORAM", 1, "PIR2_DB1_SERVER_MANIFEST_ROOT_HEX", 611, 612],
+      ];
+  const blocks = joined.split(/^\[\[scopes\]\]$/mu).slice(1);
+  if (blocks.length !== specs.length) {
+    fail(`${label} must declare exactly six role-local db0/db1 scopes`);
+  }
+  if (active.filter((line) => line === "[[scopes.offers]]").length !== 12) {
+    fail(`${label} must declare exactly Free-PoW and BAT for every scope`);
+  }
+
+  const seenOfferIds = new Set();
+  const seenBindings = new Set();
+  const seenBatKeys = new Set();
+  for (const [backend, workload, protocol, kind, db, root, freeId, batId] of specs) {
+    const prefix = `${upper}_${kind}_DB${db}`;
+    const binding = `bindings/db${db}/${workload}/cashu-bat.bin`;
+    const matches = blocks.filter((block) =>
+      block.includes(`backend = "${backend}"`)
+      && block.includes(`workload = "${workload}"`)
+      && block.includes(`root_hex = "@${root}@"`)
+    );
+    if (matches.length !== 1) {
+      fail(`${label} must contain one ${workload} db${db} scope with @${root}@`);
+    }
+    const block = matches[0];
+    for (const required of [
+      `protocol_version = ${protocol}`,
+      `operation_profile = @${prefix}_OPERATION_PROFILE@`,
+      `entitlement_profile = @${prefix}_ENTITLEMENT_PROFILE@`,
+      'kind = "manifest-root"',
+      `root_hex = "@${root}@"`,
+      `max_logical_inputs = @${prefix}_MAX_LOGICAL_INPUTS@`,
+      `max_frames = @${prefix}_MAX_FRAMES@`,
+      `max_request_bytes = @${prefix}_MAX_REQUEST_BYTES@`,
+      `max_response_bytes = @${prefix}_MAX_RESPONSE_BYTES@`,
+      `max_wall_time_ms = @${prefix}_MAX_WALL_TIME_MS@`,
+      `max_concurrent_sockets = @${prefix}_MAX_CONCURRENT_SOCKETS@`,
+      `max_hint_groups = @${prefix}_MAX_HINT_GROUPS@`,
+      `max_work_units = @${prefix}_MAX_WORK_UNITS@`,
+    ]) {
+      if (!block.includes(required)) fail(`${label} ${workload} db${db} must contain ${required}`);
+    }
+    const offers = block.split(/^\[\[scopes\.offers\]\]$/mu).slice(1);
+    if (offers.length !== 2) {
+      fail(`${label} ${workload} db${db} must contain exactly two offers`);
+    }
+    const free = offers.find((offer) => offer.includes('authorization = "free"'));
+    const bat = offers.find((offer) => offer.includes('authorization = "cashu-bat"'));
+    if (!free || !bat) {
+      fail(`${label} ${workload} db${db} must contain Free-PoW and BAT offers`);
+    }
+    for (const required of [
+      `offer_id = ${freeId}`,
+      'acquisition = "free"',
+      'free_mode = "proof-of-work"',
+      `free_pow_difficulty_bits = @${prefix}_FREE_POW_DIFFICULTY_BITS@`,
+      'verification = "provider-local"',
+      'deployment_status = "stable"',
+      'kind = "free"',
+    ]) {
+      if (!free.includes(required)) fail(`${label} ${workload} db${db} Free-PoW must contain ${required}`);
+    }
+    for (const required of [
+      `offer_id = ${batId}`,
+      'acquisition = "bolt11"',
+      'free_mode = "not-free"',
+      'verification = "shared-issuer-online"',
+      'deployment_status = "stable"',
+      'issuer_id_hex = "@BAT_ISSUER_ID_HEX@"',
+      `key_id_hex = "@${prefix}_BAT_KEY_ID_HEX@"`,
+      `credential_binding_path = "${binding}"`,
+      'endpoint = "@BAT_ISSUER_ORIGIN@"',
+      `credential_count = @${prefix}_BAT_CREDENTIAL_COUNT@`,
+      'kind = "msat"',
+      `amount = @${prefix}_BAT_PRICE_MSAT@`,
+    ]) {
+      if (!bat.includes(required)) fail(`${label} ${workload} db${db} BAT must contain ${required}`);
+    }
+    for (const offerId of [freeId, batId]) {
+      if (seenOfferIds.has(offerId)) fail(`${label} reuses offer ID ${offerId}`);
+      seenOfferIds.add(offerId);
+    }
+    if (seenBindings.has(binding)) fail(`${label} reuses BAT binding path ${binding}`);
+    seenBindings.add(binding);
+    const batKey = `${prefix}_BAT_KEY_ID_HEX`;
+    if (seenBatKeys.has(batKey)) fail(`${label} reuses BAT key placeholder ${batKey}`);
+    seenBatKeys.add(batKey);
+  }
+}
+
 function parseScalar(raw, lineNumber) {
   if (/^"[^"\r\n]*"$/.test(raw)) {
     return raw.slice(1, -1);
@@ -3371,6 +3508,13 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in",
   );
   validateVpsbgPremiumFreePowBetaPolicy(vpsbgPremiumPolicy.text, vpsbgPremiumPolicy.stat.mode);
+  for (const provider of ["pir1", "pir2"]) {
+    const policy = readRequired(
+      root,
+      `deploy/payment-v1/db1-free-pow-bat/${provider}-service-policy.toml.in`,
+    );
+    validateDb1FreePowBatPolicy(policy.text, policy.stat.mode, provider);
+  }
   const deploymentDoc = readRequired(
     root,
     "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",

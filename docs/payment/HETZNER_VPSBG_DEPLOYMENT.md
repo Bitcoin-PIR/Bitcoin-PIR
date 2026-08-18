@@ -683,6 +683,15 @@ activation actions and require separate approval.
 
 ## VPSBG Premium + Free-PoW functional beta
 
+> **Legacy source boundary:** this section records the narrower db0 functional
+> beta and is not the source for the approved db0 + db1 product profile. Do not
+> extend or merge these beta templates for that rollout. The complete, inert
+> pir1/pir2 source policies live under
+> `deploy/payment-v1/db1-free-pow-bat/`; they allow only Free-PoW and stable BAT
+> for each backend-local db0/db1 scope. Their presence does not authorize
+> rendering, signing, deployment, funds, a VPSBG image change, or a pir1
+> rebuild.
+
 `deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in`
 and its matching policy TOML prepare a different measured image. They must
 never be merged with the storeless fragment above. The beta has two independent

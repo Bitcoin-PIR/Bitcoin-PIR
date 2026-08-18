@@ -147,6 +147,29 @@ const sourceProofTask = oramConnect.slice(sourceProofStart, sourceProofEnd);
 if (sourceProofEnd < 0 || sourceProofTask.includes('oramClient = null')) {
   throw new Error('ORAM source-proof rejection must not clear the strict live client');
 }
+if (!sourceProofTask.includes('sourceProofIsCurrent')
+    || !sourceProofTask.includes('if (!sourceProofIsCurrent()) return;')) {
+  throw new Error('ORAM source-proof completion must reject a stale client or db selection');
+}
+const sourceProofHelper = moduleSource.slice(
+  moduleSource.indexOf('async function verifyAndRenderOramSourceProofBadge'),
+  moduleSource.indexOf('function setProgress'),
+);
+if ((sourceProofHelper.match(/if \(!isCurrent\(\)\) return;/g) ?? []).length < 2) {
+  throw new Error('ORAM source-proof helper must guard both pre-fetch and post-fetch rendering');
+}
+if (oramConnect.includes('pin => pin.dbId === 0')
+    || !oramConnect.includes('pin => pin.dbId === selectedDbId')) {
+  throw new Error('ORAM source proof must select the production pin for the chosen db');
+}
+if (!moduleSource.includes('const preferredDbId = Number.parseInt(select.value, 10);')
+    || !moduleSource.includes('if (db.dbId === preferredDbId) opt.selected = true;')) {
+  throw new Error('ORAM catalog refresh must preserve the requested db before admission');
+}
+if (!moduleSource.includes("select.options.length > 1 ? 'block' : 'none'")
+    || !moduleSource.includes('renderOramSourceProofWaitingForDb(selectedDbId);')) {
+  throw new Error('ORAM disconnect must expose the verified catalog for a new exact-db admission');
+}
 
 if (/\bschedule\s*:/.test(workflow) || !/^\s*workflow_dispatch:\s*$/m.test(workflow)) {
   throw new Error('live browser canary must be manual-only');

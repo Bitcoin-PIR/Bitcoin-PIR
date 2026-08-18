@@ -8,6 +8,23 @@ The machine-readable identities and paths are in
 [`data-retention/production-940611-948454.inventory.tsv`](data-retention/production-940611-948454.inventory.tsv).
 The inventory is an operator record, not a production activation instruction.
 
+## Accepted exception and forward rule
+
+The current `940611 -> 948454` serving lineage has accepted mixed provenance.
+That is a recorded historical exception: do not rebuild it, delete retained
+inputs, or relabel the whole lineage as if one producer emitted every serving
+byte. Its locked source snapshots, hybrid/canonical artifacts, exact manifests
+and accepted V2 evidence remain the recovery and audit baseline.
+
+Starting with the next new full, delta or rebuild candidate, a normal
+production rotation must come from a reviewed, exact-commit-pinned
+`Bitcoin-PIR/attested-builder` native full-build V2 run. Preserve the complete
+producer output as one generation, together with the producer review reference,
+builder commit/binary hash, measured UKI identity, verifier transcript and
+release-time end-to-end acceptance. Local `build_*` wrappers and
+`tools/db-builder` are development/regression inputs only for future rotations;
+they cannot fill or replace a missing production stage.
+
 ## Keep these three layers
 
 ### A. Irreplaceable source inputs
@@ -25,13 +42,15 @@ earlier Core snapshot: spent entries do not retain the complete Coin fields
 needed by MuHash. Never delete the 940611 snapshot because a delta directory
 appears to cover the same heights.
 
-The accepted V2 outputs were produced with Bitcoin Core `v31.0.0`, evidence
-schema V2, and `Bitcoin-PIR/attested-builder` commit
+The accepted V2 evidence/output subset was produced with Bitcoin Core
+`v31.0.0`, evidence schema V2, and `Bitcoin-PIR/attested-builder` commit
 `8d9d21a6be560236cb666269cf1f93a3de53bb1f`. Their locked MuHash values are
 `aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b`
 at 940611 and
 `cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee`
 at 948454.
+This evidence identity does not retroactively erase the mixed provenance of
+the current serving lineage described above.
 
 ### B. Expensive intermediate products
 
@@ -61,6 +80,11 @@ The point-in-time identity for image 265 is recorded in
 [`data-retention/production-release-image-265.env`](data-retention/production-release-image-265.env);
 it is evidence, not a substitute for querying current VPSBG state.
 
+For every future database rotation also retain the producer review reference,
+complete original builder output, builder UKI `.efi`/`.sha256`/`.meta`,
+`build-evidence.verify.txt`, builder status/progress record, exact staged
+catalog, and the local plus post-deployment end-to-end acceptance transcripts.
+
 ## Derived data that is not a source archive
 
 Mutable Direct ORAM payload, metadata, auth pages, controller roots, and runtime
@@ -89,6 +113,11 @@ Hetzner archive host:
 Each handoff directory contains a README and inventory. The large files may
 remain at their established canonical paths; the handoff inventory names those
 paths rather than silently duplicating everything.
+
+For future rotations, preserve the complete producer generation and the small
+release evidence on both the external Bitcoin volume and the Hetzner archive
+host before old active paths are eligible for cleanup. A successful deployment
+or a copy on only one host is not retention completion.
 
 The external handoff also carries a byte-for-byte mirror of the currently
 served Hetzner canonical delta manifest/tree. Keep it distinct from older local

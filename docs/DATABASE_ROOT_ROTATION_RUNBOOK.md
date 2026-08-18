@@ -11,6 +11,33 @@ rotation, but it must never fall back to an unverified root. A proof/pin or
 catalog mismatch is an expected fail-closed state while the two sides are
 being switched.
 
+## Prospective producer boundary (decision 4A)
+
+The active `940611 -> 948454` lineage is an accepted historical exception with
+mixed provenance. Keep its locked snapshots, Direct inputs, manifests and
+proofs exactly as retained. Do not rebuild it, clean it up, or rewrite its
+history merely to describe it as wholly attested-builder-produced.
+
+For every new full snapshot, delta or rebuild candidate created after
+2026-08-18, the production producer is the separately reviewed
+`Bitcoin-PIR/attested-builder` native full-build V2 pipeline at an exact commit.
+The producer review must occur before the expensive build and approve the exact
+commit and measured recipe. Archive the resulting builder binary hash and UKI
+SHA-256/`.meta` before the database run; record and verify the observed SNP
+measurement/report identity after the measured run. The native snapshot or
+delta run must emit the complete server-loadable generation and its evidence
+as one output; a collection assembled afterward is not a production candidate.
+This single-output rule covers the native V2 `server-db`, Direct inputs and V2
+evidence. The explicitly retained V1 proof sidecars used only for
+DPF/Harmony compatibility remain separate `proof_dir` inputs; they cannot fill
+a missing native V2 production stage.
+
+This repository's `scripts/build_full.sh`, related `build_*` wrappers and
+`tools/db-builder` remain useful for development and regression work, but they
+must not produce or splice together a future production rotation. This is a
+release/runbook boundary, not a database-build CI gate, and it does not
+authorize a build, VPSBG boot, database mutation or deployment.
+
 ## Invariants
 
 - Every database selected by the sync plan has one independently verified
@@ -41,10 +68,13 @@ being switched.
 
 Before the expensive build begins, record:
 
+- the producer review reference and exact attested-builder commit;
+- the builder binary SHA-256 and builder UKI SHA-256/archived `.meta` identity
+  when the measured Tier 3 producer is used; reserve fields for the observed
+  SNP measurement/report identity that will be completed after the run;
 - snapshot height and block hash;
 - for every delta, the start/end heights and both endpoint block hashes;
-- Bitcoin Core MuHash, network magic, builder commit and binary hash, and
-  build-parameter hash;
+- Bitcoin Core MuHash, network magic, and build-parameter hash;
 - intended database IDs and catalog order;
 - the directory names that will hold database files and immutable proof
   sidecars.
@@ -59,9 +89,14 @@ alone is insufficient across a reorg.
 
 ## 2. Build and verify before deployment
 
-Produce the database files, bucket and OnionPIR Merkle artifacts, and the
-attested-builder proof bundle. Preserve the original builder output and
-manifest; do not regenerate only the pins from copied server metadata.
+Run the reviewed native `native-full-build-v2-snapshot` or
+`native-full-build-v2-delta` producer. Preserve its complete original output,
+including `server-db/`, `oram-direct-inputs/`, the V2 evidence/report/root
+payload, database and all-artifacts manifests, `build-summary.txt`,
+`build-evidence.verify.txt`, status/progress records, and the producer UKI
+identity files. Do not regenerate only the pins from copied server metadata,
+replace the producer manifest, or fill a missing stage with this repository's
+local database wrappers.
 
 Run the local verifier with explicit expected values rather than accepting
 values printed by the proof itself:
@@ -86,10 +121,19 @@ For a delta, also pass `--expect-from-height` and
 as a deployment warning.
 
 Before copying anything to production, exercise a local catalog containing the
-entire proposed sync plan. In `RequireVerified` mode, test fresh and delta sync
-with DPF, HarmonyPIR, and OnionPIR. Include a found address, an absent address,
-and a whale fixture; every result must finish Merkle verification before sync
-state is committed.
+entire proposed sync plan and the exact proposed `server-db` trees. In
+`RequireVerified` mode, test fresh and delta sync with DPF, HarmonyPIR, and
+OnionPIR. Include a found address, an absent address, and a whale fixture;
+every result must finish Merkle verification before sync state is committed.
+
+When Direct ORAM is included, its release-time acceptance must reconstruct
+from the exact retained producer inputs and bind the same manifest root before
+activation. Use the progress stages and timing in
+[`ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md`](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md): stop
+after three minutes without stage progress, target ten minutes and use a
+fifteen-minute hard stop unless a reviewed release procedure is narrower. Keep
+that bounded acceptance with the release record; do not turn the large
+database/ORAM reconstruction into a routine CI job.
 
 ## 3. Prepare the matching frontend pins
 
@@ -240,8 +284,10 @@ After acceptance, write the release record: generate
 `scripts/generate-release-record.sh` (schema and field reference:
 `docs/data-retention/release-record.env.template`), fill any remaining
 TODO fields (measurement, served manifest hashes, acceptance tag), and
-commit it with or immediately after the pin change. Every production
-release — UKI switch, database rotation, or both — gets one record.
+commit it with or immediately after the pin change. Use a unique `--out` path
+for a database-only rotation that reuses an image ID; never use `--force` to
+overwrite an earlier point-in-time record. Every production release — UKI
+switch, database rotation, or both — gets one record.
 
 HarmonyPIR hints may remain browser-cached. Their native blob fingerprint
 includes database height, geometry, tag seed, and master seeds; a stale blob is
