@@ -44,6 +44,31 @@ new release.
 Run a manual production canary only after a deliberate web or VPSBG release,
 never as the first diagnostic step.
 
+## Active provider topology
+
+The active public provider topology is deliberately asymmetric:
+
+- `weikeng1.bitcoinpir.org` is the Hetzner `pir-primary.service` on loopback
+  port 8091. Its `c836e11a...` binary remains intentionally frozen until a
+  DPF/Harmony/Onion db1 or payment-policy change requires a coordinated pir1
+  release, or a P0/P1 defect requires an earlier fix. Direct ORAM changes on
+  pir2 alone are not a reason to rebuild pir1 for version parity.
+- `weikeng2.bitcoinpir.org` is the VPSBG measured-boot provider. Observe and
+  recover it through the status and measured-boot API routes above.
+- Hetzner `pir-secondary.service` on port 8092 was retired on 2026-08-18. It
+  is not a public provider or an approved pir2 recovery route. Its old unit,
+  binary, and database files are retained as evidence only.
+- `bitcoinpir-provider-functional-beta-2.service` is a distinct loopback-only
+  Payment functional-beta process on port 8292 on the same physical Hetzner
+  host. It is not the retired 8092 service and was outside that retirement.
+
+If a future incident requires a Hetzner replacement for pir2, do not re-enable
+the retired 8092 process. Prepare a reviewed current binary, Payment-V1 policy,
+identity, database pins, loopback-bound unit, and explicit ingress change as a
+new authorized release. Validate its public identity before any user traffic.
+The point-in-time retirement evidence and recovery boundary are recorded in
+[`history/HETZNER_SECONDARY_RETIREMENT_2026-08-18.md`](history/HETZNER_SECONDARY_RETIREMENT_2026-08-18.md).
+
 Mainnet Lightning activation is pending; source and functional-beta evidence
 are not proof of a deployed mainnet Lightning service. See
 [`docs/payment/IMPLEMENTATION_STATUS.md`](payment/IMPLEMENTATION_STATUS.md).

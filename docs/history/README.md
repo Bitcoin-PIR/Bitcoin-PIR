@@ -27,3 +27,6 @@ index. Use the maintained
 
 - [Git cleanup record (2026-08-13)](GIT_CLEANUP_2026-08-13.md)
   — records what was removed and why dirty/unmerged worktrees were preserved.
+- [Hetzner secondary retirement (2026-08-18)](HETZNER_SECONDARY_RETIREMENT_2026-08-18.md)
+  — records the authorized retirement of the unrouted 8092 legacy process,
+  its replacement recovery route, and the intentional pir1 freeze boundary.
