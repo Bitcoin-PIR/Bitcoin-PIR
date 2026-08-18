@@ -67,10 +67,12 @@ provider-specific authorization for each provider involved in a query.
 - The active database lineage keeps its accepted mixed provenance. The 4A
   runbook rule applies prospectively to the next candidate and does not rebuild
   or relabel the current lineage.
-- Remaining work is operational: render/review/sign the policies, create BAT
-  lineages and issuer authorization, publish the Web artifacts, and coordinate
-  the pir1/pir2 release under separate approvals. Nothing in this PR activates
-  a provider, issuer, payment, database, UKI or public site.
+- Remaining work includes the executable production profiles and their later
+  operational release. The ordered source and deployment boundary is recorded
+  in
+  [`payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md).
+  Nothing in this completed db1 source PR activates a provider, issuer,
+  payment, database, UKI or public site.
 
 ## Implementation sequence
 
