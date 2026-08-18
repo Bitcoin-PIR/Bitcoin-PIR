@@ -96,6 +96,11 @@ deploy/payment-v1/edge/*
 !deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in
 !deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in
 !deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in
+!deploy/payment-v1/db1-free-pow-bat/
+deploy/payment-v1/db1-free-pow-bat/*
+!deploy/payment-v1/db1-free-pow-bat/README.md
+!deploy/payment-v1/db1-free-pow-bat/pir1-service-policy.toml.in
+!deploy/payment-v1/db1-free-pow-bat/pir2-service-policy.toml.in
 !deploy/payment-v1/systemd/
 deploy/payment-v1/systemd/*
 !deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in
