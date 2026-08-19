@@ -1253,8 +1253,18 @@ across two exact provider policies, advance to a fresh key epoch, retain and
 reopen the old epoch, and reject member/terms mismatches, epoch rollback/fork,
 invalid key-validity horizons, cross-class raw-key reuse and both V1-to-V2 and
 V2-to-V1 raw-key reuse. A v5 store is rejected rather than implicitly
-migrated. These tests do not claim that V2 quote, redeem, provider, SDK or Web
-paths exist.
+migrated.
+
+The acquisition slice adds three equally narrow groups. Protocol tests bind
+the class-only quote intent, V2 issuance request/response, independent codecs
+and persisted-safe status typestate without inventing a V1 binding digest.
+Issuer-store tests cover the V1/V2 discriminator, fresh-current versus
+retained-recovery epochs, mixed-protocol restart, status/claim idempotency,
+receipt-serial exclusion and unfinished-quote key inventory. Issuer-service
+tests execute V2 create, settlement, status and blind claim with BIP340 and
+NUT-12 DLEQ, restart before claim, and byte-identical lost-response recovery;
+the app test locks V1/V2 route separation. These tests do not claim that V2
+redeem, provider, SDK or Web paths exist.
 
 - identified redeem credits only the authenticated provider;
 - blind redeem also requires provider authentication and signs exactly the

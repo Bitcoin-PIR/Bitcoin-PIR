@@ -18,9 +18,11 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::cashu_manifest::is_valid_compressed_point;
 use crate::codec::{expect_v1, put_bytes_u16, Decoder};
 use crate::{
-    derive_issuer_id, AcquisitionMethod, AuthScheme, PriceV1, ProviderId, ScopeId,
-    ServiceProtocolError, VerifiedServiceOfferV1, MAX_BITCOIN_MSAT_V1,
-    MAX_CREDENTIALS_PER_ACQUISITION_V1, MAX_CREDENTIAL_KEY_ID_LEN, MAX_CREDENTIAL_PRESENTATIONS_V1,
+    derive_issuer_id, AcquisitionMethod, AuthScheme, BatAcceptanceClassV2,
+    Bolt11BatV2QuoteIntentV2, PersistedBolt11BatV2QuoteExpectationV2, PriceV1, ProviderId, ScopeId,
+    ServiceProtocolError, VerifiedBolt11BatV2QuoteIntentV2, VerifiedBolt11BatV2QuoteV2,
+    VerifiedServiceOfferV1, MAX_BITCOIN_MSAT_V1, MAX_CREDENTIALS_PER_ACQUISITION_V1,
+    MAX_CREDENTIAL_KEY_ID_LEN, MAX_CREDENTIAL_PRESENTATIONS_V1,
     MAX_TOTAL_PRESENTATIONS_PER_ACQUISITION_V1, SERVICE_PROTOCOL_VERSION,
 };
 
@@ -63,7 +65,7 @@ pub enum LightningNetworkV1 {
 }
 
 impl LightningNetworkV1 {
-    fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
+    pub(crate) fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
         match value {
             1 => Ok(Self::Bitcoin),
             2 => Ok(Self::Testnet),
@@ -1211,6 +1213,99 @@ impl Bolt11QuoteV1 {
         )
     }
 
+    /// Initial quote signing for issuer-wide BAT V2. The signed quote wire is
+    /// the existing BOLT11 lifecycle snapshot, while its request digest binds
+    /// the independent class-only V2 intent codec.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_for_verified_bat_v2_intent(
+        verified_intent: &VerifiedBolt11BatV2QuoteIntentV2<'_>,
+        quote_id: [u8; 32],
+        invoice: String,
+        parsed_invoice: &ParsedBolt11InvoiceV1,
+        status: Bolt11QuoteStatusV1,
+        status_updated_at: u64,
+        quote_signing_key: &SigningKey,
+    ) -> Result<Self, ServiceProtocolError> {
+        let mut invoice = Zeroizing::new(invoice);
+        let intent = verified_intent.intent();
+        let class = verified_intent.class();
+        let delegation = verified_intent.delegation();
+        intent.validate()?;
+        parsed_invoice.validate()?;
+        validate_invoice_text(&invoice)?;
+        if status != Bolt11QuoteStatusV1::InvoiceOpen {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusV1.initial",
+                reason: "the initial quote snapshot must be InvoiceOpen",
+            });
+        }
+        if parsed_invoice.invoice_text_digest != bolt11_invoice_text_digest_v1(&invoice)
+            || parsed_invoice.network != intent.network
+            || parsed_invoice.payee_pubkey != intent.expected_payee_pubkey
+            || parsed_invoice.amount_msat != intent.exact_amount_msat
+            || parsed_invoice.expiry_seconds != intent.invoice_expiry_seconds
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ParsedBolt11InvoiceV1.bat_v2_class_binding",
+                reason: "invoice parser facts do not match the verified BAT V2 quote intent",
+            });
+        }
+        intent.verify_exact_class_binding(class, parsed_invoice.created_at)?;
+        if intent.quote_delegation_digest != delegation.delegation_digest()? {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11BatV2QuoteIntentV2.quote_delegation_digest",
+                reason: "intent does not bind the exact signed quote-key delegation",
+            });
+        }
+        let horizons = intent.derived_horizons(parsed_invoice.created_at)?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            parsed_invoice.created_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            status_updated_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            horizons.claim_deadline,
+        )?;
+        if quote_signing_key.verifying_key().to_bytes() != delegation.quote_verifying_key {
+            return Err(ServiceProtocolError::WrongSigningKeyId);
+        }
+        let mut value = Self {
+            request_digest: intent.request_digest()?,
+            quote_id,
+            quote_key_id: delegation.quote_key_id,
+            invoice: std::mem::take(&mut *invoice),
+            network: intent.network,
+            payee_pubkey: intent.expected_payee_pubkey,
+            amount_msat: intent.exact_amount_msat,
+            invoice_created_at: parsed_invoice.created_at,
+            invoice_expires_at: horizons.invoice_expires_at,
+            claim_deadline: horizons.claim_deadline,
+            credential_not_after: horizons.credential_not_after,
+            status,
+            state_version: 1,
+            status_updated_at,
+            signature: [0; 64],
+        };
+        value.validate_structure()?;
+        value.signature = quote_signing_key
+            .sign(&value.signing_preimage()?)
+            .to_bytes();
+        Ok(value)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn sign_verified_fields(
         intent: &Bolt11QuoteIntentV1,
@@ -1414,6 +1509,84 @@ impl Bolt11QuoteV1 {
         )
     }
 
+    /// Sign a lifecycle successor from an already verified BAT V2 snapshot.
+    pub fn with_status_from_verified_bat_v2_snapshot(
+        verified_snapshot: &VerifiedBolt11BatV2QuoteV2<'_>,
+        status: Bolt11QuoteStatusV1,
+        status_updated_at: u64,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        quote_signing_key: &SigningKey,
+    ) -> Result<Self, ServiceProtocolError> {
+        let previous = verified_snapshot.quote();
+        let intent = verified_snapshot.intent();
+        intent
+            .verify_exact_class_binding(verified_snapshot.class(), previous.invoice_created_at)?;
+        if !previous.status.allows_transition_to(status) {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusV1.transition",
+                reason: "invalid quote status transition",
+            });
+        }
+        if status == previous.status && status_updated_at != previous.status_updated_at {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.status_updated_at",
+                reason: "an idempotent status replay must preserve the exact transition time",
+            });
+        }
+        if status != previous.status && status_updated_at <= previous.status_updated_at {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.status_updated_at",
+                reason: "status transition time must strictly increase",
+            });
+        }
+        if intent.quote_delegation_digest != delegation.delegation_digest()? {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11BatV2QuoteIntentV2.quote_delegation_digest",
+                reason: "intent does not bind the exact signed quote-key delegation",
+            });
+        }
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            status_updated_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            previous.claim_deadline,
+        )?;
+        if previous.request_digest != verified_snapshot.request_digest()
+            || previous.quote_key_id != delegation.quote_key_id
+            || previous.network != delegation.network
+            || previous.payee_pubkey != delegation.expected_payee_pubkey
+            || quote_signing_key.verifying_key().to_bytes() != delegation.quote_verifying_key
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.bat_v2_status_signing_key",
+                reason: "status signer is outside the original root delegation",
+            });
+        }
+        let mut next = previous.clone();
+        next.status = status;
+        if status != previous.status {
+            next.state_version = previous.state_version.checked_add(1).ok_or(
+                ServiceProtocolError::InvalidValue {
+                    field: "Bolt11QuoteV1.state_version",
+                    reason: "state version overflow",
+                },
+            )?;
+        }
+        next.status_updated_at = status_updated_at;
+        next.signature = [0; 64];
+        next.validate_structure()?;
+        next.signature = quote_signing_key.sign(&next.signing_preimage()?).to_bytes();
+        Ok(next)
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         let mut out = self.encode_unsigned()?;
         out.extend_from_slice(&self.signature);
@@ -1572,6 +1745,225 @@ impl Bolt11QuoteV1 {
         now_unix: u64,
     ) -> Result<VerifiedBolt11QuoteV1<'a>, ServiceProtocolError> {
         let verified = self.verify_snapshot(intent, delegation, parsed_invoice, now_unix)?;
+        verified.ensure_claim_submission_at(now_unix)?;
+        Ok(verified)
+    }
+
+    /// Verify the shared BOLT11 quote snapshot against an independent BAT V2
+    /// class intent and its exact issuer-signed class artifact.
+    pub fn verify_bat_v2_snapshot<'a>(
+        &'a self,
+        intent: &'a Bolt11BatV2QuoteIntentV2,
+        class: &'a BatAcceptanceClassV2,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        parsed_invoice: &ParsedBolt11InvoiceV1,
+        now_unix: u64,
+    ) -> Result<VerifiedBolt11BatV2QuoteV2<'a>, ServiceProtocolError> {
+        self.validate_structure()?;
+        intent.validate()?;
+        parsed_invoice.validate()?;
+        intent.verify_exact_class_binding(class, self.invoice_created_at)?;
+        if intent.quote_delegation_digest != delegation.delegation_digest()? {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11BatV2QuoteIntentV2.quote_delegation_digest",
+                reason: "intent does not bind the exact signed quote-key delegation",
+            });
+        }
+        if self.request_digest != intent.request_digest()?
+            || self.network != intent.network
+            || self.payee_pubkey != intent.expected_payee_pubkey
+            || self.amount_msat != intent.exact_amount_msat
+            || self.quote_key_id != delegation.quote_key_id
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.bat_v2_intent",
+                reason: "quote does not echo the immutable BAT V2 request terms",
+            });
+        }
+        let quote_verifying_key = delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            self.invoice_created_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            self.status_updated_at,
+        )?;
+        let horizons = intent.derived_horizons(self.invoice_created_at)?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            horizons.claim_deadline,
+        )?;
+        if self.invoice_expires_at != horizons.invoice_expires_at
+            || self.claim_deadline != horizons.claim_deadline
+            || self.credential_not_after != horizons.credential_not_after
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.bat_v2_horizons",
+                reason: "response deadlines do not exactly match the BAT V2 intent",
+            });
+        }
+        if parsed_invoice.invoice_text_digest != bolt11_invoice_text_digest_v1(&self.invoice)
+            || parsed_invoice.network != self.network
+            || parsed_invoice.payee_pubkey != self.payee_pubkey
+            || parsed_invoice.amount_msat != self.amount_msat
+            || parsed_invoice.created_at != self.invoice_created_at
+            || parsed_invoice.expiry_seconds != intent.invoice_expiry_seconds
+            || parsed_invoice.expires_at()? != self.invoice_expires_at
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.bat_v2_invoice",
+                reason: "parsed BOLT11 facts differ from the BAT V2 intent",
+            });
+        }
+        if self.invoice_created_at > now_unix || self.status_updated_at > now_unix {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.time",
+                reason: "quote or status update is from the future",
+            });
+        }
+        quote_verifying_key
+            .verify_strict(
+                &self.signing_preimage()?,
+                &Signature::from_bytes(&self.signature),
+            )
+            .map_err(|_| ServiceProtocolError::BadSignature)?;
+        Ok(VerifiedBolt11BatV2QuoteV2 {
+            quote: self,
+            intent,
+            class,
+            request_digest: self.request_digest,
+        })
+    }
+
+    /// Reconstruct the BAT V2 verified-quote typestate from an issuer store's
+    /// privacy-safe intent replay image plus the authoritative original
+    /// request digest. This path deliberately never hashes the replay image as
+    /// though it were the original client request.
+    pub fn verify_persisted_bat_v2_quote_for_store<'a>(
+        &'a self,
+        expected: PersistedBolt11BatV2QuoteExpectationV2<'a>,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        now_unix: u64,
+    ) -> Result<VerifiedBolt11BatV2QuoteV2<'a>, ServiceProtocolError> {
+        self.validate_structure()?;
+        expected.replay_intent.validate()?;
+        expected
+            .replay_intent
+            .verify_exact_class_binding(expected.class, expected.invoice_created_at)?;
+        if expected
+            .original_request_digest
+            .iter()
+            .all(|byte| *byte == 0)
+            || expected.quote_id.iter().all(|byte| *byte == 0)
+            || expected.invoice.is_empty()
+            || expected.invoice_created_at == 0
+            || expected.invoice_created_at > expected.invoice_expires_at
+            || expected.invoice_expires_at > expected.claim_deadline
+            || expected.claim_deadline > expected.credential_not_after
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "PersistedBolt11BatV2QuoteExpectationV2",
+                reason: "persisted quote identity, invoice, or horizon is invalid",
+            });
+        }
+        let intent = expected.replay_intent;
+        if intent.quote_delegation_digest != delegation.delegation_digest()? {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "PersistedBolt11BatV2QuoteExpectationV2.delegation",
+                reason: "replay intent does not bind the exact persisted delegation",
+            });
+        }
+        let horizons = intent.derived_horizons(expected.invoice_created_at)?;
+        if expected.invoice_expires_at != horizons.invoice_expires_at
+            || expected.claim_deadline != horizons.claim_deadline
+            || expected.credential_not_after != horizons.credential_not_after
+            || self.request_digest != *expected.original_request_digest
+            || self.quote_id != *expected.quote_id
+            || self.invoice != expected.invoice
+            || self.network != intent.network
+            || self.payee_pubkey != intent.expected_payee_pubkey
+            || self.amount_msat != intent.exact_amount_msat
+            || self.quote_key_id != delegation.quote_key_id
+            || self.invoice_created_at != expected.invoice_created_at
+            || self.invoice_expires_at != expected.invoice_expires_at
+            || self.claim_deadline != expected.claim_deadline
+            || self.credential_not_after != expected.credential_not_after
+            || self.invoice_created_at > now_unix
+            || self.status_updated_at > now_unix
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "PersistedBolt11BatV2QuoteExpectationV2",
+                reason: "signed quote differs from the persisted class-bound facts",
+            });
+        }
+        let quote_verifying_key = delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            self.invoice_created_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            self.status_updated_at,
+        )?;
+        delegation.verify_for(
+            &intent.issuer_id,
+            intent.network,
+            &intent.expected_payee_pubkey,
+            intent.minimum_quote_key_epoch,
+            self.claim_deadline,
+        )?;
+        quote_verifying_key
+            .verify_strict(
+                &self.signing_preimage()?,
+                &Signature::from_bytes(&self.signature),
+            )
+            .map_err(|_| ServiceProtocolError::BadSignature)?;
+        Ok(VerifiedBolt11BatV2QuoteV2 {
+            quote: self,
+            intent,
+            class: expected.class,
+            request_digest: *expected.original_request_digest,
+        })
+    }
+
+    pub fn verify_bat_v2_for_payment<'a>(
+        &'a self,
+        intent: &'a Bolt11BatV2QuoteIntentV2,
+        class: &'a BatAcceptanceClassV2,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        parsed_invoice: &ParsedBolt11InvoiceV1,
+        now_unix: u64,
+    ) -> Result<VerifiedBolt11BatV2QuoteV2<'a>, ServiceProtocolError> {
+        let verified =
+            self.verify_bat_v2_snapshot(intent, class, delegation, parsed_invoice, now_unix)?;
+        verified.ensure_payable_at(now_unix)?;
+        Ok(verified)
+    }
+
+    pub fn verify_bat_v2_for_claim_submission<'a>(
+        &'a self,
+        intent: &'a Bolt11BatV2QuoteIntentV2,
+        class: &'a BatAcceptanceClassV2,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        parsed_invoice: &ParsedBolt11InvoiceV1,
+        now_unix: u64,
+    ) -> Result<VerifiedBolt11BatV2QuoteV2<'a>, ServiceProtocolError> {
+        let verified =
+            self.verify_bat_v2_snapshot(intent, class, delegation, parsed_invoice, now_unix)?;
         verified.ensure_claim_submission_at(now_unix)?;
         Ok(verified)
     }
@@ -2148,6 +2540,85 @@ impl Bolt11QuoteStatusRequestV1 {
         })
     }
 
+    /// Bind a private quote-status request to the independent BAT V2 intent
+    /// digest and claim key.
+    pub fn unverified_bip340_input_for_bat_v2(
+        &self,
+        intent: &Bolt11BatV2QuoteIntentV2,
+        expected_quote_id: &[u8; 32],
+        now_unix: u64,
+    ) -> Result<UnverifiedBip340QuoteStatusRequestV1, ServiceProtocolError> {
+        self.validate_structure()?;
+        intent.validate()?;
+        if &self.quote_id != expected_quote_id
+            || self.issuer_id != intent.issuer_id
+            || self.quote_request_digest != intent.request_digest()?
+            || self.claim_pubkey_xonly != intent.claim_pubkey_xonly
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusRequestV1.bat_v2_binding",
+                reason: "issuer, quote, V2 request, or x-only claim key mismatch",
+            });
+        }
+        if self.requested_at > now_unix
+            || now_unix.saturating_sub(self.requested_at)
+                > MAX_BOLT11_QUOTE_STATUS_REQUEST_AGE_SECONDS_V1
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusRequestV1.requested_at",
+                reason: "status request is from the future or outside the freshness window",
+            });
+        }
+        Ok(UnverifiedBip340QuoteStatusRequestV1 {
+            claim_pubkey_xonly: self.claim_pubkey_xonly,
+            message_digest: self.bip340_signing_digest()?,
+            signature: self.signature,
+            quote_id: self.quote_id,
+            requested_at: self.requested_at,
+            request_nonce: self.request_nonce,
+        })
+    }
+
+    /// Persisted-store counterpart of `unverified_bip340_input_for_bat_v2`.
+    /// It uses the verified snapshot's authoritative original request digest,
+    /// not the digest of its privacy-safe intent replay image.
+    pub fn unverified_bip340_input_for_verified_bat_v2_quote(
+        &self,
+        verified_quote: &VerifiedBolt11BatV2QuoteV2<'_>,
+        now_unix: u64,
+    ) -> Result<UnverifiedBip340QuoteStatusRequestV1, ServiceProtocolError> {
+        self.validate_structure()?;
+        let quote = verified_quote.quote();
+        let intent = verified_quote.intent();
+        if self.quote_id != quote.quote_id
+            || self.issuer_id != intent.issuer_id
+            || self.quote_request_digest != verified_quote.request_digest()
+            || self.claim_pubkey_xonly != intent.claim_pubkey_xonly
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusRequestV1.bat_v2_verified_binding",
+                reason: "issuer, quote, original V2 request, or x-only claim key mismatch",
+            });
+        }
+        if self.requested_at > now_unix
+            || now_unix.saturating_sub(self.requested_at)
+                > MAX_BOLT11_QUOTE_STATUS_REQUEST_AGE_SECONDS_V1
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteStatusRequestV1.requested_at",
+                reason: "status request is from the future or outside the freshness window",
+            });
+        }
+        Ok(UnverifiedBip340QuoteStatusRequestV1 {
+            claim_pubkey_xonly: self.claim_pubkey_xonly,
+            message_digest: self.bip340_signing_digest()?,
+            signature: self.signature,
+            quote_id: self.quote_id,
+            requested_at: self.requested_at,
+            request_nonce: self.request_nonce,
+        })
+    }
+
     fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_structure()?;
         let mut out = Zeroizing::new(Vec::with_capacity(MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN - 64));
@@ -2328,6 +2799,35 @@ impl Bolt11QuoteClaimV1 {
         })
     }
 
+    /// Bind the same quote-ownership claim primitive to an independently
+    /// versioned BAT V2 intent. No provider-bound credential digest is
+    /// synthesized or accepted by this path.
+    pub fn unverified_bip340_input_for_bat_v2(
+        &self,
+        verified_quote: &VerifiedBolt11BatV2QuoteV2<'_>,
+        now_unix: u64,
+    ) -> Result<UnverifiedBip340ClaimV1, ServiceProtocolError> {
+        self.validate_structure()?;
+        verified_quote.ensure_claim_submission_at(now_unix)?;
+        let quote = verified_quote.quote();
+        let intent = verified_quote.intent();
+        if self.issuer_id != intent.issuer_id
+            || self.quote_id != quote.quote_id
+            || self.quote_request_digest != quote.request_digest
+            || self.claim_pubkey_xonly != intent.claim_pubkey_xonly
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteClaimV1.bat_v2_binding",
+                reason: "issuer, quote, V2 request, or x-only claim key mismatch",
+            });
+        }
+        Ok(UnverifiedBip340ClaimV1 {
+            claim_pubkey_xonly: self.claim_pubkey_xonly,
+            message_digest: self.bip340_signing_digest()?,
+            signature: self.signature,
+        })
+    }
+
     fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_structure()?;
         let mut out = Zeroizing::new(Vec::with_capacity(256));
@@ -2409,7 +2909,7 @@ fn validate_invoice_text(invoice: &str) -> Result<(), ServiceProtocolError> {
     Ok(())
 }
 
-fn validate_xonly_pubkey(key: &[u8; 32]) -> Result<(), ServiceProtocolError> {
+pub(crate) fn validate_xonly_pubkey(key: &[u8; 32]) -> Result<(), ServiceProtocolError> {
     let mut even_y_point = [0u8; 33];
     even_y_point[0] = 0x02;
     even_y_point[1..].copy_from_slice(key);
@@ -2417,6 +2917,42 @@ fn validate_xonly_pubkey(key: &[u8; 32]) -> Result<(), ServiceProtocolError> {
         return Err(ServiceProtocolError::InvalidValue {
             field: "BIP340.xonly_pubkey",
             reason: "must be the x-coordinate of a secp256k1 point",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_quote_payable_at(
+    quote: &Bolt11QuoteV1,
+    now_unix: u64,
+) -> Result<(), ServiceProtocolError> {
+    if quote.status != Bolt11QuoteStatusV1::InvoiceOpen
+        || now_unix < quote.invoice_created_at
+        || now_unix > quote.invoice_expires_at
+    {
+        return Err(ServiceProtocolError::InvalidValue {
+            field: "Bolt11QuoteV1.payment",
+            reason: "quote is not open and unexpired",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_quote_claim_submission_at(
+    quote: &Bolt11QuoteV1,
+    now_unix: u64,
+) -> Result<(), ServiceProtocolError> {
+    let eligible_status = matches!(
+        quote.status,
+        Bolt11QuoteStatusV1::PaymentSettled | Bolt11QuoteStatusV1::LateSettledReconcile
+    );
+    let idempotent_recovery = quote.status == Bolt11QuoteStatusV1::CredentialClaimed;
+    if now_unix < quote.invoice_created_at
+        || (!idempotent_recovery && (!eligible_status || now_unix > quote.claim_deadline))
+    {
+        return Err(ServiceProtocolError::InvalidValue {
+            field: "Bolt11QuoteV1.claim",
+            reason: "payment is not settled or the claim window has ended",
         });
     }
     Ok(())

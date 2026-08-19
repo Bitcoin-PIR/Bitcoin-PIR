@@ -168,15 +168,21 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install --profile minimal
 
-      - name: Install C++ toolchain
-        # ubuntu-latest already ships with gcc/g++/cmake, but we pin the
-        # install step explicitly so the workflow stays reproducible if
-        # GitHub's image ever trims them. libgomp is linked dynamically
-        # by libonionpir for OpenMP.
+      - name: Verify preinstalled C++ toolchain
+        # The pinned ubuntu-22.04 image supplies GCC 11, CMake and libgomp.
+        # Fail fast if that image contract changes instead of making every
+        # run depend on the Ubuntu package mirrors before testing repo code.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libgomp1
+          command -v gcc
+          command -v g++
+          command -v cmake
+          command -v make
+          ldconfig -p | grep -F 'libgomp.so.1'
+          test "$(gcc -dumpversion | cut -d. -f1)" = "11"
+          test "$(g++ -dumpversion | cut -d. -f1)" = "11"
+          gcc --version
+          g++ --version
+          cmake --version
 
       - name: Rewrite SSH GitHub URLs to HTTPS (for SEAL submodule)
         # The `onionpir` crate we depend on has a SEAL submodule whose
@@ -265,11 +271,20 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install --profile minimal
 
-      - name: Install C++ toolchain
+      - name: Verify preinstalled C++ toolchain
+        # Keep the scheduled leakage job on the same network-free toolchain
+        # preflight as the deterministic OnionPIR integration job above.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libgomp1
+          command -v gcc
+          command -v g++
+          command -v cmake
+          command -v make
+          ldconfig -p | grep -F 'libgomp.so.1'
+          test "$(gcc -dumpversion | cut -d. -f1)" = "11"
+          test "$(g++ -dumpversion | cut -d. -f1)" = "11"
+          gcc --version
+          g++ --version
+          cmake --version
 
       - name: Rewrite SSH GitHub URLs to HTTPS (for SEAL submodule)
         run: |

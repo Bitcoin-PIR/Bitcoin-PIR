@@ -1,5 +1,6 @@
 use pir_service_protocol::{
-    AuthScheme, Bolt11QuoteClaimV1, CredentialIssuanceRequestV1, CredentialIssuanceResponseV1,
+    AuthScheme, BatV2IssuanceResponseV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11QuoteClaimV1,
+    CheckedBatV2IssuanceResponseV2, CredentialIssuanceRequestV1, CredentialIssuanceResponseV1,
     CredentialKeyBindingV1, IssuerClearingApprovalV1, LightningNetworkV1, PayoutStateV1,
     ProviderClearingAuthorizationV1, ProviderRedeemRequestV1, ProviderRedeemResponseV1,
     ServiceProtocolError, SettlementUnitV1,
@@ -9,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// On-disk schema version. This crate never performs an implicit migration.
-/// Version 6 is a fresh-schema boundary for the append-only BAT V2 class
-/// registry; existing version-5 stores must be migrated by an explicit,
+/// Version 7 is a fresh-schema boundary for protocol-discriminated BAT V2
+/// acquisition records; existing version-6 stores must be migrated by an explicit,
 /// separately reviewed operation.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 pub const MAX_EXACT_INTENT_BYTES: usize = 64 * 1024;
 pub const MAX_EXACT_DELEGATION_BYTES: usize = 64 * 1024;
@@ -320,6 +321,19 @@ pub struct QuoteReservation {
     pub now_unix: u64,
 }
 
+/// Minimal durable input for one issuer-wide BAT V2 quote reservation.
+/// Commercial, class, delegation, and idempotency fields are decoded from
+/// the two exact canonical protocol objects rather than repeated here.
+#[derive(Clone)]
+pub struct BatV2QuoteReservation {
+    pub quote_id: [u8; 32],
+    pub exact_intent: Vec<u8>,
+    pub exact_delegation: Vec<u8>,
+    pub invoice_created_not_before: u64,
+    pub invoice_created_not_after: u64,
+    pub now_unix: u64,
+}
+
 /// Exact BOLT11 invoice and first signed quote snapshot.
 #[derive(Clone)]
 pub struct QuoteFinalization {
@@ -433,6 +447,46 @@ pub struct ClaimWrite {
     /// persisted as `claimed_at`; an exact replay ignores a later supplied
     /// value and remains available after the deadline.
     pub now_unix: u64,
+}
+
+/// Exact BAT V2 claim envelope and issuer response to commit atomically. The
+/// quote ID and both endpoint idempotency keys are decoded from the canonical
+/// envelope; raw keys are never copied into durable replay images.
+#[derive(Clone)]
+pub struct BatV2ClaimWrite {
+    pub exact_claim_envelope: Vec<u8>,
+    pub exact_claim_response: Vec<u8>,
+    pub exact_signed_quote_response: Vec<u8>,
+    pub now_unix: u64,
+}
+
+pub struct BatV2ClaimCryptographicVerificationInputV2<'a> {
+    pub claim_envelope: &'a Bolt11BatV2ClaimEnvelopeV2,
+    pub issuance_response: &'a BatV2IssuanceResponseV2,
+    pub checked_response: &'a CheckedBatV2IssuanceResponseV2,
+    pub bip340_message_digest: &'a [u8; 32],
+}
+
+pub trait BatV2ClaimCryptographicVerifierV2 {
+    fn verify(&self, input: BatV2ClaimCryptographicVerificationInputV2<'_>) -> bool;
+}
+
+impl<F> BatV2ClaimCryptographicVerifierV2 for F
+where
+    F: Fn(BatV2ClaimCryptographicVerificationInputV2<'_>) -> bool,
+{
+    fn verify(&self, input: BatV2ClaimCryptographicVerificationInputV2<'_>) -> bool {
+        self(input)
+    }
+}
+
+/// One retained BAT key epoch still required by an unfinished V2 quote.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct BatV2CredentialMaterialRequirementV2 {
+    pub class_id: [u8; 32],
+    pub class_key_epoch: u64,
+    pub raw_public_key: [u8; 33],
+    pub bat_key_id: [u8; 32],
 }
 
 /// Exact claim recovery record. Exact request/response bytes are intentionally

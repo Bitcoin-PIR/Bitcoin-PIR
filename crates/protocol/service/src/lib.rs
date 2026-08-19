@@ -8,6 +8,7 @@ mod attach;
 mod auth;
 mod auth_verify;
 mod bat_v2;
+mod bat_v2_acquisition;
 mod binding;
 mod cashu_manifest;
 mod challenge;
@@ -49,6 +50,18 @@ pub use bat_v2::{
     BAT_ACCEPTANCE_KEY_ID_DOMAIN_V2, BAT_ACCEPTANCE_TERMS_DIGEST_DOMAIN_V2,
     MAX_BAT_ACCEPTANCE_CLASS_LEN_V2, MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2,
     MAX_BAT_ACCEPTANCE_TERMS_LEN_V2,
+};
+pub use bat_v2_acquisition::{
+    BatV2IssuanceRequestV2, BatV2IssuanceResponseV2, Bolt11BatV2ClaimEnvelopeV2,
+    Bolt11BatV2QuoteIntentV2, CheckedBatV2IssuanceResponseV2,
+    PersistedBolt11BatV2QuoteExpectationV2, VerifiedBolt11BatV2QuoteIntentV2,
+    VerifiedBolt11BatV2QuoteV2, BAT_V2_CLAIM_ENVELOPE_CODEC_MAGIC,
+    BAT_V2_CLAIM_ENVELOPE_WIRE_VERSION, BAT_V2_ISSUANCE_REQUEST_CODEC_MAGIC,
+    BAT_V2_ISSUANCE_REQUEST_DIGEST_DOMAIN, BAT_V2_ISSUANCE_REQUEST_WIRE_VERSION,
+    BAT_V2_ISSUANCE_RESPONSE_CODEC_MAGIC, BAT_V2_ISSUANCE_RESPONSE_WIRE_VERSION,
+    BAT_V2_QUOTE_INTENT_CODEC_MAGIC, BAT_V2_QUOTE_INTENT_DIGEST_DOMAIN,
+    BAT_V2_QUOTE_INTENT_WIRE_VERSION, MAX_BAT_V2_CLAIM_ENVELOPE_LEN,
+    MAX_BAT_V2_ISSUANCE_REQUEST_LEN, MAX_BAT_V2_ISSUANCE_RESPONSE_LEN, MAX_BAT_V2_QUOTE_INTENT_LEN,
 };
 pub use binding::{
     derive_bat_key_id_v1, derive_issuer_id, CredentialKeyBindingClaimsV1,

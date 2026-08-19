@@ -1,10 +1,13 @@
+use crate::bat_v2_ops::read_bat_acceptance_class_v2;
 use crate::db::{
     advance_store_generation, commit, db_u64, fixed_blob, is_zero, network_code,
     optional_fixed_blob, sql_integer, verify_expected_identity,
 };
 use crate::rollback::mutation_digest;
 use crate::{
-    AuthenticatedQuoteStatus, ClaimCryptographicVerificationInput, ClaimCryptographicVerifier,
+    AuthenticatedQuoteStatus, BatV2ClaimCryptographicVerificationInputV2,
+    BatV2ClaimCryptographicVerifierV2, BatV2ClaimWrite, BatV2CredentialMaterialRequirementV2,
+    BatV2QuoteReservation, ClaimCryptographicVerificationInput, ClaimCryptographicVerifier,
     ClaimRecord, ClaimWrite, CommitMarker, DelegationAdvance, DelegationHead, DurableWrite,
     IssuerStore, QuoteCapacityV1, QuoteExpiry, QuoteFinalization, QuoteReconciliationCandidateV1,
     QuoteRecord, QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
@@ -15,14 +18,17 @@ use crate::{
 };
 use ed25519_dalek::Signature;
 use pir_service_protocol::{
-    ArcIssuanceCanonicalizerV1, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
-    Bolt11QuoteKeyDelegationV1, Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
-    CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
-    CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1, BOLT11_QUOTE_SIGNATURE_DOMAIN,
+    ArcIssuanceCanonicalizerV1, BatAcceptanceClassV2, BatV2IssuanceResponseV2,
+    Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
+    Bolt11QuoteKeyDelegationV1, Bolt11QuoteKeyRollbackGuardV1, Bolt11QuoteStatusRequestV1,
+    Bolt11QuoteStatusV1, Bolt11QuoteV1, CredentialIssuanceRequestItemsV1,
+    CredentialIssuanceRequestV1, CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1,
+    PersistedBolt11BatV2QuoteExpectationV2, BOLT11_QUOTE_SIGNATURE_DOMAIN,
     MAX_BOLT11_QUOTE_STATUS_REQUEST_AGE_SECONDS_V1,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 const QUOTE_CREATE_IDEMPOTENCY_DIGEST_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-store/POST-/v1/quotes/idempotency-digest/v1";
@@ -30,6 +36,8 @@ const QUOTE_CLAIM_IDEMPOTENCY_DIGEST_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-store/POST-/v1/quotes/claim/idempotency-digest/v1";
 const QUOTE_STATUS_NONCE_DIGEST_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-store/POST-/v1/quotes/status/nonce-digest/v1";
+const QUOTE_PROTOCOL_V1: i64 = 1;
+const QUOTE_PROTOCOL_BAT_V2: i64 = 2;
 /// Bounds authenticated status-write amplification for any one purchased
 /// quote during the five-minute replay window. The HTTP edge applies a
 /// separate process-wide request budget.
@@ -43,7 +51,8 @@ const QUOTE_SELECT: &str = "quote_id, creation_idempotency_digest, backend_label
     invoice_expires_at, claim_deadline, credential_not_after, initial_signed_quote_response, \
     expiry_observed_at, expired_signed_quote_response, settled_at, settlement_observed_at, settled_amount_msat, \
     settlement_evidence_digest, settled_signed_quote_response, \
-    reservation_commit_seq, finalization_commit_seq, expiry_commit_seq, settlement_commit_seq";
+    reservation_commit_seq, finalization_commit_seq, expiry_commit_seq, settlement_commit_seq, \
+    quote_protocol";
 
 impl IssuerStore {
     /// Atomically advances the `(issuer, network, payee)` delegation guard.
@@ -233,12 +242,12 @@ impl IssuerStore {
         }
         let backend_label = self.backend_label_for_quote(&reservation.quote_id)?;
         transaction.execute(
-            "INSERT INTO quotes (quote_id, issuer_id, network, creation_idempotency_digest, \
+            "INSERT INTO quotes (quote_id, issuer_id, network, quote_protocol, creation_idempotency_digest, \
              backend_label, intent_digest, intent_replay_image, payee_pubkey, delegation_epoch, \
              delegation_digest, exact_delegation, exact_amount_msat, invoice_created_not_before, \
              invoice_created_not_after, reservation_recovery_deadline, state, state_version, \
              reservation_commit_seq) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, ?16)",
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, ?16)",
             params![
                 reservation.quote_id.as_slice(),
                 self.handle.expected_issuer_id.as_slice(),
@@ -282,21 +291,253 @@ impl IssuerStore {
         })
     }
 
+    /// Reserve one issuer-wide BAT V2 quote against the exact current class
+    /// head. Exact replay is resolved before the current-head check, so an
+    /// already durable quote remains recoverable after class rotation.
+    pub fn reserve_bat_v2_quote(
+        &self,
+        reservation: &BatV2QuoteReservation,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.reserve_bat_v2_quote_with_capacity(reservation, QuoteCapacityV1::unbounded())
+    }
+
+    pub fn reserve_bat_v2_quote_with_capacity(
+        &self,
+        reservation: &BatV2QuoteReservation,
+        capacity: QuoteCapacityV1,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        validate_quote_capacity(capacity)?;
+        let (intent, delegation) = parse_bat_v2_reservation(self, reservation)?;
+        let reservation_recovery_deadline =
+            bat_v2_reservation_recovery_deadline(reservation.invoice_created_not_after, &intent)?;
+        let creation_digest = creation_idempotency_digest(self, &intent.idempotency_key);
+        let intent_digest = intent.request_digest().map_err(StoreError::Protocol)?;
+        let replay_image = bat_v2_intent_replay_image(self, &intent)?;
+
+        let mut connection = self.open_checked(false)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
+        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
+
+        if let Some(existing) = read_quote_by_creation_digest_for_protocol(
+            &transaction,
+            self,
+            &creation_digest,
+            QUOTE_PROTOCOL_BAT_V2,
+        )? {
+            if bat_v2_quote_reservation_matches(
+                self,
+                &existing,
+                reservation,
+                &intent,
+                &delegation,
+                &replay_image,
+                reservation_recovery_deadline,
+            )? {
+                return Ok(DurableWrite {
+                    disposition: WriteDisposition::ExactReplay,
+                    commit: existing.reservation_commit,
+                    value: existing,
+                });
+            }
+            return Err(StoreError::CreationIdempotencyConflict);
+        }
+        if read_quote_for_protocol(
+            &transaction,
+            self,
+            &reservation.quote_id,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?
+        .is_some()
+        {
+            return Err(StoreError::QuoteConflict);
+        }
+
+        check_quote_capacity(&transaction, capacity, reservation.now_unix)?;
+
+        let current_head: Option<(i64, Vec<u8>)> = transaction
+            .query_row(
+                "SELECT highest_key_epoch, artifact_digest FROM bat_v2_class_heads \
+                 WHERE issuer_id = ?1 AND class_id = ?2",
+                params![
+                    self.handle.expected_issuer_id.as_slice(),
+                    intent.class_id.as_slice(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (head_epoch, head_digest) = current_head.ok_or(StoreError::BatV2ClassMemberMismatch)?;
+        let head_epoch = db_u64(head_epoch, "negative BAT V2 class head epoch")?;
+        let head_digest: [u8; 32] = fixed_blob(head_digest, "invalid BAT V2 class head digest")?;
+        if head_epoch != intent.class_key_epoch || head_digest != intent.class_digest {
+            return Err(StoreError::BatV2ClassMemberMismatch);
+        }
+        let class_record = read_bat_acceptance_class_v2(
+            &transaction,
+            self,
+            &intent.class_id,
+            intent.class_key_epoch,
+        )?
+        .ok_or(StoreError::BatV2ClassMemberMismatch)?;
+        let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+            .map_err(StoreError::Protocol)?;
+
+        let delegation_head =
+            read_delegation_head(&transaction, self, &delegation.expected_payee_pubkey)?;
+        let rollback_guard = match delegation_head.as_ref() {
+            Some(head) => Bolt11QuoteKeyRollbackGuardV1::from_persisted(
+                self.handle.expected_issuer_id,
+                self.handle.expected_network,
+                head.payee_pubkey,
+                head.highest_epoch,
+                head.delegation_digest,
+            ),
+            None => Bolt11QuoteKeyRollbackGuardV1::initial(
+                self.handle.expected_issuer_id,
+                self.handle.expected_network,
+                delegation.expected_payee_pubkey,
+            ),
+        }
+        .map_err(StoreError::Protocol)?;
+        let verified = intent
+            .verify_for_class_guarded(&class, &delegation, &rollback_guard, reservation.now_unix)
+            .map_err(StoreError::Protocol)?;
+        let upper_horizons = intent
+            .derived_horizons(reservation.invoice_created_not_after)
+            .map_err(StoreError::Protocol)?;
+        if verified.advanced_guard().highest_epoch() != delegation.key_epoch
+            || reservation.invoice_created_not_before < class.key_not_before
+            || upper_horizons.credential_not_after > class.key_not_after
+            || reservation.invoice_created_not_before < delegation.not_before
+            || reservation_recovery_deadline > delegation.not_after
+        {
+            return Err(StoreError::InvalidInput(
+                "BAT V2 class or delegation does not cover the reservation window",
+            ));
+        }
+
+        let delegation_advance = DelegationAdvance {
+            payee_pubkey: delegation.expected_payee_pubkey,
+            delegation_epoch: delegation.key_epoch,
+            delegation_digest: delegation
+                .delegation_digest()
+                .map_err(StoreError::Protocol)?,
+            exact_delegation: reservation.exact_delegation.clone(),
+            now_unix: reservation.now_unix,
+        };
+        let head_decision = delegation_head
+            .map(|head| compare_delegation(&head, &delegation_advance))
+            .transpose()?
+            .unwrap_or(HeadDecision::Advance);
+
+        let mutation = mutation_digest(
+            b"reserve-bat-v2-quote-v2",
+            &[
+                &reservation.quote_id,
+                &creation_digest,
+                &intent_digest,
+                &replay_image,
+                &intent.class_digest,
+                &delegation_advance.delegation_digest,
+                &reservation.invoice_created_not_before.to_le_bytes(),
+                &reservation.invoice_created_not_after.to_le_bytes(),
+                &reservation_recovery_deadline.to_le_bytes(),
+            ],
+        );
+        let committed_identity = advance_store_generation(
+            &transaction,
+            &previous_identity,
+            b"reserve-bat-v2-quote-v2",
+            &mutation,
+        )?;
+        let sequence = committed_identity.commit_seq;
+        if head_decision == HeadDecision::Advance {
+            write_delegation_head(&transaction, self, &delegation_advance, sequence)?;
+        }
+        let backend_label = self.backend_label_for_quote(&reservation.quote_id)?;
+        transaction.execute(
+            "INSERT INTO quotes (quote_id, issuer_id, network, quote_protocol, \
+             creation_idempotency_digest, backend_label, intent_digest, intent_replay_image, \
+             payee_pubkey, delegation_epoch, delegation_digest, exact_delegation, \
+             exact_amount_msat, invoice_created_not_before, invoice_created_not_after, \
+             reservation_recovery_deadline, state, state_version, reservation_commit_seq) \
+             VALUES (?1, ?2, ?3, 2, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, ?16)",
+            params![
+                reservation.quote_id.as_slice(),
+                self.handle.expected_issuer_id.as_slice(),
+                network_code(self.handle.expected_network),
+                creation_digest.as_slice(),
+                backend_label,
+                intent_digest.as_slice(),
+                replay_image.as_slice(),
+                delegation.expected_payee_pubkey.as_slice(),
+                sql_integer(delegation.key_epoch, "delegation epoch exceeds SQLite range")?,
+                delegation_advance.delegation_digest.as_slice(),
+                reservation.exact_delegation.as_slice(),
+                sql_integer(intent.exact_amount_msat, "amount exceeds SQLite range")?,
+                sql_integer(
+                    reservation.invoice_created_not_before,
+                    "invoice creation lower bound exceeds SQLite range",
+                )?,
+                sql_integer(
+                    reservation.invoice_created_not_after,
+                    "invoice creation upper bound exceeds SQLite range",
+                )?,
+                sql_integer(
+                    reservation_recovery_deadline,
+                    "reservation recovery deadline exceeds SQLite range",
+                )?,
+                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
+            ],
+        )?;
+        commit(transaction)?;
+        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        let record = self.bat_v2_quote(&reservation.quote_id)?.ok_or_else(|| {
+            StoreError::SchemaMismatch("committed BAT V2 quote missing".to_owned())
+        })?;
+        Ok(DurableWrite {
+            disposition: WriteDisposition::Committed,
+            commit: marker(self, sequence),
+            value: record,
+        })
+    }
+
     pub fn finalize_quote(
         &self,
         finalization: &QuoteFinalization,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.finalize_quote_for_protocol(finalization, QUOTE_PROTOCOL_V1)
+    }
+
+    pub fn finalize_bat_v2_quote(
+        &self,
+        finalization: &QuoteFinalization,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.finalize_quote_for_protocol(finalization, QUOTE_PROTOCOL_BAT_V2)
+    }
+
+    fn finalize_quote_for_protocol(
+        &self,
+        finalization: &QuoteFinalization,
+        quote_protocol: i64,
     ) -> StoreResult<DurableWrite<QuoteRecord>> {
         validate_quote_finalization(finalization)?;
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
         let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
-        let existing = read_quote(&transaction, self, &finalization.quote_id)?
-            .ok_or(StoreError::QuoteMissing)?;
+        let existing =
+            read_quote_for_protocol(&transaction, self, &finalization.quote_id, quote_protocol)?
+                .ok_or(StoreError::QuoteMissing)?;
         if let Some(commit_marker) = existing.finalization_commit {
             if quote_finalization_matches(&existing, finalization) {
-                verify_persisted_quote_history(&transaction, self, &existing)?
-                    .ok_or(StoreError::SignedQuoteMismatch)?;
+                verify_persisted_quote_history_for_protocol(
+                    &transaction,
+                    self,
+                    &existing,
+                    quote_protocol,
+                )?
+                .ok_or(StoreError::SignedQuoteMismatch)?;
                 return Ok(DurableWrite {
                     disposition: WriteDisposition::ExactReplay,
                     commit: commit_marker,
@@ -308,10 +549,12 @@ impl IssuerStore {
         if existing.state != QuoteState::Reserved {
             return Err(StoreError::InvalidQuoteState);
         }
-        let initial_snapshot = decode_and_verify_quote_snapshot(
+        let initial_snapshot = decode_and_verify_quote_snapshot_for_protocol(
+            &transaction,
             self,
             &existing,
             &finalization.exact_signed_quote_response,
+            quote_protocol,
         )?;
         verify_initial_snapshot(&initial_snapshot, finalization)?;
 
@@ -374,9 +617,11 @@ impl IssuerStore {
         }
         commit(transaction)?;
         self.anchor_committed_identity(&previous_floor, &committed_identity)?;
-        let record = self.quote(&finalization.quote_id)?.ok_or_else(|| {
-            StoreError::SchemaMismatch("committed quote finalization missing".to_owned())
-        })?;
+        let record =
+            read_committed_quote_for_protocol(self, &finalization.quote_id, quote_protocol)?
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch("committed quote finalization missing".to_owned())
+                })?;
         Ok(DurableWrite {
             disposition: WriteDisposition::Committed,
             commit: marker(self, sequence),
@@ -388,20 +633,41 @@ impl IssuerStore {
         &self,
         expiry: &QuoteExpiry,
     ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.mark_invoice_expired_for_protocol(expiry, QUOTE_PROTOCOL_V1)
+    }
+
+    pub fn mark_bat_v2_invoice_expired(
+        &self,
+        expiry: &QuoteExpiry,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.mark_invoice_expired_for_protocol(expiry, QUOTE_PROTOCOL_BAT_V2)
+    }
+
+    fn mark_invoice_expired_for_protocol(
+        &self,
+        expiry: &QuoteExpiry,
+        quote_protocol: i64,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
         validate_quote_expiry(expiry)?;
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
         let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing =
-            read_quote(&transaction, self, &expiry.quote_id)?.ok_or(StoreError::QuoteMissing)?;
+            read_quote_for_protocol(&transaction, self, &expiry.quote_id, quote_protocol)?
+                .ok_or(StoreError::QuoteMissing)?;
         if let Some(commit_marker) = existing.expiry_commit {
             if existing.expiry_observed_at == Some(expiry.observed_at)
                 && existing.expired_signed_quote_response.as_deref()
                     == Some(expiry.exact_signed_quote_response.as_slice())
             {
-                verify_persisted_quote_history(&transaction, self, &existing)?
-                    .ok_or(StoreError::SignedQuoteMismatch)?;
+                verify_persisted_quote_history_for_protocol(
+                    &transaction,
+                    self,
+                    &existing,
+                    quote_protocol,
+                )?
+                .ok_or(StoreError::SignedQuoteMismatch)?;
                 return Ok(DurableWrite {
                     disposition: WriteDisposition::ExactReplay,
                     commit: commit_marker,
@@ -418,10 +684,20 @@ impl IssuerStore {
         {
             return Err(StoreError::InvalidQuoteState);
         }
-        let prior_snapshot = verify_persisted_quote_history(&transaction, self, &existing)?
-            .ok_or(StoreError::SignedQuoteMismatch)?;
-        let expired_snapshot =
-            decode_and_verify_quote_snapshot(self, &existing, &expiry.exact_signed_quote_response)?;
+        let prior_snapshot = verify_persisted_quote_history_for_protocol(
+            &transaction,
+            self,
+            &existing,
+            quote_protocol,
+        )?
+        .ok_or(StoreError::SignedQuoteMismatch)?;
+        let expired_snapshot = decode_and_verify_quote_snapshot_for_protocol(
+            &transaction,
+            self,
+            &existing,
+            &expiry.exact_signed_quote_response,
+            quote_protocol,
+        )?;
         verify_successor_snapshot(
             &prior_snapshot,
             &expired_snapshot,
@@ -461,9 +737,10 @@ impl IssuerStore {
         }
         commit(transaction)?;
         self.anchor_committed_identity(&previous_floor, &committed_identity)?;
-        let record = self.quote(&expiry.quote_id)?.ok_or_else(|| {
-            StoreError::SchemaMismatch("committed expiry observation missing".to_owned())
-        })?;
+        let record = read_committed_quote_for_protocol(self, &expiry.quote_id, quote_protocol)?
+            .ok_or_else(|| {
+                StoreError::SchemaMismatch("committed expiry observation missing".to_owned())
+            })?;
         Ok(DurableWrite {
             disposition: WriteDisposition::Committed,
             commit: marker(self, sequence),
@@ -475,20 +752,41 @@ impl IssuerStore {
         &self,
         settlement: &QuoteSettlement,
     ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.record_settlement_for_protocol(settlement, QUOTE_PROTOCOL_V1)
+    }
+
+    pub fn record_bat_v2_settlement(
+        &self,
+        settlement: &QuoteSettlement,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
+        self.record_settlement_for_protocol(settlement, QUOTE_PROTOCOL_BAT_V2)
+    }
+
+    fn record_settlement_for_protocol(
+        &self,
+        settlement: &QuoteSettlement,
+        quote_protocol: i64,
+    ) -> StoreResult<DurableWrite<QuoteRecord>> {
         validate_quote_settlement(settlement)?;
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
         let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
-        let existing = read_quote(&transaction, self, &settlement.quote_id)?
-            .ok_or(StoreError::QuoteMissing)?;
+        let existing =
+            read_quote_for_protocol(&transaction, self, &settlement.quote_id, quote_protocol)?
+                .ok_or(StoreError::QuoteMissing)?;
         let _ = existing.payment_hash.ok_or_else(|| {
             StoreError::SchemaMismatch("settlement quote lacks payment hash".to_owned())
         })?;
         if let Some(commit_marker) = existing.settlement_commit {
             if quote_settlement_matches(&existing, settlement) {
-                verify_persisted_quote_history(&transaction, self, &existing)?
-                    .ok_or(StoreError::SignedQuoteMismatch)?;
+                verify_persisted_quote_history_for_protocol(
+                    &transaction,
+                    self,
+                    &existing,
+                    quote_protocol,
+                )?
+                .ok_or(StoreError::SignedQuoteMismatch)?;
                 return Ok(DurableWrite {
                     disposition: WriteDisposition::ExactReplay,
                     commit: commit_marker,
@@ -518,12 +816,19 @@ impl IssuerStore {
             QuoteState::InvoiceExpiredPendingReconcile => QuoteState::LateSettledReconcile,
             _ => return Err(StoreError::InvalidQuoteState),
         };
-        let prior_snapshot = verify_persisted_quote_history(&transaction, self, &existing)?
-            .ok_or(StoreError::SignedQuoteMismatch)?;
-        let settled_snapshot = decode_and_verify_quote_snapshot(
+        let prior_snapshot = verify_persisted_quote_history_for_protocol(
+            &transaction,
+            self,
+            &existing,
+            quote_protocol,
+        )?
+        .ok_or(StoreError::SignedQuoteMismatch)?;
+        let settled_snapshot = decode_and_verify_quote_snapshot_for_protocol(
+            &transaction,
             self,
             &existing,
             &settlement.exact_signed_quote_response,
+            quote_protocol,
         )?;
         let expected_status = match next_state {
             QuoteState::PaymentSettled => Bolt11QuoteStatusV1::PaymentSettled,
@@ -591,8 +896,7 @@ impl IssuerStore {
         }
         commit(transaction)?;
         self.anchor_committed_identity(&previous_floor, &committed_identity)?;
-        let record = self
-            .quote(&settlement.quote_id)?
+        let record = read_committed_quote_for_protocol(self, &settlement.quote_id, quote_protocol)?
             .ok_or_else(|| StoreError::SchemaMismatch("committed settlement missing".to_owned()))?;
         Ok(DurableWrite {
             disposition: WriteDisposition::Committed,
@@ -768,6 +1072,227 @@ impl IssuerStore {
         })
     }
 
+    /// Atomically commit one class-bound BAT V2 issuance. Exact replay is
+    /// resolved before time and cryptographic callbacks; no V2 path writes a
+    /// `receipt_serials` row.
+    pub fn record_bat_v2_claim(
+        &self,
+        write: &BatV2ClaimWrite,
+        verifier: &dyn BatV2ClaimCryptographicVerifierV2,
+    ) -> StoreResult<DurableWrite<ClaimRecord>> {
+        let (envelope, response) = parse_bat_v2_claim_write(write)?;
+        let quote_id = envelope.claim.quote_id;
+        let claim_idempotency_digest =
+            claim_idempotency_digest(self, &envelope.claim.idempotency_key);
+        let claim_request_digest = envelope
+            .claim
+            .claim_request_digest()
+            .map_err(StoreError::Protocol)?;
+
+        let mut connection = self.open_checked(false)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
+        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
+        let quote = read_quote_for_protocol(&transaction, self, &quote_id, QUOTE_PROTOCOL_BAT_V2)?
+            .ok_or(StoreError::QuoteMissing)?;
+        validate_bat_v2_envelope_for_quote(self, &quote, &envelope)?;
+        let claim_replay_image = bat_v2_claim_replay_image(self, &envelope)?;
+        let exact_credential_request = envelope
+            .credential_request
+            .encode()
+            .map_err(StoreError::Protocol)?;
+
+        if let Some(existing) = read_claim_where(
+            &transaction,
+            self,
+            "claim_idempotency_digest",
+            &claim_idempotency_digest,
+            QUOTE_PROTOCOL_BAT_V2,
+        )? {
+            if bat_v2_claim_matches(
+                &existing,
+                write,
+                &quote_id,
+                claim_request_digest,
+                &claim_replay_image,
+                &exact_credential_request,
+            ) {
+                verify_persisted_quote_history_for_protocol(
+                    &transaction,
+                    self,
+                    &quote,
+                    QUOTE_PROTOCOL_BAT_V2,
+                )?
+                .ok_or(StoreError::SignedQuoteMismatch)?;
+                return Ok(DurableWrite {
+                    disposition: WriteDisposition::ExactReplay,
+                    commit: existing.claim_commit,
+                    value: existing,
+                });
+            }
+            return Err(StoreError::ClaimIdempotencyConflict);
+        }
+        if read_claim_where(
+            &transaction,
+            self,
+            "quote_id",
+            &quote_id,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?
+        .is_some()
+        {
+            return Err(StoreError::QuoteAlreadyClaimed);
+        }
+        if write.now_unix == 0 {
+            return Err(StoreError::InvalidInput("claim time is zero"));
+        }
+        if !matches!(
+            quote.state,
+            QuoteState::PaymentSettled | QuoteState::LateSettledReconcile
+        ) {
+            return Err(StoreError::QuoteNotSettled);
+        }
+        let deadline = quote.claim_deadline.ok_or_else(|| {
+            StoreError::SchemaMismatch("settled BAT V2 quote lacks claim deadline".to_owned())
+        })?;
+        if write.now_unix > deadline {
+            return Err(StoreError::ClaimDeadlineExpired);
+        }
+
+        let prior_snapshot = verify_persisted_quote_history_for_protocol(
+            &transaction,
+            self,
+            &quote,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?
+        .ok_or(StoreError::SignedQuoteMismatch)?;
+        let replay_intent = decode_replay_bat_v2_intent(self, &quote)?;
+        let class_record = read_bat_acceptance_class_v2(
+            &transaction,
+            self,
+            &replay_intent.class_id,
+            replay_intent.class_key_epoch,
+        )?
+        .ok_or(StoreError::ClaimProtocolMismatch)?;
+        let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+            .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+        let delegation = Bolt11QuoteKeyDelegationV1::decode(&quote.exact_delegation)
+            .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+        let verified_quote = prior_snapshot
+            .verify_persisted_bat_v2_quote_for_store(
+                PersistedBolt11BatV2QuoteExpectationV2 {
+                    original_request_digest: &quote.intent_digest,
+                    replay_intent: &replay_intent,
+                    class: &class,
+                    quote_id: &quote.quote_id,
+                    invoice: quote
+                        .invoice
+                        .as_deref()
+                        .ok_or(StoreError::SignedQuoteMismatch)?,
+                    invoice_created_at: quote
+                        .invoice_created_at
+                        .ok_or(StoreError::SignedQuoteMismatch)?,
+                    invoice_expires_at: quote
+                        .invoice_expires_at
+                        .ok_or(StoreError::SignedQuoteMismatch)?,
+                    claim_deadline: deadline,
+                    credential_not_after: quote
+                        .credential_not_after
+                        .ok_or(StoreError::SignedQuoteMismatch)?,
+                },
+                &delegation,
+                write.now_unix,
+            )
+            .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+        let bip340 = envelope
+            .credential_request
+            .verify_for_verified_quote(&envelope.claim, &verified_quote, write.now_unix)
+            .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+        let checked_response = response
+            .verify_for_verified_quote(&envelope.credential_request, &verified_quote)
+            .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+        let claimed_snapshot = decode_and_verify_quote_snapshot_for_protocol(
+            &transaction,
+            self,
+            &quote,
+            &write.exact_signed_quote_response,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?;
+        verify_successor_snapshot(
+            &prior_snapshot,
+            &claimed_snapshot,
+            Bolt11QuoteStatusV1::CredentialClaimed,
+            quote
+                .state_version
+                .checked_add(1)
+                .ok_or(StoreError::SignedQuoteMismatch)?,
+            write.now_unix,
+        )?;
+        if !verifier.verify(BatV2ClaimCryptographicVerificationInputV2 {
+            claim_envelope: &envelope,
+            issuance_response: &response,
+            checked_response: &checked_response,
+            bip340_message_digest: &bip340.message_digest,
+        }) {
+            return Err(StoreError::BadClaimCryptography);
+        }
+
+        let mutation = mutation_digest(
+            b"claim-bat-v2-quote-v2",
+            &[
+                &quote_id,
+                &claim_idempotency_digest,
+                &claim_request_digest,
+                &exact_credential_request,
+                &write.exact_claim_response,
+                &write.exact_signed_quote_response,
+            ],
+        );
+        let committed_identity = advance_store_generation(
+            &transaction,
+            &previous_identity,
+            b"claim-bat-v2-quote-v2",
+            &mutation,
+        )?;
+        let sequence = committed_identity.commit_seq;
+        transaction.execute(
+            "INSERT INTO claims (quote_id, issuer_id, claim_idempotency_digest, \
+             claim_request_digest, claim_request_replay_image, exact_credential_request, \
+             exact_claim_response, exact_signed_quote_response, claimed_at, claim_commit_seq) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                quote_id.as_slice(),
+                self.handle.expected_issuer_id.as_slice(),
+                claim_idempotency_digest.as_slice(),
+                claim_request_digest.as_slice(),
+                claim_replay_image.as_slice(),
+                exact_credential_request.as_slice(),
+                write.exact_claim_response.as_slice(),
+                write.exact_signed_quote_response.as_slice(),
+                sql_integer(write.now_unix, "claim time exceeds SQLite range")?,
+                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE quotes SET state = 3, state_version = state_version + 1 \
+             WHERE quote_id = ?1 AND quote_protocol = 2 AND state IN (2, 5)",
+            [quote_id.as_slice()],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::QuoteNotSettled);
+        }
+        commit(transaction)?;
+        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        let record = self.bat_v2_claim(&quote_id)?.ok_or_else(|| {
+            StoreError::SchemaMismatch("committed BAT V2 claim missing".to_owned())
+        })?;
+        Ok(DurableWrite {
+            disposition: WriteDisposition::Committed,
+            commit: marker(self, sequence),
+            value: record,
+        })
+    }
+
     /// Issuer-internal lookup only. An HTTP adapter MUST authenticate a
     /// possession-bound status request before exposing this record; knowledge
     /// of `quote_id` alone is not authorization to read invoice or status.
@@ -837,7 +1362,8 @@ impl IssuerStore {
         let mut statement = connection.prepare(
             "SELECT quote_id, backend_label, delegation_digest
              FROM quotes
-             WHERE ((state = 0 AND reservation_recovery_deadline >= ?1)
+             WHERE quote_protocol = 1
+               AND ((state = 0 AND reservation_recovery_deadline >= ?1)
                     OR (state IN (1, 4) AND claim_deadline >= ?1))
                AND (?2 IS NULL OR quote_id > ?2)
              ORDER BY quote_id ASC
@@ -884,6 +1410,211 @@ impl IssuerStore {
         self.confirm_anchored_read(&connection, candidates)
     }
 
+    pub fn bat_v2_quote(&self, quote_id: &[u8; 32]) -> StoreResult<Option<QuoteRecord>> {
+        if is_zero(quote_id) {
+            return Err(StoreError::InvalidInput("quote id is all zero"));
+        }
+        let connection = self.open_checked(false)?;
+        let value = read_quote_for_protocol(&connection, self, quote_id, QUOTE_PROTOCOL_BAT_V2)?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
+    pub fn bat_v2_quote_by_creation_idempotency_key(
+        &self,
+        idempotency_key: &[u8; 32],
+    ) -> StoreResult<Option<QuoteRecord>> {
+        if is_zero(idempotency_key) {
+            return Err(StoreError::InvalidInput(
+                "creation idempotency key is all zero",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let digest = creation_idempotency_digest(self, idempotency_key);
+        let value = read_quote_by_creation_digest_for_protocol(
+            &connection,
+            self,
+            &digest,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
+    pub fn bat_v2_quote_by_backend_label(&self, label: &str) -> StoreResult<Option<QuoteRecord>> {
+        if label.is_empty() || label.len() > 96 {
+            return Err(StoreError::InvalidInput("backend label length is invalid"));
+        }
+        let connection = self.open_checked(false)?;
+        let value =
+            read_quote_by_label_for_protocol(&connection, self, label, QUOTE_PROTOCOL_BAT_V2)?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
+    pub fn bat_v2_quote_reconciliation_candidates_after(
+        &self,
+        after_quote_id: Option<&[u8; 32]>,
+        limit: u32,
+        now_unix: u64,
+    ) -> StoreResult<Vec<QuoteReconciliationCandidateV1>> {
+        if limit == 0 || limit > MAX_QUOTE_RECONCILIATION_BATCH_V1 {
+            return Err(StoreError::InvalidInput(
+                "quote reconciliation batch limit is invalid",
+            ));
+        }
+        if after_quote_id.is_some_and(|value| is_zero(value)) || now_unix == 0 {
+            return Err(StoreError::InvalidInput(
+                "invalid BAT V2 quote reconciliation cursor or time",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let mut statement = connection.prepare(
+            "SELECT quote_id, backend_label, delegation_digest FROM quotes
+             WHERE quote_protocol = 2
+               AND ((state = 0 AND reservation_recovery_deadline >= ?1)
+                    OR (state IN (1, 4) AND claim_deadline >= ?1))
+               AND (?2 IS NULL OR quote_id > ?2)
+             ORDER BY quote_id ASC LIMIT ?3",
+        )?;
+        let cursor = after_quote_id.map(|value| value.as_slice());
+        let rows = statement.query_map(
+            params![
+                sql_integer(now_unix, "quote reconciliation observation time")?,
+                cursor,
+                i64::from(limit),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut candidates = Vec::with_capacity(limit as usize);
+        for row in rows {
+            let (quote_id, backend_label, delegation_digest) = row?;
+            let quote_id = fixed_blob(quote_id, "invalid reconciliation quote id")?;
+            let delegation_digest = fixed_blob(
+                delegation_digest,
+                "invalid reconciliation delegation digest",
+            )?;
+            if is_zero(&quote_id)
+                || is_zero(&delegation_digest)
+                || backend_label != self.backend_label_for_quote(&quote_id)?
+            {
+                return Err(StoreError::SchemaMismatch(
+                    "invalid BAT V2 quote reconciliation candidate".to_owned(),
+                ));
+            }
+            candidates.push(QuoteReconciliationCandidateV1 {
+                quote_id,
+                backend_label,
+                delegation_digest,
+            });
+        }
+        drop(statement);
+        self.confirm_anchored_read(&connection, candidates)
+    }
+
+    /// Enumerate BAT key epochs needed either for one fresh acquisition from
+    /// a live current class head or for recovery of an unfinished historical
+    /// V2 quote. Terminal and out-of-horizon historical epochs do not pin key
+    /// material.
+    pub fn bat_v2_credential_material_requirements(
+        &self,
+        now_unix: u64,
+    ) -> StoreResult<Vec<BatV2CredentialMaterialRequirementV2>> {
+        if now_unix == 0 {
+            return Err(StoreError::InvalidInput(
+                "BAT V2 credential inventory time is zero",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let mut statement = connection.prepare(
+            "SELECT intent_replay_image FROM quotes
+             WHERE quote_protocol = 2 AND (
+                 (state = 0 AND reservation_recovery_deadline >= ?1) OR
+                 (state IN (1, 2, 4, 5) AND claim_deadline >= ?1)
+             ) ORDER BY quote_id",
+        )?;
+        let replay_images = statement
+            .query_map(
+                [sql_integer(
+                    now_unix,
+                    "BAT V2 credential inventory time exceeds SQLite range",
+                )?],
+                |row| row.get::<_, Vec<u8>>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut referenced = BTreeSet::new();
+        for replay_image in replay_images {
+            let intent = Bolt11BatV2QuoteIntentV2::decode(&replay_image).map_err(|_| {
+                StoreError::SchemaMismatch(
+                    "unfinished BAT V2 quote has an invalid replay intent".to_owned(),
+                )
+            })?;
+            referenced.insert((intent.class_id, intent.class_key_epoch));
+        }
+
+        let mut head_statement = connection.prepare(
+            "SELECT class_id, highest_key_epoch FROM bat_v2_class_heads \
+             WHERE issuer_id = ?1 ORDER BY class_id",
+        )?;
+        let heads = head_statement
+            .query_map([self.handle.expected_issuer_id.as_slice()], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(head_statement);
+        for (class_id, key_epoch) in heads {
+            let class_id = fixed_blob(class_id, "invalid BAT V2 class head ID")?;
+            let key_epoch = db_u64(key_epoch, "negative BAT V2 class head epoch")?;
+            let record = read_bat_acceptance_class_v2(&connection, self, &class_id, key_epoch)?
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch(
+                        "BAT V2 class head references a missing artifact".to_owned(),
+                    )
+                })?;
+            let artifact = BatAcceptanceClassV2::decode(&record.exact_artifact).map_err(|_| {
+                StoreError::SchemaMismatch("BAT V2 class head artifact is not canonical".to_owned())
+            })?;
+            let fresh_credential_horizon = now_unix
+                .checked_add(u64::from(artifact.common_terms.invoice_expiry_seconds))
+                .and_then(|value| {
+                    value.checked_add(u64::from(artifact.common_terms.claim_window_seconds))
+                })
+                .and_then(|value| {
+                    value.checked_add(u64::from(
+                        artifact.common_terms.minimum_credential_validity_seconds,
+                    ))
+                });
+            if now_unix >= artifact.key_not_before
+                && fresh_credential_horizon.is_some_and(|horizon| horizon <= artifact.key_not_after)
+            {
+                referenced.insert((class_id, key_epoch));
+            }
+        }
+
+        let mut requirements = Vec::with_capacity(referenced.len());
+        for (class_id, class_key_epoch) in referenced {
+            let class =
+                read_bat_acceptance_class_v2(&connection, self, &class_id, class_key_epoch)?
+                    .ok_or_else(|| {
+                        StoreError::SchemaMismatch(
+                            "unfinished BAT V2 quote references a missing class epoch".to_owned(),
+                        )
+                    })?;
+            requirements.push(BatV2CredentialMaterialRequirementV2 {
+                class_id,
+                class_key_epoch,
+                raw_public_key: class.raw_public_key,
+                bat_key_id: class.bat_key_id,
+            });
+        }
+        self.confirm_anchored_read(&connection, requirements)
+    }
+
     /// Authenticates and atomically consumes a fresh private quote-status
     /// request before returning issuer-confidential invoice/status data.
     ///
@@ -896,16 +1627,63 @@ impl IssuerStore {
         now_unix: u64,
         verifier: &dyn QuoteStatusBip340Verifier,
     ) -> StoreResult<DurableWrite<AuthenticatedQuoteStatus>> {
+        self.consume_quote_status_request_for_protocol(
+            request,
+            now_unix,
+            verifier,
+            QUOTE_PROTOCOL_V1,
+        )
+    }
+
+    /// BAT V2 counterpart of [`Self::consume_quote_status_request`]. The
+    /// persisted class-bound quote typestate is reconstructed before the
+    /// possession proof is accepted; a V1 quote therefore fails closed.
+    pub fn consume_bat_v2_quote_status_request(
+        &self,
+        request: &Bolt11QuoteStatusRequestV1,
+        now_unix: u64,
+        verifier: &dyn QuoteStatusBip340Verifier,
+    ) -> StoreResult<DurableWrite<AuthenticatedQuoteStatus>> {
+        self.consume_quote_status_request_for_protocol(
+            request,
+            now_unix,
+            verifier,
+            QUOTE_PROTOCOL_BAT_V2,
+        )
+    }
+
+    fn consume_quote_status_request_for_protocol(
+        &self,
+        request: &Bolt11QuoteStatusRequestV1,
+        now_unix: u64,
+        verifier: &dyn QuoteStatusBip340Verifier,
+        quote_protocol: i64,
+    ) -> StoreResult<DurableWrite<AuthenticatedQuoteStatus>> {
         if now_unix == 0 {
             return Err(StoreError::InvalidInput("status request time is zero"));
         }
         request
             .encode()
             .map_err(|_| StoreError::InvalidInput("status request is not canonical V1"))?;
-        let preliminary = self
-            .quote(&request.quote_id)?
-            .ok_or(StoreError::QuoteMissing)?;
-        verify_status_request_binding(self, request, &preliminary, now_unix, verifier)?;
+        let preliminary_connection = self.open_checked(false)?;
+        let preliminary = read_quote_for_protocol(
+            &preliminary_connection,
+            self,
+            &request.quote_id,
+            quote_protocol,
+        )?
+        .ok_or(StoreError::QuoteMissing)?;
+        verify_status_request_binding_for_protocol(
+            &preliminary_connection,
+            self,
+            request,
+            &preliminary,
+            now_unix,
+            verifier,
+            quote_protocol,
+        )?;
+        self.confirm_anchored_read(&preliminary_connection, ())?;
+        drop(preliminary_connection);
 
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -915,7 +1693,8 @@ impl IssuerStore {
             return Err(StoreError::StatusTimeRollback);
         }
         let current =
-            read_quote(&transaction, self, &request.quote_id)?.ok_or(StoreError::QuoteMissing)?;
+            read_quote_for_protocol(&transaction, self, &request.quote_id, quote_protocol)?
+                .ok_or(StoreError::QuoteMissing)?;
         if current.intent_digest != preliminary.intent_digest
             || current.intent_replay_image != preliminary.intent_replay_image
         {
@@ -923,8 +1702,13 @@ impl IssuerStore {
                 "immutable quote intent changed during status verification".to_owned(),
             ));
         }
-        let latest_snapshot = verify_persisted_quote_history(&transaction, self, &current)?
-            .ok_or(StoreError::InvalidQuoteState)?;
+        let latest_snapshot = verify_persisted_quote_history_for_protocol(
+            &transaction,
+            self,
+            &current,
+            quote_protocol,
+        )?
+        .ok_or(StoreError::InvalidQuoteState)?;
         let status = AuthenticatedQuoteStatus {
             quote_id: current.quote_id,
             state: current.state,
@@ -967,16 +1751,17 @@ impl IssuerStore {
         }
         let now = now_unix.to_le_bytes();
         let expiry = expires_at.to_le_bytes();
+        let mutation_domain: &[u8] = if quote_protocol == QUOTE_PROTOCOL_V1 {
+            b"consume-quote-status-nonce-v1"
+        } else {
+            b"consume-bat-v2-quote-status-nonce-v2"
+        };
         let digest = mutation_digest(
-            b"consume-quote-status-nonce-v1",
+            mutation_domain,
             &[&request.quote_id, &nonce_digest, &now, &expiry],
         );
-        let committed_identity = advance_store_generation(
-            &transaction,
-            &previous_identity,
-            b"consume-quote-status-nonce-v1",
-            &digest,
-        )?;
+        let committed_identity =
+            advance_store_generation(&transaction, &previous_identity, mutation_domain, &digest)?;
         let sequence = committed_identity.commit_seq;
         transaction.execute(
             "INSERT INTO quote_status_nonces (quote_id, nonce_digest, expires_at, commit_seq) \
@@ -1033,12 +1818,203 @@ impl IssuerStore {
         let value = read_claim_by_idempotency_digest(&connection, self, &digest)?;
         self.confirm_anchored_read(&connection, value)
     }
+
+    /// Issuer-internal BAT V2 exact-response recovery lookup. The quote
+    /// discriminator is checked through the claim's quote foreign key, so a
+    /// V1 claim can never be decoded or returned through this path.
+    pub fn bat_v2_claim(&self, quote_id: &[u8; 32]) -> StoreResult<Option<ClaimRecord>> {
+        if is_zero(quote_id) {
+            return Err(StoreError::InvalidInput("quote id is all zero"));
+        }
+        let connection = self.open_checked(false)?;
+        let value = read_claim_where(
+            &connection,
+            self,
+            "quote_id",
+            quote_id,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
+    /// Issuer-internal BAT V2 diagnostic recovery lookup. The raw key is
+    /// hashed in memory and is never persisted or sufficient public
+    /// authorization on its own.
+    pub fn bat_v2_claim_by_idempotency_key(
+        &self,
+        idempotency_key: &[u8; 32],
+    ) -> StoreResult<Option<ClaimRecord>> {
+        if is_zero(idempotency_key) {
+            return Err(StoreError::InvalidInput(
+                "claim idempotency key is all zero",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let digest = claim_idempotency_digest(self, idempotency_key);
+        let value = read_claim_where(
+            &connection,
+            self,
+            "claim_idempotency_digest",
+            &digest,
+            QUOTE_PROTOCOL_BAT_V2,
+        )?;
+        self.confirm_anchored_read(&connection, value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeadDecision {
     Exact,
     Advance,
+}
+
+fn validate_quote_capacity(capacity: QuoteCapacityV1) -> StoreResult<()> {
+    if capacity.max_outstanding_unpaid == 0
+        || capacity.max_active_records == 0
+        || capacity.max_outstanding_unpaid > capacity.max_active_records
+    {
+        Err(StoreError::InvalidInput("invalid quote capacity"))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_quote_capacity(
+    transaction: &Transaction<'_>,
+    capacity: QuoteCapacityV1,
+    now_unix: u64,
+) -> StoreResult<()> {
+    let now = sql_integer(now_unix, "quote capacity observation time")?;
+    let active_records = db_u64(
+        transaction.query_row(
+            "SELECT COUNT(*) FROM quotes
+             WHERE (state = 0 AND reservation_recovery_deadline >= ?1)
+                OR (state IN (1, 4) AND claim_deadline >= ?1)",
+            [now],
+            |row| row.get(0),
+        )?,
+        "active quote record count is invalid",
+    )?;
+    let outstanding_unpaid = db_u64(
+        transaction.query_row(
+            "SELECT COUNT(*) FROM quotes
+             WHERE (state = 0 AND reservation_recovery_deadline >= ?1)
+                OR (state = 1 AND claim_deadline >= ?1)",
+            [now],
+            |row| row.get(0),
+        )?,
+        "outstanding quote count is invalid",
+    )?;
+    if active_records >= capacity.max_active_records
+        || outstanding_unpaid >= capacity.max_outstanding_unpaid
+    {
+        Err(StoreError::QuoteCapacityExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_bat_v2_reservation(
+    store: &IssuerStore,
+    reservation: &BatV2QuoteReservation,
+) -> StoreResult<(Bolt11BatV2QuoteIntentV2, Bolt11QuoteKeyDelegationV1)> {
+    if is_zero(&reservation.quote_id)
+        || reservation.exact_intent.is_empty()
+        || reservation.exact_intent.len() > MAX_EXACT_INTENT_BYTES
+        || reservation.exact_delegation.is_empty()
+        || reservation.exact_delegation.len() > MAX_EXACT_DELEGATION_BYTES
+        || reservation.invoice_created_not_before == 0
+        || reservation.invoice_created_not_after < reservation.invoice_created_not_before
+        || reservation.now_unix == 0
+    {
+        return Err(StoreError::InvalidInput("invalid BAT V2 quote reservation"));
+    }
+    let intent = Bolt11BatV2QuoteIntentV2::decode(&reservation.exact_intent)
+        .map_err(|_| StoreError::InvalidInput("BAT V2 intent is not canonical"))?;
+    let delegation = Bolt11QuoteKeyDelegationV1::decode(&reservation.exact_delegation)
+        .map_err(|_| StoreError::InvalidInput("delegation is not canonical V1"))?;
+    if intent.encode().map_err(StoreError::Protocol)? != reservation.exact_intent
+        || delegation.encode().map_err(StoreError::Protocol)? != reservation.exact_delegation
+        || intent.issuer_id != store.handle.expected_issuer_id
+        || intent.network != store.handle.expected_network
+        || intent.expected_payee_pubkey != delegation.expected_payee_pubkey
+        || intent.minimum_quote_key_epoch != delegation.key_epoch
+        || intent.quote_delegation_digest
+            != delegation
+                .delegation_digest()
+                .map_err(StoreError::Protocol)?
+        || delegation.issuer_id != store.handle.expected_issuer_id
+        || delegation.network != store.handle.expected_network
+    {
+        return Err(StoreError::InvalidInput(
+            "BAT V2 intent and delegation binding mismatch",
+        ));
+    }
+    let _ = sql_integer(intent.exact_amount_msat, "amount exceeds SQLite range")?;
+    let _ = sql_integer(
+        reservation.invoice_created_not_before,
+        "invoice creation lower bound exceeds SQLite range",
+    )?;
+    let _ = sql_integer(
+        reservation.invoice_created_not_after,
+        "invoice creation upper bound exceeds SQLite range",
+    )?;
+    Ok((intent, delegation))
+}
+
+fn bat_v2_reservation_recovery_deadline(
+    invoice_created_not_after: u64,
+    intent: &Bolt11BatV2QuoteIntentV2,
+) -> StoreResult<u64> {
+    let deadline = invoice_created_not_after
+        .checked_add(u64::from(intent.invoice_expiry_seconds))
+        .and_then(|value| value.checked_add(u64::from(intent.claim_window_seconds)))
+        .ok_or(StoreError::InvalidInput(
+            "BAT V2 reservation recovery horizon overflows Unix time",
+        ))?;
+    let _ = sql_integer(
+        deadline,
+        "BAT V2 reservation recovery horizon exceeds SQLite range",
+    )?;
+    Ok(deadline)
+}
+
+fn bat_v2_intent_replay_image(
+    store: &IssuerStore,
+    intent: &Bolt11BatV2QuoteIntentV2,
+) -> StoreResult<Vec<u8>> {
+    let mut replay = intent.clone();
+    replay.idempotency_key = creation_idempotency_digest(store, &intent.idempotency_key);
+    replay.encode().map_err(StoreError::Protocol)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bat_v2_quote_reservation_matches(
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    reservation: &BatV2QuoteReservation,
+    intent: &Bolt11BatV2QuoteIntentV2,
+    delegation: &Bolt11QuoteKeyDelegationV1,
+    replay_image: &[u8],
+    reservation_recovery_deadline: u64,
+) -> StoreResult<bool> {
+    Ok(record.quote_id == reservation.quote_id
+        && record.creation_idempotency_digest
+            == creation_idempotency_digest(store, &intent.idempotency_key)
+        && record.backend_label == store.backend_label_for_quote(&reservation.quote_id)?
+        && record.intent_digest == intent.request_digest().map_err(StoreError::Protocol)?
+        && record.intent_replay_image == replay_image
+        && record.payee_pubkey == delegation.expected_payee_pubkey
+        && record.delegation_epoch == delegation.key_epoch
+        && record.delegation_digest
+            == delegation
+                .delegation_digest()
+                .map_err(StoreError::Protocol)?
+        && record.exact_delegation == reservation.exact_delegation
+        && record.exact_amount_msat == intent.exact_amount_msat
+        && record.invoice_created_not_before == reservation.invoice_created_not_before
+        && record.invoice_created_not_after == reservation.invoice_created_not_after
+        && record.reservation_recovery_deadline == reservation_recovery_deadline)
 }
 
 fn validate_delegation_input(
@@ -1295,6 +2271,88 @@ fn claim_replay_image(store: &IssuerStore, value: &ClaimWrite) -> StoreResult<Ve
         .map_err(|_| StoreError::InvalidInput("failed to build claim replay image"))
 }
 
+fn parse_bat_v2_claim_write(
+    value: &BatV2ClaimWrite,
+) -> StoreResult<(Bolt11BatV2ClaimEnvelopeV2, BatV2IssuanceResponseV2)> {
+    if value.exact_claim_envelope.is_empty()
+        || value.exact_claim_envelope.len() > MAX_EXACT_CLAIM_REQUEST_BYTES
+        || value.exact_claim_response.is_empty()
+        || value.exact_claim_response.len() > MAX_EXACT_CLAIM_RESPONSE_BYTES
+        || value.exact_signed_quote_response.is_empty()
+        || value.exact_signed_quote_response.len() > MAX_SIGNED_QUOTE_BYTES
+    {
+        return Err(StoreError::InvalidInput("invalid BAT V2 claim write"));
+    }
+    let envelope = Bolt11BatV2ClaimEnvelopeV2::decode(&value.exact_claim_envelope)
+        .map_err(|_| StoreError::InvalidInput("claim envelope is not canonical BAT V2"))?;
+    if envelope.encode().ok().as_deref() != Some(value.exact_claim_envelope.as_slice()) {
+        return Err(StoreError::InvalidInput(
+            "claim envelope is not canonical BAT V2",
+        ));
+    }
+    let response = BatV2IssuanceResponseV2::decode(&value.exact_claim_response)
+        .map_err(|_| StoreError::InvalidInput("claim response is not canonical BAT V2"))?;
+    if response.encode().ok().as_deref() != Some(value.exact_claim_response.as_slice()) {
+        return Err(StoreError::InvalidInput(
+            "claim response is not canonical BAT V2",
+        ));
+    }
+    Ok((envelope, response))
+}
+
+fn validate_bat_v2_envelope_for_quote(
+    store: &IssuerStore,
+    quote: &QuoteRecord,
+    envelope: &Bolt11BatV2ClaimEnvelopeV2,
+) -> StoreResult<()> {
+    let original_intent_digest = envelope
+        .quote_intent
+        .request_digest()
+        .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+    let mut replay_intent = envelope.quote_intent.clone();
+    replay_intent.idempotency_key = quote.creation_idempotency_digest;
+    let replay_image = replay_intent
+        .encode()
+        .map_err(|_| StoreError::ClaimProtocolMismatch)?;
+    if envelope.quote_intent.issuer_id != store.handle.expected_issuer_id
+        || envelope.quote_intent.network != store.handle.expected_network
+        || envelope.claim.quote_id != quote.quote_id
+        || envelope.claim.quote_request_digest != quote.intent_digest
+        || original_intent_digest != quote.intent_digest
+        || replay_image != quote.intent_replay_image
+    {
+        return Err(StoreError::ClaimProtocolMismatch);
+    }
+    Ok(())
+}
+
+fn bat_v2_claim_replay_image(
+    store: &IssuerStore,
+    envelope: &Bolt11BatV2ClaimEnvelopeV2,
+) -> StoreResult<Vec<u8>> {
+    let mut claim = envelope.claim.clone();
+    claim.idempotency_key = claim_idempotency_digest(store, &claim.idempotency_key);
+    claim
+        .encode()
+        .map_err(|_| StoreError::InvalidInput("failed to build BAT V2 claim replay image"))
+}
+
+fn bat_v2_claim_matches(
+    record: &ClaimRecord,
+    value: &BatV2ClaimWrite,
+    quote_id: &[u8; 32],
+    claim_request_digest: [u8; 32],
+    claim_replay_image: &[u8],
+    exact_credential_request: &[u8],
+) -> bool {
+    record.quote_id == *quote_id
+        && record.claim_request_digest == claim_request_digest
+        && record.claim_request_replay_image == claim_replay_image
+        && record.exact_credential_request == exact_credential_request
+        && record.exact_claim_response == value.exact_claim_response
+        && record.exact_signed_quote_response == value.exact_signed_quote_response
+}
+
 struct ParsedIssuance {
     request: CredentialIssuanceRequestV1,
     response: CredentialIssuanceResponseV1,
@@ -1436,6 +2494,102 @@ fn decode_replay_intent(
     Ok(intent)
 }
 
+fn decode_replay_bat_v2_intent(
+    store: &IssuerStore,
+    quote: &QuoteRecord,
+) -> StoreResult<Bolt11BatV2QuoteIntentV2> {
+    let intent = Bolt11BatV2QuoteIntentV2::decode(&quote.intent_replay_image)
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    if intent.encode().ok().as_deref() != Some(quote.intent_replay_image.as_slice())
+        || intent.issuer_id != store.handle.expected_issuer_id
+        || intent.network != store.handle.expected_network
+        || intent.expected_payee_pubkey != quote.payee_pubkey
+        || intent.minimum_quote_key_epoch != quote.delegation_epoch
+        || intent.quote_delegation_digest != quote.delegation_digest
+        || intent.exact_amount_msat != quote.exact_amount_msat
+        || intent.idempotency_key != quote.creation_idempotency_digest
+    {
+        return Err(StoreError::SignedQuoteMismatch);
+    }
+    Ok(intent)
+}
+
+fn decode_and_verify_quote_snapshot_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    exact: &[u8],
+    quote_protocol: i64,
+) -> StoreResult<Bolt11QuoteV1> {
+    match quote_protocol {
+        QUOTE_PROTOCOL_V1 => decode_and_verify_quote_snapshot(store, record, exact),
+        QUOTE_PROTOCOL_BAT_V2 => {
+            decode_and_verify_bat_v2_quote_snapshot(connection, store, record, exact)
+        }
+        _ => Err(StoreError::SchemaMismatch(
+            "invalid quote protocol discriminator".to_owned(),
+        )),
+    }
+}
+
+fn decode_and_verify_bat_v2_quote_snapshot(
+    connection: &Connection,
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    exact: &[u8],
+) -> StoreResult<Bolt11QuoteV1> {
+    if exact.is_empty() || exact.len() > MAX_SIGNED_QUOTE_BYTES || exact.len() < 64 {
+        return Err(StoreError::SignedQuoteMismatch);
+    }
+    let snapshot = Bolt11QuoteV1::decode(exact).map_err(|_| StoreError::SignedQuoteMismatch)?;
+    if snapshot.encode().ok().as_deref() != Some(exact) {
+        return Err(StoreError::SignedQuoteMismatch);
+    }
+    let intent = decode_replay_bat_v2_intent(store, record)?;
+    let class_record =
+        read_bat_acceptance_class_v2(connection, store, &intent.class_id, intent.class_key_epoch)?
+            .ok_or(StoreError::SignedQuoteMismatch)?;
+    let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    let delegation = Bolt11QuoteKeyDelegationV1::decode(&record.exact_delegation)
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    if delegation.encode().ok().as_deref() != Some(record.exact_delegation.as_slice())
+        || delegation.delegation_digest().ok() != Some(record.delegation_digest)
+        || delegation.issuer_id != store.handle.expected_issuer_id
+        || delegation.network != store.handle.expected_network
+        || delegation.expected_payee_pubkey != record.payee_pubkey
+        || delegation.key_epoch != record.delegation_epoch
+        || snapshot.invoice_created_at < record.invoice_created_not_before
+        || snapshot.invoice_created_at > record.invoice_created_not_after
+    {
+        return Err(StoreError::SignedQuoteMismatch);
+    }
+    snapshot
+        .verify_persisted_bat_v2_quote_for_store(
+            PersistedBolt11BatV2QuoteExpectationV2 {
+                original_request_digest: &record.intent_digest,
+                replay_intent: &intent,
+                class: &class,
+                quote_id: &record.quote_id,
+                invoice: record.invoice.as_deref().unwrap_or(&snapshot.invoice),
+                invoice_created_at: record
+                    .invoice_created_at
+                    .unwrap_or(snapshot.invoice_created_at),
+                invoice_expires_at: record
+                    .invoice_expires_at
+                    .unwrap_or(snapshot.invoice_expires_at),
+                claim_deadline: record.claim_deadline.unwrap_or(snapshot.claim_deadline),
+                credential_not_after: record
+                    .credential_not_after
+                    .unwrap_or(snapshot.credential_not_after),
+            },
+            &delegation,
+            snapshot.status_updated_at,
+        )
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    Ok(snapshot)
+}
+
 fn decode_and_verify_quote_snapshot(
     store: &IssuerStore,
     record: &QuoteRecord,
@@ -1574,6 +2728,15 @@ fn verify_persisted_quote_history(
     store: &IssuerStore,
     record: &QuoteRecord,
 ) -> StoreResult<Option<Bolt11QuoteV1>> {
+    verify_persisted_quote_history_for_protocol(connection, store, record, QUOTE_PROTOCOL_V1)
+}
+
+fn verify_persisted_quote_history_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    quote_protocol: i64,
+) -> StoreResult<Option<Bolt11QuoteV1>> {
     if record.state == QuoteState::Reserved {
         return if record.state_version == 0 && record.initial_signed_quote_response.is_none() {
             Ok(None)
@@ -1585,7 +2748,13 @@ fn verify_persisted_quote_history(
         .initial_signed_quote_response
         .as_deref()
         .ok_or(StoreError::SignedQuoteMismatch)?;
-    let initial = decode_and_verify_quote_snapshot(store, record, initial_exact)?;
+    let initial = decode_and_verify_quote_snapshot_for_protocol(
+        connection,
+        store,
+        record,
+        initial_exact,
+        quote_protocol,
+    )?;
     let persisted_finalization = QuoteFinalization {
         quote_id: record.quote_id,
         invoice: record
@@ -1611,7 +2780,13 @@ fn verify_persisted_quote_history(
     let mut latest = initial;
 
     if let Some(exact) = record.expired_signed_quote_response.as_deref() {
-        let expired = decode_and_verify_quote_snapshot(store, record, exact)?;
+        let expired = decode_and_verify_quote_snapshot_for_protocol(
+            connection,
+            store,
+            record,
+            exact,
+            quote_protocol,
+        )?;
         verify_successor_snapshot(
             &latest,
             &expired,
@@ -1624,7 +2799,13 @@ fn verify_persisted_quote_history(
         latest = expired;
     }
     if let Some(exact) = record.settled_signed_quote_response.as_deref() {
-        let settled = decode_and_verify_quote_snapshot(store, record, exact)?;
+        let settled = decode_and_verify_quote_snapshot_for_protocol(
+            connection,
+            store,
+            record,
+            exact,
+            quote_protocol,
+        )?;
         let expected_status = if record.expiry_commit.is_some() {
             Bolt11QuoteStatusV1::LateSettledReconcile
         } else {
@@ -1645,10 +2826,21 @@ fn verify_persisted_quote_history(
         latest = settled;
     }
     if record.state == QuoteState::CredentialClaimed {
-        let claim = read_claim(connection, store, &record.quote_id)?
-            .ok_or(StoreError::SignedQuoteMismatch)?;
-        let claimed =
-            decode_and_verify_quote_snapshot(store, record, &claim.exact_signed_quote_response)?;
+        let claim = read_claim_where(
+            connection,
+            store,
+            "quote_id",
+            &record.quote_id,
+            quote_protocol,
+        )?
+        .ok_or(StoreError::SignedQuoteMismatch)?;
+        let claimed = decode_and_verify_quote_snapshot_for_protocol(
+            connection,
+            store,
+            record,
+            &claim.exact_signed_quote_response,
+            quote_protocol,
+        )?;
         verify_successor_snapshot(
             &latest,
             &claimed,
@@ -1683,15 +2875,19 @@ pub(crate) fn verify_all_quote_histories(
     store: &IssuerStore,
     connection: &Connection,
 ) -> StoreResult<()> {
-    let mut statement = connection.prepare("SELECT quote_id FROM quotes ORDER BY quote_id")?;
+    let mut statement =
+        connection.prepare("SELECT quote_id, quote_protocol FROM quotes ORDER BY quote_id")?;
     let quote_ids = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
-    for raw_quote_id in quote_ids {
+    for (raw_quote_id, quote_protocol) in quote_ids {
         let quote_id = fixed_blob(raw_quote_id, "invalid quote id")?;
-        let quote = read_quote(connection, store, &quote_id)?
+        let quote = read_quote_for_protocol(connection, store, &quote_id, quote_protocol)?
             .ok_or_else(|| StoreError::SchemaMismatch("enumerated quote is missing".to_owned()))?;
-        let _ = verify_persisted_quote_history(connection, store, &quote)?;
+        let _ =
+            verify_persisted_quote_history_for_protocol(connection, store, &quote, quote_protocol)?;
     }
     Ok(())
 }
@@ -1876,6 +3072,7 @@ struct RawQuote {
     finalization_seq: Option<i64>,
     expiry_seq: Option<i64>,
     settlement_seq: Option<i64>,
+    quote_protocol: i64,
 }
 
 fn raw_quote(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawQuote> {
@@ -1913,6 +3110,7 @@ fn raw_quote(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawQuote> {
         finalization_seq: row.get(30)?,
         expiry_seq: row.get(31)?,
         settlement_seq: row.get(32)?,
+        quote_protocol: row.get(33)?,
     })
 }
 
@@ -1921,11 +3119,31 @@ fn read_quote(
     store: &IssuerStore,
     quote_id: &[u8; 32],
 ) -> StoreResult<Option<QuoteRecord>> {
+    read_quote_for_protocol(connection, store, quote_id, QUOTE_PROTOCOL_V1)
+}
+
+fn read_quote_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    quote_id: &[u8; 32],
+    expected_protocol: i64,
+) -> StoreResult<Option<QuoteRecord>> {
     let sql = format!("SELECT {QUOTE_SELECT} FROM quotes WHERE quote_id = ?1");
     let raw = connection
         .query_row(&sql, [quote_id.as_slice()], raw_quote)
         .optional()?;
-    raw.map(|raw| convert_quote(store, raw)).transpose()
+    raw.map(|raw| convert_quote(store, raw, expected_protocol))
+        .transpose()
+}
+
+fn read_committed_quote_for_protocol(
+    store: &IssuerStore,
+    quote_id: &[u8; 32],
+    quote_protocol: i64,
+) -> StoreResult<Option<QuoteRecord>> {
+    let connection = store.open_checked(false)?;
+    let value = read_quote_for_protocol(&connection, store, quote_id, quote_protocol)?;
+    store.confirm_anchored_read(&connection, value)
 }
 
 fn read_quote_by_creation_digest(
@@ -1933,11 +3151,21 @@ fn read_quote_by_creation_digest(
     store: &IssuerStore,
     key: &[u8; 32],
 ) -> StoreResult<Option<QuoteRecord>> {
+    read_quote_by_creation_digest_for_protocol(connection, store, key, QUOTE_PROTOCOL_V1)
+}
+
+fn read_quote_by_creation_digest_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    key: &[u8; 32],
+    expected_protocol: i64,
+) -> StoreResult<Option<QuoteRecord>> {
     let sql = format!("SELECT {QUOTE_SELECT} FROM quotes WHERE creation_idempotency_digest = ?1");
     let raw = connection
         .query_row(&sql, [key.as_slice()], raw_quote)
         .optional()?;
-    raw.map(|raw| convert_quote(store, raw)).transpose()
+    raw.map(|raw| convert_quote(store, raw, expected_protocol))
+        .transpose()
 }
 
 fn read_quote_by_label(
@@ -1945,12 +3173,29 @@ fn read_quote_by_label(
     store: &IssuerStore,
     label: &str,
 ) -> StoreResult<Option<QuoteRecord>> {
-    let sql = format!("SELECT {QUOTE_SELECT} FROM quotes WHERE backend_label = ?1");
-    let raw = connection.query_row(&sql, [label], raw_quote).optional()?;
-    raw.map(|raw| convert_quote(store, raw)).transpose()
+    read_quote_by_label_for_protocol(connection, store, label, QUOTE_PROTOCOL_V1)
 }
 
-fn convert_quote(store: &IssuerStore, raw: RawQuote) -> StoreResult<QuoteRecord> {
+fn read_quote_by_label_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    label: &str,
+    expected_protocol: i64,
+) -> StoreResult<Option<QuoteRecord>> {
+    let sql = format!("SELECT {QUOTE_SELECT} FROM quotes WHERE backend_label = ?1");
+    let raw = connection.query_row(&sql, [label], raw_quote).optional()?;
+    raw.map(|raw| convert_quote(store, raw, expected_protocol))
+        .transpose()
+}
+
+fn convert_quote(
+    store: &IssuerStore,
+    raw: RawQuote,
+    expected_protocol: i64,
+) -> StoreResult<QuoteRecord> {
+    if raw.quote_protocol != expected_protocol {
+        return Err(StoreError::QuoteProtocolMismatch);
+    }
     let quote_id = fixed_blob(raw.quote_id, "invalid quote id")?;
     let creation_idempotency_digest = fixed_blob(raw.creation_key, "invalid creation digest")?;
     let intent_digest = fixed_blob(raw.intent_digest, "invalid intent digest")?;
@@ -1964,11 +3209,29 @@ fn convert_quote(store: &IssuerStore, raw: RawQuote) -> StoreResult<QuoteRecord>
         raw.reservation_recovery_deadline,
         "negative reservation recovery deadline",
     )?;
-    let replay_intent = Bolt11QuoteIntentV1::decode(&raw.intent_replay_image)
-        .map_err(|_| StoreError::SchemaMismatch("invalid persisted quote intent".to_owned()))?;
+    let (invoice_expiry_seconds, claim_window_seconds) = match expected_protocol {
+        QUOTE_PROTOCOL_V1 => {
+            let intent = Bolt11QuoteIntentV1::decode(&raw.intent_replay_image).map_err(|_| {
+                StoreError::SchemaMismatch("invalid persisted V1 quote intent".to_owned())
+            })?;
+            (intent.invoice_expiry_seconds, intent.claim_window_seconds)
+        }
+        QUOTE_PROTOCOL_BAT_V2 => {
+            let intent =
+                Bolt11BatV2QuoteIntentV2::decode(&raw.intent_replay_image).map_err(|_| {
+                    StoreError::SchemaMismatch("invalid persisted BAT V2 quote intent".to_owned())
+                })?;
+            (intent.invoice_expiry_seconds, intent.claim_window_seconds)
+        }
+        _ => {
+            return Err(StoreError::SchemaMismatch(
+                "invalid quote protocol discriminator".to_owned(),
+            ))
+        }
+    };
     let expected_recovery_deadline = invoice_created_not_after
-        .checked_add(u64::from(replay_intent.invoice_expiry_seconds))
-        .and_then(|value| value.checked_add(u64::from(replay_intent.claim_window_seconds)))
+        .checked_add(u64::from(invoice_expiry_seconds))
+        .and_then(|value| value.checked_add(u64::from(claim_window_seconds)))
         .ok_or_else(|| {
             StoreError::SchemaMismatch(
                 "persisted quote reservation recovery horizon overflows".to_owned(),
@@ -2079,7 +3342,7 @@ fn read_claim(
     store: &IssuerStore,
     quote_id: &[u8; 32],
 ) -> StoreResult<Option<ClaimRecord>> {
-    read_claim_where(connection, store, "quote_id", quote_id)
+    read_claim_where(connection, store, "quote_id", quote_id, QUOTE_PROTOCOL_V1)
 }
 
 fn read_claim_by_idempotency_digest(
@@ -2087,7 +3350,13 @@ fn read_claim_by_idempotency_digest(
     store: &IssuerStore,
     key: &[u8; 32],
 ) -> StoreResult<Option<ClaimRecord>> {
-    read_claim_where(connection, store, "claim_idempotency_digest", key)
+    read_claim_where(
+        connection,
+        store,
+        "claim_idempotency_digest",
+        key,
+        QUOTE_PROTOCOL_V1,
+    )
 }
 
 fn read_claim_where(
@@ -2095,6 +3364,7 @@ fn read_claim_where(
     store: &IssuerStore,
     column: &'static str,
     value: &[u8; 32],
+    expected_protocol: i64,
 ) -> StoreResult<Option<ClaimRecord>> {
     type Raw = (
         Vec<u8>,
@@ -2106,11 +3376,13 @@ fn read_claim_where(
         Vec<u8>,
         i64,
         i64,
+        i64,
     );
     let sql = format!(
-        "SELECT quote_id, claim_idempotency_digest, claim_request_digest, claim_request_replay_image, \
-         exact_credential_request, exact_claim_response, exact_signed_quote_response, claimed_at, claim_commit_seq \
-         FROM claims WHERE {column} = ?1"
+        "SELECT c.quote_id, c.claim_idempotency_digest, c.claim_request_digest, \
+         c.claim_request_replay_image, c.exact_credential_request, c.exact_claim_response, \
+         c.exact_signed_quote_response, c.claimed_at, c.claim_commit_seq, q.quote_protocol \
+         FROM claims c JOIN quotes q ON q.quote_id = c.quote_id WHERE c.{column} = ?1"
     );
     let raw: Option<Raw> = connection
         .query_row(&sql, [value.as_slice()], |row| {
@@ -2124,10 +3396,14 @@ fn read_claim_where(
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
             ))
         })
         .optional()?;
     raw.map(|raw| {
+        if raw.9 != expected_protocol {
+            return Err(StoreError::QuoteProtocolMismatch);
+        }
         let quote_id = fixed_blob(raw.0, "invalid claim quote id")?;
         let claim_idempotency_digest = fixed_blob(raw.1, "invalid claim idempotency digest")?;
         let claim_request_digest = fixed_blob(raw.2, "invalid claim request digest")?;
@@ -2233,6 +3509,94 @@ fn verify_status_request_binding(
         claim_pubkey_xonly: &request.claim_pubkey_xonly,
         message_digest: &message_digest,
         signature: &request.signature,
+    }) {
+        return Err(StoreError::BadStatusRequestSignature);
+    }
+    Ok(())
+}
+
+fn verify_status_request_binding_for_protocol(
+    connection: &Connection,
+    store: &IssuerStore,
+    request: &Bolt11QuoteStatusRequestV1,
+    quote: &QuoteRecord,
+    now_unix: u64,
+    verifier: &dyn QuoteStatusBip340Verifier,
+    quote_protocol: i64,
+) -> StoreResult<()> {
+    if quote_protocol == QUOTE_PROTOCOL_V1 {
+        return verify_status_request_binding(store, request, quote, now_unix, verifier);
+    }
+    if quote_protocol != QUOTE_PROTOCOL_BAT_V2 {
+        return Err(StoreError::SchemaMismatch(
+            "invalid quote protocol discriminator".to_owned(),
+        ));
+    }
+
+    let latest = verify_persisted_quote_history_for_protocol(
+        connection,
+        store,
+        quote,
+        QUOTE_PROTOCOL_BAT_V2,
+    )?
+    .ok_or(StoreError::InvalidQuoteState)?;
+    let replay_intent = decode_replay_bat_v2_intent(store, quote)?;
+    let class_record = read_bat_acceptance_class_v2(
+        connection,
+        store,
+        &replay_intent.class_id,
+        replay_intent.class_key_epoch,
+    )?
+    .ok_or_else(|| {
+        StoreError::SchemaMismatch(
+            "BAT V2 quote status references a missing retained class epoch".to_owned(),
+        )
+    })?;
+    let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    let delegation = Bolt11QuoteKeyDelegationV1::decode(&quote.exact_delegation)
+        .map_err(|_| StoreError::SignedQuoteMismatch)?;
+    if request.requested_at > now_unix
+        || now_unix.saturating_sub(request.requested_at)
+            > MAX_BOLT11_QUOTE_STATUS_REQUEST_AGE_SECONDS_V1
+    {
+        return Err(StoreError::StatusRequestStale);
+    }
+    let verified_quote = latest
+        .verify_persisted_bat_v2_quote_for_store(
+            PersistedBolt11BatV2QuoteExpectationV2 {
+                original_request_digest: &quote.intent_digest,
+                replay_intent: &replay_intent,
+                class: &class,
+                quote_id: &quote.quote_id,
+                invoice: quote
+                    .invoice
+                    .as_deref()
+                    .ok_or(StoreError::SignedQuoteMismatch)?,
+                invoice_created_at: quote
+                    .invoice_created_at
+                    .ok_or(StoreError::SignedQuoteMismatch)?,
+                invoice_expires_at: quote
+                    .invoice_expires_at
+                    .ok_or(StoreError::SignedQuoteMismatch)?,
+                claim_deadline: quote
+                    .claim_deadline
+                    .ok_or(StoreError::SignedQuoteMismatch)?,
+                credential_not_after: quote
+                    .credential_not_after
+                    .ok_or(StoreError::SignedQuoteMismatch)?,
+            },
+            &delegation,
+            now_unix,
+        )
+        .map_err(|_| StoreError::StatusRequestBindingMismatch)?;
+    let bip340 = request
+        .unverified_bip340_input_for_verified_bat_v2_quote(&verified_quote, now_unix)
+        .map_err(|_| StoreError::StatusRequestBindingMismatch)?;
+    if !verifier.verify(QuoteStatusBip340Input {
+        claim_pubkey_xonly: &bip340.claim_pubkey_xonly,
+        message_digest: &bip340.message_digest,
+        signature: &bip340.signature,
     }) {
         return Err(StoreError::BadStatusRequestSignature);
     }

@@ -8,17 +8,19 @@
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use pir_issuer_store::{
-    IssuerStore, QuoteCapacityV1, QuoteExpiry, QuoteFinalization, QuoteRecord, QuoteReservation,
-    QuoteSettlement, QuoteState, StoreError, WriteDisposition,
+    BatV2QuoteReservation, IssuerStore, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
+    QuoteRecord, QuoteReservation, QuoteSettlement, QuoteState, StoreError, WriteDisposition,
 };
 use pir_lightning_backend::{
     anonymous_invoice_description_hash_v1, CreateInvoiceRequestV1, InvoiceObservationStateV1,
     LightningBackendErrorV1, LightningInvoiceBackendV1,
 };
 use pir_service_protocol::{
-    bolt11_invoice_text_digest_v1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
-    Bolt11QuoteStatusV1, Bolt11QuoteV1, ParsedBolt11InvoiceV1, PersistedBolt11QuoteExpectationV1,
-    VerifiedBolt11QuoteIntentV1, BOLT11_QUOTE_SIGNATURE_DOMAIN,
+    bolt11_invoice_text_digest_v1, BatAcceptanceClassV2, Bolt11BatV2QuoteIntentV2,
+    Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1, Bolt11QuoteKeyRollbackGuardV1,
+    Bolt11QuoteStatusV1, Bolt11QuoteV1, ParsedBolt11InvoiceV1,
+    PersistedBolt11BatV2QuoteExpectationV2, PersistedBolt11QuoteExpectationV1,
+    VerifiedBolt11BatV2QuoteIntentV2, VerifiedBolt11QuoteIntentV1, BOLT11_QUOTE_SIGNATURE_DOMAIN,
 };
 use std::fmt;
 use std::sync::Arc;
@@ -160,6 +162,12 @@ pub struct Bolt11IssuerCoreV1<B, Q> {
     backend: Arc<B>,
     quote_ids: Arc<Q>,
     quote_capacity: QuoteCapacityV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuoteAcquisitionProtocolV1 {
+    ProviderBoundV1,
+    BatV2,
 }
 
 impl<B, Q> fmt::Debug for Bolt11IssuerCoreV1<B, Q> {
@@ -308,6 +316,92 @@ where
         )
     }
 
+    /// Reserve before Lightning, then create or recover one issuer-wide BAT
+    /// V2 quote. Every durable lookup and write uses the V2 store namespace;
+    /// a V1 quote with the same raw idempotency key is never an exact replay.
+    pub fn create_or_recover_bat_v2_quote(
+        &self,
+        verified_intent: &VerifiedBolt11BatV2QuoteIntentV2<'_>,
+        quote_signing_key: &SigningKey,
+        now_unix: u64,
+    ) -> Result<QuoteCreateResultV1, IssuerCoreErrorV1> {
+        validate_now(now_unix)?;
+        validate_signer(verified_intent.delegation(), quote_signing_key)?;
+        let intent = verified_intent.intent();
+
+        if let Some(record) = self
+            .store
+            .bat_v2_quote_by_creation_idempotency_key(&intent.idempotency_key)
+            .map_err(map_store_error)?
+        {
+            return self.recover_bat_v2_record(
+                record,
+                verified_intent,
+                quote_signing_key,
+                now_unix,
+                false,
+            );
+        }
+
+        let quote_id = self
+            .quote_ids
+            .next_quote_id()
+            .map_err(|error| match error {
+                QuoteIdSourceErrorV1::Unavailable => IssuerCoreErrorV1::RetryableUnavailable,
+                QuoteIdSourceErrorV1::Exhausted => IssuerCoreErrorV1::PermanentMismatch,
+            })?;
+        if quote_id.iter().all(|byte| *byte == 0) {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let invoice_created_not_before = now_unix
+            .checked_sub(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+            .ok_or(IssuerCoreErrorV1::InvalidInput)?;
+        let invoice_created_not_after = now_unix
+            .checked_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+            .ok_or(IssuerCoreErrorV1::InvalidInput)?;
+        if invoice_created_not_before == 0 {
+            return Err(IssuerCoreErrorV1::InvalidInput);
+        }
+        let reservation = BatV2QuoteReservation {
+            quote_id,
+            exact_intent: intent
+                .encode()
+                .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?,
+            exact_delegation: verified_intent
+                .delegation()
+                .encode()
+                .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?,
+            invoice_created_not_before,
+            invoice_created_not_after,
+            now_unix,
+        };
+        let (record, newly_reserved) = match self
+            .store
+            .reserve_bat_v2_quote_with_capacity(&reservation, self.quote_capacity)
+        {
+            Ok(write) => (
+                write.value,
+                write.disposition == WriteDisposition::Committed,
+            ),
+            Err(StoreError::CreationIdempotencyConflict) => {
+                let existing = self
+                    .store
+                    .bat_v2_quote_by_creation_idempotency_key(&intent.idempotency_key)
+                    .map_err(map_store_error)?
+                    .ok_or(IssuerCoreErrorV1::OutcomeUnknown)?;
+                (existing, false)
+            }
+            Err(error) => return Err(map_store_error(error)),
+        };
+        self.recover_bat_v2_record(
+            record,
+            verified_intent,
+            quote_signing_key,
+            now_unix,
+            newly_reserved,
+        )
+    }
+
     /// Reconcile one issuer-confidential backend label against durable quote
     /// state. Callers must never place this label in PIR protocol messages.
     pub fn reconcile_by_backend_label(
@@ -316,29 +410,85 @@ where
         quote_signing_key: &SigningKey,
         now_unix: u64,
     ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
+        self.reconcile_by_backend_label_for_protocol(
+            backend_label,
+            quote_signing_key,
+            now_unix,
+            QuoteAcquisitionProtocolV1::ProviderBoundV1,
+        )
+    }
+
+    /// Reconcile one BAT V2 quote without allowing a V1 row to satisfy the
+    /// backend-label lookup or receive a V2 lifecycle transition.
+    pub fn reconcile_bat_v2_by_backend_label(
+        &self,
+        backend_label: &str,
+        quote_signing_key: &SigningKey,
+        now_unix: u64,
+    ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
+        self.reconcile_by_backend_label_for_protocol(
+            backend_label,
+            quote_signing_key,
+            now_unix,
+            QuoteAcquisitionProtocolV1::BatV2,
+        )
+    }
+
+    fn reconcile_by_backend_label_for_protocol(
+        &self,
+        backend_label: &str,
+        quote_signing_key: &SigningKey,
+        now_unix: u64,
+        protocol: QuoteAcquisitionProtocolV1,
+    ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
         validate_now(now_unix)?;
         if backend_label.is_empty() {
             return Err(IssuerCoreErrorV1::InvalidInput);
         }
-        let record = self
-            .store
-            .quote_by_backend_label(backend_label)
-            .map_err(map_store_error)?
-            .ok_or(IssuerCoreErrorV1::NotFound)?;
+        let record = match protocol {
+            QuoteAcquisitionProtocolV1::ProviderBoundV1 => {
+                self.store.quote_by_backend_label(backend_label)
+            }
+            QuoteAcquisitionProtocolV1::BatV2 => {
+                self.store.bat_v2_quote_by_backend_label(backend_label)
+            }
+        }
+        .map_err(map_store_error)?
+        .ok_or(IssuerCoreErrorV1::NotFound)?;
         if record.backend_label != backend_label {
             return Err(IssuerCoreErrorV1::PermanentMismatch);
         }
         if record.state == QuoteState::Reserved {
-            return self.recover_reserved_for_reconciliation(record, quote_signing_key, now_unix);
+            return match protocol {
+                QuoteAcquisitionProtocolV1::ProviderBoundV1 => {
+                    self.recover_reserved_for_reconciliation(record, quote_signing_key, now_unix)
+                }
+                QuoteAcquisitionProtocolV1::BatV2 => self
+                    .recover_bat_v2_reserved_for_reconciliation(
+                        record,
+                        quote_signing_key,
+                        now_unix,
+                    ),
+            };
         }
         let current_exact = current_snapshot_bytes(&record)?.to_vec();
-        verify_persisted_snapshot(
-            &record,
-            &current_exact,
-            quote_signing_key,
-            now_unix,
-            expected_status_for_state(record.state)?,
-        )?;
+        match protocol {
+            QuoteAcquisitionProtocolV1::ProviderBoundV1 => verify_persisted_snapshot(
+                &record,
+                &current_exact,
+                quote_signing_key,
+                now_unix,
+                expected_status_for_state(record.state)?,
+            ),
+            QuoteAcquisitionProtocolV1::BatV2 => verify_persisted_bat_v2_snapshot(
+                &self.store,
+                &record,
+                &current_exact,
+                quote_signing_key,
+                now_unix,
+                expected_status_for_state(record.state)?,
+            ),
+        }?;
 
         let observation = self
             .backend
@@ -366,6 +516,7 @@ where
                 current_exact,
                 quote_signing_key,
                 observation.observed_at,
+                protocol,
             ),
             InvoiceObservationStateV1::Settled {
                 settled_at,
@@ -379,6 +530,7 @@ where
                 settled_at,
                 amount_received_msat,
                 settlement_evidence_digest,
+                protocol,
             ),
         }
     }
@@ -500,6 +652,150 @@ where
         ))
     }
 
+    fn recover_bat_v2_reserved_for_reconciliation(
+        &self,
+        record: QuoteRecord,
+        quote_signing_key: &SigningKey,
+        now_unix: u64,
+    ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
+        let intent = Bolt11BatV2QuoteIntentV2::decode(&record.intent_replay_image)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        if intent
+            .encode()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+            != record.intent_replay_image
+            || intent.idempotency_key != record.creation_idempotency_digest
+            || intent.expected_payee_pubkey != record.payee_pubkey
+            || intent.minimum_quote_key_epoch != record.delegation_epoch
+            || intent.quote_delegation_digest != record.delegation_digest
+            || intent.exact_amount_msat != record.exact_amount_msat
+        {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let identity = self.store.identity().map_err(map_store_error)?;
+        if intent.issuer_id != identity.issuer_id || intent.network != identity.network {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let delegation = Bolt11QuoteKeyDelegationV1::decode(&record.exact_delegation)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        if delegation
+            .encode()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+            != record.exact_delegation
+            || delegation.delegation_digest().ok() != Some(record.delegation_digest)
+            || delegation.issuer_id != identity.issuer_id
+            || delegation.network != identity.network
+            || delegation.expected_payee_pubkey != record.payee_pubkey
+            || delegation.key_epoch != record.delegation_epoch
+        {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        validate_signer(&delegation, quote_signing_key)?;
+        let class_record = self
+            .store
+            .bat_acceptance_class_v2(&intent.class_id, intent.class_key_epoch)
+            .map_err(map_store_error)?
+            .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+        let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        if class
+            .encode()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+            != class_record.exact_artifact
+            || class_record.artifact_digest != intent.class_digest
+            || class_record.bat_key_id != intent.bat_key_id
+        {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let reservation_time = reservation_time(&record)?;
+        let guard = Bolt11QuoteKeyRollbackGuardV1::from_persisted(
+            intent.issuer_id,
+            intent.network,
+            intent.expected_payee_pubkey,
+            record.delegation_epoch,
+            record.delegation_digest,
+        )
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        intent
+            .verify_for_class_guarded(&class, &delegation, &guard, reservation_time)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let request = CreateInvoiceRequestV1 {
+            backend_label: record.backend_label.clone(),
+            network: intent.network,
+            expected_payee_pubkey: record.payee_pubkey,
+            amount_msat: record.exact_amount_msat,
+            expiry_seconds: intent.invoice_expiry_seconds,
+            description_hash: anonymous_invoice_description_hash_v1(),
+        };
+        let created = match self
+            .backend
+            .existing_invoice(&record.backend_label)
+            .map_err(map_backend_error)?
+        {
+            Some(created) => created,
+            None if now_unix <= record.invoice_created_not_after => self
+                .backend
+                .create_or_get_invoice(&request)
+                .map_err(map_backend_error)?,
+            None => return Err(IssuerCoreErrorV1::InvalidState),
+        };
+        let created = created
+            .verify_for_request(&request)
+            .map_err(map_backend_error)?
+            .created();
+        if created.created_at < record.invoice_created_not_before
+            || created.created_at > record.invoice_created_not_after
+            || created.created_at > now_unix.saturating_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+        {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let parsed = ParsedBolt11InvoiceV1::parse(&created.invoice)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let exact = sign_recovered_initial_bat_v2_quote(
+            &record,
+            &intent,
+            &class,
+            &delegation,
+            &created.invoice,
+            &parsed,
+            quote_signing_key,
+        )?;
+        let horizons = intent
+            .derived_horizons(created.created_at)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let write = self
+            .store
+            .finalize_bat_v2_quote(&QuoteFinalization {
+                quote_id: record.quote_id,
+                invoice: created.invoice.clone(),
+                payment_hash: created.payment_hash,
+                invoice_created_at: created.created_at,
+                invoice_expires_at: horizons.invoice_expires_at,
+                claim_deadline: horizons.claim_deadline,
+                credential_not_after: horizons.credential_not_after,
+                exact_signed_quote_response: exact,
+            })
+            .map_err(map_store_error)?;
+        let persisted = write
+            .value
+            .initial_signed_quote_response
+            .clone()
+            .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+        verify_persisted_bat_v2_snapshot(
+            &self.store,
+            &write.value,
+            &persisted,
+            quote_signing_key,
+            now_unix,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+        )?;
+        Ok(reconcile_result(
+            &write.value,
+            QuoteReconcileDispositionV1::Transitioned,
+            persisted,
+        ))
+    }
+
     fn recover_record(
         &self,
         record: QuoteRecord,
@@ -608,12 +904,123 @@ where
         })
     }
 
+    fn recover_bat_v2_record(
+        &self,
+        record: QuoteRecord,
+        verified_intent: &VerifiedBolt11BatV2QuoteIntentV2<'_>,
+        quote_signing_key: &SigningKey,
+        now_unix: u64,
+        newly_reserved: bool,
+    ) -> Result<QuoteCreateResultV1, IssuerCoreErrorV1> {
+        validate_bat_v2_record_for_intent(&record, verified_intent)?;
+        if record.state != QuoteState::Reserved {
+            let exact = record
+                .initial_signed_quote_response
+                .as_deref()
+                .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+            verify_persisted_bat_v2_snapshot(
+                &self.store,
+                &record,
+                exact,
+                quote_signing_key,
+                now_unix,
+                Bolt11QuoteStatusV1::InvoiceOpen,
+            )?;
+            return Ok(QuoteCreateResultV1 {
+                disposition: QuoteCreateDispositionV1::ExactReplay,
+                exact_signed_quote_response: exact.to_vec(),
+            });
+        }
+
+        let intent = verified_intent.intent();
+        let request = CreateInvoiceRequestV1 {
+            backend_label: record.backend_label.clone(),
+            network: intent.network,
+            expected_payee_pubkey: record.payee_pubkey,
+            amount_msat: record.exact_amount_msat,
+            expiry_seconds: intent.invoice_expiry_seconds,
+            description_hash: anonymous_invoice_description_hash_v1(),
+        };
+        let created = match self
+            .backend
+            .existing_invoice(&record.backend_label)
+            .map_err(map_backend_error)?
+        {
+            Some(created) => created,
+            None if now_unix <= record.invoice_created_not_after => self
+                .backend
+                .create_or_get_invoice(&request)
+                .map_err(map_backend_error)?,
+            None => return Err(IssuerCoreErrorV1::InvalidState),
+        };
+        let verified_created = created
+            .verify_for_request(&request)
+            .map_err(map_backend_error)?;
+        let created = verified_created.created();
+        if created.created_at < record.invoice_created_not_before
+            || created.created_at > record.invoice_created_not_after
+            || created.created_at > now_unix.saturating_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+        {
+            return Err(IssuerCoreErrorV1::PermanentMismatch);
+        }
+        let parsed = ParsedBolt11InvoiceV1::parse(&created.invoice)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let quote = Bolt11QuoteV1::sign_for_verified_bat_v2_intent(
+            verified_intent,
+            record.quote_id,
+            created.invoice.clone(),
+            &parsed,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+            created.created_at,
+            quote_signing_key,
+        )
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let exact = quote
+            .encode()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        let write = self
+            .store
+            .finalize_bat_v2_quote(&QuoteFinalization {
+                quote_id: record.quote_id,
+                invoice: created.invoice.clone(),
+                payment_hash: created.payment_hash,
+                invoice_created_at: quote.invoice_created_at,
+                invoice_expires_at: quote.invoice_expires_at,
+                claim_deadline: quote.claim_deadline,
+                credential_not_after: quote.credential_not_after,
+                exact_signed_quote_response: exact,
+            })
+            .map_err(map_store_error)?;
+        let persisted = write
+            .value
+            .initial_signed_quote_response
+            .clone()
+            .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+        verify_persisted_bat_v2_snapshot(
+            &self.store,
+            &write.value,
+            &persisted,
+            quote_signing_key,
+            now_unix,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+        )?;
+        Ok(QuoteCreateResultV1 {
+            disposition: if newly_reserved {
+                QuoteCreateDispositionV1::Created
+            } else {
+                QuoteCreateDispositionV1::RecoveredReserved
+            },
+            exact_signed_quote_response: persisted,
+        })
+    }
+
     fn reconcile_expired(
         &self,
         record: QuoteRecord,
         current_exact: Vec<u8>,
         quote_signing_key: &SigningKey,
         observed_at: u64,
+        protocol: QuoteAcquisitionProtocolV1,
     ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
         let expires_at = required_time(record.invoice_expires_at)?;
         if observed_at < expires_at {
@@ -626,22 +1033,29 @@ where
                 // at `expires_at` keeps restart recovery possible after a long
                 // issuer outage without extending the delegated quote key's
                 // validity or manufacturing a later lifecycle timestamp.
-                let next = sign_persisted_transition(
+                let next = self.sign_persisted_transition_for_protocol(
                     &record,
                     &current_exact,
                     quote_signing_key,
                     observed_at,
                     Bolt11QuoteStatusV1::InvoiceExpiredPendingReconcile,
                     expires_at,
+                    protocol,
                 )?;
-                let write = self
-                    .store
-                    .mark_invoice_expired(&QuoteExpiry {
-                        quote_id: record.quote_id,
-                        observed_at: expires_at,
-                        exact_signed_quote_response: next,
-                    })
-                    .map_err(map_store_error)?;
+                let expiry = QuoteExpiry {
+                    quote_id: record.quote_id,
+                    observed_at: expires_at,
+                    exact_signed_quote_response: next,
+                };
+                let write = match protocol {
+                    QuoteAcquisitionProtocolV1::ProviderBoundV1 => {
+                        self.store.mark_invoice_expired(&expiry)
+                    }
+                    QuoteAcquisitionProtocolV1::BatV2 => {
+                        self.store.mark_bat_v2_invoice_expired(&expiry)
+                    }
+                }
+                .map_err(map_store_error)?;
                 let exact = write
                     .value
                     .expired_signed_quote_response
@@ -677,6 +1091,7 @@ where
         settled_at: u64,
         amount_received_msat: u64,
         settlement_evidence_digest: [u8; 32],
+        protocol: QuoteAcquisitionProtocolV1,
     ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
         let created_at = required_time(record.invoice_created_at)?;
         let expires_at = required_time(record.invoice_expires_at)?;
@@ -698,24 +1113,32 @@ where
                 amount_received_msat,
                 settlement_evidence_digest,
                 Bolt11QuoteStatusV1::PaymentSettled,
+                protocol,
             ),
             QuoteState::InvoiceOpen => {
-                let expired_exact = sign_persisted_transition(
+                let expired_exact = self.sign_persisted_transition_for_protocol(
                     &record,
                     &current_exact,
                     quote_signing_key,
                     observed_at,
                     Bolt11QuoteStatusV1::InvoiceExpiredPendingReconcile,
                     expires_at,
+                    protocol,
                 )?;
-                let expired_write = self
-                    .store
-                    .mark_invoice_expired(&QuoteExpiry {
-                        quote_id: record.quote_id,
-                        observed_at: expires_at,
-                        exact_signed_quote_response: expired_exact,
-                    })
-                    .map_err(map_store_error)?;
+                let expiry = QuoteExpiry {
+                    quote_id: record.quote_id,
+                    observed_at: expires_at,
+                    exact_signed_quote_response: expired_exact,
+                };
+                let expired_write = match protocol {
+                    QuoteAcquisitionProtocolV1::ProviderBoundV1 => {
+                        self.store.mark_invoice_expired(&expiry)
+                    }
+                    QuoteAcquisitionProtocolV1::BatV2 => {
+                        self.store.mark_bat_v2_invoice_expired(&expiry)
+                    }
+                }
+                .map_err(map_store_error)?;
                 let expired_record = expired_write.value;
                 let expired_snapshot = expired_record
                     .expired_signed_quote_response
@@ -730,6 +1153,7 @@ where
                     amount_received_msat,
                     settlement_evidence_digest,
                     Bolt11QuoteStatusV1::LateSettledReconcile,
+                    protocol,
                 )
             }
             QuoteState::InvoiceExpiredPendingReconcile => {
@@ -746,6 +1170,7 @@ where
                     amount_received_msat,
                     settlement_evidence_digest,
                     Bolt11QuoteStatusV1::LateSettledReconcile,
+                    protocol,
                 )
             }
             QuoteState::PaymentSettled | QuoteState::LateSettledReconcile => {
@@ -778,6 +1203,7 @@ where
         amount_received_msat: u64,
         settlement_evidence_digest: [u8; 32],
         next_status: Bolt11QuoteStatusV1,
+        protocol: QuoteAcquisitionProtocolV1,
     ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
         let current = Bolt11QuoteV1::decode(&current_exact)
             .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
@@ -796,25 +1222,30 @@ where
         if transition_time > observed_at {
             return Err(IssuerCoreErrorV1::RetryableUnavailable);
         }
-        let next = sign_persisted_transition(
+        let next = self.sign_persisted_transition_for_protocol(
             &record,
             &current_exact,
             quote_signing_key,
             observed_at,
             next_status,
             transition_time,
+            protocol,
         )?;
-        let write = self
-            .store
-            .record_settlement(&QuoteSettlement {
-                quote_id: record.quote_id,
-                settled_at,
-                observed_at: transition_time,
-                settled_amount_msat: amount_received_msat,
-                settlement_evidence_digest,
-                exact_signed_quote_response: next,
-            })
-            .map_err(map_store_error)?;
+        let settlement = QuoteSettlement {
+            quote_id: record.quote_id,
+            settled_at,
+            observed_at: transition_time,
+            settled_amount_msat: amount_received_msat,
+            settlement_evidence_digest,
+            exact_signed_quote_response: next,
+        };
+        let write = match protocol {
+            QuoteAcquisitionProtocolV1::ProviderBoundV1 => {
+                self.store.record_settlement(&settlement)
+            }
+            QuoteAcquisitionProtocolV1::BatV2 => self.store.record_bat_v2_settlement(&settlement),
+        }
+        .map_err(map_store_error)?;
         let exact = write
             .value
             .settled_signed_quote_response
@@ -825,6 +1256,38 @@ where
             QuoteReconcileDispositionV1::Transitioned,
             exact,
         ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sign_persisted_transition_for_protocol(
+        &self,
+        record: &QuoteRecord,
+        current_exact: &[u8],
+        quote_signing_key: &SigningKey,
+        verification_time: u64,
+        next_status: Bolt11QuoteStatusV1,
+        transition_time: u64,
+        protocol: QuoteAcquisitionProtocolV1,
+    ) -> Result<Vec<u8>, IssuerCoreErrorV1> {
+        match protocol {
+            QuoteAcquisitionProtocolV1::ProviderBoundV1 => sign_persisted_transition(
+                record,
+                current_exact,
+                quote_signing_key,
+                verification_time,
+                next_status,
+                transition_time,
+            ),
+            QuoteAcquisitionProtocolV1::BatV2 => sign_persisted_bat_v2_transition(
+                &self.store,
+                record,
+                current_exact,
+                quote_signing_key,
+                verification_time,
+                next_status,
+                transition_time,
+            ),
+        }
     }
 }
 
@@ -872,6 +1335,45 @@ fn validate_record_for_intent(
     Ok(())
 }
 
+fn validate_bat_v2_record_for_intent(
+    record: &QuoteRecord,
+    verified_intent: &VerifiedBolt11BatV2QuoteIntentV2<'_>,
+) -> Result<(), IssuerCoreErrorV1> {
+    let intent = verified_intent.intent();
+    let exact_delegation = verified_intent
+        .delegation()
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if record.intent_digest
+        != intent
+            .request_digest()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+        || record.payee_pubkey != intent.expected_payee_pubkey
+        || record.delegation_epoch != verified_intent.delegation().key_epoch
+        || record.delegation_digest != intent.quote_delegation_digest
+        || record.exact_delegation != exact_delegation
+        || record.exact_amount_msat != intent.exact_amount_msat
+        || record.invoice_created_not_before == 0
+        || record.invoice_created_not_after < record.invoice_created_not_before
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    Ok(())
+}
+
+fn reservation_time(record: &QuoteRecord) -> Result<u64, IssuerCoreErrorV1> {
+    let value = record
+        .invoice_created_not_before
+        .checked_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+        .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+    if value.checked_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+        != Some(record.invoice_created_not_after)
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    Ok(value)
+}
+
 fn sign_recovered_initial_quote(
     record: &QuoteRecord,
     sanitized_intent: &Bolt11QuoteIntentV1,
@@ -892,6 +1394,88 @@ fn sign_recovered_initial_quote(
             .expires_at()
             .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
             != horizons.invoice_expires_at
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    delegation
+        .verify_for(
+            &sanitized_intent.issuer_id,
+            sanitized_intent.network,
+            &record.payee_pubkey,
+            record.delegation_epoch,
+            parsed_invoice.created_at(),
+        )
+        .and_then(|_| {
+            delegation.verify_for(
+                &sanitized_intent.issuer_id,
+                sanitized_intent.network,
+                &record.payee_pubkey,
+                record.delegation_epoch,
+                horizons.claim_deadline,
+            )
+        })
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    validate_signer(delegation, quote_signing_key)?;
+    let mut quote = Bolt11QuoteV1 {
+        request_digest: record.intent_digest,
+        quote_id: record.quote_id,
+        quote_key_id: delegation.quote_key_id,
+        invoice: invoice.to_owned(),
+        network: sanitized_intent.network,
+        payee_pubkey: record.payee_pubkey,
+        amount_msat: record.exact_amount_msat,
+        invoice_created_at: parsed_invoice.created_at(),
+        invoice_expires_at: horizons.invoice_expires_at,
+        claim_deadline: horizons.claim_deadline,
+        credential_not_after: horizons.credential_not_after,
+        status: Bolt11QuoteStatusV1::InvoiceOpen,
+        state_version: 1,
+        status_updated_at: parsed_invoice.created_at(),
+        signature: [0; 64],
+    };
+    let unsigned_with_placeholder = quote
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    let unsigned_len = unsigned_with_placeholder
+        .len()
+        .checked_sub(quote.signature.len())
+        .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+    let mut signing_preimage =
+        Vec::with_capacity(BOLT11_QUOTE_SIGNATURE_DOMAIN.len() + unsigned_len);
+    signing_preimage.extend_from_slice(BOLT11_QUOTE_SIGNATURE_DOMAIN);
+    signing_preimage.extend_from_slice(&unsigned_with_placeholder[..unsigned_len]);
+    quote.signature = quote_signing_key.sign(&signing_preimage).to_bytes();
+    quote
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_recovered_initial_bat_v2_quote(
+    record: &QuoteRecord,
+    sanitized_intent: &Bolt11BatV2QuoteIntentV2,
+    class: &BatAcceptanceClassV2,
+    delegation: &Bolt11QuoteKeyDelegationV1,
+    invoice: &str,
+    parsed_invoice: &ParsedBolt11InvoiceV1,
+    quote_signing_key: &SigningKey,
+) -> Result<Vec<u8>, IssuerCoreErrorV1> {
+    let horizons = sanitized_intent
+        .derived_horizons(parsed_invoice.created_at())
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if parsed_invoice.invoice_text_digest() != bolt11_invoice_text_digest_v1(invoice)
+        || parsed_invoice.network() != sanitized_intent.network
+        || parsed_invoice.payee_pubkey() != record.payee_pubkey
+        || parsed_invoice.amount_msat() != record.exact_amount_msat
+        || parsed_invoice.expiry_seconds() != sanitized_intent.invoice_expiry_seconds
+        || parsed_invoice
+            .expires_at()
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+            != horizons.invoice_expires_at
+        || class.class_digest().ok() != Some(sanitized_intent.class_digest)
+        || class.bat_key_id() != sanitized_intent.bat_key_id
+        || parsed_invoice.created_at() < class.key_not_before
+        || horizons.credential_not_after > class.key_not_after
     {
         return Err(IssuerCoreErrorV1::PermanentMismatch);
     }
@@ -980,6 +1564,155 @@ fn expected_status_for_state(state: QuoteState) -> Result<Bolt11QuoteStatusV1, I
             Err(IssuerCoreErrorV1::InvalidState)
         }
     }
+}
+
+fn decode_persisted_bat_v2_material(
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    exact: &[u8],
+    quote_signing_key: &SigningKey,
+    expected_status: Bolt11QuoteStatusV1,
+) -> Result<
+    (
+        Bolt11QuoteV1,
+        Bolt11QuoteKeyDelegationV1,
+        Bolt11BatV2QuoteIntentV2,
+        BatAcceptanceClassV2,
+    ),
+    IssuerCoreErrorV1,
+> {
+    let quote = Bolt11QuoteV1::decode(exact).map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if quote
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+        != exact
+        || quote.status != expected_status
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    let delegation = Bolt11QuoteKeyDelegationV1::decode(&record.exact_delegation)
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if delegation
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+        != record.exact_delegation
+        || delegation.delegation_digest().ok() != Some(record.delegation_digest)
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    validate_signer(&delegation, quote_signing_key)?;
+    let intent = Bolt11BatV2QuoteIntentV2::decode(&record.intent_replay_image)
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if intent
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+        != record.intent_replay_image
+        || intent.idempotency_key != record.creation_idempotency_digest
+        || intent.issuer_id != delegation.issuer_id
+        || intent.network != delegation.network
+        || intent.expected_payee_pubkey != record.payee_pubkey
+        || intent.minimum_quote_key_epoch != record.delegation_epoch
+        || intent.quote_delegation_digest != record.delegation_digest
+        || intent.exact_amount_msat != record.exact_amount_msat
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    let class_record = store
+        .bat_acceptance_class_v2(&intent.class_id, intent.class_key_epoch)
+        .map_err(map_store_error)?
+        .ok_or(IssuerCoreErrorV1::PermanentMismatch)?;
+    let class = BatAcceptanceClassV2::decode(&class_record.exact_artifact)
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    if class
+        .encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?
+        != class_record.exact_artifact
+        || class_record.artifact_digest != intent.class_digest
+        || class_record.bat_key_id != intent.bat_key_id
+        || class_record.raw_public_key != class.bat_verification_key
+    {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    Ok((quote, delegation, intent, class))
+}
+
+fn persisted_bat_v2_expectation<'a>(
+    record: &'a QuoteRecord,
+    intent: &'a Bolt11BatV2QuoteIntentV2,
+    class: &'a BatAcceptanceClassV2,
+) -> Result<PersistedBolt11BatV2QuoteExpectationV2<'a>, IssuerCoreErrorV1> {
+    Ok(PersistedBolt11BatV2QuoteExpectationV2 {
+        original_request_digest: &record.intent_digest,
+        replay_intent: intent,
+        class,
+        quote_id: &record.quote_id,
+        invoice: record
+            .invoice
+            .as_deref()
+            .ok_or(IssuerCoreErrorV1::PermanentMismatch)?,
+        invoice_created_at: required_time(record.invoice_created_at)?,
+        invoice_expires_at: required_time(record.invoice_expires_at)?,
+        claim_deadline: required_time(record.claim_deadline)?,
+        credential_not_after: required_time(record.credential_not_after)?,
+    })
+}
+
+fn verify_persisted_bat_v2_snapshot(
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    exact: &[u8],
+    quote_signing_key: &SigningKey,
+    now_unix: u64,
+    expected_status: Bolt11QuoteStatusV1,
+) -> Result<(), IssuerCoreErrorV1> {
+    let (quote, delegation, intent, class) =
+        decode_persisted_bat_v2_material(store, record, exact, quote_signing_key, expected_status)?;
+    let latest_signed_time = quote.invoice_created_at.max(quote.status_updated_at);
+    if latest_signed_time > now_unix.saturating_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1) {
+        return Err(IssuerCoreErrorV1::PermanentMismatch);
+    }
+    let verification_time = now_unix.max(latest_signed_time);
+    let expected = persisted_bat_v2_expectation(record, &intent, &class)?;
+    quote
+        .verify_persisted_bat_v2_quote_for_store(expected, &delegation, verification_time)
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_persisted_bat_v2_transition(
+    store: &IssuerStore,
+    record: &QuoteRecord,
+    current_exact: &[u8],
+    quote_signing_key: &SigningKey,
+    verification_time: u64,
+    next_status: Bolt11QuoteStatusV1,
+    transition_time: u64,
+) -> Result<Vec<u8>, IssuerCoreErrorV1> {
+    let (quote, delegation, intent, class) = decode_persisted_bat_v2_material(
+        store,
+        record,
+        current_exact,
+        quote_signing_key,
+        expected_status_for_state(record.state)?,
+    )?;
+    if transition_time <= quote.status_updated_at {
+        return Err(IssuerCoreErrorV1::RetryableUnavailable);
+    }
+    let expected = persisted_bat_v2_expectation(record, &intent, &class)?;
+    let verified = quote
+        .verify_persisted_bat_v2_quote_for_store(expected, &delegation, verification_time)
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    let next = Bolt11QuoteV1::with_status_from_verified_bat_v2_snapshot(
+        &verified,
+        next_status,
+        transition_time,
+        &delegation,
+        quote_signing_key,
+    )
+    .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+    next.encode()
+        .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)
 }
 
 fn decode_persisted_material(
@@ -1148,6 +1881,7 @@ fn map_store_error(error: StoreError) -> IssuerCoreErrorV1 {
         | StoreError::IssuerMismatch
         | StoreError::NetworkMismatch
         | StoreError::InvalidInput(_)
+        | StoreError::QuoteProtocolMismatch
         | StoreError::QuoteConflict
         | StoreError::CreationIdempotencyConflict
         | StoreError::InvoiceConflict

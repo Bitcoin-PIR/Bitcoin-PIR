@@ -9,10 +9,10 @@ use crate::{
 use ed25519_dalek::VerifyingKey;
 use pir_service_protocol::{
     bat_acceptance_member_from_verified_policy_v2, AuthScheme, BatAcceptanceMemberV2,
-    Bolt11QuoteIntentV1, CashuManifestEpochFloorV1, CredentialKeyBindingExpectationV1,
-    CredentialKeyBindingV1, CredentialKeysetEpochFloorV1, PolicyRollbackGuardV1,
-    ProviderClearingAuthorizationV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
-    VerifiedBatAcceptanceMemberV2,
+    Bolt11BatV2QuoteIntentV2, Bolt11QuoteIntentV1, CashuManifestEpochFloorV1,
+    CredentialKeyBindingExpectationV1, CredentialKeyBindingV1, CredentialKeysetEpochFloorV1,
+    PolicyRollbackGuardV1, ProviderClearingAuthorizationV1, ServicePolicyEpochFloorsV1,
+    ServicePolicyV1, VerifiedBatAcceptanceMemberV2,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -243,8 +243,10 @@ impl IssuerStore {
         let mut quote_statement = connection.prepare(
             "SELECT state, intent_replay_image, invoice_created_not_after, claim_deadline
              FROM quotes
-             WHERE (state = 0 AND reservation_recovery_deadline >= ?1)
-                OR (state IN (1, 2, 4, 5) AND claim_deadline >= ?1)
+             WHERE quote_protocol = 1 AND (
+                    (state = 0 AND reservation_recovery_deadline >= ?1)
+                    OR (state IN (1, 2, 4, 5) AND claim_deadline >= ?1)
+             )
              ORDER BY quote_id",
         )?;
         let quotes = quote_statement
@@ -341,7 +343,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let mut statement = connection.prepare(
-            "SELECT state, delegation_digest, intent_replay_image, \
+            "SELECT quote_protocol, state, delegation_digest, intent_replay_image, \
                     invoice_created_not_after, claim_deadline
              FROM quotes
              WHERE (state = 0 AND reservation_recovery_deadline >= ?1)
@@ -357,27 +359,79 @@ impl IssuerStore {
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(1)?,
                         row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
                     ))
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
         let mut required = BTreeSet::new();
-        for (state, delegation_digest, exact_intent, create_deadline, claim_deadline) in rows {
+        for (
+            quote_protocol,
+            state,
+            delegation_digest,
+            exact_intent,
+            create_deadline,
+            claim_deadline,
+        ) in rows
+        {
             let state = crate::QuoteState::from_db(state)
                 .ok_or_else(|| StoreError::SchemaMismatch("quote has invalid state".to_owned()))?;
             let delegation_digest =
                 fixed_blob(delegation_digest, "invalid quote delegation digest")?;
-            let intent = Bolt11QuoteIntentV1::decode(&exact_intent).map_err(|_| {
-                StoreError::SchemaMismatch("quote intent replay image is not canonical".to_owned())
-            })?;
-            if intent.encode()? != exact_intent
-                || intent.issuer_id != self.handle.expected_issuer_id
-                || intent.network != self.handle.expected_network
-                || intent.quote_delegation_digest != delegation_digest
+            let (intent_issuer_id, intent_network, intent_delegation_digest, expiry, claim) =
+                match quote_protocol {
+                    1 => {
+                        let intent = Bolt11QuoteIntentV1::decode(&exact_intent).map_err(|_| {
+                            StoreError::SchemaMismatch(
+                                "V1 quote intent replay image is not canonical".to_owned(),
+                            )
+                        })?;
+                        if intent.encode()? != exact_intent {
+                            return Err(StoreError::SchemaMismatch(
+                                "V1 quote intent replay image is non-canonical".to_owned(),
+                            ));
+                        }
+                        (
+                            intent.issuer_id,
+                            intent.network,
+                            intent.quote_delegation_digest,
+                            intent.invoice_expiry_seconds,
+                            intent.claim_window_seconds,
+                        )
+                    }
+                    2 => {
+                        let intent =
+                            Bolt11BatV2QuoteIntentV2::decode(&exact_intent).map_err(|_| {
+                                StoreError::SchemaMismatch(
+                                    "BAT V2 quote intent replay image is not canonical".to_owned(),
+                                )
+                            })?;
+                        if intent.encode()? != exact_intent {
+                            return Err(StoreError::SchemaMismatch(
+                                "BAT V2 quote intent replay image is non-canonical".to_owned(),
+                            ));
+                        }
+                        (
+                            intent.issuer_id,
+                            intent.network,
+                            intent.quote_delegation_digest,
+                            intent.invoice_expiry_seconds,
+                            intent.claim_window_seconds,
+                        )
+                    }
+                    _ => {
+                        return Err(StoreError::SchemaMismatch(
+                            "quote has an unknown acquisition protocol".to_owned(),
+                        ))
+                    }
+                };
+            if intent_issuer_id != self.handle.expected_issuer_id
+                || intent_network != self.handle.expected_network
+                || intent_delegation_digest != delegation_digest
             {
                 return Err(StoreError::SchemaMismatch(
                     "quote intent does not match its durable delegation".to_owned(),
@@ -386,8 +440,8 @@ impl IssuerStore {
             let still_required = match state {
                 crate::QuoteState::Reserved => {
                     let deadline = db_u64(create_deadline, "negative invoice creation deadline")?
-                        .checked_add(u64::from(intent.invoice_expiry_seconds))
-                        .and_then(|value| value.checked_add(u64::from(intent.claim_window_seconds)))
+                        .checked_add(u64::from(expiry))
+                        .and_then(|value| value.checked_add(u64::from(claim)))
                         .ok_or_else(|| {
                             StoreError::SchemaMismatch(
                                 "reserved quote recovery horizon overflows Unix time".to_owned(),
