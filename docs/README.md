@@ -54,6 +54,10 @@ a browser or log search.
   repository moves and split gates.
 - [`payment/IMPLEMENTATION_STATUS.md`](payment/IMPLEMENTATION_STATUS.md) —
   exact Payment V1 method/test/activation status. Source-ready ≠ deployed.
+- [`payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md)
+  — revised issuer-wide BAT target: cross-provider acceptance, issuer-global
+  first-spend, payment-storeless providers, phased source work and separate
+  live-operation approvals.
 - [`payment/OPERATOR_RUNBOOK.md`](payment/OPERATOR_RUNBOOK.md) — Payment
   deployment phases and approval scopes.
 
