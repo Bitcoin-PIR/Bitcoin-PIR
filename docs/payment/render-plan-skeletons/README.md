@@ -47,10 +47,11 @@ The three checked-in provider skeletons are separate V1 profiles, not
 optional-field variants. `provider-v1` retains its complete Standard Cashu
 inputs unchanged. `provider-no-standard-cashu-v1` is the older stateful,
 single-Harmony-pool profile with provider-local BAT and shared-issuer inputs.
-An unmerged draft's exact-db two-pool routing remains useful source reference,
-but its payment profile is superseded. The checked-in profile is not the V2
-payment-storeless pir1 profile, cannot be materialized for Mainnet, and must not
-be described as the current production skeleton.
+The server's independently re-landed exact-db multi-pool routing is available
+as a source foundation, but the checked-in profile still configures one pool
+and its payment shape is superseded. It is not the V2 payment-storeless pir1
+profile, cannot be materialized for Mainnet, and must not be described as the
+current production skeleton.
 `provider-direct-v1` has another distinct unit, identity, state/configuration
 root and sentinel. Its nine payloads contain only the unified-server binary and
 manifest, database config, provider identity key/certificate, signed policy,
@@ -130,7 +131,7 @@ separately reviewed owner-only record; a skeleton cannot establish it.
 | `issuer-lightning-signet-v1.plan.json.example` | `issuer-lightning-signet-v1` | Default-Signet CLN, RPC guard, preflight and payment issuer. |
 | `issuer-lightning-mainnet-v1.plan.json.example` | `issuer-lightning-mainnet-v1` | Deliberately empty, gate-rejected legacy V1 placeholder. It implements neither the unmerged 2/12/2 draft nor the approved V2 contract, cannot render or deploy, and must not be completed. A future V2 issuer-wide skeleton is not yet checked in. |
 | `provider-v1.plan.json.example` | `provider-v1` | One provider process and its complete Payment V1 material. |
-| `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Older stateful, single-pool V1 profile with local-BAT/shared-issuer inputs. An unmerged draft's db0/db1 two-pool work may inform V2, but neither payment shape is the issuer-wide production skeleton and this checked-in profile must not be materialized for it. |
+| `provider-no-standard-cashu-v1.plan.json.example` | `provider-no-standard-cashu-v1` | Older stateful, single-pool V1 profile with local-BAT/shared-issuer inputs. The server now has independently re-landed db0/db1 multi-pool routing, but this checked-in payment profile is not the issuer-wide production skeleton and must not be materialized for it. |
 | `provider-direct-v1.plan.json.example` | `provider-direct-v1` | Built-in Free subset and direct BOLT11 receipt, without optional payment-adapter material. |
 | `rollback-authority-v1.plan.json.example` | `rollback-authority-v1` | One independent monotonic rollback authority. |
 

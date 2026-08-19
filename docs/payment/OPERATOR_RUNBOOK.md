@@ -55,13 +55,14 @@ Harmony hint and Harmony query must be separate scopes/offers. A hint provider
 may charge more than a query provider. Do not reuse one capability across those
 roles.
 
-For Harmony V2Full, one `unified_server` process serves one cold-cache database
-binding. Start its pool with `--pool-size N --pool-db-id ID`; omitted
-`--pool-db-id` means the existing `db_id=0` behavior. The ID must exist in the
-loaded catalog or startup fails. Use a distinct process/port and a distinct
-`--pool-dir` for each additional delta database, and publish only the scope
-whose exact dataset binding that process can serve. First-version deployment
-does not share or multiplex one hint pool across database IDs.
+For Harmony V2Full, every pool serves one cold-cache database binding. The
+legacy single-pool form is `--pool-size N --pool-db-id ID --pool-dir DIR`;
+omitted `--pool-db-id` means `db_id=0`. A provider serving several catalog
+entries in one process uses the common per-pool target `--pool-size N` and one
+repeatable `--harmony-pool-db ID=DIR` per database. Do not combine that form
+with `--pool-db-id` or `--pool-dir`, repeat an ID, or reuse a directory. Every
+ID must exist in the loaded catalog or startup fails, and the signed policy may
+publish only exact dataset scopes backed by configured pools.
 
 ### Harmony V2Full pool filesystem and upgrade contract
 
