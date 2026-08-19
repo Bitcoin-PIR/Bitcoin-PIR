@@ -5,10 +5,10 @@
 # starts this; runit restarts on exit (1s default backoff).
 #
 # Base topology flags mirror deploy/systemd/pir-vpsbg.service. The measured
-# Payment V1 suffix below is intentionally VPSBG-specific: it enables the
-# db0 Free-PoW + Hetzner shared-issuer BAT/ARC functional beta, with an
-# independently served Harmony query scope when its signed policy advertises
-# one.
+# sealed profile is intentionally VPSBG-specific: observe/enroll/probe finish
+# inertly before database access, while Ready opens its measurement-bound
+# identity and BAT V2 clearing keys before Direct ORAM construction and again
+# in the final long-lived server process.
 #   --port 8091
 #   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
 #   --serve-queries    (pir2 is queries-only per the production topology
@@ -34,60 +34,36 @@
 
 # shellcheck shell=sh
 
-# Wait for the bind-mounted /home/pir/data to actually be available.
-# The takeover init mounts it before starting runsvdir, but runit
-# might race on cold-start. Give it a few seconds.
-i=0
-while [ ! -r /home/pir/data/databases.toml ] && [ "$i" -lt 30 ]; do
-    sleep 0.5
-    i=$((i + 1))
-done
-if [ ! -r /home/pir/data/databases.toml ]; then
-    echo "[unified-server-run] FATAL: /home/pir/data/databases.toml missing — bind mount failed?" >&2
-    sleep 5
-    exit 1
-fi
-
 ORAMCTL=/usr/local/bin/oramctl
-if [ ! -x "$ORAMCTL" ] && [ -x /home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl ]; then
-    ORAMCTL=/home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl
-fi
-
 TIER3_DATA_ROOT=/home/pir/data
 TIER3_DATABASES_CONFIG="$TIER3_DATA_ROOT/databases.toml"
 UNIFIED_SERVER=/usr/local/bin/unified_server
-if [ ! -x "$UNIFIED_SERVER" ] && [ -x /home/pir/BitcoinPIR/target/release/unified_server ]; then
-    UNIFIED_SERVER=/home/pir/BitcoinPIR/target/release/unified_server
-fi
 
-# Prefer an explicitly measured identity pair when one is present. Otherwise
-# read the persistent pair from a private root-owned directory on the mounted
-# stock rootfs. Keeping the secret below /sysroot/root avoids both embedding a
-# long-lived identity key in the public UKI and the intentionally non-private
-# /home/pir/data parent that the shared private-file loader rejects.
-IDENTITY_ROOT=${BPIR_TIER3_IDENTITY_ROOT:-/sysroot/root/bitcoinpir-identity}
-IDENTITY_OWNER_UID=${BPIR_TIER3_IDENTITY_UID:-0}
-if [ -r /etc/bitcoinpir/identity/server.key ] && [ -r /etc/bitcoinpir/identity/server.cert ]; then
-    IDENTITY_ROOT=/etc/bitcoinpir/identity
-    IDENTITY_OWNER_UID=0
-fi
-IDENTITY_KEY_PATH="$IDENTITY_ROOT/server.key"
-IDENTITY_CERT_PATH="$IDENTITY_ROOT/server.cert"
-
-# Existing deployments load their signed policy from the mutable data mount.
-# A release may instead embed the same public policy in the UKI so its exact
-# Free offer set changes atomically with the attested runtime.  Issuer keys,
-# payment bindings, stores, and databases remain on the data mount.
-SERVICE_POLICY_PATH=/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin
-if [ -r /etc/bitcoinpir/payment/service-policy.bin ]; then
-    SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
-fi
+# The sealed profile accepts only public artifacts plus its ciphertext
+# envelope from the untrusted data mount.  No private identity/clearing input
+# is embedded in the UKI or read from the mutable rootfs as plaintext.
+PIR2_SEALED_ROOT=${BPIR_PIR2_SNP_SEALED_ROOT:-$TIER3_DATA_ROOT/pir2-sealed}
+PIR2_SEALED_STARTUP_CONFIG=${BPIR_PIR2_SNP_SEALED_STARTUP_CONFIG:-$PIR2_SEALED_ROOT/startup.env}
+PIR2_SEALED_RELEASE_PATH="$PIR2_SEALED_ROOT/release.bin"
+PIR2_SEALED_ENVELOPE_PATH="$PIR2_SEALED_ROOT/credentials.envelope.bin"
+PIR2_SEALED_RECEIPT_DIR="$PIR2_SEALED_ROOT/receipts"
+PIR2_SEALED_MARKER_DIR="$PIR2_SEALED_ROOT/markers"
+PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
+PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH="$PIR2_SEALED_ROOT/provider-accounting-authorization.bin"
+PIR2_SEALED_ISSUER_APPROVAL_PATH="$PIR2_SEALED_ROOT/issuer-accounting-approval.bin"
+PIR2_SEALED_CLASS_PATH="$PIR2_SEALED_ROOT/bat-acceptance-class.bin"
+SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
+PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
+PIR2_SEALED_OPERATOR_KEY_HEX=7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb
+PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX=248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7
+PIR2_SEALED_PROVIDER_ID_HEX=85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac
+PIR2_SEALED_POLICY_KEY_HEX=73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5
 
 # This measured constant selects exactly one startup path. The active v2
 # generation now carries proof-bound Direct inputs for both databases, so a
 # future UKI built from this script must fail closed into the Direct profile.
 # Changing the profile requires a new measured UKI review and release.
-VPSBG_RUNTIME_PROFILE=direct-oram-v1
+VPSBG_RUNTIME_PROFILE=pir2-snp-sealed-v1
 
 ORAM_BOOT_ROOT=/home/pir/data/.oram-boot
 ORAM_BUILD_LOG_DIR=/home/pir/data/oram-boot-logs
@@ -266,33 +242,180 @@ require_file() {
     [ -r "$1" ] || fatal "required file missing or unreadable: $1"
 }
 
-require_runtime_identity_and_policy() {
-    [ -d "$IDENTITY_ROOT" ] && [ ! -L "$IDENTITY_ROOT" ] \
-        || fatal "identity directory missing, not a directory, or a symlink: $IDENTITY_ROOT"
-    identity_root_uid=$(stat -c %u "$IDENTITY_ROOT") \
-        || fatal "failed to inspect identity directory owner"
-    identity_root_mode=$(stat -c %a "$IDENTITY_ROOT") \
-        || fatal "failed to inspect identity directory mode"
-    [ "$identity_root_uid" = "$IDENTITY_OWNER_UID" ] && [ "$identity_root_mode" = 700 ] \
-        || fatal "identity directory must be owner-matched mode 0700"
-    require_file "$IDENTITY_KEY_PATH"
-    require_file "$IDENTITY_CERT_PATH"
-    [ -f "$IDENTITY_KEY_PATH" ] && [ ! -L "$IDENTITY_KEY_PATH" ] \
-        || fatal "identity key is not a non-symlink regular file: $IDENTITY_KEY_PATH"
-    [ -f "$IDENTITY_CERT_PATH" ] && [ ! -L "$IDENTITY_CERT_PATH" ] \
-        || fatal "identity certificate is not a non-symlink regular file: $IDENTITY_CERT_PATH"
-    identity_key_stat=$(stat -c '%u:%a:%h' "$IDENTITY_KEY_PATH") \
-        || fatal "failed to inspect identity key metadata"
-    identity_cert_stat=$(stat -c '%u:%a:%h' "$IDENTITY_CERT_PATH") \
-        || fatal "failed to inspect identity certificate metadata"
-    [ "$identity_key_stat" = "$IDENTITY_OWNER_UID:600:1" ] \
-        || fatal "identity key must be owner-matched mode 0600 with one link"
-    [ "$identity_cert_stat" = "$IDENTITY_OWNER_UID:644:1" ] \
-        || fatal "identity certificate must be owner-matched mode 0644 with one link"
-    identity_key_bytes=$(wc -c <"$IDENTITY_KEY_PATH" | tr -d '[:space:]')
-    [ "$identity_key_bytes" = 32 ] || fatal "identity key must be exactly 32 bytes"
-    [ -s "$IDENTITY_CERT_PATH" ] || fatal "identity certificate is empty"
-    require_file "$SERVICE_POLICY_PATH"
+read_exact_public_config_value() {
+    config_key=$1
+    config_value=$(awk -F= -v key="$config_key" '
+        $1 == key { if (++seen == 1) value = substr($0, length(key) + 2); else exit 2 }
+        END { if (seen != 1 || value == "") exit 1; print value }
+    ' "$PIR2_SEALED_STARTUP_CONFIG") \
+        || fatal "sealed startup config must contain exactly one non-empty $config_key"
+    printf '%s\n' "$config_value"
+}
+
+validate_lower_hex() {
+    hex_value=$1
+    hex_length=$2
+    hex_label=$3
+    case "$hex_value" in
+        *[!0-9a-f]*) fatal "$hex_label must be canonical lowercase hex" ;;
+    esac
+    [ "${#hex_value}" -eq "$hex_length" ] || fatal "$hex_label has the wrong length"
+    case "$hex_value" in
+        *[1-9a-f]*) ;;
+        *) fatal "$hex_label must not be all zero" ;;
+    esac
+}
+
+load_pir2_sealed_startup_config() {
+    env_configured=false
+    for env_value in \
+        "${BPIR_PIR2_SNP_SEALED_PROFILE:-}" \
+        "${BPIR_PIR2_SNP_SEALED_PHASE:-}" \
+        "${BPIR_PIR2_SNP_SEALED_ORDINAL:-}" \
+        "${BPIR_PIR2_SNP_SEALED_VERIFIER_NONCE_HEX:-}" \
+        "${BPIR_PIR2_SNP_SEALED_POLICY_DIGEST_HEX:-}" \
+        "${BPIR_PIR2_SNP_SEALED_CLASS_DIGEST_HEX:-}" \
+        "${BPIR_PIR2_SNP_SEALED_MINIMUM_AUTHORIZATION_EPOCH:-}"; do
+        [ -z "$env_value" ] || env_configured=true
+    done
+
+    if [ "$env_configured" = true ]; then
+        PIR2_SEALED_PROFILE=${BPIR_PIR2_SNP_SEALED_PROFILE:-}
+        PIR2_SEALED_PHASE=${BPIR_PIR2_SNP_SEALED_PHASE:-}
+        PIR2_SEALED_ORDINAL=${BPIR_PIR2_SNP_SEALED_ORDINAL:-}
+        PIR2_SEALED_VERIFIER_NONCE_HEX=${BPIR_PIR2_SNP_SEALED_VERIFIER_NONCE_HEX:-}
+        PIR2_SEALED_POLICY_DIGEST_HEX=${BPIR_PIR2_SNP_SEALED_POLICY_DIGEST_HEX:-}
+        PIR2_SEALED_CLASS_DIGEST_HEX=${BPIR_PIR2_SNP_SEALED_CLASS_DIGEST_HEX:-}
+        PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH=${BPIR_PIR2_SNP_SEALED_MINIMUM_AUTHORIZATION_EPOCH:-}
+        for env_value in \
+            "$PIR2_SEALED_PROFILE" "$PIR2_SEALED_PHASE" "$PIR2_SEALED_ORDINAL" \
+            "$PIR2_SEALED_VERIFIER_NONCE_HEX" "$PIR2_SEALED_POLICY_DIGEST_HEX" \
+            "$PIR2_SEALED_CLASS_DIGEST_HEX" "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"; do
+            [ -n "$env_value" ] || fatal "partial pir2 sealed environment configuration"
+        done
+    else
+        require_file "$PIR2_SEALED_STARTUP_CONFIG"
+        unknown_config_key=$(awk -F= '
+            $1 != "schema" && $1 != "profile" && $1 != "phase" && $1 != "ordinal" &&
+            $1 != "verifier_nonce_hex" && $1 != "current_policy_digest_hex" &&
+            $1 != "class_digest_hex" && $1 != "minimum_authorization_epoch" {
+                print $1; exit
+            }
+        ' "$PIR2_SEALED_STARTUP_CONFIG")
+        [ -z "$unknown_config_key" ] \
+            || fatal "sealed startup config contains unsupported key: $unknown_config_key"
+        config_schema=$(read_exact_public_config_value schema)
+        [ "$config_schema" = bitcoinpir-pir2-sealed-startup-v1 ] \
+            || fatal "sealed startup config has unsupported schema"
+        PIR2_SEALED_PROFILE=$(read_exact_public_config_value profile)
+        PIR2_SEALED_PHASE=$(read_exact_public_config_value phase)
+        PIR2_SEALED_ORDINAL=$(read_exact_public_config_value ordinal)
+        PIR2_SEALED_VERIFIER_NONCE_HEX=$(read_exact_public_config_value verifier_nonce_hex)
+        PIR2_SEALED_POLICY_DIGEST_HEX=$(read_exact_public_config_value current_policy_digest_hex)
+        PIR2_SEALED_CLASS_DIGEST_HEX=$(read_exact_public_config_value class_digest_hex)
+        PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH=$(read_exact_public_config_value minimum_authorization_epoch)
+    fi
+
+    [ "$PIR2_SEALED_PROFILE" = "$VPSBG_RUNTIME_PROFILE" ] \
+        || fatal "sealed startup profile must be $VPSBG_RUNTIME_PROFILE"
+    case "$PIR2_SEALED_PHASE" in
+        observe|enroll|probe|ready) ;;
+        *) fatal "sealed startup phase must be observe, enroll, probe, or ready" ;;
+    esac
+    case "$PIR2_SEALED_ORDINAL" in
+        ''|*[!0-9]*|0) fatal "sealed startup ordinal must be a non-zero integer" ;;
+    esac
+    case "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" in
+        ''|*[!0-9]*|0) fatal "sealed minimum authorization epoch must be a non-zero integer" ;;
+    esac
+    validate_lower_hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" 64 "sealed verifier nonce"
+    validate_lower_hex "$PIR2_SEALED_POLICY_DIGEST_HEX" 64 "sealed current policy digest"
+    validate_lower_hex "$PIR2_SEALED_CLASS_DIGEST_HEX" 64 "sealed class digest"
+}
+
+read_pir2_current_boot() {
+    PIR2_BOOT_ID=$(cat "$ORAM_BOOT_ID_FILE" 2>/dev/null || true)
+    case "$PIR2_BOOT_ID" in
+        ????????-????-????-????-????????????) ;;
+        *) fatal "kernel boot_id missing or invalid" ;;
+    esac
+    case "$PIR2_BOOT_ID" in
+        *[!0-9a-f-]*) fatal "kernel boot_id must use canonical lowercase hex" ;;
+    esac
+    PIR2_BOOT_ID_HEX=$(printf '%s' "$PIR2_BOOT_ID" | tr -d -)
+    PIR2_SEALED_RECEIPT_PATH="$PIR2_SEALED_RECEIPT_DIR/inert-$PIR2_BOOT_ID_HEX.bin"
+    PIR2_SEALED_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/inert-$PIR2_BOOT_ID_HEX.env"
+    PIR2_SEALED_READY_PREFLIGHT_RECEIPT_PATH="$PIR2_SEALED_RECEIPT_DIR/ready-preflight-$PIR2_BOOT_ID_HEX.bin"
+    PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/ready-preflight-$PIR2_BOOT_ID_HEX.env"
+    PIR2_SEALED_READY_RUNTIME_RECEIPT_PATH="$PIR2_SEALED_RECEIPT_DIR/ready-runtime-$PIR2_BOOT_ID_HEX.bin"
+    PIR2_SEALED_READY_RUNTIME_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/ready-runtime-$PIR2_BOOT_ID_HEX.env"
+}
+
+inert_marker_matches_current_boot() {
+    [ -r "$PIR2_SEALED_MARKER_PATH" ] || return 1
+    marker_schema=$(awk -F= '$1 == "schema" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
+        || fatal "pir2 sealed inert marker is malformed"
+    marker_phase=$(awk -F= '$1 == "phase" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
+        || fatal "pir2 sealed inert marker is malformed"
+    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
+        || fatal "pir2 sealed inert marker is malformed"
+    marker_receipt_digest=$(awk -F= '$1 == "receipt_digest" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
+        || fatal "pir2 sealed inert marker is malformed"
+    marker_exit_code=$(awk -F= '$1 == "exit_code" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
+        || fatal "pir2 sealed inert marker is malformed"
+    marker_lines=$(wc -l <"$PIR2_SEALED_MARKER_PATH" | tr -d '[:space:]')
+    [ "$marker_lines" = 5 ] || fatal "pir2 sealed inert marker has unexpected fields"
+    [ "$marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] \
+        || fatal "pir2 sealed inert marker has unsupported schema"
+    case "$marker_phase" in observe|enroll|probe) ;; *) fatal "pir2 sealed inert marker has invalid phase" ;; esac
+    validate_lower_hex "$marker_receipt_digest" 64 "sealed receipt digest"
+    [ "$marker_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
+        && [ "$marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
+        && [ -s "$PIR2_SEALED_RECEIPT_PATH" ]
+}
+
+prepare_pir2_sealed_output_dirs() {
+    umask 077
+    mkdir -p "$PIR2_SEALED_ROOT" "$PIR2_SEALED_RECEIPT_DIR" "$PIR2_SEALED_MARKER_DIR" \
+        || fatal "failed to create pir2 sealed output directories"
+    for sealed_dir in "$PIR2_SEALED_ROOT" "$PIR2_SEALED_RECEIPT_DIR" "$PIR2_SEALED_MARKER_DIR"; do
+        [ -d "$sealed_dir" ] && [ ! -L "$sealed_dir" ] \
+            || fatal "pir2 sealed output path is not a non-symlink directory: $sealed_dir"
+    done
+    chmod 700 "$PIR2_SEALED_ROOT" "$PIR2_SEALED_RECEIPT_DIR" "$PIR2_SEALED_MARKER_DIR" \
+        || fatal "failed to protect pir2 sealed output directories"
+}
+
+run_pir2_sealed_inert_phase() {
+    "$UNIFIED_SERVER" \
+        --port 8091 \
+        --role secondary \
+        --serve-queries \
+        --pir2-snp-sealed-preflight-only \
+        --pir2-snp-sealed-release "$PIR2_SEALED_RELEASE_PATH" \
+        --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
+        --pir2-snp-sealed-receipt "$PIR2_SEALED_RECEIPT_PATH" \
+        --pir2-snp-sealed-marker "$PIR2_SEALED_MARKER_PATH" \
+        --pir2-snp-sealed-phase "$PIR2_SEALED_PHASE" \
+        --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
+        --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
+        --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX"
+    sealed_status=$?
+    [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
+        || fatal "pir2 sealed $PIR2_SEALED_PHASE dispatcher failed with exit $sealed_status"
+    inert_marker_matches_current_boot \
+        || fatal "pir2 sealed dispatcher exited 42 without an exact current-boot marker and receipt"
+    exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
+}
+
+wait_for_databases_config() {
+    i=0
+    while [ ! -r "$TIER3_DATABASES_CONFIG" ] && [ "$i" -lt 30 ]; do
+        sleep 0.5
+        i=$((i + 1))
+    done
+    [ -r "$TIER3_DATABASES_CONFIG" ] \
+        || fatal "$TIER3_DATABASES_CONFIG missing — bind mount failed?"
 }
 
 direct_input_hash() {
@@ -671,60 +794,40 @@ verify_direct_oram_publish() {
 }
 
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
-# Identity announcement and admission policy are mandatory for both measured
-# runtime profiles. Check them before Direct ORAM regeneration so a missing
-# persistent secret or public policy cannot waste the bounded build window and
-# then leave the server silently unannounced.
-require_runtime_identity_and_policy
-case "$VPSBG_RUNTIME_PROFILE" in
-dpf-only-functional-beta-v1)
-    umask 077
-    mkdir -p "$ORAM_BUILD_LOG_DIR" || fatal "failed to create unified_server runtime log directory"
-    chmod 700 "$ORAM_BUILD_LOG_DIR" || fatal "failed to protect unified_server runtime log directory"
-    read_current_boot_id || fatal "kernel boot_id missing or invalid"
-    start_unified_server_runtime_log
-    echo "[unified-server-run] starting VPSBG db0 functional beta; Direct ORAM is not advertised" >&2
-    exec "$UNIFIED_SERVER" \
-        --port 8091 \
-        --role secondary \
-        --serve-queries \
-        --config /home/pir/data/databases.toml \
-        --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
-        --vcek-dir /home/pir/data/vcek \
-        --identity-key-path "$IDENTITY_KEY_PATH" \
-        --identity-cert-path "$IDENTITY_CERT_PATH" \
-        --identity-server-id pir2-vpsbg-dpf-v1 \
-        --require-service-auth-v1 \
-        --service-policy "$SERVICE_POLICY_PATH" \
-        --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
-        --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
-        --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
-        --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
-        --allow-local-service-rollback-authority-dev \
-        --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
-        --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
-        --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
-        --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
-        --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
-        --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
-        --service-shared-minimum-authorization-epoch 1 \
-        --allow-experimental-arc \
-        --service-max-concurrent-auth 4 \
-        --service-max-concurrent-online-v2full-auth 0 \
-        --connection-idle-timeout-ms 300000 \
-        --service-pre-auth-timeout-ms 300000 \
-        2>&1
+ulimit -c 0 || fatal "failed to disable core dumps before pir2 sealed startup"
+PIR2_PROC_SWAPS=${BPIR_PIR2_PROC_SWAPS:-/proc/swaps}
+require_file "$PIR2_PROC_SWAPS"
+active_swap_rows=$(awk 'NR > 1 { count++ } END { print count + 0 }' "$PIR2_PROC_SWAPS") \
+    || fatal "failed to inspect active swap before pir2 sealed startup"
+[ "$active_swap_rows" = 0 ] || fatal "active swap is forbidden for pir2 sealed startup"
+read_pir2_current_boot
+if inert_marker_matches_current_boot; then
+    echo "[unified-server-run] pir2 sealed inert phase already completed for boot $PIR2_BOOT_ID; refusing restart" >&2
+    exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
+fi
+load_pir2_sealed_startup_config
+prepare_pir2_sealed_output_dirs
+case "$PIR2_SEALED_PHASE" in
+observe|enroll|probe)
+    # These phases are terminal and inert.  This is deliberately before the
+    # databases.toml wait, policy/auth loading, ORAM cleanup/build, and every
+    # listener-capable final invocation.
+    run_pir2_sealed_inert_phase
     ;;
-direct-oram-v1)
-    ;;
-*)
-    fatal "unsupported measured VPSBG runtime profile: $VPSBG_RUNTIME_PROFILE"
+ready)
+    # The real Ready preflight is connected below once the dispatcher exposes
+    # its reviewed ready-preflight-only CLI.  Do not emulate it with Probe or
+    # a deliberately failing server invocation: neither verifies the complete
+    # public authorization set with the opened keys.
+    fatal "pir2 sealed ready requires the dedicated binary ready-preflight interface"
     ;;
 esac
 
 [ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$ORAM_SUPERVISOR" ] || fatal "$ORAM_SUPERVISOR missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
+require_file "$SERVICE_POLICY_PATH"
+wait_for_databases_config
 umask 077
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
 chmod 700 "$ORAM_BUILD_LOG_DIR" || fatal "failed to protect ORAM boot log directory"
@@ -813,29 +916,31 @@ exec "$UNIFIED_SERVER" \
     --direct-oram-auth-store \
     --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \
-    --identity-key-path "$IDENTITY_KEY_PATH" \
-    --identity-cert-path "$IDENTITY_CERT_PATH" \
-    --identity-server-id pir2-vpsbg-dpf-v1 \
+    --pir2-snp-sealed-require-ready \
+    --pir2-snp-sealed-release "$PIR2_SEALED_RELEASE_PATH" \
+    --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
+    --pir2-snp-sealed-receipt "$PIR2_SEALED_READY_RUNTIME_RECEIPT_PATH" \
+    --pir2-snp-sealed-marker "$PIR2_SEALED_READY_RUNTIME_MARKER_PATH" \
+    --pir2-snp-sealed-phase ready \
+    --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
+    --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
+    --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX" \
+    --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
+    --pir2-snp-sealed-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
+    --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
     --require-service-auth-v1 \
     --service-policy "$SERVICE_POLICY_PATH" \
-    --service-provider-id-hex 85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac \
-    --service-policy-key-hex 73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
-    --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3 \
-    --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3 \
-    --allow-local-service-rollback-authority-dev \
-    --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin \
-    --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin \
-    --service-shared-operator-key-hex 7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb \
-    --service-shared-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
-    --service-shared-clearing-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider-clearing-signing.key \
-    --service-shared-idempotency-key /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-redeem-idempotency.key \
-    --service-shared-minimum-authorization-epoch 1 \
+    --service-provider-id-hex "$PIR2_SEALED_PROVIDER_ID_HEX" \
+    --service-policy-key-hex "$PIR2_SEALED_POLICY_KEY_HEX" \
+    --service-storeless-bat-v2-policy-digest-hex "$PIR2_SEALED_POLICY_DIGEST_HEX" \
+    --service-storeless-bat-v2-class "$PIR2_SEALED_CLASS_DIGEST_HEX=$PIR2_SEALED_CLASS_PATH" \
+    --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
+    --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
+    --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \
+    --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
+    --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" \
     --service-max-concurrent-auth 4 \
     --service-max-concurrent-online-v2full-auth 0 \
     --connection-idle-timeout-ms 300000 \
     --service-pre-auth-timeout-ms 300000 \
     2>&1
-# --identity-* (operator-signed identity / REQ_ANNOUNCE): a measured fallback
-# may be supplied at UKI build time; otherwise the bind-mounted rootfs paths
-# remain valid. The operator signing key is never embedded. The certificate
-# server_id MUST remain pir2-vpsbg-dpf-v1, matching the public bootstrap.
