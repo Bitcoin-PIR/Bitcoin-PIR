@@ -701,19 +701,35 @@ prepare_pir2_sealed_output_dirs() {
 }
 
 run_pir2_sealed_inert_phase() {
-    "$UNIFIED_SERVER" \
-        --port 8091 \
-        --role secondary \
-        --serve-queries \
-        --pir2-snp-sealed-preflight-only \
-        --pir2-snp-sealed-release "$PIR2_SEALED_RELEASE_PATH" \
-        --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
-        --pir2-snp-sealed-receipt "$PIR2_SEALED_RECEIPT_PATH" \
-        --pir2-snp-sealed-marker "$PIR2_SEALED_MARKER_PATH" \
-        --pir2-snp-sealed-phase "$PIR2_SEALED_PHASE" \
-        --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
-        --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
-        --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX"
+    if [ "$PIR2_SEALED_PHASE" = observe ]; then
+        "$UNIFIED_SERVER" \
+            --port 8091 \
+            --role secondary \
+            --serve-queries \
+            --pir2-snp-sealed-preflight-only \
+            --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
+            --pir2-snp-sealed-receipt "$PIR2_SEALED_RECEIPT_PATH" \
+            --pir2-snp-sealed-marker "$PIR2_SEALED_MARKER_PATH" \
+            --pir2-snp-sealed-phase "$PIR2_SEALED_PHASE" \
+            --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
+            --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
+            --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX"
+    else
+        require_file "$PIR2_SEALED_RELEASE_PATH"
+        "$UNIFIED_SERVER" \
+            --port 8091 \
+            --role secondary \
+            --serve-queries \
+            --pir2-snp-sealed-preflight-only \
+            --pir2-snp-sealed-release "$PIR2_SEALED_RELEASE_PATH" \
+            --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
+            --pir2-snp-sealed-receipt "$PIR2_SEALED_RECEIPT_PATH" \
+            --pir2-snp-sealed-marker "$PIR2_SEALED_MARKER_PATH" \
+            --pir2-snp-sealed-phase "$PIR2_SEALED_PHASE" \
+            --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
+            --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
+            --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX"
+    fi
     sealed_status=$?
     [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
         || fatal "pir2 sealed $PIR2_SEALED_PHASE dispatcher failed with exit $sealed_status"

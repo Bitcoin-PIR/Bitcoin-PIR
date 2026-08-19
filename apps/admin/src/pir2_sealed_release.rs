@@ -8,8 +8,9 @@ use pir_private_files::{
     read_private_file_bounded_v1, write_atomic_noreplace_private_file_v1, PrivateFileModeV1,
 };
 use pir_runtime_core::snp_sealed_secrets::{
-    encode_signed_pir2_sealed_release_v1, Pir2SealedReleaseClaimsV1, SnpDerivedKeyRequestV1,
-    SnpTcbVersionV1, VerifiedPir2SealedReleaseV1,
+    encode_signed_pir2_sealed_release_v1, Pir2PreReleaseObservationClaimsV1,
+    Pir2PreReleaseObservationReceiptV1, Pir2SealedReleaseClaimsV1, SnpDerivedKeyRequestV1,
+    SnpTcbVersionV1, VerifiedPir2SealedReleaseV1, PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1,
 };
 use sev::measurement::{
     snp::{snp_calc_launch_digest, SnpMeasurementArgs},
@@ -49,9 +50,21 @@ pub struct Pir2SealedReleaseArgs {
     /// Operator-pinned SHA-256 of the exact OVMF image.
     #[arg(long)]
     pub expected_ovmf_sha256_hex: String,
-    /// Fresh raw 1184-byte SNP report.
+    /// Canonical current-boot pre-release observation receipt.
     #[arg(long)]
-    pub report: PathBuf,
+    pub observation_receipt: PathBuf,
+    /// Operator-known current observation ordinal.
+    #[arg(long)]
+    pub observation_ordinal: u64,
+    /// Exact 32-byte fresh verifier nonce committed by the observation.
+    #[arg(long)]
+    pub observation_verifier_nonce_hex: String,
+    /// Exact 32-byte current channel public key committed by the observation.
+    #[arg(long)]
+    pub observation_current_channel_pubkey_hex: String,
+    /// Exact 16-byte current boot ID committed by the observation.
+    #[arg(long)]
+    pub observation_boot_id_hex: String,
     /// AMD ARK PEM for the report's CPU generation.
     #[arg(long)]
     pub ark: PathBuf,
@@ -64,10 +77,6 @@ pub struct Pir2SealedReleaseArgs {
     /// SHA-256 of the DER-encoded ARK certificate.
     #[arg(long)]
     pub expected_ark_sha256_hex: String,
-    /// Exact 64-byte REPORT_DATA challenge/binding expected from this fresh observation.
-    #[arg(long)]
-    pub expected_report_data_hex: String,
-
     /// Launch vCPU count; the source contract accepts exactly 2.
     #[arg(long)]
     pub vcpus: u32,
@@ -117,19 +126,38 @@ pub struct Pir2SealedReleaseArgs {
 }
 
 pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
+    let observation_claims = Pir2PreReleaseObservationClaimsV1::new(
+        args.observation_ordinal,
+        parse_fixed_hex::<32>(
+            &args.observation_verifier_nonce_hex,
+            "observation verifier nonce",
+        )?,
+        parse_fixed_hex::<32>(
+            &args.observation_current_channel_pubkey_hex,
+            "observation current channel public key",
+        )?,
+        parse_fixed_hex::<16>(&args.observation_boot_id_hex, "observation boot ID")?,
+    )
+    .map_err(|error| format!("validate expected pre-release observation claims: {error}"))?;
+    let observation_receipt_bytes = read_public_bounded(
+        &args.observation_receipt,
+        PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1,
+        "canonical pre-release observation receipt",
+    )?;
+    let observation_receipt = Pir2PreReleaseObservationReceiptV1::decode_and_verify(
+        &observation_receipt_bytes,
+        &observation_claims,
+    )
+    .map_err(|error| format!("verify canonical pre-release observation receipt: {error}"))?;
+    let expected_report_data = observation_claims
+        .report_data()
+        .map_err(|error| format!("derive observation REPORT_DATA: {error}"))?;
     let expected_ark_sha256 =
         parse_fixed_hex::<32>(&args.expected_ark_sha256_hex, "expected ARK SHA-256")?;
-    let expected_report_data =
-        parse_fixed_hex::<64>(&args.expected_report_data_hex, "expected REPORT_DATA")?;
-    if expected_report_data == [0_u8; 64] {
-        return Err(
-            "expected REPORT_DATA must be a nonzero fresh operator challenge/binding".to_owned(),
-        );
-    }
 
     // The AMD trust decision deliberately precedes launch-artifact processing.
     let report = verify_offline_report(
-        &args.report,
+        observation_receipt.raw_report(),
         &args.ark,
         &args.ask,
         &args.vcek,
@@ -195,14 +223,13 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
 }
 
 fn verify_offline_report(
-    report_path: &Path,
+    report_bytes: &[u8],
     ark_path: &Path,
     ask_path: &Path,
     vcek_path: &Path,
     expected_ark_sha256: [u8; 32],
     expected_report_data: [u8; 64],
 ) -> Result<SnpReport, String> {
-    let report_bytes = read_public_bounded(report_path, SNP_REPORT_LEN, "raw SNP report")?;
     if report_bytes.len() != SNP_REPORT_LEN {
         return Err(format!(
             "raw SNP report must contain exactly {SNP_REPORT_LEN} bytes"
@@ -214,7 +241,7 @@ fn verify_offline_report(
 
     pir_attest_verify::verify_chain(&ark, &ask, &vcek, Some(expected_ark_sha256))
         .map_err(|error| format!("AMD certificate chain rejected: {error}"))?;
-    let report = pir_attest_verify::verify_report_against_vcek(&report_bytes, &vcek)
+    let report = pir_attest_verify::verify_report_against_vcek(report_bytes, &vcek)
         .map_err(|error| format!("SNP report rejected: {error}"))?;
     if report.report_data != expected_report_data {
         return Err("SNP REPORT_DATA differs from the fresh operator binding".to_owned());
@@ -391,7 +418,52 @@ fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], 
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use pir_runtime_core::snp_sealed_secrets::{
+        FreshSnpReportV1, SnpDerivedKeyMaterialV1, SnpDerivedKeyProvider,
+        SnpDerivedKeyProviderErrorV1,
+    };
     use std::fs;
+
+    struct ObservationProviderV1;
+
+    impl SnpDerivedKeyProvider for ObservationProviderV1 {
+        fn fresh_report(
+            &self,
+            report_data: [u8; 64],
+        ) -> Result<FreshSnpReportV1, SnpDerivedKeyProviderErrorV1> {
+            let mut raw_report = vec![0xA5; SNP_REPORT_LEN];
+            raw_report[0x50..0x90].copy_from_slice(&report_data);
+            Ok(FreshSnpReportV1 {
+                report_version: 3,
+                vmpl: 0,
+                guest_policy: 1 << 17,
+                measurement: [0x33; 48],
+                report_data,
+                reported_tcb: SnpTcbVersionV1 {
+                    fmc: Some(1),
+                    bootloader: 1,
+                    tee: 1,
+                    snp: 1,
+                    microcode: 1,
+                },
+                committed_tcb: SnpTcbVersionV1 {
+                    fmc: Some(1),
+                    bootloader: 1,
+                    tee: 1,
+                    snp: 1,
+                    microcode: 1,
+                },
+                raw_report,
+            })
+        }
+
+        fn derive_key(
+            &self,
+            _request: &SnpDerivedKeyRequestV1,
+        ) -> Result<SnpDerivedKeyMaterialV1, SnpDerivedKeyProviderErrorV1> {
+            Err(SnpDerivedKeyProviderErrorV1::RequestDrift)
+        }
+    }
 
     fn release_claims() -> Pir2SealedReleaseClaimsV1 {
         Pir2SealedReleaseClaimsV1 {
@@ -413,18 +485,27 @@ mod tests {
         }
     }
 
-    fn zero_report_data_args(dir: &Path) -> Pir2SealedReleaseArgs {
+    fn observation_args(dir: &Path) -> Pir2SealedReleaseArgs {
+        let claims =
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x41; 32], [0x43; 32], [0x42; 16]).unwrap();
+        let receipt =
+            Pir2PreReleaseObservationReceiptV1::request(claims, &ObservationProviderV1).unwrap();
+        let receipt_path = dir.join("observation.bin");
+        fs::write(&receipt_path, receipt.encode().unwrap()).unwrap();
         Pir2SealedReleaseArgs {
             uki: dir.join("missing.uki"),
             expected_uki_sha256_hex: hex::encode([1_u8; 32]),
             ovmf: dir.join("missing.ovmf"),
             expected_ovmf_sha256_hex: hex::encode([2_u8; 32]),
-            report: dir.join("missing.report"),
+            observation_receipt: receipt_path,
+            observation_ordinal: 1,
+            observation_verifier_nonce_hex: hex::encode([0x41_u8; 32]),
+            observation_current_channel_pubkey_hex: hex::encode([0x43_u8; 32]),
+            observation_boot_id_hex: hex::encode([0x42_u8; 16]),
             ark: dir.join("missing.ark"),
             ask: dir.join("missing.ask"),
             vcek: dir.join("missing.vcek"),
             expected_ark_sha256_hex: hex::encode([3_u8; 32]),
-            expected_report_data_hex: hex::encode([0_u8; 64]),
             vcpus: REQUIRED_VCPUS,
             vcpu_sig_hex: format!("{REQUIRED_VCPU_SIGNATURE:08x}"),
             vmm_type: REQUIRED_VMM_TYPE.to_owned(),
@@ -534,17 +615,24 @@ mod tests {
     }
 
     #[test]
-    fn zero_report_data_is_rejected_before_any_file_or_key_access() {
+    fn observation_replay_fields_are_rejected_before_key_or_output_access() {
         let dir = crate::keygen::private_tempdir_v1().unwrap();
-        let args = zero_report_data_args(dir.path());
-        let out = args.out.clone();
-        let key = args.operator_signing_key.clone();
-
-        let error = run(args).unwrap_err();
-
-        assert!(error.contains("nonzero fresh operator challenge"));
-        assert!(!out.exists());
-        assert!(!key.exists());
+        for variant in 0..4 {
+            let mut args = observation_args(dir.path());
+            match variant {
+                0 => args.observation_ordinal += 1,
+                1 => args.observation_verifier_nonce_hex = hex::encode([0x51_u8; 32]),
+                2 => args.observation_current_channel_pubkey_hex = hex::encode([0x53_u8; 32]),
+                3 => args.observation_boot_id_hex = hex::encode([0x52_u8; 16]),
+                _ => unreachable!(),
+            }
+            let out = args.out.clone();
+            let key = args.operator_signing_key.clone();
+            let error = run(args).unwrap_err();
+            assert!(error.contains("claims differ from current boot expectations"));
+            assert!(!out.exists());
+            assert!(!key.exists());
+        }
     }
 
     #[test]
@@ -565,20 +653,18 @@ mod tests {
         )
         .unwrap();
 
+        let report_bytes = fs::read(&report_path).unwrap();
         let report =
-            verify_offline_report(&report_path, &ark, &ask, &vcek, ark_sha256, report_data)
+            verify_offline_report(&report_bytes, &ark, &ask, &vcek, ark_sha256, report_data)
                 .unwrap();
         assert_eq!(report.report_data, report_data);
 
         let dir = crate::keygen::private_tempdir_v1().unwrap();
-        let tampered_path = dir.path().join("tampered-report.bin");
         let out = dir.path().join("must-not-create-release.bin");
         let mut tampered = fs::read(report_path).unwrap();
         tampered[144] ^= 1;
-        fs::write(&tampered_path, tampered).unwrap();
         assert!(
-            verify_offline_report(&tampered_path, &ark, &ask, &vcek, ark_sha256, report_data,)
-                .is_err()
+            verify_offline_report(&tampered, &ark, &ask, &vcek, ark_sha256, report_data,).is_err()
         );
         assert!(!out.exists());
     }

@@ -62,6 +62,12 @@ const MAX_SEALED_RELEASE_LEN_V1: usize = 2048;
 const SEALED_RECEIPT_MAGIC_V1: &[u8; 8] = b"BPIRSRC1";
 const SEALED_RECEIPT_DIGEST_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-receipt-digest/v1";
 const MAX_FRESH_SNP_REPORT_LEN_V1: usize = 4096;
+const PRE_RELEASE_OBSERVATION_MAGIC_V1: &[u8; 8] = b"BPIRPRO1";
+const PRE_RELEASE_OBSERVATION_CLAIMS_DOMAIN_V1: &[u8] =
+    b"BitcoinPIR/pir2/pre-release-observation-claims/v1";
+pub const PIR2_PRE_RELEASE_OBSERVATION_RAW_REPORT_LEN_V1: usize = 1184;
+pub const PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1: usize =
+    8 + 2 + 8 + 32 + 32 + 16 + PIR2_PRE_RELEASE_OBSERVATION_RAW_REPORT_LEN_V1;
 
 /// Immutable semantic request used for every pir2 envelope V1 derivation.
 ///
@@ -779,6 +785,227 @@ impl Pir2SealedSigningMaterialV1 {
             service_identity: self.service_identity,
             clearing: self.clearing,
         }
+    }
+}
+
+/// Freshness-only claims for the pre-release Observe ceremony.
+///
+/// This type deliberately cannot carry release, authority, envelope, or key
+/// material. Its domain is permanently the pre-release Observe phase.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2PreReleaseObservationClaimsV1 {
+    ordinal: u64,
+    verifier_nonce: [u8; 32],
+    current_channel_pubkey: [u8; 32],
+    boot_id: [u8; 16],
+}
+
+impl Pir2PreReleaseObservationClaimsV1 {
+    pub fn new(
+        ordinal: u64,
+        verifier_nonce: [u8; 32],
+        current_channel_pubkey: [u8; 32],
+        boot_id: [u8; 16],
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        let claims = Self {
+            ordinal,
+            verifier_nonce,
+            current_channel_pubkey,
+            boot_id,
+        };
+        claims.validate()?;
+        Ok(claims)
+    }
+
+    fn validate(&self) -> Result<(), SnpSealedSecretsErrorV1> {
+        if self.ordinal == 0
+            || self.verifier_nonce == [0_u8; 32]
+            || self.current_channel_pubkey == [0_u8; 32]
+            || self.boot_id == [0_u8; 16]
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation contains an empty freshness binding",
+            ));
+        }
+        Ok(())
+    }
+
+    fn encode_claims(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+        self.validate()?;
+        let mut out = Vec::with_capacity(88);
+        out.extend_from_slice(&self.ordinal.to_le_bytes());
+        out.extend_from_slice(&self.verifier_nonce);
+        out.extend_from_slice(&self.current_channel_pubkey);
+        out.extend_from_slice(&self.boot_id);
+        Ok(out)
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], SnpSealedSecretsErrorV1> {
+        let encoded = self.encode_claims()?;
+        let mut hasher = Sha256::new();
+        hasher.update((PRE_RELEASE_OBSERVATION_CLAIMS_DOMAIN_V1.len() as u32).to_le_bytes());
+        hasher.update(PRE_RELEASE_OBSERVATION_CLAIMS_DOMAIN_V1);
+        hasher.update((encoded.len() as u32).to_le_bytes());
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn report_data(&self) -> Result<[u8; 64], SnpSealedSecretsErrorV1> {
+        let digest = self.digest()?;
+        let mut report_data = [0_u8; 64];
+        report_data[..32].copy_from_slice(&digest);
+        report_data[32..].copy_from_slice(&digest);
+        Ok(report_data)
+    }
+}
+
+/// Canonical pre-release observation receipt containing only the exact raw SNP
+/// report and its current-boot freshness claims.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2PreReleaseObservationReceiptV1 {
+    claims: Pir2PreReleaseObservationClaimsV1,
+    raw_report: [u8; PIR2_PRE_RELEASE_OBSERVATION_RAW_REPORT_LEN_V1],
+}
+
+impl Pir2PreReleaseObservationReceiptV1 {
+    pub fn request<P: SnpDerivedKeyProvider + ?Sized>(
+        claims: Pir2PreReleaseObservationClaimsV1,
+        provider: &P,
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        let expected_report_data = claims.report_data()?;
+        let fresh_report = provider.fresh_report(expected_report_data)?;
+        if fresh_report.report_data != expected_report_data {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "typed fresh report data does not bind pre-release observation claims",
+            ));
+        }
+        let raw_report: [u8; PIR2_PRE_RELEASE_OBSERVATION_RAW_REPORT_LEN_V1] =
+            fresh_report.raw_report.try_into().map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation requires an exact 1184-byte SNP report",
+                )
+            })?;
+        let receipt = Self { claims, raw_report };
+        receipt.verify_binding(&receipt.claims)?;
+        Ok(receipt)
+    }
+
+    pub fn decode_and_verify(
+        exact_bytes: &[u8],
+        expected_claims: &Pir2PreReleaseObservationClaimsV1,
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        if exact_bytes.len() != PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1 {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation receipt has a non-canonical length",
+            ));
+        }
+        let mut decoder = DecoderV1::new(exact_bytes);
+        decoder
+            .exact(
+                PRE_RELEASE_OBSERVATION_MAGIC_V1,
+                "pre-release observation magic",
+            )
+            .map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation receipt magic is invalid",
+                )
+            })?;
+        if decoder.u16("pre-release observation codec").map_err(|_| {
+            SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation receipt codec is truncated",
+            )
+        })? != ENVELOPE_CODEC_VERSION_V1
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation receipt codec is unsupported",
+            ));
+        }
+        let claims = Pir2PreReleaseObservationClaimsV1::new(
+            decoder.u64("pre-release ordinal").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation ordinal is truncated",
+                )
+            })?,
+            decoder.array("pre-release verifier nonce").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation verifier nonce is truncated",
+                )
+            })?,
+            decoder.array("pre-release channel key").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation channel key is truncated",
+                )
+            })?,
+            decoder.array("pre-release boot id").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "pre-release observation boot id is truncated",
+                )
+            })?,
+        )?;
+        let raw_report = decoder.array("pre-release raw report").map_err(|_| {
+            SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation raw report is truncated",
+            )
+        })?;
+        decoder.finish().map_err(|_| {
+            SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation receipt has trailing bytes",
+            )
+        })?;
+        let receipt = Self { claims, raw_report };
+        receipt.verify_binding(expected_claims)?;
+        if receipt.encode()? != exact_bytes {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation receipt is not canonical",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    pub fn verify_binding(
+        &self,
+        expected_claims: &Pir2PreReleaseObservationClaimsV1,
+    ) -> Result<(), SnpSealedSecretsErrorV1> {
+        if &self.claims != expected_claims {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation claims differ from current boot expectations",
+            ));
+        }
+        let embedded_report_data = pir_core::attest::extract_report_data(&self.raw_report).ok_or(
+            SnpSealedSecretsErrorV1::InvalidReceipt(
+                "pre-release observation report is too short for REPORT_DATA",
+            ),
+        )?;
+        if embedded_report_data != self.claims.report_data()? {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "raw SNP REPORT_DATA does not bind pre-release observation claims",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], SnpSealedSecretsErrorV1> {
+        self.claims.digest()
+    }
+
+    pub fn claims(&self) -> &Pir2PreReleaseObservationClaimsV1 {
+        &self.claims
+    }
+
+    pub fn raw_report(&self) -> &[u8; PIR2_PRE_RELEASE_OBSERVATION_RAW_REPORT_LEN_V1] {
+        &self.raw_report
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+        self.verify_binding(&self.claims)?;
+        let claims = self.claims.encode_claims()?;
+        let mut out = Vec::with_capacity(PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1);
+        out.extend_from_slice(PRE_RELEASE_OBSERVATION_MAGIC_V1);
+        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&claims);
+        out.extend_from_slice(&self.raw_report);
+        debug_assert_eq!(out.len(), PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1);
+        Ok(out)
     }
 }
 
@@ -1699,6 +1926,9 @@ mod tests {
             let mut report = self.report.clone();
             if self.echo_challenge {
                 report.report_data = report_data;
+                if report.raw_report.len() >= 0x90 {
+                    report.raw_report[0x50..0x90].copy_from_slice(&report_data);
+                }
             }
             Ok(report)
         }
@@ -2159,6 +2389,43 @@ mod tests {
         );
         assert_eq!(public.clearing, keys.clearing.verifying_key().to_bytes());
         assert_ne!(public.service_identity, public.clearing);
+    }
+
+    #[test]
+    fn pre_release_observation_receipt_is_canonical_and_rejects_replay() {
+        let claims =
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x81; 32], [0x82; 32], [0x83; 16]).unwrap();
+        let provider = MockProviderV1::good(&release(), [0x42; 32]);
+        let receipt =
+            Pir2PreReleaseObservationReceiptV1::request(claims.clone(), &provider).unwrap();
+        let encoded = receipt.encode().unwrap();
+        assert_eq!(encoded.len(), PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1);
+        assert_eq!(
+            &claims.report_data().unwrap()[..32],
+            &claims.report_data().unwrap()[32..]
+        );
+        assert_eq!(
+            Pir2PreReleaseObservationReceiptV1::decode_and_verify(&encoded, &claims).unwrap(),
+            receipt
+        );
+        assert_eq!(provider.report_calls.get(), 1);
+        assert_eq!(provider.derive_calls.get(), 0);
+
+        let replay_variants = [
+            Pir2PreReleaseObservationClaimsV1::new(2, [0x81; 32], [0x82; 32], [0x83; 16]).unwrap(),
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x91; 32], [0x82; 32], [0x83; 16]).unwrap(),
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x81; 32], [0x92; 32], [0x83; 16]).unwrap(),
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x81; 32], [0x82; 32], [0x93; 16]).unwrap(),
+        ];
+        for replay in replay_variants {
+            assert!(
+                Pir2PreReleaseObservationReceiptV1::decode_and_verify(&encoded, &replay).is_err()
+            );
+        }
+
+        let mut tampered = encoded;
+        tampered[10 + 88 + 0x50] ^= 1;
+        assert!(Pir2PreReleaseObservationReceiptV1::decode_and_verify(&tampered, &claims).is_err());
     }
 
     #[test]

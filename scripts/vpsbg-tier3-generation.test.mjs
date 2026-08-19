@@ -180,6 +180,11 @@ try {
   );
   assert.match(
     tier3RunText,
+    /if \[ "\$PIR2_SEALED_PHASE" = observe \]; then[\s\S]*--pir2-snp-sealed-phase "\$PIR2_SEALED_PHASE"[\s\S]*else[\s\S]*require_file "\$PIR2_SEALED_RELEASE_PATH"[\s\S]*--pir2-snp-sealed-release "\$PIR2_SEALED_RELEASE_PATH"/,
+    "Observe must run without a release while Enroll and Probe require one",
+  );
+  assert.match(
+    tier3RunText,
     /ready\)[\s\S]*run_pir2_sealed_ready_preflight[\s\S]*esac[\s\S]*wait_for_databases_config[\s\S]*build_direct_oram mainnet[\s\S]*exec "\$UNIFIED_SERVER"[\s\S]*--pir2-snp-sealed-require-ready/,
     "Ready must preflight before databases/ORAM and reopen only in the final exec",
   );
@@ -312,16 +317,18 @@ phase=
 receipt=
 marker=
 boot_id=
+release_seen=absent
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --pir2-snp-sealed-phase) phase=$2; shift 2 ;;
     --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
     --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
     --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    --pir2-snp-sealed-release) release_seen=present; shift 2 ;;
     *) shift ;;
   esac
 done
-printf '%s\n' "$phase" >> "${inertCalls}"
+printf '%s:%s\n' "$phase" "$release_seen" >> "${inertCalls}"
 [ ! -e "$receipt" ] || exit 2
 [ ! -e "$marker" ] || exit 2
 printf 'fixture receipt\n' > "$receipt"
@@ -351,6 +358,9 @@ exit 42
   for (const [index, phase] of ["observe", "enroll", "probe"].entries()) {
     const phaseRoot = path.join(inertRoot, phase);
     writeSealedStartup(phaseRoot, phase, index + 1);
+    if (phase !== "observe") {
+      write(path.join(phaseRoot, "release.bin"), "fixture signed release\n");
+    }
     const bootId = `${index + 1}`.repeat(8);
     writeFileSync(
       inertBootId,
@@ -365,7 +375,10 @@ exit 42
     };
     const inert = run("sh", [inertRunScript], { env: inertEnv });
     assert.equal(inert.status, 42, inert.stdout + inert.stderr);
-    assert.equal(readFileSync(inertCalls, "utf8").trim().split("\n").at(-1), phase);
+    assert.equal(
+      readFileSync(inertCalls, "utf8").trim().split("\n").at(-1),
+      `${phase}:${phase === "observe" ? "absent" : "present"}`,
+    );
     assert.equal(existsSync(path.join(phaseRoot, "databases.toml")), false);
     const callsBeforeRetry = readFileSync(inertCalls, "utf8");
     const retry = run("sh", [inertRunScript], { env: inertEnv });
@@ -415,6 +428,7 @@ exit_code=42
   const partialRoot = path.join(inertRoot, "partial-marker");
   const partialAttemptRoot = path.join(partialRoot, "trusted-attempt");
   writeSealedStartup(partialRoot, "probe", 10);
+  write(path.join(partialRoot, "release.bin"), "fixture signed release\n");
   const callsBeforePartialMarker = readFileSync(inertCalls, "utf8");
   const partialMarker = run("sh", [inertRunScript], {
     env: {
@@ -438,6 +452,7 @@ exit_code=42
   const partialTokenRoot = path.join(inertRoot, "partial-token");
   const partialTokenAttemptRoot = path.join(partialTokenRoot, "trusted-attempt");
   writeSealedStartup(partialTokenRoot, "enroll", 11);
+  write(path.join(partialTokenRoot, "release.bin"), "fixture signed release\n");
   write(
     path.join(partialTokenAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env"),
     "schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\nkind=terminal\n",
