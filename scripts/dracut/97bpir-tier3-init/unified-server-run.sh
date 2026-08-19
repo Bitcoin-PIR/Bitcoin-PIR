@@ -374,6 +374,29 @@ inert_marker_matches_current_boot() {
         && [ -s "$PIR2_SEALED_RECEIPT_PATH" ]
 }
 
+ready_preflight_marker_matches_current_boot() {
+    [ -r "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" ] || return 1
+    marker_schema=$(awk -F= '$1 == "schema" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
+        || fatal "pir2 sealed Ready-preflight marker is malformed"
+    marker_phase=$(awk -F= '$1 == "phase" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
+        || fatal "pir2 sealed Ready-preflight marker is malformed"
+    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
+        || fatal "pir2 sealed Ready-preflight marker is malformed"
+    marker_receipt_digest=$(awk -F= '$1 == "receipt_digest" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
+        || fatal "pir2 sealed Ready-preflight marker is malformed"
+    marker_exit_code=$(awk -F= '$1 == "exit_code" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
+        || fatal "pir2 sealed Ready-preflight marker is malformed"
+    marker_lines=$(wc -l <"$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" | tr -d '[:space:]')
+    [ "$marker_lines" = 5 ] || fatal "pir2 sealed Ready-preflight marker has unexpected fields"
+    [ "$marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] \
+        || fatal "pir2 sealed Ready-preflight marker has unsupported schema"
+    [ "$marker_phase" = ready ] || fatal "pir2 sealed Ready-preflight marker has invalid phase"
+    validate_lower_hex "$marker_receipt_digest" 64 "sealed Ready-preflight receipt digest"
+    [ "$marker_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
+        && [ "$marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
+        && [ -s "$PIR2_SEALED_READY_PREFLIGHT_RECEIPT_PATH" ]
+}
+
 prepare_pir2_sealed_output_dirs() {
     umask 077
     mkdir -p "$PIR2_SEALED_ROOT" "$PIR2_SEALED_RECEIPT_DIR" "$PIR2_SEALED_MARKER_DIR" \
@@ -406,6 +429,42 @@ run_pir2_sealed_inert_phase() {
     inert_marker_matches_current_boot \
         || fatal "pir2 sealed dispatcher exited 42 without an exact current-boot marker and receipt"
     exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
+}
+
+run_pir2_sealed_ready_preflight() {
+    if ready_preflight_marker_matches_current_boot; then
+        echo "[unified-server-run] reusing exact current-boot pir2 sealed Ready-preflight success" >&2
+        return 0
+    fi
+    "$UNIFIED_SERVER" \
+        --port 8091 \
+        --role secondary \
+        --serve-queries \
+        --pir2-snp-sealed-preflight-only \
+        --pir2-snp-sealed-release "$PIR2_SEALED_RELEASE_PATH" \
+        --pir2-snp-sealed-envelope "$PIR2_SEALED_ENVELOPE_PATH" \
+        --pir2-snp-sealed-receipt "$PIR2_SEALED_READY_PREFLIGHT_RECEIPT_PATH" \
+        --pir2-snp-sealed-marker "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" \
+        --pir2-snp-sealed-phase ready \
+        --pir2-snp-sealed-ordinal "$PIR2_SEALED_ORDINAL" \
+        --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
+        --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX" \
+        --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
+        --pir2-snp-sealed-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
+        --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
+        --service-storeless-bat-v2-policy-digest-hex "$PIR2_SEALED_POLICY_DIGEST_HEX" \
+        --service-storeless-bat-v2-class "$PIR2_SEALED_CLASS_DIGEST_HEX=$PIR2_SEALED_CLASS_PATH" \
+        --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
+        --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
+        --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \
+        --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
+        --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"
+    sealed_status=$?
+    [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
+        || fatal "pir2 sealed Ready preflight failed with exit $sealed_status"
+    ready_preflight_marker_matches_current_boot \
+        || fatal "pir2 sealed Ready preflight exited 42 without an exact current-boot marker and receipt"
+    echo "[unified-server-run] pir2 sealed Ready preflight passed; opened keys were dropped before ORAM" >&2
 }
 
 wait_for_databases_config() {
@@ -794,6 +853,8 @@ verify_direct_oram_publish() {
 }
 
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
+# BusyBox ash provides the required ulimit builtin in the measured initramfs.
+# shellcheck disable=SC3045
 ulimit -c 0 || fatal "failed to disable core dumps before pir2 sealed startup"
 PIR2_PROC_SWAPS=${BPIR_PIR2_PROC_SWAPS:-/proc/swaps}
 require_file "$PIR2_PROC_SWAPS"
@@ -815,11 +876,10 @@ observe|enroll|probe)
     run_pir2_sealed_inert_phase
     ;;
 ready)
-    # The real Ready preflight is connected below once the dispatcher exposes
-    # its reviewed ready-preflight-only CLI.  Do not emulate it with Probe or
-    # a deliberately failing server invocation: neither verifies the complete
-    # public authorization set with the opened keys.
-    fatal "pir2 sealed ready requires the dedicated binary ready-preflight interface"
+    # The child process strictly opens the envelope, verifies all three public
+    # authorizations, writes a separate current-boot receipt, drops both keys
+    # on exit 42, and returns control here before any database/ORAM access.
+    run_pir2_sealed_ready_preflight
     ;;
 esac
 

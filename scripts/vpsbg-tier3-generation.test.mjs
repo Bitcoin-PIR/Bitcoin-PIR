@@ -124,6 +124,13 @@ try {
   );
   assert.match(
     tier3RunText,
+    /ready\)[\s\S]*run_pir2_sealed_ready_preflight[\s\S]*esac[\s\S]*wait_for_databases_config[\s\S]*build_direct_oram mainnet[\s\S]*exec "\$UNIFIED_SERVER"[\s\S]*--pir2-snp-sealed-require-ready/,
+    "Ready must preflight before databases/ORAM and reopen only in the final exec",
+  );
+  assert.match(tier3RunText, /ready-preflight-\$PIR2_BOOT_ID_HEX\.bin/);
+  assert.match(tier3RunText, /ready-runtime-\$PIR2_BOOT_ID_HEX\.bin/);
+  assert.match(
+    tier3RunText,
     /--pir2-snp-sealed-require-ready[\s\S]*--service-storeless-bat-v2-policy-digest-hex/,
     "final serving must use sealed Ready plus the payment-storeless BAT V2 profile",
   );
@@ -309,7 +316,36 @@ exit 42
   const mismatchSwaps = path.join(mismatchRoot, "swaps");
   const mismatchServicePolicy = path.join(mismatchRoot, "service-policy.bin");
   write(oramctl, `#!/bin/sh\nprintf invoked > "${marker}"\n`);
-  write(unifiedServer, "#!/bin/sh\nexit 0\n");
+  write(
+    unifiedServer,
+    `#!/bin/sh
+preflight=false
+receipt=
+marker=
+boot_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  printf 'fixture receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"46".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
+exit 0
+`,
+  );
   chmodSync(oramctl, 0o755);
   chmodSync(unifiedServer, 0o755);
   write(bhtmProof, "{}\n");
@@ -340,10 +376,6 @@ exit 42
     .replace("TRUSTED_INPUT_ROOT=/run/bitcoinpir-oram-inputs", `TRUSTED_INPUT_ROOT=${mismatchRoot}/trusted-inputs`)
     .replace("TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state", `TRUSTED_STATE_ROOT=${mismatchRoot}/trusted-state`)
     .replaceAll("/run/bitcoinpir-oram-status-api", `${mismatchRoot}/status-api`)
-    .replace(
-      'fatal "pir2 sealed ready requires the dedicated binary ready-preflight interface"',
-      ":",
-    )
     .replaceAll("sleep 5", ":");
   writeFileSync(fixtureRunScript, transformed);
   chmodSync(fixtureRunScript, 0o755);
@@ -362,6 +394,7 @@ exit 42
   const directRoot = path.join(tempRoot, "direct-success");
   const directData = path.join(directRoot, "data");
   const directMarker = path.join(directRoot, "oramctl.calls");
+  const directEvents = path.join(directRoot, "startup.events");
   const unifiedArgs = path.join(directRoot, "unified-server.args");
   const unifiedStarts = path.join(directRoot, "unified-server.starts");
   const readySignal = path.join(directRoot, "unified-server.ready");
@@ -407,6 +440,15 @@ exit 42
   write(directServicePolicy, "fixture policy\n");
   write(directSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
   writeSealedStartup(directSealedRoot, "ready");
+  for (const relative of [
+    "release.bin",
+    "credentials.envelope.bin",
+    "provider-accounting-authorization.bin",
+    "issuer-accounting-approval.bin",
+    "bat-acceptance-class.bin",
+  ]) {
+    write(path.join(directSealedRoot, relative), `${relative} fixture\n`);
+  }
   write(
     path.join(directData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "db0-runtime"\nproof_dir = "db0-proof-v1"\nproof_v2_dir = "db0-proof"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "db1-runtime"\nproof_dir = "db1-proof-v1"\nproof_v2_dir = "db1-proof"\nbase_height = 940611\nheight = 948454\n`,
@@ -435,12 +477,43 @@ for level in direct-index direct-chunk; do
   done
 done
 printf '%s|%s\n' "$out" "$state" >> "${directMarker}"
+printf 'oram:%s\n' "$out" >> "${directEvents}"
 `,
   );
   write(
     directUnifiedServer,
     `#!/bin/sh
-printf '%s\n' "$@" > "${unifiedArgs}"
+printf '%s\n' "$@" > "${unifiedArgs}.latest"
+preflight=false
+receipt=
+marker=
+boot_id=
+identity_cert=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    --pir2-snp-sealed-identity-cert) identity_cert=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  [ -s "$identity_cert" ] || exit 2
+  printf 'ready-preflight\n' >> "${directEvents}"
+  printf 'fixture ready receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"45".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
+mv "${unifiedArgs}.latest" "${unifiedArgs}"
+printf 'final-ready\n' >> "${directEvents}"
 printf started >> "${unifiedStarts}"
 printf ready > "${readySignal}"
 printf 'fixture server stdout\n'
@@ -489,10 +562,6 @@ exit 1
       "TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state",
       `TRUSTED_STATE_ROOT=${directRoot}/trusted-state`,
     )
-    .replace(
-      'fatal "pir2 sealed ready requires the dedicated binary ready-preflight interface"',
-      ":",
-    )
     .replace("ORAM_DB0_MAX_SECONDS=480", "ORAM_DB0_MAX_SECONDS=5")
     .replace("ORAM_DB1_MAX_SECONDS=180", "ORAM_DB1_MAX_SECONDS=5")
     .replace("ORAM_TOTAL_MAX_SECONDS=900", "ORAM_TOTAL_MAX_SECONDS=8")
@@ -536,6 +605,12 @@ exit 1
   assert.equal(existsSync(directMarker), false, "ORAM must not run with partial sealed config");
   assert.equal(existsSync(unifiedStarts), false, "server must not run with partial sealed config");
   writeFileSync(path.join(directSealedRoot, "startup.env"), completeStartup);
+  const missingReadyArtifact = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(missingReadyArtifact.status, 0, missingReadyArtifact.stdout + missingReadyArtifact.stderr);
+  assert.match(missingReadyArtifact.stderr, /Ready preflight failed with exit 2/);
+  assert.equal(existsSync(directMarker), false, "ORAM must not run before Ready public artifacts pass");
+  assert.equal(existsSync(unifiedStarts), false, "final server must not run before Ready preflight");
+  write(path.join(directSealedRoot, "identity.cert"), "identity certificate fixture\n");
   const directSuccess = run("sh", [directRunScript], { env: directEnv });
   assert.equal(directSuccess.status, 0, directSuccess.stdout + directSuccess.stderr);
   const directCalls = readFileSync(directMarker, "utf8");
@@ -547,6 +622,14 @@ exit 1
   assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
   assert.match(finalArgs, /--service-storeless-bat-v2-policy-digest-hex/);
   assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
+  assert.deepEqual(
+    readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>
+      event
+        .replace(/^oram:.*db0-mainnet-948454$/, "oram-db0")
+        .replace(/^oram:.*db1-delta-940611-948454$/, "oram-db1")
+    ),
+    ["ready-preflight", "oram-db0", "oram-db1", "final-ready"],
+  );
   for (const label of ["mainnet-948454", "delta-940611-948454"]) {
     assert.match(
       readFileSync(path.join(directData, "oram-boot-logs", `${label}.status.env`), "utf8"),
@@ -584,6 +667,30 @@ exit 1
   write(
     timeoutUnifiedServer,
     `#!/bin/sh
+preflight=false
+receipt=
+marker=
+boot_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  printf 'fixture timeout preflight receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"47".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
 printf 'timeout server stdout\\n'
 printf 'timeout server stderr\\n' >&2
 exec sleep 5
@@ -658,6 +765,19 @@ exit_code=42
 
   rmSync(svLog);
   rmSync(path.join(sealedGuardRoot, `markers/inert-${sealedGuardBootHex}.env`));
+  write(
+    path.join(sealedGuardRoot, `receipts/ready-preflight-${sealedGuardBootHex}.bin`),
+    "fixture ready preflight receipt\n",
+  );
+  write(
+    path.join(sealedGuardRoot, `markers/ready-preflight-${sealedGuardBootHex}.env`),
+    `schema=bitcoinpir-pir2-sealed-inert-success-v1
+phase=ready
+boot_id=${sealedGuardBootHex}
+receipt_digest=${"56".repeat(32)}
+exit_code=42
+`,
+  );
   const unbound42 = run("sh", [tier3FinishScript, "42", "0"], {
     env: {
       ...guardEnv,
@@ -667,7 +787,11 @@ exit_code=42
   });
   assert.equal(unbound42.status, 0, unbound42.stdout + unbound42.stderr);
   assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
-  assert.equal(existsSync(svLog), false, "exit 42 without the exact marker must retry");
+  assert.equal(
+    existsSync(svLog),
+    false,
+    "Ready-preflight marker must not make finish treat exit 42 as terminal success",
+  );
   rmSync(guardState, { recursive: true, force: true });
   for (let failure = 1; failure <= 3; failure += 1) {
     const result = run("sh", [tier3FinishScript, "134", "6"], { env: guardEnv });
