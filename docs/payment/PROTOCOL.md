@@ -225,6 +225,38 @@ pub enum PriceV1 {
 The server derives all limits from its loaded signed policy. Wire values only
 select an existing scope/offer.
 
+### Issuer-wide BAT V2 class registry
+
+`AuthScheme::BitcoinPirCashuBatV2` is wire value `6`. Its policy offer remains
+inside the unchanged canonical `ServicePolicyV1` encoding, but it uses a new
+shape: BOLT11 acquisition, `SharedIssuerOnline` verification, a nonzero
+issuer ID, and an exact nonzero 32-byte preallocated acceptance-class ID in
+`key_id`. It carries neither `CredentialKeyBindingV1` nor a standard-Cashu
+manifest. V1 binding, issuance, proof/redeem and ProviderStore paths reject
+scheme 6 instead of treating it as provider-bound BAT V1.
+
+After all provider policies are signed, the credential issuer signs a
+separate canonical `BatAcceptanceClassV2` artifact. It binds the issuer root,
+stable class ID, key epoch and absolute key validity, one raw BAT verification
+key, one common-terms projection, and a strictly sorted set of exact
+`(provider_id, policy_digest, scope_id, offer_id)` members. The class ID is not
+derived from that artifact, so provider policy digests and the issuer artifact
+do not form a digest cycle. The class artifact and terms use independent V2
+signature/digest domains; the raw-key ID additionally commits issuer, class,
+key epoch and raw key.
+
+Issuer-store schema v6 atomically installs a complete class epoch against each
+provider's current exact signed policy head. A class ID keeps the same common
+terms across epochs; a changed exact member set requires a fresh epoch and raw
+key, while the old signed artifact remains available through its promised
+retired-policy horizon. The store rejects epoch rollback/forks, incomplete or
+incompatible members, and raw-key reuse across V2 classes or legacy BAT V1.
+Schema v6 has no implicit migration from v5.
+
+This registry is only the first V2 source slice. Class-bound quote/claim
+records, issuer-global first-spend redemption, non-grantable replay results,
+storeless provider admission and SDK/Web wallet handling are still pending.
+
 ## PIR wire messages
 
 Four opcode values are reserved after a repository-wide collision check:

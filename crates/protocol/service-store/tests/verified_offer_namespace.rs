@@ -2,12 +2,12 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use pir_service_protocol::{
     arc_provider_global_spend_key_v1, bat_verification_key_fingerprint_v1, bind_auth_begin_v1,
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_cashu_mint_id,
-    derive_shared_issuer_local_grant_namespace_v1,
-    free_anonymous_ticket_key_id, paid_receipt_key_id, AcquisitionMethod, ArcPresentationV1,
-    AuthBeginV1, AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId,
-    BoundAuthAttemptV1, CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
-    CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
-    DeploymentStatus, EntitlementLimitsV1, FreeAnonymousTicketV1, FreeModeV1, OperationStartV1,
+    derive_shared_issuer_local_grant_namespace_v1, free_anonymous_ticket_key_id,
+    paid_receipt_key_id, AcquisitionMethod, ArcPresentationV1, AuthBeginV1, AuthPaddingClassV1,
+    AuthScheme, AuthorizationProofV1, BackendId, BoundAuthAttemptV1, CashuDenominationKeyV1,
+    CashuKeysetBindingV1, CashuRequiredNutsV1, CredentialKeyBindingClaimsV1,
+    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeAnonymousTicketV1, FreeModeV1, OperationStartV1,
     PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1,
     ServicePolicyV1, ServiceProtocolError, ServiceScopePolicyV1, ServiceScopeV1,
     StandardCashuMintManifestV1, TrustedCatalogResolutionV1, VerificationMode,
@@ -248,6 +248,9 @@ fn credential_binding(
         ),
         AuthScheme::ArcV1Experimental => (CredentialUnitV1::Auth, vec![0xa5; 99], vec![0xa6; 16]),
         AuthScheme::CashuEcashV1 => panic!("standard Cashu has no credential binding"),
+        AuthScheme::BitcoinPirCashuBatV2 => {
+            panic!("issuer-wide BAT V2 has no V1 provider-store credential binding")
+        }
     };
     let issuer_signing_key = SigningKey::from_bytes(&ISSUER_SIGNING_SEED);
     let binding = CredentialKeyBindingV1::sign(
@@ -506,6 +509,30 @@ fn expect_namespace(
         } => (*namespace, install_outcome),
         other => panic!("expected a durable namespace, got {other:?}"),
     }
+}
+
+#[test]
+fn issuer_wide_bat_v2_never_derives_a_provider_store_namespace() {
+    let path = TestPath::new();
+    let store = create_store(&path.database, 0x20);
+    let scope = scope(1);
+    let mut offer = bearer_offer(
+        &scope,
+        59,
+        AuthScheme::BitcoinPirCashuBatV1,
+        VerificationMode::SharedIssuerOnline,
+        1,
+    );
+    offer.authorization = AuthScheme::BitcoinPirCashuBatV2;
+    offer.key_id = vec![0x42; 32];
+    offer.credential_binding = None;
+
+    assert!(matches!(
+        install_offer(&store, scope, offer, 1),
+        Err(StoreError::InvalidInput(
+            "issuer-wide BAT V2 has no provider-store namespace"
+        ))
+    ));
 }
 
 #[test]

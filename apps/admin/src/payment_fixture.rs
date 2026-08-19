@@ -2407,6 +2407,9 @@ mod tests {
                             }
                         }
                         AuthScheme::FreeV1 => {}
+                        AuthScheme::BitcoinPirCashuBatV2 => {
+                            panic!("V1 payment fixture must not emit issuer-wide BAT V2 offers")
+                        }
                     }
                 }
             }

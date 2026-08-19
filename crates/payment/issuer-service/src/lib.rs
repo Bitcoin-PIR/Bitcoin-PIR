@@ -871,6 +871,7 @@ where
                 now_unix,
             )
             .map_err(|_| IssuerServiceErrorV1::Unauthorized),
+            AuthScheme::BitcoinPirCashuBatV2 => Err(IssuerServiceErrorV1::InvalidRequest),
             AuthScheme::FreeV1 | AuthScheme::CashuEcashV1 => {
                 Err(IssuerServiceErrorV1::InvalidRequest)
             }
@@ -931,6 +932,7 @@ pub fn ensure_shared_clearing_binding_material_v1(
                 &binding.claims.verification_key,
             )
         }),
+        AuthScheme::BitcoinPirCashuBatV2 => false,
         AuthScheme::Bolt11DirectReceiptV1 | AuthScheme::CashuEcashV1 => false,
     };
     if covered {
@@ -973,6 +975,9 @@ fn ensure_offer_credential_material_v1(
     if offer.acquisition != AcquisitionMethod::Bolt11V1 || &offer.issuer_id != issuer_id {
         return Ok(());
     }
+    if offer.authorization == AuthScheme::BitcoinPirCashuBatV2 {
+        return Err(IssuerServiceErrorV1::InvalidRequest);
+    }
     let binding = offer
         .credential_binding
         .as_ref()
@@ -1004,6 +1009,7 @@ fn ensure_offer_credential_material_v1(
                 &binding.claims.verification_key,
             )
         }),
+        AuthScheme::BitcoinPirCashuBatV2 => false,
         AuthScheme::FreeV1 | AuthScheme::CashuEcashV1 => false,
     };
     if covered {

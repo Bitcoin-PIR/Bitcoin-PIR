@@ -855,6 +855,15 @@ fn check_store(args: StoreCheckArgs) -> Result<(), String> {
     println!("quote_rows={}", inventory.quote_rows);
     println!("claim_rows={}", inventory.claim_rows);
     println!("retained_policy_rows={}", inventory.retained_policy_rows);
+    println!("bat_v2_class_rows={}", inventory.bat_v2_class_rows);
+    println!(
+        "bat_v2_class_head_rows={}",
+        inventory.bat_v2_class_head_rows
+    );
+    println!(
+        "bat_v2_class_member_rows={}",
+        inventory.bat_v2_class_member_rows
+    );
     println!("redemption_rows={}", inventory.redemption_rows);
     println!("payout_rows={}", inventory.payout_rows);
     Ok(())

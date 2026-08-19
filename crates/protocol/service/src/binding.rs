@@ -312,6 +312,13 @@ impl CredentialKeyBindingV1 {
             }
             AuthScheme::BitcoinPirCashuBatV1 => (CredentialUnitV1::Auth, 33usize, true),
             AuthScheme::ArcV1Experimental => (CredentialUnitV1::Auth, 99usize, false),
+            AuthScheme::BitcoinPirCashuBatV2 => {
+                return Err(ServiceProtocolError::InvalidValue {
+                    field: "CredentialKeyBindingV1.scheme",
+                    reason:
+                        "BAT V2 uses an issuer-wide acceptance class, not a V1 provider binding",
+                })
+            }
             AuthScheme::CashuEcashV1 => {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "CredentialKeyBindingV1.scheme",

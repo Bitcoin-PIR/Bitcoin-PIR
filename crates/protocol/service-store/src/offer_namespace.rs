@@ -1,8 +1,8 @@
 //! Safe derivation of provider-local durable spend namespaces.
 
 use pir_service_protocol::{
-    bat_verification_key_fingerprint_v1, derive_shared_issuer_local_grant_namespace_v1,
-    AuthScheme, CredentialKeyBindingV1, FreeModeV1, ServiceProtocolError, VerificationMode,
+    bat_verification_key_fingerprint_v1, derive_shared_issuer_local_grant_namespace_v1, AuthScheme,
+    CredentialKeyBindingV1, FreeModeV1, ServiceProtocolError, VerificationMode,
     VerifiedServiceOfferV1, SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
 };
 use rusqlite::{params, OptionalExtension};
@@ -178,6 +178,11 @@ where
     A: ArcExclusiveKeyLineageVerifierV1 + ?Sized,
 {
     let offer = verified_offer.offer();
+    if offer.authorization == AuthScheme::BitcoinPirCashuBatV2 {
+        return Err(StoreError::InvalidInput(
+            "issuer-wide BAT V2 has no provider-store namespace",
+        ));
+    }
     match offer.verification {
         VerificationMode::SharedIssuerOnline => {
             let synthetic = derive_shared_issuer_local_grant_namespace_v1(verified_offer)?;
@@ -207,6 +212,11 @@ where
                 ))
             }
             AuthScheme::Bolt11DirectReceiptV1 | AuthScheme::BitcoinPirCashuBatV1 => {}
+            AuthScheme::BitcoinPirCashuBatV2 => {
+                return Err(StoreError::InvalidInput(
+                    "issuer-wide BAT V2 has no provider-store namespace",
+                ))
+            }
             AuthScheme::ArcV1Experimental if arc_lineage_verifier.is_some() => {}
             AuthScheme::ArcV1Experimental => {
                 return Ok(DerivedOfferNamespaceV1::UnsupportedExperimental)

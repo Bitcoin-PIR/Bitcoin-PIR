@@ -76,7 +76,7 @@ impl AuthPaddingClassV1 {
         }
     }
 
-    fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
+    pub(crate) fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
         match value {
             1 => Ok(Self::Class16KiB),
             value => Err(ServiceProtocolError::UnknownDiscriminant {
@@ -147,7 +147,7 @@ pub enum DeploymentStatus {
 }
 
 impl DeploymentStatus {
-    fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
+    pub(crate) fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
         match value {
             1 => Ok(Self::Stable),
             2 => Ok(Self::Experimental),
@@ -295,7 +295,7 @@ pub struct EntitlementLimitsV1 {
 }
 
 impl EntitlementLimitsV1 {
-    fn validate(&self) -> Result<(), ServiceProtocolError> {
+    pub(crate) fn validate(&self) -> Result<(), ServiceProtocolError> {
         if self.max_frames == 0 || self.max_wall_time_ms == 0 || self.max_concurrent_sockets == 0 {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "EntitlementLimitsV1",
@@ -305,7 +305,7 @@ impl EntitlementLimitsV1 {
         Ok(())
     }
 
-    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), ServiceProtocolError> {
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), ServiceProtocolError> {
         self.validate()?;
         out.extend_from_slice(&self.max_logical_inputs.to_le_bytes());
         out.extend_from_slice(&self.max_frames.to_le_bytes());
@@ -318,7 +318,7 @@ impl EntitlementLimitsV1 {
         Ok(())
     }
 
-    fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, ServiceProtocolError> {
+    pub(crate) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, ServiceProtocolError> {
         let value = Self {
             max_logical_inputs: decoder.u16("EntitlementLimitsV1.max_logical_inputs")?,
             max_frames: decoder.u32("EntitlementLimitsV1.max_frames")?,
@@ -483,6 +483,7 @@ impl ServiceOfferV1 {
                     AcquisitionMethod::Bolt11V1,
                     AuthScheme::Bolt11DirectReceiptV1
                         | AuthScheme::BitcoinPirCashuBatV1
+                        | AuthScheme::BitcoinPirCashuBatV2
                         | AuthScheme::ArcV1Experimental
                 )
                 | (AcquisitionMethod::CashuEcashV1, AuthScheme::CashuEcashV1)
@@ -523,6 +524,9 @@ impl ServiceOfferV1 {
                 self.verification,
                 VerificationMode::ProviderLocal | VerificationMode::SharedIssuerOnline
             ),
+            AuthScheme::BitcoinPirCashuBatV2 => {
+                self.verification == VerificationMode::SharedIssuerOnline
+            }
             AuthScheme::ArcV1Experimental => matches!(
                 self.verification,
                 VerificationMode::ProviderLocal | VerificationMode::SharedIssuerOnline
@@ -565,10 +569,25 @@ impl ServiceOfferV1 {
                 reason: "non-issued Free grants and standard Cashu spends authorize one operation",
             });
         }
-        let credential_backed = self.authorization != AuthScheme::FreeV1
+        let class_backed = self.authorization == AuthScheme::BitcoinPirCashuBatV2;
+        let credential_backed = !class_backed
+            && self.authorization != AuthScheme::FreeV1
             && self.authorization != AuthScheme::CashuEcashV1
             || self.free_mode == FreeModeV1::AnonymousTicket;
-        if credential_backed {
+        if class_backed {
+            if self.issuer_id.iter().all(|byte| *byte == 0)
+                || self.key_id.len() != 32
+                || self.key_id.iter().all(|byte| *byte == 0)
+                || self.endpoint.is_empty()
+                || self.credential_binding.is_some()
+                || self.cashu_mint_manifest.is_some()
+            {
+                return Err(ServiceProtocolError::InvalidValue {
+                    field: "ServiceOfferV1.bat_v2_class_binding",
+                    reason: "BAT V2 requires issuer, non-zero 32-byte class ID, endpoint, and no V1 delegation",
+                });
+            }
+        } else if credential_backed {
             if self.issuer_id.iter().all(|byte| *byte == 0)
                 || self.key_id.is_empty()
                 || self.endpoint.is_empty()
@@ -635,7 +654,9 @@ impl ServiceOfferV1 {
                 PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
                     | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER
             }
-            AuthScheme::BitcoinPirCashuBatV1 | AuthScheme::ArcV1Experimental => {
+            AuthScheme::BitcoinPirCashuBatV1
+            | AuthScheme::BitcoinPirCashuBatV2
+            | AuthScheme::ArcV1Experimental => {
                 if self.verification == VerificationMode::SharedIssuerOnline {
                     PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
                         | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER

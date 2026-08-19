@@ -7,6 +7,7 @@
 mod attach;
 mod auth;
 mod auth_verify;
+mod bat_v2;
 mod binding;
 mod cashu_manifest;
 mod challenge;
@@ -38,6 +39,16 @@ pub use auth::{
 };
 pub use auth_verify::{
     bind_auth_begin_v1, BoundAuthAttemptV1, TrustedCatalogResolutionV1, TrustedServiceCatalogV1,
+};
+pub use bat_v2::{
+    bat_acceptance_member_from_verified_policy_v2, derive_bat_acceptance_key_id_v2,
+    validate_bat_acceptance_class_id_v2, BatAcceptanceClassIdV2, BatAcceptanceClassV2,
+    BatAcceptanceMemberV2, BatAcceptanceTermsV2, VerifiedBatAcceptanceMemberV2,
+    BAT_ACCEPTANCE_CLASS_CODEC_MAGIC_V2, BAT_ACCEPTANCE_CLASS_DIGEST_DOMAIN_V2,
+    BAT_ACCEPTANCE_CLASS_SIGNATURE_DOMAIN_V2, BAT_ACCEPTANCE_CLASS_WIRE_VERSION_V2,
+    BAT_ACCEPTANCE_KEY_ID_DOMAIN_V2, BAT_ACCEPTANCE_TERMS_DIGEST_DOMAIN_V2,
+    MAX_BAT_ACCEPTANCE_CLASS_LEN_V2, MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2,
+    MAX_BAT_ACCEPTANCE_TERMS_LEN_V2,
 };
 pub use binding::{
     derive_bat_key_id_v1, derive_issuer_id, CredentialKeyBindingClaimsV1,

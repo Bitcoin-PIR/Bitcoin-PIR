@@ -821,6 +821,7 @@ const fn auth_scheme_label(value: AuthScheme) -> &'static str {
         AuthScheme::CashuEcashV1 => "cashu-ecash",
         AuthScheme::BitcoinPirCashuBatV1 => "cashu-bat",
         AuthScheme::ArcV1Experimental => "arc-experimental",
+        AuthScheme::BitcoinPirCashuBatV2 => "cashu-bat-v2",
     }
 }
 

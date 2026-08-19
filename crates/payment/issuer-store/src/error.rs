@@ -54,6 +54,11 @@ pub enum StoreError {
     ServicePolicyFork,
     ServicePolicySigningKeyConflict,
     BatKeyLineageConflict,
+    BatV2ClassRollback,
+    BatV2ClassFork,
+    BatV2ClassTermsConflict,
+    BatV2ClassMemberMismatch,
+    BatV2RawKeyConflict,
     ArcKeyLineageConflict,
     SettlementKeyLineageConflict,
     ProviderRegistrationRollback,
@@ -206,6 +211,25 @@ impl fmt::Display for StoreError {
             Self::BatKeyLineageConflict => {
                 write!(f, "Cashu BAT raw key conflicts with immutable lineage")
             }
+            Self::BatV2ClassRollback => {
+                write!(f, "BAT V2 class key epoch rollback rejected")
+            }
+            Self::BatV2ClassFork => write!(
+                f,
+                "different BAT V2 class artifact at an accepted key epoch rejected"
+            ),
+            Self::BatV2ClassTermsConflict => write!(
+                f,
+                "BAT V2 common terms changed under an existing class ID"
+            ),
+            Self::BatV2ClassMemberMismatch => write!(
+                f,
+                "BAT V2 class member does not match a current exact provider policy"
+            ),
+            Self::BatV2RawKeyConflict => write!(
+                f,
+                "BAT raw key is already owned by another V1 or V2 lineage"
+            ),
             Self::ArcKeyLineageConflict => {
                 write!(f, "experimental ARC raw key conflicts with immutable lineage")
             }

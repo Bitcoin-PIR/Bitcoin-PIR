@@ -691,6 +691,7 @@ fn authorization_name(value: AuthScheme) -> &'static str {
         AuthScheme::CashuEcashV1 => "cashu-ecash-v1",
         AuthScheme::BitcoinPirCashuBatV1 => "bitcoinpir-cashu-bat-v1",
         AuthScheme::ArcV1Experimental => "arc-v1-experimental",
+        AuthScheme::BitcoinPirCashuBatV2 => "bitcoinpir-cashu-bat-v2",
     }
 }
 

@@ -1172,6 +1172,11 @@ fn map_store_error(error: StoreError) -> IssuerCoreErrorV1 {
         | StoreError::ServicePolicyFork
         | StoreError::ServicePolicySigningKeyConflict
         | StoreError::BatKeyLineageConflict
+        | StoreError::BatV2ClassRollback
+        | StoreError::BatV2ClassFork
+        | StoreError::BatV2ClassTermsConflict
+        | StoreError::BatV2ClassMemberMismatch
+        | StoreError::BatV2RawKeyConflict
         | StoreError::ArcKeyLineageConflict
         | StoreError::SettlementKeyLineageConflict
         | StoreError::ProviderRegistrationRollback

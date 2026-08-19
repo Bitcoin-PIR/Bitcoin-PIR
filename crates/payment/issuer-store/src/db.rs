@@ -303,6 +303,9 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             (SELECT COUNT(*) FROM receipt_serials WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM arc_key_lineages WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_key_lineages WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_class_artifacts WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_class_heads WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_class_members WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM settlement_key_lineages WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_registration_history WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_registrations WHERE issuer_id != ?1) + \
@@ -320,6 +323,56 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
     )?;
     if foreign_rows != 0 {
         return Err(StoreError::IssuerMismatch);
+    }
+
+    let bad_bat_v2_registry: i64 = connection.query_row(
+        "SELECT \
+            (SELECT COUNT(*) FROM bat_v2_class_heads h \
+                LEFT JOIN bat_v2_class_artifacts a \
+                  ON a.issuer_id = h.issuer_id AND a.class_id = h.class_id \
+                 AND a.key_epoch = h.highest_key_epoch \
+                WHERE a.artifact_digest IS NULL \
+                   OR a.artifact_digest != h.artifact_digest \
+                   OR a.common_terms_digest != h.common_terms_digest \
+                   OR a.commit_seq != h.commit_seq \
+                   OR h.highest_key_epoch != (SELECT MAX(prior.key_epoch) \
+                        FROM bat_v2_class_artifacts prior \
+                        WHERE prior.issuer_id = h.issuer_id AND prior.class_id = h.class_id)) + \
+            (SELECT COUNT(*) FROM bat_v2_class_artifacts a \
+                WHERE NOT EXISTS (SELECT 1 FROM bat_v2_class_heads h \
+                    WHERE h.issuer_id = a.issuer_id AND h.class_id = a.class_id) \
+                   OR EXISTS (SELECT 1 FROM bat_v2_class_heads h \
+                    WHERE h.issuer_id = a.issuer_id AND h.class_id = a.class_id \
+                      AND h.common_terms_digest != a.common_terms_digest) \
+                   OR a.member_count != (SELECT COUNT(*) FROM bat_v2_class_members m \
+                    WHERE m.issuer_id = a.issuer_id AND m.class_id = a.class_id \
+                      AND m.key_epoch = a.key_epoch) \
+                   OR 0 != (SELECT MIN(m.member_index) FROM bat_v2_class_members m \
+                    WHERE m.issuer_id = a.issuer_id AND m.class_id = a.class_id \
+                      AND m.key_epoch = a.key_epoch) \
+                   OR a.member_count - 1 != (SELECT MAX(m.member_index) \
+                        FROM bat_v2_class_members m \
+                        WHERE m.issuer_id = a.issuer_id AND m.class_id = a.class_id \
+                          AND m.key_epoch = a.key_epoch) \
+                   OR EXISTS (SELECT 1 FROM bat_v2_class_members m \
+                        WHERE m.issuer_id = a.issuer_id AND m.class_id = a.class_id \
+                          AND m.key_epoch = a.key_epoch AND m.commit_seq != a.commit_seq)) + \
+            (SELECT COUNT(*) FROM bat_v2_class_members m \
+                LEFT JOIN issuer_service_policies p \
+                  ON p.policy_digest = m.policy_digest AND p.provider_id = m.provider_id \
+                WHERE p.policy_digest IS NULL) + \
+            (SELECT COUNT(*) FROM bat_key_lineages legacy \
+                JOIN bat_v2_class_artifacts class \
+                  ON class.issuer_id = legacy.issuer_id \
+                 AND (class.raw_public_key = legacy.raw_public_key \
+                      OR class.key_fingerprint = legacy.key_fingerprint))",
+        [],
+        |row| row.get(0),
+    )?;
+    if bad_bat_v2_registry != 0 {
+        return Err(StoreError::SchemaMismatch(
+            "BAT V2 class registry linkage or raw-key ownership failed".to_owned(),
+        ));
     }
 
     let bad_provider_registration_history: i64 = connection.query_row(
@@ -435,6 +488,9 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             UNION ALL SELECT commit_seq FROM quote_status_nonces \
             UNION ALL SELECT commit_seq FROM arc_key_lineages \
             UNION ALL SELECT commit_seq FROM bat_key_lineages \
+            UNION ALL SELECT commit_seq FROM bat_v2_class_artifacts \
+            UNION ALL SELECT commit_seq FROM bat_v2_class_heads \
+            UNION ALL SELECT commit_seq FROM bat_v2_class_members \
             UNION ALL SELECT commit_seq FROM settlement_key_lineages \
             UNION ALL SELECT commit_seq FROM provider_registration_history \
             UNION ALL SELECT commit_seq FROM provider_registrations \

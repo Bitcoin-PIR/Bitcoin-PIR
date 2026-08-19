@@ -1245,6 +1245,17 @@ accept a changing artifact.
 
 ## Shared clearing and settlement tests
 
+The issuer-wide BAT V2 class-registry slice has two intentionally narrow test
+groups. Protocol tests lock the scheme-6 offer shape, canonical class codec,
+issuer signature, terms/member ordering, key-ID derivation and a complete BAT
+V1 signed-policy bytes/digest golden. Issuer-store tests install one class
+across two exact provider policies, advance to a fresh key epoch, retain and
+reopen the old epoch, and reject member/terms mismatches, epoch rollback/fork,
+invalid key-validity horizons, cross-class raw-key reuse and both V1-to-V2 and
+V2-to-V1 raw-key reuse. A v5 store is rejected rather than implicitly
+migrated. These tests do not claim that V2 quote, redeem, provider, SDK or Web
+paths exist.
+
 - identified redeem credits only the authenticated provider;
 - blind redeem also requires provider authentication and signs exactly the
   fixed settlement denomination;

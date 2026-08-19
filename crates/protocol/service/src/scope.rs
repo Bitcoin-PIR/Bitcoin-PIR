@@ -69,6 +69,7 @@ pub enum AuthScheme {
     CashuEcashV1 = 3,
     BitcoinPirCashuBatV1 = 4,
     ArcV1Experimental = 5,
+    BitcoinPirCashuBatV2 = 6,
 }
 
 impl AuthScheme {
@@ -79,6 +80,7 @@ impl AuthScheme {
             3 => Ok(Self::CashuEcashV1),
             4 => Ok(Self::BitcoinPirCashuBatV1),
             5 => Ok(Self::ArcV1Experimental),
+            6 => Ok(Self::BitcoinPirCashuBatV2),
             value => Err(ServiceProtocolError::UnknownDiscriminant {
                 kind: "AuthScheme",
                 value,
@@ -95,7 +97,7 @@ pub enum DatasetBindingV1 {
 }
 
 impl DatasetBindingV1 {
-    fn encode_into(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         match self {
             Self::Class { class_id } => {
                 out.push(1);
@@ -112,7 +114,7 @@ impl DatasetBindingV1 {
         }
     }
 
-    fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, ServiceProtocolError> {
+    pub(crate) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, ServiceProtocolError> {
         match decoder.u8("DatasetBindingV1.type")? {
             1 => Ok(Self::Class {
                 class_id: decoder.u16("DatasetBindingV1.class_id")?,

@@ -18,14 +18,26 @@ activated the path with real money.
       db0/db1 pool bindings, exact-db admission/reservation/dispatch and
       cross-database V2Half continuation isolation. The focused process test
       starts one complete two-database policy with two distinct pool markers.
-- [ ] **Issuer-wide V2 protocol pending.** Current policy bindings, issuer
-      lineage rules, SDK/Web selection and render gates remain provider-bound
-      and deliberately reject a shared raw BAT key across providers. Current
-      `main` also retains the old Direct Mainnet issuer unit and a stateful
-      single-pool provider profile. An unmerged draft's fixed
-      2-policy/12-key/2-clearing shape is superseded rather than ready to merge.
-      The current focused Mainnet script checks Direct V1; the draft CI checked
-      2/12/2. Neither is V2 readiness evidence.
+- [x] **Issuer-wide V2 class registry implemented.** Scheme 6 policies carry a
+      stable, preallocated 32-byte class ID and no V1 provider binding. A
+      separately signed issuer artifact fixes one immutable key epoch, common
+      commercial/entitlement terms and a canonical set of exact provider
+      policy members. Issuer-store schema v6 registers the complete artifact
+      atomically, retains old epochs, rejects class forks/terms changes and
+      prevents a raw BAT key from crossing either V2 classes or the legacy V1
+      lineage namespace. Focused protocol and store tests cover canonical
+      bytes, two-provider membership, epoch rotation/restart, validity bounds
+      and bidirectional V1/V2 key isolation. Version 5 stores are not migrated
+      implicitly.
+- [ ] **Issuer-wide V2 acquisition and redemption pending.** V1 quote, claim,
+      issuance, redeem and ProviderStore paths deliberately reject scheme 6;
+      no old replayable V1 success is reinterpreted. The class-bound quote/
+      wallet record, issuer-global first-spend transaction, non-grantable
+      replay response, storeless provider commit, SDK/Web selection and render
+      gates remain to implement. Current `main` also retains the old Direct
+      Mainnet issuer unit and stateful V1 provider profiles. An old draft's
+      fixed 2-policy/12-key/2-clearing shape remains superseded and is not V2
+      readiness evidence.
 - [ ] **Payment-storeless provider mode pending.** The current shared-BAT
       committer still uses ProviderStore for a local delivery claim and the
       existing storeless mode accepts only Free-PoW. The V2 path must make the
