@@ -20,7 +20,8 @@ use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 use crate::service::{
-    authorize_bat_v2_redemption_v2, dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_bat_v2_redemption_v2,
+    dangerous_unpaired_authorize_retained_service_redemption_v1,
     dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
     fetch_retained_service_redemption_v1, fetch_verified_service_policy_v1,
     request_pow_challenge_v1,
@@ -409,7 +410,7 @@ impl OramClient {
             )));
         }
         let transport = self.conn_mut()?;
-        authorize_bat_v2_redemption_v2(
+        dangerous_unpaired_authorize_bat_v2_redemption_v2(
             transport.as_mut(),
             verified,
             OperationStartV1::TeeOramQuery { db_id },

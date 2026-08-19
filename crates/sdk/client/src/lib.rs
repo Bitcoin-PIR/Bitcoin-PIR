@@ -114,7 +114,7 @@ pub use query_plan::{
 pub use service::{
     accept_bat_v2_authorization_response_v2, accept_pow_challenge_response_v1,
     accept_retained_bat_v2_policy_response_v2, accept_retained_service_policy_response_v1,
-    accept_service_policy_response_v1, authorize_bat_v2_redemption_v2,
+    accept_service_policy_response_v1, dangerous_unpaired_authorize_bat_v2_redemption_v2,
     build_pow_challenge_request_v1, build_retained_service_policy_request_v1,
     build_service_policy_request_v1,
     dangerous_unpaired_accept_retained_service_authorization_response_v1,

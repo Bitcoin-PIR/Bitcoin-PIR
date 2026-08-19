@@ -44,7 +44,8 @@ use crate::protocol::{
     reject_error_response, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 use crate::service::{
-    authorize_bat_v2_redemption_v2, dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_bat_v2_redemption_v2,
+    dangerous_unpaired_authorize_retained_service_redemption_v1,
     dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
     fetch_retained_service_redemption_v1, fetch_verified_service_policy_v1,
     request_pow_challenge_v1,
@@ -1645,7 +1646,7 @@ impl HarmonyClient {
         }
         let outcome = {
             let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-            authorize_bat_v2_redemption_v2(
+            dangerous_unpaired_authorize_bat_v2_redemption_v2(
                 hint_conn.as_mut(),
                 verified,
                 OperationStartV1::HarmonyHint {
@@ -1781,7 +1782,7 @@ impl HarmonyClient {
             )));
         }
         let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        authorize_bat_v2_redemption_v2(
+        dangerous_unpaired_authorize_bat_v2_redemption_v2(
             query_conn.as_mut(),
             verified,
             OperationStartV1::HarmonyQuery { db_id },

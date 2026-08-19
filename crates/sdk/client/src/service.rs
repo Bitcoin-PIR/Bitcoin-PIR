@@ -1314,13 +1314,15 @@ pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
     dangerous_unpaired_accept_retained_service_authorization_response_v1(&response, accepted)
 }
 
-/// Present one proof through an already verified BAT V2 member handle.
+/// Dangerous unpaired presentation through one verified BAT V2 member handle.
+/// Pair-based callers must establish their strict provider context before
+/// entering this lower-level one-sided transport operation.
 ///
 /// All local/session checks and proof class binding finish before the single
 /// transport call. Once that call is entered, any transport or response
 /// decoding failure is conservatively an indeterminate burn; this function
 /// never retries and never parses error strings.
-pub async fn authorize_bat_v2_redemption_v2(
+pub async fn dangerous_unpaired_authorize_bat_v2_redemption_v2(
     transport: &mut dyn PirTransport,
     verified: &VerifiedBatV2RedemptionV2,
     operation: OperationStartV1,
@@ -2333,7 +2335,7 @@ mod tests {
             sent: Vec::new(),
             exporter: [9; 32],
         };
-        assert!(authorize_bat_v2_redemption_v2(
+        assert!(dangerous_unpaired_authorize_bat_v2_redemption_v2(
             &mut rejected_before_send,
             &handle,
             OperationStartV1::DpfQuery { db_id: 0 },
@@ -2349,7 +2351,7 @@ mod tests {
             sent: Vec::new(),
             exporter: [8; 32],
         };
-        assert!(authorize_bat_v2_redemption_v2(
+        assert!(dangerous_unpaired_authorize_bat_v2_redemption_v2(
             &mut wrong_session,
             &handle,
             OperationStartV1::DpfQuery { db_id: 0 },
@@ -2417,7 +2419,7 @@ mod tests {
                 sent: Vec::new(),
                 exporter: [9; 32],
             };
-            let outcome = authorize_bat_v2_redemption_v2(
+            let outcome = dangerous_unpaired_authorize_bat_v2_redemption_v2(
                 &mut transport,
                 &handle,
                 OperationStartV1::DpfQuery { db_id: 0 },
