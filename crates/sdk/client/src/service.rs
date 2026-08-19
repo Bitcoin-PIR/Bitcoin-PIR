@@ -1281,6 +1281,7 @@ pub async fn dangerous_unpaired_authorize_service_operation_v1(
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
     let request = Zeroizing::new(dangerous_unpaired_build_service_authorization_request_v1(
@@ -1301,6 +1302,7 @@ pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
     proof: AuthorizationProofV1,
     now_unix: u64,
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
     let request = Zeroizing::new(
@@ -1347,6 +1349,7 @@ pub fn dangerous_unpaired_build_retained_service_authorization_request_v1(
     proof: AuthorizationProofV1,
     now_unix: u64,
 ) -> PirResult<Vec<u8>> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let verified_offer = accepted.verified_offer_for_redemption_v1(now_unix)?;
     let scope = verified_offer.scope();
     let (required_backend, required_workload) = operation.required_service();
@@ -1382,6 +1385,7 @@ pub fn dangerous_unpaired_build_service_authorization_request_v1(
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
 ) -> PirResult<Vec<u8>> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let (_scope_policy, offer) =
         service_offer_for_operation_v1(accepted, &scope_id, offer_id, &operation)?;
     let proof = proof
@@ -1398,6 +1402,18 @@ pub fn dangerous_unpaired_build_service_authorization_request_v1(
     };
     let padded = Zeroizing::new(auth.encode_padded().map_err(protocol_decode_error)?);
     Ok(encode_request(REQ_AUTH_BEGIN_V1, &padded))
+}
+
+/// Scheme 6 must pass through [`VerifiedBatV2RedemptionV2`]. Reject the
+/// public protocol enum itself so native callers cannot bypass the byte-level
+/// V1 proof decoder by constructing `AuthorizationProofV1` directly.
+fn reject_bat_v2_proof_from_generic_v1(proof: &AuthorizationProofV1) -> PirResult<()> {
+    if matches!(proof, AuthorizationProofV1::BitcoinPirCashuBatV2(_)) {
+        return Err(PirError::InvalidState(
+            "BAT V2 authorization requires a verified exact-member redemption handle".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Dangerous unpaired primitive: verify one provider's authorization response
@@ -2125,6 +2141,52 @@ mod tests {
         offer.authorization = AuthScheme::BitcoinPirCashuBatV2;
         offer.free_mode = FreeModeV1::NotFree;
         assert!(build_authorization_proof_for_offer_v1(&offer, &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn generic_native_v1_request_rejects_direct_bat_v2_enum_before_transport() {
+        let (policy, verifying_key, provider_id, scope_id, class, _) = bat_v2_policy_and_class();
+        let accepted = accept_service_policy_response_v1(
+            &policy_wire_response(policy),
+            provider_id,
+            &verifying_key,
+            150,
+            &ServicePolicyCheckpointV1::initial(),
+            [9; 32],
+        )
+        .unwrap();
+        let direct_proof = |secret_raw| {
+            AuthorizationProofV1::BitcoinPirCashuBatV2(
+                BitcoinPirCashuBatProofV2::from_class(&class, secret_raw, GENERATOR_COMPRESSED)
+                    .unwrap(),
+            )
+        };
+
+        assert!(dangerous_unpaired_build_service_authorization_request_v1(
+            &accepted,
+            scope_id,
+            11,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            direct_proof([0x61; 32]),
+        )
+        .is_err());
+
+        let mut transport = ScriptedSecureTransport {
+            responses: [].into(),
+            sent: Vec::new(),
+            exporter: [9; 32],
+        };
+        assert!(dangerous_unpaired_authorize_service_operation_v1(
+            &mut transport,
+            &accepted,
+            scope_id,
+            11,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            direct_proof([0x62; 32]),
+        )
+        .await
+        .is_err());
+        assert!(transport.sent.is_empty());
     }
 
     #[test]

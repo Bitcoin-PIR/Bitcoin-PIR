@@ -1783,10 +1783,10 @@ impl WasmDpfClient {
         Ok(grant_json_v1(&grant))
     }
 
-    /// Scheme-6 DPF admission accepts only the opaque verified-member handle;
-    /// the generic V1 proof builder remains unable to decode BAT V2.
-    #[wasm_bindgen(js_name = authorizeBatV2Service)]
-    pub async fn authorize_bat_v2_service_v2(
+    /// Dangerous one-sided DPF scheme-6 admission. This accepts only the
+    /// verified-member handle but does not prove a strict provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2Service)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_service_v2(
         &mut self,
         server_index: u8,
         db_id: u8,
@@ -1796,7 +1796,7 @@ impl WasmDpfClient {
     ) -> Result<JsValue, JsError> {
         let outcome = self
             .inner
-            .authorize_bat_v2_service_v2(
+            .dangerous_unpaired_authorize_bat_v2_service_v2(
                 server_index,
                 db_id,
                 &verified.inner,
@@ -2628,8 +2628,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeBatV2HintService)]
-    pub async fn authorize_bat_v2_hint_service_v2(
+    /// Dangerous one-sided Harmony hint admission without a verified strict
+    /// hint/query provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2HintService)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_hint_service_v2(
         &mut self,
         db_id: u8,
         verified: &WasmVerifiedBatV2RedemptionV2,
@@ -2638,7 +2640,7 @@ impl WasmHarmonyClient {
     ) -> Result<JsValue, JsError> {
         let outcome = self
             .inner
-            .authorize_bat_v2_hint_service_v2(
+            .dangerous_unpaired_authorize_bat_v2_hint_service_v2(
                 db_id,
                 &verified.inner,
                 proof_bytes,
@@ -2703,8 +2705,10 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
-    #[wasm_bindgen(js_name = authorizeBatV2QueryService)]
-    pub async fn authorize_bat_v2_query_service_v2(
+    /// Dangerous one-sided Harmony query admission without a verified strict
+    /// hint/query provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2QueryService)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_query_service_v2(
         &mut self,
         db_id: u8,
         verified: &WasmVerifiedBatV2RedemptionV2,
@@ -2713,7 +2717,12 @@ impl WasmHarmonyClient {
     ) -> Result<JsValue, JsError> {
         let outcome = self
             .inner
-            .authorize_bat_v2_query_service_v2(db_id, &verified.inner, proof_bytes, now_unix)
+            .dangerous_unpaired_authorize_bat_v2_query_service_v2(
+                db_id,
+                &verified.inner,
+                proof_bytes,
+                now_unix,
+            )
             .await
             .map_err(err_to_js)?;
         Ok(bat_v2_outcome_json_v2(&outcome))

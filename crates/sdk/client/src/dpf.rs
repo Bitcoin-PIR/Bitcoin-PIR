@@ -1306,10 +1306,10 @@ impl DpfClient {
         .await
     }
 
-    /// Authorize one DPF side through an exact verified BAT V2 member. Local
-    /// proof/class failures return before the sole transport call; every
-    /// post-entry transport ambiguity is a typed burn outcome.
-    pub async fn authorize_bat_v2_service_v2(
+    /// Dangerous unpaired BAT V2 authorization for one DPF side. This does
+    /// not prove that the peer provider selection passed strict independence
+    /// checks. Local failures precede the sole transport call.
+    pub async fn dangerous_unpaired_authorize_bat_v2_service_v2(
         &mut self,
         server_index: u8,
         db_id: u8,

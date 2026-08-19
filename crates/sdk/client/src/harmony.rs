@@ -1624,11 +1624,11 @@ impl HarmonyClient {
         Ok(granted)
     }
 
-    /// Authorize the Harmony hint side through an exact BAT V2 member. The
-    /// bearer is sent at most once; only a typed granted result advances the
-    /// local full-hint authorization state.
+    /// Dangerous unpaired BAT V2 authorization for the Harmony hint side.
+    /// This does not verify a strict hint/query provider pair. The bearer is
+    /// sent at most once; only a grant advances local authorization state.
     #[allow(clippy::too_many_arguments)]
-    pub async fn authorize_bat_v2_hint_service_v2(
+    pub async fn dangerous_unpaired_authorize_bat_v2_hint_service_v2(
         &mut self,
         db_id: u8,
         verified: &VerifiedBatV2RedemptionV2,
@@ -1766,9 +1766,9 @@ impl HarmonyClient {
         .await
     }
 
-    /// Authorize the Harmony query side through an exact BAT V2 member with
-    /// one transport call and a conservative typed post-send disposition.
-    pub async fn authorize_bat_v2_query_service_v2(
+    /// Dangerous unpaired BAT V2 authorization for the Harmony query side.
+    /// This does not verify a strict hint/query provider pair.
+    pub async fn dangerous_unpaired_authorize_bat_v2_query_service_v2(
         &mut self,
         db_id: u8,
         verified: &VerifiedBatV2RedemptionV2,
