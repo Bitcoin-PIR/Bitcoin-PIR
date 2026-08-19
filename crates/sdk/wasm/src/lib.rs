@@ -75,7 +75,8 @@ pub use bat_v2::{WasmBolt11BatV2AcquisitionV2, WasmIssuedBatV2ProofsV2};
 /// Strict signed service-policy and provider-local admission bindings.
 pub mod service;
 pub use service::{
-    initial_service_policy_checkpoint_v1, WasmAcceptedServicePolicyV1, WasmServicePowChallengeV1,
+    initial_service_policy_checkpoint_v1, WasmAcceptedRetainedBatV2PolicyV2,
+    WasmAcceptedServicePolicyV1, WasmServicePowChallengeV1, WasmVerifiedBatV2RedemptionV2,
 };
 
 /// Strict Nostr directory verification and persist-before-select typestate.

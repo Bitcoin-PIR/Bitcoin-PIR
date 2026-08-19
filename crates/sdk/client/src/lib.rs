@@ -113,7 +113,8 @@ pub use query_plan::{
 };
 pub use service::{
     accept_bat_v2_authorization_response_v2, accept_pow_challenge_response_v1,
-    accept_retained_service_policy_response_v1, accept_service_policy_response_v1,
+    accept_retained_bat_v2_policy_response_v2, accept_retained_service_policy_response_v1,
+    accept_service_policy_response_v1, authorize_bat_v2_redemption_v2,
     build_pow_challenge_request_v1, build_retained_service_policy_request_v1,
     build_service_policy_request_v1,
     dangerous_unpaired_accept_retained_service_authorization_response_v1,
@@ -123,10 +124,11 @@ pub use service::{
     dangerous_unpaired_build_authorization_proof_v1,
     dangerous_unpaired_build_retained_authorization_proof_v1,
     dangerous_unpaired_build_retained_service_authorization_request_v1,
-    dangerous_unpaired_build_service_authorization_request_v1,
+    dangerous_unpaired_build_service_authorization_request_v1, fetch_retained_bat_v2_policy_v2,
     fetch_retained_service_redemption_v1, fetch_verified_service_policy_v1,
-    request_pow_challenge_v1, verify_service_policy_session_v1, AcceptedRetiredServiceRedemptionV1,
-    AcceptedServicePolicyV1, BatV2AdmissionOutcomeV2, ServicePolicyCheckpointV1,
+    request_pow_challenge_v1, verify_service_policy_session_v1, AcceptedRetainedBatV2PolicyV2,
+    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, BatV2AdmissionOutcomeV2,
+    ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
 };
 pub use strict_pair::{
     select_strict_bat_v2_offer_v2, select_strict_provider_offer_v1,

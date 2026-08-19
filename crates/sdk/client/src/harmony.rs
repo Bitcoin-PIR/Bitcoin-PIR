@@ -44,11 +44,13 @@ use crate::protocol::{
     reject_error_response, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 use crate::service::{
-    dangerous_unpaired_authorize_retained_service_redemption_v1,
-    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_service_redemption_v1,
-    fetch_verified_service_policy_v1, request_pow_challenge_v1,
+    authorize_bat_v2_redemption_v2, dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
+    fetch_retained_service_redemption_v1, fetch_verified_service_policy_v1,
+    request_pow_challenge_v1,
     verify_service_policy_session_v1 as verify_policy_transport_session_v1,
-    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+    AcceptedRetainedBatV2PolicyV2, AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1,
+    BatV2AdmissionOutcomeV2, ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
 };
 use crate::transport::PirTransport;
 use crate::verified_query::VerifiedQueryResult;
@@ -1348,6 +1350,46 @@ impl HarmonyClient {
         .await
     }
 
+    /// Fetch one exact retained BAT V2 policy member for the independently
+    /// selected Harmony side (`0 = hint`, `1 = query`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_retained_bat_v2_policy_v2(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        expected_policy_digest: [u8; 32],
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained BAT V2 policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match provider_index {
+            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+                )))
+            }
+        };
+        fetch_retained_bat_v2_policy_v2(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            expected_policy_digest,
+            scope_id,
+            offer_id,
+            now_unix,
+        )
+        .await
+    }
+
     pub fn verify_retained_service_session_v1(
         &self,
         provider_index: u8,
@@ -1582,6 +1624,53 @@ impl HarmonyClient {
         Ok(granted)
     }
 
+    /// Authorize the Harmony hint side through an exact BAT V2 member. The
+    /// bearer is sent at most once; only a typed granted result advances the
+    /// local full-hint authorization state.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn authorize_bat_v2_hint_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &VerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+        hint_transport: HintTransport,
+        session_token: Option<[u8; 16]>,
+        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
+    ) -> PirResult<BatV2AdmissionOutcomeV2> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "BAT V2 hint authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let outcome = {
+            let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+            authorize_bat_v2_redemption_v2(
+                hint_conn.as_mut(),
+                verified,
+                OperationStartV1::HarmonyHint {
+                    db_id,
+                    transport: hint_transport,
+                    session_token,
+                    primary_side,
+                },
+                proof_bytes,
+                now_unix,
+            )
+            .await?
+        };
+        if matches!(&outcome, BatV2AdmissionOutcomeV2::Granted(_)) {
+            self.strict_v2_full_hint_authorization_v1 = match hint_transport {
+                HintTransport::V2Full => Some(StrictV2FullHintAuthorizationV1 {
+                    db_id,
+                    main_bundle_loaded: false,
+                }),
+                HintTransport::V2Half => None,
+            };
+        }
+        Ok(outcome)
+    }
+
     /// Dangerous compatibility entry point for an already-retired hint proof.
     /// A failed readiness check cannot preserve that capability. Prefer
     /// [`Self::authorize_hint_service_pair_v1`].
@@ -1673,6 +1762,31 @@ impl HarmonyClient {
             offer_id,
             OperationStartV1::HarmonyQuery { db_id },
             proof,
+        )
+        .await
+    }
+
+    /// Authorize the Harmony query side through an exact BAT V2 member with
+    /// one transport call and a conservative typed post-send disposition.
+    pub async fn authorize_bat_v2_query_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &VerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<BatV2AdmissionOutcomeV2> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "BAT V2 query authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        authorize_bat_v2_redemption_v2(
+            query_conn.as_mut(),
+            verified,
+            OperationStartV1::HarmonyQuery { db_id },
+            proof_bytes,
+            now_unix,
         )
         .await
     }
