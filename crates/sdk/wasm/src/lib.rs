@@ -68,6 +68,10 @@ mod standard_cashu;
 /// Browser-side BOLT11 quote acquisition and recovery state machine.
 pub mod bolt11;
 
+/// Class-bound BAT V2 acquisition and recovery bridge.
+pub mod bat_v2;
+pub use bat_v2::{WasmBolt11BatV2AcquisitionV2, WasmIssuedBatV2ProofsV2};
+
 /// Strict signed service-policy and provider-local admission bindings.
 pub mod service;
 pub use service::{

@@ -96,6 +96,14 @@ impl Bolt11QuoteKeyCheckpointV1 {
         self.guard.highest_epoch()
     }
 
+    pub(crate) const fn rollback_guard_v1(&self) -> &Bolt11QuoteKeyRollbackGuardV1 {
+        &self.guard
+    }
+
+    pub(crate) const fn from_rollback_guard_v1(guard: Bolt11QuoteKeyRollbackGuardV1) -> Self {
+        Self { guard }
+    }
+
     /// Validate one exact issuer delegation against this durable stream
     /// without constructing an invoice intent. Strict two-provider callers
     /// use this to freeze the payee and delegation before either payment leg

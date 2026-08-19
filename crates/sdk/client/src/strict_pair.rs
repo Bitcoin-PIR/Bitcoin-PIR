@@ -9,8 +9,8 @@ use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
     bat_verification_key_fingerprint_v1, is_canonical_public_wss_endpoint_v1, AcquisitionMethod,
-    AuthScheme, AuthorizationProofV1, ProviderId, ServiceOfferV1, VerificationMode,
-    VerifiedDirectoryOperatorAssertionV1, VerifiedServiceOfferV1,
+    AuthScheme, AuthorizationProofV1, BitcoinPirCashuBatProofV2, ProviderId, ServiceOfferV1,
+    VerificationMode, VerifiedDirectoryOperatorAssertionV1, VerifiedServiceOfferV1,
 };
 
 use crate::service::AcceptedServicePolicyV1;
@@ -66,6 +66,25 @@ pub struct StrictProviderOfferSelectionV1<'policy> {
     directory_wss_endpoints: Option<Vec<String>>,
 }
 
+/// One current provider offer proven to be an exact member of an
+/// issuer-signed BAT V2 class, while retaining the ordinary strict-provider
+/// identity checks for pair construction.
+#[derive(Clone, Debug)]
+pub struct StrictBatV2OfferSelectionV2<'policy> {
+    base: StrictProviderOfferSelectionV1<'policy>,
+    class_offer: crate::bat_v2::VerifiedCurrentBatV2OfferV2,
+}
+
+impl<'policy> StrictBatV2OfferSelectionV2<'policy> {
+    pub const fn base(&self) -> &StrictProviderOfferSelectionV1<'policy> {
+        &self.base
+    }
+
+    pub const fn class_offer(&self) -> &crate::bat_v2::VerifiedCurrentBatV2OfferV2 {
+        &self.class_offer
+    }
+}
+
 impl<'policy> StrictProviderOfferSelectionV1<'policy> {
     pub const fn accepted_policy(&self) -> &'policy AcceptedServicePolicyV1 {
         self.accepted_policy
@@ -108,6 +127,98 @@ pub struct VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
     second: StrictProviderOfferSelectionV1<'second>,
     shared_issuer_correlation: bool,
     allow_shared_lightning_payee_correlation: bool,
+}
+
+/// A strict two-provider BAT V2 pair whose two independently signed provider
+/// policies are members of the same exact reviewed issuer class.
+///
+/// Sharing that issuer/class is the V2 design and is therefore not rejected
+/// as V1 raw-key reuse. Provider IDs, provider policy keys, directory operator
+/// keys, and later WebSocket origins remain independent.
+#[must_use]
+#[derive(Clone, Debug)]
+pub struct VerifiedStrictTwoProviderBatV2OfferPairV2<'first, 'second> {
+    pair: VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+    class: pir_service_protocol::BatAcceptanceClassV2,
+}
+
+impl<'first, 'second> VerifiedStrictTwoProviderBatV2OfferPairV2<'first, 'second> {
+    pub const fn pair(&self) -> &VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
+        &self.pair
+    }
+
+    pub const fn class(&self) -> &pir_service_protocol::BatAcceptanceClassV2 {
+        &self.class
+    }
+
+    /// Decode and class-check both vault-selected proofs, then prove that the
+    /// issuer-global spend keys differ. The Web vault must additionally make
+    /// the two record IDs distinct before calling this method.
+    pub fn verify_distinct_proofs_v2(
+        &self,
+        first_proof_bytes: &[u8],
+        second_proof_bytes: &[u8],
+    ) -> PirResult<VerifiedDistinctBatV2ProofPairV2> {
+        let first = BitcoinPirCashuBatProofV2::decode(first_proof_bytes)
+            .map_err(|error| pair_error(format!("first BAT V2 proof is invalid: {error}")))?;
+        let second = BitcoinPirCashuBatProofV2::decode(second_proof_bytes)
+            .map_err(|error| pair_error(format!("second BAT V2 proof is invalid: {error}")))?;
+        first
+            .verify_class_binding(&self.class)
+            .map_err(|error| pair_error(format!("first BAT V2 proof has wrong class: {error}")))?;
+        second
+            .verify_class_binding(&self.class)
+            .map_err(|error| pair_error(format!("second BAT V2 proof has wrong class: {error}")))?;
+        let first_spend_key = first
+            .spend_key(&self.class.bat_verification_key)
+            .map_err(|error| pair_error(format!("first BAT V2 spend key is invalid: {error}")))?;
+        let second_spend_key = second
+            .spend_key(&self.class.bat_verification_key)
+            .map_err(|error| pair_error(format!("second BAT V2 spend key is invalid: {error}")))?;
+        if first_spend_key == second_spend_key {
+            return Err(pair_error(
+                "strict BAT V2 pair requires two different issuer-global spend keys",
+            ));
+        }
+        Ok(VerifiedDistinctBatV2ProofPairV2 {
+            first: AuthorizationProofV1::BitcoinPirCashuBatV2(first),
+            second: AuthorizationProofV1::BitcoinPirCashuBatV2(second),
+            first_spend_key,
+            second_spend_key,
+        })
+    }
+}
+
+/// Two exact class-bound BAT proofs proven distinct under the issuer-global
+/// spend-key derivation. This value is local-only and never serialized.
+#[derive(Clone, Debug)]
+pub struct VerifiedDistinctBatV2ProofPairV2 {
+    first: AuthorizationProofV1,
+    second: AuthorizationProofV1,
+    first_spend_key: [u8; 32],
+    second_spend_key: [u8; 32],
+}
+
+impl VerifiedDistinctBatV2ProofPairV2 {
+    pub const fn first_proof(&self) -> &AuthorizationProofV1 {
+        &self.first
+    }
+
+    pub const fn second_proof(&self) -> &AuthorizationProofV1 {
+        &self.second
+    }
+
+    pub const fn first_spend_key(&self) -> [u8; 32] {
+        self.first_spend_key
+    }
+
+    pub const fn second_spend_key(&self) -> [u8; 32] {
+        self.second_spend_key
+    }
+
+    pub fn into_proofs(self) -> (AuthorizationProofV1, AuthorizationProofV1) {
+        (self.first, self.second)
+    }
 }
 
 impl<'first, 'second> VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
@@ -478,6 +589,33 @@ pub fn select_strict_provider_offer_v1<'policy>(
     })
 }
 
+/// Select one exact current BAT V2 provider member. Canonical class bytes are
+/// supplied by the application trust path; this function performs no issuer
+/// fetch and does not accept an unsigned provider claim about membership.
+pub fn select_strict_bat_v2_offer_v2<'policy>(
+    accepted_policy: &'policy AcceptedServicePolicyV1,
+    scope_id: &[u8; 32],
+    offer_id: u32,
+    class_bytes: &[u8],
+    now_unix: u64,
+    directory_assertion: Option<VerifiedDirectoryOperatorAssertionV1<'_>>,
+) -> PirResult<StrictBatV2OfferSelectionV2<'policy>> {
+    let base = select_strict_provider_offer_v1(
+        accepted_policy,
+        scope_id,
+        offer_id,
+        now_unix,
+        directory_assertion,
+    )?;
+    let class_offer = accepted_policy.verify_current_bat_v2_offer_v2(
+        scope_id,
+        offer_id,
+        class_bytes,
+        now_unix,
+    )?;
+    Ok(StrictBatV2OfferSelectionV2 { base, class_offer })
+}
+
 /// Validate two independently selected provider offers and produce an
 /// unforgeable local typestate on success.
 pub fn verify_strict_two_provider_offer_pair_v1<'first, 'second>(
@@ -564,9 +702,30 @@ pub fn verify_strict_two_provider_offer_pair_v1<'first, 'second>(
         first,
         second,
         shared_issuer_correlation,
-        allow_shared_lightning_payee_correlation: options
-            .allow_shared_lightning_payee_correlation,
+        allow_shared_lightning_payee_correlation: options.allow_shared_lightning_payee_correlation,
     })
+}
+
+/// Validate two independently authenticated provider members of one exact BAT
+/// V2 class. A copied class ID without exact signed membership is rejected at
+/// selection; two different class artifacts are rejected here even if their
+/// commercial terms happen to match.
+pub fn verify_strict_two_provider_bat_v2_offer_pair_v2<'first, 'second>(
+    first: StrictBatV2OfferSelectionV2<'first>,
+    second: StrictBatV2OfferSelectionV2<'second>,
+    options: StrictProviderPairOptionsV1,
+) -> PirResult<VerifiedStrictTwoProviderBatV2OfferPairV2<'first, 'second>> {
+    if first.class_offer.class() != second.class_offer.class() {
+        return Err(pair_error(
+            "strict BAT V2 pair requires the same exact issuer-signed acceptance class",
+        ));
+    }
+    let class = first.class_offer.class().clone();
+    // Shared issuer correlation is inherent in BAT V2, but the ordinary
+    // strict-pair contract still requires the caller's one-shot explicit
+    // acknowledgement of that correlation (and of a shared payee, if any).
+    let pair = verify_strict_two_provider_offer_pair_v1(first.base, second.base, options)?;
+    Ok(VerifiedStrictTwoProviderBatV2OfferPairV2 { pair, class })
 }
 
 fn has_correlation_infrastructure(offer: &ServiceOfferV1) -> bool {
@@ -657,8 +816,9 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use pir_arc_adapter::{ArcSecretKeyV1, ARC_SECRET_KEY_LEN_V1};
     use pir_service_protocol::{
-        derive_bat_key_id_v1, derive_provider_id, free_anonymous_ticket_key_id,
-        paid_receipt_key_id, AuthPaddingClassV1, BackendId, Bolt11QuoteKeyDelegationV1,
+        derive_bat_key_id_v1, derive_issuer_id, derive_provider_id, free_anonymous_ticket_key_id,
+        paid_receipt_key_id, AuthPaddingClassV1, BackendId, BatAcceptanceClassV2,
+        BatAcceptanceMemberV2, BatAcceptanceTermsV2, Bolt11QuoteKeyDelegationV1,
         CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
         DeploymentStatus, DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1,
         DirectoryOperatorAssertionV1, DirectoryTransportV1, EntitlementLimitsV1,
@@ -720,6 +880,11 @@ mod tests {
             issuer_seed: u8,
             endpoint: &'a str,
             verification_key: [u8; 33],
+        },
+        BatV2 {
+            issuer_seed: u8,
+            endpoint: &'a str,
+            class_id: [u8; 32],
         },
         Arc {
             issuer_seed: u8,
@@ -808,6 +973,11 @@ mod tests {
                 endpoint,
                 verification_key,
             ),
+            OfferFixture::BatV2 {
+                issuer_seed,
+                endpoint,
+                class_id,
+            } => bat_v2_offer(issuer_seed, endpoint, class_id),
             OfferFixture::Arc {
                 issuer_seed,
                 endpoint,
@@ -1001,6 +1171,40 @@ mod tests {
         )
     }
 
+    fn bat_v2_offer(issuer_seed: u8, endpoint: &str, class_id: [u8; 32]) -> ServiceOfferV1 {
+        let issuer_key = SigningKey::from_bytes(&[issuer_seed; 32]);
+        ServiceOfferV1 {
+            offer_id: OFFER_ID,
+            acquisition: AcquisitionMethod::Bolt11V1,
+            free_mode: FreeModeV1::NotFree,
+            free_quota: 0,
+            free_window_seconds: 0,
+            free_pow_difficulty_bits: 0,
+            priority_class: 1,
+            authorization: AuthScheme::BitcoinPirCashuBatV2,
+            verification: VerificationMode::SharedIssuerOnline,
+            deployment_status: DeploymentStatus::Stable,
+            price: PriceV1::MilliSatoshi(1_000),
+            issuer_id: derive_issuer_id(&issuer_key.verifying_key().to_bytes()),
+            key_id: class_id.to_vec(),
+            credential_binding: None,
+            cashu_mint_manifest: None,
+            endpoint: endpoint.into(),
+            invoice_expiry_seconds: 10,
+            claim_window_seconds: 10,
+            minimum_credential_validity_seconds: 10,
+            retired_policy_grace_seconds: 30,
+            credential_count: 2,
+            credential_presentation_limit: 1,
+            privacy_leakage: PrivacyLeakageV1::from_bits(
+                PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                    | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                    | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+            )
+            .unwrap(),
+        }
+    }
+
     fn paid_offer(
         authorization: AuthScheme,
         binding: CredentialKeyBindingV1,
@@ -1148,6 +1352,103 @@ mod tests {
         hex::decode(hex_value).unwrap().try_into().unwrap()
     }
 
+    fn bat_v2_class(class_id: [u8; 32]) -> BatAcceptanceClassV2 {
+        BatAcceptanceClassV2::sign(
+            class_id,
+            1,
+            100,
+            1_500,
+            point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+            BatAcceptanceTermsV2 {
+                auth_padding_class: AuthPaddingClassV1::Class16KiB,
+                backend: BackendId::DpfPirV1,
+                workload: WorkloadId::DpfEvaluateJobV1,
+                protocol_version: 1,
+                dataset: DatasetBindingV1::Class { class_id: 1 },
+                operation_profile: 1,
+                entitlement_profile: 2,
+                limits: limits(),
+                priority_class: 1,
+                deployment_status: DeploymentStatus::Stable,
+                price_msat: 1_000,
+                issuer_endpoint: "https://issuer.invalid".into(),
+                invoice_expiry_seconds: 10,
+                claim_window_seconds: 10,
+                minimum_credential_validity_seconds: 10,
+                retired_policy_grace_seconds: 30,
+                credential_count: 2,
+                credential_presentation_limit: 1,
+                privacy_leakage: PrivacyLeakageV1::from_bits(
+                    PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                        | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                        | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+                )
+                .unwrap(),
+            },
+            vec![BatAcceptanceMemberV2 {
+                provider_id: [1; 32],
+                policy_digest: [2; 32],
+                scope_id: [3; 32],
+                offer_id: OFFER_ID,
+            }],
+            &SigningKey::from_bytes(&[90; 32]),
+        )
+        .unwrap()
+    }
+
+    fn reviewed_bat_v2_class(
+        class_id: [u8; 32],
+        issuer_seed: u8,
+        fixtures: &[&Fixture],
+    ) -> BatAcceptanceClassV2 {
+        let mut members = fixtures
+            .iter()
+            .map(|fixture| BatAcceptanceMemberV2 {
+                provider_id: fixture.accepted.policy().provider_id,
+                policy_digest: fixture.accepted.policy_digest(),
+                scope_id: fixture.scope_id,
+                offer_id: OFFER_ID,
+            })
+            .collect::<Vec<_>>();
+        members.sort();
+        BatAcceptanceClassV2::sign(
+            class_id,
+            1,
+            100,
+            230,
+            point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+            BatAcceptanceTermsV2 {
+                auth_padding_class: AuthPaddingClassV1::Class16KiB,
+                backend: BackendId::DpfPirV1,
+                workload: WorkloadId::DpfEvaluateJobV1,
+                protocol_version: 1,
+                dataset: DatasetBindingV1::Class { class_id: 1 },
+                operation_profile: 1,
+                entitlement_profile: 2,
+                limits: limits(),
+                priority_class: 1,
+                deployment_status: DeploymentStatus::Stable,
+                price_msat: 1_000,
+                issuer_endpoint: "https://issuer.example".into(),
+                invoice_expiry_seconds: 10,
+                claim_window_seconds: 10,
+                minimum_credential_validity_seconds: 10,
+                retired_policy_grace_seconds: 30,
+                credential_count: 2,
+                credential_presentation_limit: 1,
+                privacy_leakage: PrivacyLeakageV1::from_bits(
+                    PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                        | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                        | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+                )
+                .unwrap(),
+            },
+            members,
+            &SigningKey::from_bytes(&[issuer_seed; 32]),
+        )
+        .unwrap()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn bolt_payment_context<'first, 'second>(
         pair: VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
@@ -1293,6 +1594,188 @@ mod tests {
             .unwrap(),
             AuthorizationProofV1::Free(FreeAuthorizationProofV1::OpenBestEffort)
         ));
+    }
+
+    #[test]
+    fn bat_v2_pair_requires_two_distinct_issuer_global_spend_keys() {
+        let first = fixture([1; 32], 11, OfferFixture::Free);
+        let second = fixture([2; 32], 12, OfferFixture::Free);
+        let generic = verify_strict_two_provider_offer_pair_v1(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap();
+        let class = bat_v2_class([0xc1; 32]);
+        let pair = VerifiedStrictTwoProviderBatV2OfferPairV2 {
+            pair: generic,
+            class: class.clone(),
+        };
+        let first_proof = BitcoinPirCashuBatProofV2::from_class(
+            &class,
+            [0xd1; 32],
+            point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+        )
+        .unwrap();
+        let second_proof = BitcoinPirCashuBatProofV2::from_class(
+            &class,
+            [0xd2; 32],
+            point("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"),
+        )
+        .unwrap();
+        let distinct = pair
+            .verify_distinct_proofs_v2(
+                &first_proof.encode().unwrap(),
+                &second_proof.encode().unwrap(),
+            )
+            .unwrap();
+        assert_ne!(distinct.first_spend_key(), distinct.second_spend_key());
+        assert!(pair
+            .verify_distinct_proofs_v2(
+                &first_proof.encode().unwrap(),
+                &first_proof.encode().unwrap(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("different issuer-global spend keys"));
+
+        let other_class = bat_v2_class([0xc2; 32]);
+        let cross_class = BitcoinPirCashuBatProofV2::from_class(
+            &other_class,
+            [0xd3; 32],
+            point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+        )
+        .unwrap();
+        assert!(pair
+            .verify_distinct_proofs_v2(
+                &first_proof.encode().unwrap(),
+                &cross_class.encode().unwrap(),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn bat_v2_pair_accepts_same_reviewed_class_and_rejects_copied_or_cross_class() {
+        let class_id = [0x42; 32];
+        let first = fixture(
+            [11; 32],
+            21,
+            OfferFixture::BatV2 {
+                issuer_seed: 90,
+                endpoint: "https://issuer.example",
+                class_id,
+            },
+        );
+        let second = fixture(
+            [12; 32],
+            22,
+            OfferFixture::BatV2 {
+                issuer_seed: 90,
+                endpoint: "https://issuer.example",
+                class_id,
+            },
+        );
+        let reviewed = reviewed_bat_v2_class(class_id, 90, &[&first, &second]);
+        let reviewed_bytes = reviewed.encode().unwrap();
+        assert!(verify_strict_two_provider_bat_v2_offer_pair_v2(
+            select_strict_bat_v2_offer_v2(
+                &first.accepted,
+                &first.scope_id,
+                OFFER_ID,
+                &reviewed_bytes,
+                NOW,
+                None,
+            )
+            .unwrap(),
+            select_strict_bat_v2_offer_v2(
+                &second.accepted,
+                &second.scope_id,
+                OFFER_ID,
+                &reviewed_bytes,
+                NOW,
+                None,
+            )
+            .unwrap(),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .is_err());
+        let pair = verify_strict_two_provider_bat_v2_offer_pair_v2(
+            select_strict_bat_v2_offer_v2(
+                &first.accepted,
+                &first.scope_id,
+                OFFER_ID,
+                &reviewed_bytes,
+                NOW,
+                None,
+            )
+            .unwrap(),
+            select_strict_bat_v2_offer_v2(
+                &second.accepted,
+                &second.scope_id,
+                OFFER_ID,
+                &reviewed_bytes,
+                NOW,
+                None,
+            )
+            .unwrap(),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+                allow_shared_lightning_payee_correlation: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(pair.class(), &reviewed);
+        assert!(pair.pair().shared_issuer_correlation());
+
+        let copied_id_without_second_member = reviewed_bat_v2_class(class_id, 90, &[&first])
+            .encode()
+            .unwrap();
+        assert!(select_strict_bat_v2_offer_v2(
+            &second.accepted,
+            &second.scope_id,
+            OFFER_ID,
+            &copied_id_without_second_member,
+            NOW,
+            None,
+        )
+        .is_err());
+
+        let second_class_id = [0x43; 32];
+        let cross_second = fixture(
+            [13; 32],
+            23,
+            OfferFixture::BatV2 {
+                issuer_seed: 90,
+                endpoint: "https://issuer.example",
+                class_id: second_class_id,
+            },
+        );
+        let first_class = reviewed_bat_v2_class(class_id, 90, &[&first]);
+        let second_class = reviewed_bat_v2_class(second_class_id, 90, &[&cross_second]);
+        let error = verify_strict_two_provider_bat_v2_offer_pair_v2(
+            select_strict_bat_v2_offer_v2(
+                &first.accepted,
+                &first.scope_id,
+                OFFER_ID,
+                &first_class.encode().unwrap(),
+                NOW,
+                None,
+            )
+            .unwrap(),
+            select_strict_bat_v2_offer_v2(
+                &cross_second.accepted,
+                &cross_second.scope_id,
+                OFFER_ID,
+                &second_class.encode().unwrap(),
+                NOW,
+                None,
+            )
+            .unwrap(),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("same exact issuer-signed acceptance class"));
     }
 
     #[test]
