@@ -491,11 +491,16 @@ where
     }
 }
 
-/// One retained BAT key epoch still required by an unfinished V2 quote.
+/// One retained BAT key epoch whose private mint scalar must remain loaded.
+///
+/// `raw_public_key` is only the exact compressed-public-key locator used to
+/// select that scalar from an in-memory keyring. It is not the scalar itself;
+/// issuer-store never persists or returns BAT private key material.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct BatV2CredentialMaterialRequirementV2 {
     pub class_id: [u8; 32],
     pub class_key_epoch: u64,
+    /// Exact compressed BAT verification key identifying the required scalar.
     pub raw_public_key: [u8; 33],
     pub bat_key_id: [u8; 32],
 }

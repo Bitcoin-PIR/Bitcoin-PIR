@@ -3113,12 +3113,24 @@ fn bat_v2_acquisition_claim_status_and_restart_are_protocol_isolated() {
     let _ = reopened
         .register_bat_acceptance_class_v2(&second_class, 400)
         .unwrap();
-    let terminal_old_epoch_does_not_pin = reopened
+    let issued_old_epoch_remains_pinned = reopened
         .bat_v2_credential_material_requirements(400)
         .unwrap();
-    assert_eq!(terminal_old_epoch_does_not_pin.len(), 1);
-    assert_eq!(terminal_old_epoch_does_not_pin[0].class_key_epoch, 2);
-    assert_eq!(terminal_old_epoch_does_not_pin[0].raw_public_key, point(77));
+    assert_eq!(issued_old_epoch_remains_pinned.len(), 2);
+    assert_eq!(issued_old_epoch_remains_pinned[0].class_key_epoch, 1);
+    assert_eq!(issued_old_epoch_remains_pinned[0].raw_public_key, point(76));
+    assert_eq!(issued_old_epoch_remains_pinned[1].class_key_epoch, 2);
+    assert_eq!(issued_old_epoch_remains_pinned[1].raw_public_key, point(77));
+    let at_redemption_deadline = reopened
+        .bat_v2_credential_material_requirements(1_480)
+        .unwrap();
+    assert_eq!(at_redemption_deadline.len(), 1);
+    assert_eq!(at_redemption_deadline[0].class_key_epoch, 1);
+    assert_eq!(at_redemption_deadline[0].raw_public_key, point(76));
+    assert!(reopened
+        .bat_v2_credential_material_requirements(1_481)
+        .unwrap()
+        .is_empty());
 
     let v1 = reserve_finalize_settle(&reopened, 0x7b, 0x7c, 0x7d);
     let v1_claim = claim(0x7b, v1.intent_digest, 0x7e, 0x7d, 0x7f, 0x25, 3);

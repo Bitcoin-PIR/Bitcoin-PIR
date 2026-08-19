@@ -1915,8 +1915,12 @@ fn map_store_error(error: StoreError) -> IssuerCoreErrorV1 {
         | StoreError::SettlementKeyLineageConflict
         | StoreError::ProviderRegistrationRollback
         | StoreError::ProviderRegistrationFork
+        | StoreError::ProviderAccountBindingConflict
         | StoreError::ClearingAuthorizationRollback
         | StoreError::ClearingAuthorizationFork
+        | StoreError::BatV2ClearingAuthorizationRollback
+        | StoreError::BatV2ClearingAuthorizationFork
+        | StoreError::BatV2RedeemPreconditionChanged
         | StoreError::RedeemIdempotencyConflict
         | StoreError::CredentialAlreadySpent
         | StoreError::LedgerBalanceOverflow
