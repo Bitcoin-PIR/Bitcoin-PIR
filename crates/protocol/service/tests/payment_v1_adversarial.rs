@@ -76,6 +76,9 @@ fn public_v1_decoders() -> Vec<(&'static str, DecoderV1)> {
         ("CredentialKeyBindingV1", |bytes| {
             CredentialKeyBindingV1::decode(bytes).is_ok()
         }),
+        ("BatAcceptanceClassV2", |bytes| {
+            BatAcceptanceClassV2::decode(bytes).is_ok()
+        }),
         ("CashuKeysetBindingV1", |bytes| {
             CashuKeysetBindingV1::decode(bytes).is_ok()
         }),
@@ -350,7 +353,7 @@ fn payment_v1_public_decoders_are_total_for_bounded_adversarial_corpus() {
     );
     assert_eq!(
         decoders.len(),
-        53,
+        54,
         "the explicit public-decoder inventory must not shrink silently"
     );
     assert!(
