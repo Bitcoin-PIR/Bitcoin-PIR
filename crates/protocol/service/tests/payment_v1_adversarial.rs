@@ -91,6 +91,27 @@ fn public_v1_decoders() -> Vec<(&'static str, DecoderV1)> {
         ("Bolt11BatV2ClaimEnvelopeV2", |bytes| {
             Bolt11BatV2ClaimEnvelopeV2::decode(bytes).is_ok()
         }),
+        ("BitcoinPirCashuBatProofV2", |bytes| {
+            BitcoinPirCashuBatProofV2::decode(bytes).is_ok()
+        }),
+        ("ProviderAccountingAuthorizationV2", |bytes| {
+            ProviderAccountingAuthorizationV2::decode(bytes).is_ok()
+        }),
+        ("IssuerAccountingApprovalV2", |bytes| {
+            IssuerAccountingApprovalV2::decode(bytes).is_ok()
+        }),
+        ("ProviderRedeemRequestV2", |bytes| {
+            ProviderRedeemRequestV2::decode(bytes).is_ok()
+        }),
+        ("ProviderRedeemRequestAuthV2", |bytes| {
+            ProviderRedeemRequestAuthV2::decode(bytes).is_ok()
+        }),
+        ("ProviderRedeemEnvelopeV2", |bytes| {
+            ProviderRedeemEnvelopeV2::decode(bytes).is_ok()
+        }),
+        ("ProviderRedeemResponseV2", |bytes| {
+            ProviderRedeemResponseV2::decode(bytes).is_ok()
+        }),
         ("CashuKeysetBindingV1", |bytes| {
             CashuKeysetBindingV1::decode(bytes).is_ok()
         }),
@@ -365,7 +386,7 @@ fn payment_v1_public_decoders_are_total_for_bounded_adversarial_corpus() {
     );
     assert_eq!(
         decoders.len(),
-        58,
+        65,
         "the explicit public-decoder inventory must not shrink silently"
     );
     assert!(
