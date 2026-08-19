@@ -61,6 +61,11 @@ impl<'a> IssuerBatV2RedeemCommitterV2<'a> {
 impl BatV2RedeemCommitStoreV2 for IssuerBatV2RedeemCommitterV2<'_> {
     type Error = StoreError;
 
+    fn attempt_is_committed(&self, request: &ProviderRedeemRequestV2) -> Result<bool, Self::Error> {
+        self.store
+            .bat_v2_attempt_is_committed(&request.provider_id, &request.attempt_id)
+    }
+
     fn commit_fresh(
         &mut self,
         verified: &VerifiedBatV2RedeemCommitV2,
