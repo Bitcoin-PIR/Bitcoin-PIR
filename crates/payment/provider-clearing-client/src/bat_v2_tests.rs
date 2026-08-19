@@ -19,7 +19,8 @@ use pir_service_protocol::{
 
 use crate::{
     BatV2ProviderRedeemTrustV2, BatV2RedeemHttpRequestV2, BatV2RedeemTransportErrorV2,
-    BatV2RedeemTransportV2, StorelessBatV2ProviderRedeemClientV2, StorelessBatV2RedeemDecisionV2,
+    BatV2RedeemTransportV2, StorelessBatV2AdmissionCommitterV2,
+    StorelessBatV2ProviderRedeemClientV2, StorelessBatV2RedeemDecisionV2,
     StorelessBatV2RedeemErrorV2, BAT_V2_REDEEM_ENDPOINT_V2, BAT_V2_REDEEM_REQUEST_CONTENT_TYPE_V2,
     BAT_V2_REDEEM_RESPONSE_CONTENT_TYPE_V2,
 };
@@ -622,6 +623,28 @@ fn bat_v2_storeless_constructor_and_presend_checks_fail_closed() {
     .is_err());
 
     let client = client(&transport);
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &transport.fixture.selected,
+        &transport.fixture.class,
+        &client,
+    )
+    .is_ok());
+    let mut wrong_member = transport.fixture.selected.clone();
+    wrong_member.member.offer_id += 1;
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &wrong_member,
+        &transport.fixture.class,
+        &client,
+    )
+    .is_err());
+    let mut extended_deadline = transport.fixture.selected.clone();
+    extended_deadline.redemption_deadline += 1;
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &extended_deadline,
+        &transport.fixture.class,
+        &client,
+    )
+    .is_err());
     assert!(matches!(
         client.redeem_once(
             &transport.fixture.selected,
