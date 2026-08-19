@@ -58,10 +58,12 @@ use crate::db_proof::{
 use crate::protocol::reject_error_response;
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::service::{
-    dangerous_unpaired_authorize_service_operation_v1, fetch_verified_service_policy_v1,
-    request_pow_challenge_v1,
+    dangerous_unpaired_authorize_bat_v2_redemption_v2,
+    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
+    fetch_verified_service_policy_v1, request_pow_challenge_v1,
     verify_service_policy_session_v1 as verify_policy_transport_session_v1,
-    AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+    AcceptedRetainedBatV2PolicyV2, AcceptedServicePolicyV1, BatV2AdmissionOutcomeV2,
+    ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
 };
 use crate::transport::PirTransport;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
@@ -710,6 +712,37 @@ impl OnionClient {
         .await
     }
 
+    /// Fetch one exact historical BAT V2 member after the Onion database root
+    /// is installed. This path cannot select a provider-bound V1 credential.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_retained_bat_v2_policy_v2(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        expected_policy_digest: [u8; 32],
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained BAT V2 policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        fetch_retained_bat_v2_policy_v2(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            expected_policy_digest,
+            scope_id,
+            offer_id,
+            now_unix,
+        )
+        .await
+    }
+
     /// Verify that `accepted` belongs to this exact OnionPIR connection. Call
     /// immediately before retiring a one-shot capability.
     pub fn verify_service_policy_session_v1(
@@ -742,6 +775,31 @@ impl OnionClient {
             offer_id,
             OperationStartV1::OnionSession { db_id },
             proof,
+        )
+        .await
+    }
+
+    /// One-shot standalone OnionPIR BAT V2 admission with an exact verified
+    /// member handle and conservative post-send disposition.
+    pub async fn authorize_bat_v2_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &VerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<BatV2AdmissionOutcomeV2> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "BAT V2 authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_bat_v2_redemption_v2(
+            transport.as_mut(),
+            verified,
+            OperationStartV1::OnionSession { db_id },
+            proof_bytes,
+            now_unix,
         )
         .await
     }

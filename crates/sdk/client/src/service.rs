@@ -12,14 +12,15 @@
 use ed25519_dalek::VerifyingKey;
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
-    bat_acceptance_member_from_verified_policy_v2, check_standard_cashu_spend_for_offer,
-    verify_bat_acceptance_class_member_projection_v2, ArcPresentationV1, AuthBeginV1,
-    AuthRejectCode, AuthResultV1, AuthScheme, AuthorizationProofV1, BatAcceptanceClassV2,
-    BitcoinPirCashuBatProofV1, CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1,
-    DeploymentStatus, FreeAnonymousTicketV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1,
-    OperationStartV1, PaidReceiptV1, PolicyRollbackGuardV1, PowChallengeRequestV1,
-    PowChallengeResponseV1, ProviderId, ServicePolicyEpochFloorsV1, ServicePolicyRequestV1,
-    ServicePolicyResponseV1, ServicePolicyV1, StandardCashuSpendV1, REQ_AUTH_BEGIN_V1,
+    bat_acceptance_member_from_retained_policy_v2, bat_acceptance_member_from_verified_policy_v2,
+    check_standard_cashu_spend_for_offer, verify_bat_acceptance_class_member_projection_v2,
+    ArcPresentationV1, AuthBeginV1, AuthRejectCode, AuthResultV1, AuthScheme, AuthorizationProofV1,
+    BatAcceptanceClassV2, BitcoinPirCashuBatProofV1, BitcoinPirCashuBatProofV2,
+    CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1, DeploymentStatus,
+    FreeAnonymousTicketV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1, OperationStartV1,
+    PaidReceiptV1, PolicyRollbackGuardV1, PowChallengeRequestV1, PowChallengeResponseV1,
+    ProviderId, ServicePolicyEpochFloorsV1, ServicePolicyRequestV1, ServicePolicyResponseV1,
+    ServicePolicyV1, StandardCashuSpendV1, VerifiedBatAcceptanceMemberV2, REQ_AUTH_BEGIN_V1,
     REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1, RESP_AUTH_RESULT_V1, RESP_POW_CHALLENGE_V1,
     RESP_SERVICE_POLICY_V1,
 };
@@ -345,6 +346,26 @@ impl AcceptedServicePolicyV1 {
         ))
     }
 
+    /// Close one current, accepted provider policy over the exact signed BAT
+    /// V2 class member that may receive an issuer-wide bearer presentation.
+    /// The returned owned handle has no scope/offer selector and is the only
+    /// SDK type that can construct a scheme-6 `AuthBeginV1`.
+    pub fn verify_bat_v2_redemption_v2(
+        &self,
+        scope_id: &[u8; 32],
+        offer_id: u32,
+        class_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<VerifiedBatV2RedemptionV2> {
+        let verified =
+            self.verify_current_bat_v2_offer_v2(scope_id, offer_id, class_bytes, now_unix)?;
+        Ok(VerifiedBatV2RedemptionV2 {
+            accepted: AcceptedBatV2PolicyV2::Current(self.clone()),
+            class: verified.class().clone(),
+            member: verified.member().clone(),
+        })
+    }
+
     /// Dangerous unpaired primitive: build a BOLT11 quote intent from one
     /// exact verified signed offer without proving that a second provider
     /// selection passed the strict independence checks.
@@ -516,6 +537,264 @@ impl AcceptedRetiredServiceRedemptionV1 {
     }
 }
 
+/// One exact historical BAT V2 policy member accepted only for presenting an
+/// already-issued issuer-wide bearer during its signed grace period.
+///
+/// This is deliberately not an alias for [`AcceptedRetiredServiceRedemptionV1`].
+/// The V1 type requires a provider-bound credential binding, while BAT V2
+/// forbids that binding and instead closes redemption through an issuer-signed
+/// acceptance class.
+#[derive(Clone)]
+pub struct AcceptedRetainedBatV2PolicyV2 {
+    policy: ServicePolicyV1,
+    policy_digest: [u8; 32],
+    scope_id: [u8; 32],
+    offer_id: u32,
+    policy_signing_key: VerifyingKey,
+    service_authorization_exporter: [u8; 32],
+}
+
+impl core::fmt::Debug for AcceptedRetainedBatV2PolicyV2 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AcceptedRetainedBatV2PolicyV2")
+            .field("policy_digest", &self.policy_digest)
+            .field("scope_id", &self.scope_id)
+            .field("offer_id", &self.offer_id)
+            .field("policy_signing_key", &self.policy_signing_key)
+            .field("service_authorization_exporter", &"[redacted]")
+            .finish()
+    }
+}
+
+impl AcceptedRetainedBatV2PolicyV2 {
+    pub const fn policy(&self) -> &ServicePolicyV1 {
+        &self.policy
+    }
+
+    pub const fn policy_digest(&self) -> [u8; 32] {
+        self.policy_digest
+    }
+
+    pub const fn scope_id(&self) -> [u8; 32] {
+        self.scope_id
+    }
+
+    pub const fn offer_id(&self) -> u32 {
+        self.offer_id
+    }
+
+    pub fn verify_service_authorization_exporter_v2(
+        &self,
+        current_exporter: &[u8; 32],
+    ) -> PirResult<()> {
+        if current_exporter.iter().all(|byte| *byte == 0)
+            || current_exporter != &self.service_authorization_exporter
+        {
+            return Err(PirError::VerificationFailed(
+                "accepted retained BAT V2 policy belongs to a different secure-channel session"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn verified_member_v2(&self, now_unix: u64) -> PirResult<VerifiedBatAcceptanceMemberV2> {
+        if now_unix == 0 {
+            return Err(PirError::InvalidState(
+                "trusted wall clock is required for retained BAT V2 redemption".into(),
+            ));
+        }
+        let member = bat_acceptance_member_from_retained_policy_v2(
+            &self.policy,
+            &self.policy.provider_id,
+            &self.policy_digest,
+            &self.scope_id,
+            self.offer_id,
+            &self.policy_signing_key,
+        )
+        .map_err(protocol_verification_error)?;
+        if now_unix < member.policy_issued_at || now_unix > member.redemption_deadline {
+            return Err(PirError::VerificationFailed(
+                "retained BAT V2 policy is outside its signed redemption grace".into(),
+            ));
+        }
+        Ok(member)
+    }
+
+    /// Combine this exact retained selector with the canonical signed class
+    /// whose member projection it authenticates.
+    pub fn verify_bat_v2_redemption_v2(
+        &self,
+        class_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<VerifiedBatV2RedemptionV2> {
+        let class = BatAcceptanceClassV2::decode(class_bytes).map_err(protocol_decode_error)?;
+        let member = self.verified_member_v2(now_unix)?;
+        verify_bat_acceptance_class_member_projection_v2(&class, &member)
+            .map_err(protocol_verification_error)?;
+        if now_unix < class.key_not_before || now_unix > class.key_not_after {
+            return Err(PirError::VerificationFailed(
+                "retained BAT V2 class key is outside its signed validity window".into(),
+            ));
+        }
+        Ok(VerifiedBatV2RedemptionV2 {
+            accepted: AcceptedBatV2PolicyV2::Retained(self.clone()),
+            class,
+            member,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum AcceptedBatV2PolicyV2 {
+    Current(AcceptedServicePolicyV1),
+    Retained(AcceptedRetainedBatV2PolicyV2),
+}
+
+/// Owned, unforgeable client-side authority to present one BAT V2 proof to
+/// one exact provider policy member.
+///
+/// Its fields and constructors are private. Callers can obtain it only by
+/// closing an accepted current or exact retained policy over a canonical
+/// issuer-signed class/member projection.
+#[derive(Clone, Debug)]
+pub struct VerifiedBatV2RedemptionV2 {
+    accepted: AcceptedBatV2PolicyV2,
+    class: BatAcceptanceClassV2,
+    member: VerifiedBatAcceptanceMemberV2,
+}
+
+impl VerifiedBatV2RedemptionV2 {
+    pub const fn provider_id(&self) -> ProviderId {
+        self.member.member.provider_id
+    }
+
+    pub const fn policy_digest(&self) -> [u8; 32] {
+        self.member.member.policy_digest
+    }
+
+    pub const fn scope_id(&self) -> [u8; 32] {
+        self.member.member.scope_id
+    }
+
+    pub const fn offer_id(&self) -> u32 {
+        self.member.member.offer_id
+    }
+
+    pub const fn class(&self) -> &BatAcceptanceClassV2 {
+        &self.class
+    }
+
+    /// Recheck the exact secure-channel exporter immediately before a bearer
+    /// is removed from durable storage.
+    pub fn verify_service_authorization_exporter_v2(
+        &self,
+        current_exporter: &[u8; 32],
+    ) -> PirResult<()> {
+        match &self.accepted {
+            AcceptedBatV2PolicyV2::Current(accepted) => {
+                accepted.verify_service_authorization_exporter_v1(current_exporter)
+            }
+            AcceptedBatV2PolicyV2::Retained(accepted) => {
+                accepted.verify_service_authorization_exporter_v2(current_exporter)
+            }
+        }
+    }
+
+    /// Recheck current-policy validity or the retained member's signed grace
+    /// without exposing a selector that could be changed after vault release.
+    pub fn verify_redemption_ready_v2(&self, now_unix: u64) -> PirResult<()> {
+        let member = match &self.accepted {
+            AcceptedBatV2PolicyV2::Current(accepted) => {
+                let class_bytes = self.class.encode().map_err(protocol_encode_error)?;
+                accepted
+                    .verify_current_bat_v2_offer_v2(
+                        &self.scope_id(),
+                        self.offer_id(),
+                        &class_bytes,
+                        now_unix,
+                    )?
+                    .member()
+                    .clone()
+            }
+            AcceptedBatV2PolicyV2::Retained(accepted) => accepted.verified_member_v2(now_unix)?,
+        };
+        verify_bat_acceptance_class_member_projection_v2(&self.class, &member)
+            .map_err(protocol_verification_error)?;
+        if now_unix < self.class.key_not_before || now_unix > self.class.key_not_after {
+            return Err(PirError::VerificationFailed(
+                "BAT V2 class key is outside its signed validity window".into(),
+            ));
+        }
+        if member != self.member {
+            return Err(PirError::VerificationFailed(
+                "BAT V2 redemption member changed after handle construction".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Decode and class-bind one BAT V2 proof, then build the sole scheme-6
+    /// AuthBegin path. Local proof, member, operation, and deadline failures
+    /// occur before transport I/O.
+    pub fn build_authorization_request_v2(
+        &self,
+        operation: OperationStartV1,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<Vec<u8>> {
+        self.verify_redemption_ready_v2(now_unix)?;
+        let (required_backend, required_workload) = operation.required_service();
+        if self.member.common_terms.backend != required_backend
+            || self.member.common_terms.workload != required_workload
+        {
+            return Err(PirError::InvalidState(
+                "BAT V2 class member does not authorize this backend workload".into(),
+            ));
+        }
+        let proof =
+            BitcoinPirCashuBatProofV2::decode(proof_bytes).map_err(protocol_decode_error)?;
+        proof
+            .verify_class_binding(&self.class)
+            .map_err(protocol_verification_error)?;
+        let proof = AuthorizationProofV1::BitcoinPirCashuBatV2(proof)
+            .encode_for(AuthScheme::BitcoinPirCashuBatV2, FreeModeV1::NotFree)
+            .map_err(protocol_encode_error)?;
+        let auth = AuthBeginV1 {
+            policy_digest: self.policy_digest(),
+            scope_id: self.scope_id(),
+            offer_id: self.offer_id(),
+            scheme: AuthScheme::BitcoinPirCashuBatV2,
+            key_id: self.class.class_id.to_vec(),
+            operation,
+            proof,
+        };
+        let padded = Zeroizing::new(auth.encode_padded().map_err(protocol_encode_error)?);
+        Ok(encode_request(REQ_AUTH_BEGIN_V1, &padded))
+    }
+
+    /// Classify one post-send response against the exact handle. This method
+    /// is total: malformed/mismatched responses conservatively burn the proof.
+    pub fn accept_authorization_response_v2(&self, response: &[u8]) -> BatV2AdmissionOutcomeV2 {
+        let Some((&opcode, body)) = response.split_first() else {
+            return BatV2AdmissionOutcomeV2::BurnOutcomeUnknown;
+        };
+        if opcode != RESP_AUTH_RESULT_V1 {
+            return BatV2AdmissionOutcomeV2::BurnOutcomeUnknown;
+        }
+        let result = match AuthResultV1::decode(body) {
+            Ok(result) => result,
+            Err(_) => return BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+        };
+        classify_bat_v2_auth_result_v2(
+            result,
+            self.scope_id(),
+            self.member.common_terms.entitlement_profile,
+        )
+    }
+}
+
 /// Fetch and verify one provider's policy on an authenticated encrypted
 /// channel. No capability is presented or consumed by this function.
 pub async fn fetch_verified_service_policy_v1(
@@ -555,6 +834,33 @@ pub async fn fetch_retained_service_redemption_v1(
     let request = build_retained_service_policy_request_v1(expected_policy_digest)?;
     let response = transport.roundtrip(&request).await?;
     accept_retained_service_policy_response_v1(
+        &response,
+        expected_provider_id,
+        policy_signing_key,
+        expected_policy_digest,
+        scope_id,
+        offer_id,
+        now_unix,
+        exporter,
+    )
+}
+
+/// Fetch one exact historical BAT V2 policy member. This accepts no wildcard
+/// selector and does not advance the current-policy rollback checkpoint.
+#[allow(clippy::too_many_arguments)]
+pub async fn fetch_retained_bat_v2_policy_v2(
+    transport: &mut dyn PirTransport,
+    expected_provider_id: ProviderId,
+    policy_signing_key: &VerifyingKey,
+    expected_policy_digest: [u8; 32],
+    scope_id: [u8; 32],
+    offer_id: u32,
+    now_unix: u64,
+) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
+    let exporter = require_secure_service_channel(transport)?;
+    let request = build_retained_service_policy_request_v1(expected_policy_digest)?;
+    let response = transport.roundtrip(&request).await?;
+    accept_retained_bat_v2_policy_response_v2(
         &response,
         expected_provider_id,
         policy_signing_key,
@@ -686,6 +992,59 @@ pub fn accept_retained_service_policy_response_v1(
         )
         .map_err(protocol_verification_error)?;
     Ok(AcceptedRetiredServiceRedemptionV1 {
+        policy,
+        policy_digest: expected_policy_digest,
+        scope_id,
+        offer_id,
+        policy_signing_key: *policy_signing_key,
+        service_authorization_exporter,
+    })
+}
+
+/// Accept one exact retained BAT V2 member without weakening the provider-
+/// bound V1 retained-redemption type. The signed grace deadline is checked at
+/// acceptance and again by every verified redemption handle before send.
+#[allow(clippy::too_many_arguments)]
+pub fn accept_retained_bat_v2_policy_response_v2(
+    response: &[u8],
+    expected_provider_id: ProviderId,
+    policy_signing_key: &VerifyingKey,
+    expected_policy_digest: [u8; 32],
+    scope_id: [u8; 32],
+    offer_id: u32,
+    now_unix: u64,
+    service_authorization_exporter: [u8; 32],
+) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
+    if now_unix == 0 {
+        return Err(PirError::InvalidState(
+            "trusted wall clock is required for retained BAT V2 verification".into(),
+        ));
+    }
+    ServicePolicyRequestV1::retained(expected_policy_digest).map_err(protocol_decode_error)?;
+    if service_authorization_exporter.iter().all(|byte| *byte == 0) {
+        return Err(PirError::VerificationFailed(
+            "retained BAT V2 acceptance requires a non-zero secure-channel exporter".into(),
+        ));
+    }
+    let body = expect_response_opcode(response, RESP_SERVICE_POLICY_V1, "retained BAT V2 policy")?;
+    let policy = ServicePolicyResponseV1::decode(body)
+        .map_err(protocol_decode_error)?
+        .policy;
+    let member = bat_acceptance_member_from_retained_policy_v2(
+        &policy,
+        &expected_provider_id,
+        &expected_policy_digest,
+        &scope_id,
+        offer_id,
+        policy_signing_key,
+    )
+    .map_err(protocol_verification_error)?;
+    if now_unix < member.policy_issued_at || now_unix > member.redemption_deadline {
+        return Err(PirError::VerificationFailed(
+            "retained BAT V2 policy is outside its signed redemption grace".into(),
+        ));
+    }
+    Ok(AcceptedRetainedBatV2PolicyV2 {
         policy,
         policy_digest: expected_policy_digest,
         scope_id,
@@ -922,6 +1281,7 @@ pub async fn dangerous_unpaired_authorize_service_operation_v1(
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
     let request = Zeroizing::new(dangerous_unpaired_build_service_authorization_request_v1(
@@ -942,6 +1302,7 @@ pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
     proof: AuthorizationProofV1,
     now_unix: u64,
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
     let request = Zeroizing::new(
@@ -953,6 +1314,35 @@ pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
     dangerous_unpaired_accept_retained_service_authorization_response_v1(&response, accepted)
 }
 
+/// Dangerous unpaired presentation through one verified BAT V2 member handle.
+/// Pair-based callers must establish their strict provider context before
+/// entering this lower-level one-sided transport operation.
+///
+/// All local/session checks and proof class binding finish before the single
+/// transport call. Once that call is entered, any transport or response
+/// decoding failure is conservatively an indeterminate burn; this function
+/// never retries and never parses error strings.
+pub async fn dangerous_unpaired_authorize_bat_v2_redemption_v2(
+    transport: &mut dyn PirTransport,
+    verified: &VerifiedBatV2RedemptionV2,
+    operation: OperationStartV1,
+    proof_bytes: &[u8],
+    now_unix: u64,
+) -> PirResult<BatV2AdmissionOutcomeV2> {
+    let exporter = require_secure_service_channel(transport)?;
+    verified.verify_service_authorization_exporter_v2(&exporter)?;
+    let request = Zeroizing::new(verified.build_authorization_request_v2(
+        operation,
+        proof_bytes,
+        now_unix,
+    )?);
+    let response = match transport.roundtrip(&request).await {
+        Ok(response) => response,
+        Err(_) => return Ok(BatV2AdmissionOutcomeV2::BurnOutcomeUnknown),
+    };
+    Ok(verified.accept_authorization_response_v2(&response))
+}
+
 /// Build the one-shot AuthBegin for the exact retained digest/scope/offer.
 /// There is no parameter with which a caller could substitute any of them.
 pub fn dangerous_unpaired_build_retained_service_authorization_request_v1(
@@ -961,6 +1351,7 @@ pub fn dangerous_unpaired_build_retained_service_authorization_request_v1(
     proof: AuthorizationProofV1,
     now_unix: u64,
 ) -> PirResult<Vec<u8>> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let verified_offer = accepted.verified_offer_for_redemption_v1(now_unix)?;
     let scope = verified_offer.scope();
     let (required_backend, required_workload) = operation.required_service();
@@ -996,6 +1387,7 @@ pub fn dangerous_unpaired_build_service_authorization_request_v1(
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
 ) -> PirResult<Vec<u8>> {
+    reject_bat_v2_proof_from_generic_v1(&proof)?;
     let (_scope_policy, offer) =
         service_offer_for_operation_v1(accepted, &scope_id, offer_id, &operation)?;
     let proof = proof
@@ -1012,6 +1404,18 @@ pub fn dangerous_unpaired_build_service_authorization_request_v1(
     };
     let padded = Zeroizing::new(auth.encode_padded().map_err(protocol_decode_error)?);
     Ok(encode_request(REQ_AUTH_BEGIN_V1, &padded))
+}
+
+/// Scheme 6 must pass through [`VerifiedBatV2RedemptionV2`]. Reject the
+/// public protocol enum itself so native callers cannot bypass the byte-level
+/// V1 proof decoder by constructing `AuthorizationProofV1` directly.
+fn reject_bat_v2_proof_from_generic_v1(proof: &AuthorizationProofV1) -> PirResult<()> {
+    if matches!(proof, AuthorizationProofV1::BitcoinPirCashuBatV2(_)) {
+        return Err(PirError::InvalidState(
+            "BAT V2 authorization requires a verified exact-member redemption handle".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Dangerous unpaired primitive: verify one provider's authorization response
@@ -1245,6 +1649,10 @@ fn protocol_decode_error(error: pir_service_protocol::ServiceProtocolError) -> P
     PirError::Decode(format!("service protocol: {error}"))
 }
 
+fn protocol_encode_error(error: pir_service_protocol::ServiceProtocolError) -> PirError {
+    PirError::Encode(format!("service protocol: {error}"))
+}
+
 fn protocol_verification_error(error: pir_service_protocol::ServiceProtocolError) -> PirError {
     PirError::VerificationFailed(format!("service policy: {error}"))
 }
@@ -1317,12 +1725,20 @@ mod tests {
     use async_trait::async_trait;
     use pir_sdk::PirMetrics;
     use pir_service_protocol::{
-        paid_receipt_key_id, AcquisitionMethod, AuthGrantedV1, AuthPaddingClassV1, BackendId,
-        CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
-        EntitlementLimitsV1, PaidReceiptBindingV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1,
-        ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
+        derive_issuer_id, paid_receipt_key_id, AcquisitionMethod, AuthGrantedV1,
+        AuthPaddingClassV1, BackendId, BatAcceptanceClassV2, BatAcceptanceMemberV2,
+        BatAcceptanceTermsV2, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1,
+        CredentialUnitV1, DatasetBindingV1, EntitlementLimitsV1, PaidReceiptBindingV1, PriceV1,
+        PrivacyLeakageV1, ServiceOfferV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode,
+        WorkloadId,
     };
     use std::sync::Arc;
+
+    const GENERATOR_COMPRESSED: [u8; 33] = [
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ];
 
     struct ScriptedSecureTransport {
         responses: std::collections::VecDeque<Vec<u8>>,
@@ -1518,6 +1934,131 @@ mod tests {
         )
     }
 
+    fn bat_v2_policy_and_class() -> (
+        ServicePolicyV1,
+        VerifyingKey,
+        ProviderId,
+        [u8; 32],
+        BatAcceptanceClassV2,
+        ed25519_dalek::SigningKey,
+    ) {
+        let policy_signing = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+        let issuer_signing = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
+        let issuer_id = derive_issuer_id(&issuer_signing.verifying_key().to_bytes());
+        let provider_id = [0x41; 32];
+        let class_id = [0x42; 32];
+        let scope = ServiceScopeV1 {
+            provider_id,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::Class { class_id: 7 },
+            operation_profile: 2,
+            entitlement_profile: 3,
+        };
+        let scope_id = scope.scope_id();
+        let limits = EntitlementLimitsV1 {
+            max_logical_inputs: 1,
+            max_frames: 10,
+            max_request_bytes: 10_000,
+            max_response_bytes: 20_000,
+            max_wall_time_ms: 1_000,
+            max_concurrent_sockets: 1,
+            max_hint_groups: 0,
+            max_work_units: 100,
+        };
+        let privacy_leakage = PrivacyLeakageV1::from_bits(
+            PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+        )
+        .unwrap();
+        let policy = ServicePolicyV1::sign(
+            provider_id,
+            9,
+            100,
+            200,
+            AuthPaddingClassV1::Class16KiB,
+            vec![ServiceScopePolicyV1 {
+                scope,
+                limits: limits.clone(),
+                offers: vec![ServiceOfferV1 {
+                    offer_id: 11,
+                    acquisition: AcquisitionMethod::Bolt11V1,
+                    free_mode: FreeModeV1::NotFree,
+                    free_quota: 0,
+                    free_window_seconds: 0,
+                    free_pow_difficulty_bits: 0,
+                    priority_class: 1,
+                    authorization: AuthScheme::BitcoinPirCashuBatV2,
+                    verification: VerificationMode::SharedIssuerOnline,
+                    deployment_status: DeploymentStatus::Stable,
+                    price: PriceV1::MilliSatoshi(1_000),
+                    issuer_id,
+                    key_id: class_id.to_vec(),
+                    credential_binding: None,
+                    cashu_mint_manifest: None,
+                    endpoint: "https://issuer.invalid".into(),
+                    invoice_expiry_seconds: 10,
+                    claim_window_seconds: 10,
+                    minimum_credential_validity_seconds: 10,
+                    retired_policy_grace_seconds: 40,
+                    credential_count: 2,
+                    credential_presentation_limit: 1,
+                    privacy_leakage,
+                }],
+            }],
+            &policy_signing,
+        )
+        .unwrap();
+        let policy_digest = policy.policy_digest().unwrap();
+        let terms = BatAcceptanceTermsV2 {
+            auth_padding_class: AuthPaddingClassV1::Class16KiB,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::Class { class_id: 7 },
+            operation_profile: 2,
+            entitlement_profile: 3,
+            limits,
+            priority_class: 1,
+            deployment_status: DeploymentStatus::Stable,
+            price_msat: 1_000,
+            issuer_endpoint: "https://issuer.invalid".into(),
+            invoice_expiry_seconds: 10,
+            claim_window_seconds: 10,
+            minimum_credential_validity_seconds: 10,
+            retired_policy_grace_seconds: 40,
+            credential_count: 2,
+            credential_presentation_limit: 1,
+            privacy_leakage,
+        };
+        let class = BatAcceptanceClassV2::sign(
+            class_id,
+            4,
+            100,
+            230,
+            GENERATOR_COMPRESSED,
+            terms,
+            vec![BatAcceptanceMemberV2 {
+                provider_id,
+                policy_digest,
+                scope_id,
+                offer_id: 11,
+            }],
+            &issuer_signing,
+        )
+        .unwrap();
+        (
+            policy,
+            policy_signing.verifying_key(),
+            provider_id,
+            scope_id,
+            class,
+            issuer_signing,
+        )
+    }
+
     fn policy_wire_response(policy: ServicePolicyV1) -> Vec<u8> {
         let body = ServicePolicyResponseV1 { policy }.encode().unwrap();
         let mut response = vec![RESP_SERVICE_POLICY_V1];
@@ -1602,6 +2143,300 @@ mod tests {
         offer.authorization = AuthScheme::BitcoinPirCashuBatV2;
         offer.free_mode = FreeModeV1::NotFree;
         assert!(build_authorization_proof_for_offer_v1(&offer, &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn generic_native_v1_request_rejects_direct_bat_v2_enum_before_transport() {
+        let (policy, verifying_key, provider_id, scope_id, class, _) = bat_v2_policy_and_class();
+        let accepted = accept_service_policy_response_v1(
+            &policy_wire_response(policy),
+            provider_id,
+            &verifying_key,
+            150,
+            &ServicePolicyCheckpointV1::initial(),
+            [9; 32],
+        )
+        .unwrap();
+        let direct_proof = |secret_raw| {
+            AuthorizationProofV1::BitcoinPirCashuBatV2(
+                BitcoinPirCashuBatProofV2::from_class(&class, secret_raw, GENERATOR_COMPRESSED)
+                    .unwrap(),
+            )
+        };
+
+        assert!(dangerous_unpaired_build_service_authorization_request_v1(
+            &accepted,
+            scope_id,
+            11,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            direct_proof([0x61; 32]),
+        )
+        .is_err());
+
+        let mut transport = ScriptedSecureTransport {
+            responses: [].into(),
+            sent: Vec::new(),
+            exporter: [9; 32],
+        };
+        assert!(dangerous_unpaired_authorize_service_operation_v1(
+            &mut transport,
+            &accepted,
+            scope_id,
+            11,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            direct_proof([0x62; 32]),
+        )
+        .await
+        .is_err());
+        assert!(transport.sent.is_empty());
+    }
+
+    #[test]
+    fn bat_v2_handles_close_current_and_retained_policies_without_cross_use() {
+        let (policy, verifying_key, provider_id, scope_id, class, issuer_signing) =
+            bat_v2_policy_and_class();
+        let policy_digest = policy.policy_digest().unwrap();
+        let response = policy_wire_response(policy.clone());
+        let current = accept_service_policy_response_v1(
+            &response,
+            provider_id,
+            &verifying_key,
+            150,
+            &ServicePolicyCheckpointV1::initial(),
+            [9; 32],
+        )
+        .unwrap();
+        let class_bytes = class.encode().unwrap();
+        let current_handle = current
+            .verify_bat_v2_redemption_v2(&scope_id, 11, &class_bytes, 150)
+            .unwrap();
+        assert_eq!(current_handle.policy_digest(), policy_digest);
+        assert!(current_handle.verify_redemption_ready_v2(150).is_ok());
+        assert!(current_handle.verify_redemption_ready_v2(210).is_err());
+
+        // Copying the class ID and common terms into another valid issuer
+        // signature is insufficient when the exact policy member is absent.
+        let copied_id_nonmember = BatAcceptanceClassV2::sign(
+            class.class_id,
+            class.key_epoch,
+            class.key_not_before,
+            class.key_not_after,
+            class.bat_verification_key,
+            class.common_terms.clone(),
+            vec![BatAcceptanceMemberV2 {
+                provider_id: [0xee; 32],
+                policy_digest,
+                scope_id,
+                offer_id: 11,
+            }],
+            &issuer_signing,
+        )
+        .unwrap();
+        assert!(
+            current
+                .verify_bat_v2_redemption_v2(
+                    &scope_id,
+                    11,
+                    &copied_id_nonmember.encode().unwrap(),
+                    150,
+                )
+                .is_err()
+        );
+        assert!(current
+            .verify_bat_v2_redemption_v2(&scope_id, 12, &class_bytes, 150)
+            .is_err());
+
+        let retained = accept_retained_bat_v2_policy_response_v2(
+            &response,
+            provider_id,
+            &verifying_key,
+            policy_digest,
+            scope_id,
+            11,
+            210,
+            [9; 32],
+        )
+        .unwrap();
+        let retained_handle = retained
+            .verify_bat_v2_redemption_v2(&class_bytes, 210)
+            .unwrap();
+        assert!(retained_handle.verify_redemption_ready_v2(210).is_ok());
+        assert!(retained.verified_member_v2(231).is_ok());
+        assert!(retained_handle.verify_redemption_ready_v2(231).is_err());
+        assert!(retained.verified_member_v2(241).is_err());
+
+        // Neither retained typestate can be cross-used for the other's offer
+        // family.
+        assert!(accept_retained_service_policy_response_v1(
+            &response,
+            provider_id,
+            &verifying_key,
+            policy_digest,
+            scope_id,
+            11,
+            210,
+            [9; 32],
+        )
+        .is_err());
+        let (v1_policy, v1_key, v1_provider, v1_scope, _) = retained_policy();
+        let v1_digest = v1_policy.policy_digest().unwrap();
+        assert!(accept_retained_bat_v2_policy_response_v2(
+            &policy_wire_response(v1_policy),
+            v1_provider,
+            &v1_key,
+            v1_digest,
+            v1_scope,
+            9,
+            250,
+            [9; 32],
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn bat_v2_authorization_preflights_class_and_calls_transport_once() {
+        let (policy, verifying_key, provider_id, scope_id, class, issuer_signing) =
+            bat_v2_policy_and_class();
+        let accepted = accept_service_policy_response_v1(
+            &policy_wire_response(policy),
+            provider_id,
+            &verifying_key,
+            150,
+            &ServicePolicyCheckpointV1::initial(),
+            [9; 32],
+        )
+        .unwrap();
+        let handle = accepted
+            .verify_bat_v2_redemption_v2(&scope_id, 11, &class.encode().unwrap(), 150)
+            .unwrap();
+        let proof = BitcoinPirCashuBatProofV2::from_class(&class, [0x51; 32], GENERATOR_COMPRESSED)
+            .unwrap()
+            .encode()
+            .unwrap();
+
+        let wrong_class = BatAcceptanceClassV2::sign(
+            [0x52; 32],
+            class.key_epoch,
+            class.key_not_before,
+            class.key_not_after,
+            class.bat_verification_key,
+            class.common_terms.clone(),
+            class.members.clone(),
+            &issuer_signing,
+        )
+        .unwrap();
+        let wrong_proof =
+            BitcoinPirCashuBatProofV2::from_class(&wrong_class, [0x53; 32], GENERATOR_COMPRESSED)
+                .unwrap()
+                .encode()
+                .unwrap();
+        let mut rejected_before_send = ScriptedSecureTransport {
+            responses: [].into(),
+            sent: Vec::new(),
+            exporter: [9; 32],
+        };
+        assert!(dangerous_unpaired_authorize_bat_v2_redemption_v2(
+            &mut rejected_before_send,
+            &handle,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            &wrong_proof,
+            150,
+        )
+        .await
+        .is_err());
+        assert!(rejected_before_send.sent.is_empty());
+
+        let mut wrong_session = ScriptedSecureTransport {
+            responses: [].into(),
+            sent: Vec::new(),
+            exporter: [8; 32],
+        };
+        assert!(dangerous_unpaired_authorize_bat_v2_redemption_v2(
+            &mut wrong_session,
+            &handle,
+            OperationStartV1::DpfQuery { db_id: 0 },
+            &proof,
+            150,
+        )
+        .await
+        .is_err());
+        assert!(wrong_session.sent.is_empty());
+
+        let rejected = |code| {
+            let body = AuthResultV1::Rejected(pir_service_protocol::AuthRejectedV1 {
+                code,
+                retry_after_ms: 250,
+            })
+            .encode()
+            .unwrap();
+            let mut response = vec![RESP_AUTH_RESULT_V1];
+            response.extend_from_slice(&body);
+            response
+        };
+        let granted = AuthGrantedV1 {
+            scope_id,
+            enforced_profile: 3,
+            expires_in_ms: 10_000,
+            harmony_attach: None,
+        };
+        let mut granted_response = vec![RESP_AUTH_RESULT_V1];
+        granted_response
+            .extend_from_slice(&AuthResultV1::Granted(granted.clone()).encode().unwrap());
+        let cases = [
+            (
+                Some(granted_response),
+                BatV2AdmissionOutcomeV2::Granted(granted),
+            ),
+            (
+                Some(rejected(AuthRejectCode::ServerBusy)),
+                BatV2AdmissionOutcomeV2::RecoverableDefinitelyNotSent {
+                    retry_after_ms: 250,
+                },
+            ),
+            (
+                Some(rejected(AuthRejectCode::ScopeUnavailable)),
+                BatV2AdmissionOutcomeV2::RecoverableRetrySafe {
+                    retry_after_ms: 250,
+                },
+            ),
+            (
+                Some(rejected(AuthRejectCode::InvalidOrSpent)),
+                BatV2AdmissionOutcomeV2::BurnTerminal,
+            ),
+            (
+                Some(rejected(AuthRejectCode::InternalAfterSpend)),
+                BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+            ),
+            (
+                Some(vec![RESP_AUTH_RESULT_V1, 0xff]),
+                BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+            ),
+            (None, BatV2AdmissionOutcomeV2::BurnOutcomeUnknown),
+        ];
+        for (index, (response, expected)) in cases.into_iter().enumerate() {
+            let mut transport = ScriptedSecureTransport {
+                responses: response.into_iter().collect(),
+                sent: Vec::new(),
+                exporter: [9; 32],
+            };
+            let outcome = dangerous_unpaired_authorize_bat_v2_redemption_v2(
+                &mut transport,
+                &handle,
+                OperationStartV1::DpfQuery { db_id: 0 },
+                &proof,
+                150,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, expected);
+            assert_eq!(transport.sent.len(), 1, "case {index} retried");
+            let auth = AuthBeginV1::decode_padded(&transport.sent[0][5..]).unwrap();
+            assert_eq!(auth.policy_digest, handle.policy_digest());
+            assert_eq!(auth.scope_id, handle.scope_id());
+            assert_eq!(auth.offer_id, handle.offer_id());
+            assert_eq!(auth.scheme, AuthScheme::BitcoinPirCashuBatV2);
+            assert_eq!(auth.key_id, class.class_id);
+        }
     }
 
     #[tokio::test]

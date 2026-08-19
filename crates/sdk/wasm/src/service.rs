@@ -6,16 +6,18 @@
 use ed25519_dalek::VerifyingKey;
 use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_sdk_client::{
-    accept_pow_challenge_response_v1, accept_retained_service_policy_response_v1,
-    accept_service_policy_response_v1, build_pow_challenge_request_v1,
-    build_retained_service_policy_request_v1, build_service_policy_request_v1,
+    accept_pow_challenge_response_v1, accept_retained_bat_v2_policy_response_v2,
+    accept_retained_service_policy_response_v1, accept_service_policy_response_v1,
+    build_pow_challenge_request_v1, build_retained_service_policy_request_v1,
+    build_service_policy_request_v1,
     dangerous_unpaired_accept_retained_service_authorization_response_v1,
     dangerous_unpaired_accept_service_authorization_response_v1,
     dangerous_unpaired_build_authorization_proof_v1,
     dangerous_unpaired_build_retained_authorization_proof_v1,
     dangerous_unpaired_build_retained_service_authorization_request_v1,
-    dangerous_unpaired_build_service_authorization_request_v1, AcceptedRetiredServiceRedemptionV1,
-    AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+    dangerous_unpaired_build_service_authorization_request_v1, AcceptedRetainedBatV2PolicyV2,
+    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, BatV2AdmissionOutcomeV2,
+    ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
 };
 use pir_service_protocol::{
     bat_verification_key_fingerprint_v1, pow_solution_meets_difficulty_v1, AcquisitionMethod,
@@ -38,6 +40,21 @@ pub struct WasmAcceptedServicePolicyV1 {
 #[wasm_bindgen]
 pub struct WasmAcceptedRetainedServiceRedemptionV1 {
     pub(crate) inner: AcceptedRetiredServiceRedemptionV1,
+}
+
+/// Exact historical BAT V2 selector. It cannot authorize until it is closed
+/// over the issuer-signed acceptance class into
+/// [`WasmVerifiedBatV2RedemptionV2`].
+#[wasm_bindgen]
+pub struct WasmAcceptedRetainedBatV2PolicyV2 {
+    pub(crate) inner: AcceptedRetainedBatV2PolicyV2,
+}
+
+/// Opaque exact-member authority for the only browser-visible scheme-6 AUTH
+/// path. JavaScript cannot construct or mutate its policy/class selectors.
+#[wasm_bindgen]
+pub struct WasmVerifiedBatV2RedemptionV2 {
+    pub(crate) inner: VerifiedBatV2RedemptionV2,
 }
 
 /// Opaque, verified proof-of-work challenge bound to one provider connection
@@ -156,6 +173,40 @@ impl WasmStandaloneOnionServiceAdmissionV1 {
         Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
     }
 
+    /// Accept one exact historical BAT V2 selector. It remains unusable until
+    /// `verifyBatV2Redemption` closes it over the signed class/member gate.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = acceptRetainedBatV2PolicyResponse)]
+    pub fn accept_retained_bat_v2_policy_response(
+        &self,
+        response_frame: &[u8],
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedBatV2PolicyV2, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let payload = crate::standalone_channel::exact_payload(
+            response_frame,
+            "retained BAT V2 policy response",
+        )?;
+        let accepted = accept_retained_bat_v2_policy_response_v2(
+            payload,
+            provider_id,
+            &signing_key,
+            parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+            parse_scope_id_v1(scope_id)?,
+            offer_id,
+            now_unix,
+            self.secure_channel_exporter,
+        )
+        .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(WasmAcceptedRetainedBatV2PolicyV2 { inner: accepted })
+    }
+
     #[wasm_bindgen(js_name = verifyRetainedPolicySession)]
     pub fn verify_retained_policy_session(
         &self,
@@ -267,6 +318,29 @@ impl WasmStandaloneOnionServiceAdmissionV1 {
         .map_err(|error| JsError::new(&error.to_string()))
     }
 
+    /// Sole standalone OnionPIR request builder for scheme 6. Proof decoding,
+    /// exact class binding, member freshness, and session binding all finish
+    /// before bytes are returned to JavaScript.
+    #[wasm_bindgen(js_name = batV2AuthorizationRequest)]
+    pub fn bat_v2_authorization_request(
+        &self,
+        verified: &WasmVerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, JsError> {
+        verified
+            .inner
+            .verify_service_authorization_exporter_v2(&self.secure_channel_exporter)
+            .and_then(|_| {
+                verified.inner.build_authorization_request_v2(
+                    OperationStartV1::OnionSession { db_id: self.db_id },
+                    proof_bytes,
+                    now_unix,
+                )
+            })
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     #[wasm_bindgen(js_name = acceptAuthorizationResponse)]
     pub fn accept_authorization_response(
         &self,
@@ -311,6 +385,33 @@ impl WasmStandaloneOnionServiceAdmissionV1 {
         )
         .map_err(|error| JsError::new(&error.to_string()))?;
         Ok(grant_json_v1(&grant))
+    }
+
+    /// Total post-send BAT V2 classifier. Even a malformed encrypted frame is
+    /// returned as `burn-outcome-unknown`; JavaScript never infers retry
+    /// safety from an exception string.
+    #[wasm_bindgen(js_name = acceptBatV2AuthorizationResponse)]
+    pub fn accept_bat_v2_authorization_response(
+        &self,
+        response_frame: &[u8],
+        verified: &WasmVerifiedBatV2RedemptionV2,
+    ) -> JsValue {
+        let outcome = if verified
+            .inner
+            .verify_service_authorization_exporter_v2(&self.secure_channel_exporter)
+            .is_err()
+        {
+            BatV2AdmissionOutcomeV2::BurnOutcomeUnknown
+        } else {
+            match crate::standalone_channel::exact_payload(
+                response_frame,
+                "BAT V2 authorization response",
+            ) {
+                Ok(payload) => verified.inner.accept_authorization_response_v2(payload),
+                Err(_) => BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+            }
+        };
+        bat_v2_outcome_json_v2(&outcome)
     }
 }
 
@@ -377,6 +478,78 @@ impl WasmAcceptedRetainedServiceRedemptionV1 {
             "offer": service_offer_json_v1(verified.offer()),
         }))
         .map_err(|error| JsError::new(&error.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+impl WasmAcceptedRetainedBatV2PolicyV2 {
+    #[wasm_bindgen(getter, js_name = providerIdHex)]
+    pub fn provider_id_hex(&self) -> String {
+        hex::encode(self.inner.policy().provider_id)
+    }
+
+    #[wasm_bindgen(getter, js_name = policyDigestHex)]
+    pub fn policy_digest_hex(&self) -> String {
+        hex::encode(self.inner.policy_digest())
+    }
+
+    #[wasm_bindgen(getter, js_name = scopeIdHex)]
+    pub fn scope_id_hex(&self) -> String {
+        hex::encode(self.inner.scope_id())
+    }
+
+    #[wasm_bindgen(getter, js_name = offerId)]
+    pub fn offer_id(&self) -> u32 {
+        self.inner.offer_id()
+    }
+
+    /// The retained selector alone cannot build AUTH. It must still prove
+    /// exact membership in this canonical signed class.
+    #[wasm_bindgen(js_name = verifyBatV2Redemption)]
+    pub fn verify_bat_v2_redemption(
+        &self,
+        class_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<WasmVerifiedBatV2RedemptionV2, JsError> {
+        self.inner
+            .verify_bat_v2_redemption_v2(class_bytes, now_unix)
+            .map(|inner| WasmVerifiedBatV2RedemptionV2 { inner })
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+impl WasmVerifiedBatV2RedemptionV2 {
+    #[wasm_bindgen(getter, js_name = providerIdHex)]
+    pub fn provider_id_hex(&self) -> String {
+        hex::encode(self.inner.provider_id())
+    }
+
+    #[wasm_bindgen(getter, js_name = policyDigestHex)]
+    pub fn policy_digest_hex(&self) -> String {
+        hex::encode(self.inner.policy_digest())
+    }
+
+    #[wasm_bindgen(getter, js_name = scopeIdHex)]
+    pub fn scope_id_hex(&self) -> String {
+        hex::encode(self.inner.scope_id())
+    }
+
+    #[wasm_bindgen(getter, js_name = offerId)]
+    pub fn offer_id(&self) -> u32 {
+        self.inner.offer_id()
+    }
+
+    #[wasm_bindgen(getter, js_name = classIdHex)]
+    pub fn class_id_hex(&self) -> String {
+        hex::encode(self.inner.class().class_id)
+    }
+
+    #[wasm_bindgen(js_name = assertRedemptionReady)]
+    pub fn assert_redemption_ready(&self, now_unix: u64) -> Result<(), JsError> {
+        self.inner
+            .verify_redemption_ready_v2(now_unix)
+            .map_err(|error| JsError::new(&error.to_string()))
     }
 }
 
@@ -533,6 +706,28 @@ impl WasmAcceptedServicePolicyV1 {
             quote_key_checkpoint_bytes,
             now_unix,
         )
+    }
+
+    /// Create the opaque scheme-6 redemption authority only after the current
+    /// policy checkpoint is durable and exact class membership is verified.
+    #[wasm_bindgen(js_name = verifyBatV2Redemption)]
+    pub fn verify_bat_v2_redemption(
+        &self,
+        scope_id: &[u8],
+        offer_id: u32,
+        class_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<WasmVerifiedBatV2RedemptionV2, JsError> {
+        self.require_checkpoint_persisted()?;
+        self.inner
+            .verify_bat_v2_redemption_v2(
+                &parse_scope_id_v1(scope_id)?,
+                offer_id,
+                class_bytes,
+                now_unix,
+            )
+            .map(|inner| WasmVerifiedBatV2RedemptionV2 { inner })
+            .map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Decode and validate one canonical method proof against this exact
@@ -716,6 +911,37 @@ pub(crate) fn build_retained_proof_v1(
 pub(crate) fn grant_json_v1(grant: &AuthGrantedV1) -> JsValue {
     // A half-stream attach secret never enters this general-purpose summary.
     json_compatible_js_value_v1(&grant_json_value_v1(grant)).unwrap_or(JsValue::NULL)
+}
+
+pub(crate) fn bat_v2_outcome_json_v2(outcome: &BatV2AdmissionOutcomeV2) -> JsValue {
+    json_compatible_js_value_v1(&bat_v2_outcome_json_value_v2(outcome)).unwrap_or(JsValue::NULL)
+}
+
+fn bat_v2_outcome_json_value_v2(outcome: &BatV2AdmissionOutcomeV2) -> serde_json::Value {
+    match outcome {
+        BatV2AdmissionOutcomeV2::Granted(grant) => serde_json::json!({
+            "kind": "granted",
+            "grant": grant_json_value_v1(grant),
+        }),
+        BatV2AdmissionOutcomeV2::RecoverableDefinitelyNotSent { retry_after_ms } => {
+            serde_json::json!({
+                "kind": "recoverable-definitely-not-sent",
+                "retryAfterMs": retry_after_ms,
+            })
+        }
+        BatV2AdmissionOutcomeV2::RecoverableRetrySafe { retry_after_ms } => {
+            serde_json::json!({
+                "kind": "recoverable-retry-safe",
+                "retryAfterMs": retry_after_ms,
+            })
+        }
+        BatV2AdmissionOutcomeV2::BurnTerminal => serde_json::json!({
+            "kind": "burn-terminal",
+        }),
+        BatV2AdmissionOutcomeV2::BurnOutcomeUnknown => serde_json::json!({
+            "kind": "burn-outcome-unknown",
+        }),
+    }
 }
 
 fn grant_json_value_v1(grant: &AuthGrantedV1) -> serde_json::Value {
@@ -933,6 +1159,36 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    fn bat_v2_outcome_json_is_a_closed_typed_disposition() {
+        let cases = [
+            (
+                BatV2AdmissionOutcomeV2::RecoverableDefinitelyNotSent { retry_after_ms: 7 },
+                "recoverable-definitely-not-sent",
+                Some(7),
+            ),
+            (
+                BatV2AdmissionOutcomeV2::RecoverableRetrySafe { retry_after_ms: 8 },
+                "recoverable-retry-safe",
+                Some(8),
+            ),
+            (BatV2AdmissionOutcomeV2::BurnTerminal, "burn-terminal", None),
+            (
+                BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+                "burn-outcome-unknown",
+                None,
+            ),
+        ];
+        for (outcome, kind, retry_after_ms) in cases {
+            let value = bat_v2_outcome_json_value_v2(&outcome);
+            assert_eq!(value["kind"].as_str(), Some(kind));
+            assert_eq!(
+                value.get("retryAfterMs").and_then(|value| value.as_u64()),
+                retry_after_ms
+            );
+        }
     }
 
     #[test]

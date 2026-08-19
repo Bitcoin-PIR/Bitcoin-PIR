@@ -45,10 +45,10 @@ use pir_sdk_client::{
 use wasm_bindgen::prelude::*;
 
 use crate::service::{
-    build_proof_v1, build_retained_proof_v1, grant_json_v1, parse_digest_v1,
-    parse_provider_and_key_v1, parse_scope_id_v1, parse_service_trust_v1,
-    WasmAcceptedRetainedServiceRedemptionV1, WasmAcceptedServicePolicyV1,
-    WasmServicePowChallengeV1,
+    bat_v2_outcome_json_v2, build_proof_v1, build_retained_proof_v1, grant_json_v1,
+    parse_digest_v1, parse_provider_and_key_v1, parse_scope_id_v1, parse_service_trust_v1,
+    WasmAcceptedRetainedBatV2PolicyV2, WasmAcceptedRetainedServiceRedemptionV1,
+    WasmAcceptedServicePolicyV1, WasmServicePowChallengeV1, WasmVerifiedBatV2RedemptionV2,
 };
 use crate::{to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
 
@@ -1695,6 +1695,38 @@ impl WasmDpfClient {
         Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedBatV2Policy)]
+    pub async fn fetch_retained_bat_v2_policy_v2(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedBatV2PolicyV2, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_bat_v2_policy_v2(
+                server_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedBatV2PolicyV2 { inner: accepted })
+    }
+
     /// Fail before capability retirement unless the accepted policy belongs to
     /// the currently connected DPF side.
     #[wasm_bindgen(js_name = verifyServicePolicySession)]
@@ -1749,6 +1781,31 @@ impl WasmDpfClient {
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
+    }
+
+    /// Dangerous one-sided DPF scheme-6 admission. This accepts only the
+    /// verified-member handle but does not prove a strict provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2Service)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_service_v2(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        verified: &WasmVerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let outcome = self
+            .inner
+            .dangerous_unpaired_authorize_bat_v2_service_v2(
+                server_index,
+                db_id,
+                &verified.inner,
+                proof_bytes,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(bat_v2_outcome_json_v2(&outcome))
     }
 
     /// Low-level one-sided DPF retained redemption. The JavaScript name is
@@ -2483,6 +2540,38 @@ impl WasmHarmonyClient {
         Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedBatV2Policy)]
+    pub async fn fetch_retained_bat_v2_policy_v2(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedBatV2PolicyV2, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_bat_v2_policy_v2(
+                provider_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedBatV2PolicyV2 { inner: accepted })
+    }
+
     /// Fail before capability retirement unless the accepted policy belongs to
     /// the currently connected Harmony provider side.
     #[wasm_bindgen(js_name = verifyServicePolicySession)]
@@ -2539,6 +2628,32 @@ impl WasmHarmonyClient {
         Ok(grant_json_v1(&grant))
     }
 
+    /// Dangerous one-sided Harmony hint admission without a verified strict
+    /// hint/query provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2HintService)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_hint_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &WasmVerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let outcome = self
+            .inner
+            .dangerous_unpaired_authorize_bat_v2_hint_service_v2(
+                db_id,
+                &verified.inner,
+                proof_bytes,
+                now_unix,
+                pir_service_protocol::HintTransport::V2Full,
+                None,
+                None,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(bat_v2_outcome_json_v2(&outcome))
+    }
+
     /// Low-level retained hint redemption without a verified hint/query
     /// payment context.
     #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeRetainedHintService)]
@@ -2588,6 +2703,29 @@ impl WasmHarmonyClient {
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
+    }
+
+    /// Dangerous one-sided Harmony query admission without a verified strict
+    /// hint/query provider pair.
+    #[wasm_bindgen(js_name = dangerousUnpairedAuthorizeBatV2QueryService)]
+    pub async fn dangerous_unpaired_authorize_bat_v2_query_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &WasmVerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let outcome = self
+            .inner
+            .dangerous_unpaired_authorize_bat_v2_query_service_v2(
+                db_id,
+                &verified.inner,
+                proof_bytes,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(bat_v2_outcome_json_v2(&outcome))
     }
 
     /// Low-level retained query redemption without a verified hint/query
@@ -3314,6 +3452,36 @@ impl WasmOramClient {
         Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedBatV2Policy)]
+    pub async fn fetch_retained_bat_v2_policy_v2(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedBatV2PolicyV2, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_bat_v2_policy_v2(
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedBatV2PolicyV2 { inner: accepted })
+    }
+
     /// Fail before capability retirement unless the accepted policy belongs to
     /// the currently connected ORAM session.
     #[wasm_bindgen(js_name = verifyServicePolicySession)]
@@ -3355,6 +3523,22 @@ impl WasmOramClient {
             .await
             .map_err(err_to_js)?;
         Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = authorizeBatV2Service)]
+    pub async fn authorize_bat_v2_service_v2(
+        &mut self,
+        db_id: u8,
+        verified: &WasmVerifiedBatV2RedemptionV2,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let outcome = self
+            .inner
+            .authorize_bat_v2_service_v2(db_id, &verified.inner, proof_bytes, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(bat_v2_outcome_json_v2(&outcome))
     }
 
     #[wasm_bindgen(js_name = authorizeRetainedService)]
