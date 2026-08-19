@@ -2017,6 +2017,56 @@ impl Bolt11QuoteV1 {
         Ok(verified)
     }
 
+    /// BAT V2 counterpart of [`Self::verify_latest_after`]. Both snapshots
+    /// must remain bound to the exact issuer-signed acceptance class before
+    /// lifecycle monotonicity is considered.
+    pub fn verify_latest_bat_v2_after<'a>(
+        &'a self,
+        previous: &Bolt11QuoteV1,
+        intent: &'a Bolt11BatV2QuoteIntentV2,
+        class: &'a BatAcceptanceClassV2,
+        delegation: &Bolt11QuoteKeyDelegationV1,
+        parsed_invoice: &ParsedBolt11InvoiceV1,
+        now_unix: u64,
+    ) -> Result<VerifiedBolt11BatV2QuoteV2<'a>, ServiceProtocolError> {
+        previous.verify_bat_v2_snapshot(intent, class, delegation, parsed_invoice, now_unix)?;
+        let verified =
+            self.verify_bat_v2_snapshot(intent, class, delegation, parsed_invoice, now_unix)?;
+        let prior = previous;
+        if self.quote_id != prior.quote_id {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.quote_id",
+                reason: "status polling cannot replace the original quote",
+            });
+        }
+        if self.state_version < prior.state_version {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.state_version",
+                reason: "status snapshot rolls back the locally accepted version",
+            });
+        }
+        if self.state_version == prior.state_version {
+            let current = Zeroizing::new(self.encode()?);
+            let previous = Zeroizing::new(prior.encode()?);
+            if current.as_slice() != previous.as_slice() {
+                return Err(ServiceProtocolError::InvalidValue {
+                    field: "Bolt11QuoteV1.state_version",
+                    reason: "different signed snapshots exist at the same state version",
+                });
+            }
+            return Ok(verified);
+        }
+        if self.status_updated_at <= prior.status_updated_at
+            || !is_observable_quote_successor_v1(prior, self)
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.status",
+                reason: "status snapshot is not a reachable monotonic successor",
+            });
+        }
+        Ok(verified)
+    }
+
     fn signing_preimage(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         let unsigned = self.encode_unsigned()?;
         let mut out = Zeroizing::new(Vec::with_capacity(
@@ -2962,11 +3012,12 @@ pub(crate) fn ensure_quote_claim_submission_at(
 mod tests {
     use super::*;
     use crate::{
-        derive_bat_key_id_v1, AuthPaddingClassV1, BackendId, CredentialKeyBindingClaimsV1,
-        CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
-        EntitlementLimitsV1, FreeModeV1, PolicyRollbackGuardV1, PrivacyLeakageV1, ServiceOfferV1,
-        ServicePolicyEpochFloorsV1, ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1,
-        VerificationMode, WorkloadId,
+        derive_bat_key_id_v1, AuthPaddingClassV1, BackendId, BatAcceptanceMemberV2,
+        BatAcceptanceTermsV2, CredentialKeyBindingClaimsV1, CredentialKeyBindingV1,
+        CredentialUnitV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1,
+        PolicyRollbackGuardV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1,
+        ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode,
+        VerifiedBatAcceptanceMemberV2, WorkloadId,
     };
     #[cfg(not(target_family = "wasm"))]
     use bitcoin::hashes::{sha256, Hash};
@@ -3103,6 +3154,168 @@ mod tests {
             CREATED_AT,
             delegation,
             quote_key,
+        )
+        .unwrap()
+    }
+
+    struct BatV2QuoteFixture {
+        quote_key: SigningKey,
+        delegation: Bolt11QuoteKeyDelegationV1,
+        class: BatAcceptanceClassV2,
+        member: VerifiedBatAcceptanceMemberV2,
+        guard: Bolt11QuoteKeyRollbackGuardV1,
+        intent: Bolt11BatV2QuoteIntentV2,
+        parsed_invoice: ParsedBolt11InvoiceV1,
+        open: Bolt11QuoteV1,
+    }
+
+    fn bat_v2_quote_fixture() -> BatV2QuoteFixture {
+        let issuer_key = SigningKey::from_bytes(&[17; 32]);
+        let quote_key = SigningKey::from_bytes(&[18; 32]);
+        let member_coordinates = BatAcceptanceMemberV2 {
+            provider_id: [0x21; 32],
+            policy_digest: [0x22; 32],
+            scope_id: [0x23; 32],
+            offer_id: 24,
+        };
+        let common_terms = BatAcceptanceTermsV2 {
+            auth_padding_class: AuthPaddingClassV1::Class16KiB,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::Class { class_id: 1 },
+            operation_profile: 2,
+            entitlement_profile: 3,
+            limits: EntitlementLimitsV1 {
+                max_logical_inputs: 1,
+                max_frames: 10,
+                max_request_bytes: 10_000,
+                max_response_bytes: 20_000,
+                max_wall_time_ms: 1_000,
+                max_concurrent_sockets: 1,
+                max_hint_groups: 0,
+                max_work_units: 100,
+            },
+            priority_class: 1,
+            deployment_status: DeploymentStatus::Stable,
+            price_msat: 1_000_000,
+            issuer_endpoint: "https://issuer.invalid".into(),
+            invoice_expiry_seconds: INVOICE_EXPIRY,
+            claim_window_seconds: CLAIM_WINDOW,
+            minimum_credential_validity_seconds: CREDENTIAL_VALIDITY,
+            retired_policy_grace_seconds: 5_500,
+            credential_count: 8,
+            credential_presentation_limit: 1,
+            privacy_leakage: PrivacyLeakageV1::from_bits(
+                PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                    | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                    | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+            )
+            .unwrap(),
+        };
+        let class = BatAcceptanceClassV2::sign(
+            [0x24; 32],
+            3,
+            100,
+            20_000,
+            compressed_point(11),
+            common_terms.clone(),
+            vec![member_coordinates.clone()],
+            &issuer_key,
+        )
+        .unwrap();
+        let member = VerifiedBatAcceptanceMemberV2 {
+            issuer_id: class.issuer_id,
+            class_id: class.class_id,
+            member: member_coordinates,
+            common_terms: common_terms.clone(),
+            policy_issued_at: 100,
+            policy_expires_at: 20_000,
+            redemption_deadline: 20_000,
+        };
+        let payee = compressed_point(3);
+        let delegation = Bolt11QuoteKeyDelegationV1::sign(
+            LightningNetworkV1::Bitcoin,
+            payee,
+            4,
+            100,
+            20_000,
+            quote_key.verifying_key().to_bytes(),
+            &issuer_key,
+        )
+        .unwrap();
+        let guard = Bolt11QuoteKeyRollbackGuardV1::initial(
+            class.issuer_id,
+            LightningNetworkV1::Bitcoin,
+            payee,
+        )
+        .unwrap();
+        let intent = Bolt11BatV2QuoteIntentV2::from_verified_class_member_guarded(
+            &member,
+            &class,
+            &delegation,
+            &guard,
+            CREATED_AT,
+            xonly_point(5),
+            [0x25; 32],
+        )
+        .unwrap()
+        .0;
+        let parsed_invoice = ParsedBolt11InvoiceV1::from_signature_verified_invoice(
+            INVOICE,
+            LightningNetworkV1::Bitcoin,
+            payee,
+            common_terms.price_msat,
+            CREATED_AT,
+            INVOICE_EXPIRY,
+        )
+        .unwrap();
+        let verified_intent = intent
+            .verify_for_class_member_guarded(&member, &class, &delegation, &guard, CREATED_AT)
+            .unwrap();
+        let open = Bolt11QuoteV1::sign_for_verified_bat_v2_intent(
+            &verified_intent,
+            [0x26; 32],
+            INVOICE.into(),
+            &parsed_invoice,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+            CREATED_AT,
+            &quote_key,
+        )
+        .unwrap();
+        BatV2QuoteFixture {
+            quote_key,
+            delegation,
+            class,
+            member,
+            guard,
+            intent,
+            parsed_invoice,
+            open,
+        }
+    }
+
+    fn bat_v2_successor(
+        fixture: &BatV2QuoteFixture,
+        previous: &Bolt11QuoteV1,
+        status: Bolt11QuoteStatusV1,
+        status_updated_at: u64,
+    ) -> Bolt11QuoteV1 {
+        let verified = previous
+            .verify_bat_v2_snapshot(
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                status_updated_at,
+            )
+            .unwrap();
+        Bolt11QuoteV1::with_status_from_verified_bat_v2_snapshot(
+            &verified,
+            status,
+            status_updated_at,
+            &fixture.delegation,
+            &fixture.quote_key,
         )
         .unwrap()
     }
@@ -3880,6 +4093,171 @@ mod tests {
         claimed
             .verify_latest_after(&open, &intent, &delegation, &parsed_invoice, 1_500)
             .unwrap();
+    }
+
+    #[test]
+    fn latest_bat_v2_snapshot_guard_accepts_reachable_monotonic_successor() {
+        let fixture = bat_v2_quote_fixture();
+        let settled = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::PaymentSettled,
+            1_400,
+        );
+
+        settled
+            .verify_latest_bat_v2_after(
+                &fixture.open,
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                1_500,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn latest_bat_v2_snapshot_guard_rejects_quote_replacement() {
+        let fixture = bat_v2_quote_fixture();
+        let verified_intent = fixture
+            .intent
+            .verify_for_class_member_guarded(
+                &fixture.member,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.guard,
+                CREATED_AT,
+            )
+            .unwrap();
+        let replacement = Bolt11QuoteV1::sign_for_verified_bat_v2_intent(
+            &verified_intent,
+            [0x27; 32],
+            INVOICE.into(),
+            &fixture.parsed_invoice,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+            CREATED_AT,
+            &fixture.quote_key,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            replacement.verify_latest_bat_v2_after(
+                &fixture.open,
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                1_500,
+            ),
+            Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.quote_id",
+                reason: "status polling cannot replace the original quote",
+            })
+        ));
+    }
+
+    #[test]
+    fn latest_bat_v2_snapshot_guard_rejects_version_rollback() {
+        let fixture = bat_v2_quote_fixture();
+        let settled = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::PaymentSettled,
+            1_400,
+        );
+
+        assert!(matches!(
+            fixture.open.verify_latest_bat_v2_after(
+                &settled,
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                1_500,
+            ),
+            Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.state_version",
+                reason: "status snapshot rolls back the locally accepted version",
+            })
+        ));
+    }
+
+    #[test]
+    fn latest_bat_v2_snapshot_guard_rejects_same_version_equivocation() {
+        let fixture = bat_v2_quote_fixture();
+        let settled = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::PaymentSettled,
+            1_400,
+        );
+        let expired = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::InvoiceExpiredPendingReconcile,
+            fixture.open.invoice_expires_at,
+        );
+        assert_eq!(settled.state_version, expired.state_version);
+
+        assert!(matches!(
+            expired.verify_latest_bat_v2_after(
+                &settled,
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                1_700,
+            ),
+            Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.state_version",
+                reason: "different signed snapshots exist at the same state version",
+            })
+        ));
+    }
+
+    #[test]
+    fn latest_bat_v2_snapshot_guard_rejects_unreachable_successor() {
+        let fixture = bat_v2_quote_fixture();
+        let settled = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::PaymentSettled,
+            1_400,
+        );
+        let expired = bat_v2_successor(
+            &fixture,
+            &fixture.open,
+            Bolt11QuoteStatusV1::InvoiceExpiredPendingReconcile,
+            fixture.open.invoice_expires_at,
+        );
+        let late = bat_v2_successor(
+            &fixture,
+            &expired,
+            Bolt11QuoteStatusV1::LateSettledReconcile,
+            1_700,
+        );
+        let claimed = bat_v2_successor(
+            &fixture,
+            &late,
+            Bolt11QuoteStatusV1::CredentialClaimed,
+            1_800,
+        );
+
+        assert!(matches!(
+            claimed.verify_latest_bat_v2_after(
+                &settled,
+                &fixture.intent,
+                &fixture.class,
+                &fixture.delegation,
+                &fixture.parsed_invoice,
+                1_900,
+            ),
+            Err(ServiceProtocolError::InvalidValue {
+                field: "Bolt11QuoteV1.status",
+                reason: "status snapshot is not a reachable monotonic successor",
+            })
+        ));
     }
 
     #[test]

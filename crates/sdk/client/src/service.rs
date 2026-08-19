@@ -12,14 +12,16 @@
 use ed25519_dalek::VerifyingKey;
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
-    check_standard_cashu_spend_for_offer, ArcPresentationV1, AuthBeginV1, AuthRejectCode,
-    AuthResultV1, AuthScheme, AuthorizationProofV1, BitcoinPirCashuBatProofV1,
-    CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1, DeploymentStatus,
-    FreeAnonymousTicketV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1, OperationStartV1,
-    PaidReceiptV1, PolicyRollbackGuardV1, PowChallengeRequestV1, PowChallengeResponseV1,
-    ProviderId, ServicePolicyEpochFloorsV1, ServicePolicyRequestV1, ServicePolicyResponseV1,
-    ServicePolicyV1, StandardCashuSpendV1, REQ_AUTH_BEGIN_V1, REQ_POW_CHALLENGE_V1,
-    REQ_SERVICE_POLICY_V1, RESP_AUTH_RESULT_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
+    bat_acceptance_member_from_verified_policy_v2, check_standard_cashu_spend_for_offer,
+    verify_bat_acceptance_class_member_projection_v2, ArcPresentationV1, AuthBeginV1,
+    AuthRejectCode, AuthResultV1, AuthScheme, AuthorizationProofV1, BatAcceptanceClassV2,
+    BitcoinPirCashuBatProofV1, CashuManifestEpochFloorV1, CredentialKeysetEpochFloorV1,
+    DeploymentStatus, FreeAnonymousTicketV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1,
+    OperationStartV1, PaidReceiptV1, PolicyRollbackGuardV1, PowChallengeRequestV1,
+    PowChallengeResponseV1, ProviderId, ServicePolicyEpochFloorsV1, ServicePolicyRequestV1,
+    ServicePolicyResponseV1, ServicePolicyV1, StandardCashuSpendV1, REQ_AUTH_BEGIN_V1,
+    REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1, RESP_AUTH_RESULT_V1, RESP_POW_CHALLENGE_V1,
+    RESP_SERVICE_POLICY_V1,
 };
 
 use crate::protocol::encode_request;
@@ -199,6 +201,20 @@ pub struct AcceptedServicePolicyV1 {
     service_authorization_exporter: [u8; 32],
 }
 
+/// Client-side disposition for one BAT V2 admission attempt.
+///
+/// Only the two runtime responses that prove non-consumption are recoverable.
+/// Terminal and indeterminate outcomes require the selected vault record to be
+/// burned. This enum does not expose a retrying transport operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatV2AdmissionOutcomeV2 {
+    Granted(pir_service_protocol::AuthGrantedV1),
+    RecoverableDefinitelyNotSent { retry_after_ms: u32 },
+    RecoverableRetrySafe { retry_after_ms: u32 },
+    BurnTerminal,
+    BurnOutcomeUnknown,
+}
+
 impl core::fmt::Debug for AcceptedServicePolicyV1 {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -280,6 +296,53 @@ impl AcceptedServicePolicyV1 {
         verified
             .offer(scope_id, offer_id)
             .map_err(protocol_verification_error)
+    }
+
+    /// Verify one exact current BAT V2 offer against caller-supplied canonical
+    /// issuer class bytes. The provider cannot substitute a copied class ID:
+    /// its signed policy projection must be an exact member of the signed
+    /// class before any class-only quote intent can be produced.
+    pub fn verify_current_bat_v2_offer_v2(
+        &self,
+        scope_id: &[u8; 32],
+        offer_id: u32,
+        class_bytes: &[u8],
+        now_unix: u64,
+    ) -> PirResult<crate::bat_v2::VerifiedCurrentBatV2OfferV2> {
+        if now_unix == 0 {
+            return Err(PirError::InvalidState(
+                "trusted wall clock is required for BAT V2 class verification".into(),
+            ));
+        }
+        let class = BatAcceptanceClassV2::decode(class_bytes).map_err(protocol_decode_error)?;
+        class.verify().map_err(protocol_verification_error)?;
+        if now_unix < class.key_not_before || now_unix > class.key_not_after {
+            return Err(PirError::VerificationFailed(
+                "BAT V2 class key is not currently active".into(),
+            ));
+        }
+        let verified = self
+            .policy
+            .verify_current_for_acquisition(
+                &self.policy.provider_id,
+                now_unix,
+                self.checkpoint.rollback_guard(),
+                self.checkpoint.epoch_floors(),
+                &self.policy_signing_key,
+            )
+            .map_err(protocol_verification_error)?;
+        if verified.policy_digest() != self.policy_digest {
+            return Err(PirError::VerificationFailed(
+                "accepted service-policy digest changed during BAT V2 class verification".into(),
+            ));
+        }
+        let member = bat_acceptance_member_from_verified_policy_v2(&verified, scope_id, offer_id)
+            .map_err(protocol_verification_error)?;
+        verify_bat_acceptance_class_member_projection_v2(&class, &member)
+            .map_err(protocol_verification_error)?;
+        Ok(crate::bat_v2::VerifiedCurrentBatV2OfferV2::new(
+            class, member,
+        ))
     }
 
     /// Dangerous unpaired primitive: build a BOLT11 quote intent from one
@@ -722,6 +785,9 @@ fn build_authorization_proof_for_offer_v1(
                 BitcoinPirCashuBatProofV1::decode(proof_bytes).map_err(protocol_decode_error)?,
             )
         }
+        // BAT V2 is deliberately absent: a provider policy and class ID are
+        // insufficient to release an issuer-wide bearer proof. The follow-up
+        // admission path must hold an exact verified class-member typestate.
         (AuthScheme::ArcV1Experimental, FreeModeV1::NotFree) => {
             if offer.deployment_status != DeploymentStatus::Experimental {
                 return Err(PirError::VerificationFailed(
@@ -980,6 +1046,76 @@ pub fn dangerous_unpaired_accept_service_authorization_response_v1(
     }
 }
 
+/// Classify exactly one already-received BAT V2 admission response. Malformed,
+/// mismatched, or otherwise unclassified post-send responses are deliberately
+/// `BurnOutcomeUnknown`; callers must not automatically replay the proof.
+pub fn accept_bat_v2_authorization_response_v2(
+    response: &[u8],
+    accepted: &AcceptedServicePolicyV1,
+    scope_id: [u8; 32],
+    offer_id: u32,
+) -> PirResult<BatV2AdmissionOutcomeV2> {
+    let scope_policy = accepted
+        .policy
+        .scopes
+        .iter()
+        .find(|entry| entry.scope.scope_id() == scope_id)
+        .ok_or_else(|| PirError::InvalidState("selected service scope is not in policy".into()))?;
+    let offer = scope_policy
+        .offers
+        .iter()
+        .find(|offer| offer.offer_id == offer_id)
+        .ok_or_else(|| PirError::InvalidState("selected service offer is not in policy".into()))?;
+    if offer.authorization != AuthScheme::BitcoinPirCashuBatV2
+        || offer.free_mode != FreeModeV1::NotFree
+    {
+        return Err(PirError::InvalidState(
+            "selected service offer is not BAT V2".into(),
+        ));
+    }
+    let Some((&opcode, body)) = response.split_first() else {
+        return Ok(BatV2AdmissionOutcomeV2::BurnOutcomeUnknown);
+    };
+    if opcode != RESP_AUTH_RESULT_V1 {
+        return Ok(BatV2AdmissionOutcomeV2::BurnOutcomeUnknown);
+    }
+    let result = match AuthResultV1::decode(body) {
+        Ok(result) => result,
+        Err(_) => return Ok(BatV2AdmissionOutcomeV2::BurnOutcomeUnknown),
+    };
+    Ok(classify_bat_v2_auth_result_v2(
+        result,
+        scope_id,
+        scope_policy.scope.entitlement_profile,
+    ))
+}
+
+fn classify_bat_v2_auth_result_v2(
+    result: AuthResultV1,
+    scope_id: [u8; 32],
+    entitlement_profile: u16,
+) -> BatV2AdmissionOutcomeV2 {
+    match result {
+        AuthResultV1::Granted(grant)
+            if grant.scope_id == scope_id && grant.enforced_profile == entitlement_profile =>
+        {
+            BatV2AdmissionOutcomeV2::Granted(grant)
+        }
+        AuthResultV1::Granted(_) => BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+        AuthResultV1::Rejected(rejected) => match rejected.code {
+            AuthRejectCode::ServerBusy => BatV2AdmissionOutcomeV2::RecoverableDefinitelyNotSent {
+                retry_after_ms: rejected.retry_after_ms,
+            },
+            AuthRejectCode::ScopeUnavailable => BatV2AdmissionOutcomeV2::RecoverableRetrySafe {
+                retry_after_ms: rejected.retry_after_ms,
+            },
+            AuthRejectCode::InvalidOrSpent => BatV2AdmissionOutcomeV2::BurnTerminal,
+            AuthRejectCode::InternalAfterSpend => BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+            _ => BatV2AdmissionOutcomeV2::BurnOutcomeUnknown,
+        },
+    }
+}
+
 /// Verify an authorization result against the exact scope/profile fixed by a
 /// retained redemption handle.
 pub fn dangerous_unpaired_accept_retained_service_authorization_response_v1(
@@ -1120,6 +1256,7 @@ fn decode_auth_scheme(value: u8) -> PirResult<AuthScheme> {
         3 => Ok(AuthScheme::CashuEcashV1),
         4 => Ok(AuthScheme::BitcoinPirCashuBatV1),
         5 => Ok(AuthScheme::ArcV1Experimental),
+        6 => Ok(AuthScheme::BitcoinPirCashuBatV2),
         _ => Err(PirError::Decode(
             "service policy checkpoint contains an unknown authorization scheme".into(),
         )),
@@ -1417,6 +1554,54 @@ mod tests {
         let mut trailing = encoded;
         trailing.push(0);
         assert!(ServicePolicyCheckpointV1::decode(&trailing).is_err());
+    }
+
+    #[test]
+    fn bat_v2_admission_outcomes_recover_only_proven_non_consumption() {
+        let scope_id = [0x44; 32];
+        let rejected = |code| {
+            AuthResultV1::Rejected(pir_service_protocol::AuthRejectedV1 {
+                code,
+                retry_after_ms: 250,
+            })
+        };
+        assert_eq!(
+            classify_bat_v2_auth_result_v2(rejected(AuthRejectCode::ServerBusy), scope_id, 2),
+            BatV2AdmissionOutcomeV2::RecoverableDefinitelyNotSent {
+                retry_after_ms: 250
+            }
+        );
+        assert_eq!(
+            classify_bat_v2_auth_result_v2(rejected(AuthRejectCode::ScopeUnavailable), scope_id, 2,),
+            BatV2AdmissionOutcomeV2::RecoverableRetrySafe {
+                retry_after_ms: 250
+            }
+        );
+        assert_eq!(
+            classify_bat_v2_auth_result_v2(rejected(AuthRejectCode::InvalidOrSpent), scope_id, 2,),
+            BatV2AdmissionOutcomeV2::BurnTerminal
+        );
+        assert_eq!(
+            classify_bat_v2_auth_result_v2(
+                rejected(AuthRejectCode::InternalAfterSpend),
+                scope_id,
+                2,
+            ),
+            BatV2AdmissionOutcomeV2::BurnOutcomeUnknown
+        );
+        assert_eq!(
+            classify_bat_v2_auth_result_v2(rejected(AuthRejectCode::WrongScope), scope_id, 2),
+            BatV2AdmissionOutcomeV2::BurnOutcomeUnknown
+        );
+    }
+
+    #[test]
+    fn generic_offer_builder_cannot_release_a_bat_v2_bearer() {
+        let (policy, _, _, _) = policy();
+        let mut offer = policy.scopes[0].offers[0].clone();
+        offer.authorization = AuthScheme::BitcoinPirCashuBatV2;
+        offer.free_mode = FreeModeV1::NotFree;
+        assert!(build_authorization_proof_for_offer_v1(&offer, &[]).is_err());
     }
 
     #[tokio::test]
