@@ -2,13 +2,21 @@
 //! Operations to handle and create a Guest Context
 use std::convert::TryInto;
 
+#[cfg(feature = "openssl")]
 use openssl::sha::sha384;
 
-use crate::error::*;
+#[cfg(feature = "crypto_nossl")]
+fn sha384(data: &[u8]) -> [u8; 48] {
+    use sha2::Digest;
+    let hash = sha2::Sha384::digest(data);
+    let mut out = [0u8; 48];
+    out.copy_from_slice(&hash);
+    out
+}
 
-#[cfg(target_os = "linux")]
 use crate::{
-    launch::snp::PageType,
+    error::*,
+    launch::PageType,
     measurement::snp::{SnpLaunchDigest, LD_BYTES},
 };
 
@@ -93,7 +101,6 @@ impl Gctx<Updating> {
 
     /// Update Lanunch digest type according to page type and guest physical address.
     /// Some Page types don't require data. Some page types just require size of the page.
-    #[cfg(target_os = "linux")]
     pub fn update_page(
         &mut self,
         page_type: PageType,

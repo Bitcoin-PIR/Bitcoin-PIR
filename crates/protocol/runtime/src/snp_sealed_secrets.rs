@@ -241,7 +241,9 @@ pub struct Pir2SealedReleaseClaimsV1 {
 }
 
 impl Pir2SealedReleaseClaimsV1 {
-    fn validate(&self) -> Result<(), SnpSealedSecretsErrorV1> {
+    /// Validate every production release invariant before a signing key is
+    /// accessed. The canonical encoder repeats this check defensively.
+    pub fn validate_for_signing(&self) -> Result<(), SnpSealedSecretsErrorV1> {
         if self.uki_sha256 == [0_u8; 32] {
             return Err(SnpSealedSecretsErrorV1::InvalidRelease(
                 "UKI SHA-256 must not be all zero",
@@ -269,7 +271,7 @@ impl Pir2SealedReleaseClaimsV1 {
     }
 
     fn encode_unsigned(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
-        self.validate()?;
+        self.validate_for_signing()?;
         let server_id = self.stable_server_id.as_bytes();
         let mut out = Vec::with_capacity(256 + server_id.len());
         out.extend_from_slice(SEALED_RELEASE_MAGIC_V1);
@@ -382,7 +384,7 @@ impl VerifiedPir2SealedReleaseV1 {
                 .map(u64::from_le_bytes)
                 .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated clearing epoch"))?,
         };
-        claims.validate()?;
+        claims.validate_for_signing()?;
         let signature_bytes: [u8; 64] = decoder
             .array("operator signature")
             .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated operator signature"))?;
