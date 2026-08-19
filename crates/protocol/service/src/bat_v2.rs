@@ -12,10 +12,10 @@ use crate::codec::{put_bytes_u16, Decoder};
 use crate::{
     derive_issuer_id, is_canonical_service_https_origin_v1, AuthPaddingClassV1, AuthScheme,
     BackendId, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, PriceV1, PrivacyLeakageV1,
-    ProviderId, ScopeId, ServiceProtocolError, ServiceScopeV1, VerifiedCurrentPolicyV1, WorkloadId,
-    MAX_BITCOIN_MSAT_V1, MAX_BOLT11_CLAIM_WINDOW_SECONDS_V1,
-    MAX_BOLT11_CREDENTIAL_VALIDITY_SECONDS_V1, MAX_BOLT11_INVOICE_EXPIRY_SECONDS_V1,
-    MAX_CREDENTIALS_PER_ACQUISITION_V1, MAX_ENDPOINT_LEN,
+    ProviderId, ScopeId, ServicePolicyV1, ServiceProtocolError, ServiceScopeV1,
+    VerifiedCurrentPolicyV1, VerifiedServiceOfferV1, WorkloadId, MAX_BITCOIN_MSAT_V1,
+    MAX_BOLT11_CLAIM_WINDOW_SECONDS_V1, MAX_BOLT11_CREDENTIAL_VALIDITY_SECONDS_V1,
+    MAX_BOLT11_INVOICE_EXPIRY_SECONDS_V1, MAX_CREDENTIALS_PER_ACQUISITION_V1, MAX_ENDPOINT_LEN,
 };
 
 pub const BAT_ACCEPTANCE_CLASS_CODEC_MAGIC_V2: &[u8; 8] = b"BPIRBAT2";
@@ -125,6 +125,35 @@ pub fn bat_acceptance_member_from_verified_policy_v2(
     offer_id: u32,
 ) -> Result<VerifiedBatAcceptanceMemberV2, ServiceProtocolError> {
     let selected = verified.offer(expected_scope_id, offer_id)?;
+    bat_acceptance_member_from_verified_offer_v2(verified.policy(), selected)
+}
+
+/// Rebuild one exact member from an issuer-retained signed policy. Unlike the
+/// current-policy acquisition projection, this does not require the policy to
+/// remain current; the later redemption precheck enforces the retained member
+/// deadline and class validity.
+pub fn bat_acceptance_member_from_retained_policy_v2(
+    policy: &ServicePolicyV1,
+    expected_provider_id: &ProviderId,
+    expected_policy_digest: &[u8; 32],
+    expected_scope_id: &ScopeId,
+    offer_id: u32,
+    verifying_key: &VerifyingKey,
+) -> Result<VerifiedBatAcceptanceMemberV2, ServiceProtocolError> {
+    let selected = policy.verify_retained_bat_v2_offer(
+        expected_provider_id,
+        expected_policy_digest,
+        expected_scope_id,
+        offer_id,
+        verifying_key,
+    )?;
+    bat_acceptance_member_from_verified_offer_v2(policy, selected)
+}
+
+fn bat_acceptance_member_from_verified_offer_v2(
+    policy: &ServicePolicyV1,
+    selected: VerifiedServiceOfferV1<'_>,
+) -> Result<VerifiedBatAcceptanceMemberV2, ServiceProtocolError> {
     let scope = selected.scope();
     let offer = selected.offer();
     if offer.authorization != AuthScheme::BitcoinPirCashuBatV2
@@ -156,7 +185,7 @@ pub fn bat_acceptance_member_from_verified_policy_v2(
         });
     };
     let common_terms = BatAcceptanceTermsV2 {
-        auth_padding_class: verified.policy().auth_padding_class,
+        auth_padding_class: policy.auth_padding_class,
         backend: scope.backend,
         workload: scope.workload,
         protocol_version: scope.protocol_version,
@@ -182,13 +211,13 @@ pub fn bat_acceptance_member_from_verified_policy_v2(
         class_id,
         member: BatAcceptanceMemberV2 {
             provider_id: scope.provider_id,
-            policy_digest: verified.policy_digest(),
-            scope_id: *expected_scope_id,
-            offer_id,
+            policy_digest: selected.policy_digest(),
+            scope_id: scope.scope_id(),
+            offer_id: offer.offer_id,
         },
         common_terms,
-        policy_issued_at: verified.policy().issued_at,
-        policy_expires_at: verified.policy().expires_at,
+        policy_issued_at: policy.issued_at,
+        policy_expires_at: policy.expires_at,
         redemption_deadline: selected.redemption_deadline(),
     })
 }
@@ -902,6 +931,29 @@ mod tests {
         assert_eq!(projected.policy_issued_at, 100);
         assert_eq!(projected.policy_expires_at, 1_000);
         assert_eq!(projected.redemption_deadline, 1_480);
+
+        let retained = bat_acceptance_member_from_retained_policy_v2(
+            &policy,
+            &provider_scope.provider_id,
+            &policy.policy_digest().unwrap(),
+            &scope_id,
+            7,
+            &provider_key.verifying_key(),
+        )
+        .unwrap();
+        assert_eq!(retained, projected);
+
+        let mut wrong_digest = policy.policy_digest().unwrap();
+        wrong_digest[0] ^= 1;
+        assert!(bat_acceptance_member_from_retained_policy_v2(
+            &policy,
+            &provider_scope.provider_id,
+            &wrong_digest,
+            &scope_id,
+            7,
+            &provider_key.verifying_key(),
+        )
+        .is_err());
     }
 
     #[test]

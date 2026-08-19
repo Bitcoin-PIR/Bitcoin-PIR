@@ -1677,6 +1677,42 @@ impl ServicePolicyV1 {
         Ok(verified)
     }
 
+    /// Verify the signature and exact digest of one issuer-retained BAT V2
+    /// policy member without asserting that it is current. This does not grant
+    /// service and intentionally performs no wall-clock check; the signed BAT
+    /// class and redemption precheck apply the retained member deadline and
+    /// produce the terminal result for expired credentials.
+    pub fn verify_retained_bat_v2_offer<'a>(
+        &'a self,
+        expected_provider_id: &ProviderId,
+        expected_policy_digest: &[u8; 32],
+        expected_scope_id: &crate::ScopeId,
+        offer_id: u32,
+        verifying_key: &VerifyingKey,
+    ) -> Result<VerifiedServiceOfferV1<'a>, ServiceProtocolError> {
+        self.verify_signature_and_identity(expected_provider_id, verifying_key)?;
+        if &self.policy_digest()? != expected_policy_digest {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ServicePolicyV1.retained_bat_v2_offer",
+                reason: "policy is not the exact issuer-retained digest",
+            });
+        }
+        let verified =
+            verified_offer_from_policy(self, *expected_policy_digest, expected_scope_id, offer_id)?;
+        if verified.offer.authorization != AuthScheme::BitcoinPirCashuBatV2
+            || verified.offer.acquisition != AcquisitionMethod::Bolt11V1
+            || verified.offer.verification != VerificationMode::SharedIssuerOnline
+            || verified.offer.credential_binding.is_some()
+            || verified.offer.cashu_mint_manifest.is_some()
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ServicePolicyV1.retained_bat_v2_offer",
+                reason: "retained offer is not an issuer-wide BAT V2 member",
+            });
+        }
+        Ok(verified)
+    }
+
     /// Reconstruct the verified offer needed to recover an exact, already
     /// reserved BOLT11 quote after the provider has published a newer policy.
     ///
