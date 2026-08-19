@@ -18,6 +18,7 @@ const RECOVERY_STORE = 'recoveries';
 const QUOTE_KEY_STORE = 'quote-key-checkpoints';
 const KEY_ID = 'non-extractable-aes-gcm-v1';
 const GLOBAL_LOCK = 'bitcoinpir:bat-v2-vault:v1';
+const RESERVATION_OWNER_LOCK_PREFIX = 'bitcoinpir:bat-v2-reservation-owner:v1';
 const RECORD_AAD_DOMAIN = 'BitcoinPIR/bat-v2-vault/record/v1';
 const RECOVERY_AAD_DOMAIN = 'BitcoinPIR/bat-v2-vault/recovery/v1';
 const QUOTE_KEY_AAD_DOMAIN = 'BitcoinPIR/bat-v2-vault/quote-key-checkpoint/v1';
@@ -115,7 +116,14 @@ interface DecryptedRecordV1 {
   plain: PlainRecordV1;
 }
 
+interface ReservationOwnerV1 {
+  readonly remainingRecordIds: Set<string>;
+  release(): void;
+}
+
 export class BatV2CredentialVaultV2 {
+  private readonly reservationOwners = new Map<string, ReservationOwnerV1>();
+
   private constructor(
     private readonly db: IDBDatabase,
     private readonly key: CryptoKey,
@@ -149,6 +157,9 @@ export class BatV2CredentialVaultV2 {
   }
 
   close(): void {
+    for (const reservationId of [...this.reservationOwners.keys()]) {
+      this.releaseReservationOwner(reservationId);
+    }
     this.db.close();
   }
 
@@ -359,18 +370,32 @@ export class BatV2CredentialVaultV2 {
         }
 
         const reservationId = randomId();
-        const firstLease = reservedProof(firstMatch, reservationId);
-        const secondLease = reservedProof(secondMatch, reservationId);
-        const replacements = await Promise.all([firstMatch, secondMatch].map(({ row, plain }) =>
-          this.encryptRecord(
-            row.id,
-            walletRecord(plain),
-            'reserved',
-            reservationId,
-            row.spendKeyDigestHex,
-          )));
-        await putRecordsTransaction(this.db, replacements);
-        return { reservationId, first: firstLease, second: secondLease };
+        const owner = await acquireReservationOwnerLock(reservationId);
+        this.reservationOwners.set(reservationId, {
+          remainingRecordIds: new Set([firstMatch.row.id, secondMatch.row.id]),
+          release: owner.release,
+        });
+        let firstLease: BatV2ReservedProofV2 | undefined;
+        let secondLease: BatV2ReservedProofV2 | undefined;
+        try {
+          firstLease = reservedProof(firstMatch, reservationId);
+          secondLease = reservedProof(secondMatch, reservationId);
+          const replacements = await Promise.all([firstMatch, secondMatch].map(({ row, plain }) =>
+            this.encryptRecord(
+              row.id,
+              walletRecord(plain),
+              'reserved',
+              reservationId,
+              row.spendKeyDigestHex,
+            )));
+          await putRecordsTransaction(this.db, replacements);
+          return { reservationId, first: firstLease, second: secondLease };
+        } catch (error) {
+          firstLease?.proof.fill(0);
+          secondLease?.proof.fill(0);
+          this.releaseReservationOwner(reservationId);
+          throw error;
+        }
       } finally {
         zeroPlainRecords(records);
       }
@@ -413,6 +438,7 @@ export class BatV2CredentialVaultV2 {
             ),
           );
         }
+        this.finishReservationOwnerLeg(lease.reservationId, lease.recordId);
       } finally {
         zeroPlainRecord(decrypted.plain);
         lease.proof.fill(0);
@@ -423,13 +449,36 @@ export class BatV2CredentialVaultV2 {
   private async burnOrphanedReservationsUnlocked(): Promise<void> {
     const records = await this.decryptAllRecordsUnlocked();
     try {
-      const orphaned = records
-        .filter(({ plain }) => plain.state === 'reserved')
-        .map(({ row }) => row.id);
-      if (orphaned.length > 0) await deleteRecordsTransaction(this.db, orphaned);
+      const reservations = new Map<string, string[]>();
+      for (const { row, plain } of records) {
+        if (plain.state !== 'reserved') continue;
+        const reservationId = plain.reservationId!;
+        const ids = reservations.get(reservationId) ?? [];
+        ids.push(row.id);
+        reservations.set(reservationId, ids);
+      }
+      for (const [reservationId, ids] of reservations) {
+        await withAvailableReservationOwnerLock(reservationId, async () => {
+          await deleteRecordsTransaction(this.db, ids);
+        });
+      }
     } finally {
       zeroPlainRecords(records);
     }
+  }
+
+  private finishReservationOwnerLeg(reservationId: string, recordId: string): void {
+    const owner = this.reservationOwners.get(reservationId);
+    if (!owner) return;
+    owner.remainingRecordIds.delete(recordId);
+    if (owner.remainingRecordIds.size === 0) this.releaseReservationOwner(reservationId);
+  }
+
+  private releaseReservationOwner(reservationId: string): void {
+    const owner = this.reservationOwners.get(reservationId);
+    if (!owner) return;
+    this.reservationOwners.delete(reservationId);
+    owner.release();
   }
 
   private async completeAcquisitionUnlocked(
@@ -822,6 +871,68 @@ function requireBrowserPrimitives(): void {
 
 async function withExclusiveLock<T>(body: () => Promise<T>): Promise<T> {
   return navigator.locks.request(GLOBAL_LOCK, { mode: 'exclusive' }, body);
+}
+
+async function acquireReservationOwnerLock(
+  reservationId: string,
+): Promise<Pick<ReservationOwnerV1, 'release'>> {
+  const name = reservationOwnerLockName(reservationId);
+  let releaseHeldLock!: () => void;
+  const held = new Promise<void>((resolve) => {
+    releaseHeldLock = resolve;
+  });
+  let resolveAcquired!: () => void;
+  let rejectAcquired!: (error: unknown) => void;
+  const acquired = new Promise<void>((resolve, reject) => {
+    resolveAcquired = resolve;
+    rejectAcquired = reject;
+  });
+  let request: Promise<void>;
+  try {
+    request = Promise.resolve(
+      navigator.locks.request(name, { mode: 'exclusive' }, async (lock) => {
+        if (!lock) throw new Error('BAT V2 reservation owner lock was not acquired');
+        resolveAcquired();
+        await held;
+      }),
+    );
+  } catch (error) {
+    rejectAcquired(error);
+    throw error;
+  }
+  void request.then(
+    () => rejectAcquired(new Error('BAT V2 reservation owner lock ended before acquisition')),
+    rejectAcquired,
+  );
+  await acquired;
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      releaseHeldLock();
+    },
+  };
+}
+
+async function withAvailableReservationOwnerLock(
+  reservationId: string,
+  body: () => Promise<void>,
+): Promise<void> {
+  await navigator.locks.request(
+    reservationOwnerLockName(reservationId),
+    { mode: 'exclusive', ifAvailable: true },
+    async (lock) => {
+      if (!lock) return;
+      await body();
+    },
+  );
+}
+
+function reservationOwnerLockName(reservationId: string): string {
+  return `${RESERVATION_OWNER_LOCK_PREFIX}:${canonicalOpaqueId(
+    'BAT V2 reservation ID', reservationId,
+  )}`;
 }
 
 function openDb(): Promise<IDBDatabase> {

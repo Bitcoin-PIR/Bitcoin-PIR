@@ -32,18 +32,10 @@ beforeEach(async () => {
     configurable: true,
     value: webcrypto,
   });
-  const tails = new Map<string, Promise<unknown>>();
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
     value: {
-      locks: {
-        request: <T>(name: string, _options: unknown, callback: () => Promise<T>) => {
-          const previous = tails.get(name) ?? Promise.resolve();
-          const result = previous.then(callback, callback);
-          tails.set(name, result.then(() => undefined, () => undefined));
-          return result;
-        },
-      },
+      locks: testLockManager(),
     },
   });
   await deleteDatabase(databaseName);
@@ -126,7 +118,33 @@ describe('BAT V2 class-only encrypted vault', () => {
     await expect(vault.listInventory()).resolves.toEqual([{ ...binding, count: 1 }]);
   });
 
-  it('conservatively burns every orphaned reservation when the vault reopens', async () => {
+  it('does not burn a reservation owned by another live vault handle', async () => {
+    const owner = await openVault();
+    await install(owner, [walletRecord(1, 2), walletRecord(3, 4)]);
+    const pair = await owner.reserveDistinctPair(binding, binding);
+    expect(pair).not.toBeNull();
+
+    const observer = await openVault();
+    await expect(observer.listInventory()).resolves.toEqual([]);
+    await owner.finishReservation(pair!.first, 'recover-safe');
+    await owner.finishReservation(pair!.second, 'recover-safe');
+    await expect(observer.listInventory()).resolves.toEqual([{ ...binding, count: 2 }]);
+  });
+
+  it('holds reservation ownership until both legs have completed', async () => {
+    const owner = await openVault();
+    await install(owner, [walletRecord(1, 2), walletRecord(3, 4)]);
+    const pair = await owner.reserveDistinctPair(binding, binding);
+    expect(pair).not.toBeNull();
+
+    await owner.finishReservation(pair!.first, 'recover-safe');
+    const observer = await openVault();
+    await expect(observer.listInventory()).resolves.toEqual([{ ...binding, count: 1 }]);
+    await owner.finishReservation(pair!.second, 'recover-safe');
+    await expect(observer.listInventory()).resolves.toEqual([{ ...binding, count: 2 }]);
+  });
+
+  it('releases reservation ownership on close so the next open burns the orphan', async () => {
     const vault = await openVault();
     await install(vault, [walletRecord(1, 2), walletRecord(3, 4)]);
     const pair = await vault.reserveDistinctPair(binding, binding);
@@ -206,4 +224,36 @@ function deleteDatabase(name: string): Promise<void> {
     request.onerror = () => reject(new Error(`failed to delete ${name}`));
     request.onblocked = () => reject(new Error(`delete ${name} was blocked`));
   });
+}
+
+function testLockManager(): LockManager {
+  const active = new Set<string>();
+  const waiters = new Map<string, Array<() => void>>();
+  const release = (name: string) => {
+    active.delete(name);
+    const queue = waiters.get(name);
+    const next = queue?.shift();
+    if (queue?.length === 0) waiters.delete(name);
+    next?.();
+  };
+  const wait = (name: string) => new Promise<void>((resolve) => {
+    const queue = waiters.get(name) ?? [];
+    queue.push(resolve);
+    waiters.set(name, queue);
+  });
+  const request = async <T>(
+    name: string,
+    options: LockOptions,
+    callback: (lock: Lock | null) => PromiseLike<T> | T,
+  ): Promise<T> => {
+    if (options.ifAvailable && active.has(name)) return callback(null);
+    while (active.has(name)) await wait(name);
+    active.add(name);
+    try {
+      return await callback({ name, mode: options.mode ?? 'exclusive' } as Lock);
+    } finally {
+      release(name);
+    }
+  };
+  return { request } as unknown as LockManager;
 }
