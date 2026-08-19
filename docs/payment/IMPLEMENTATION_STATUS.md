@@ -22,21 +22,33 @@ activated the path with real money.
       stable, preallocated 32-byte class ID and no V1 provider binding. A
       separately signed issuer artifact fixes one immutable key epoch, common
       commercial/entitlement terms and a canonical set of exact provider
-      policy members. Issuer-store schema v6 registers the complete artifact
+      policy members. Issuer-store schema v7 registers the complete artifact
       atomically, retains old epochs, rejects class forks/terms changes and
       prevents a raw BAT key from crossing either V2 classes or the legacy V1
       lineage namespace. Focused protocol and store tests cover canonical
       bytes, two-provider membership, epoch rotation/restart, validity bounds
-      and bidirectional V1/V2 key isolation. Version 5 stores are not migrated
-      implicitly.
-- [ ] **Issuer-wide V2 acquisition and redemption pending.** V1 quote, claim,
-      issuance, redeem and ProviderStore paths deliberately reject scheme 6;
-      no old replayable V1 success is reinterpreted. The class-bound quote/
-      wallet record, issuer-global first-spend transaction, non-grantable
-      replay response, storeless provider commit, SDK/Web selection and render
-      gates remain to implement. Current `main` also retains the old Direct
-      Mainnet issuer unit and stateful V1 provider profiles. An old draft's
-      fixed 2-policy/12-key/2-clearing shape remains superseded and is not V2
+      and bidirectional V1/V2 key isolation. Version 5 or 6 stores are not
+      migrated implicitly.
+- [x] **Issuer-wide V2 acquisition implemented.** A separate class-only V2
+      quote intent, issuance request/response and claim envelope use their own
+      codecs and domains; none carries a fake V1 credential-binding digest.
+      Issuer-store schema v7 marks every quote as V1 or V2, creates new V2
+      quotes only at the current class head, recovers retained historical
+      epochs after restart, and forbids V2 receipt-serial rows. The issuer
+      exposes independent `/v2/quotes/...` create, status and claim routes,
+      selects the exact class raw key, verifies BIP340 plus NUT-12 DLEQ, and
+      replays only the byte-identical committed issuance response after a lost
+      claim response. Focused tests cover protocol codecs, mixed V1/V2 store
+      restart, class-key selection, claim-before-restart recovery and route
+      isolation.
+- [ ] **Issuer-wide V2 redemption and provider path pending.** V1 redeem and
+      ProviderStore paths still deliberately reject scheme 6; no old
+      replayable V1 redeem success is reinterpreted. The V2 presentation,
+      issuer-global first-spend transaction, non-grantable redeem replay,
+      storeless provider commit, SDK/Web class wallet and render gates remain
+      to implement. Current `main` also retains the old Direct Mainnet issuer
+      unit and stateful V1 provider profiles. An old draft's fixed
+      2-policy/12-key/2-clearing shape remains superseded and is not V2
       readiness evidence.
 - [ ] **Payment-storeless provider mode pending.** The current shared-BAT
       committer still uses ProviderStore for a local delivery claim and the

@@ -21,10 +21,12 @@ use pir_issuer_core::{
     INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1,
 };
 use pir_issuer_credentials::{
-    prepare_arc_issuance_v1, prepare_cashu_bat_issuance_v1, prepare_direct_receipt_issuance_v1,
-    IssuerCredentialDerivationKeyV1, PreparedCredentialIssuanceV1,
+    prepare_arc_issuance_v1, prepare_cashu_bat_issuance_v1, prepare_cashu_bat_v2_issuance_v2,
+    prepare_direct_receipt_issuance_v1, IssuerCredentialDerivationKeyV1, PreparedBatV2IssuanceV2,
+    PreparedCredentialIssuanceV1,
 };
 use pir_issuer_store::{
+    BatAcceptanceClassRecordV2, BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimWrite,
     ClaimCryptographicVerificationInput, ClaimWrite, IssuerStore,
     ProviderSettlementRegistrationRecordV1, QuoteCapacityV1, QuoteState, QuoteStatusBip340Input,
     StoreError, VerifiedRedeemCommitV1,
@@ -39,7 +41,8 @@ use pir_service_protocol::{
     verify_new_balance_request_for, verify_new_payout_request_for,
     verify_new_payout_status_request_for, verify_payout_initial_response_for_exact_request,
     verify_persisted_payout_snapshot_for_store_v1, verify_redeem_response_for_exact_request,
-    AcquisitionMethod, AuthScheme, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1,
+    AcquisitionMethod, AuthScheme, BatAcceptanceClassV2, Bolt11BatV2ClaimEnvelopeV2,
+    Bolt11BatV2QuoteIntentV2, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1,
     Bolt11QuoteKeyDelegationV1, Bolt11QuoteKeyRollbackGuardV1, Bolt11QuoteStatusRequestV1,
     Bolt11QuoteStatusV1, Bolt11QuoteV1, CashuKeysetBindingV1, CommittedRedeemReplayExpectationV1,
     IssuerBalanceResponseV1, IssuerClearingApprovalV1, IssuerPayoutIntentResponseV1,
@@ -335,6 +338,18 @@ where
                 arc_keyring_experimental.as_deref(),
             )?;
         }
+        for requirement in store
+            .bat_v2_credential_material_requirements(now_unix)
+            .map_err(map_store_error)?
+        {
+            let covered = bat_keyring.as_ref().is_some_and(|keys| {
+                keys.denomination_public_keys()
+                    .contains(&requirement.raw_public_key)
+            });
+            if !covered {
+                return Err(IssuerServiceErrorV1::InvalidRequest);
+            }
+        }
         Ok(Self {
             core: Bolt11IssuerCoreV1::new_with_quote_capacity(
                 store.clone(),
@@ -500,6 +515,128 @@ where
             .map_err(map_core_error)
     }
 
+    /// `POST /v2/quotes/bolt11` body handler for issuer-wide BAT V2.
+    /// The intent is class-only: no provider policy, scope, offer, or V1
+    /// credential binding is accepted on this path.
+    pub fn create_bat_v2_quote(
+        &self,
+        canonical_intent: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let intent = Bolt11BatV2QuoteIntentV2::decode(canonical_intent)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        if intent
+            .encode()
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+            .as_slice()
+            != canonical_intent
+        {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
+        if let Some(existing) = self
+            .store
+            .bat_v2_quote_by_creation_idempotency_key(&intent.idempotency_key)
+            .map_err(map_store_error)?
+        {
+            if existing.intent_digest
+                != intent
+                    .request_digest()
+                    .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+            {
+                return Err(IssuerServiceErrorV1::Conflict);
+            }
+            let class_record = self
+                .store
+                .bat_acceptance_class_v2(&intent.class_id, intent.class_key_epoch)
+                .map_err(map_store_error)?
+                .ok_or(IssuerServiceErrorV1::Internal)?;
+            let class = decode_bat_v2_class(&class_record)?;
+            let delegation = Bolt11QuoteKeyDelegationV1::decode(&existing.exact_delegation)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let quote_material = self
+                .quote_material(&existing.delegation_digest)
+                .ok_or(IssuerServiceErrorV1::Internal)?;
+            let reservation_time = existing
+                .invoice_created_not_before
+                .checked_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+                .ok_or(IssuerServiceErrorV1::Internal)?;
+            if reservation_time.checked_add(INVOICE_CREATION_CLOCK_SKEW_SECONDS_V1)
+                != Some(existing.invoice_created_not_after)
+            {
+                return Err(IssuerServiceErrorV1::Internal);
+            }
+            let guard = Bolt11QuoteKeyRollbackGuardV1::from_persisted(
+                intent.issuer_id,
+                intent.network,
+                intent.expected_payee_pubkey,
+                existing.delegation_epoch,
+                existing.delegation_digest,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let verified_intent = intent
+                .verify_for_class_guarded(&class, &delegation, &guard, reservation_time)
+                .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+            if existing.state == QuoteState::Reserved {
+                self.ensure_bat_v2_class_credential_material(&class_record)?;
+            }
+            return self
+                .core
+                .create_or_recover_bat_v2_quote(
+                    &verified_intent,
+                    &quote_material.signing_key,
+                    now_unix,
+                )
+                .map(|result| result.into_exact_signed_quote_response())
+                .map_err(map_core_error);
+        }
+
+        let class_record = self
+            .store
+            .current_bat_acceptance_class_v2(&intent.class_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        if class_record.key_epoch != intent.class_key_epoch
+            || class_record.artifact_digest != intent.class_digest
+            || class_record.bat_key_id != intent.bat_key_id
+        {
+            return Err(IssuerServiceErrorV1::Unauthorized);
+        }
+        self.ensure_bat_v2_class_credential_material(&class_record)?;
+        if intent.quote_delegation_digest != self.current_quote_key.delegation_digest {
+            return Err(IssuerServiceErrorV1::Unauthorized);
+        }
+        let quote_material = self
+            .quote_material(&intent.quote_delegation_digest)
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        let guard = match self
+            .store
+            .delegation_head(&intent.expected_payee_pubkey)
+            .map_err(map_store_error)?
+        {
+            Some(head) => Bolt11QuoteKeyRollbackGuardV1::from_persisted(
+                intent.issuer_id,
+                intent.network,
+                intent.expected_payee_pubkey,
+                head.highest_epoch,
+                head.delegation_digest,
+            ),
+            None => Bolt11QuoteKeyRollbackGuardV1::initial(
+                intent.issuer_id,
+                intent.network,
+                intent.expected_payee_pubkey,
+            ),
+        }
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let class = decode_bat_v2_class(&class_record)?;
+        let verified_intent = intent
+            .verify_for_class_guarded(&class, &quote_material.delegation, &guard, now_unix)
+            .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        self.core
+            .create_or_recover_bat_v2_quote(&verified_intent, &quote_material.signing_key, now_unix)
+            .map(|result| result.into_exact_signed_quote_response())
+            .map_err(map_core_error)
+    }
+
     /// Reconcile one bounded cursor page without any browser status nonce.
     /// Individual backend failures are reduced to aggregate counters so no
     /// invoice, label, payment hash, or quote ID can reach logs.
@@ -531,6 +668,63 @@ where
                 continue;
             };
             match self.core.reconcile_by_backend_label(
+                candidate.backend_label(),
+                &material.signing_key,
+                now_unix,
+            ) {
+                Ok(result) => match result.disposition() {
+                    QuoteReconcileDispositionV1::Transitioned => {
+                        report.transitioned = report.transitioned.saturating_add(1)
+                    }
+                    QuoteReconcileDispositionV1::Unchanged => {
+                        report.unchanged = report.unchanged.saturating_add(1)
+                    }
+                },
+                Err(
+                    IssuerCoreErrorV1::RetryableUnavailable
+                    | IssuerCoreErrorV1::OutcomeUnknown
+                    | IssuerCoreErrorV1::StoreUnanchored,
+                ) => report.retryable_failures = report.retryable_failures.saturating_add(1),
+                Err(_) => report.permanent_failures = report.permanent_failures.saturating_add(1),
+            }
+        }
+        if candidates.len() == limit as usize {
+            report.next_cursor = candidates.last().map(|candidate| *candidate.quote_id());
+        }
+        Ok(report)
+    }
+
+    /// Reconcile one bounded BAT V2 cursor page. Store queries and core
+    /// transitions are protocol-discriminated, so a V1 row can never enter
+    /// this batch even if a caller reuses a quote ID or backend label.
+    pub fn reconcile_bat_v2_quote_batch(
+        &self,
+        after_quote_id: Option<&[u8; 32]>,
+        limit: u32,
+        now_unix: u64,
+    ) -> Result<IssuerReconciliationBatchV1, IssuerServiceErrorV1> {
+        if now_unix == 0 {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
+        let candidates = self
+            .store
+            .bat_v2_quote_reconciliation_candidates_after(after_quote_id, limit, now_unix)
+            .map_err(map_store_error)?;
+        let mut report = IssuerReconciliationBatchV1 {
+            next_cursor: None,
+            examined: 0,
+            transitioned: 0,
+            unchanged: 0,
+            retryable_failures: 0,
+            permanent_failures: 0,
+        };
+        for candidate in &candidates {
+            report.examined = report.examined.saturating_add(1);
+            let Some(material) = self.quote_material(candidate.delegation_digest()) else {
+                report.permanent_failures = report.permanent_failures.saturating_add(1);
+                continue;
+            };
+            match self.core.reconcile_bat_v2_by_backend_label(
                 candidate.backend_label(),
                 &material.signing_key,
                 now_unix,
@@ -605,6 +799,65 @@ where
             .ok_or(IssuerServiceErrorV1::Internal)?;
         self.core
             .reconcile_by_backend_label(
+                &record.backend_label,
+                &quote_material.signing_key,
+                now_unix,
+            )
+            .map(|result| result.into_exact_signed_quote_response())
+            .map_err(map_core_error)
+    }
+
+    /// `POST /v2/quotes/{quote_id}/status` body handler. Although the status
+    /// request wire type is shared, the store lookup and persisted typestate
+    /// reconstruction are strictly BAT V2.
+    pub fn bat_v2_quote_status(
+        &self,
+        route_quote_id: &[u8; 32],
+        canonical_request: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let request = Bolt11QuoteStatusRequestV1::decode(canonical_request)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        if &request.quote_id != route_quote_id
+            || request
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+                .as_slice()
+                != canonical_request
+        {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
+        let bip340 = K256Bip340PrehashVerifierV1;
+        let authenticated = self
+            .store
+            .consume_bat_v2_quote_status_request(
+                &request,
+                now_unix,
+                &|input: QuoteStatusBip340Input<'_>| {
+                    bip340
+                        .verify(
+                            input.claim_pubkey_xonly,
+                            input.message_digest,
+                            input.signature,
+                        )
+                        .is_ok()
+                },
+            )
+            .map_err(map_store_error)?
+            .value;
+        if authenticated.state == QuoteState::CredentialClaimed {
+            return Ok(authenticated.exact_signed_quote_response);
+        }
+        let record = self
+            .store
+            .bat_v2_quote(route_quote_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::NotFound)?;
+        let quote_material = self
+            .quote_material(&record.delegation_digest)
+            .ok_or(IssuerServiceErrorV1::Internal)?;
+        self.core
+            .reconcile_bat_v2_by_backend_label(
                 &record.backend_label,
                 &quote_material.signing_key,
                 now_unix,
@@ -816,6 +1069,156 @@ where
         Ok(write.value.exact_claim_response)
     }
 
+    /// `POST /v2/quotes/{quote_id}/claim` body handler. Exact committed
+    /// recovery precedes time, class-key, quote-key, and Lightning checks so a
+    /// lost successful response remains recoverable after restart or expiry.
+    pub fn claim_bat_v2_quote(
+        &self,
+        route_quote_id: &[u8; 32],
+        canonical_envelope: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let envelope = Bolt11BatV2ClaimEnvelopeV2::decode(canonical_envelope)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        if &envelope.claim.quote_id != route_quote_id
+            || envelope
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+                .as_slice()
+                != canonical_envelope
+        {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
+
+        if let Some(existing) = self
+            .store
+            .bat_v2_claim_by_idempotency_key(&envelope.claim.idempotency_key)
+            .map_err(map_store_error)?
+        {
+            let replay = self
+                .store
+                .record_bat_v2_claim(
+                    &BatV2ClaimWrite {
+                        exact_claim_envelope: canonical_envelope.to_vec(),
+                        exact_claim_response: existing.exact_claim_response.clone(),
+                        exact_signed_quote_response: existing.exact_signed_quote_response.clone(),
+                        now_unix,
+                    },
+                    &|_: BatV2ClaimCryptographicVerificationInputV2<'_>| false,
+                )
+                .map_err(map_store_error)?;
+            return Ok(replay.value.exact_claim_response);
+        }
+
+        let quote_record = self
+            .store
+            .bat_v2_quote(route_quote_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::NotFound)?;
+        if envelope
+            .quote_intent
+            .request_digest()
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+            != quote_record.intent_digest
+        {
+            return Err(IssuerServiceErrorV1::Unauthorized);
+        }
+        let class_record = self
+            .store
+            .bat_acceptance_class_v2(
+                &envelope.quote_intent.class_id,
+                envelope.quote_intent.class_key_epoch,
+            )
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        let class = decode_bat_v2_class(&class_record)?;
+        self.ensure_bat_v2_class_credential_material(&class_record)?;
+        let delegation = Bolt11QuoteKeyDelegationV1::decode(&quote_record.exact_delegation)
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let quote_material = self
+            .quote_material(&quote_record.delegation_digest)
+            .ok_or(IssuerServiceErrorV1::Internal)?;
+        let invoice = quote_record
+            .invoice
+            .as_deref()
+            .ok_or(IssuerServiceErrorV1::Internal)?;
+        let parsed_invoice =
+            ParsedBolt11InvoiceV1::parse(invoice).map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let exact_settled = quote_record
+            .settled_signed_quote_response
+            .as_deref()
+            .ok_or(IssuerServiceErrorV1::Conflict)?;
+        let quote =
+            Bolt11QuoteV1::decode(exact_settled).map_err(|_| IssuerServiceErrorV1::Internal)?;
+        if !matches!(
+            quote.status,
+            Bolt11QuoteStatusV1::PaymentSettled | Bolt11QuoteStatusV1::LateSettledReconcile
+        ) {
+            return Err(IssuerServiceErrorV1::Conflict);
+        }
+        if now_unix <= quote.status_updated_at {
+            return Err(IssuerServiceErrorV1::RetryableUnavailable);
+        }
+        let verified_quote = quote
+            .verify_bat_v2_for_claim_submission(
+                &envelope.quote_intent,
+                &class,
+                &delegation,
+                &parsed_invoice,
+                now_unix,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let prepared: PreparedBatV2IssuanceV2 = prepare_cashu_bat_v2_issuance_v2(
+            &envelope.credential_request,
+            &envelope.claim,
+            &verified_quote,
+            self.bat_keyring
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::Internal)?,
+            &self.credential_derivation_key,
+            now_unix,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let exact_response = prepared
+            .encode_response()
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let expected_checked = prepared
+            .response()
+            .verify_for_verified_quote(&envelope.credential_request, &verified_quote)
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let claimed_quote = Bolt11QuoteV1::with_status_from_verified_bat_v2_snapshot(
+            &verified_quote,
+            Bolt11QuoteStatusV1::CredentialClaimed,
+            now_unix,
+            &delegation,
+            &quote_material.signing_key,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Internal)?
+        .encode()
+        .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let expected_bip340_digest = *prepared.verified_claim().bip340_message_digest();
+        let expected_response = prepared.response().clone();
+        let verifier = |input: BatV2ClaimCryptographicVerificationInputV2<'_>| {
+            input.bip340_message_digest == &expected_bip340_digest
+                && input.claim_envelope == &envelope
+                && input.issuance_response == &expected_response
+                && input.checked_response == &expected_checked
+        };
+        let write = self
+            .store
+            .record_bat_v2_claim(
+                &BatV2ClaimWrite {
+                    exact_claim_envelope: canonical_envelope.to_vec(),
+                    exact_claim_response: exact_response,
+                    exact_signed_quote_response: claimed_quote,
+                    now_unix,
+                },
+                &verifier,
+            )
+            .map_err(map_store_error)?;
+        Ok(write.value.exact_claim_response)
+    }
+
     fn prepare_credential(
         &self,
         envelope: &Bolt11QuoteClaimEnvelopeV1,
@@ -884,6 +1287,20 @@ where
             .find(|material| &material.delegation_digest == digest)
     }
 
+    fn ensure_bat_v2_class_credential_material(
+        &self,
+        class: &BatAcceptanceClassRecordV2,
+    ) -> Result<(), IssuerServiceErrorV1> {
+        if self.bat_keyring.as_ref().is_some_and(|keys| {
+            keys.denomination_public_keys()
+                .contains(&class.raw_public_key)
+        }) {
+            Ok(())
+        } else {
+            Err(IssuerServiceErrorV1::Internal)
+        }
+    }
+
     fn ensure_offer_credential_material(
         &self,
         offer: &pir_service_protocol::ServiceOfferV1,
@@ -897,6 +1314,23 @@ where
             self.arc_keyring_experimental.as_deref(),
         )
     }
+}
+
+fn decode_bat_v2_class(
+    record: &BatAcceptanceClassRecordV2,
+) -> Result<BatAcceptanceClassV2, IssuerServiceErrorV1> {
+    let class = BatAcceptanceClassV2::decode(&record.exact_artifact)
+        .map_err(|_| IssuerServiceErrorV1::Internal)?;
+    if class.encode().map_err(|_| IssuerServiceErrorV1::Internal)? != record.exact_artifact
+        || class.class_id != record.class_id
+        || class.key_epoch != record.key_epoch
+        || class.class_digest().ok() != Some(record.artifact_digest)
+        || class.bat_key_id() != record.bat_key_id
+        || class.bat_verification_key != record.raw_public_key
+    {
+        return Err(IssuerServiceErrorV1::Internal);
+    }
+    Ok(class)
 }
 
 /// Verifies that an exact issuer-retained shared-clearing binding still has
@@ -975,8 +1409,12 @@ fn ensure_offer_credential_material_v1(
     if offer.acquisition != AcquisitionMethod::Bolt11V1 || &offer.issuer_id != issuer_id {
         return Ok(());
     }
+    // Scheme 6 is configured and checked through the issuer-wide class
+    // registry and the separate V2 acquisition handlers. The V1 policy scan
+    // must neither reinterpret it as a provider binding nor prevent a mixed
+    // V1/V2 issuer process from starting.
     if offer.authorization == AuthScheme::BitcoinPirCashuBatV2 {
-        return Err(IssuerServiceErrorV1::InvalidRequest);
+        return Ok(());
     }
     let binding = offer
         .credential_binding

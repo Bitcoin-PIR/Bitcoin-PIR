@@ -79,6 +79,18 @@ fn public_v1_decoders() -> Vec<(&'static str, DecoderV1)> {
         ("BatAcceptanceClassV2", |bytes| {
             BatAcceptanceClassV2::decode(bytes).is_ok()
         }),
+        ("Bolt11BatV2QuoteIntentV2", |bytes| {
+            Bolt11BatV2QuoteIntentV2::decode(bytes).is_ok()
+        }),
+        ("BatV2IssuanceRequestV2", |bytes| {
+            BatV2IssuanceRequestV2::decode(bytes).is_ok()
+        }),
+        ("BatV2IssuanceResponseV2", |bytes| {
+            BatV2IssuanceResponseV2::decode(bytes).is_ok()
+        }),
+        ("Bolt11BatV2ClaimEnvelopeV2", |bytes| {
+            Bolt11BatV2ClaimEnvelopeV2::decode(bytes).is_ok()
+        }),
         ("CashuKeysetBindingV1", |bytes| {
             CashuKeysetBindingV1::decode(bytes).is_ok()
         }),
@@ -353,7 +365,7 @@ fn payment_v1_public_decoders_are_total_for_bounded_adversarial_corpus() {
     );
     assert_eq!(
         decoders.len(),
-        54,
+        58,
         "the explicit public-decoder inventory must not shrink silently"
     );
     assert!(

@@ -485,6 +485,17 @@ usable V2 purchase or redemption path; the remaining Phase-B work below is
 unchanged. Version-5 issuer stores require a separately reviewed explicit
 migration or isolated legacy retention and are never upgraded at startup.
 
+Source checkpoint (2026-08-19, acquisition slice): independent V2 quote intent,
+claim envelope and blind issuance codecs now bind only the exact class/key
+epoch and common terms. Issuer-store schema v7 discriminates V1/V2 quotes,
+allows new V2 quotes only at the current class head, retains exact historical
+epochs for paid-claim recovery, and rejects implicit v5/v6 migration. Separate
+`/v2/quotes/...` routes perform class-key selection, BIP340 claim verification,
+NUT-12 DLEQ issuance and byte-identical lost-response recovery. This completes
+issuer-side acquisition only; no V2 presentation, global first-spend,
+provider grant, SDK/Web class wallet or production activation follows from
+this checkpoint.
+
 Acceptance:
 
 - one BAT acquired through a class member can redeem at another compatible

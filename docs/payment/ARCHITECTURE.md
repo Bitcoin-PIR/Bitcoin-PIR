@@ -448,10 +448,11 @@ raw-key epoch, identical commercial/entitlement terms, and the canonical exact
 provider-policy members allowed to receive that credential. The raw key may be
 shared only inside that signed member set. A member or policy rotation uses a
 fresh raw key/epoch and retains the old artifact; different terms use a new
-class ID. The class codec/policy shape and issuer-store v6 registry are the only
-implemented V2 components at this stage. They prevent V1/V2 raw-key rebinding
-and class rollback, but do not yet expose V2 acquisition, redemption or
-provider admission.
+class ID. The class codec/policy shape, issuer-store v7 registry and class-bound
+issuer acquisition path are implemented. They prevent V1/V2 raw-key
+rebinding, class rollback and provider provenance from leaking into the issued
+credential. V2 redemption, provider admission and SDK/Web wallet handling are
+not implemented yet.
 
 V1 does not send Cashu DLEQ blinding material to a provider for public-key-only
 offline verification and later batch redemption. Although such a receiver can

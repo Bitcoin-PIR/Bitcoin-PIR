@@ -34,9 +34,10 @@ use pir_issuer_credentials::IssuerCredentialDerivationKeyV1;
 #[cfg(test)]
 use pir_issuer_service::SettlementPayoutPolicyV1;
 use pir_issuer_service::{
-    ensure_shared_clearing_binding_material_v1, IssuerAcquisitionServiceV1, IssuerServiceErrorV1,
-    QuoteSigningMaterialV1, ReceiptSigningMaterialV1, SharedIssuerClearingServiceV1,
-    TrustedClearingProviderV1, LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
+    ensure_shared_clearing_binding_material_v1, IssuerAcquisitionServiceV1,
+    IssuerReconciliationBatchV1, IssuerServiceErrorV1, QuoteSigningMaterialV1,
+    ReceiptSigningMaterialV1, SharedIssuerClearingServiceV1, TrustedClearingProviderV1,
+    LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
 };
 use pir_issuer_store::{
     BatKeyLineageRegistration, IssuerRollbackFloorAuthorityV1, IssuerStore,
@@ -58,9 +59,12 @@ use pir_lightning_backend::{
 use pir_payment_crypto::K256CashuMintKeyringV1;
 use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_protocol::{
-    AuthScheme, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
+    AuthScheme, BatAcceptanceClassV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2,
+    Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
     IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationV1,
     ProviderRedeemEnvelopeV1, ServicePolicyV1, SettlementModesV1, SettlementUnitV1,
+    MAX_BAT_ACCEPTANCE_CLASS_LEN_V2, MAX_BAT_V2_CLAIM_ENVELOPE_LEN,
+    MAX_BAT_V2_ISSUANCE_RESPONSE_LEN, MAX_BAT_V2_QUOTE_INTENT_LEN,
     MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1, MAX_BOLT11_QUOTE_INTENT_LEN,
     MAX_BOLT11_QUOTE_KEY_DELEGATION_LEN, MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN,
     MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1, MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
@@ -76,10 +80,20 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 // The only 320 KiB settlement envelope is the 64-note deposit model, which
 // this executable does not serve. Keep the public listener capped by the
 // larger of the acquisition claim and production redeem/balance surfaces.
-const MAX_HTTP_BODY_BYTES: usize = MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1;
+const MAX_HTTP_BODY_BYTES: usize =
+    if MAX_BAT_V2_CLAIM_ENVELOPE_LEN > MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1 {
+        MAX_BAT_V2_CLAIM_ENVELOPE_LEN
+    } else {
+        MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1
+    };
 const _: () = assert!(MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
 const _: () = assert!(MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
-const MAX_HTTP_RESPONSE_BYTES: usize = MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1;
+const MAX_HTTP_RESPONSE_BYTES: usize =
+    if MAX_BAT_V2_ISSUANCE_RESPONSE_LEN > MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1 {
+        MAX_BAT_V2_ISSUANCE_RESPONSE_LEN
+    } else {
+        MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1
+    };
 const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const DEFAULT_MAX_OUTSTANDING_QUOTES: u64 = 256;
 const DEFAULT_MAX_TOTAL_QUOTES: u64 = 100_000;
@@ -94,11 +108,15 @@ const MAX_CONFIGURED_RATE_PER_MINUTE: u32 = 60_000;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 const CT_QUOTE_INTENT: &str = "application/vnd.bitcoinpir.bolt11-quote-intent-v1";
+const CT_BAT_V2_QUOTE_INTENT: &str = "application/vnd.bitcoinpir.bat-v2-bolt11-quote-intent-v2";
 const CT_QUOTE: &str = "application/vnd.bitcoinpir.bolt11-quote-v1";
 const CT_QUOTE_KEY_DELEGATION: &str = "application/vnd.bitcoinpir.bolt11-quote-key-delegation-v1";
 const CT_STATUS_REQUEST: &str = "application/vnd.bitcoinpir.bolt11-quote-status-request-v1";
 const CT_CLAIM_ENVELOPE: &str = "application/vnd.bitcoinpir.bolt11-quote-claim-envelope-v1";
+const CT_BAT_V2_CLAIM_ENVELOPE: &str =
+    "application/vnd.bitcoinpir.bat-v2-bolt11-quote-claim-envelope-v2";
 const CT_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.credential-issuance-response-v1";
+const CT_BAT_V2_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.bat-v2-issuance-response-v2";
 const CT_REDEEM: &str = "application/vnd.bitcoinpir.redeem-v1";
 const CT_REDEEM_RESULT: &str = "application/vnd.bitcoinpir.redeem-result-v1";
 #[cfg(any(test, feature = "test-only-fake-lightning"))]
@@ -291,6 +309,11 @@ struct ServeCommonArgs {
     /// Repeat `<signed-policy-path>=<ed25519-policy-public-key-hex>`.
     #[arg(long = "service-policy")]
     service_policies: Vec<String>,
+    /// Repeat one canonical issuer-signed BAT V2 acceptance-class artifact.
+    /// Member policies are registered first so the store can verify the exact
+    /// current policy heads atomically with each class epoch.
+    #[arg(long = "bat-v2-class")]
+    bat_v2_classes: Vec<PathBuf>,
     /// Repeat for every retained direct-receipt Ed25519 signing key.
     #[arg(long = "receipt-signing-key")]
     receipt_signing_keys: Vec<PathBuf>,
@@ -512,17 +535,35 @@ struct ReconciliationTickTotalsV1 {
     service_failures: u32,
 }
 
+impl ReconciliationTickTotalsV1 {
+    fn include(&mut self, report: &IssuerReconciliationBatchV1) {
+        self.examined = self.examined.saturating_add(report.examined);
+        self.transitioned = self.transitioned.saturating_add(report.transitioned);
+        self.unchanged = self.unchanged.saturating_add(report.unchanged);
+        self.retryable_failures = self
+            .retryable_failures
+            .saturating_add(report.retryable_failures);
+        self.permanent_failures = self
+            .permanent_failures
+            .saturating_add(report.permanent_failures);
+    }
+}
+
 fn spawn_reconciliation_worker(
     state: Arc<ServerState>,
     config: ReconciliationWorkerConfigV1,
 ) -> Result<(), String> {
     thread::Builder::new()
-        .name("issuer-reconciliation-v1".to_owned())
+        .name("issuer-reconciliation".to_owned())
         .spawn(move || {
-            let mut cursor = None;
+            let mut v1_cursor = None;
+            let mut bat_v2_cursor = None;
+            let mut bat_v2_next = false;
             loop {
                 let tick_started = Instant::now();
                 let mut totals = ReconciliationTickTotalsV1::default();
+                let mut v1_empty = false;
+                let mut bat_v2_empty = false;
                 while totals.examined < config.batch_size
                     && tick_started.elapsed() < config.tick_budget
                     && config.rate.try_acquire(Instant::now())
@@ -534,26 +575,48 @@ fn spawn_reconciliation_worker(
                             break;
                         }
                     };
-                    match state
-                        .acquisition
-                        .reconcile_quote_batch(cursor.as_ref(), 1, now_unix)
-                    {
+                    let use_bat_v2 = if v1_empty {
+                        true
+                    } else if bat_v2_empty {
+                        false
+                    } else {
+                        let selected = bat_v2_next;
+                        bat_v2_next = !bat_v2_next;
+                        selected
+                    };
+                    let result = if use_bat_v2 {
+                        state.acquisition.reconcile_bat_v2_quote_batch(
+                            bat_v2_cursor.as_ref(),
+                            1,
+                            now_unix,
+                        )
+                    } else {
+                        state
+                            .acquisition
+                            .reconcile_quote_batch(v1_cursor.as_ref(), 1, now_unix)
+                    };
+                    match result {
                         Ok(report) if report.examined == 0 => {
-                            cursor = None;
-                            break;
+                            if use_bat_v2 {
+                                bat_v2_cursor = None;
+                                bat_v2_empty = true;
+                            } else {
+                                v1_cursor = None;
+                                v1_empty = true;
+                            }
+                            if v1_empty && bat_v2_empty {
+                                break;
+                            }
                         }
                         Ok(report) => {
-                            cursor = report.next_cursor();
-                            totals.examined = totals.examined.saturating_add(report.examined);
-                            totals.transitioned =
-                                totals.transitioned.saturating_add(report.transitioned);
-                            totals.unchanged = totals.unchanged.saturating_add(report.unchanged);
-                            totals.retryable_failures = totals
-                                .retryable_failures
-                                .saturating_add(report.retryable_failures);
-                            totals.permanent_failures = totals
-                                .permanent_failures
-                                .saturating_add(report.permanent_failures);
+                            if use_bat_v2 {
+                                bat_v2_cursor = report.next_cursor();
+                                bat_v2_empty = false;
+                            } else {
+                                v1_cursor = report.next_cursor();
+                                v1_empty = false;
+                            }
+                            totals.include(&report);
                         }
                         Err(_) => {
                             totals.service_failures = totals.service_failures.saturating_add(1);
@@ -652,6 +715,37 @@ fn is_exact_claim_replay(
         return false;
     }
     let Ok(Some(existing)) = store.claim_by_idempotency_key(&envelope.claim.idempotency_key) else {
+        return false;
+    };
+    let Ok(claim_digest) = envelope.claim.claim_request_digest() else {
+        return false;
+    };
+    let Ok(exact_credential_request) = envelope.credential_request.encode() else {
+        return false;
+    };
+    existing.quote_id == envelope.claim.quote_id
+        && existing.claim_request_digest == claim_digest
+        && existing.exact_credential_request == exact_credential_request
+}
+
+/// BAT V2 exact replay uses its own protocol-discriminated claim namespace.
+/// This transport precheck only exempts an already durable exact request from
+/// rate limiting; the service/store still authenticate it before release.
+fn is_exact_bat_v2_claim_replay(
+    store: &IssuerStore,
+    route_quote_id: &[u8; 32],
+    canonical_envelope: &[u8],
+) -> bool {
+    let Ok(envelope) = Bolt11BatV2ClaimEnvelopeV2::decode(canonical_envelope) else {
+        return false;
+    };
+    if &envelope.claim.quote_id != route_quote_id
+        || envelope.encode().ok().as_deref() != Some(canonical_envelope)
+    {
+        return false;
+    }
+    let Ok(Some(existing)) = store.bat_v2_claim_by_idempotency_key(&envelope.claim.idempotency_key)
+    else {
         return false;
     };
     let Ok(claim_digest) = envelope.claim.claim_request_digest() else {
@@ -1482,6 +1576,37 @@ fn serve_with_backend(
         register_policy_key_lineages(&store, &policy, now_unix)?;
         policies.push(policy);
     }
+    for path in &args.bat_v2_classes {
+        let bytes = read_public_file(
+            path,
+            MAX_BAT_ACCEPTANCE_CLASS_LEN_V2,
+            "BAT V2 acceptance class",
+        )?;
+        let class = BatAcceptanceClassV2::decode(&bytes).map_err(|_| {
+            format!(
+                "BAT V2 acceptance class {} is not canonical V2",
+                path.display()
+            )
+        })?;
+        if class
+            .encode()
+            .map_err(|_| "BAT V2 acceptance class encode failed".to_owned())?
+            != bytes
+        {
+            return Err(format!(
+                "BAT V2 acceptance class {} is non-canonical",
+                path.display()
+            ));
+        }
+        let _registration = store
+            .register_bat_acceptance_class_v2(&class, now_unix)
+            .map_err(|error| {
+                format!(
+                    "register BAT V2 acceptance class {} failed: {error}",
+                    path.display()
+                )
+            })?;
+    }
 
     let mut receipt_keys = Vec::with_capacity(args.receipt_signing_keys.len());
     for path in &args.receipt_signing_keys {
@@ -2212,6 +2337,35 @@ fn route_request(
                 .create_quote(&request.body, now_unix)
                 .map(|body| (CT_QUOTE, body))
         }
+        "/v2/quotes/bolt11" => {
+            require_content_type(request, CT_BAT_V2_QUOTE_INTENT)?;
+            if request.body.len() > MAX_BAT_V2_QUOTE_INTENT_LEN {
+                return Err(IssuerServiceErrorV1::InvalidRequest);
+            }
+            let intent = Bolt11BatV2QuoteIntentV2::decode(&request.body)
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+            if intent.encode().ok().as_deref() != Some(request.body.as_slice()) {
+                return Err(IssuerServiceErrorV1::InvalidRequest);
+            }
+            let request_digest = intent
+                .request_digest()
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+            let stored = state
+                .store
+                .bat_v2_quote_by_creation_idempotency_key(&intent.idempotency_key)
+                .map_err(|_| IssuerServiceErrorV1::RetryableUnavailable)?;
+            let exact_replay = exact_intent_replay(
+                stored.as_ref().map(|quote| quote.intent_digest),
+                request_digest,
+            );
+            if !exact_replay && !state.quote_rate.try_acquire(Instant::now()) {
+                return Err(IssuerServiceErrorV1::RetryableUnavailable);
+            }
+            state
+                .acquisition
+                .create_bat_v2_quote(&request.body, now_unix)
+                .map(|body| (CT_QUOTE, body))
+        }
         "/v1/redeems" => {
             require_content_type(request, CT_REDEEM)?;
             if request.body.len() > MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1 {
@@ -2308,21 +2462,34 @@ fn route_request(
                     .try_into()
                     .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?,
             );
-            let quote = state
+            let quote = match state
                 .store
                 .quote(&quote_id)
                 .map_err(|_| IssuerServiceErrorV1::Internal)?
-                .ok_or(IssuerServiceErrorV1::NotFound)?;
+            {
+                Some(quote) => quote,
+                None => state
+                    .store
+                    .bat_v2_quote(&quote_id)
+                    .map_err(|_| IssuerServiceErrorV1::Internal)?
+                    .ok_or(IssuerServiceErrorV1::NotFound)?,
+            };
             fake_lightning
                 .observe_settlement(&quote.backend_label, amount, settled_at)
                 .map_err(|_| IssuerServiceErrorV1::Conflict)?;
             Ok(("application/octet-stream", Vec::new()))
         }
         path => {
-            let (quote_id, action) =
-                parse_quote_action_path(path).ok_or(IssuerServiceErrorV1::NotFound)?;
-            match action {
-                "status" => {
+            let (quote_id, action, bat_v2) =
+                if let Some((quote_id, action)) = parse_quote_action_path(path) {
+                    (quote_id, action, false)
+                } else if let Some((quote_id, action)) = parse_bat_v2_quote_action_path(path) {
+                    (quote_id, action, true)
+                } else {
+                    return Err(IssuerServiceErrorV1::NotFound);
+                };
+            match (bat_v2, action) {
+                (false, "status") => {
                     require_content_type(request, CT_STATUS_REQUEST)?;
                     if request.body.len() > MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN {
                         return Err(IssuerServiceErrorV1::InvalidRequest);
@@ -2335,7 +2502,20 @@ fn route_request(
                         .quote_status(&quote_id, &request.body, now_unix)
                         .map(|body| (CT_QUOTE, body))
                 }
-                "claim" => {
+                (true, "status") => {
+                    require_content_type(request, CT_STATUS_REQUEST)?;
+                    if request.body.len() > MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN {
+                        return Err(IssuerServiceErrorV1::InvalidRequest);
+                    }
+                    if !state.status_rate.try_acquire(Instant::now()) {
+                        return Err(IssuerServiceErrorV1::RetryableUnavailable);
+                    }
+                    state
+                        .acquisition
+                        .bat_v2_quote_status(&quote_id, &request.body, now_unix)
+                        .map(|body| (CT_QUOTE, body))
+                }
+                (false, "claim") => {
                     require_content_type(request, CT_CLAIM_ENVELOPE)?;
                     if request.body.len() > MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1 {
                         return Err(IssuerServiceErrorV1::InvalidRequest);
@@ -2349,6 +2529,21 @@ fn route_request(
                         .acquisition
                         .claim_quote(&quote_id, &request.body, now_unix)
                         .map(|body| (CT_ISSUANCE_RESPONSE, body))
+                }
+                (true, "claim") => {
+                    require_content_type(request, CT_BAT_V2_CLAIM_ENVELOPE)?;
+                    if request.body.len() > MAX_BAT_V2_CLAIM_ENVELOPE_LEN {
+                        return Err(IssuerServiceErrorV1::InvalidRequest);
+                    }
+                    if !is_exact_bat_v2_claim_replay(&state.store, &quote_id, &request.body)
+                        && !state.mutation_rate.try_acquire(Instant::now())
+                    {
+                        return Err(IssuerServiceErrorV1::RetryableUnavailable);
+                    }
+                    state
+                        .acquisition
+                        .claim_bat_v2_quote(&quote_id, &request.body, now_unix)
+                        .map(|body| (CT_BAT_V2_ISSUANCE_RESPONSE, body))
                 }
                 _ => Err(IssuerServiceErrorV1::NotFound),
             }
@@ -2386,7 +2581,18 @@ fn require_executable_settlement_request(
 }
 
 fn parse_quote_action_path(path: &str) -> Option<([u8; 32], &str)> {
-    let rest = path.strip_prefix("/v1/quotes/")?;
+    parse_quote_action_path_for_prefix(path, "/v1/quotes/")
+}
+
+fn parse_bat_v2_quote_action_path(path: &str) -> Option<([u8; 32], &str)> {
+    parse_quote_action_path_for_prefix(path, "/v2/quotes/")
+}
+
+fn parse_quote_action_path_for_prefix<'a>(
+    path: &'a str,
+    prefix: &str,
+) -> Option<([u8; 32], &'a str)> {
+    let rest = path.strip_prefix(prefix)?;
     let (quote_hex, action) = rest.split_once('/')?;
     if quote_hex.len() != 64
         || !quote_hex
@@ -3782,6 +3988,17 @@ mod tests {
             parse_quote_action_path(&format!("/v1/quotes/{}/status", id.to_uppercase())).is_none()
         );
         assert!(parse_quote_action_path(&format!("/v1/quotes/{id}/status?x=1")).is_none());
+        assert_eq!(
+            parse_bat_v2_quote_action_path(&format!("/v2/quotes/{id}/claim"))
+                .unwrap()
+                .1,
+            "claim"
+        );
+        assert!(
+            parse_bat_v2_quote_action_path(&format!("/v2/quotes/{}/claim", id.to_uppercase()))
+                .is_none()
+        );
+        assert!(parse_bat_v2_quote_action_path(&format!("/v1/quotes/{id}/claim")).is_none());
     }
 
     #[test]

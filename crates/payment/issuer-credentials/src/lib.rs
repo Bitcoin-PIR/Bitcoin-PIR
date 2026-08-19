@@ -18,11 +18,12 @@ use pir_payment_crypto::{
     VerifiedBip340ClaimV1,
 };
 use pir_service_protocol::{
-    AuthScheme, BitcoinPirCashuBatIssuanceResponseItemV1, Bolt11QuoteClaimV1, Bolt11QuoteStatusV1,
+    AuthScheme, BatV2IssuanceRequestV2, BatV2IssuanceResponseV2,
+    BitcoinPirCashuBatIssuanceResponseItemV1, Bolt11QuoteClaimV1, Bolt11QuoteStatusV1,
     CheckedCredentialIssuanceResponseV1, CredentialIssuanceRequestItemsV1,
     CredentialIssuanceRequestV1, CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1,
     CredentialKeyBindingExpectationV1, CredentialKeyBindingV1, PaidReceiptBindingV1, PaidReceiptV1,
-    ServiceProtocolError, VerifiedBolt11QuoteV1,
+    ServiceProtocolError, VerifiedBolt11BatV2QuoteV2, VerifiedBolt11QuoteV1,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use sha2::{Digest, Sha256};
@@ -31,6 +32,8 @@ use zeroize::{Zeroize, Zeroizing};
 const DIRECT_SERIAL_DERIVATION_DOMAIN_V1: &[u8] = b"BitcoinPIR/issuer-credential/direct-serial/v1";
 const BAT_DLEQ_NONCE_DERIVATION_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-credential/bat-dleq-nonce/v1";
+const BAT_V2_DLEQ_NONCE_DERIVATION_DOMAIN_V2: &[u8] =
+    b"BitcoinPIR/issuer-credential/bat-v2-dleq-nonce/v2";
 const ARC_RESPONSE_RNG_DERIVATION_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-credential/arc-response-rng/v1";
 const MAX_DERIVATION_ATTEMPTS_V1: u32 = 128;
@@ -182,6 +185,37 @@ impl fmt::Debug for PreparedCredentialIssuanceV1 {
     }
 }
 
+/// Prepared issuer-wide BAT V2 response whose BIP340 claim and every NUT-12
+/// transcript have been checked. The exact bytes still must not be released
+/// until the issuer store durably commits the matching V2 claim envelope.
+pub struct PreparedBatV2IssuanceV2 {
+    response: BatV2IssuanceResponseV2,
+    verified_claim: VerifiedCredentialClaimV1,
+}
+
+impl PreparedBatV2IssuanceV2 {
+    pub const fn response(&self) -> &BatV2IssuanceResponseV2 {
+        &self.response
+    }
+
+    pub const fn verified_claim(&self) -> &VerifiedCredentialClaimV1 {
+        &self.verified_claim
+    }
+
+    pub fn encode_response(&self) -> Result<Vec<u8>, IssuerCredentialErrorV1> {
+        Ok(self.response.encode()?)
+    }
+}
+
+impl fmt::Debug for PreparedBatV2IssuanceV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedBatV2IssuanceV2")
+            .field("item_count", &self.response.items.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Prepare linkable single-use receipts for a settled direct-BOLT11 quote.
 /// No response bytes may be released until the caller commits them durably.
 pub fn prepare_direct_receipt_issuance_v1(
@@ -292,6 +326,7 @@ pub fn prepare_cashu_bat_issuance_v1(
         let response = derive_and_blind_sign_v1(
             keyring,
             derivation_key,
+            BAT_DLEQ_NONCE_DERIVATION_DOMAIN_V1,
             &issuer_public_key,
             &verified_quote.quote().quote_id,
             &request_digest,
@@ -323,6 +358,67 @@ pub fn prepare_cashu_bat_issuance_v1(
         return Err(IssuerCredentialErrorV1::WrongPreparedResponseVariant);
     }
     Ok(PreparedCredentialIssuanceV1 {
+        response,
+        verified_claim,
+    })
+}
+
+/// Prepare class-bound blind BAT signatures and NUT-12 proofs for a settled
+/// BAT V2 quote. The issuer selects the signing scalar only through the exact
+/// retained class artifact; no provider-bound V1 credential binding is
+/// accepted by this path.
+pub fn prepare_cashu_bat_v2_issuance_v2(
+    request: &BatV2IssuanceRequestV2,
+    claim: &Bolt11QuoteClaimV1,
+    verified_quote: &VerifiedBolt11BatV2QuoteV2<'_>,
+    keyring: &K256CashuMintKeyringV1,
+    derivation_key: &IssuerCredentialDerivationKeyV1,
+    now_unix: u64,
+) -> Result<PreparedBatV2IssuanceV2, IssuerCredentialErrorV1> {
+    let unverified_claim = request.verify_for_verified_quote(claim, verified_quote, now_unix)?;
+    let bip340 = verify_quote_claim_v1(&unverified_claim)?;
+    let request_digest = request.request_digest()?;
+    let issuer_public_key = verified_quote.class().bat_verification_key;
+    let mut used_nonce_fingerprints = HashSet::with_capacity(request.items.len());
+    let mut items = Vec::with_capacity(request.items.len());
+    for (index, item) in request.items.iter().enumerate() {
+        let index =
+            u32::try_from(index).map_err(|_| IssuerCredentialErrorV1::DerivationExhausted)?;
+        let signed = derive_and_blind_sign_v1(
+            keyring,
+            derivation_key,
+            BAT_V2_DLEQ_NONCE_DERIVATION_DOMAIN_V2,
+            &issuer_public_key,
+            &verified_quote.quote().quote_id,
+            &request_digest,
+            index,
+            &item.blinded_message,
+            &mut used_nonce_fingerprints,
+        )?;
+        items.push(BitcoinPirCashuBatIssuanceResponseItemV1 {
+            blinded_message: item.blinded_message,
+            blinded_signature: *signed.blinded_signature(),
+            dleq_e: *signed.dleq_e(),
+            dleq_s: *signed.dleq_s(),
+        });
+    }
+    let response = BatV2IssuanceResponseV2 {
+        issuer_id: request.issuer_id,
+        quote_id: request.quote_id,
+        quote_request_digest: request.quote_request_digest,
+        credential_request_digest: request_digest,
+        class_id: request.class_id,
+        class_digest: request.class_digest,
+        class_key_epoch: request.class_key_epoch,
+        bat_key_id: request.bat_key_id,
+        items,
+    };
+    let verified_claim =
+        verify_prepared_bat_v2_response_v2(claim, request, &response, verified_quote, now_unix)?;
+    if verified_claim.bip340_message_digest() != bip340.message_digest() {
+        return Err(IssuerCredentialErrorV1::WrongPreparedResponseVariant);
+    }
+    Ok(PreparedBatV2IssuanceV2 {
         response,
         verified_claim,
     })
@@ -438,6 +534,32 @@ pub fn verify_prepared_response_v1(
     Ok(VerifiedCredentialClaimV1 { bip340 })
 }
 
+/// Verify a prepared BAT V2 response without issuer secret material. This
+/// repeats the exact quote/request binding, BIP340 ownership proof, and every
+/// NUT-12 equation before a store callback may authorize the durable write.
+pub fn verify_prepared_bat_v2_response_v2(
+    claim: &Bolt11QuoteClaimV1,
+    request: &BatV2IssuanceRequestV2,
+    response: &BatV2IssuanceResponseV2,
+    verified_quote: &VerifiedBolt11BatV2QuoteV2<'_>,
+    now_unix: u64,
+) -> Result<VerifiedCredentialClaimV1, IssuerCredentialErrorV1> {
+    let unverified_claim = request.verify_for_verified_quote(claim, verified_quote, now_unix)?;
+    let bip340 = verify_quote_claim_v1(&unverified_claim)?;
+    let checked = response.verify_for_verified_quote(request, verified_quote)?;
+    let verifier = K256CashuDleqVerifierV1;
+    for tuple in checked.unverified_dleq() {
+        verifier.verify(
+            &tuple.issuer_public_key,
+            &tuple.blinded_message,
+            &tuple.blinded_signature,
+            &tuple.dleq_e,
+            &tuple.dleq_s,
+        )?;
+    }
+    Ok(VerifiedCredentialClaimV1 { bip340 })
+}
+
 fn verify_request_claim_v1(
     request: &CredentialIssuanceRequestV1,
     claim: &Bolt11QuoteClaimV1,
@@ -476,6 +598,7 @@ fn response_envelope_v1(
 fn derive_and_blind_sign_v1(
     keyring: &K256CashuMintKeyringV1,
     derivation_key: &IssuerCredentialDerivationKeyV1,
+    nonce_domain: &[u8],
     issuer_public_key: &[u8; 33],
     quote_id: &[u8; 32],
     request_digest: &[u8; 32],
@@ -485,7 +608,7 @@ fn derive_and_blind_sign_v1(
 ) -> Result<pir_payment_crypto::CashuBlindSignatureWithDleqV1, IssuerCredentialErrorV1> {
     for attempt in 0..MAX_DERIVATION_ATTEMPTS_V1 {
         let mut nonce = derivation_key.derive(
-            BAT_DLEQ_NONCE_DERIVATION_DOMAIN_V1,
+            nonce_domain,
             quote_id,
             request_digest,
             index,

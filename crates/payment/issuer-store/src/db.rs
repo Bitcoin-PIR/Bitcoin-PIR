@@ -419,6 +419,18 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
         ));
     }
 
+    let bat_v2_receipt_serials: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM receipt_serials r \
+         JOIN quotes q ON q.quote_id = r.quote_id WHERE q.quote_protocol = 2",
+        [],
+        |row| row.get(0),
+    )?;
+    if bat_v2_receipt_serials != 0 {
+        return Err(StoreError::SchemaMismatch(
+            "BAT V2 claims must not allocate paid-receipt serials".to_owned(),
+        ));
+    }
+
     let bad_ledger: i64 = connection.query_row(
         "SELECT \
             (SELECT COUNT(*) FROM ledger_transactions t WHERE \

@@ -30,6 +30,8 @@ pub use sqlite_rollback::SqliteIssuerRollbackFloorAuthorityV1;
 pub use types::{
     ArcKeyLineageV1, AuthenticatedQuoteStatus, BatAcceptanceClassMemberRecordV2,
     BatAcceptanceClassRecordV2, BatKeyLineage, BatKeyLineageRegistration,
+    BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimCryptographicVerifierV2, BatV2ClaimWrite,
+    BatV2CredentialMaterialRequirementV2, BatV2QuoteReservation,
     ClaimCryptographicVerificationInput, ClaimCryptographicVerifier, ClaimRecord, ClaimWrite,
     ClearingAuthorizationRecordV1, CommitMarker, DelegationAdvance, DelegationHead, DurableWrite,
     IssuerServicePolicyRecordV1, IssuerStoreOperationalInventoryV1, LedgerTransactionKindV1,

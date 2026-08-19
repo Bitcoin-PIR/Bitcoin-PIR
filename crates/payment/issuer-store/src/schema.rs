@@ -45,6 +45,7 @@ pub(crate) fn quotes_sql() -> String {
         length(issuer_id) = 32 AND issuer_id != zeroblob(32)
     ),
     network                        INTEGER NOT NULL CHECK (network BETWEEN 1 AND 4),
+    quote_protocol                 INTEGER NOT NULL CHECK (quote_protocol IN (1, 2)),
     creation_idempotency_digest    BLOB NOT NULL UNIQUE CHECK (
         length(creation_idempotency_digest) = 32 AND
         creation_idempotency_digest != zeroblob(32)

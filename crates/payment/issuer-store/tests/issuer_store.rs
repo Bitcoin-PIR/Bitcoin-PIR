@@ -2,7 +2,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
-    BatKeyLineageRegistration, ClaimCryptographicVerificationInput, ClaimWrite, DelegationAdvance,
+    BatKeyLineageRegistration, BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimWrite,
+    BatV2QuoteReservation, ClaimCryptographicVerificationInput, ClaimWrite, DelegationAdvance,
     IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
     IssuerStore, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry,
     QuoteFinalization, QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
@@ -11,7 +12,9 @@ use pir_issuer_store::{
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_issuer_id, paid_receipt_key_id,
     AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, BatAcceptanceClassV2,
-    BatAcceptanceMemberV2, BatAcceptanceTermsV2, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
+    BatAcceptanceMemberV2, BatAcceptanceTermsV2, BatV2IssuanceRequestV2, BatV2IssuanceResponseV2,
+    BitcoinPirCashuBatIssuanceRequestItemV1, BitcoinPirCashuBatIssuanceResponseItemV1,
+    Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
     Bolt11QuoteKeyDelegationV1, Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
     CashuDenominationKeyV1, CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
     CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1, DatasetBindingV1,
@@ -212,6 +215,10 @@ fn point(multiplier: u64) -> [u8; 33] {
         .to_affine()
         .to_encoded_point(true);
     encoded.as_bytes().try_into().expect("compressed point")
+}
+
+fn scalar(multiplier: u64) -> [u8; 32] {
+    Scalar::from(multiplier).to_bytes().into()
 }
 
 fn bat_v2_limits() -> EntitlementLimitsV1 {
@@ -503,6 +510,43 @@ fn reservation(
     reservation_with_receipt_key(quote_id_byte, idempotency_byte, delegation, 0x25)
 }
 
+fn bat_v2_reservation(
+    quote_id_byte: u8,
+    idempotency_byte: u8,
+    class: &BatAcceptanceClassV2,
+    delegation: &Bolt11QuoteKeyDelegationV1,
+) -> (BatV2QuoteReservation, Bolt11BatV2QuoteIntentV2) {
+    let intent = Bolt11BatV2QuoteIntentV2 {
+        issuer_id: issuer_id(),
+        class_id: class.class_id,
+        class_digest: class.class_digest().expect("BAT V2 class digest"),
+        class_key_epoch: class.key_epoch,
+        bat_key_id: class.bat_key_id(),
+        network: LightningNetworkV1::Regtest,
+        expected_payee_pubkey: delegation.expected_payee_pubkey,
+        minimum_quote_key_epoch: delegation.key_epoch,
+        quote_delegation_digest: delegation
+            .delegation_digest()
+            .expect("BAT V2 delegation digest"),
+        exact_amount_msat: class.common_terms.price_msat,
+        credential_count: class.common_terms.credential_count,
+        invoice_expiry_seconds: class.common_terms.invoice_expiry_seconds,
+        claim_window_seconds: class.common_terms.claim_window_seconds,
+        minimum_credential_validity_seconds: class.common_terms.minimum_credential_validity_seconds,
+        claim_pubkey_xonly: xonly(3),
+        idempotency_key: [idempotency_byte; 32],
+    };
+    let reservation = BatV2QuoteReservation {
+        quote_id: [quote_id_byte; 32],
+        exact_intent: intent.encode().expect("encode BAT V2 intent"),
+        exact_delegation: delegation.encode().expect("encode BAT V2 delegation"),
+        invoice_created_not_before: 250,
+        invoice_created_not_after: 350,
+        now_unix: 200,
+    };
+    (reservation, intent)
+}
+
 fn signed_quote(
     quote_id_byte: u8,
     quote_request_digest: [u8; 32],
@@ -535,6 +579,166 @@ fn signed_quote(
     preimage.extend_from_slice(&placeholder[..placeholder.len() - 64]);
     snapshot.signature = quote_key().sign(&preimage).to_bytes();
     snapshot.encode().expect("encode signed quote")
+}
+
+fn bat_v2_signed_quote(
+    quote_id_byte: u8,
+    quote_request_digest: [u8; 32],
+    invoice_suffix: u8,
+    status: Bolt11QuoteStatusV1,
+    state_version: u64,
+    status_updated_at: u64,
+) -> Vec<u8> {
+    let delegation = delegation(1, 0x22);
+    let mut snapshot = Bolt11QuoteV1 {
+        request_digest: quote_request_digest,
+        quote_id: [quote_id_byte; 32],
+        quote_key_id: delegation.quote_key_id,
+        invoice: format!("lnbcrt1bitcoinpirbatv2fixture{invoice_suffix}"),
+        network: LightningNetworkV1::Regtest,
+        payee_pubkey: point(2),
+        amount_msat: 2_000,
+        invoice_created_at: 300,
+        invoice_expires_at: 360,
+        claim_deadline: 480,
+        credential_not_after: 780,
+        status,
+        state_version,
+        status_updated_at,
+        signature: [1; 64],
+    };
+    let placeholder = snapshot.encode().expect("encode BAT V2 quote placeholder");
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(BOLT11_QUOTE_SIGNATURE_DOMAIN);
+    preimage.extend_from_slice(&placeholder[..placeholder.len() - 64]);
+    snapshot.signature = quote_key().sign(&preimage).to_bytes();
+    snapshot.encode().expect("encode signed BAT V2 quote")
+}
+
+fn bat_v2_finalization(
+    quote_id_byte: u8,
+    invoice_suffix: u8,
+    quote_request_digest: [u8; 32],
+) -> QuoteFinalization {
+    QuoteFinalization {
+        quote_id: [quote_id_byte; 32],
+        invoice: format!("lnbcrt1bitcoinpirbatv2fixture{invoice_suffix}"),
+        payment_hash: [invoice_suffix; 32],
+        invoice_created_at: 300,
+        invoice_expires_at: 360,
+        claim_deadline: 480,
+        credential_not_after: 780,
+        exact_signed_quote_response: bat_v2_signed_quote(
+            quote_id_byte,
+            quote_request_digest,
+            invoice_suffix,
+            Bolt11QuoteStatusV1::InvoiceOpen,
+            1,
+            300,
+        ),
+    }
+}
+
+fn bat_v2_settlement(
+    quote_id_byte: u8,
+    quote_request_digest: [u8; 32],
+    invoice_suffix: u8,
+) -> QuoteSettlement {
+    QuoteSettlement {
+        quote_id: [quote_id_byte; 32],
+        settled_at: 350,
+        observed_at: 350,
+        settled_amount_msat: 2_000,
+        settlement_evidence_digest: [invoice_suffix; 32],
+        exact_signed_quote_response: bat_v2_signed_quote(
+            quote_id_byte,
+            quote_request_digest,
+            invoice_suffix,
+            Bolt11QuoteStatusV1::PaymentSettled,
+            2,
+            350,
+        ),
+    }
+}
+
+fn bat_v2_claim_write(
+    quote_id_byte: u8,
+    intent: &Bolt11BatV2QuoteIntentV2,
+    claim_idempotency_byte: u8,
+    invoice_suffix: u8,
+) -> BatV2ClaimWrite {
+    let quote_request_digest = intent.request_digest().expect("BAT V2 intent digest");
+    let credential_request = BatV2IssuanceRequestV2 {
+        issuer_id: issuer_id(),
+        quote_id: [quote_id_byte; 32],
+        quote_request_digest,
+        class_id: intent.class_id,
+        class_digest: intent.class_digest,
+        class_key_epoch: intent.class_key_epoch,
+        bat_key_id: intent.bat_key_id,
+        items: vec![
+            BitcoinPirCashuBatIssuanceRequestItemV1 {
+                blinded_message: point(70),
+            },
+            BitcoinPirCashuBatIssuanceRequestItemV1 {
+                blinded_message: point(71),
+            },
+        ],
+    };
+    let credential_request_digest = credential_request
+        .request_digest()
+        .expect("BAT V2 issuance request digest");
+    let claim = Bolt11QuoteClaimV1 {
+        issuer_id: issuer_id(),
+        quote_id: [quote_id_byte; 32],
+        quote_request_digest,
+        credential_request_digest,
+        claim_pubkey_xonly: intent.claim_pubkey_xonly,
+        idempotency_key: [claim_idempotency_byte; 32],
+        signature: [0x62; 64],
+    };
+    let envelope = Bolt11BatV2ClaimEnvelopeV2 {
+        quote_intent: intent.clone(),
+        claim,
+        credential_request: credential_request.clone(),
+    };
+    let response = BatV2IssuanceResponseV2 {
+        issuer_id: issuer_id(),
+        quote_id: [quote_id_byte; 32],
+        quote_request_digest,
+        credential_request_digest,
+        class_id: intent.class_id,
+        class_digest: intent.class_digest,
+        class_key_epoch: intent.class_key_epoch,
+        bat_key_id: intent.bat_key_id,
+        items: vec![
+            BitcoinPirCashuBatIssuanceResponseItemV1 {
+                blinded_message: point(70),
+                blinded_signature: point(72),
+                dleq_e: scalar(1),
+                dleq_s: scalar(2),
+            },
+            BitcoinPirCashuBatIssuanceResponseItemV1 {
+                blinded_message: point(71),
+                blinded_signature: point(73),
+                dleq_e: scalar(3),
+                dleq_s: scalar(4),
+            },
+        ],
+    };
+    BatV2ClaimWrite {
+        exact_claim_envelope: envelope.encode().expect("encode BAT V2 claim envelope"),
+        exact_claim_response: response.encode().expect("encode BAT V2 issuance response"),
+        exact_signed_quote_response: bat_v2_signed_quote(
+            quote_id_byte,
+            quote_request_digest,
+            invoice_suffix,
+            Bolt11QuoteStatusV1::CredentialClaimed,
+            3,
+            400,
+        ),
+        now_unix: 400,
+    }
 }
 
 fn finalization(
@@ -670,6 +874,14 @@ fn claim(
 
 fn accept_claim_crypto(_input: ClaimCryptographicVerificationInput<'_>) -> bool {
     true
+}
+
+fn accept_bat_v2_claim_crypto(_input: BatV2ClaimCryptographicVerificationInputV2<'_>) -> bool {
+    true
+}
+
+fn reject_bat_v2_claim_crypto(_input: BatV2ClaimCryptographicVerificationInputV2<'_>) -> bool {
+    false
 }
 
 fn reject_claim_crypto(_input: ClaimCryptographicVerificationInput<'_>) -> bool {
@@ -2504,6 +2716,233 @@ fn bat_and_settlement_key_lineages_are_immutable_and_survive_restart() {
 }
 
 #[test]
+fn bat_v2_acquisition_reservation_is_current_head_only_but_old_exact_replay_survives() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let class_id = [0x70; 32];
+    let first_members = register_bat_v2_members(&store, class_id, 1);
+    let first_class = bat_v2_class(class_id, 1, 70, bat_v2_terms(), first_members);
+    let _ = store
+        .register_bat_acceptance_class_v2(&first_class, 200)
+        .unwrap();
+    let live_head_only = store.bat_v2_credential_material_requirements(200).unwrap();
+    assert_eq!(live_head_only.len(), 1);
+    assert_eq!(live_head_only[0].class_key_epoch, 1);
+    assert_eq!(live_head_only[0].raw_public_key, point(70));
+    let first_delegation = delegation(1, 0x22);
+    let (first_reservation, _) = bat_v2_reservation(0x70, 0x71, &first_class, &first_delegation);
+    let committed = store.reserve_bat_v2_quote(&first_reservation).unwrap();
+    assert_eq!(committed.disposition, WriteDisposition::Committed);
+    assert_eq!(
+        store
+            .reserve_bat_v2_quote(&first_reservation)
+            .unwrap()
+            .disposition,
+        WriteDisposition::ExactReplay
+    );
+    assert!(matches!(
+        store.quote(&first_reservation.quote_id),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+
+    let requirements = store.bat_v2_credential_material_requirements(400).unwrap();
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].class_id, class_id);
+    assert_eq!(requirements[0].class_key_epoch, 1);
+    assert_eq!(
+        requirements[0].raw_public_key,
+        first_class.bat_verification_key
+    );
+    assert_eq!(requirements[0].bat_key_id, first_class.bat_key_id());
+
+    let second_members = register_bat_v2_members(&store, class_id, 2);
+    let second_class = bat_v2_class(class_id, 2, 71, bat_v2_terms(), second_members);
+    let _ = store
+        .register_bat_acceptance_class_v2(&second_class, 200)
+        .unwrap();
+    let rotated_requirements = store.bat_v2_credential_material_requirements(400).unwrap();
+    assert_eq!(rotated_requirements.len(), 2);
+    assert_eq!(rotated_requirements[0].class_key_epoch, 1);
+    assert_eq!(rotated_requirements[1].class_key_epoch, 2);
+    assert_eq!(
+        store
+            .reserve_bat_v2_quote(&first_reservation)
+            .unwrap()
+            .disposition,
+        WriteDisposition::ExactReplay,
+        "an already durable historical quote must recover after class rotation"
+    );
+    let (fresh_old_epoch, _) = bat_v2_reservation(0x72, 0x73, &first_class, &first_delegation);
+    assert!(matches!(
+        store.reserve_bat_v2_quote(&fresh_old_epoch),
+        Err(StoreError::BatV2ClassMemberMismatch)
+    ));
+
+    let conflicting_v1 = reservation(0x73, 0x71, &first_delegation);
+    assert!(matches!(
+        store.reserve_quote(&conflicting_v1),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+    let v1_first = reservation(0x74, 0x75, &first_delegation);
+    let _ = store.reserve_quote(&v1_first).unwrap();
+    let (conflicting_v2, _) = bat_v2_reservation(0x75, 0x75, &second_class, &first_delegation);
+    assert!(matches!(
+        store.reserve_bat_v2_quote(&conflicting_v2),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+    drop(store);
+
+    let reopened = open_store(&test_path).unwrap();
+    let mut historical_recovery = first_reservation.clone();
+    historical_recovery.now_unix = 2_000;
+    assert_eq!(
+        reopened
+            .reserve_bat_v2_quote(&historical_recovery)
+            .unwrap()
+            .disposition,
+        WriteDisposition::ExactReplay
+    );
+    assert_eq!(
+        reopened
+            .bat_v2_quote_by_creation_idempotency_key(&[0x71; 32])
+            .unwrap()
+            .unwrap()
+            .quote_id,
+        first_reservation.quote_id
+    );
+    let current_only = reopened
+        .bat_v2_credential_material_requirements(531)
+        .unwrap();
+    assert_eq!(current_only.len(), 1);
+    assert_eq!(current_only[0].class_key_epoch, 2);
+    assert_eq!(current_only[0].raw_public_key, point(71));
+    assert!(reopened
+        .bat_v2_credential_material_requirements(1_001)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn bat_v2_acquisition_claim_status_and_restart_are_protocol_isolated() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let class_id = [0x76; 32];
+    let members = register_bat_v2_members(&store, class_id, 1);
+    let mixed_v1_member = members[0].clone();
+    let class = bat_v2_class(class_id, 1, 76, bat_v2_terms(), members);
+    let _ = store.register_bat_acceptance_class_v2(&class, 200).unwrap();
+    let (reservation, intent) = bat_v2_reservation(0x76, 0x77, &class, &delegation(1, 0x22));
+    let intent_digest = intent.request_digest().unwrap();
+    let _ = store.reserve_bat_v2_quote(&reservation).unwrap();
+    let _ = store
+        .finalize_bat_v2_quote(&bat_v2_finalization(0x76, 0x78, intent_digest))
+        .unwrap();
+
+    let mut mixed_v1 = reservation_with_receipt_key(0x79, 0x80, &delegation(1, 0x22), 0x25);
+    let mut mixed_v1_intent = Bolt11QuoteIntentV1::decode(&mixed_v1.exact_intent).unwrap();
+    mixed_v1_intent.provider_id = mixed_v1_member.provider_id;
+    mixed_v1_intent.policy_digest = mixed_v1_member.policy_digest;
+    mixed_v1.intent_digest = mixed_v1_intent.request_digest().unwrap();
+    mixed_v1.exact_intent = mixed_v1_intent.encode().unwrap();
+    let _ = store.reserve_quote(&mixed_v1).unwrap();
+    drop(store);
+
+    let store = open_store(&test_path).unwrap();
+    let v1_requirements = store
+        .service_policies_requiring_credential_material(320)
+        .expect("mixed V1 plus open BAT V2 readiness must decode only V1 intents");
+    assert!(v1_requirements.iter().any(|record| {
+        record.provider_id == mixed_v1_member.provider_id
+            && record.policy_digest == mixed_v1_member.policy_digest
+    }));
+    assert_eq!(
+        store
+            .quote_delegation_digests_requiring_signing_material(320)
+            .expect("mixed V1 plus open BAT V2 signer readiness"),
+        vec![delegation(1, 0x22).delegation_digest().unwrap()]
+    );
+
+    let status = status_request(0x76, intent_digest, 320, 0x79);
+    let authenticated = store
+        .consume_bat_v2_quote_status_request(&status, 320, &accept_status_signature)
+        .unwrap();
+    assert_eq!(authenticated.value.state, QuoteState::InvoiceOpen);
+    assert!(matches!(
+        store.consume_bat_v2_quote_status_request(&status, 320, &accept_status_signature),
+        Err(StoreError::StatusNonceReplay)
+    ));
+    assert!(matches!(
+        store.consume_quote_status_request(&status, 320, &accept_status_signature),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+
+    let _ = store
+        .record_bat_v2_settlement(&bat_v2_settlement(0x76, intent_digest, 0x78))
+        .unwrap();
+    let v2_claim = bat_v2_claim_write(0x76, &intent, 0x7a, 0x78);
+    let committed = store
+        .record_bat_v2_claim(&v2_claim, &accept_bat_v2_claim_crypto)
+        .unwrap();
+    assert_eq!(committed.disposition, WriteDisposition::Committed);
+    assert!(committed.value.receipt_serials.is_empty());
+    assert!(matches!(
+        store.claim(&reservation.quote_id),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+
+    let mut replay_after_deadline = v2_claim.clone();
+    replay_after_deadline.now_unix = 999;
+    let replay = store
+        .record_bat_v2_claim(&replay_after_deadline, &reject_bat_v2_claim_crypto)
+        .unwrap();
+    assert_eq!(replay.disposition, WriteDisposition::ExactReplay);
+    assert!(replay.value == committed.value);
+
+    let connection = Connection::open(&test_path.database).unwrap();
+    let receipt_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM receipt_serials r JOIN quotes q ON q.quote_id = r.quote_id \
+             WHERE q.quote_protocol = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_rows, 0);
+    drop(connection);
+    drop(store);
+
+    let reopened = open_store(&test_path).unwrap();
+    assert!(
+        reopened
+            .bat_v2_claim_by_idempotency_key(&[0x7a; 32])
+            .unwrap()
+            .unwrap()
+            == committed.value
+    );
+    let second_members = register_bat_v2_members(&reopened, class_id, 2);
+    let second_class = bat_v2_class(class_id, 2, 77, bat_v2_terms(), second_members);
+    let _ = reopened
+        .register_bat_acceptance_class_v2(&second_class, 400)
+        .unwrap();
+    let terminal_old_epoch_does_not_pin = reopened
+        .bat_v2_credential_material_requirements(400)
+        .unwrap();
+    assert_eq!(terminal_old_epoch_does_not_pin.len(), 1);
+    assert_eq!(terminal_old_epoch_does_not_pin[0].class_key_epoch, 2);
+    assert_eq!(terminal_old_epoch_does_not_pin[0].raw_public_key, point(77));
+
+    let v1 = reserve_finalize_settle(&reopened, 0x7b, 0x7c, 0x7d);
+    let v1_claim = claim(0x7b, v1.intent_digest, 0x7e, 0x7d, 0x7f, 0x25, 3);
+    let _ = reopened
+        .record_claim(&v1_claim, &accept_claim_crypto, None)
+        .unwrap();
+    assert!(matches!(
+        reopened.bat_v2_claim(&v1.quote_id),
+        Err(StoreError::QuoteProtocolMismatch)
+    ));
+}
+
+#[test]
 fn bat_v2_registry_accepts_two_provider_epochs_and_survives_restart() {
     let test_path = TestPath::new();
     let store = create_store(&test_path);
@@ -2682,12 +3121,12 @@ fn bat_v2_registry_rejects_bidirectional_legacy_raw_key_reuse() {
 }
 
 #[test]
-fn bat_v2_schema_v6_rejects_implicit_v5_open() {
+fn bat_v2_acquisition_schema_v7_rejects_implicit_v6_open() {
     let test_path = TestPath::new();
     let store = create_store(&test_path);
     drop(store);
     let connection = Connection::open(&test_path.database).unwrap();
-    connection.pragma_update(None, "user_version", 5).unwrap();
+    connection.pragma_update(None, "user_version", 6).unwrap();
     drop(connection);
     assert!(matches!(
         open_store(&test_path),

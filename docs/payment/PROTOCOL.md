@@ -245,17 +245,41 @@ do not form a digest cycle. The class artifact and terms use independent V2
 signature/digest domains; the raw-key ID additionally commits issuer, class,
 key epoch and raw key.
 
-Issuer-store schema v6 atomically installs a complete class epoch against each
+Issuer-store schema v7 atomically installs a complete class epoch against each
 provider's current exact signed policy head. A class ID keeps the same common
 terms across epochs; a changed exact member set requires a fresh epoch and raw
 key, while the old signed artifact remains available through its promised
 retired-policy horizon. The store rejects epoch rollback/forks, incomplete or
 incompatible members, and raw-key reuse across V2 classes or legacy BAT V1.
-Schema v6 has no implicit migration from v5.
+Schema v7 has no implicit migration from v5 or v6.
 
-This registry is only the first V2 source slice. Class-bound quote/claim
-records, issuer-global first-spend redemption, non-grantable replay results,
-storeless provider admission and SDK/Web wallet handling are still pending.
+The class-bound BOLT11 acquisition path uses independent
+`Bolt11BatV2QuoteIntentV2`, `BatV2IssuanceRequestV2`,
+`BatV2IssuanceResponseV2` and `Bolt11BatV2ClaimEnvelopeV2` codecs and digest
+domains. The intent binds only issuer/class/key and shared commercial terms;
+it deliberately omits the provider member through which the user discovered
+the class. A new quote must reference the current class head, while an existing
+quote may finish against its exact retained class epoch through the promised
+claim horizon. The issuer selects that epoch's raw key, verifies the quote
+claim and blind issuance request, produces NUT-12 DLEQ evidence and commits the
+exact response before releasing it.
+
+Issuer-store v7 carries an explicit V1/V2 quote discriminator. V1 and V2
+lookups, transitions and idempotency namespaces reject the opposite protocol;
+V2 claims never create Direct-receipt serial rows. The HTTP surface is also
+separate:
+
+```text
+POST /v2/quotes/bolt11
+POST /v2/quotes/{quote_id}/status
+POST /v2/quotes/{quote_id}/claim
+```
+
+An exact replay of a committed V2 *acquisition claim* returns the same blind
+issuance response so a paid invoice is recoverable after a lost response. This
+does not define redeem replay: issuer-global first-spend redemption,
+non-grantable redeem replay, storeless provider admission and SDK/Web class
+wallet handling are still pending.
 
 ## PIR wire messages
 

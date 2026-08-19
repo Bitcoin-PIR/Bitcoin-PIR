@@ -26,6 +26,7 @@ pub enum StoreError {
         authority_error: String,
     },
     QuoteMissing,
+    QuoteProtocolMismatch,
     QuoteConflict,
     QuoteCapacityExceeded,
     CreationIdempotencyConflict,
@@ -137,6 +138,9 @@ impl fmt::Display for StoreError {
                 "issuer-store generation {store_generation} committed but is not externally anchored: {authority_error}"
             ),
             Self::QuoteMissing => write!(f, "quote is missing"),
+            Self::QuoteProtocolMismatch => {
+                write!(f, "quote or claim belongs to a different acquisition protocol")
+            }
             Self::QuoteConflict => write!(f, "quote id conflicts with durable state"),
             Self::QuoteCapacityExceeded => {
                 write!(f, "issuer quote capacity is exhausted")
