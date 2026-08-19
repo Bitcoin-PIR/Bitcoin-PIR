@@ -1813,6 +1813,9 @@ function schemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {
     }
     return 'free-anonymous-ticket';
   }
+  if (offer.authorization === 'cashu-bat-v2') {
+    throw new Error('BAT V2 requires the class-bound admission path');
+  }
   return offer.authorization;
 }
 
