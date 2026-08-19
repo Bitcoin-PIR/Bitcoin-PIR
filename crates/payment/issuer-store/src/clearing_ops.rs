@@ -1,3 +1,4 @@
+use crate::bat_v2_clearing_ops::{ensure_ledger_account, ensure_provider_account_binding};
 use crate::db::{
     advance_store_generation, commit, db_u64, fixed_blob, is_zero, sql_integer,
     verify_expected_identity,
@@ -219,6 +220,22 @@ impl IssuerStore {
             &digest,
         )?;
         let sequence = committed_identity.commit_seq;
+        ensure_provider_account_binding(
+            &transaction,
+            self,
+            &candidate.provider_id,
+            &candidate.settlement_account_id,
+            SettlementUnitV1::AuthCredit,
+            sequence,
+        )?;
+        ensure_ledger_account(
+            &transaction,
+            self,
+            &candidate.provider_id,
+            &candidate.settlement_account_id,
+            SettlementUnitV1::AuthCredit,
+            sequence,
+        )?;
         transaction.execute(
             "INSERT INTO provider_registrations (issuer_id, provider_id, registration_epoch, \
              registration_digest, settlement_account_id, provider_request_verifying_key, \
@@ -266,19 +283,6 @@ impl IssuerStore {
                     candidate.not_after,
                     "registration not_after exceeds SQLite range"
                 )?,
-                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO ledger_accounts (account_id, issuer_id, provider_id, unit, \
-             available_value, reserved_value, ledger_sequence, commit_seq) \
-             VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5) \
-             ON CONFLICT(account_id) DO UPDATE SET commit_seq = excluded.commit_seq",
-            params![
-                candidate.settlement_account_id.as_slice(),
-                self.handle.expected_issuer_id.as_slice(),
-                candidate.provider_id.as_slice(),
-                SettlementUnitV1::AuthCredit as u8,
                 sql_integer(sequence, "commit sequence exceeds SQLite range")?,
             ],
         )?;
@@ -546,7 +550,8 @@ impl IssuerStore {
         }
         let spent: Option<i64> = transaction
             .query_row(
-                "SELECT 1 FROM redemptions WHERE credential_spend_key = ?1",
+                "SELECT 1 FROM redemptions WHERE credential_spend_key = ?1 \
+                 UNION ALL SELECT 1 FROM bat_v2_redemptions WHERE global_spend_key = ?1 LIMIT 1",
                 params![redeem.spend_key.as_slice()],
                 |row| row.get(0),
             )

@@ -306,7 +306,10 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             (SELECT COUNT(*) FROM bat_v2_class_artifacts WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_v2_class_heads WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_v2_class_members WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_clearing_authorizations WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_redemptions WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM settlement_key_lineages WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM provider_account_bindings WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_registration_history WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_registrations WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM clearing_authorizations WHERE issuer_id != ?1) + \
@@ -441,9 +444,23 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
                 ON t.transaction_id = r.ledger_transaction_id \
                 WHERE t.transaction_id IS NULL OR t.reference_digest != r.request_digest \
                 OR t.provider_id != r.provider_id OR t.unit != r.unit) + \
-            (SELECT COUNT(*) FROM ledger_accounts a LEFT JOIN provider_registrations p \
-                ON p.provider_id = a.provider_id \
-                WHERE p.provider_id IS NULL OR p.settlement_account_id != a.account_id) + \
+            (SELECT COUNT(*) FROM bat_v2_redemptions r LEFT JOIN ledger_transactions t \
+                ON t.transaction_id = r.ledger_transaction_id \
+                WHERE t.transaction_id IS NULL OR t.reference_digest != r.request_digest \
+                OR t.provider_id != r.provider_id OR t.unit != r.unit OR t.kind != 7) + \
+            (SELECT COUNT(*) FROM ledger_accounts a LEFT JOIN provider_account_bindings b \
+                ON b.issuer_id = a.issuer_id AND b.provider_id = a.provider_id \
+                AND b.settlement_account_id = a.account_id \
+                WHERE b.provider_id IS NULL OR b.unit != a.unit) + \
+            (SELECT COUNT(*) FROM provider_registrations p LEFT JOIN provider_account_bindings b \
+                ON b.issuer_id = p.issuer_id AND b.provider_id = p.provider_id \
+                AND b.settlement_account_id = p.settlement_account_id \
+                WHERE b.provider_id IS NULL) + \
+            (SELECT COUNT(*) FROM bat_v2_clearing_authorizations a \
+                LEFT JOIN provider_account_bindings b ON b.issuer_id = a.issuer_id \
+                AND b.provider_id = a.provider_id \
+                AND b.settlement_account_id = a.settlement_account_id \
+                WHERE b.provider_id IS NULL) + \
             (SELECT COUNT(*) FROM settlement_deposits d LEFT JOIN ledger_transactions t \
                 ON t.transaction_id = d.ledger_transaction_id \
                 WHERE t.transaction_id IS NULL OR t.reference_digest != d.request_digest \
@@ -488,6 +505,18 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
         ));
     }
 
+    let cross_protocol_bat_spends: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM redemptions v1 JOIN bat_v2_redemptions v2 \
+         ON v2.global_spend_key = v1.credential_spend_key",
+        [],
+        |row| row.get(0),
+    )?;
+    if cross_protocol_bat_spends != 0 {
+        return Err(StoreError::SchemaMismatch(
+            "one BAT spend key is committed in both V1 and V2".to_owned(),
+        ));
+    }
+
     let identity = read_identity(connection)?;
     let max_referenced: i64 = connection.query_row(
         "SELECT MAX(value) FROM (\
@@ -503,7 +532,10 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             UNION ALL SELECT commit_seq FROM bat_v2_class_artifacts \
             UNION ALL SELECT commit_seq FROM bat_v2_class_heads \
             UNION ALL SELECT commit_seq FROM bat_v2_class_members \
+            UNION ALL SELECT commit_seq FROM bat_v2_clearing_authorizations \
+            UNION ALL SELECT commit_seq FROM bat_v2_redemptions \
             UNION ALL SELECT commit_seq FROM settlement_key_lineages \
+            UNION ALL SELECT commit_seq FROM provider_account_bindings \
             UNION ALL SELECT commit_seq FROM provider_registration_history \
             UNION ALL SELECT commit_seq FROM provider_registrations \
             UNION ALL SELECT commit_seq FROM clearing_authorizations \

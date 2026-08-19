@@ -1,7 +1,8 @@
 use pir_service_protocol::{
     AuthScheme, BatV2IssuanceResponseV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11QuoteClaimV1,
     CheckedBatV2IssuanceResponseV2, CredentialIssuanceRequestV1, CredentialIssuanceResponseV1,
-    CredentialKeyBindingV1, IssuerClearingApprovalV1, LightningNetworkV1, PayoutStateV1,
+    CredentialKeyBindingV1, IssuerAccountingApprovalV2, IssuerClearingApprovalV1,
+    LightningNetworkV1, PayoutStateV1, ProviderAccountingAuthorizationV2,
     ProviderClearingAuthorizationV1, ProviderRedeemRequestV1, ProviderRedeemResponseV1,
     ServiceProtocolError, SettlementUnitV1,
 };
@@ -10,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// On-disk schema version. This crate never performs an implicit migration.
-/// Version 7 is a fresh-schema boundary for protocol-discriminated BAT V2
-/// acquisition records; existing version-6 stores must be migrated by an explicit,
-/// separately reviewed operation.
-pub const SCHEMA_VERSION: u32 = 7;
+/// Version 8 is a fresh-schema boundary for issuer-global BAT V2 redemption
+/// and protocol-neutral provider-account bindings. This crate never upgrades
+/// a version-7 store implicitly; deployment must isolate a fresh v8 store or
+/// use an explicit, separately reviewed migration.
+pub const SCHEMA_VERSION: u32 = 8;
 
 pub const MAX_EXACT_INTENT_BYTES: usize = 64 * 1024;
 pub const MAX_EXACT_DELEGATION_BYTES: usize = 64 * 1024;
@@ -38,6 +40,12 @@ pub const MAX_EXACT_SERVICE_POLICY_BYTES: usize = pir_service_protocol::MAX_SIGN
 /// an artifact that the protocol layer cannot decode and re-encode exactly.
 pub const MAX_EXACT_BAT_V2_CLASS_BYTES: usize =
     pir_service_protocol::MAX_BAT_ACCEPTANCE_CLASS_LEN_V2;
+pub const MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES: usize =
+    pir_service_protocol::MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2;
+pub const MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES: usize =
+    pir_service_protocol::BAT_V2_ISSUER_ACCOUNTING_APPROVAL_LEN_V2;
+pub const MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES: usize =
+    pir_service_protocol::MAX_BAT_V2_PROVIDER_REDEEM_RESPONSE_LEN_V2;
 /// V1 protocol acquisition cap. Store limits may not exceed the wire cap.
 pub const MAX_RECEIPT_SERIALS_PER_CLAIM: usize = 256;
 
@@ -86,7 +94,10 @@ pub struct IssuerStoreOperationalInventoryV1 {
     pub bat_v2_class_rows: u64,
     pub bat_v2_class_head_rows: u64,
     pub bat_v2_class_member_rows: u64,
+    pub provider_account_binding_rows: u64,
+    pub bat_v2_accounting_authorization_rows: u64,
     pub redemption_rows: u64,
+    pub bat_v2_redemption_rows: u64,
     pub payout_rows: u64,
 }
 
@@ -633,6 +644,51 @@ pub struct ClearingAuthorizationRecordV1 {
     pub commit: CommitMarker,
 }
 
+/// Protocol-neutral immutable binding between one provider and the one issuer
+/// ledger account into which both V1 and V2 clearing may post.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProviderAccountBindingRecordV2 {
+    pub provider_id: [u8; 32],
+    pub settlement_account_id: [u8; 32],
+    pub unit: SettlementUnitV1,
+    pub commit: CommitMarker,
+}
+
+/// Append-only, issuer-verified BAT V2 accounting authority. Exact encoded
+/// artifacts remain the only truth; duplicated columns are checked indexes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BatV2AccountingAuthorizationRecordV2 {
+    pub authorization_digest: [u8; 32],
+    pub authorization_id: [u8; 16],
+    pub authorization_epoch: u64,
+    pub provider_id: [u8; 32],
+    pub settlement_account_id: [u8; 32],
+    pub operator_verifying_key: [u8; 32],
+    pub issuer_settlement_verifying_key: [u8; 32],
+    pub not_before: u64,
+    pub not_after: u64,
+    pub exact_authorization: Vec<u8>,
+    pub exact_approval: Vec<u8>,
+    pub commit: CommitMarker,
+}
+
+impl BatV2AccountingAuthorizationRecordV2 {
+    pub fn decode_exact(
+        &self,
+    ) -> Result<
+        (
+            ProviderAccountingAuthorizationV2,
+            IssuerAccountingApprovalV2,
+        ),
+        ServiceProtocolError,
+    > {
+        Ok((
+            ProviderAccountingAuthorizationV2::decode(&self.exact_authorization)?,
+            IssuerAccountingApprovalV2::decode(&self.exact_approval)?,
+        ))
+    }
+}
+
 /// Exact inputs a reviewed shared-credential adapter must authenticate. The
 /// adapter returns its private cryptographic result only through the sink.
 pub struct SharedCredentialVerificationInputV1<'a> {
@@ -722,6 +778,7 @@ pub enum LedgerTransactionKindV1 {
     PayoutDebit = 4,
     PayoutSucceeded = 5,
     PayoutFailed = 6,
+    BatV2RedeemLedgerCredit = 7,
 }
 
 #[derive(Clone, Eq, PartialEq)]

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bat_v2_clearing_ops;
 mod bat_v2_ops;
 mod clearing_ops;
 mod db;
@@ -30,20 +31,22 @@ pub use sqlite_rollback::SqliteIssuerRollbackFloorAuthorityV1;
 pub use types::{
     ArcKeyLineageV1, AuthenticatedQuoteStatus, BatAcceptanceClassMemberRecordV2,
     BatAcceptanceClassRecordV2, BatKeyLineage, BatKeyLineageRegistration,
-    BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimCryptographicVerifierV2, BatV2ClaimWrite,
-    BatV2CredentialMaterialRequirementV2, BatV2QuoteReservation,
-    ClaimCryptographicVerificationInput, ClaimCryptographicVerifier, ClaimRecord, ClaimWrite,
-    ClearingAuthorizationRecordV1, CommitMarker, DelegationAdvance, DelegationHead, DurableWrite,
-    IssuerServicePolicyRecordV1, IssuerStoreOperationalInventoryV1, LedgerTransactionKindV1,
-    PayoutIntentRecordV1, PayoutOutboxCommandV1, PayoutOutboxStateV1, PayoutRecordV1,
-    ProviderLedgerBalanceV1, ProviderSettlementRegistrationRecordV1,
-    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
-    QuoteReconciliationCandidateV1, QuoteRecord, QuoteReservation, QuoteSettlement, QuoteState,
-    QuoteStatusBip340Input, QuoteStatusBip340Verifier, ReceiptSerial, RedeemRecordV1,
-    SettlementDepositRecordV1, SettlementKeyLineage, SettlementKeyLineageRegistration,
-    SharedCredentialCryptographicVerifierV1, SharedCredentialSpendSinkV1,
-    SharedCredentialVerificationInputV1, StoreIdentity, StoreOptions, VerifiedRedeemCommitV1,
-    VerifiedSharedIssuerRedeemV1, WriteDisposition, MAX_EXACT_BAT_V2_CLASS_BYTES,
+    BatV2AccountingAuthorizationRecordV2, BatV2ClaimCryptographicVerificationInputV2,
+    BatV2ClaimCryptographicVerifierV2, BatV2ClaimWrite, BatV2CredentialMaterialRequirementV2,
+    BatV2QuoteReservation, ClaimCryptographicVerificationInput, ClaimCryptographicVerifier,
+    ClaimRecord, ClaimWrite, ClearingAuthorizationRecordV1, CommitMarker, DelegationAdvance,
+    DelegationHead, DurableWrite, IssuerServicePolicyRecordV1, IssuerStoreOperationalInventoryV1,
+    LedgerTransactionKindV1, PayoutIntentRecordV1, PayoutOutboxCommandV1, PayoutOutboxStateV1,
+    PayoutRecordV1, ProviderAccountBindingRecordV2, ProviderLedgerBalanceV1,
+    ProviderSettlementRegistrationRecordV1, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1,
+    QuoteExpiry, QuoteFinalization, QuoteReconciliationCandidateV1, QuoteRecord, QuoteReservation,
+    QuoteSettlement, QuoteState, QuoteStatusBip340Input, QuoteStatusBip340Verifier, ReceiptSerial,
+    RedeemRecordV1, SettlementDepositRecordV1, SettlementKeyLineage,
+    SettlementKeyLineageRegistration, SharedCredentialCryptographicVerifierV1,
+    SharedCredentialSpendSinkV1, SharedCredentialVerificationInputV1, StoreIdentity, StoreOptions,
+    VerifiedRedeemCommitV1, VerifiedSharedIssuerRedeemV1, WriteDisposition,
+    MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES, MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
+    MAX_EXACT_BAT_V2_CLASS_BYTES, MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES,
     MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
     MAX_EXACT_CLEARING_APPROVAL_BYTES, MAX_EXACT_CLEARING_AUTHORIZATION_BYTES,
     MAX_EXACT_DELEGATION_BYTES, MAX_EXACT_INTENT_BYTES, MAX_EXACT_PAYOUT_INTENT_REQUEST_BYTES,
@@ -54,6 +57,8 @@ pub use types::{
     MAX_EXACT_SETTLEMENT_DEPOSIT_RESPONSE_BYTES, MAX_INVOICE_BYTES, MAX_RECEIPT_SERIALS_PER_CLAIM,
     MAX_SIGNED_QUOTE_BYTES, SCHEMA_VERSION,
 };
+
+pub use bat_v2_clearing_ops::IssuerBatV2RedeemCommitterV2;
 
 pub use clearing_ops::{
     issuer_redeem_ledger_transaction_id_v1, issuer_settlement_deposit_transaction_id_v1,
@@ -236,7 +241,7 @@ impl IssuerStore {
     /// material.
     pub fn operational_inventory(&self) -> StoreResult<IssuerStoreOperationalInventoryV1> {
         let connection = self.open_checked(false)?;
-        type RawInventory = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
+        type RawInventory = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
         let raw: RawInventory = connection.query_row(
             "SELECT (SELECT commit_seq FROM store_identity WHERE singleton = 1), \
                     (SELECT COUNT(*) FROM quotes), \
@@ -245,7 +250,10 @@ impl IssuerStore {
                     (SELECT COUNT(*) FROM bat_v2_class_artifacts), \
                     (SELECT COUNT(*) FROM bat_v2_class_heads), \
                     (SELECT COUNT(*) FROM bat_v2_class_members), \
+                    (SELECT COUNT(*) FROM provider_account_bindings), \
+                    (SELECT COUNT(*) FROM bat_v2_clearing_authorizations), \
                     (SELECT COUNT(*) FROM redemptions), \
+                    (SELECT COUNT(*) FROM bat_v2_redemptions), \
                     (SELECT COUNT(*) FROM payouts)",
             [],
             |row| {
@@ -259,6 +267,9 @@ impl IssuerStore {
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
                 ))
             },
         )?;
@@ -270,8 +281,17 @@ impl IssuerStore {
             bat_v2_class_rows: db::db_u64(raw.4, "negative BAT V2 class row count")?,
             bat_v2_class_head_rows: db::db_u64(raw.5, "negative BAT V2 class head row count")?,
             bat_v2_class_member_rows: db::db_u64(raw.6, "negative BAT V2 class member row count")?,
-            redemption_rows: db::db_u64(raw.7, "negative redemption row count")?,
-            payout_rows: db::db_u64(raw.8, "negative payout row count")?,
+            provider_account_binding_rows: db::db_u64(
+                raw.7,
+                "negative provider account binding row count",
+            )?,
+            bat_v2_accounting_authorization_rows: db::db_u64(
+                raw.8,
+                "negative BAT V2 accounting authorization row count",
+            )?,
+            redemption_rows: db::db_u64(raw.9, "negative redemption row count")?,
+            bat_v2_redemption_rows: db::db_u64(raw.10, "negative BAT V2 redemption row count")?,
+            payout_rows: db::db_u64(raw.11, "negative payout row count")?,
         };
         self.confirm_anchored_read(&connection, inventory)
     }
@@ -299,6 +319,7 @@ impl IssuerStore {
             quote_ops::verify_all_quote_histories(self, &connection)?;
             clearing_ops::verify_all_provider_registration_histories(self, &connection)?;
             bat_v2_ops::verify_all_bat_acceptance_classes_v2(self, &connection)?;
+            bat_v2_clearing_ops::verify_all_bat_v2_clearing(self, &connection)?;
         }
         Ok(connection)
     }

@@ -64,8 +64,12 @@ pub enum StoreError {
     SettlementKeyLineageConflict,
     ProviderRegistrationRollback,
     ProviderRegistrationFork,
+    ProviderAccountBindingConflict,
     ClearingAuthorizationRollback,
     ClearingAuthorizationFork,
+    BatV2ClearingAuthorizationRollback,
+    BatV2ClearingAuthorizationFork,
+    BatV2RedeemPreconditionChanged,
     RedeemIdempotencyConflict,
     CredentialAlreadySpent,
     LedgerBalanceOverflow,
@@ -248,12 +252,28 @@ impl fmt::Display for StoreError {
                 f,
                 "different provider settlement registration at an accepted epoch rejected"
             ),
+            Self::ProviderAccountBindingConflict => write!(
+                f,
+                "provider settlement account differs from its immutable issuer binding"
+            ),
             Self::ClearingAuthorizationRollback => {
                 write!(f, "provider clearing authorization epoch rollback rejected")
             }
             Self::ClearingAuthorizationFork => write!(
                 f,
                 "different provider clearing authorization at an accepted epoch rejected"
+            ),
+            Self::BatV2ClearingAuthorizationRollback => write!(
+                f,
+                "BAT V2 provider accounting authorization epoch rollback rejected"
+            ),
+            Self::BatV2ClearingAuthorizationFork => write!(
+                f,
+                "different BAT V2 provider accounting authorization at an accepted epoch rejected"
+            ),
+            Self::BatV2RedeemPreconditionChanged => write!(
+                f,
+                "BAT V2 redeem authorization, account, or class precondition changed before commit"
             ),
             Self::RedeemIdempotencyConflict => {
                 write!(f, "redeem idempotency key conflicts with durable state")
