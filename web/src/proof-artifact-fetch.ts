@@ -5,6 +5,8 @@ export interface ProofArtifactFetchOptionsV1 {
   baseHref?: string;
   fetchImpl?: typeof fetch;
   maxBytes?: number;
+  /** Reject non-streaming responses instead of allocating an unbounded body. */
+  requireStreaming?: boolean;
 }
 
 /** Resolve a manifest-controlled artifact path without permitting an SSRF-like request. */
@@ -67,8 +69,57 @@ export async function fetchProofArtifactBytesV1(
   if (contentLength !== null) {
     const declaredLength = Number(contentLength);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
+      await response.body?.cancel('proof artifact declared byte limit exceeded').catch(() => {});
       throw new Error(`proof artifact ${path} exceeds the ${maxBytes}-byte fetch limit`);
     }
+  }
+  const stream = response.body;
+  if (stream && typeof stream.getReader === 'function') {
+    const reader = stream.getReader();
+    let bytes = new Uint8Array(Math.min(maxBytes, 64 * 1024));
+    let total = 0;
+    let cancelled = false;
+    const cancel = async (reason: string): Promise<void> => {
+      cancelled = true;
+      await reader.cancel(reason).catch(() => {});
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) {
+          await cancel('non-byte proof artifact stream');
+          throw new Error(`proof artifact ${path} returned a non-byte stream`);
+        }
+        if (value.byteLength === 0) continue;
+        if (value.byteLength > maxBytes - total) {
+          await cancel('proof artifact byte limit exceeded');
+          throw new Error(`proof artifact ${path} exceeds the ${maxBytes}-byte fetch limit`);
+        }
+        const nextTotal = total + value.byteLength;
+        if (nextTotal > bytes.length) {
+          const capacity = Math.min(
+            maxBytes,
+            Math.max(nextTotal, Math.max(1, bytes.length) * 2),
+          );
+          const grown = new Uint8Array(capacity);
+          grown.set(bytes.subarray(0, total));
+          bytes = grown;
+        }
+        bytes.set(value, total);
+        total = nextTotal;
+      }
+    } catch (error) {
+      if (!cancelled) await cancel('proof artifact stream rejected');
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+    return bytes.slice(0, total);
+  }
+  if (options.requireStreaming) {
+    await response.body?.cancel('bounded proof artifact stream required').catch(() => {});
+    throw new Error(`proof artifact ${path} does not expose a bounded byte stream`);
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length > maxBytes) {

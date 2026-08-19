@@ -5,6 +5,7 @@ import {
   defaultProviderIdsForAdmissionRoutesV1,
   expectedLightningPayeeForOfferV1,
   parseProductTrustedBootstrapV1,
+  productBatV2ClassCatalogRefV2,
   providerLightningPayeeTrustV1,
 } from '../product-provider-bootstrap.js';
 import type { ServiceOfferViewV1 } from '../sdk-bridge.js';
@@ -66,6 +67,15 @@ function parseProvider(overrides: Record<string, unknown> = {}) {
     network: 'signet',
     providers: [{ ...bootstrapProvider(), ...overrides }],
   })).providers[0];
+}
+
+function bootstrapWithCatalog(catalogRef: unknown) {
+  return parseProductTrustedBootstrapV1(JSON.stringify({
+    version: 1,
+    network: 'signet',
+    providers: [bootstrapProvider()],
+    batV2ClassCatalog: catalogRef,
+  }));
 }
 
 function offer(overrides: Partial<ServiceOfferViewV1> = {}): ServiceOfferViewV1 {
@@ -153,6 +163,32 @@ describe('explicit product role routing', () => {
     expect(defaultProviderIdsForAdmissionRoutesV1([
       { providerIdHex: '01', supportedWorkloads: ['dpf-query'] },
     ], [['query', 'harmony-query']])).toEqual({});
+  });
+});
+
+describe('trusted BAT V2 class catalog render seam', () => {
+  it('pins one immutable same-origin path independently of directory hints', () => {
+    const sha256Hex = 'aa'.repeat(32);
+    const parsed = bootstrapWithCatalog({
+      version: 2,
+      path: `/proofs/bat-v2/catalogs/${sha256Hex}.json`,
+      sha256Hex,
+    });
+    const owned = productBatV2ClassCatalogRefV2(parsed)!;
+    expect(owned.sha256Hex).toBe(sha256Hex);
+    owned.sha256Hex = 'bb'.repeat(32);
+    expect(parsed.batV2ClassCatalog?.sha256Hex).toBe(sha256Hex);
+  });
+
+  it('rejects partial, mutable, and cross-origin catalog refs', () => {
+    const sha256Hex = 'aa'.repeat(32);
+    for (const ref of [
+      { version: 2, path: `/proofs/bat-v2/catalogs/${sha256Hex}.json` },
+      { version: 2, path: `/proofs/bat-v2/catalogs/latest.json`, sha256Hex },
+      { version: 2, path: 'https://issuer.example/catalog.json', sha256Hex },
+    ]) {
+      expect(() => bootstrapWithCatalog(ref)).toThrow();
+    }
   });
 });
 

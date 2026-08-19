@@ -8,6 +8,10 @@ import { directoryProviderTrustAnchorV1 } from './nostr-directory.js';
 import type { ProviderTrustAnchorV1 } from './service-admission.js';
 import type { LightningNetworkNameV1 } from './admission-vault.js';
 import type { ServiceOfferViewV1 } from './sdk-bridge.js';
+import {
+  parseTrustedBatV2PublicClassCatalogRefV2,
+  type TrustedBatV2PublicClassCatalogRefV2,
+} from './bat-v2-class-catalog.js';
 
 const MAX_LIGHTNING_PAYEE_TRUST_ENTRIES_V1 = 64;
 
@@ -58,6 +62,8 @@ export interface ProductTrustedBootstrapV1 {
   version: 1;
   network: LightningNetworkNameV1;
   providers: ProductTrustedProviderV1[];
+  /** Independent trusted-render root. Directory catalog hints never fill it. */
+  batV2ClassCatalog?: TrustedBatV2PublicClassCatalogRefV2;
 }
 
 /**
@@ -102,7 +108,19 @@ export function parseProductTrustedBootstrapV1(serialized: string): ProductTrust
   }
   const providers = parsed.providers.map((value, index) => parseProvider(value, index));
   requireUnique(providers.map((value) => value.providerIdHex), 'provider ID');
-  return { version: 1, network: parsed.network, providers };
+  const batV2ClassCatalog = parsed.batV2ClassCatalog === undefined
+    ? undefined
+    : parseTrustedBatV2PublicClassCatalogRefV2(parsed.batV2ClassCatalog);
+  return { version: 1, network: parsed.network, providers, batV2ClassCatalog };
+}
+
+/** Return an owned trusted catalog ref; callers cannot mutate bootstrap state. */
+export function productBatV2ClassCatalogRefV2(
+  bootstrap: ProductTrustedBootstrapV1,
+): TrustedBatV2PublicClassCatalogRefV2 | undefined {
+  return bootstrap.batV2ClassCatalog
+    ? { ...bootstrap.batV2ClassCatalog }
+    : undefined;
 }
 
 /** Manual anchors cannot pre-commit an unknown live policy epoch/digest. */

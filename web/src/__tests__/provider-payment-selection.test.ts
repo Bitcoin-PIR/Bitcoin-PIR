@@ -55,7 +55,11 @@ const batV2Class: BatV2ClassArtifactV2 = {
   },
 };
 
-function batV2Projection(providerByte: number, classArtifact = batV2Class) {
+function batV2Projection(
+  providerByte: number,
+  classArtifact = batV2Class,
+  verifiedBinding = classArtifact.binding,
+) {
   const policyDigestHex = `${providerByte + 70}`.repeat(32);
   const scopeIdHex = `${providerByte + 80}`.repeat(32);
   const selectedTrust = trust(providerByte, providerByte + 10, providerByte + 20);
@@ -83,12 +87,20 @@ function batV2Projection(providerByte: number, classArtifact = batV2Class) {
       scopeIdHex,
       offerId: 1,
       classIdHex: classArtifact.binding.classIdHex,
+      classBindingJson: () => ({ ...verifiedBinding }),
       assertRedemptionReady: vi.fn(),
     },
   });
 }
 
 describe('local independent-provider payment selection', () => {
+  it('rejects a current redemption handle from another class digest before pairing', () => {
+    expect(() => batV2Projection(1, batV2Class, {
+      ...batV2Class.binding,
+      classDigestHex: '52'.repeat(32),
+    })).toThrow(/exact signed class binding/);
+  });
+
   it('retains two exact verified BAT V2 members of one byte-identical class', () => {
     const first = batV2Projection(1);
     const second = batV2Projection(2);

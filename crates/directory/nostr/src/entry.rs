@@ -577,6 +577,10 @@ fn method_pair_match(acquisition: AcquisitionMethod, authorization: AuthScheme) 
                 AcquisitionMethod::Bolt11V1,
                 AuthScheme::BitcoinPirCashuBatV1
             )
+            | (
+                AcquisitionMethod::Bolt11V1,
+                AuthScheme::BitcoinPirCashuBatV2
+            )
             | (AcquisitionMethod::Bolt11V1, AuthScheme::ArcV1Experimental)
             | (AcquisitionMethod::CashuEcashV1, AuthScheme::CashuEcashV1)
     )
@@ -679,6 +683,7 @@ fn parse_authorization(value: &str) -> Result<AuthScheme, DirectoryErrorV1> {
         "bolt11-direct-receipt-v1" => Ok(AuthScheme::Bolt11DirectReceiptV1),
         "cashu-ecash-v1" => Ok(AuthScheme::CashuEcashV1),
         "bitcoinpir-cashu-bat-v1" => Ok(AuthScheme::BitcoinPirCashuBatV1),
+        "bitcoinpir-cashu-bat-v2" => Ok(AuthScheme::BitcoinPirCashuBatV2),
         "arc-v1-experimental" => Ok(AuthScheme::ArcV1Experimental),
         _ => Err(DirectoryErrorV1::InvalidCatalogHints),
     }
