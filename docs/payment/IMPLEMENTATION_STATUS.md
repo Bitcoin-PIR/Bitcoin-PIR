@@ -13,10 +13,11 @@ activated the path with real money.
       issuer's first successful commit consumes that credential globally. One
       paid two-provider query uses two BATs. Providers do not keep a durable BAT
       spent set or delivery claim. See `MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`.
-- [ ] **pir1 Harmony multi-pool routing pending on `main`.** An unmerged draft
-      implements exact-db multi-pool routing and cross-db continuation
-      isolation with narrow tests. That useful slice must be re-landed and
-      reviewed independently of the superseded BAT-profile work.
+- [x] **pir1 Harmony multi-pool routing implemented independently.** The server
+      preserves the legacy single-pool CLI and adds explicit repeatable
+      db0/db1 pool bindings, exact-db admission/reservation/dispatch and
+      cross-database V2Half continuation isolation. The focused process test
+      starts one complete two-database policy with two distinct pool markers.
 - [ ] **Issuer-wide V2 protocol pending.** Current policy bindings, issuer
       lineage rules, SDK/Web selection and render gates remain provider-bound
       and deliberately reject a shared raw BAT key across providers. Current
@@ -238,12 +239,12 @@ activated the path with real money.
       bind response opcode/level/round and reject malformed canonical errors,
       truncation and trailing bytes. V2Full now has canonical two/three-byte
       request bodies;
-      `main` currently exposes only the legacy single-pool
-      `--pool-db-id` binding. Same-process db0/db1 pools, exact-db dispatch and
-      cross-database V2Half token isolation remain pending; the unmerged draft
-      contains a candidate implementation and narrow tests that must be
-      reviewed and re-landed independently. Within the current single-pool
-      path, V2Full now reserves one entry atomically after exact structural
+      `--pool-db-id` preserves the legacy single-pool binding, while repeatable
+      `--harmony-pool-db ID=DIR` entries let one process own an explicit map of
+      independently bound snapshot/delta pools. Auth, reservation and dispatch
+      select the exact database, V2Half tokens reject cross-database pairing,
+      and a granted client forces V2Full for that database without paid V1
+      fallback. V2Full now reserves one entry atomically after exact structural
       binding but before credential commit by locking the unchanged ready inode;
       rejection/pre-use disconnect returns it without a filesystem mutation,
       while first main dispatch unlinks and directory-fsyncs only the

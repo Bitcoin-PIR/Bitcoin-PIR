@@ -486,12 +486,14 @@ inherits this V2Full continuation rule.
 The V2Full request body has one canonical encoding: `[0xff, 0x00]` for
 `db_id=0`, or those two bytes followed by one non-zero `db_id`. A non-zero
 reserved byte, redundant zero database suffix, or any trailing byte is invalid.
-One hint-provider process owns exactly one immutable pool/database binding,
-selected with `--pool-db-id` (default `0`). Its service policy may authorize a
-V2Full hint scope only for that loaded binding. Serving several snapshot/delta
-databases in V1 therefore uses separate provider processes/ports and separate
-pool directories; it does not introduce a shared in-process multi-database
-pool or cross-provider state.
+Every hint pool owns exactly one immutable pool/database binding. The legacy
+single-pool CLI selects it with `--pool-db-id` (default `0`) and optional
+`--pool-dir`. A provider that intentionally serves several loaded databases in
+one process instead repeats `--harmony-pool-db <db_id>=<pool-dir>`; this form is
+mutually exclusive with the legacy locator flags, uses the common `--pool-size`
+as the target for each pool, and requires a distinct private directory per
+database. Admission, reservation and dispatch select the pool by the exact
+authenticated `db_id`; there is no cross-database pool or cross-provider state.
 
 For an exact, structurally bound V2Full authorization attempt, the provider
 atomically removes one entry from that database's pool before method-specific

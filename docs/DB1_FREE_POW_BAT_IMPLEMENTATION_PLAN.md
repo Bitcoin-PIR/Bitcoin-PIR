@@ -1,10 +1,10 @@
 # db1 Free-PoW + BAT implementation plan
 
 Status: the db1 policy-template, retained-proof and Web-selection source slice
-was completed on 2026-08-18. Same-process pir1 Harmony db0/db1 pool routing is
-not present on `main` and remains a production source blocker. The
-provider-specific BAT production contract was superseded later that day and
-requires the issuer-wide V2 work in
+was completed on 2026-08-18. Same-process pir1 Harmony db0/db1 pool routing was
+then independently re-landed with exact-db isolation and focused tests. The
+provider-specific BAT production contract was superseded and still requires
+the issuer-wide V2 work in
 [`payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`](payment/MAINNET_SHARED_BAT_PRODUCTION_PLAN.md).
 This document is not production deployment, policy rotation, database rebuild,
 public Web publication, or funds authorization.
@@ -92,8 +92,8 @@ The steps below record the completed db1 policy/proof/UI source slice. Any
 assertion that a BAT key, vault record or spent namespace must remain
 provider-specific is superseded by the issuer-wide plan. Dataset roots,
 generic admission isolation, Free-PoW policy shape and Direct-proof work remain
-valid. Runtime reachability for pir1 Harmony db0 and db1 in one process is not
-complete and is carried into the issuer-wide plan.
+valid. Runtime reachability for pir1 Harmony db0 and db1 in one process is now
+implemented independently of the superseded payment profile.
 
 ## Implementation sequence
 
@@ -124,8 +124,8 @@ backend grant DFA to accept db1 operations after authorization.
 Historical acceptance target:
 
 - one focused matrix gate validates both Free-PoW and BAT policy entries for
-  every db1 workload; this static policy result does not prove that the current
-  single-pool pir1 process can serve both Harmony databases;
+  every db1 workload; this static policy result did not by itself prove Harmony
+  runtime reachability, which the later two-pool process test now covers;
 - a db0 authorization cannot admit db1 work, and a db1 authorization cannot
   admit db0 work;
 - the historical V1 gate keeps its provider/scope/offer isolation until it is
@@ -134,10 +134,11 @@ Historical acceptance target:
 
 Implementation result: no admission/client payment code change was necessary
 for the db1 policy/proof/UI slice. The old source gate checked all six policy
-rows and the provider-specific bindings that existed at that time. It did not
-add same-process pir1 Harmony db0/db1 pools; that runtime work remains pending.
-The issuer-wide V2 work must replace the old binding assertions, while the
-existing generic arbitrary-db authorization isolation can be reused.
+rows and the provider-specific bindings that existed at that time. The later
+independent Harmony slice adds same-process pir1 db0/db1 pools and exact-db
+dispatch without changing that old payment wire. The issuer-wide V2 work must
+replace the old binding assertions, while the existing generic arbitrary-db
+authorization isolation can be reused.
 
 Superseding V2 acceptance remains pending: one BAT may target any compatible
 acceptance-class member, but the issuer's first successful commit must make

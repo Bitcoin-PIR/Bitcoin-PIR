@@ -6,9 +6,8 @@ source-ready; no production activation is authorized**. The
 earlier unmerged draft implemented a shared issuer with provider-specific BATs,
 twelve raw BAT key lineages and provider-side payment stores. That shape is
 superseded by this plan and must not be rendered or activated. The independent
-unmerged draft's pir1 Harmony db0/db1 multi-pool work remains a useful
-candidate, but it is not present on `main` and must be reviewed and re-landed
-independently.
+pir1 Harmony db0/db1 multi-pool slice has been reviewed and re-landed without
+the superseded payment profile.
 
 This is the ordered source-to-production plan. It does not authorize rendering
 private inputs, installing files on a host, building or switching a VPSBG UKI,
@@ -290,10 +289,10 @@ as another provider payment store.
 
 ## Disposition of the current source draft
 
-The unmerged source draft contains two different kinds of work:
+The superseded source draft contained two different kinds of work:
 
-- **review and re-land independently:** pir1 exact-db Harmony multi-pool
-  routing, cross-db V2Half token isolation and their narrow tests;
+- **independently re-landed:** pir1 exact-db Harmony multi-pool routing,
+  cross-db V2Half token isolation and their narrow tests;
 - **replace:** provider-specific BAT policy bindings, the fixed
   2-policy/12-BAT/2-clearing issuer shape, provider-side
   ProviderStore/idempotency/rollback requirements, and client checks that
@@ -460,8 +459,8 @@ Acceptance:
   payment store are unambiguous;
 - the one-BAT/one-winning-provider rule is explicit;
 - V1 is not silently reinterpreted;
-- the unmerged Harmony multi-pool candidate is separated from superseded
-  payment work and remains explicitly pending on `main`;
+- Harmony multi-pool routing is separated from and re-landed without the
+  superseded payment work;
 - pir2's distinct long-lived authentication roles and the measurement-bound
   sealed-envelope decision are explicit, while implementation and the VPSBG
   capability canary remain P1 work; and
@@ -515,9 +514,8 @@ Acceptance:
 ### Phase D — update policies, clients, profiles and focused tests
 
 Replace the provider-specific templates, issuer unit, render gates and wallet
-selection model. Preserve the already-correct db0/db1 roots; independently
-review and re-land the unmerged Harmony multi-pool candidate before claiming
-db0/db1 Harmony runtime reachability.
+selection model. Preserve the already-correct db0/db1 roots and the
+independently re-landed Harmony multi-pool routing.
 
 The meaningful minimum checks are:
 

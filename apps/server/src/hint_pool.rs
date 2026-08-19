@@ -307,9 +307,9 @@ pub struct HintPool {
 impl HintPool {
     /// Create a new pool and start the background generator.
     ///
-    /// `db` is the exact database selected by `bound_db_id`. Payment V1 keeps
-    /// one pool/database binding per provider process; the default remains the
-    /// main UTXO snapshot at db_id=0.
+    /// `db` is the exact database selected by `bound_db_id`. Every pool instance
+    /// remains a single immutable database binding even when one provider
+    /// process owns several explicitly configured pools.
     pub fn new(
         mut config: HintPoolConfig,
         bound_db_id: u8,
