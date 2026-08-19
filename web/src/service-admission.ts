@@ -15,6 +15,11 @@ import {
   type Bolt11CapabilityAcquisitionContextV1,
   type LightningNetworkNameV1,
 } from './admission-vault.js';
+import {
+  type BatV2ClassBindingV2,
+  type BatV2DistinctPairReservationV2,
+  type BatV2ReservedProofV2,
+} from './bat-v2-vault.js';
 import { hexToBytes } from './hash.js';
 import {
   requireSdkWasm,
@@ -23,14 +28,20 @@ import {
   type ServicePolicyViewV1,
   type ServiceScopeViewV1,
   type RetainedServiceRedemptionViewV1,
+  type BatV2AdmissionOutcomeV2,
+  type WasmAcceptedRetainedBatV2PolicyV2,
   type WasmAcceptedServicePolicyV1,
   type WasmAcceptedRetainedServiceRedemptionV1,
+  type WasmVerifiedBatV2RedemptionV2,
   type WasmServicePowChallengeV1,
 } from './sdk-bridge.js';
 import {
+  assertIndependentProviderBatV2ProjectionPairV2,
   assertIndependentProviderOfferPairV1,
+  type BatV2ClassArtifactV2,
   type IndependentProviderSelectionOptionsV1,
   type SelectedProviderOfferV1,
+  VerifiedProviderBatV2ProjectionV2,
 } from './provider-payment-selection.js';
 import {
   Bolt11AcquisitionControllerV1,
@@ -49,6 +60,9 @@ const PAIR_AUTHORIZATION_V1 = Symbol('BitcoinPIR/verified-pair-authorization/v1'
 const PAIR_RETAINED_AUTHORIZATION_V1 = Symbol('BitcoinPIR/verified-pair-retained-authorization/v1');
 const PAIR_ACQUISITION_V1 = Symbol('BitcoinPIR/verified-pair-acquisition/v1');
 const PAIR_CASHU_IMPORT_V1 = Symbol('BitcoinPIR/verified-pair-cashu-import/v1');
+const PAIR_BAT_V2_PROJECTION_V2 = Symbol('BitcoinPIR/verified-bat-v2-projection/v2');
+const PAIR_BAT_V2_PREFLIGHT_V2 = Symbol('BitcoinPIR/verified-bat-v2-preflight/v2');
+const PAIR_BAT_V2_AUTHORIZATION_V2 = Symbol('BitcoinPIR/verified-bat-v2-authorization/v2');
 
 export interface ProviderTrustAnchorV1 {
   /** Pinned 32-byte provider identity, independent of the peer PIR server. */
@@ -90,6 +104,16 @@ export interface ServiceAdmissionPortV1 {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmAcceptedRetainedServiceRedemptionV1>;
+  /** Historical scheme-6 selector; it remains unusable until exact class
+   * membership produces a `WasmVerifiedBatV2RedemptionV2`. */
+  fetchRetainedBatV2Policy?(
+    expectedProviderId: Uint8Array,
+    policySigningKey: Uint8Array,
+    expectedPolicyDigest: Uint8Array,
+    scopeId: Uint8Array,
+    offerId: number,
+    nowUnix: bigint,
+  ): Promise<WasmAcceptedRetainedBatV2PolicyV2>;
   /** Fail synchronously unless the policy came from this live channel session. */
   assertSessionBinding(policy: WasmAcceptedServicePolicyV1): void;
   /**
@@ -113,6 +137,13 @@ export interface ServiceAdmissionPortV1 {
     proofBytes: Uint8Array,
     nowUnix: bigint,
   ): Promise<ServiceGrantViewV1>;
+  /** Sole typed scheme-6 call. The adapter performs exactly one native/WASM
+   * call, never parses an exception string, and never retries. */
+  authorizeBatV2?(
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Promise<BatV2AdmissionOutcomeV2>;
   requestPowChallenge(
     policy: WasmAcceptedServicePolicyV1,
     scopeId: Uint8Array,
@@ -208,6 +239,13 @@ export interface IndependentProviderAdmissionSelectionV1
   expectedLightningPayeePubkey?: Uint8Array;
 }
 
+/** One current, independently selected provider offer plus the exact trusted
+ * class artifact against which Rust must re-prove signed membership. */
+export interface IndependentProviderBatV2AdmissionSelectionV2
+  extends IndependentProviderAdmissionSelectionV1 {
+  classArtifact: BatV2ClassArtifactV2;
+}
+
 /** One already-inspected historical signed offer, frozen before pair use. */
 export interface IndependentRetainedProviderAdmissionSelectionV1 {
   session: ProviderAdmissionSessionV1;
@@ -280,6 +318,7 @@ export class ProviderAdmissionSessionV1 {
     | 'acquire'
     | 'import-cashu'
     | 'authorize'
+    | 'authorize-bat-v2'
     | 'inspect-retained'
     | 'authorize-retained'
     | null = null;
@@ -777,6 +816,116 @@ export class ProviderAdmissionSessionV1 {
     }
   }
 
+  [PAIR_BAT_V2_PROJECTION_V2](
+    selection: SessionPairSelectionV1,
+    scopeIdHex: string,
+    offerId: number,
+    classArtifact: BatV2ClassArtifactV2,
+    expectedLightningPayeePubkey: Uint8Array | undefined,
+  ): SessionBatV2LegV2 {
+    if (this.transitionInFlight !== null) {
+      throw new Error(`service admission ${this.transitionInFlight} transition is already in flight`);
+    }
+    const canonicalScopeIdHex = canonicalHex32('BAT V2 scope ID', scopeIdHex);
+    this.assertCurrentPairSelection(selection, canonicalScopeIdHex, offerId);
+    const scope = this.requireScope(canonicalScopeIdHex);
+    const accepted = this.accepted;
+    if (!accepted || !this.view) throw new Error('fetch and persist service policy first');
+    if (selection.offer.authorization !== 'cashu-bat-v2') {
+      throw new Error('selected signed offer is not BAT V2');
+    }
+    this.port.assertSessionBinding(accepted);
+    const assertReady = this.port.captureReadinessGuard();
+    const nowUnix = trustedNowUnixV1();
+    assertReady();
+    let verified: WasmVerifiedBatV2RedemptionV2 | null = null;
+    try {
+      const verifyBatV2Redemption = accepted.verifyBatV2Redemption;
+      if (typeof verifyBatV2Redemption !== 'function') {
+        throw new Error('loaded SDK does not support verified BAT V2 redemption');
+      }
+      verified = verifyBatV2Redemption.call(
+        accepted,
+        hexToBytes32('scopeIdHex', canonicalScopeIdHex),
+        offerId,
+        classArtifact.classBytes,
+        nowUnix,
+      );
+      const connection = this[PAIR_CONNECTION_CONTEXT_V1]();
+      const projection = VerifiedProviderBatV2ProjectionV2.create({
+        ...selection,
+        providerEndpoint: connection.providerEndpoint,
+        trustedOperatorSigningKey: connection.trustedOperatorSigningKey,
+        expectedLightningPayeePubkey: expectedLightningPayeePubkey?.slice(),
+        policyDigestHex: selection.policyDigestHex,
+        scopeIdHex: canonicalScopeIdHex,
+        offerId,
+        classArtifact,
+        verifiedRedemption: verified,
+      });
+      verified = null;
+      return {
+        session: this,
+        selection,
+        scopeIdHex: canonicalScopeIdHex,
+        offerId,
+        entitlementProfile: scope.entitlementProfile,
+        projection,
+        assertReady,
+      };
+    } finally {
+      verified?.free();
+    }
+  }
+
+  [PAIR_BAT_V2_PREFLIGHT_V2](leg: SessionBatV2LegV2, nowUnix: bigint): void {
+    this.assertBatV2Preflight(leg, nowUnix);
+  }
+
+  async [PAIR_BAT_V2_AUTHORIZATION_V2](
+    leg: SessionBatV2LegV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+    onAdapterCallStart: () => void,
+  ): Promise<BatV2AdmissionOutcomeV2> {
+    this.beginTransition('authorize-bat-v2');
+    try {
+      // This exact-member/session check runs immediately before the adapter
+      // receives proof bytes. Opaque current and retained handles share the
+      // same `assertRedemptionReady` contract.
+      this.assertBatV2Preflight(leg, nowUnix, true);
+      const authorize = this.port.authorizeBatV2;
+      if (typeof authorize !== 'function') {
+        throw new Error('this verified adapter does not expose typed BAT V2 admission');
+      }
+      onAdapterCallStart();
+      return await authorize.call(this.port, leg.projection.verifiedRedemption(), proofBytes, nowUnix);
+    } finally {
+      this.transitionInFlight = null;
+    }
+  }
+
+  private assertBatV2Preflight(
+    leg: SessionBatV2LegV2,
+    nowUnix: bigint,
+    duringAuthorization = false,
+  ): void {
+    if (leg.session !== this) throw new Error('BAT V2 projection belongs to another session');
+    if (this.transitionInFlight !== null
+        && !(duringAuthorization && this.transitionInFlight === 'authorize-bat-v2')) {
+      throw new Error(`service admission ${this.transitionInFlight} transition is already in flight`);
+    }
+    this.assertCurrentPairSelection(leg.selection, leg.scopeIdHex, leg.offerId);
+    const accepted = this.accepted;
+    if (!accepted) throw new Error('fetch and persist service policy first');
+    if (typeof this.port.authorizeBatV2 !== 'function') {
+      throw new Error('this verified adapter does not expose typed BAT V2 admission');
+    }
+    this.port.assertSessionBinding(accepted);
+    leg.assertReady();
+    leg.projection.assertRedemptionReady(nowUnix);
+  }
+
   close(): void {
     if (this.transitionInFlight !== null) {
       throw new Error(`cannot close service admission during ${this.transitionInFlight}`);
@@ -793,6 +942,7 @@ export class ProviderAdmissionSessionV1 {
       | 'acquire'
       | 'import-cashu'
       | 'authorize'
+      | 'authorize-bat-v2'
       | 'inspect-retained'
       | 'authorize-retained',
   ): void {
@@ -960,6 +1110,16 @@ interface SessionPairSelectionV1 extends SelectedProviderOfferV1 {
   policyDigestHex: string;
   policyRevision: number;
   offerFingerprint: string;
+}
+
+interface SessionBatV2LegV2 {
+  session: ProviderAdmissionSessionV1;
+  selection: SessionPairSelectionV1;
+  scopeIdHex: string;
+  offerId: number;
+  entitlementProfile: number;
+  projection: VerifiedProviderBatV2ProjectionV2;
+  assertReady: () => void;
 }
 
 interface SessionRetainedPairSelectionV1 extends SelectedProviderOfferV1 {
@@ -1254,6 +1414,260 @@ export class VerifiedIndependentProviderPairV1 {
   }
 }
 
+/** Narrow structural surface used by the scheme-6 pair orchestrator. */
+export interface BatV2AdmissionVaultV2 {
+  reserveDistinctPair(
+    firstBinding: BatV2ClassBindingV2,
+    secondBinding: BatV2ClassBindingV2,
+    validateBeforeReserve?: (record: {
+      proof: Uint8Array;
+      globalSpendKeyHex: string;
+    } & BatV2ClassBindingV2) => void,
+  ): Promise<BatV2DistinctPairReservationV2 | null>;
+  finishReservation(
+    lease: BatV2ReservedProofV2,
+    disposition: 'recover-safe' | 'burn',
+  ): Promise<void>;
+}
+
+/**
+ * Browser-local BAT V2 pair. Both exact provider members are verified before
+ * the vault atomically reserves two issuer-wide proofs, so zero/one proof (or
+ * a duplicate global spend key) causes zero provider sends.
+ */
+export class VerifiedIndependentProviderBatV2PairV2 {
+  private reservation: BatV2DistinctPairReservationV2 | null = null;
+  private readonly finished = new Set<ProviderPairSideV1>();
+  /** Persist the intended terminal disposition before awaiting IndexedDB so
+   * close can never recover a proof whose adapter call may have started. */
+  private readonly dispositions = new Map<
+    ProviderPairSideV1,
+    'recover-safe' | 'burn'
+  >();
+  private inFlight = false;
+  private activeAuthorization: Promise<void> | null = null;
+  private closePromise: Promise<void> | null = null;
+  private closed = false;
+
+  private constructor(
+    private readonly first: SessionBatV2LegV2,
+    private readonly second: SessionBatV2LegV2,
+    private readonly vault: BatV2AdmissionVaultV2,
+  ) {}
+
+  static create(
+    firstSelection: IndependentProviderBatV2AdmissionSelectionV2,
+    secondSelection: IndependentProviderBatV2AdmissionSelectionV2,
+    vault: BatV2AdmissionVaultV2,
+    options: IndependentProviderSelectionOptionsV1 = {},
+  ): VerifiedIndependentProviderBatV2PairV2 {
+    // Preserve every ordinary provider/operator/origin/payee independence
+    // check. BAT V2's shared issuer remains an explicit one-shot choice.
+    VerifiedIndependentProviderPairV1.create(firstSelection, secondSelection, options);
+    if (!vault || typeof vault.reserveDistinctPair !== 'function'
+        || typeof vault.finishReservation !== 'function') {
+      throw new Error('BAT V2 pair requires the encrypted pair-reservation vault');
+    }
+    const firstVerified = firstSelection.session[PAIR_SELECTION_V1](
+      firstSelection.scopeIdHex,
+      firstSelection.offerId,
+    );
+    const secondVerified = secondSelection.session[PAIR_SELECTION_V1](
+      secondSelection.scopeIdHex,
+      secondSelection.offerId,
+    );
+    let first: SessionBatV2LegV2 | null = null;
+    let second: SessionBatV2LegV2 | null = null;
+    try {
+      first = firstSelection.session[PAIR_BAT_V2_PROJECTION_V2](
+        firstVerified,
+        firstSelection.scopeIdHex,
+        firstSelection.offerId,
+        firstSelection.classArtifact,
+        firstSelection.expectedLightningPayeePubkey,
+      );
+      second = secondSelection.session[PAIR_BAT_V2_PROJECTION_V2](
+        secondVerified,
+        secondSelection.scopeIdHex,
+        secondSelection.offerId,
+        secondSelection.classArtifact,
+        secondSelection.expectedLightningPayeePubkey,
+      );
+      assertIndependentProviderBatV2ProjectionPairV2(
+        first.projection,
+        second.projection,
+        options,
+      );
+      return new VerifiedIndependentProviderBatV2PairV2(first, second, vault);
+    } catch (error) {
+      first?.projection.close();
+      second?.projection.close();
+      throw error;
+    }
+  }
+
+  classBinding(): BatV2ClassBindingV2 {
+    this.assertOpen();
+    const artifact = this.first.projection.classArtifact();
+    try {
+      return { ...artifact.binding };
+    } finally {
+      artifact.classBytes.fill(0);
+    }
+  }
+
+  async authorize(side: ProviderPairSideV1): Promise<BatV2AdmissionOutcomeV2> {
+    this.assertOpen();
+    if (this.inFlight) throw new Error('a BAT V2 pair authorization is already in flight');
+    if (this.dispositions.has(side)) throw new Error('this BAT V2 provider leg already finished');
+    this.inFlight = true;
+    let releaseActive!: () => void;
+    const active = new Promise<void>((resolve) => { releaseActive = resolve; });
+    this.activeAuthorization = active;
+    let lease: BatV2ReservedProofV2 | null = null;
+    let adapterCalled = false;
+    try {
+      const reservation = await this.ensureReservation();
+      lease = side === 'first' ? reservation.first : reservation.second;
+      const leg = this.leg(side);
+      const nowUnix = trustedNowUnixV1();
+      leg.session[PAIR_BAT_V2_PREFLIGHT_V2](leg, nowUnix);
+      const raw = await leg.session[PAIR_BAT_V2_AUTHORIZATION_V2](
+        leg,
+        lease.proof,
+        nowUnix,
+        () => { adapterCalled = true; },
+      );
+      const outcome = normalizeBatV2AdmissionOutcomeV2(raw, leg);
+      await this.finish(side, lease, batV2DispositionV2(outcome));
+      return cloneBatV2AdmissionOutcomeV2(outcome);
+    } catch (cause) {
+      if (lease && !this.finished.has(side)) {
+        // Once the adapter call begins, even a synchronous native error is
+        // conservatively a burn. All earlier local/preflight failures recover.
+        const disposition = this.dispositions.get(side)
+          ?? (adapterCalled ? 'burn' : 'recover-safe');
+        await this.finish(side, lease, disposition)
+          .catch(() => { /* preserve the authoritative admission failure */ });
+      }
+      if (adapterCalled) {
+        throw new AmbiguousCapabilitySpendErrorV1(
+          'BAT V2 admission failed after the one-shot adapter call began',
+          { cause },
+        );
+      }
+      throw cause;
+    } finally {
+      lease?.proof.fill(0);
+      this.inFlight = false;
+      releaseActive();
+      if (this.activeAuthorization === active) this.activeAuthorization = null;
+    }
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    const operation = this.finishClose(this.activeAuthorization);
+    this.closePromise = operation;
+    return operation;
+  }
+
+  private async finishClose(active: Promise<void> | null): Promise<void> {
+    await active;
+    const reservation = this.reservation;
+    const releases: Promise<void>[] = [];
+    if (reservation) {
+      if (!this.finished.has('first')) {
+        releases.push(this.finish(
+          'first',
+          reservation.first,
+          this.dispositions.get('first') ?? 'recover-safe',
+        ));
+      }
+      if (!this.finished.has('second')) {
+        releases.push(this.finish(
+          'second',
+          reservation.second,
+          this.dispositions.get('second') ?? 'recover-safe',
+        ));
+      }
+    }
+    const outcomes = await Promise.allSettled(releases);
+    this.first.projection.close();
+    this.second.projection.close();
+    const failures = outcomes.filter(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        'failed to release one or more unused BAT V2 reservations',
+      );
+    }
+  }
+
+  private async ensureReservation(): Promise<BatV2DistinctPairReservationV2> {
+    if (this.reservation) return this.reservation;
+    const nowUnix = trustedNowUnixV1();
+    this.first.session[PAIR_BAT_V2_PREFLIGHT_V2](this.first, nowUnix);
+    this.second.session[PAIR_BAT_V2_PREFLIGHT_V2](this.second, nowUnix);
+    const binding = this.classBinding();
+    const reservation = await this.vault.reserveDistinctPair(
+      binding,
+      binding,
+      (record) => assertBatV2ReservedRecordBindingV2(record, binding),
+    );
+    if (!reservation) {
+      throw new Error('two distinct BAT V2 proofs are not available for this exact class');
+    }
+    try {
+      if (reservation.first.recordId === reservation.second.recordId
+          || reservation.first.globalSpendKeyHex === reservation.second.globalSpendKeyHex
+          || reservation.first.reservationId !== reservation.reservationId
+          || reservation.second.reservationId !== reservation.reservationId) {
+        throw new Error('BAT V2 vault returned a non-distinct pair reservation');
+      }
+      assertBatV2ReservedRecordBindingV2(reservation.first, binding);
+      assertBatV2ReservedRecordBindingV2(reservation.second, binding);
+    } catch (error) {
+      await Promise.allSettled([
+        this.vault.finishReservation(reservation.first, 'recover-safe'),
+        this.vault.finishReservation(reservation.second, 'recover-safe'),
+      ]);
+      reservation.first.proof.fill(0);
+      reservation.second.proof.fill(0);
+      throw error;
+    }
+    this.reservation = reservation;
+    return reservation;
+  }
+
+  private async finish(
+    side: ProviderPairSideV1,
+    lease: BatV2ReservedProofV2,
+    disposition: 'recover-safe' | 'burn',
+  ): Promise<void> {
+    const existing = this.dispositions.get(side);
+    if (existing !== undefined && existing !== disposition) {
+      throw new Error('BAT V2 reservation disposition cannot be weakened after a send boundary');
+    }
+    this.dispositions.set(side, disposition);
+    await this.vault.finishReservation(lease, disposition);
+    this.finished.add(side);
+  }
+
+  private leg(side: ProviderPairSideV1): SessionBatV2LegV2 {
+    if (side === 'first') return this.first;
+    if (side === 'second') return this.second;
+    throw new Error('provider pair side must be first or second');
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('BAT V2 provider pair is closed');
+  }
+}
+
 export interface LiveOperatorIdentityV1 {
   state: string;
   serverId?: string;
@@ -1292,6 +1706,95 @@ export function verifiedLiveOperatorSigningKeyV1(
     throw new Error('strict pair admission requires a verified live operator signing key');
   }
   return hexToBytes(identity.operatorPubkeyHex);
+}
+
+function normalizeBatV2AdmissionOutcomeV2(
+  value: BatV2AdmissionOutcomeV2,
+  leg: SessionBatV2LegV2,
+): BatV2AdmissionOutcomeV2 {
+  if (!value || typeof value !== 'object' || typeof value.kind !== 'string') {
+    return { kind: 'burn-outcome-unknown' };
+  }
+  if (value.kind === 'granted') {
+    const grant = value.grant;
+    if (!grant || typeof grant !== 'object'
+        || canonicalHex32OrNull(grant.scopeIdHex) !== leg.scopeIdHex
+        || grant.enforcedProfile !== leg.entitlementProfile
+        || !Number.isSafeInteger(grant.expiresInMs)
+        || grant.expiresInMs < 0
+        || typeof grant.hasHarmonyAttach !== 'boolean') {
+      return { kind: 'burn-outcome-unknown' };
+    }
+    return { kind: 'granted', grant: { ...grant } };
+  }
+  if (value.kind === 'recoverable-definitely-not-sent'
+      || value.kind === 'recoverable-retry-safe') {
+    const retryAfterMs = value.retryAfterMs;
+    if (retryAfterMs !== null
+        && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0)) {
+      return { kind: 'burn-outcome-unknown' };
+    }
+    return { kind: value.kind, retryAfterMs };
+  }
+  if (value.kind === 'burn-terminal' || value.kind === 'burn-outcome-unknown') {
+    return { kind: value.kind };
+  }
+  return { kind: 'burn-outcome-unknown' };
+}
+
+function batV2DispositionV2(
+  outcome: BatV2AdmissionOutcomeV2,
+): 'recover-safe' | 'burn' {
+  return outcome.kind === 'recoverable-definitely-not-sent'
+    || outcome.kind === 'recoverable-retry-safe'
+    ? 'recover-safe'
+    : 'burn';
+}
+
+function cloneBatV2AdmissionOutcomeV2(
+  outcome: BatV2AdmissionOutcomeV2,
+): BatV2AdmissionOutcomeV2 {
+  return outcome.kind === 'granted'
+    ? { kind: 'granted', grant: { ...outcome.grant } }
+    : { ...outcome };
+}
+
+function assertBatV2ReservedRecordBindingV2(
+  record: BatV2ClassBindingV2 & {
+    proof: Uint8Array;
+    globalSpendKeyHex: string;
+  },
+  expected: BatV2ClassBindingV2,
+): void {
+  if (!(record.proof instanceof Uint8Array) || record.proof.length !== 210
+      || canonicalHex32('BAT V2 global spend key', record.globalSpendKeyHex)
+        !== record.globalSpendKeyHex
+      || batV2ClassBindingKeyV2(record) !== batV2ClassBindingKeyV2(expected)) {
+    throw new Error('reserved BAT V2 proof does not match the exact verified class');
+  }
+}
+
+function batV2ClassBindingKeyV2(value: BatV2ClassBindingV2): string {
+  const epoch = canonicalPositiveDecimalV2('BAT V2 class key epoch', value.classKeyEpoch);
+  return [
+    canonicalHex32('BAT V2 issuer ID', value.issuerIdHex),
+    canonicalHex32('BAT V2 class ID', value.classIdHex),
+    canonicalHex32('BAT V2 class digest', value.classDigestHex),
+    epoch,
+    canonicalHex32('BAT V2 BAT key ID', value.batKeyIdHex),
+  ].join(':');
+}
+
+function canonicalPositiveDecimalV2(field: string, value: string): string {
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`${field} must be a positive decimal`);
+  return value;
+}
+
+function canonicalHex32OrNull(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+    && !/^0{64}$/.test(value)
+    ? value
+    : null;
 }
 
 function validatePolicyView(

@@ -325,6 +325,11 @@ export class OramPirClientAdapter {
       ) => client().fetchRetainedServiceRedemption(
         dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
+      fetchRetainedBatV2Policy: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedBatV2Policy(
+        dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
       assertSessionBinding: (policy) => client().verifyServicePolicySession(policy),
       captureReadinessGuard: () => {
         const expectedClient = client();
@@ -344,6 +349,8 @@ export class OramPirClientAdapter {
         client().verifyRetainedServiceSession(policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         client().authorizeService(dbId, policy, scopeId, offerId, proof),
+      authorizeBatV2: (verified, proof, nowUnix) =>
+        client().authorizeBatV2Service(dbId, verified, proof, nowUnix),
       authorizeRetained: (policy, proof, nowUnix) =>
         client().authorizeRetainedService(dbId, policy, proof, nowUnix),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>

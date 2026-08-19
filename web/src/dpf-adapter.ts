@@ -1144,6 +1144,18 @@ export class BatchPirClientAdapter {
         offerId,
         nowUnix,
       ),
+      fetchRetainedBatV2Policy: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedBatV2Policy(
+        serverIndex,
+        dbId,
+        providerId,
+        policyKey,
+        policyDigest,
+        scopeId,
+        offerId,
+        nowUnix,
+      ),
       assertSessionBinding: (policy) =>
         authorizedClient().verifyServicePolicySession(serverIndex, policy),
       captureReadinessGuard: () => {
@@ -1163,6 +1175,14 @@ export class BatchPirClientAdapter {
         authorizedClient().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
+      authorizeBatV2: (verified, proof, nowUnix) =>
+        authorizedClient().dangerousUnpairedAuthorizeBatV2Service(
+          serverIndex,
+          dbId,
+          verified,
+          proof,
+          nowUnix,
+        ),
       authorizeRetained: (policy, proof, nowUnix) =>
         authorizedClient().dangerousUnpairedAuthorizeRetainedService(
           serverIndex, dbId, policy, proof, nowUnix,

@@ -6,6 +6,8 @@ const mocked = vi.hoisted(() => ({
     exporter: Uint8Array;
     free: ReturnType<typeof vi.fn>;
     verifyPolicySession: ReturnType<typeof vi.fn>;
+    batV2AuthorizationRequest: ReturnType<typeof vi.fn>;
+    acceptBatV2AuthorizationResponse: ReturnType<typeof vi.fn>;
   }>,
 }));
 
@@ -16,6 +18,12 @@ vi.mock('../sdk-bridge.js', async (importOriginal) => {
     readonly exporter: Uint8Array;
     readonly free = vi.fn();
     readonly verifyPolicySession = vi.fn();
+    readonly batV2AuthorizationRequest = vi.fn(() =>
+      new Uint8Array([1, 0, 0, 0, 0x10]));
+    readonly acceptBatV2AuthorizationResponse = vi.fn(() => ({
+      kind: 'recoverable-retry-safe',
+      retryAfterMs: 5,
+    }));
 
     constructor(dbId: number, exporter: Uint8Array) {
       this.dbId = dbId;
@@ -118,6 +126,35 @@ describe('standalone OnionPIR service admission port', () => {
     )).rejects.toThrow('connection lost after send');
     expect(sendRaw).toHaveBeenCalledOnce();
     expect(mocked.instances).toHaveLength(1);
+    expect(mocked.instances[0].free).toHaveBeenCalledOnce();
+  });
+
+  it('sends one BAT V2 request made from the opaque verified handle and returns typed outcome', async () => {
+    mocked.instances.length = 0;
+    const sent: Uint8Array[] = [];
+    const sendRaw = vi.fn(async (request: Uint8Array) => {
+      sent.push(request.slice());
+      return new Uint8Array([1, 0, 0, 0, 0x90]);
+    });
+    const client = readyClient(sendRaw);
+    const verified = { marker: 'opaque-bat-v2' } as any;
+    const proof = new Uint8Array(210).fill(6);
+
+    await expect(client.serviceAdmissionPort(3).authorizeBatV2!(
+      verified, proof, 1_700_000_000n,
+    )).resolves.toEqual({
+      kind: 'recoverable-retry-safe',
+      retryAfterMs: 5,
+    });
+
+    expect(sendRaw).toHaveBeenCalledOnce();
+    expect(sent).toEqual([new Uint8Array([1, 0, 0, 0, 0x10])]);
+    expect(mocked.instances).toHaveLength(1);
+    expect(mocked.instances[0].batV2AuthorizationRequest).toHaveBeenCalledWith(
+      verified, proof, 1_700_000_000n,
+    );
+    expect(mocked.instances[0].acceptBatV2AuthorizationResponse)
+      .toHaveBeenCalledWith(expect.any(Uint8Array), verified);
     expect(mocked.instances[0].free).toHaveBeenCalledOnce();
   });
 });

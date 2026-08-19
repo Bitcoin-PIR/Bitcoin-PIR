@@ -12,12 +12,14 @@ vi.mock('../sdk-bridge.js', async () => {
 import {
   AmbiguousCapabilitySpendErrorV1,
   ProviderAdmissionSessionV1,
+  VerifiedIndependentProviderBatV2PairV2,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
   VerifiedSingleProviderRetainedOfferV1,
   type ServiceAdmissionPortV1,
   type ServiceAdmissionTargetV1,
   type ServiceAdmissionVaultV1,
+  type BatV2AdmissionVaultV2,
 } from '../service-admission.js';
 import type { AdmissionCapabilityV1 } from '../admission-vault.js';
 import type {
@@ -97,6 +99,23 @@ function accepted(view: ServicePolicyViewV1) {
     importStandardCashuToken: () => new Uint8Array([7, 7]),
     offersJson: () => view,
     beginBolt11Acquisition: () => { throw new Error('unused'); },
+    verifyBatV2Redemption: (scopeId: Uint8Array, offerId: number) => {
+      const selected = view.scopes[0].offers[0];
+      if (selected.authorization !== 'cashu-bat-v2'
+          || offerId !== selected.offerId
+          || Buffer.from(scopeId).toString('hex') !== view.scopes[0].scopeIdHex) {
+        throw new Error('wrong BAT V2 member');
+      }
+      return {
+        free: vi.fn(),
+        providerIdHex: view.providerIdHex,
+        policyDigestHex: view.policyDigestHex,
+        scopeIdHex: view.scopes[0].scopeIdHex,
+        offerId,
+        classIdHex: selected.keyIdHex,
+        assertRedemptionReady: vi.fn(),
+      };
+    },
   } satisfies WasmAcceptedServicePolicyV1;
 }
 
@@ -137,6 +156,27 @@ function retainedAccepted(
     assertRedemptionReady: vi.fn(),
     validateAuthorizationProof: vi.fn(),
     redemptionJson: () => structuredClone(view),
+  };
+}
+
+function batV2Offer(): ServiceOfferViewV1 {
+  return {
+    offerId: 101,
+    acquisition: 'bolt11',
+    authorization: 'cashu-bat-v2',
+    freeMode: 'not-free',
+    verification: 'shared-issuer-online',
+    deploymentStatus: 'stable',
+    priorityClass: 1,
+    price: { kind: 'msat', amount: '1000' },
+    issuerIdHex: '71'.repeat(32),
+    keyIdHex: '72'.repeat(32),
+    batVerificationKeyFingerprintHex: '',
+    arcVerificationKeyFingerprintHex: '',
+    endpoint: 'https://shared-issuer.example',
+    credentialCount: 2,
+    credentialPresentationLimit: 1,
+    privacyLeakageBits: 0,
   };
 }
 
@@ -1210,6 +1250,7 @@ describe('provider admission orchestration', () => {
         scopeIdHex: scopeHex,
         offerId: 90,
         providerEndpoint: 'wss://provider-a.example',
+        lightningNetwork: 'bitcoin',
       } },
       { kind: 'retained', value: second },
     )).not.toThrow();
@@ -1286,5 +1327,280 @@ describe('provider admission orchestration', () => {
       scheme: 'cashu-bat',
     })).rejects.toThrow(/does not match capability scheme/);
     expect(retiredBinding).toBeNull();
+  });
+
+  it('reserves two class-only BAT V2 proofs before either typed adapter call', async () => {
+    const events: string[] = [];
+    const dispositions: string[] = [];
+    let firstSendGate: Promise<void> | null = null;
+    const classBinding = {
+      issuerIdHex: '71'.repeat(32),
+      classIdHex: '72'.repeat(32),
+      classDigestHex: '73'.repeat(32),
+      classKeyEpoch: '4',
+      batKeyIdHex: '74'.repeat(32),
+    };
+    const artifact = { classBytes: new Uint8Array([1, 2, 3]), binding: classBinding };
+    const reservationId = 'reservation-v2';
+    const lease = (recordId: string, spendByte: number) => ({
+      ...classBinding,
+      proof: new Uint8Array(210).fill(spendByte),
+      globalSpendKeyHex: spendByte.toString(16).padStart(2, '0').repeat(32),
+      recordId,
+      reservationId,
+    });
+    const batVault: BatV2AdmissionVaultV2 = {
+      reserveDistinctPair: vi.fn(async (_first, _second, validate) => {
+        events.push('reserve');
+        const first = lease('record-a', 0x31);
+        const second = lease('record-b', 0x32);
+        validate?.(first);
+        validate?.(second);
+        return { reservationId, first, second };
+      }),
+      finishReservation: vi.fn(async (_lease, disposition) => {
+        dispositions.push(disposition);
+      }),
+    };
+    const firstView = policy(batV2Offer(), providerHex, scopeHex);
+    const secondView = policy(batV2Offer(), secondProviderHex, secondScopeHex);
+    const makePort = (
+      label: string,
+      view: ServicePolicyViewV1,
+      endpoint: string,
+      operator: Uint8Array,
+    ): ServiceAdmissionPortV1 => ({
+      assertTrustAnchor: vi.fn(),
+      providerEndpoint: () => endpoint,
+      operatorSigningKey: () => operator.slice(),
+      fetchPolicy: async () => accepted(view),
+      assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
+      authorize: async () => { throw new Error('V1 must not send'); },
+      authorizeBatV2: async () => {
+        events.push(label);
+        if (label === 'send-a') await firstSendGate;
+        return {
+          kind: 'granted',
+          grant: {
+            scopeIdHex: view.scopes[0].scopeIdHex,
+            enforcedProfile: 3,
+            expiresInMs: 1000,
+            hasHarmonyAttach: false,
+          },
+        };
+      },
+      requestPowChallenge: async () => { throw new Error('unused'); },
+    });
+    const firstSession = new ProviderAdmissionSessionV1(
+      vault,
+      makePort('send-a', firstView, 'wss://provider-a.example', providerId),
+      { providerId, policySigningKey: policyKey },
+      DPF_TARGET,
+    );
+    const secondSession = new ProviderAdmissionSessionV1(
+      vault,
+      makePort('send-b', secondView, 'wss://provider-b.example', secondProviderId),
+      { providerId: secondProviderId, policySigningKey: secondPolicyKey },
+      DPF_TARGET,
+    );
+    await firstSession.refreshPolicy();
+    await secondSession.refreshPolicy();
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(8)]);
+    const createPair = () => VerifiedIndependentProviderBatV2PairV2.create(
+      {
+        session: firstSession,
+        scopeIdHex: scopeHex,
+        offerId: 101,
+        providerEndpoint: 'wss://provider-a.example',
+        lightningNetwork: 'bitcoin',
+        expectedLightningPayeePubkey: payee,
+        classArtifact: artifact,
+      },
+      {
+        session: secondSession,
+        scopeIdHex: secondScopeHex,
+        offerId: 101,
+        providerEndpoint: 'wss://provider-b.example',
+        lightningNetwork: 'bitcoin',
+        expectedLightningPayeePubkey: payee,
+        classArtifact: artifact,
+      },
+      batVault,
+      {
+        allowSharedIssuerCorrelation: true,
+        allowSharedLightningPayeeCorrelation: true,
+      },
+    );
+    const pair = createPair();
+    await expect(pair.authorize('first')).resolves.toMatchObject({ kind: 'granted' });
+    await expect(pair.authorize('second')).resolves.toMatchObject({ kind: 'granted' });
+    expect(events).toEqual(['reserve', 'send-a', 'send-b']);
+    expect(dispositions).toEqual(['burn', 'burn']);
+    await pair.close();
+
+    events.length = 0;
+    dispositions.length = 0;
+    let releaseFirstSend!: () => void;
+    firstSendGate = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
+    const closingPair = createPair();
+    const authorization = closingPair.authorize('first');
+    await vi.waitFor(() => expect(events).toEqual(['reserve', 'send-a']));
+    const closing = closingPair.close();
+    await Promise.resolve();
+    expect(dispositions).toEqual([]);
+
+    releaseFirstSend();
+    await expect(authorization).resolves.toMatchObject({ kind: 'granted' });
+    await closing;
+    expect(dispositions).toEqual(['burn', 'recover-safe']);
+    firstSession.close();
+    secondSession.close();
+  });
+
+  it('performs zero sends for missing or duplicate BAT V2 pair inventory', async () => {
+    const send = vi.fn();
+    const classBinding = {
+      issuerIdHex: '71'.repeat(32),
+      classIdHex: '72'.repeat(32),
+      classDigestHex: '73'.repeat(32),
+      classKeyEpoch: '4',
+      batKeyIdHex: '74'.repeat(32),
+    };
+    const viewA = policy(batV2Offer(), providerHex, scopeHex);
+    const viewB = policy(batV2Offer(), secondProviderHex, secondScopeHex);
+    const port = (
+      view: ServicePolicyViewV1,
+      endpoint: string,
+      operator: Uint8Array,
+      withBatV2 = true,
+    ): ServiceAdmissionPortV1 => {
+      const value: ServiceAdmissionPortV1 = {
+        assertTrustAnchor: vi.fn(),
+        providerEndpoint: () => endpoint,
+        operatorSigningKey: () => operator.slice(),
+        fetchPolicy: async () => accepted(view),
+        assertSessionBinding: vi.fn(),
+        captureReadinessGuard: () => vi.fn(),
+        authorize: async () => { throw new Error('unused'); },
+        requestPowChallenge: async () => { throw new Error('unused'); },
+      };
+      if (withBatV2) {
+        value.authorizeBatV2 = async () => {
+          send();
+          return { kind: 'burn-terminal' };
+        };
+      }
+      return value;
+    };
+    const first = new ProviderAdmissionSessionV1(
+      vault, port(viewA, 'wss://a.example', providerId),
+      { providerId, policySigningKey: policyKey }, DPF_TARGET,
+    );
+    const second = new ProviderAdmissionSessionV1(
+      vault, port(viewB, 'wss://b.example', secondProviderId),
+      { providerId: secondProviderId, policySigningKey: secondPolicyKey }, DPF_TARGET,
+    );
+    await first.refreshPolicy();
+    await second.refreshPolicy();
+    const artifact = { classBytes: new Uint8Array([1]), binding: classBinding };
+    const payee = new Uint8Array([2, ...new Uint8Array(32).fill(8)]);
+    const create = (
+      batVault: BatV2AdmissionVaultV2,
+      firstSession = first,
+    ) =>
+      VerifiedIndependentProviderBatV2PairV2.create(
+        { session: firstSession, scopeIdHex: scopeHex, offerId: 101,
+          providerEndpoint: 'wss://a.example', lightningNetwork: 'bitcoin',
+          expectedLightningPayeePubkey: payee,
+          classArtifact: artifact },
+        { session: second, scopeIdHex: secondScopeHex, offerId: 101,
+          providerEndpoint: 'wss://b.example', lightningNetwork: 'bitcoin',
+          expectedLightningPayeePubkey: payee,
+          classArtifact: artifact },
+        batVault,
+        { allowSharedIssuerCorrelation: true, allowSharedLightningPayeeCorrelation: true },
+      );
+    const missing = create({
+      reserveDistinctPair: async () => null,
+      finishReservation: vi.fn(),
+    });
+    await expect(missing.authorize('first')).rejects.toThrow(/two distinct BAT V2 proofs/);
+    expect(send).not.toHaveBeenCalled();
+    await missing.close();
+
+    const duplicateLease = {
+      ...classBinding,
+      proof: new Uint8Array(210).fill(5),
+      globalSpendKeyHex: '75'.repeat(32),
+      recordId: 'record-a',
+      reservationId: 'reservation-duplicate',
+    };
+    const duplicate = create({
+      reserveDistinctPair: async () => ({
+        reservationId: 'reservation-duplicate',
+        first: duplicateLease,
+        second: { ...duplicateLease, proof: duplicateLease.proof.slice(), recordId: 'record-b' },
+      }),
+      finishReservation: vi.fn(async () => {}),
+    });
+    await expect(duplicate.authorize('first')).rejects.toThrow(/non-distinct/);
+    expect(send).not.toHaveBeenCalled();
+    await duplicate.close();
+
+    const mismatchedFirst = {
+      ...duplicateLease,
+      recordId: 'record-c',
+      reservationId: 'reservation-mismatch',
+      classDigestHex: '76'.repeat(32),
+      proof: new Uint8Array(210).fill(6),
+    };
+    const mismatchedSecond = {
+      ...duplicateLease,
+      recordId: 'record-d',
+      reservationId: 'reservation-mismatch',
+      globalSpendKeyHex: '77'.repeat(32),
+      proof: new Uint8Array(210).fill(7),
+    };
+    const finishMismatch = vi.fn(async (
+      reserved: typeof mismatchedFirst,
+      _disposition: 'recover-safe' | 'burn',
+    ) => {
+      reserved.proof.fill(0);
+    });
+    const mismatched = create({
+      reserveDistinctPair: async () => ({
+        reservationId: 'reservation-mismatch',
+        first: mismatchedFirst,
+        second: mismatchedSecond,
+      }),
+      finishReservation: finishMismatch,
+    });
+    await expect(mismatched.authorize('first')).rejects.toThrow(/exact verified class/);
+    expect(finishMismatch).toHaveBeenCalledTimes(2);
+    expect(finishMismatch.mock.calls.every(([, disposition]) =>
+      disposition === 'recover-safe')).toBe(true);
+    expect(mismatchedFirst.proof.every((byte) => byte === 0)).toBe(true);
+    expect(mismatchedSecond.proof.every((byte) => byte === 0)).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    await mismatched.close();
+
+    const unsupportedFirst = new ProviderAdmissionSessionV1(
+      vault, port(viewA, 'wss://a.example', providerId, false),
+      { providerId, policySigningKey: policyKey }, DPF_TARGET,
+    );
+    await unsupportedFirst.refreshPolicy();
+    const reserveDistinctPair = vi.fn(async () => null);
+    const unsupported = create({
+      reserveDistinctPair,
+      finishReservation: vi.fn(),
+    }, unsupportedFirst);
+    await expect(unsupported.authorize('first')).rejects.toThrow(/does not expose typed BAT V2/);
+    expect(reserveDistinctPair).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    await unsupported.close();
+    unsupportedFirst.close();
+    first.close();
+    second.close();
   });
 });
