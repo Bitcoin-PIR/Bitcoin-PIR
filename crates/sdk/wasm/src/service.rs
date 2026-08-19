@@ -510,6 +510,31 @@ impl WasmAcceptedServicePolicyV1 {
         )
     }
 
+    /// Begin class-bound BAT V2 acquisition only after the exact current
+    /// provider offer is proven a member of the caller-supplied signed class.
+    /// No provider coordinates enter the returned recovery state.
+    #[wasm_bindgen(js_name = beginBatV2Acquisition)]
+    pub fn begin_bat_v2_acquisition(
+        &self,
+        scope_id: &[u8],
+        offer_id: u32,
+        class_bytes: &[u8],
+        quote_delegation_bytes: &[u8],
+        quote_key_checkpoint_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<crate::bat_v2::WasmBolt11BatV2AcquisitionV2, JsError> {
+        self.require_checkpoint_persisted()?;
+        crate::bat_v2::begin_bat_v2_acquisition_v2(
+            &self.inner,
+            scope_id,
+            offer_id,
+            class_bytes,
+            quote_delegation_bytes,
+            quote_key_checkpoint_bytes,
+            now_unix,
+        )
+    }
+
     /// Decode and validate one canonical method proof against this exact
     /// signed scope/offer without sending or consuming it.
     #[wasm_bindgen(js_name = validateAuthorizationProof)]

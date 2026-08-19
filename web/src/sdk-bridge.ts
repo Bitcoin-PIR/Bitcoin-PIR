@@ -169,6 +169,10 @@ interface PirSdkWasm {
   WasmBolt11AcquisitionV1: {
     restore(state: Uint8Array, nowUnix: bigint): WasmBolt11AcquisitionV1;
   };
+  /** Restore an opaque class-bound BAT V2 acquisition. */
+  WasmBolt11BatV2AcquisitionV2: {
+    restore(state: Uint8Array, nowUnix: bigint): WasmBolt11BatV2AcquisitionV2;
+  };
   /** Strict transport-neutral verifier for complete multi-relay catalogs. */
   WasmDirectoryCatalogCandidateV1: {
     /**
@@ -559,6 +563,7 @@ export interface ServiceOfferViewV1 {
     | 'bolt11-direct-receipt'
     | 'cashu-ecash'
     | 'cashu-bat'
+    | 'cashu-bat-v2'
     | 'arc-experimental';
   freeMode:
     | 'not-free'
@@ -661,6 +666,15 @@ export interface WasmAcceptedServicePolicyV1 {
     quoteKeyCheckpointBytes: Uint8Array,
     nowUnix: bigint,
   ): WasmBolt11AcquisitionV1;
+  /** Begin acquisition only after Rust verifies the exact signed class member. */
+  beginBatV2Acquisition?(
+    scopeId: Uint8Array,
+    offerId: number,
+    classBytes: Uint8Array,
+    quoteDelegationBytes: Uint8Array,
+    quoteKeyCheckpointBytes: Uint8Array,
+    nowUnix: bigint,
+  ): WasmBolt11BatV2AcquisitionV2;
 }
 
 /** Exact historical signed policy typestate, usable only for one retained
@@ -704,6 +718,41 @@ export interface WasmBolt11AcquisitionV1 {
   accept_status(quoteBytes: Uint8Array, nowUnix: bigint): void;
   prepare_claim(nowUnix: bigint): Uint8Array;
   finish_claim(responseBytes: Uint8Array, nowUnix: bigint): WasmIssuedCapabilitiesV1;
+}
+
+/** Secret-bearing, provider-independent BAT V2 acquisition state. */
+export interface WasmBolt11BatV2AcquisitionV2 {
+  free(): void;
+  quoteIntentBytes(): Uint8Array;
+  quoteKeyCheckpointBytes(): Uint8Array;
+  recoveryStateBytes(): Uint8Array;
+  acceptInitialQuote(quoteBytes: Uint8Array, nowUnix: bigint): void;
+  invoice(): string;
+  quoteIdHex(): string;
+  quoteStatus(): WasmBolt11QuoteStatusV1;
+  invoiceExpiresAtUnix(): string;
+  claimDeadlineUnix(): string;
+  buildStatusRequest(requestedAt: bigint): Uint8Array;
+  acceptStatus(quoteBytes: Uint8Array, nowUnix: bigint): void;
+  prepareClaim(nowUnix: bigint): Uint8Array;
+  finishClaim(responseBytes: Uint8Array, nowUnix: bigint): WasmIssuedBatV2ProofsV2;
+}
+
+/** Verified issuer-wide proofs withheld until the Web vault commits a batch. */
+export interface WasmIssuedBatV2ProofsV2 {
+  free(): void;
+  count(): number;
+  proof(index: number): Uint8Array;
+  globalSpendKeyHex(index: number): string;
+  classBindingJson(): BatV2ClassBindingViewV2;
+}
+
+export interface BatV2ClassBindingViewV2 {
+  issuerIdHex: string;
+  classIdHex: string;
+  classDigestHex: string;
+  classKeyEpoch: string;
+  batKeyIdHex: string;
 }
 
 /** Verified, provider-local capability batch returned by one paid claim. */
