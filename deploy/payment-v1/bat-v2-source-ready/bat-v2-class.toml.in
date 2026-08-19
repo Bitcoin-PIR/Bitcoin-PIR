@@ -1,0 +1,25 @@
+# Strict input to `bpir-admin payment-artifact bat-v2-class`.
+# Repeat [[members]] for every exact signed provider-policy member.
+
+expected_issuer_id_hex = "@BAT_V2_ISSUER_ID_HEX@"
+class_id_hex = "@BAT_V2_PREALLOCATED_CLASS_ID_HEX@"
+key_epoch = @BAT_V2_CLASS_KEY_EPOCH@
+key_not_before = @BAT_V2_CLASS_KEY_NOT_BEFORE_UNIX@
+key_not_after = @BAT_V2_CLASS_KEY_NOT_AFTER_UNIX@
+verification_time = @BAT_V2_POLICY_VERIFICATION_TIME_UNIX@
+
+[[members]]
+policy_path = "@PIR1_SIGNED_POLICY_RELATIVE_PATH@"
+expected_policy_digest_hex = "@PIR1_POLICY_DIGEST_HEX@"
+expected_provider_id_hex = "@PIR1_PROVIDER_ID_HEX@"
+provider_policy_verifying_key_hex = "@PIR1_POLICY_VERIFYING_KEY_HEX@"
+scope_id_hex = "@PIR1_SCOPE_ID_HEX@"
+offer_id = @PIR1_OFFER_ID@
+
+[[members]]
+policy_path = "@PIR2_SIGNED_POLICY_RELATIVE_PATH@"
+expected_policy_digest_hex = "@PIR2_POLICY_DIGEST_HEX@"
+expected_provider_id_hex = "@PIR2_PROVIDER_ID_HEX@"
+provider_policy_verifying_key_hex = "@PIR2_POLICY_VERIFYING_KEY_HEX@"
+scope_id_hex = "@PIR2_SCOPE_ID_HEX@"
+offer_id = @PIR2_OFFER_ID@

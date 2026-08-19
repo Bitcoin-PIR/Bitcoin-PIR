@@ -1,4 +1,4 @@
-//! Offline Payment V1 protocol-artifact builders.
+//! Offline Payment V1 and BAT V2 protocol-artifact builders.
 //!
 //! These commands never open a socket or invoke a Lightning backend. They
 //! construct canonical protocol objects, decode the exact encoded bytes, and
@@ -7,23 +7,35 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use ed25519_dalek::VerifyingKey;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::SecretKey as Secp256k1SecretKey;
 use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_service_protocol::{
-    derive_bat_key_id_v1, derive_cashu_keyset_id_v2, free_anonymous_ticket_key_id,
-    paid_receipt_key_id, AuthScheme, Bolt11QuoteKeyDelegationV1, CashuDenominationKeyV1,
-    CashuKeysetBindingV1, CashuRequiredNutsV1, CredentialKeyBindingClaimsV1,
-    CredentialKeyBindingExpectationV1, CredentialKeyBindingV1, CredentialUnitV1,
-    IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationClaimsV1,
-    ProviderClearingAuthorizationV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1,
-    StandardCashuMintExpectationV1, StandardCashuMintManifestV1, MAX_CREDENTIAL_KEY_ID_LEN,
+    bat_acceptance_member_from_verified_policy_v2, derive_bat_key_id_v1, derive_cashu_keyset_id_v2,
+    derive_issuer_id, free_anonymous_ticket_key_id, paid_receipt_key_id,
+    verify_bat_acceptance_class_member_projection_v2, AuthScheme, BatAcceptanceClassV2,
+    Bolt11QuoteKeyDelegationV1, CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
+    CredentialKeyBindingClaimsV1, CredentialKeyBindingExpectationV1, CredentialKeyBindingV1,
+    CredentialUnitV1, IssuerAccountingApprovalV2, IssuerClearingApprovalV1, LightningNetworkV1,
+    PolicyRollbackGuardV1, ProviderAccountingAuthorizationClaimsV2,
+    ProviderAccountingAuthorizationV2, ProviderAccountingRuleV2,
+    ProviderClearingAuthorizationClaimsV1, ProviderClearingAuthorizationV1,
+    ServicePolicyEpochFloorsV1, ServicePolicyV1, SettlementModesV1, SettlementRuleV1,
+    SettlementUnitV1, StandardCashuMintExpectationV1, StandardCashuMintManifestV1,
+    MAX_BAT_ACCEPTANCE_CLASS_LEN_V2, MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2,
+    MAX_CREDENTIAL_KEY_ID_LEN, MAX_SIGNED_POLICY_LEN,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 const MAX_MANIFEST_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CLEARING_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CLEARING_AUTHORIZATION_BYTES: u64 = 64 * 1024;
+const MAX_BAT_V2_CLASS_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_BAT_V2_ACCOUNTING_CONFIG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Args, Debug)]
 pub struct PaymentArtifactArgs {
@@ -48,6 +60,15 @@ enum PaymentArtifactCommand {
     /// Issuer-sign and self-verify one exact provider clearing authorization.
     #[command(name = "clearing-approval")]
     ClearingApproval(ClearingApprovalArgs),
+    /// Issuer-sign and self-verify one exact BAT V2 acceptance-class epoch.
+    #[command(name = "bat-v2-class")]
+    BatV2Class(BatV2ClassArgs),
+    /// Operator-sign and self-verify one BAT V2 provider accounting authorization.
+    #[command(name = "bat-v2-accounting-authorization")]
+    BatV2AccountingAuthorization(BatV2AccountingAuthorizationArgs),
+    /// Issuer-sign and self-verify one exact BAT V2 accounting authorization.
+    #[command(name = "bat-v2-accounting-approval")]
+    BatV2AccountingApproval(BatV2AccountingApprovalArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -212,6 +233,66 @@ struct ClearingApprovalArgs {
     force: bool,
 }
 
+#[derive(Args, Debug)]
+struct BatV2ClassArgs {
+    /// Owner-only 32-byte issuer-root Ed25519 seed.
+    #[arg(long)]
+    issuer_root_key: PathBuf,
+    /// Owner-only 32-byte Cashu BAT secp256k1 scalar for this class epoch.
+    #[arg(long)]
+    bat_key: PathBuf,
+    /// Strict TOML source naming exact signed provider-policy members.
+    #[arg(long)]
+    config: PathBuf,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Debug)]
+struct BatV2AccountingAuthorizationArgs {
+    /// Owner-only 32-byte provider-operator Ed25519 seed.
+    #[arg(long)]
+    operator_signing_key: PathBuf,
+    /// Strict TOML source naming exact signed class members and ledger values.
+    #[arg(long)]
+    config: PathBuf,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args, Debug)]
+struct BatV2AccountingApprovalArgs {
+    /// Canonical operator-signed ProviderAccountingAuthorizationV2 bytes.
+    #[arg(long)]
+    authorization: PathBuf,
+    /// Owner-only 32-byte issuer-settlement Ed25519 seed.
+    #[arg(long)]
+    issuer_settlement_signing_key: PathBuf,
+    /// Digest printed by the independently run accounting-authorization ceremony.
+    #[arg(long)]
+    expected_authorization_digest_hex: String,
+    #[arg(long)]
+    expected_provider_id_hex: String,
+    #[arg(long)]
+    expected_issuer_id_hex: String,
+    #[arg(long)]
+    expected_operator_key_hex: String,
+    #[arg(long)]
+    minimum_authorization_epoch: u64,
+    #[arg(long)]
+    approved_at: u64,
+    #[arg(long)]
+    not_after: u64,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    force: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClearingAuthorizationConfig {
@@ -226,6 +307,58 @@ struct ClearingAuthorizationConfig {
     not_before: u64,
     not_after: u64,
     rules: Vec<LedgerClearingRuleConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatV2ClassConfig {
+    expected_issuer_id_hex: String,
+    class_id_hex: String,
+    key_epoch: u64,
+    key_not_before: u64,
+    key_not_after: u64,
+    verification_time: u64,
+    members: Vec<BatV2ClassMemberConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatV2ClassMemberConfig {
+    policy_path: PathBuf,
+    expected_policy_digest_hex: String,
+    expected_provider_id_hex: String,
+    provider_policy_verifying_key_hex: String,
+    scope_id_hex: String,
+    offer_id: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatV2AccountingAuthorizationConfig {
+    authorization_id_hex: String,
+    authorization_epoch: u64,
+    provider_id_hex: String,
+    issuer_id_hex: String,
+    redeem_endpoint: String,
+    redeem_leaf_spki_sha256_pins_hex: Vec<String>,
+    settlement_account_id_hex: String,
+    clearing_verifying_key_hex: String,
+    not_before: u64,
+    not_after: u64,
+    rules: Vec<BatV2AccountingRuleConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatV2AccountingRuleConfig {
+    class_path: PathBuf,
+    expected_class_digest_hex: String,
+    policy_digest_hex: String,
+    scope_id_hex: String,
+    offer_id: u32,
+    accepted_value: u64,
+    provider_credit: u64,
+    issuer_fee: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +412,13 @@ pub fn run(args: PaymentArtifactArgs) -> Result<(), String> {
         PaymentArtifactCommand::CashuManifest(args) => build_cashu_manifest(args),
         PaymentArtifactCommand::ClearingAuthorization(args) => build_clearing_authorization(args),
         PaymentArtifactCommand::ClearingApproval(args) => build_clearing_approval(args),
+        PaymentArtifactCommand::BatV2Class(args) => build_bat_v2_class(args),
+        PaymentArtifactCommand::BatV2AccountingAuthorization(args) => {
+            build_bat_v2_accounting_authorization(args)
+        }
+        PaymentArtifactCommand::BatV2AccountingApproval(args) => {
+            build_bat_v2_accounting_approval(args)
+        }
     }
 }
 
@@ -619,6 +759,414 @@ fn build_clearing_approval(args: ClearingApprovalArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn build_bat_v2_class(args: BatV2ClassArgs) -> Result<(), String> {
+    let issuer_key = crate::keygen::read_secret_key(&args.issuer_root_key)?;
+    let config_bytes = read_bounded_public_file(&args.config, MAX_BAT_V2_CLASS_CONFIG_BYTES)?;
+    let config: BatV2ClassConfig = toml::from_str(
+        std::str::from_utf8(&config_bytes)
+            .map_err(|_| format!("{} is not UTF-8", args.config.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", args.config.display()))?;
+    if config.verification_time == 0 || config.members.is_empty() {
+        return Err("BAT V2 class verification_time and member list must be non-zero".to_owned());
+    }
+    let expected_issuer_id =
+        parse_hex_exact::<32>("expected_issuer_id_hex", &config.expected_issuer_id_hex)?;
+    let actual_issuer_id = derive_issuer_id(&issuer_key.verifying_key().to_bytes());
+    if actual_issuer_id != expected_issuer_id {
+        return Err("issuer root key does not match expected_issuer_id_hex".to_owned());
+    }
+    let class_id = parse_hex_exact::<32>("class_id_hex", &config.class_id_hex)?;
+    let bat_secret = Zeroizing::new(crate::keygen::read_secret_bytes::<32>(&args.bat_key)?);
+    if issuer_key.to_bytes() == *bat_secret {
+        return Err("issuer-root and BAT class keys must be distinct".to_owned());
+    }
+    let bat_key = Secp256k1SecretKey::from_slice(bat_secret.as_ref())
+        .map_err(|_| "--bat-key is not a valid secp256k1 scalar".to_owned())?;
+    let bat_verification_key: [u8; 33] = bat_key
+        .public_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .map_err(|_| "derived BAT public key is not compressed secp256k1".to_owned())?;
+    let base = args.config.parent().unwrap_or_else(|| Path::new("."));
+    let mut projections = Vec::with_capacity(config.members.len());
+    for (index, member) in config.members.iter().enumerate() {
+        let label = format!("members[{index}]");
+        let policy_bytes = read_bounded_public_file(
+            &resolve_relative_path(base, &member.policy_path),
+            MAX_SIGNED_POLICY_LEN as u64,
+        )?;
+        let policy = ServicePolicyV1::decode(&policy_bytes)
+            .map_err(|error| format!("decode {label} policy: {error}"))?;
+        if policy
+            .encode()
+            .map_err(|error| format!("re-encode {label} policy: {error}"))?
+            != policy_bytes
+        {
+            return Err(format!("{label} policy is not canonical"));
+        }
+        let provider_id = parse_hex_exact::<32>(
+            &format!("{label}.expected_provider_id_hex"),
+            &member.expected_provider_id_hex,
+        )?;
+        let expected_digest = parse_hex_exact::<32>(
+            &format!("{label}.expected_policy_digest_hex"),
+            &member.expected_policy_digest_hex,
+        )?;
+        if policy
+            .policy_digest()
+            .map_err(|error| format!("digest {label} policy: {error}"))?
+            != expected_digest
+        {
+            return Err(format!(
+                "{label} policy digest does not match ceremony input"
+            ));
+        }
+        let provider_key_bytes = parse_hex_exact::<32>(
+            &format!("{label}.provider_policy_verifying_key_hex"),
+            &member.provider_policy_verifying_key_hex,
+        )?;
+        let provider_key = VerifyingKey::from_bytes(&provider_key_bytes)
+            .map_err(|_| format!("{label} provider policy key is not valid Ed25519"))?;
+        let verified = policy
+            .verify_current_for_acquisition(
+                &provider_id,
+                config.verification_time,
+                &PolicyRollbackGuardV1::initial(),
+                &ServicePolicyEpochFloorsV1::initial(),
+                &provider_key,
+            )
+            .map_err(|error| format!("verify {label} policy: {error}"))?;
+        let scope_id =
+            parse_hex_exact::<32>(&format!("{label}.scope_id_hex"), &member.scope_id_hex)?;
+        let projection =
+            bat_acceptance_member_from_verified_policy_v2(&verified, &scope_id, member.offer_id)
+                .map_err(|error| format!("project {label}: {error}"))?;
+        if projection.issuer_id != expected_issuer_id || projection.class_id != class_id {
+            return Err(format!(
+                "{label} issuer or preallocated class ID does not match the ceremony"
+            ));
+        }
+        projections.push(projection);
+    }
+    let common_terms = projections
+        .first()
+        .ok_or_else(|| "BAT V2 class member list is empty".to_owned())?
+        .common_terms
+        .clone();
+    if projections
+        .iter()
+        .any(|projection| projection.common_terms != common_terms)
+    {
+        return Err("BAT V2 class members do not have identical canonical terms".to_owned());
+    }
+    let mut members = projections
+        .iter()
+        .map(|projection| projection.member.clone())
+        .collect::<Vec<_>>();
+    members.sort();
+    let class = BatAcceptanceClassV2::sign(
+        class_id,
+        config.key_epoch,
+        config.key_not_before,
+        config.key_not_after,
+        bat_verification_key,
+        common_terms,
+        members,
+        &issuer_key,
+    )
+    .map_err(|error| format!("construct BAT V2 class: {error}"))?;
+    for (index, projection) in projections.iter().enumerate() {
+        verify_bat_acceptance_class_member_projection_v2(&class, projection)
+            .map_err(|error| format!("self-verify members[{index}] class projection: {error}"))?;
+    }
+    let encoded = class
+        .encode()
+        .map_err(|error| format!("encode BAT V2 class: {error}"))?;
+    let decoded = BatAcceptanceClassV2::decode(&encoded)
+        .map_err(|error| format!("decode generated BAT V2 class: {error}"))?;
+    if decoded != class
+        || decoded
+            .encode()
+            .map_err(|error| format!("re-encode generated BAT V2 class: {error}"))?
+            != encoded
+    {
+        return Err("generated BAT V2 class is not canonical".to_owned());
+    }
+    decoded
+        .verify_for(&expected_issuer_id, &class_id)
+        .map_err(|error| format!("self-verify BAT V2 class: {error}"))?;
+    let class_digest = decoded
+        .class_digest()
+        .map_err(|error| format!("digest BAT V2 class: {error}"))?;
+    write_public_artifact(&args.out, &encoded, args.force)?;
+    println!("issuer_id={}", hex::encode(decoded.issuer_id));
+    println!("class_id={}", hex::encode(decoded.class_id));
+    println!("class_digest={}", hex::encode(class_digest));
+    println!("key_epoch={}", decoded.key_epoch);
+    println!("bat_key_id={}", hex::encode(decoded.bat_key_id()));
+    println!("member_count={}", decoded.members.len());
+    println!("artifact_sha256={}", hex::encode(Sha256::digest(&encoded)));
+    println!("out={}", args.out.display());
+    Ok(())
+}
+
+fn build_bat_v2_accounting_authorization(
+    args: BatV2AccountingAuthorizationArgs,
+) -> Result<(), String> {
+    let operator_key = crate::keygen::read_secret_key(&args.operator_signing_key)?;
+    let config_bytes = read_bounded_public_file(&args.config, MAX_BAT_V2_ACCOUNTING_CONFIG_BYTES)?;
+    let config: BatV2AccountingAuthorizationConfig = toml::from_str(
+        std::str::from_utf8(&config_bytes)
+            .map_err(|_| format!("{} is not UTF-8", args.config.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", args.config.display()))?;
+    let provider_id = parse_hex_exact::<32>("provider_id_hex", &config.provider_id_hex)?;
+    let issuer_id = parse_hex_exact::<32>("issuer_id_hex", &config.issuer_id_hex)?;
+    let clearing_verifying_key = parse_hex_exact::<32>(
+        "clearing_verifying_key_hex",
+        &config.clearing_verifying_key_hex,
+    )?;
+    VerifyingKey::from_bytes(&clearing_verifying_key)
+        .map_err(|_| "clearing_verifying_key_hex is not a valid Ed25519 key".to_owned())?;
+    if clearing_verifying_key == operator_key.verifying_key().to_bytes() {
+        return Err("operator and provider clearing keys must be distinct".to_owned());
+    }
+    let base = args.config.parent().unwrap_or_else(|| Path::new("."));
+    let mut rules = Vec::with_capacity(config.rules.len());
+    for (index, rule) in config.rules.iter().enumerate() {
+        let label = format!("rules[{index}]");
+        let class_bytes = read_bounded_public_file(
+            &resolve_relative_path(base, &rule.class_path),
+            MAX_BAT_ACCEPTANCE_CLASS_LEN_V2 as u64,
+        )?;
+        let class = BatAcceptanceClassV2::decode(&class_bytes)
+            .map_err(|error| format!("decode {label} class: {error}"))?;
+        if class
+            .encode()
+            .map_err(|error| format!("re-encode {label} class: {error}"))?
+            != class_bytes
+        {
+            return Err(format!("{label} class is not canonical"));
+        }
+        class
+            .verify()
+            .map_err(|error| format!("verify {label} class: {error}"))?;
+        let expected_class_digest = parse_hex_exact::<32>(
+            &format!("{label}.expected_class_digest_hex"),
+            &rule.expected_class_digest_hex,
+        )?;
+        if class
+            .class_digest()
+            .map_err(|error| format!("digest {label} class: {error}"))?
+            != expected_class_digest
+        {
+            return Err(format!(
+                "{label} class digest does not match ceremony input"
+            ));
+        }
+        if class.issuer_id != issuer_id {
+            return Err(format!("{label} class belongs to another issuer"));
+        }
+        let policy_digest = parse_hex_exact::<32>(
+            &format!("{label}.policy_digest_hex"),
+            &rule.policy_digest_hex,
+        )?;
+        let scope_id = parse_hex_exact::<32>(&format!("{label}.scope_id_hex"), &rule.scope_id_hex)?;
+        if !class.members.iter().any(|member| {
+            member.provider_id == provider_id
+                && member.policy_digest == policy_digest
+                && member.scope_id == scope_id
+                && member.offer_id == rule.offer_id
+        }) {
+            return Err(format!(
+                "{label} does not name an exact member of the signed class for this provider"
+            ));
+        }
+        rules.push(ProviderAccountingRuleV2 {
+            class_id: class.class_id,
+            policy_digest,
+            scope_id,
+            offer_id: rule.offer_id,
+            unit: SettlementUnitV1::AuthCredit,
+            accepted_value: rule.accepted_value,
+            provider_credit: rule.provider_credit,
+            issuer_fee: rule.issuer_fee,
+        });
+    }
+    rules.sort_by(|left, right| {
+        left.class_id
+            .cmp(&right.class_id)
+            .then_with(|| left.policy_digest.cmp(&right.policy_digest))
+            .then_with(|| left.scope_id.cmp(&right.scope_id))
+            .then_with(|| left.offer_id.cmp(&right.offer_id))
+    });
+    let authorization = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: parse_hex_exact::<16>(
+                "authorization_id_hex",
+                &config.authorization_id_hex,
+            )?,
+            authorization_epoch: config.authorization_epoch,
+            provider_id,
+            issuer_id,
+            redeem_endpoint: config.redeem_endpoint,
+            redeem_leaf_spki_sha256_pins: config
+                .redeem_leaf_spki_sha256_pins_hex
+                .iter()
+                .map(|pin| parse_hex_exact::<32>("redeem leaf SPKI SHA-256 pin", pin))
+                .collect::<Result<Vec<_>, _>>()?,
+            settlement_account_id: parse_hex_exact::<32>(
+                "settlement_account_id_hex",
+                &config.settlement_account_id_hex,
+            )?,
+            clearing_verifying_key,
+            not_before: config.not_before,
+            not_after: config.not_after,
+            rules,
+        },
+        &operator_key,
+    )
+    .map_err(|error| format!("construct BAT V2 accounting authorization: {error}"))?;
+    let encoded = authorization
+        .encode()
+        .map_err(|error| format!("encode BAT V2 accounting authorization: {error}"))?;
+    let decoded = ProviderAccountingAuthorizationV2::decode(&encoded)
+        .map_err(|error| format!("decode generated BAT V2 accounting authorization: {error}"))?;
+    if decoded != authorization
+        || decoded
+            .encode()
+            .map_err(|error| format!("re-encode BAT V2 accounting authorization: {error}"))?
+            != encoded
+    {
+        return Err("generated BAT V2 accounting authorization is not canonical".to_owned());
+    }
+    decoded
+        .verify_for(
+            &provider_id,
+            &issuer_id,
+            &operator_key.verifying_key(),
+            config.not_before,
+            config.authorization_epoch,
+        )
+        .map_err(|error| format!("self-verify BAT V2 accounting authorization: {error}"))?;
+    let digest = decoded
+        .authorization_digest()
+        .map_err(|error| format!("digest BAT V2 accounting authorization: {error}"))?;
+    write_public_artifact(&args.out, &encoded, args.force)?;
+    println!("provider_id={}", hex::encode(decoded.claims.provider_id));
+    println!("issuer_id={}", hex::encode(decoded.claims.issuer_id));
+    println!(
+        "operator_key={}",
+        hex::encode(decoded.operator_verifying_key)
+    );
+    println!(
+        "clearing_key={}",
+        hex::encode(decoded.claims.clearing_verifying_key)
+    );
+    println!("authorization_digest={}", hex::encode(digest));
+    println!("rule_count={}", decoded.claims.rules.len());
+    println!("artifact_sha256={}", hex::encode(Sha256::digest(&encoded)));
+    println!("out={}", args.out.display());
+    Ok(())
+}
+
+fn build_bat_v2_accounting_approval(args: BatV2AccountingApprovalArgs) -> Result<(), String> {
+    if args.minimum_authorization_epoch == 0 || args.approved_at == 0 {
+        return Err("minimum authorization epoch and approved_at must be non-zero".to_owned());
+    }
+    let exact = read_bounded_public_file(
+        &args.authorization,
+        MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2 as u64,
+    )?;
+    let authorization = ProviderAccountingAuthorizationV2::decode(&exact)
+        .map_err(|error| format!("decode BAT V2 accounting authorization: {error}"))?;
+    if authorization
+        .encode()
+        .map_err(|error| format!("re-encode BAT V2 accounting authorization: {error}"))?
+        != exact
+    {
+        return Err("BAT V2 accounting authorization is not canonical".to_owned());
+    }
+    let expected_digest = parse_hex_exact::<32>(
+        "--expected-authorization-digest-hex",
+        &args.expected_authorization_digest_hex,
+    )?;
+    if authorization
+        .authorization_digest()
+        .map_err(|error| format!("digest BAT V2 accounting authorization: {error}"))?
+        != expected_digest
+    {
+        return Err(
+            "BAT V2 accounting authorization digest does not match ceremony input".to_owned(),
+        );
+    }
+    let expected_provider =
+        parse_hex_exact::<32>("--expected-provider-id-hex", &args.expected_provider_id_hex)?;
+    let expected_issuer =
+        parse_hex_exact::<32>("--expected-issuer-id-hex", &args.expected_issuer_id_hex)?;
+    let expected_operator_bytes = parse_hex_exact::<32>(
+        "--expected-operator-key-hex",
+        &args.expected_operator_key_hex,
+    )?;
+    let expected_operator = VerifyingKey::from_bytes(&expected_operator_bytes)
+        .map_err(|_| "--expected-operator-key-hex is not a valid Ed25519 key".to_owned())?;
+    authorization
+        .verify_for(
+            &expected_provider,
+            &expected_issuer,
+            &expected_operator,
+            args.approved_at,
+            args.minimum_authorization_epoch,
+        )
+        .map_err(|error| format!("verify BAT V2 accounting authorization: {error}"))?;
+    let settlement_key = crate::keygen::read_secret_key(&args.issuer_settlement_signing_key)?;
+    let settlement_verifying_key = settlement_key.verifying_key().to_bytes();
+    if settlement_verifying_key == authorization.operator_verifying_key
+        || settlement_verifying_key == authorization.claims.clearing_verifying_key
+    {
+        return Err(
+            "issuer settlement, provider operator, and provider clearing keys must be distinct"
+                .to_owned(),
+        );
+    }
+    let approval = IssuerAccountingApprovalV2::sign(
+        &authorization,
+        args.approved_at,
+        args.not_after,
+        &settlement_key,
+    )
+    .map_err(|error| format!("construct BAT V2 accounting approval: {error}"))?;
+    let encoded = approval.encode();
+    let decoded = IssuerAccountingApprovalV2::decode(&encoded)
+        .map_err(|error| format!("decode generated BAT V2 accounting approval: {error}"))?;
+    if decoded != approval || decoded.encode() != encoded {
+        return Err("generated BAT V2 accounting approval is not canonical".to_owned());
+    }
+    decoded
+        .verify_for(
+            &authorization,
+            &settlement_key.verifying_key(),
+            args.approved_at,
+            args.minimum_authorization_epoch,
+        )
+        .map_err(|error| format!("self-verify BAT V2 accounting approval: {error}"))?;
+    write_public_artifact(&args.out, &encoded, args.force)?;
+    println!(
+        "authorization_digest={}",
+        hex::encode(decoded.accounting_authorization_digest)
+    );
+    println!(
+        "issuer_settlement_key_id={}",
+        hex::encode(decoded.issuer_settlement_key_id)
+    );
+    println!("authorization_epoch={}", decoded.authorization_epoch);
+    println!("artifact_sha256={}", hex::encode(Sha256::digest(encoded)));
+    println!("out={}", args.out.display());
+    Ok(())
+}
+
 fn ensure_auth_credit_ledger_only(
     authorization: &ProviderClearingAuthorizationV1,
 ) -> Result<(), String> {
@@ -837,6 +1385,14 @@ pub(crate) fn parse_hex(name: &str, value: &str) -> Result<Vec<u8>, String> {
     hex::decode(value).map_err(|error| format!("decode {name}: {error}"))
 }
 
+fn resolve_relative_path(base: &Path, value: &Path) -> PathBuf {
+    if value.is_absolute() {
+        value.to_owned()
+    } else {
+        base.join(value)
+    }
+}
+
 pub(crate) fn parse_hex_exact<const N: usize>(name: &str, value: &str) -> Result<[u8; N], String> {
     let decoded = parse_hex(name, value)?;
     decoded.try_into().map_err(|bytes: Vec<u8>| {
@@ -944,6 +1500,11 @@ mod tests {
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::SecretKey;
     use pir_arc_adapter::{ArcSecretKeyV1, ARC_SECRET_KEY_LEN_V1};
+    use pir_service_protocol::{
+        AcquisitionMethod, AuthPaddingClassV1, BackendId, DatasetBindingV1, DeploymentStatus,
+        EntitlementLimitsV1, FreeModeV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1,
+        ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
+    };
     use zeroize::Zeroizing;
 
     fn point(value: u8) -> String {
@@ -989,6 +1550,332 @@ mod tests {
             hex::encode(clearing.verifying_key().to_bytes()),
             hex::encode([0x56; 32]),
         )
+    }
+
+    fn bat_v2_policy(
+        provider_id: [u8; 32],
+        issuer_id: [u8; 32],
+        policy_key: &SigningKey,
+        price_msat: u64,
+    ) -> (ServicePolicyV1, [u8; 32]) {
+        let scope = ServiceScopeV1 {
+            provider_id,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::Class { class_id: 1 },
+            operation_profile: 1,
+            entitlement_profile: 2,
+        };
+        let scope_id = scope.scope_id();
+        let policy = ServicePolicyV1::sign(
+            provider_id,
+            1,
+            100,
+            1_000,
+            AuthPaddingClassV1::Class16KiB,
+            vec![ServiceScopePolicyV1 {
+                scope,
+                limits: EntitlementLimitsV1 {
+                    max_logical_inputs: 4,
+                    max_frames: 200,
+                    max_request_bytes: 1_000_000,
+                    max_response_bytes: 2_000_000,
+                    max_wall_time_ms: 60_000,
+                    max_concurrent_sockets: 1,
+                    max_hint_groups: 0,
+                    max_work_units: 9_000,
+                },
+                offers: vec![ServiceOfferV1 {
+                    offer_id: 7,
+                    acquisition: AcquisitionMethod::Bolt11V1,
+                    free_mode: FreeModeV1::NotFree,
+                    free_quota: 0,
+                    free_window_seconds: 0,
+                    free_pow_difficulty_bits: 0,
+                    priority_class: 1,
+                    authorization: AuthScheme::BitcoinPirCashuBatV2,
+                    verification: VerificationMode::SharedIssuerOnline,
+                    deployment_status: DeploymentStatus::Stable,
+                    price: PriceV1::MilliSatoshi(price_msat),
+                    issuer_id,
+                    key_id: vec![0x42; 32],
+                    credential_binding: None,
+                    cashu_mint_manifest: None,
+                    endpoint: "https://issuer.invalid".to_owned(),
+                    invoice_expiry_seconds: 60,
+                    claim_window_seconds: 120,
+                    minimum_credential_validity_seconds: 300,
+                    retired_policy_grace_seconds: 480,
+                    credential_count: 2,
+                    credential_presentation_limit: 1,
+                    privacy_leakage: PrivacyLeakageV1::from_bits(
+                        PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                            | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+                            | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+                    )
+                    .unwrap(),
+                }],
+            }],
+            policy_key,
+        )
+        .unwrap();
+        (policy, scope_id)
+    }
+
+    #[test]
+    fn bat_v2_class_accounting_and_approval_commands_are_canonical_and_exact() {
+        let directory = private_tempdir().unwrap();
+        let issuer = SigningKey::from_bytes(&[0x71; 32]);
+        let policy_key = SigningKey::from_bytes(&[0x72; 32]);
+        let operator = SigningKey::from_bytes(&[0x73; 32]);
+        let clearing = SigningKey::from_bytes(&[0x74; 32]);
+        let settlement = SigningKey::from_bytes(&[0x75; 32]);
+        let issuer_id = derive_issuer_id(&issuer.verifying_key().to_bytes());
+        let (policy_a, scope_a) = bat_v2_policy([0x11; 32], issuer_id, &policy_key, 2_000);
+        let (policy_b, scope_b) = bat_v2_policy([0x12; 32], issuer_id, &policy_key, 2_000);
+        let (mixed_policy, _) = bat_v2_policy([0x12; 32], issuer_id, &policy_key, 2_001);
+        let policy_a_path = directory.path().join("policy-a.bin");
+        let policy_b_path = directory.path().join("policy-b.bin");
+        let mixed_policy_path = directory.path().join("policy-mixed.bin");
+        std::fs::write(&policy_a_path, policy_a.encode().unwrap()).unwrap();
+        std::fs::write(&policy_b_path, policy_b.encode().unwrap()).unwrap();
+        std::fs::write(&mixed_policy_path, mixed_policy.encode().unwrap()).unwrap();
+        let issuer_path = directory.path().join("issuer.key");
+        let bat_key_path = directory.path().join("bat.key");
+        let operator_path = directory.path().join("operator.key");
+        let settlement_path = directory.path().join("settlement.key");
+        write_secret(&issuer_path, &issuer.to_bytes());
+        write_secret(&bat_key_path, &[0x51; 32]);
+        write_secret(&operator_path, &operator.to_bytes());
+        write_secret(&settlement_path, &settlement.to_bytes());
+
+        let class_config_path = directory.path().join("class.toml");
+        let class_config = format!(
+            "expected_issuer_id_hex = \"{}\"\n\
+                 class_id_hex = \"{}\"\n\
+                 key_epoch = 1\n\
+                 key_not_before = 100\n\
+                 key_not_after = 1480\n\
+                 verification_time = 150\n\
+                 [[members]]\n\
+                 policy_path = \"policy-a.bin\"\n\
+                 expected_policy_digest_hex = \"{}\"\n\
+                 expected_provider_id_hex = \"{}\"\n\
+                 provider_policy_verifying_key_hex = \"{}\"\n\
+                 scope_id_hex = \"{}\"\n\
+                 offer_id = 7\n\
+                 [[members]]\n\
+                 policy_path = \"policy-b.bin\"\n\
+                 expected_policy_digest_hex = \"{}\"\n\
+                 expected_provider_id_hex = \"{}\"\n\
+                 provider_policy_verifying_key_hex = \"{}\"\n\
+                 scope_id_hex = \"{}\"\n\
+                 offer_id = 7\n",
+            hex::encode(issuer_id),
+            hex::encode([0x42; 32]),
+            hex::encode(policy_a.policy_digest().unwrap()),
+            hex::encode(policy_a.provider_id),
+            hex::encode(policy_key.verifying_key().to_bytes()),
+            hex::encode(scope_a),
+            hex::encode(policy_b.policy_digest().unwrap()),
+            hex::encode(policy_b.provider_id),
+            hex::encode(policy_key.verifying_key().to_bytes()),
+            hex::encode(scope_b),
+        );
+        std::fs::write(&class_config_path, &class_config).unwrap();
+        let wrong_policy_digest_config = directory.path().join("wrong-policy-digest.toml");
+        std::fs::write(
+            &wrong_policy_digest_config,
+            class_config.replacen(
+                &hex::encode(policy_a.policy_digest().unwrap()),
+                &hex::encode([0x99; 32]),
+                1,
+            ),
+        )
+        .unwrap();
+        let wrong_class_out = directory.path().join("wrong-class.bin");
+        assert!(build_bat_v2_class(BatV2ClassArgs {
+            issuer_root_key: issuer_path.clone(),
+            bat_key: bat_key_path.clone(),
+            config: wrong_policy_digest_config,
+            out: wrong_class_out.clone(),
+            force: false,
+        })
+        .unwrap_err()
+        .contains("digest does not match"));
+        assert!(!wrong_class_out.exists());
+        let mixed_terms_config = directory.path().join("mixed-terms.toml");
+        std::fs::write(
+            &mixed_terms_config,
+            class_config
+                .replace("policy-b.bin", "policy-mixed.bin")
+                .replace(
+                    &hex::encode(policy_b.policy_digest().unwrap()),
+                    &hex::encode(mixed_policy.policy_digest().unwrap()),
+                ),
+        )
+        .unwrap();
+        let mixed_terms_out = directory.path().join("mixed-terms-class.bin");
+        assert!(build_bat_v2_class(BatV2ClassArgs {
+            issuer_root_key: issuer_path.clone(),
+            bat_key: bat_key_path.clone(),
+            config: mixed_terms_config,
+            out: mixed_terms_out.clone(),
+            force: false,
+        })
+        .unwrap_err()
+        .contains("identical canonical terms"));
+        assert!(!mixed_terms_out.exists());
+        let unknown_field_config = directory.path().join("unknown-field.toml");
+        std::fs::write(
+            &unknown_field_config,
+            format!("{class_config}unreviewed_mode = true\n"),
+        )
+        .unwrap();
+        assert!(build_bat_v2_class(BatV2ClassArgs {
+            issuer_root_key: issuer_path.clone(),
+            bat_key: bat_key_path.clone(),
+            config: unknown_field_config,
+            out: directory.path().join("unknown-field-class.bin"),
+            force: false,
+        })
+        .is_err());
+        let reused_bat_key_path = directory.path().join("reused-bat.key");
+        write_secret(&reused_bat_key_path, &issuer.to_bytes());
+        assert!(build_bat_v2_class(BatV2ClassArgs {
+            issuer_root_key: issuer_path.clone(),
+            bat_key: reused_bat_key_path,
+            config: directory.path().join("class.toml"),
+            out: directory.path().join("reused-key-class.bin"),
+            force: false,
+        })
+        .unwrap_err()
+        .contains("must be distinct"));
+        let class_path = directory.path().join("class.bin");
+        build_bat_v2_class(BatV2ClassArgs {
+            issuer_root_key: issuer_path.clone(),
+            bat_key: bat_key_path.clone(),
+            config: class_config_path,
+            out: class_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let class_bytes = std::fs::read(&class_path).unwrap();
+        let class = BatAcceptanceClassV2::decode(&class_bytes).unwrap();
+        assert_eq!(class.encode().unwrap(), class_bytes);
+        assert_eq!(class.members.len(), 2);
+
+        let authorization_config_path = directory.path().join("accounting.toml");
+        let authorization_config = format!(
+            "authorization_id_hex = \"{}\"\n\
+                 authorization_epoch = 3\n\
+                 provider_id_hex = \"{}\"\n\
+                 issuer_id_hex = \"{}\"\n\
+                 redeem_endpoint = \"https://issuer.invalid\"\n\
+                 redeem_leaf_spki_sha256_pins_hex = [\"{}\"]\n\
+                 settlement_account_id_hex = \"{}\"\n\
+                 clearing_verifying_key_hex = \"{}\"\n\
+                 not_before = 100\n\
+                 not_after = 1480\n\
+                 [[rules]]\n\
+                 class_path = \"class.bin\"\n\
+                 expected_class_digest_hex = \"{}\"\n\
+                 policy_digest_hex = \"{}\"\n\
+                 scope_id_hex = \"{}\"\n\
+                 offer_id = 7\n\
+                 accepted_value = 10\n\
+                 provider_credit = 9\n\
+                 issuer_fee = 1\n",
+            hex::encode([0x21; 16]),
+            hex::encode(policy_a.provider_id),
+            hex::encode(issuer_id),
+            hex::encode([0x22; 32]),
+            hex::encode([0x23; 32]),
+            hex::encode(clearing.verifying_key().to_bytes()),
+            hex::encode(class.class_digest().unwrap()),
+            hex::encode(policy_a.policy_digest().unwrap()),
+            hex::encode(scope_a),
+        );
+        std::fs::write(&authorization_config_path, &authorization_config).unwrap();
+        let wrong_member_config = directory.path().join("wrong-member.toml");
+        std::fs::write(
+            &wrong_member_config,
+            authorization_config.replacen(
+                &hex::encode(policy_a.provider_id),
+                &hex::encode(policy_b.provider_id),
+                1,
+            ),
+        )
+        .unwrap();
+        let wrong_authorization_out = directory.path().join("wrong-accounting.bin");
+        assert!(
+            build_bat_v2_accounting_authorization(BatV2AccountingAuthorizationArgs {
+                operator_signing_key: operator_path.clone(),
+                config: wrong_member_config,
+                out: wrong_authorization_out.clone(),
+                force: false,
+            })
+            .unwrap_err()
+            .contains("exact member")
+        );
+        assert!(!wrong_authorization_out.exists());
+        let authorization_path = directory.path().join("accounting.bin");
+        build_bat_v2_accounting_authorization(BatV2AccountingAuthorizationArgs {
+            operator_signing_key: operator_path.clone(),
+            config: authorization_config_path,
+            out: authorization_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let authorization_bytes = std::fs::read(&authorization_path).unwrap();
+        let authorization =
+            ProviderAccountingAuthorizationV2::decode(&authorization_bytes).unwrap();
+        assert_eq!(authorization.encode().unwrap(), authorization_bytes);
+        assert_eq!(authorization.claims.rules.len(), 1);
+
+        let approval_path = directory.path().join("approval.bin");
+        let wrong_approval_out = directory.path().join("wrong-approval.bin");
+        assert!(
+            build_bat_v2_accounting_approval(BatV2AccountingApprovalArgs {
+                authorization: authorization_path.clone(),
+                issuer_settlement_signing_key: settlement_path.clone(),
+                expected_authorization_digest_hex: hex::encode([0x98; 32]),
+                expected_provider_id_hex: hex::encode(policy_a.provider_id),
+                expected_issuer_id_hex: hex::encode(issuer_id),
+                expected_operator_key_hex: hex::encode(operator.verifying_key().to_bytes()),
+                minimum_authorization_epoch: 3,
+                approved_at: 100,
+                not_after: 1480,
+                out: wrong_approval_out.clone(),
+                force: false,
+            })
+            .unwrap_err()
+            .contains("digest does not match")
+        );
+        assert!(!wrong_approval_out.exists());
+        build_bat_v2_accounting_approval(BatV2AccountingApprovalArgs {
+            authorization: authorization_path,
+            issuer_settlement_signing_key: settlement_path,
+            expected_authorization_digest_hex: hex::encode(
+                authorization.authorization_digest().unwrap(),
+            ),
+            expected_provider_id_hex: hex::encode(policy_a.provider_id),
+            expected_issuer_id_hex: hex::encode(issuer_id),
+            expected_operator_key_hex: hex::encode(operator.verifying_key().to_bytes()),
+            minimum_authorization_epoch: 3,
+            approved_at: 100,
+            not_after: 1480,
+            out: approval_path.clone(),
+            force: false,
+        })
+        .unwrap();
+        let approval_bytes = std::fs::read(approval_path).unwrap();
+        let approval = IssuerAccountingApprovalV2::decode(&approval_bytes).unwrap();
+        assert_eq!(approval.encode().as_slice(), approval_bytes.as_slice());
+        approval
+            .verify_for(&authorization, &settlement.verifying_key(), 100, 3)
+            .unwrap();
     }
 
     #[test]

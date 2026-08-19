@@ -488,6 +488,7 @@ fn parse_authorization(value: &str) -> Result<AuthScheme, String> {
         "bolt11-direct-receipt" => Ok(AuthScheme::Bolt11DirectReceiptV1),
         "cashu-ecash" => Ok(AuthScheme::CashuEcashV1),
         "cashu-bat" => Ok(AuthScheme::BitcoinPirCashuBatV1),
+        "cashu-bat-v2" => Ok(AuthScheme::BitcoinPirCashuBatV2),
         "arc-experimental" => Ok(AuthScheme::ArcV1Experimental),
         _ => Err(format!("unknown authorization scheme `{value}`")),
     }
@@ -586,6 +587,19 @@ mod tests {
     use super::*;
     use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn bat_v2_authorization_name_is_explicit_and_v1_remains_stable() {
+        assert_eq!(
+            parse_authorization("cashu-bat-v2").unwrap(),
+            AuthScheme::BitcoinPirCashuBatV2
+        );
+        assert_eq!(
+            parse_authorization("cashu-bat").unwrap(),
+            AuthScheme::BitcoinPirCashuBatV1
+        );
+        assert!(parse_authorization("cashu-bat-v3").is_err());
+    }
 
     #[test]
     fn free_policy_toml_signs_and_verifies() {
