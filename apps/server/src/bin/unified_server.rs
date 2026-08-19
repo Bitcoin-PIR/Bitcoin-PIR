@@ -9099,10 +9099,11 @@ async fn main() {
             || args.service_shared_clearing_key_path.is_some(),
     )
     .unwrap_or_else(|error| fatal_cli(error));
-    if args.pir2_sealed.require_ready && !args.service_storeless_bat_v2.selected() {
-        fatal_cli("--pir2-snp-sealed-require-ready requires the storeless BAT V2 profile");
+    let ready_phase = args.pir2_sealed.phase == Some(Pir2SealedStartupPhaseV1::Ready);
+    if ready_phase && !args.service_storeless_bat_v2.selected() {
+        fatal_cli("pir2 SNP-sealed ready phase requires the storeless BAT V2 profile");
     }
-    if args.pir2_sealed.require_ready
+    if ready_phase
         && (args.pir2_sealed.accounting_authorization_path
             != args.service_storeless_bat_v2.accounting_authorization_path
             || args.pir2_sealed.issuer_approval_path
@@ -9120,7 +9121,7 @@ async fn main() {
     let channel_pubkey = channel_keypair.public_bytes();
     let pinned_operator =
         source_pinned_pir2_operator_key_v1().unwrap_or_else(|error| fatal_cli(error));
-    let sealed_issuer_settlement_key = if args.pir2_sealed.require_ready {
+    let sealed_issuer_settlement_key = if ready_phase {
         let configured_operator = decode_fixed_hex_v1::<32>(
             args.service_storeless_bat_v2
                 .operator_key_hex
