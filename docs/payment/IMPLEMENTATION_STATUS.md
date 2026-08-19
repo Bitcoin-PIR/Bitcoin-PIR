@@ -67,20 +67,31 @@ activated the path with real money.
       outcome burns it. Focused tests cover fresh success, issuer-global replay,
       signed retry-safe decisions, stale/invalid response rejection, transport
       ambiguity, trust/role-key checks and exact route/media bindings.
-- [ ] **Runtime provider, SDK/Web and render path pending.** Legacy
-      ProviderStore/admission paths still deliberately reject scheme 6; no old
-      replayable V1 success is reinterpreted. The exact-policy runtime adapter,
-      unified-server closed profile, SDK/Web class wallet, two-paid-leg
-      selection and production render gates remain to implement. Current
+- [x] **Runtime protocol/provider adapter implemented.** Scheme 6 has an
+      independent fixed-size proof variant, admission route and composite
+      committer slot; it is not interpreted as V1 and the ProviderStore adapter
+      explicitly rejects it. Separate exact-digest current/retained policy
+      activation accepts only the closed per-scope Free-PoW plus shared-issuer
+      BAT V2 shape, and the storeless committer binds the exact verified member,
+      signed class and provider client before one issuer-online attempt.
+      Focused protocol, runtime and provider-client tests cover route isolation,
+      closed policy shape, retained deadlines and fail-closed outcome mapping.
+- [ ] **Unified-server, SDK/Web and render integration pending.** The new
+      runtime/provider libraries are not yet selected by `unified_server`; no
+      SDK/Web class wallet, two-paid-leg selection or production render gate
+      exists. Legacy ProviderStore/admission paths still deliberately reject
+      scheme 6, and no old replayable V1 success is reinterpreted. Current
       `main` also retains the old Direct Mainnet issuer unit and stateful V1
       provider profiles. An old draft's fixed
       2-policy/12-key/2-clearing shape remains superseded and is not V2
       readiness evidence.
-- [ ] **Payment-storeless provider mode pending.** The current shared-BAT
-      committer still uses ProviderStore for a local delivery claim and the
-      existing storeless mode accepts only Free-PoW. The V2 path must make the
-      issuer the only durable spend/replay authority and must not return a
-      grantable success after first commit.
+- [x] **Payment-storeless provider library mode implemented.** The independent
+      BAT V2 path has no ProviderStore, local delivery claim, HMAC/idempotency
+      secret or payment rollback client. The issuer remains the only durable
+      spend/replay authority; only a freshly committed issuer response can
+      grant, while terminal/replay and ambiguous outcomes cannot grant. This
+      checkbox covers library/runtime behavior only, not the pending
+      `unified_server`, SDK/Web, render or production activation work above.
 - [ ] **Old Direct transition pending.** Before replacing the old Mainnet
       source profile, an owner must inventory every private plan, installed
       bundle, store/floor, identity/key lineage, backup and outstanding quote/
@@ -1505,13 +1516,13 @@ findings and must not be collapsed into that count.
    attestation/binary/client-pin acceptance. Policy expiry/renewal, difficulty,
    scope, limit or dataset changes all require another UKI; host-side edits fail
    closed.
-   The current storeless exception cannot implement issuer-wide V2 BAT either,
-   because its runtime contract accepts only Free-PoW. V2 must add an
-   exact-policy, issuer-online BAT mode with no payment ProviderStore,
-   shared-idempotency material or provider payment rollback client. pir2's
-   selected sealed identity/clearing implementation and capability canary are
-   tracked separately above. Until that code and evidence exist, no pir2 V2
-   plan or UKI is source-ready.
+   The original Free-PoW-only storeless contract remains unchanged. A separate
+   exact-policy, issuer-online BAT V2 library/runtime path now exists without a
+   payment ProviderStore, shared-idempotency material or provider payment
+   rollback client, but it is not yet wired into `unified_server` or a rendered
+   provider plan. pir2's selected sealed identity/clearing implementation and
+   capability canary are tracked separately above. Until those integration and
+   sealed-state artifacts exist, no pir2 V2 plan or UKI is source-ready.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent

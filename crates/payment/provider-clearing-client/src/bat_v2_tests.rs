@@ -12,8 +12,8 @@ use pir_service_protocol::{
     DeploymentStatus, EntitlementLimitsV1, IssuerAccountingApprovalV2, PrivacyLeakageV1,
     ProviderAccountingAuthorizationClaimsV2, ProviderAccountingAuthorizationV2,
     ProviderAccountingExpectationV2, ProviderAccountingRuleV2, ProviderRedeemEnvelopeV2,
-    ProviderRedeemResponseV2, RetrySafeNonConsumingReasonV2, SettlementUnitV1,
-    VerifiedBatAcceptanceMemberV2, VerifiedBatV2RedeemCommitV2, WorkloadId,
+    ProviderRedeemResponseV2, RetrySafeNonConsumingReasonV2, ServiceProtocolError,
+    SettlementUnitV1, VerifiedBatAcceptanceMemberV2, VerifiedBatV2RedeemCommitV2, WorkloadId,
     MAX_BAT_V2_PROVIDER_REDEEM_RESPONSE_LEN_V2,
 };
 
@@ -101,7 +101,7 @@ impl Fixture {
             [7; 32],
             13,
             100,
-            2_000,
+            1_480,
             SECP_GENERATOR,
             terms(),
             members.clone(),
@@ -186,6 +186,20 @@ impl Fixture {
             issuer_settlement_verifying_key: self.settlement_key.verifying_key(),
             minimum_authorization_epoch: 7,
         }
+    }
+
+    fn class_with_validity(&self, key_not_before: u64, key_not_after: u64) -> BatAcceptanceClassV2 {
+        BatAcceptanceClassV2::sign(
+            self.class.class_id,
+            self.class.key_epoch,
+            key_not_before,
+            key_not_after,
+            self.class.bat_verification_key,
+            self.class.common_terms.clone(),
+            self.class.members.clone(),
+            &SigningKey::from_bytes(&[8; 32]),
+        )
+        .unwrap()
     }
 }
 
@@ -645,6 +659,38 @@ fn bat_v2_storeless_constructor_and_presend_checks_fail_closed() {
         &client,
     )
     .is_err());
+    let starts_after_policy = transport.fixture.class_with_validity(101, 1_480);
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &transport.fixture.selected,
+        &starts_after_policy,
+        &client,
+    )
+    .is_err());
+    let short_by_one = transport.fixture.class_with_validity(100, 1_479);
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &transport.fixture.selected,
+        &short_by_one,
+        &client,
+    )
+    .is_err());
+    let extends_past_redemption = transport.fixture.class_with_validity(100, 1_481);
+    assert!(StorelessBatV2AdmissionCommitterV2::new(
+        &transport.fixture.selected,
+        &extends_past_redemption,
+        &client,
+    )
+    .is_err());
+    let overflow_class = transport.fixture.class_with_validity(100, u64::MAX);
+    let mut overflow_member = transport.fixture.selected.clone();
+    overflow_member.policy_expires_at = u64::MAX - 100;
+    overflow_member.redemption_deadline = u64::MAX;
+    assert!(matches!(
+        StorelessBatV2AdmissionCommitterV2::new(&overflow_member, &overflow_class, &client),
+        Err(ServiceProtocolError::InvalidValue {
+            field: "VerifiedBatAcceptanceMemberV2.class_projection",
+            reason: "minimum class validity horizon overflows",
+        })
+    ));
     assert!(matches!(
         client.redeem_once(
             &transport.fixture.selected,

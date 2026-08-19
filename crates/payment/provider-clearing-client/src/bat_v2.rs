@@ -5,6 +5,7 @@ use pir_runtime_core::service_admission::{
     AdmissionCommitErrorV1, AdmissionMethodCommitterV1, AdmissionMethodRouteV1,
 };
 use pir_service_protocol::{
+    verify_bat_acceptance_class_member_projection_v2,
     verify_grantable_success_for_inflight_attempt_v2, BatAcceptanceClassV2,
     BitcoinPirCashuBatProofV2, IssuerAccountingApprovalV2, ProviderAccountingAuthorizationV2,
     ProviderId, ProviderRedeemEnvelopeV2, ProviderRedeemOutcomeV2, ProviderRedeemRequestAuthV2,
@@ -399,20 +400,7 @@ impl<'a> StorelessBatV2AdmissionCommitterV2<'a> {
         class: &'a BatAcceptanceClassV2,
         client: &'a StorelessBatV2ProviderRedeemClientV2<'a>,
     ) -> Result<Self, ServiceProtocolError> {
-        class.verify_for(&member.issuer_id, &member.class_id)?;
-        let expected_deadline = member
-            .policy_expires_at
-            .checked_add(class.common_terms.retired_policy_grace_seconds as u64);
-        if member.common_terms != class.common_terms
-            || !class.members.contains(&member.member)
-            || member.policy_issued_at > member.policy_expires_at
-            || expected_deadline != Some(member.redemption_deadline)
-        {
-            return Err(ServiceProtocolError::InvalidValue {
-                field: "StorelessBatV2AdmissionCommitterV2.member",
-                reason: "verified member is not an exact member of the signed BAT V2 class",
-            });
-        }
+        verify_bat_acceptance_class_member_projection_v2(class, member)?;
         Ok(Self {
             member,
             class,
