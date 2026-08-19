@@ -54,12 +54,26 @@ activated the path with real money.
       store, service and route tests cover one-winner concurrency, retained
       members, restart replay, real Cashu proof verification, zero-mutation
       retry-safe rejection, exact media types and CLI trust inputs.
-- [ ] **Storeless provider, SDK/Web and render path pending.** ProviderStore
-      paths still deliberately reject scheme 6; no old replayable V1 success is
-      reinterpreted. The connection-local V2 provider committer, SDK/Web class
-      wallet, two-paid-leg selection and production render gates remain to
-      implement. Current `main` also retains the old Direct Mainnet issuer unit
-      and stateful V1 provider profiles. An old draft's fixed
+- [x] **Storeless provider redemption client core implemented.** The provider
+      creates one fresh public OS-random attempt per call, sends the canonical
+      V2 envelope exactly once through strict WebPKI-plus-pin HTTPS, and can
+      create an opaque connection grant only by consuming the protocol's exact
+      in-flight witness for a freshly committed issuer success. It has no
+      ProviderStore, idempotency/HMAC secret, local delivery claim, payment
+      rollback client, automatic retry or saved-response recovery. Only
+      transport-proven `DefinitelyNotSent` and issuer-signed non-consuming
+      rejection leave the proof eligible for a later caller-initiated attempt;
+      every unsigned HTTP status, malformed/misbound response and ambiguous
+      outcome burns it. Focused tests cover fresh success, issuer-global replay,
+      signed retry-safe decisions, stale/invalid response rejection, transport
+      ambiguity, trust/role-key checks and exact route/media bindings.
+- [ ] **Runtime provider, SDK/Web and render path pending.** Legacy
+      ProviderStore/admission paths still deliberately reject scheme 6; no old
+      replayable V1 success is reinterpreted. The exact-policy runtime adapter,
+      unified-server closed profile, SDK/Web class wallet, two-paid-leg
+      selection and production render gates remain to implement. Current
+      `main` also retains the old Direct Mainnet issuer unit and stateful V1
+      provider profiles. An old draft's fixed
       2-policy/12-key/2-clearing shape remains superseded and is not V2
       readiness evidence.
 - [ ] **Payment-storeless provider mode pending.** The current shared-BAT
