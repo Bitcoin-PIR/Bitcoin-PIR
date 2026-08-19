@@ -335,23 +335,13 @@ for expected in "${REQUIRED_TIER3_ITEMS[@]}"; do
 done
 echo "Direct ORAM supervisor, runit hooks, binaries, and BHTM proof confirmed in initramfs"
 
-# A measured identity key is optional, but when supplied it must retain the
-# exact private-parent permissions required by unified_server's private-file
-# loader.  Otherwise the guest can attest and serve an encrypted channel while
-# silently disabling REQ_ANNOUNCE at startup.
-if [ -n "${BPIR_TIER3_IDENTITY_KEY:-}" ] || [ -n "${BPIR_TIER3_IDENTITY_CERT:-}" ]; then
-    IDENTITY_INITRD_ITEMS=(
-        'drwx------[[:space:]]+.*etc/bitcoinpir/identity$'
-        '-rw-------[[:space:]]+.*etc/bitcoinpir/identity/server\.key$'
-        '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/identity/server\.cert$'
-    )
-    for expected in "${IDENTITY_INITRD_ITEMS[@]}"; do
-        if ! grep -Eq -- "$expected" <<< "$INITRD_LISTING"; then
-            echo "ERROR: measured identity item missing or has unsafe mode: $expected" >&2
-            exit 1
-        fi
-    done
-    echo "measured identity confirmed in initramfs (private parent + key + cert)"
+# The pir2 sealed profile derives both long-lived signing seeds inside the
+# measured guest.  A plaintext identity seed in the UKI would bypass that
+# boundary even if the runtime never selected it, so inventory rejects the old
+# fallback path unconditionally.
+if grep -Eq -- 'etc/bitcoinpir/identity/server\.key$' <<< "$INITRD_LISTING"; then
+    echo "ERROR: private identity key must not be embedded in the Tier 3 UKI" >&2
+    exit 1
 fi
 
 if ! grep -Eq -- '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/payment/service-policy\.bin$' <<< "$INITRD_LISTING"; then
