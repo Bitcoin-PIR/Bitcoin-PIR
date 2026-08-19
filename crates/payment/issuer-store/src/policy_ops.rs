@@ -8,9 +8,11 @@ use crate::{
 };
 use ed25519_dalek::VerifyingKey;
 use pir_service_protocol::{
-    AuthScheme, Bolt11QuoteIntentV1, CashuManifestEpochFloorV1, CredentialKeyBindingExpectationV1,
+    bat_acceptance_member_from_verified_policy_v2, AuthScheme, BatAcceptanceMemberV2,
+    Bolt11QuoteIntentV1, CashuManifestEpochFloorV1, CredentialKeyBindingExpectationV1,
     CredentialKeyBindingV1, CredentialKeysetEpochFloorV1, PolicyRollbackGuardV1,
     ProviderClearingAuthorizationV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
+    VerifiedBatAcceptanceMemberV2,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -598,6 +600,11 @@ impl IssuerStore {
                         "clearing rule references a non-shared credential scheme",
                     ));
                 }
+                AuthScheme::BitcoinPirCashuBatV2 => {
+                    return Err(StoreError::InvalidInput(
+                        "BAT V2 has no V1 credential binding or clearing-rule path",
+                    ));
+                }
             }
             resolved.push(binding.clone());
         }
@@ -605,31 +612,45 @@ impl IssuerStore {
     }
 }
 
-fn read_policy_head(
+pub(crate) fn read_policy_head(
     connection: &Connection,
     store: &IssuerStore,
     provider_id: &[u8; 32],
 ) -> StoreResult<Option<IssuerServicePolicyRecordV1>> {
-    let digest: Option<Vec<u8>> = connection
+    type RawHead = (i64, Vec<u8>, Vec<u8>, i64);
+    let head: Option<RawHead> = connection
         .query_row(
-            "SELECT policy_digest FROM issuer_service_policy_heads WHERE provider_id = ?1",
+            "SELECT highest_epoch, policy_digest, policy_verifying_key, commit_seq \
+             FROM issuer_service_policy_heads WHERE provider_id = ?1",
             [provider_id.as_slice()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    digest
-        .map(|digest| {
-            let digest = fixed_blob(digest, "invalid service policy head digest")?;
+    head.map(|(highest_epoch, digest, verifying_key, commit_seq)| {
+        let highest_epoch = db_u64(highest_epoch, "negative service policy head epoch")?;
+        let digest = fixed_blob(digest, "invalid service policy head digest")?;
+        let verifying_key = fixed_blob(verifying_key, "invalid service policy head verifying key")?;
+        let commit_seq = db_u64(commit_seq, "negative service policy head commit")?;
+        let record =
             read_policy_by_digest(connection, store, provider_id, &digest)?.ok_or_else(|| {
                 StoreError::SchemaMismatch(
                     "service policy head points to a missing retained policy".to_owned(),
                 )
-            })
-        })
-        .transpose()
+            })?;
+        if record.policy_epoch != highest_epoch
+            || record.policy_verifying_key != verifying_key
+            || record.commit.commit_seq != commit_seq
+        {
+            return Err(StoreError::SchemaMismatch(
+                "service policy head metadata points to different retained rows".to_owned(),
+            ));
+        }
+        Ok(record)
+    })
+    .transpose()
 }
 
-fn read_policy_by_digest(
+pub(crate) fn read_policy_by_digest(
     connection: &Connection,
     store: &IssuerStore,
     provider_id: &[u8; 32],
@@ -692,6 +713,84 @@ fn read_policy_by_digest(
         })
     })
     .transpose()
+}
+
+/// Resolves a BAT V2 member only through the provider's currently registered
+/// policy head. This is used inside the class-registration transaction so a
+/// retained but superseded policy can never activate a new class epoch.
+pub(crate) fn project_current_bat_acceptance_member_v2(
+    connection: &Connection,
+    store: &IssuerStore,
+    member: &BatAcceptanceMemberV2,
+    now_unix: u64,
+) -> StoreResult<(VerifiedBatAcceptanceMemberV2, IssuerServicePolicyRecordV1)> {
+    let record = read_policy_head(connection, store, &member.provider_id)?
+        .ok_or(StoreError::BatV2ClassMemberMismatch)?;
+    if record.policy_digest != member.policy_digest {
+        return Err(StoreError::BatV2ClassMemberMismatch);
+    }
+    let floors = read_policy_floors(connection, &member.provider_id)?;
+    project_bat_acceptance_member_from_record_v2(record, member, now_unix, &floors)
+}
+
+/// Rebuilds the BAT V2 projection from one retained exact signed policy at its
+/// original issuance time. It is readback/integrity-only and therefore never
+/// makes an expired policy eligible for a new class registration.
+pub(crate) fn project_retained_bat_acceptance_member_v2(
+    connection: &Connection,
+    store: &IssuerStore,
+    member: &BatAcceptanceMemberV2,
+) -> StoreResult<(VerifiedBatAcceptanceMemberV2, IssuerServicePolicyRecordV1)> {
+    let record = read_policy_by_digest(
+        connection,
+        store,
+        &member.provider_id,
+        &member.policy_digest,
+    )?
+    .ok_or_else(|| StoreError::SchemaMismatch("BAT V2 member policy is not retained".to_owned()))?;
+    let policy = ServicePolicyV1::decode(&record.exact_policy).map_err(|_| {
+        StoreError::SchemaMismatch("retained BAT V2 member policy is not canonical".to_owned())
+    })?;
+    project_bat_acceptance_member_from_record_v2(
+        record,
+        member,
+        policy.issued_at,
+        &ServicePolicyEpochFloorsV1::initial(),
+    )
+}
+
+fn project_bat_acceptance_member_from_record_v2(
+    record: IssuerServicePolicyRecordV1,
+    member: &BatAcceptanceMemberV2,
+    verification_time: u64,
+    floors: &ServicePolicyEpochFloorsV1,
+) -> StoreResult<(VerifiedBatAcceptanceMemberV2, IssuerServicePolicyRecordV1)> {
+    let policy = ServicePolicyV1::decode(&record.exact_policy).map_err(|_| {
+        StoreError::SchemaMismatch("retained BAT V2 member policy is not canonical".to_owned())
+    })?;
+    let key = VerifyingKey::from_bytes(&record.policy_verifying_key).map_err(|_| {
+        StoreError::SchemaMismatch("retained BAT V2 policy key is malformed".to_owned())
+    })?;
+    let guard = PolicyRollbackGuardV1 {
+        highest_epoch: record.policy_epoch,
+        digest_at_highest_epoch: record.policy_digest,
+    };
+    let verified = policy
+        .verify_current_for_acquisition(
+            &member.provider_id,
+            verification_time,
+            &guard,
+            floors,
+            &key,
+        )
+        .map_err(|_| StoreError::BatV2ClassMemberMismatch)?;
+    let projection =
+        bat_acceptance_member_from_verified_policy_v2(&verified, &member.scope_id, member.offer_id)
+            .map_err(|_| StoreError::BatV2ClassMemberMismatch)?;
+    if projection.member != *member {
+        return Err(StoreError::BatV2ClassMemberMismatch);
+    }
+    Ok((projection, record))
 }
 
 fn read_policy_floors(

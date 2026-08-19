@@ -10,11 +10,15 @@ use pir_issuer_store::{
 };
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_issuer_id, paid_receipt_key_id,
-    AuthScheme, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
-    Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1, CashuDenominationKeyV1,
-    CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
-    CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1, LightningNetworkV1,
-    PaidReceiptBindingV1, PaidReceiptV1, BOLT11_QUOTE_SIGNATURE_DOMAIN,
+    AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, BatAcceptanceClassV2,
+    BatAcceptanceMemberV2, BatAcceptanceTermsV2, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
+    Bolt11QuoteKeyDelegationV1, Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
+    CashuDenominationKeyV1, CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
+    CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1, DatasetBindingV1,
+    DeploymentStatus, EntitlementLimitsV1, FreeModeV1, LightningNetworkV1, PaidReceiptBindingV1,
+    PaidReceiptV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyV1,
+    ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
+    BOLT11_QUOTE_SIGNATURE_DOMAIN,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -208,6 +212,181 @@ fn point(multiplier: u64) -> [u8; 33] {
         .to_affine()
         .to_encoded_point(true);
     encoded.as_bytes().try_into().expect("compressed point")
+}
+
+fn bat_v2_limits() -> EntitlementLimitsV1 {
+    EntitlementLimitsV1 {
+        max_logical_inputs: 4,
+        max_frames: 200,
+        max_request_bytes: 1_000_000,
+        max_response_bytes: 2_000_000,
+        max_wall_time_ms: 60_000,
+        max_concurrent_sockets: 1,
+        max_hint_groups: 0,
+        max_work_units: 9_000,
+    }
+}
+
+fn bat_v2_privacy() -> PrivacyLeakageV1 {
+    PrivacyLeakageV1::from_bits(
+        PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+            | PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING
+            | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+    )
+    .expect("BAT V2 privacy flags")
+}
+
+fn bat_v2_scope(provider_id: [u8; 32]) -> ServiceScopeV1 {
+    ServiceScopeV1 {
+        provider_id,
+        backend: BackendId::DpfPirV1,
+        workload: WorkloadId::DpfEvaluateJobV1,
+        protocol_version: 1,
+        dataset: DatasetBindingV1::Class { class_id: 1 },
+        operation_profile: 1,
+        entitlement_profile: 2,
+    }
+}
+
+fn bat_v2_offer(class_id: [u8; 32]) -> ServiceOfferV1 {
+    ServiceOfferV1 {
+        offer_id: 7,
+        acquisition: AcquisitionMethod::Bolt11V1,
+        free_mode: FreeModeV1::NotFree,
+        free_quota: 0,
+        free_window_seconds: 0,
+        free_pow_difficulty_bits: 0,
+        priority_class: 1,
+        authorization: AuthScheme::BitcoinPirCashuBatV2,
+        verification: VerificationMode::SharedIssuerOnline,
+        deployment_status: DeploymentStatus::Stable,
+        price: PriceV1::MilliSatoshi(2_000),
+        issuer_id: issuer_id(),
+        key_id: class_id.to_vec(),
+        credential_binding: None,
+        cashu_mint_manifest: None,
+        endpoint: "https://issuer.invalid".to_owned(),
+        invoice_expiry_seconds: 60,
+        claim_window_seconds: 120,
+        minimum_credential_validity_seconds: 300,
+        retired_policy_grace_seconds: 480,
+        credential_count: 2,
+        credential_presentation_limit: 1,
+        privacy_leakage: bat_v2_privacy(),
+    }
+}
+
+fn bat_v2_terms() -> BatAcceptanceTermsV2 {
+    BatAcceptanceTermsV2 {
+        auth_padding_class: AuthPaddingClassV1::Class16KiB,
+        backend: BackendId::DpfPirV1,
+        workload: WorkloadId::DpfEvaluateJobV1,
+        protocol_version: 1,
+        dataset: DatasetBindingV1::Class { class_id: 1 },
+        operation_profile: 1,
+        entitlement_profile: 2,
+        limits: bat_v2_limits(),
+        priority_class: 1,
+        deployment_status: DeploymentStatus::Stable,
+        price_msat: 2_000,
+        issuer_endpoint: "https://issuer.invalid".to_owned(),
+        invoice_expiry_seconds: 60,
+        claim_window_seconds: 120,
+        minimum_credential_validity_seconds: 300,
+        retired_policy_grace_seconds: 480,
+        credential_count: 2,
+        credential_presentation_limit: 1,
+        privacy_leakage: bat_v2_privacy(),
+    }
+}
+
+fn register_bat_v2_member_policy(
+    store: &IssuerStore,
+    provider_byte: u8,
+    signing_key_byte: u8,
+    class_id: [u8; 32],
+    policy_epoch: u64,
+) -> BatAcceptanceMemberV2 {
+    let provider_id = [provider_byte; 32];
+    let scope = bat_v2_scope(provider_id);
+    let scope_id = scope.scope_id();
+    let signing_key = SigningKey::from_bytes(&[signing_key_byte; 32]);
+    let policy = ServicePolicyV1::sign(
+        provider_id,
+        policy_epoch,
+        100,
+        1_000,
+        AuthPaddingClassV1::Class16KiB,
+        vec![ServiceScopePolicyV1 {
+            scope,
+            limits: bat_v2_limits(),
+            offers: vec![bat_v2_offer(class_id)],
+        }],
+        &signing_key,
+    )
+    .expect("sign BAT V2 member policy");
+    let policy_digest = policy.policy_digest().expect("BAT V2 policy digest");
+    let _ = store
+        .register_service_policy(&policy, &signing_key.verifying_key(), 200)
+        .expect("register BAT V2 member policy");
+    BatAcceptanceMemberV2 {
+        provider_id,
+        policy_digest,
+        scope_id,
+        offer_id: 7,
+    }
+}
+
+fn register_bat_v2_members(
+    store: &IssuerStore,
+    class_id: [u8; 32],
+    policy_epoch: u64,
+) -> Vec<BatAcceptanceMemberV2> {
+    vec![
+        register_bat_v2_member_policy(store, 0xa1, 0xb1, class_id, policy_epoch),
+        register_bat_v2_member_policy(store, 0xa2, 0xb2, class_id, policy_epoch),
+    ]
+}
+
+fn bat_v2_class(
+    class_id: [u8; 32],
+    key_epoch: u64,
+    raw_key_multiplier: u64,
+    terms: BatAcceptanceTermsV2,
+    members: Vec<BatAcceptanceMemberV2>,
+) -> BatAcceptanceClassV2 {
+    bat_v2_class_with_validity(
+        class_id,
+        key_epoch,
+        raw_key_multiplier,
+        100,
+        1_480,
+        terms,
+        members,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bat_v2_class_with_validity(
+    class_id: [u8; 32],
+    key_epoch: u64,
+    raw_key_multiplier: u64,
+    key_not_before: u64,
+    key_not_after: u64,
+    terms: BatAcceptanceTermsV2,
+    members: Vec<BatAcceptanceMemberV2>,
+) -> BatAcceptanceClassV2 {
+    BatAcceptanceClassV2::sign(
+        class_id,
+        key_epoch,
+        key_not_before,
+        key_not_after,
+        point(raw_key_multiplier),
+        terms,
+        members,
+        &root_key(),
+    )
+    .expect("sign BAT V2 class")
 }
 
 fn xonly(multiplier: u64) -> [u8; 32] {
@@ -955,6 +1134,9 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
     assert_eq!(inventory.quote_rows, 0);
     assert_eq!(inventory.claim_rows, 0);
     assert_eq!(inventory.retained_policy_rows, 0);
+    assert_eq!(inventory.bat_v2_class_rows, 0);
+    assert_eq!(inventory.bat_v2_class_head_rows, 0);
+    assert_eq!(inventory.bat_v2_class_member_rows, 0);
     assert_eq!(inventory.redemption_rows, 0);
     assert_eq!(inventory.payout_rows, 0);
     let floor = test_path.authority.floor().unwrap();
@@ -2319,6 +2501,198 @@ fn bat_and_settlement_key_lineages_are_immutable_and_survive_restart() {
             .manifest_digest,
         settlement.manifest_digest
     );
+}
+
+#[test]
+fn bat_v2_registry_accepts_two_provider_epochs_and_survives_restart() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let class_id = [0x42; 32];
+    let first_members = register_bat_v2_members(&store, class_id, 1);
+    let first = bat_v2_class(class_id, 1, 40, bat_v2_terms(), first_members);
+    let installed = store.register_bat_acceptance_class_v2(&first, 200).unwrap();
+    assert_eq!(installed.disposition, WriteDisposition::Committed);
+    assert_eq!(installed.value.members.len(), 2);
+    assert_eq!(
+        store
+            .register_bat_acceptance_class_v2(&first, 200)
+            .unwrap()
+            .disposition,
+        WriteDisposition::ExactReplay
+    );
+
+    let second_members = register_bat_v2_members(&store, class_id, 2);
+    let second = bat_v2_class(class_id, 2, 41, bat_v2_terms(), second_members);
+    let _ = store
+        .register_bat_acceptance_class_v2(&second, 200)
+        .unwrap();
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&first, 200),
+        Err(StoreError::BatV2ClassRollback)
+    ));
+    assert_eq!(
+        store
+            .current_bat_acceptance_class_v2(&class_id)
+            .unwrap()
+            .unwrap()
+            .key_epoch,
+        2
+    );
+    assert_eq!(
+        store
+            .bat_acceptance_class_v2(&class_id, 1)
+            .unwrap()
+            .unwrap()
+            .exact_artifact,
+        first.encode().unwrap()
+    );
+    let inventory = store.operational_inventory().unwrap();
+    assert_eq!(inventory.bat_v2_class_rows, 2);
+    assert_eq!(inventory.bat_v2_class_head_rows, 1);
+    assert_eq!(inventory.bat_v2_class_member_rows, 4);
+    drop(store);
+
+    let reopened = open_store(&test_path).unwrap();
+    assert_eq!(
+        reopened
+            .current_bat_acceptance_class_v2(&class_id)
+            .unwrap()
+            .unwrap()
+            .exact_artifact,
+        second.encode().unwrap()
+    );
+    assert!(reopened
+        .bat_acceptance_class_v2(&class_id, 1)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn bat_v2_registry_rejects_member_terms_epoch_and_cross_class_conflicts() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let class_id = [0x43; 32];
+    let members = register_bat_v2_members(&store, class_id, 1);
+
+    let mut changed_terms = bat_v2_terms();
+    changed_terms.price_msat += 1;
+    let terms_mismatch = bat_v2_class(class_id, 1, 50, changed_terms.clone(), members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&terms_mismatch, 200),
+        Err(StoreError::BatV2ClassTermsConflict)
+    ));
+
+    let mut wrong_members = members.clone();
+    wrong_members[0].offer_id += 1;
+    let wrong_member = bat_v2_class(class_id, 1, 50, bat_v2_terms(), wrong_members);
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&wrong_member, 200),
+        Err(StoreError::BatV2ClassMemberMismatch)
+    ));
+
+    let late_not_before =
+        bat_v2_class_with_validity(class_id, 1, 52, 101, 1_480, bat_v2_terms(), members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&late_not_before, 200),
+        Err(StoreError::BatV2ClassMemberMismatch)
+    ));
+    let short_not_after =
+        bat_v2_class_with_validity(class_id, 1, 53, 100, 1_479, bat_v2_terms(), members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&short_not_after, 200),
+        Err(StoreError::BatV2ClassMemberMismatch)
+    ));
+    let long_not_after =
+        bat_v2_class_with_validity(class_id, 1, 54, 100, 1_481, bat_v2_terms(), members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&long_not_after, 200),
+        Err(StoreError::BatV2ClassMemberMismatch)
+    ));
+
+    let accepted = bat_v2_class(class_id, 1, 50, bat_v2_terms(), members.clone());
+    let _ = store
+        .register_bat_acceptance_class_v2(&accepted, 200)
+        .unwrap();
+    let same_epoch_fork = bat_v2_class(class_id, 1, 51, bat_v2_terms(), members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&same_epoch_fork, 200),
+        Err(StoreError::BatV2ClassFork)
+    ));
+    let changed_terms_epoch = bat_v2_class(class_id, 2, 51, changed_terms, members.clone());
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&changed_terms_epoch, 200),
+        Err(StoreError::BatV2ClassTermsConflict)
+    ));
+    let reused_epoch_key = bat_v2_class(class_id, 2, 50, bat_v2_terms(), members);
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&reused_epoch_key, 200),
+        Err(StoreError::BatV2RawKeyConflict)
+    ));
+
+    let other_class_id = [0x44; 32];
+    let other_members = register_bat_v2_members(&store, other_class_id, 2);
+    let cross_class_reuse = bat_v2_class(other_class_id, 1, 50, bat_v2_terms(), other_members);
+    assert!(matches!(
+        store.register_bat_acceptance_class_v2(&cross_class_reuse, 200),
+        Err(StoreError::BatV2RawKeyConflict)
+    ));
+}
+
+fn bat_v2_legacy_lineage(raw_public_key: [u8; 33]) -> BatKeyLineageRegistration {
+    let provider_id = [0xd1; 32];
+    let scope_id = [0xd2; 32];
+    BatKeyLineageRegistration {
+        raw_public_key,
+        provider_id,
+        scope_id,
+        offer_id: 9,
+        entitlement_profile: 4,
+        keyset_epoch: 3,
+        credential_key_id: derive_bat_key_id_v1(&provider_id, &scope_id, 9, 4, 3, &raw_public_key),
+    }
+}
+
+#[test]
+fn bat_v2_registry_rejects_bidirectional_legacy_raw_key_reuse() {
+    let legacy_first_path = TestPath::new();
+    let legacy_first = create_store(&legacy_first_path);
+    let class_id = [0x45; 32];
+    let members = register_bat_v2_members(&legacy_first, class_id, 1);
+    let artifact = bat_v2_class(class_id, 1, 60, bat_v2_terms(), members);
+    let lineage = bat_v2_legacy_lineage(point(60));
+    let _ = legacy_first.register_bat_key_lineage(&lineage).unwrap();
+    assert!(matches!(
+        legacy_first.register_bat_acceptance_class_v2(&artifact, 200),
+        Err(StoreError::BatV2RawKeyConflict)
+    ));
+
+    let v2_first_path = TestPath::new();
+    let v2_first = create_store(&v2_first_path);
+    let class_id = [0x46; 32];
+    let members = register_bat_v2_members(&v2_first, class_id, 1);
+    let artifact = bat_v2_class(class_id, 1, 61, bat_v2_terms(), members);
+    let _ = v2_first
+        .register_bat_acceptance_class_v2(&artifact, 200)
+        .unwrap();
+    let lineage = bat_v2_legacy_lineage(point(61));
+    assert!(matches!(
+        v2_first.register_bat_key_lineage(&lineage),
+        Err(StoreError::BatV2RawKeyConflict)
+    ));
+}
+
+#[test]
+fn bat_v2_schema_v6_rejects_implicit_v5_open() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    drop(store);
+    let connection = Connection::open(&test_path.database).unwrap();
+    connection.pragma_update(None, "user_version", 5).unwrap();
+    drop(connection);
+    assert!(matches!(
+        open_store(&test_path),
+        Err(StoreError::SchemaMismatch(_))
+    ));
 }
 
 #[test]

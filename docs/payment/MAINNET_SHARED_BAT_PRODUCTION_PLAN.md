@@ -474,6 +474,17 @@ grant success. Freeze the V2 public attempt-ID/removal wire and signature
 contract without a provider HMAC root. Keep V1 parsing and history isolated for
 compatibility/recovery.
 
+Source checkpoint (2026-08-19): the first Phase-B slice implements the stable
+class ID, scheme-6 policy shape, canonical issuer-signed class/key-epoch
+artifact and rollback-protected issuer-store v6 registry. Complete artifacts
+are registered atomically against exact current provider policy heads; older
+epochs remain retained, common terms cannot change under one class ID, and raw
+BAT keys cannot cross V1/V2 ownership. Existing V1 acquisition, issuance,
+redeem and ProviderStore paths still reject scheme 6. This checkpoint is not a
+usable V2 purchase or redemption path; the remaining Phase-B work below is
+unchanged. Version-5 issuer stores require a separately reviewed explicit
+migration or isolated legacy retention and are never upgraded at startup.
+
 Acceptance:
 
 - one BAT acquired through a class member can redeem at another compatible

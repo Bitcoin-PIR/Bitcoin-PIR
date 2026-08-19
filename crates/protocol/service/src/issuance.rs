@@ -405,10 +405,12 @@ impl CredentialIssuanceRequestV1 {
                 }
                 CredentialIssuanceRequestItemsV1::ArcExperimental(values)
             }
-            AuthScheme::FreeV1 | AuthScheme::CashuEcashV1 => {
+            AuthScheme::FreeV1
+            | AuthScheme::CashuEcashV1
+            | AuthScheme::BitcoinPirCashuBatV2 => {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "CredentialIssuanceRequestV1.authorization",
-                    reason: "custom BOLT11 claims support only direct receipt, BAT, or experimental ARC; standard Cashu uses NUT-04",
+                    reason: "the V1 issuance envelope supports only direct receipt, provider-bound BAT V1, or experimental ARC",
                 })
             }
         };
@@ -734,10 +736,12 @@ impl CredentialIssuanceResponseV1 {
                 }
                 CredentialIssuanceResponseItemsV1::ArcExperimental(values)
             }
-            AuthScheme::FreeV1 | AuthScheme::CashuEcashV1 => {
+            AuthScheme::FreeV1
+            | AuthScheme::CashuEcashV1
+            | AuthScheme::BitcoinPirCashuBatV2 => {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "CredentialIssuanceResponseV1.authorization",
-                    reason: "custom BOLT11 claims support only direct receipt, BAT, or experimental ARC; standard Cashu uses NUT-04",
+                    reason: "the V1 issuance envelope supports only direct receipt, provider-bound BAT V1, or experimental ARC",
                 })
             }
         };

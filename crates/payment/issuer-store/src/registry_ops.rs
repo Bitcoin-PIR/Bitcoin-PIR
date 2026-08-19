@@ -146,6 +146,23 @@ impl IssuerStore {
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
         let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
+        let v2_owner: Option<Vec<u8>> = transaction
+            .query_row(
+                "SELECT class_id FROM bat_v2_class_artifacts \
+                 WHERE issuer_id = ?1 AND (raw_public_key = ?2 OR key_fingerprint = ?3) \
+                 LIMIT 1",
+                params![
+                    self.handle.expected_issuer_id.as_slice(),
+                    candidate.raw_public_key.as_slice(),
+                    candidate.key_fingerprint.as_slice(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if v2_owner.is_some() {
+            return Err(StoreError::BatV2RawKeyConflict);
+        }
+
         if let Some(existing) = read_bat_lineage(&transaction, self, &candidate.key_fingerprint)? {
             if bat_lineage_matches(&existing, &candidate) {
                 return Ok(DurableWrite {

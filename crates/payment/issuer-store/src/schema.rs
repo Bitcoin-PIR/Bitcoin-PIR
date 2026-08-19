@@ -1,5 +1,5 @@
 use crate::{
-    MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
+    MAX_EXACT_BAT_V2_CLASS_BYTES, MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
     MAX_EXACT_CLEARING_APPROVAL_BYTES, MAX_EXACT_CLEARING_AUTHORIZATION_BYTES,
     MAX_EXACT_DELEGATION_BYTES, MAX_EXACT_INTENT_BYTES, MAX_EXACT_PAYOUT_INTENT_REQUEST_BYTES,
     MAX_EXACT_PAYOUT_INTENT_RESPONSE_BYTES, MAX_EXACT_PAYOUT_REQUEST_BYTES,
@@ -8,6 +8,7 @@ use crate::{
     MAX_EXACT_SERVICE_POLICY_BYTES, MAX_EXACT_SETTLEMENT_DEPOSIT_REQUEST_BYTES,
     MAX_EXACT_SETTLEMENT_DEPOSIT_RESPONSE_BYTES, MAX_INVOICE_BYTES, MAX_SIGNED_QUOTE_BYTES,
 };
+use pir_service_protocol::MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2;
 
 pub(crate) const APPLICATION_ID: i64 = 0x4250_4949;
 
@@ -340,6 +341,112 @@ pub(crate) const BAT_KEY_LINEAGES_SQL: &str = r#"CREATE TABLE bat_key_lineages (
     UNIQUE (issuer_id, lineage_digest),
     UNIQUE (issuer_id, provider_id, scope_id, offer_id, entitlement_profile, keyset_epoch)
 ) STRICT, WITHOUT ROWID"#;
+
+pub(crate) fn bat_v2_class_artifacts_sql() -> String {
+    format!(
+        r#"CREATE TABLE bat_v2_class_artifacts (
+    issuer_id             BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    class_id              BLOB NOT NULL CHECK (
+        length(class_id) = 32 AND class_id != zeroblob(32)
+    ),
+    key_epoch             INTEGER NOT NULL CHECK (key_epoch > 0),
+    artifact_digest       BLOB NOT NULL CHECK (
+        length(artifact_digest) = 32 AND artifact_digest != zeroblob(32)
+    ),
+    common_terms_digest   BLOB NOT NULL CHECK (
+        length(common_terms_digest) = 32 AND common_terms_digest != zeroblob(32)
+    ),
+    issuer_verifying_key  BLOB NOT NULL CHECK (
+        length(issuer_verifying_key) = 32 AND issuer_verifying_key != zeroblob(32)
+    ),
+    raw_public_key        BLOB NOT NULL CHECK (
+        length(raw_public_key) = 33 AND raw_public_key != zeroblob(33)
+    ),
+    key_fingerprint       BLOB NOT NULL CHECK (
+        length(key_fingerprint) = 32 AND key_fingerprint != zeroblob(32)
+    ),
+    bat_key_id            BLOB NOT NULL CHECK (
+        length(bat_key_id) = 32 AND bat_key_id != zeroblob(32)
+    ),
+    key_not_before        INTEGER NOT NULL CHECK (key_not_before >= 0),
+    key_not_after         INTEGER NOT NULL CHECK (key_not_after >= key_not_before),
+    member_count          INTEGER NOT NULL CHECK (
+        member_count BETWEEN 1 AND {max_members}
+    ),
+    exact_artifact        BLOB NOT NULL CHECK (
+        length(exact_artifact) BETWEEN 1 AND {max_artifact}
+    ),
+    commit_seq            INTEGER NOT NULL CHECK (commit_seq > 0),
+    PRIMARY KEY (issuer_id, class_id, key_epoch),
+    UNIQUE (issuer_id, artifact_digest),
+    UNIQUE (issuer_id, raw_public_key),
+    UNIQUE (issuer_id, key_fingerprint),
+    UNIQUE (issuer_id, bat_key_id)
+) STRICT, WITHOUT ROWID"#,
+        max_artifact = MAX_EXACT_BAT_V2_CLASS_BYTES,
+        max_members = MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2,
+    )
+}
+
+pub(crate) const BAT_V2_CLASS_HEADS_SQL: &str = r#"CREATE TABLE bat_v2_class_heads (
+    issuer_id           BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    class_id            BLOB NOT NULL CHECK (
+        length(class_id) = 32 AND class_id != zeroblob(32)
+    ),
+    highest_key_epoch   INTEGER NOT NULL CHECK (highest_key_epoch > 0),
+    artifact_digest     BLOB NOT NULL CHECK (
+        length(artifact_digest) = 32 AND artifact_digest != zeroblob(32)
+    ),
+    common_terms_digest BLOB NOT NULL CHECK (
+        length(common_terms_digest) = 32 AND common_terms_digest != zeroblob(32)
+    ),
+    commit_seq          INTEGER NOT NULL CHECK (commit_seq > 0),
+    PRIMARY KEY (issuer_id, class_id),
+    FOREIGN KEY (issuer_id, class_id, highest_key_epoch)
+        REFERENCES bat_v2_class_artifacts(issuer_id, class_id, key_epoch) ON DELETE RESTRICT,
+    FOREIGN KEY (issuer_id, artifact_digest)
+        REFERENCES bat_v2_class_artifacts(issuer_id, artifact_digest) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID"#;
+
+pub(crate) fn bat_v2_class_members_sql() -> String {
+    format!(
+        r#"CREATE TABLE bat_v2_class_members (
+    issuer_id           BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    class_id            BLOB NOT NULL CHECK (
+        length(class_id) = 32 AND class_id != zeroblob(32)
+    ),
+    key_epoch           INTEGER NOT NULL CHECK (key_epoch > 0),
+    member_index        INTEGER NOT NULL CHECK (
+        member_index BETWEEN 0 AND {max_member_index}
+    ),
+    provider_id         BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    policy_digest       BLOB NOT NULL CHECK (
+        length(policy_digest) = 32 AND policy_digest != zeroblob(32)
+    ),
+    scope_id            BLOB NOT NULL CHECK (
+        length(scope_id) = 32 AND scope_id != zeroblob(32)
+    ),
+    offer_id            INTEGER NOT NULL CHECK (offer_id > 0),
+    redemption_deadline INTEGER NOT NULL CHECK (redemption_deadline > 0),
+    commit_seq          INTEGER NOT NULL CHECK (commit_seq > 0),
+    PRIMARY KEY (issuer_id, class_id, key_epoch, member_index),
+    UNIQUE (issuer_id, class_id, key_epoch, provider_id, policy_digest, scope_id, offer_id),
+    FOREIGN KEY (issuer_id, class_id, key_epoch)
+        REFERENCES bat_v2_class_artifacts(issuer_id, class_id, key_epoch) ON DELETE RESTRICT,
+    FOREIGN KEY (policy_digest)
+        REFERENCES issuer_service_policies(policy_digest) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID"#,
+        max_member_index = MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2 - 1,
+    )
+}
 
 pub(crate) const ARC_KEY_LINEAGES_SQL: &str = r#"CREATE TABLE arc_key_lineages (
     issuer_id           BLOB NOT NULL CHECK (
@@ -816,6 +923,9 @@ pub(crate) fn schema() -> Vec<(&'static str, String)> {
     vec![
         ("arc_key_lineages", ARC_KEY_LINEAGES_SQL.to_owned()),
         ("bat_key_lineages", BAT_KEY_LINEAGES_SQL.to_owned()),
+        ("bat_v2_class_artifacts", bat_v2_class_artifacts_sql()),
+        ("bat_v2_class_heads", BAT_V2_CLASS_HEADS_SQL.to_owned()),
+        ("bat_v2_class_members", bat_v2_class_members_sql()),
         ("claims", claims_sql()),
         ("clearing_authorizations", clearing_authorizations_sql()),
         (

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// On-disk schema version. This crate never performs an implicit migration.
-pub const SCHEMA_VERSION: u32 = 5;
+/// Version 6 is a fresh-schema boundary for the append-only BAT V2 class
+/// registry; existing version-5 stores must be migrated by an explicit,
+/// separately reviewed operation.
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub const MAX_EXACT_INTENT_BYTES: usize = 64 * 1024;
 pub const MAX_EXACT_DELEGATION_BYTES: usize = 64 * 1024;
@@ -29,6 +32,11 @@ pub const MAX_EXACT_PAYOUT_REQUEST_BYTES: usize = 16 * 1024;
 pub const MAX_EXACT_PAYOUT_RESPONSE_BYTES: usize = 16 * 1024;
 pub const MAX_EXACT_PAYOUT_STATUS_RESPONSE_BYTES: usize = 16 * 1024;
 pub const MAX_EXACT_SERVICE_POLICY_BYTES: usize = pir_service_protocol::MAX_SIGNED_POLICY_LEN;
+/// Durable upper bound for one canonical signed BAT V2 class artifact. The
+/// protocol codec has its own equal-or-smaller bound; this store never accepts
+/// an artifact that the protocol layer cannot decode and re-encode exactly.
+pub const MAX_EXACT_BAT_V2_CLASS_BYTES: usize =
+    pir_service_protocol::MAX_BAT_ACCEPTANCE_CLASS_LEN_V2;
 /// V1 protocol acquisition cap. Store limits may not exceed the wire cap.
 pub const MAX_RECEIPT_SERIALS_PER_CLAIM: usize = 256;
 
@@ -74,8 +82,44 @@ pub struct IssuerStoreOperationalInventoryV1 {
     pub quote_rows: u64,
     pub claim_rows: u64,
     pub retained_policy_rows: u64,
+    pub bat_v2_class_rows: u64,
+    pub bat_v2_class_head_rows: u64,
+    pub bat_v2_class_member_rows: u64,
     pub redemption_rows: u64,
     pub payout_rows: u64,
+}
+
+/// One exact provider-policy member retained under one signed BAT V2 class
+/// artifact. The redemption deadline is derived from the registered exact
+/// policy and signed offer at registration time; it is not caller supplied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatAcceptanceClassMemberRecordV2 {
+    pub member_index: u16,
+    pub provider_id: [u8; 32],
+    pub policy_digest: [u8; 32],
+    pub scope_id: [u8; 32],
+    pub offer_id: u32,
+    pub redemption_deadline: u64,
+}
+
+/// Append-only issuer BAT V2 class/key-epoch snapshot. `exact_artifact`
+/// remains the canonical signed protocol object; the duplicated fixed-width
+/// columns are checked readback indexes, not a second source of truth.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatAcceptanceClassRecordV2 {
+    pub class_id: [u8; 32],
+    pub key_epoch: u64,
+    pub artifact_digest: [u8; 32],
+    pub common_terms_digest: [u8; 32],
+    pub issuer_verifying_key: [u8; 32],
+    pub raw_public_key: [u8; 33],
+    pub key_fingerprint: [u8; 32],
+    pub bat_key_id: [u8; 32],
+    pub key_not_before: u64,
+    pub key_not_after: u64,
+    pub exact_artifact: Vec<u8>,
+    pub members: Vec<BatAcceptanceClassMemberRecordV2>,
+    pub commit: CommitMarker,
 }
 
 /// One provider policy retained by the issuer for current acquisition and

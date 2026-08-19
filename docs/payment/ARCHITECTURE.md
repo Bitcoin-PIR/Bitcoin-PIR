@@ -429,18 +429,29 @@ guidance and is therefore named as a BitcoinPIR protocol rather than claimed
 as an unmodified NUT-22 implementation.
 
 Provider-specific public keysets allow private-key verification by a provider's
-own issuer sidecar. A shared issuer is shared infrastructure only: v1 still requires a
-distinct raw DHKE key for every `(provider_id, scope_id, offer_id,
-entitlement_profile, epoch)`.
-One signing keyset MUST NOT span provider audiences; doing so would make a blind
-BAT transferable across providers or require an issuance-to-proof mapping that
-destroys blind issuance.
+own issuer sidecar. A shared issuer is shared infrastructure only: v1 still
+requires a distinct raw DHKE key for every `(provider_id, scope_id, offer_id,
+entitlement_profile, epoch)`. One V1 signing keyset MUST NOT span provider
+audiences; doing so would make a V1 blind BAT transferable across providers or
+require an issuance-to-proof mapping that destroys blind issuance.
 
 The durable BAT spend key uses the raw DHKE public-key fingerprint and token
 secret, not the audience-derived key ID. Both the provider store and shared
 issuer retain a permanent raw-key lineage registry so policy/key-ID rebinding
 cannot reset the spent namespace. This does not replace the requirement that
 the two independent PIR providers use different raw keys.
+
+Issuer-wide BAT V2 does not weaken or reinterpret that V1 rule. It uses a new
+scheme value and a separate issuer-signed acceptance-class artifact. Provider
+policies commit only a stable class ID; the later artifact commits one fresh
+raw-key epoch, identical commercial/entitlement terms, and the canonical exact
+provider-policy members allowed to receive that credential. The raw key may be
+shared only inside that signed member set. A member or policy rotation uses a
+fresh raw key/epoch and retains the old artifact; different terms use a new
+class ID. The class codec/policy shape and issuer-store v6 registry are the only
+implemented V2 components at this stage. They prevent V1/V2 raw-key rebinding
+and class rollback, but do not yet expose V2 acquisition, redemption or
+provider admission.
 
 V1 does not send Cashu DLEQ blinding material to a provider for public-key-only
 offline verification and later batch redemption. Although such a receiver can
