@@ -86,16 +86,44 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function writeSealedStartup(root, phase, ordinal = 1) {
+function writeSealedStartup(
+  root,
+  phase,
+  ordinal = 1,
+  servicePolicyPath = path.join(root, "service-policy.bin"),
+) {
+  const retainedPolicyPath = path.join(root, `public/policies/${"47".repeat(32)}.bin`);
+  const currentClassPath = path.join(root, `public/classes/${"43".repeat(32)}.bin`);
+  const retainedClassPath = path.join(root, `public/classes/${"48".repeat(32)}.bin`);
+  const accountingAuthorizationPath = path.join(root, "provider-accounting-authorization.bin");
+  const accountingApprovalPath = path.join(root, "issuer-accounting-approval.bin");
+  if (!existsSync(servicePolicyPath)) write(servicePolicyPath, "fixture current policy\n");
+  write(retainedPolicyPath, "fixture retained policy\n");
+  write(currentClassPath, "fixture current class\n");
+  write(retainedClassPath, "fixture retained class\n");
+  write(accountingAuthorizationPath, "provider-accounting-authorization.bin fixture\n");
+  write(accountingApprovalPath, "issuer-accounting-approval.bin fixture\n");
+  const artifactSet = `schema=bitcoinpir-pir2-bat-v2-public-artifact-set-v1
+current_policy=${"42".repeat(32)}=${sha256(readFileSync(servicePolicyPath))}=${servicePolicyPath}
+retained_policy=${"47".repeat(32)}=${sha256(readFileSync(retainedPolicyPath))}=${retainedPolicyPath}
+current_class=${"43".repeat(32)}=${sha256(readFileSync(currentClassPath))}=${currentClassPath}
+retained_class=${"48".repeat(32)}=${sha256(readFileSync(retainedClassPath))}=${retainedClassPath}
+accounting_authorization=${"49".repeat(32)}=${sha256(readFileSync(accountingAuthorizationPath))}=${accountingAuthorizationPath}
+accounting_approval=${"4a".repeat(32)}=${sha256(readFileSync(accountingApprovalPath))}=${accountingApprovalPath}
+`;
+  const artifactSetPath = path.join(root, "public-artifact-set.env");
+  write(artifactSetPath, artifactSet);
   write(
     path.join(root, "startup.env"),
-    `schema=bitcoinpir-pir2-sealed-startup-v1
+    `schema=bitcoinpir-pir2-sealed-startup-v2
 profile=pir2-snp-sealed-v1
 phase=${phase}
 ordinal=${ordinal}
 verifier_nonce_hex=${"41".repeat(32)}
 current_policy_digest_hex=${"42".repeat(32)}
 class_digest_hex=${"43".repeat(32)}
+artifact_set_path=${artifactSetPath}
+artifact_set_sha256=${sha256(artifactSet)}
 minimum_authorization_epoch=7
 `,
   );
@@ -109,11 +137,12 @@ function authoritativeAttemptToken({
   nonce = "41".repeat(32),
   policy = "42".repeat(32),
   classDigest = "43".repeat(32),
+  artifactSetSha256 = "49".repeat(32),
   minimumAuthorizationEpoch = 7,
   receiptProtocolDigest = "44".repeat(32),
   receiptFileSha256 = "45".repeat(32),
 }) {
-  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1
+  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v2
 kind=${kind}
 phase=${phase}
 boot_id=${bootIdHex}
@@ -121,6 +150,7 @@ ordinal=${ordinal}
 verifier_nonce_hex=${nonce}
 current_policy_digest_hex=${policy}
 class_digest_hex=${classDigest}
+artifact_set_sha256=${artifactSetSha256}
 minimum_authorization_epoch=${minimumAuthorizationEpoch}
 receipt_protocol_digest=${receiptProtocolDigest}
 receipt_file_sha256=${receiptFileSha256}
@@ -157,8 +187,13 @@ try {
   assert.match(tier3RunText, /ready-runtime-\$PIR2_BOOT_ID_HEX\.bin/);
   assert.match(
     tier3RunText,
-    /--pir2-snp-sealed-require-ready[\s\S]*--service-storeless-bat-v2-policy-digest-hex/,
-    "final serving must use sealed Ready plus the payment-storeless BAT V2 profile",
+    /validate_pir2_public_artifact_set[\s\S]*run_pir2_with_public_artifacts exec[\s\S]*--pir2-snp-sealed-require-ready/,
+    "final serving must use sealed Ready plus the validated public BAT V2 artifact set",
+  );
+  assert.match(
+    tier3RunText,
+    /run_pir2_with_public_artifacts\(\)[\s\S]*--service-storeless-bat-v2-policy-digest-hex[\s\S]*--service-storeless-bat-v2-retained-policy[\s\S]*--service-storeless-bat-v2-class/,
+    "the bounded artifact runner must project current, retained, and class flags",
   );
   assert.doesNotMatch(
     tier3ModuleSetupText,
@@ -471,7 +506,7 @@ exit 0
   createProofV1(mismatchData, "proof-v1-db0");
   createProofV1(mismatchData, "proof-v1-db1");
   write(path.join(mismatchData, "proof-v2-db0/server-db/MANIFEST.toml"), "proof manifest\n");
-  writeSealedStartup(path.join(mismatchData, "pir2-sealed"), "ready");
+  writeSealedStartup(path.join(mismatchData, "pir2-sealed"), "ready", 1, mismatchServicePolicy);
   write(
     path.join(mismatchData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-v1-db0"\nproof_v2_dir = "proof-v2-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-v1-db1"\nproof_v2_dir = "proof-v2-db1"\nbase_height = 940611\nheight = 948454\n`,
@@ -555,7 +590,7 @@ exit 0
   const directSealedRoot = path.join(directData, "pir2-sealed");
   write(directServicePolicy, "fixture policy\n");
   write(directSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
-  writeSealedStartup(directSealedRoot, "ready");
+  writeSealedStartup(directSealedRoot, "ready", 1, directServicePolicy);
   for (const relative of [
     "release.bin",
     "credentials.envelope.bin",
@@ -740,6 +775,11 @@ exit 1
   assert.match(finalArgs, /--direct-oram-db\n1=.*db1-delta-940611-948454/);
   assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
   assert.match(finalArgs, /--service-storeless-bat-v2-policy-digest-hex/);
+  assert.equal(
+    (finalArgs.match(/--service-storeless-bat-v2-retained-policy/g) ?? []).length,
+    1,
+  );
+  assert.equal((finalArgs.match(/--service-storeless-bat-v2-class/g) ?? []).length, 2);
   assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
   assert.deepEqual(
     readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>
@@ -777,6 +817,17 @@ exit 1
   );
   const readyPreflightTokenText = readFileSync(readyPreflightToken, "utf8");
   assert.match(readyPreflightTokenText, /kind=ready-preflight\nphase=ready\n/);
+  const directArtifactSet = path.join(directSealedRoot, "public-artifact-set.env");
+  assert.match(
+    readyPreflightTokenText,
+    new RegExp(`artifact_set_sha256=${sha256(readFileSync(directArtifactSet))}`),
+  );
+  const trustedArtifactSet = path.join(
+    directEnv.BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT,
+    `public-artifact-set-${firstBootHex}.env`,
+  );
+  assert.equal(readFileSync(trustedArtifactSet, "utf8"), readFileSync(directArtifactSet, "utf8"));
+  assert.equal(statSync(trustedArtifactSet).mode & 0o777, 0o600);
   assert.match(
     readyPreflightTokenText,
     new RegExp(`receipt_file_sha256=${sha256(readFileSync(readyPreflightReceipt))}`),

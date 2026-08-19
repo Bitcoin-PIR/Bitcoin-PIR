@@ -701,7 +701,7 @@ test("db1 product policies keep every role-local scope on Free-PoW plus shared B
   }
 });
 
-test("VPSBG measured final exec fixes the premium suffix while accepting rendered public keys", () => {
+test("VPSBG measured final exec fixes the sealed BAT V2 suffix while accepting reviewed public keys", () => {
   const measuredRunPath =
     "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";
   const measuredRun = readFileSync(join(REPOSITORY, measuredRunPath), "utf8");
@@ -720,13 +720,13 @@ test("VPSBG measured final exec fixes the premium suffix while accepting rendere
   );
 
   const dpfOnlyRun = measuredRun.replace(
-    "VPSBG_RUNTIME_PROFILE=direct-oram-v1",
+    "VPSBG_RUNTIME_PROFILE=pir2-snp-sealed-v1",
     "VPSBG_RUNTIME_PROFILE=dpf-only-functional-beta-v1",
   );
   assert.notEqual(dpfOnlyRun, measuredRun);
   assert.throws(
     () => validateVpsbgPremiumFreePowMeasuredFinalExec(dpfOnlyRun),
-    /must select the reviewed Direct ORAM runtime profile/,
+    /must contain exactly one db0 DPF-only and one Direct ORAM fallback exec/,
   );
 });
 
@@ -741,7 +741,7 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
   );
   assert.throws(
     () => validateVpsbgPremiumFreePowMeasuredFinalExec(placeholder),
-    /placeholder value/,
+    /non-placeholder 64-hex public value|placeholder value/,
   );
 
   const suffixEnd = [
@@ -781,12 +781,12 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
     );
   }
 
-  const idleLine = "        --connection-idle-timeout-ms 300000 \\";
+  const idleLine = "    --connection-idle-timeout-ms 300000 \\";
   const missingIdleTimeout = measuredRun.replace(idleLine + "\n", "");
   assert.notEqual(missingIdleTimeout, measuredRun);
   assert.throws(
     () => validateVpsbgPremiumFreePowMeasuredFinalExec(missingIdleTimeout),
-    /must contain --connection-idle-timeout-ms exactly once and in canonical order/,
+    /connection idle timeout exactly once|--connection-idle-timeout-ms 300000/,
   );
 });
 

@@ -1,0 +1,76 @@
+# Inert BAT V2 source-profile template. Rendering and activation are separate approvals.
+[Unit]
+Description=BitcoinPIR Mainnet Lightning BAT V2 issuer (source template only)
+After=network-online.target bitcoinpir-mainnet-lightning-v1-core.service bitcoinpir-mainnet-lightning-v1-preflight.service bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service
+Wants=network-online.target
+Requisite=bitcoinpir-mainnet-lightning-v1-core.service
+Requires=bitcoinpir-mainnet-lightning-v1-preflight.service bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service
+BindsTo=bitcoinpir-mainnet-lightning-v1-preflight.service bitcoinpir-mainnet-lightning-v1-cln-rpc-guard.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/BAT-V2-SOURCE-PROFILE-RENDERED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/MAINNET-BAT-V2-ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-mainnet-issuer
+Group=bitcoinpir-mainnet-issuer
+UMask=0077
+StateDirectory=bitcoinpir-mainnet-bat-v2-issuer
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-mainnet-bat-v2-issuer
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/bat-v2/issuer/payment-issuer.sha256
+ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer serve-cln \
+    --bind 127.0.0.1:5610 \
+    --max-connections 128 \
+    --allow-origin @BITCOINPIR_WEB_ORIGIN@ \
+    --store /var/lib/bitcoinpir-mainnet-bat-v2-issuer/issuer.sqlite3 \
+    --remote-rollback-authority-config /etc/bitcoinpir/payment-v1/bat-v2/issuer/remote-rollback-authority.toml \
+    --quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin \
+    --quote-signing-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/quote-signing.key \
+    --credential-derivation-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/credential-derivation.key \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir1-current.bin=@PIR1_POLICY_VERIFYING_KEY_HEX@ \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-current.bin=@PIR2_POLICY_VERIFYING_KEY_HEX@ \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir1-retained.bin=@PIR1_POLICY_VERIFYING_KEY_HEX@ \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-retained.bin=@PIR2_POLICY_VERIFYING_KEY_HEX@ \
+    --bat-v2-class /etc/bitcoinpir/payment-v1/bat-v2/public/classes/current.bin \
+    --bat-v2-class /etc/bitcoinpir/payment-v1/bat-v2/public/classes/retained.bin \
+    --bat-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-current.key \
+    --bat-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-retained.key \
+    --bat-v2-accounting-authorization /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-authorization.bin \
+    --bat-v2-accounting-approval /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-approval.bin \
+    --bat-v2-accounting-operator-verifying-key /etc/bitcoinpir/payment-v1/bat-v2/public/keys/pir1-operator-verifying.key \
+    --bat-v2-accounting-authorization /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir2-authorization.bin \
+    --bat-v2-accounting-approval /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir2-approval.bin \
+    --bat-v2-accounting-operator-verifying-key /etc/bitcoinpir/payment-v1/bat-v2/public/keys/pir2-operator-verifying.key \
+    --issuer-settlement-signing-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/issuer-settlement-signing.key \
+    --cln-rpc-socket /run/bitcoinpir-mainnet-cln-rpc-guard/issuer/issuer-rpc \
+    --cln-rpc-expected-uid @CLN_GUARD_UID@ \
+    --cln-rpc-expected-gid @ISSUER_GID@ \
+    --cln-rpc-timeout-seconds 10
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/bat-v2 /etc/bitcoinpir/payment-v1/mainnet-lightning-v1 /run/bitcoinpir-mainnet-cln-rpc-guard/issuer /opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@
+ReadWritePaths=/var/lib/bitcoinpir-mainnet-bat-v2-issuer
+InaccessiblePaths=-/srv/lightning -/srv/bitcoin -/run/bitcoinpir-source-fair-edge
+
+# No [Install] section: this checked-in file is not an activation artifact.

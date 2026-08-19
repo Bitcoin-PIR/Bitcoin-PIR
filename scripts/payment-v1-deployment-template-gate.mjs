@@ -26,9 +26,9 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "1d32d99f837ff0b0579c566bf8015b7ae684c4509856ec9c78a223255780be6a",
+    "4ac1a58416dbf82266852fce7b7e244b2b8e58b22f7f693c0071229206c73745",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
-    "06b763099ce2828603763ec45e1cdcec406659a3fb0cd413c28ac85af9cf6444",
+    "361d6a52a2e61482d8e766823a17c3b12187f96805c7e1f9d0f785e27ae64ef9",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
     "571fd7005f5941abaeecdbcf4e363bb0bcd6ff005f471d3d4f0402306c0b8181",
 });
@@ -107,6 +107,14 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/db1-free-pow-bat/README.md",
   "deploy/payment-v1/db1-free-pow-bat/pir1-service-policy.toml.in",
   "deploy/payment-v1/db1-free-pow-bat/pir2-service-policy.toml.in",
+  "deploy/payment-v1/bat-v2-source-ready/README.md",
+  "deploy/payment-v1/bat-v2-source-ready/bat-v2-class.toml.in",
+  "deploy/payment-v1/bat-v2-source-ready/provider-accounting-authorization.toml.in",
+  "deploy/payment-v1/bat-v2-source-ready/source-profile.json.in",
+  "deploy/payment-v1/bat-v2-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in",
+  "deploy/payment-v1/bat-v2-source-ready/pir1-storeless-bat-v2-provider.service.in",
+  "deploy/payment-v1/bat-v2-source-ready/pir2-public-artifact-set.env.in",
+  "deploy/payment-v1/bat-v2-source-ready/pir2-sealed-startup.env.in",
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",
@@ -2422,6 +2430,62 @@ function requireMeasuredPublicHex(value, flag, label) {
  */
 export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
   const label = "VPSBG Premium + Free-PoW measured final exec";
+  if (/^VPSBG_RUNTIME_PROFILE=pir2-snp-sealed-v1$/mu.test(text)) {
+    const logicalLines = measuredShellLogicalLines(text, label);
+    const finalLines = logicalLines.filter((line) =>
+      /^run_pir2_with_public_artifacts exec "\$UNIFIED_SERVER"(?:\s|$)/u.test(line),
+    );
+    if (finalLines.length !== 1 || !finalLines[0].includes("--direct-oram-db")) {
+      fail(`${label} must contain exactly one sealed Direct ORAM final invocation`);
+    }
+    const finalLine = finalLines[0];
+    for (const required of [
+      "--pir2-snp-sealed-require-ready",
+      "--require-service-auth-v1",
+      "--service-policy \"$SERVICE_POLICY_PATH\"",
+      "--service-provider-id-hex \"$PIR2_SEALED_PROVIDER_ID_HEX\"",
+      "--service-policy-key-hex \"$PIR2_SEALED_POLICY_KEY_HEX\"",
+      "--service-storeless-bat-v2-accounting-authorization",
+      "--service-storeless-bat-v2-issuer-approval",
+      "--service-storeless-bat-v2-operator-key-hex",
+      "--service-storeless-bat-v2-issuer-settlement-key-hex",
+      "--service-storeless-bat-v2-minimum-authorization-epoch",
+      "--connection-idle-timeout-ms 300000",
+      "--service-pre-auth-timeout-ms 300000",
+    ]) requireText(finalLine, required, label);
+    for (const [name, value] of [
+      ["PIR2_SEALED_OPERATOR_KEY_HEX", /^PIR2_SEALED_OPERATOR_KEY_HEX=([0-9a-f]{64})$/mu.exec(text)?.[1]],
+      ["PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX", /^PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX=([0-9a-f]{64})$/mu.exec(text)?.[1]],
+      ["PIR2_SEALED_PROVIDER_ID_HEX", /^PIR2_SEALED_PROVIDER_ID_HEX=([0-9a-f]{64})$/mu.exec(text)?.[1]],
+      ["PIR2_SEALED_POLICY_KEY_HEX", /^PIR2_SEALED_POLICY_KEY_HEX=([0-9a-f]{64})$/mu.exec(text)?.[1]],
+    ]) requireMeasuredPublicHex(value ?? "", name, label);
+    rejectPattern(text, /@[A-Z][A-Z0-9_]*@/u, label, "placeholder value");
+    for (const [pattern, description] of [
+      [/--service-storeless-free-pow-policy-digest-hex/u, "storeless policy digest"],
+      [/--service-remote-rollback-authority-config/u, "remote rollback authority"],
+      [/--service-bat-key/u, "provider-local BAT key"],
+      [/--service-arc-key/u, "provider-local ARC key"],
+      [/--service-store(?:\s|=)/u, "ProviderStore"],
+      [/--service-shared-/u, "V1 shared clearing"],
+      [/--service-storeless-bat-v2-pir1-clearing-key/u, "plaintext pir1 clearing key"],
+    ]) rejectPattern(text, pattern, label, description);
+    for (const [needle, description] of [
+      ["--connection-idle-timeout-ms 300000", "connection idle timeout"],
+      ["--service-pre-auth-timeout-ms 300000", "service pre-auth timeout"],
+    ]) {
+      if (finalLine.split(needle).length !== 2) {
+        fail(`${label} must contain ${description} exactly once in the final invocation`);
+      }
+    }
+    for (const required of [
+      "bitcoinpir-pir2-sealed-startup-v2",
+      "PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH",
+      "artifact_set_sha256=",
+      "--service-storeless-bat-v2-retained-policy",
+      "--service-storeless-bat-v2-class",
+    ]) requireText(text, required, label);
+    return;
+  }
   const execLines = measuredShellLogicalLines(text, label).filter((line) =>
     /^exec\s+"\$UNIFIED_SERVER"(?:\s|$)/u.test(line),
   );
@@ -3146,6 +3210,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".fragment.in") &&
       !rel.endsWith(".cfg.in") &&
       !rel.endsWith(".conf.in") &&
+      !rel.endsWith(".env.in") &&
       !rel.endsWith(".json.in") &&
       !rel.endsWith(".sh.in") &&
       !rel.endsWith(".toml.in") &&
@@ -3166,6 +3231,25 @@ function validateActiveBaselines(root) {
     const actual = sha256File(absolute);
     if (actual !== expected) {
       fail(`active deployment file changed outside this slice: ${relativePath}`);
+    }
+    if (
+      relativePath === VPSBG_MEASURED_RUN_PATH &&
+      /^VPSBG_RUNTIME_PROFILE=pir2-snp-sealed-v1$/mu.test(text)
+    ) {
+      for (const required of [
+        "bitcoinpir-pir2-sealed-startup-v2",
+        "PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH",
+        "artifact_set_sha256=",
+        "run_pir2_with_public_artifacts exec",
+        "--service-storeless-bat-v2-retained-policy",
+      ]) requireText(text, required, relativePath);
+      rejectPattern(
+        text,
+        /--service-storeless-bat-v2-pir1-clearing-key|--service-shared-(?:clearing|idempotency)/u,
+        relativePath,
+        "plaintext or V1 clearing fallback",
+      );
+      continue;
     }
     if (
       relativePath === VPSBG_MEASURED_RUN_PATH &&
