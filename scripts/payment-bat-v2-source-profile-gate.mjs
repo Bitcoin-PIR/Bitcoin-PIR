@@ -147,7 +147,7 @@ function validatePolicy(value, index, seenDigests, seenPaths) {
   addUnique(seenPaths, value.path, "public artifact path");
 }
 
-function validateClass(value, index, policyDigests, seenDigests, seenPaths, coverage) {
+function validateClass(value, index, policyDigests, seenDigests, seenPaths, seenSecretPaths, coverage) {
   const label = `issuer.classes[${index}]`;
   exactKeys(value, [
     "state", "classIdHex", "keyEpoch", "digestHex", "fileSha256Hex", "path",
@@ -168,7 +168,7 @@ function validateClass(value, index, policyDigests, seenDigests, seenPaths, cove
   addUnique(seenDigests, value.digestHex, "class digest");
   addUnique(seenPaths, value.path, "public artifact path");
   addUnique(seenPaths, value.pir2RuntimePath, "pir2 runtime artifact path");
-  addUnique(seenPaths, value.batSigningKeyPath, "issuer BAT signing-key path");
+  addUnique(seenSecretPaths, value.batSigningKeyPath, "private signing-key path");
   const members = arrayBounded(value.memberPolicyDigestsHex, 1, MAX_POLICIES, `${label}.memberPolicyDigestsHex`);
   const local = new Set();
   for (const digest of members) {
@@ -229,12 +229,16 @@ export function validateSourceProfileV1(profile) {
 
   const seenDigests = new Set();
   const seenPaths = new Set();
+  const seenSecretPaths = new Set();
+  addUnique(seenSecretPaths, profile.issuer.settlementSigningKeyPath, "private signing-key path");
   const policies = arrayBounded(profile.issuer.policies, 4, MAX_POLICIES, "issuer.policies");
   policies.forEach((value, index) => validatePolicy(value, index, seenDigests, seenPaths));
   const policyDigests = new Set(policies.map((policy) => policy.digestHex));
   const coverage = new Map();
   const classes = arrayBounded(profile.issuer.classes, 2, MAX_CLASSES, "issuer.classes");
-  classes.forEach((value, index) => validateClass(value, index, policyDigests, seenDigests, seenPaths, coverage));
+  classes.forEach((value, index) => validateClass(
+    value, index, policyDigests, seenDigests, seenPaths, seenSecretPaths, coverage,
+  ));
   const classCoordinates = new Set();
   for (const entry of classes) {
     addUnique(classCoordinates, `${entry.classIdHex}:${entry.keyEpoch}`, "class coordinate");
@@ -258,15 +262,17 @@ export function validateSourceProfileV1(profile) {
   sameSet(names, ["pir1", "pir2"], "provider roles");
   const providerIds = new Set();
   const roleKeys = new Map([[profile.issuer.settlementVerifyingKeyHex, "issuer settlement key"]]);
-  const classKeys = new Set();
   const batKeyIds = new Set();
+  const classSigner = classes[0].classVerifyingKeyHex;
+  if (classes.some((value) => value.classVerifyingKeyHex !== classSigner)) {
+    fail("all BAT V2 classes for one issuer must use the same class artifact signer");
+  }
+  if (roleKeys.has(classSigner)) {
+    fail(`raw/public role-key reuse between ${roleKeys.get(classSigner)} and class artifact signer`);
+  }
+  roleKeys.set(classSigner, "class artifact signer");
   for (const value of classes) {
-    addUnique(classKeys, value.classVerifyingKeyHex, "class verifying key");
     addUnique(batKeyIds, value.batKeyIdHex, "BAT key id");
-    if (roleKeys.has(value.classVerifyingKeyHex)) {
-      fail(`raw/public role-key reuse between ${roleKeys.get(value.classVerifyingKeyHex)} and class ${value.state} verifying key`);
-    }
-    roleKeys.set(value.classVerifyingKeyHex, `class ${value.state} verifying key`);
   }
 
   for (const [index, provider] of providers.entries()) {
@@ -422,6 +428,29 @@ export function validatePir1UnitV1(source, profile) {
   oneValue(command, "--service-storeless-bat-v2-pir1-clearing-key", "pir1 BAT V2 unit");
 }
 
+export function validatePrivateSecretPathsV1(issuerSource, pir1Source, profile) {
+  const issuerCommand = execStart(issuerSource, "BAT V2 issuer unit");
+  const pir1Command = execStart(pir1Source, "pir1 BAT V2 unit");
+  const privatePaths = [
+    [oneValue(issuerCommand, "--issuer-settlement-signing-key", "BAT V2 issuer unit"), "issuer settlement signing key"],
+    ...valuesForFlag(issuerCommand, "--bat-key").map((value) => [value, "issuer BAT scalar"]),
+    [oneValue(issuerCommand, "--quote-signing-key", "BAT V2 issuer unit"), "issuer quote signing key"],
+    [oneValue(issuerCommand, "--credential-derivation-key", "BAT V2 issuer unit"), "issuer credential derivation key"],
+    [oneValue(pir1Command, "--identity-key-path", "pir1 BAT V2 unit"), "pir1 identity signing key"],
+    [oneValue(pir1Command, "--service-storeless-bat-v2-pir1-clearing-key", "pir1 BAT V2 unit"), "pir1 clearing signing key"],
+  ];
+  const seen = new Set();
+  for (const [value, label] of privatePaths) {
+    requireAbsolutePath(value, "/etc/bitcoinpir/payment-v1/bat-v2", label);
+    addUnique(seen, value, "private signing-key path");
+  }
+  sameSet(
+    valuesForFlag(issuerCommand, "--bat-key"),
+    profile.issuer.classes.map((entry) => entry.batSigningKeyPath),
+    "issuer BAT private-path set",
+  );
+}
+
 function parseEnv(source, label) {
   if (!source.endsWith("\n") || source.includes("\r")) fail(`${label} must be canonical LF text`);
   const entries = [];
@@ -433,6 +462,13 @@ function parseEnv(source, label) {
   return entries;
 }
 
+function measuredHexConstant(runSource, name) {
+  const pattern = new RegExp(`^${name}=([0-9a-f]{64})$`, "gmu");
+  const matches = [...runSource.matchAll(pattern)];
+  if (matches.length !== 1) fail(`pir2 measured run path must define exactly one ${name}`);
+  return matches[0][1];
+}
+
 export function validatePir2RenderInputsV1(artifactSource, startupSource, runSource, profile) {
   const provider = profile.providers.find((entry) => entry.name === "pir2");
   const policies = profile.issuer.policies.filter((entry) => entry.provider === "pir2");
@@ -442,6 +478,16 @@ export function validatePir2RenderInputsV1(artifactSource, startupSource, runSou
   const currentClass = classes.find((entry) => entry.state === "current");
   const retainedClasses = classes.filter((entry) => entry.state === "retained");
   const accounting = profile.issuer.accounting.find((entry) => entry.provider === "pir2");
+  for (const [actual, constantName, label] of [
+    [provider.providerIdHex, "PIR2_SEALED_PROVIDER_ID_HEX", "provider id"],
+    [provider.policyVerifyingKeyHex, "PIR2_SEALED_POLICY_KEY_HEX", "policy key"],
+    [provider.operatorVerifyingKeyHex, "PIR2_SEALED_OPERATOR_KEY_HEX", "operator key"],
+    [profile.issuer.settlementVerifyingKeyHex, "PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX", "issuer settlement key"],
+  ]) {
+    if (actual !== measuredHexConstant(runSource, constantName)) {
+      fail(`pir2 ${label} does not match measured source constant ${constantName}`);
+    }
+  }
   const artifact = parseEnv(artifactSource, "pir2 artifact set");
   if (artifact.length < 7 || artifact.length > 4 + MAX_RETAINED_PER_PROVIDER + MAX_CLASSES) {
     fail("pir2 artifact set is outside its bounded entry count");
@@ -495,8 +541,11 @@ export function validatePir2RenderInputsV1(artifactSource, startupSource, runSou
 export function validateRepository(root) {
   const sourceRoot = join(root, SOURCE_ROOT);
   const profile = validateSourceProfileV1(JSON.parse(readFileSync(join(sourceRoot, "source-profile.json.in"), "utf8")));
-  validateIssuerUnitV1(readFileSync(join(sourceRoot, "issuer-lightning-mainnet-bat-v2-payment-issuer.service.in"), "utf8"), profile);
-  validatePir1UnitV1(readFileSync(join(sourceRoot, "pir1-storeless-bat-v2-provider.service.in"), "utf8"), profile);
+  const issuerSource = readFileSync(join(sourceRoot, "issuer-lightning-mainnet-bat-v2-payment-issuer.service.in"), "utf8");
+  const pir1Source = readFileSync(join(sourceRoot, "pir1-storeless-bat-v2-provider.service.in"), "utf8");
+  validateIssuerUnitV1(issuerSource, profile);
+  validatePir1UnitV1(pir1Source, profile);
+  validatePrivateSecretPathsV1(issuerSource, pir1Source, profile);
   validatePir2RenderInputsV1(
     readFileSync(join(sourceRoot, "pir2-public-artifact-set.env.in"), "utf8"),
     readFileSync(join(sourceRoot, "pir2-sealed-startup.env.in"), "utf8"),

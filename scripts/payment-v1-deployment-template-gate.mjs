@@ -13,6 +13,7 @@ import {
   validateBuildManifestV1,
   validateClosedHaproxyConfigV1,
 } from "./payment-v1-directory-public-haproxy-artifact-gate.mjs";
+import { validateRepository as validateBatV2SourceProfileRepository } from "./payment-bat-v2-source-profile-gate.mjs";
 
 export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/pir-primary.service":
@@ -3285,6 +3286,7 @@ export function validateDeploymentTree(rootInput) {
   validateTemplateTreeShape(root);
   validateActiveBaselines(root);
   validatePublisherNetnsTree(root);
+  validateBatV2SourceProfileRepository(root);
 
   const provider = readRequired(
     root,

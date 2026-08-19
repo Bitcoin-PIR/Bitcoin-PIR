@@ -108,6 +108,23 @@ test("repository deployment preparation passes its fail-closed gate", () => {
   assert.equal(validateDeploymentTree(REPOSITORY), true);
 });
 
+test("default deployment gate executes the BAT V2 source-profile validator", () => {
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/bat-v2-source-ready/source-profile.json.in",
+      (text) => text.replace(
+        "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /provider id does not match measured source constant/u,
+    );
+  });
+});
+
 test("a copied fixture ignores Finder metadata but rejects adjacent unexpected files", () => {
   withFixture((root) => {
     const deploymentRoot = join(root, "deploy/payment-v1");

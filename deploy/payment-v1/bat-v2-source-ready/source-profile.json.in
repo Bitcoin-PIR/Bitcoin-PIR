@@ -3,7 +3,7 @@
   "profile": "issuer-pir1-pir2-storeless-v1",
   "issuer": {
     "issuerIdHex": "@BAT_V2_ISSUER_ID_HEX@",
-    "settlementVerifyingKeyHex": "@ISSUER_SETTLEMENT_VERIFYING_KEY_HEX@",
+    "settlementVerifyingKeyHex": "248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7",
     "settlementSigningKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/issuer/issuer-settlement-signing.key",
     "unitPath": "deploy/payment-v1/bat-v2-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in",
     "policies": [
@@ -24,7 +24,7 @@
         "fileSha256Hex": "@PIR2_CURRENT_POLICY_FILE_SHA256_HEX@",
         "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-current.bin",
         "pir2RuntimePath": "/etc/bitcoinpir/payment/service-policy.bin",
-        "verifyingKeyHex": "@PIR2_POLICY_VERIFYING_KEY_HEX@",
+        "verifyingKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
         "scopeIdHex": "@PIR2_CURRENT_SCOPE_ID_HEX@",
         "offerId": "@PIR2_CURRENT_OFFER_ID@"
       },
@@ -45,7 +45,7 @@
         "fileSha256Hex": "@PIR2_RETAINED_POLICY_FILE_SHA256_HEX@",
         "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-retained.bin",
         "pir2RuntimePath": "/home/pir/data/pir2-sealed/public/policies/@PIR2_RETAINED_POLICY_DIGEST_HEX@.bin",
-        "verifyingKeyHex": "@PIR2_POLICY_VERIFYING_KEY_HEX@",
+        "verifyingKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
         "scopeIdHex": "@PIR2_RETAINED_SCOPE_ID_HEX@",
         "offerId": "@PIR2_RETAINED_OFFER_ID@"
       }
@@ -59,7 +59,7 @@
         "fileSha256Hex": "@BAT_V2_CURRENT_CLASS_FILE_SHA256_HEX@",
         "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/classes/current.bin",
         "pir2RuntimePath": "/home/pir/data/pir2-sealed/public/classes/@BAT_V2_CURRENT_CLASS_DIGEST_HEX@.bin",
-        "classVerifyingKeyHex": "@BAT_V2_CURRENT_CLASS_VERIFYING_KEY_HEX@",
+        "classVerifyingKeyHex": "@BAT_V2_CLASS_VERIFYING_KEY_HEX@",
         "batKeyIdHex": "@BAT_V2_CURRENT_KEY_ID_HEX@",
         "batSigningKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-current.key",
         "memberPolicyDigestsHex": [
@@ -75,7 +75,7 @@
         "fileSha256Hex": "@BAT_V2_RETAINED_CLASS_FILE_SHA256_HEX@",
         "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/classes/retained.bin",
         "pir2RuntimePath": "/home/pir/data/pir2-sealed/public/classes/@BAT_V2_RETAINED_CLASS_DIGEST_HEX@.bin",
-        "classVerifyingKeyHex": "@BAT_V2_RETAINED_CLASS_VERIFYING_KEY_HEX@",
+        "classVerifyingKeyHex": "@BAT_V2_CLASS_VERIFYING_KEY_HEX@",
         "batKeyIdHex": "@BAT_V2_RETAINED_KEY_ID_HEX@",
         "batSigningKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-retained.key",
         "memberPolicyDigestsHex": [
@@ -107,7 +107,7 @@
         "approvalPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir2-approval.bin",
         "pir2AuthorizationPath": "/home/pir/data/pir2-sealed/provider-accounting-authorization.bin",
         "pir2ApprovalPath": "/home/pir/data/pir2-sealed/issuer-accounting-approval.bin",
-        "operatorVerifyingKeyHex": "@PIR2_OPERATOR_VERIFYING_KEY_HEX@",
+        "operatorVerifyingKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
         "operatorVerifyingKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/keys/pir2-operator-verifying.key",
         "minimumAuthorizationEpoch": "@PIR2_MINIMUM_AUTHORIZATION_EPOCH@"
       }
@@ -134,8 +134,8 @@
     },
     {
       "name": "pir2",
-      "providerIdHex": "@PIR2_PROVIDER_ID_HEX@",
-      "policyVerifyingKeyHex": "@PIR2_POLICY_VERIFYING_KEY_HEX@",
+      "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+      "policyVerifyingKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
       "clearingKeySource": "snp-sealed-ready",
       "clearingVerifyingKeyHex": "@PIR2_CLEARING_VERIFYING_KEY_HEX@",
       "currentPolicyDigestHex": "@PIR2_CURRENT_POLICY_DIGEST_HEX@",
@@ -146,7 +146,7 @@
       ],
       "accountingAuthorizationDigestHex": "@PIR2_ACCOUNTING_AUTHORIZATION_DIGEST_HEX@",
       "accountingApprovalDigestHex": "@PIR2_ACCOUNTING_APPROVAL_DIGEST_HEX@",
-      "operatorVerifyingKeyHex": "@PIR2_OPERATOR_VERIFYING_KEY_HEX@",
+      "operatorVerifyingKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
       "minimumAuthorizationEpoch": "@PIR2_MINIMUM_AUTHORIZATION_EPOCH@",
       "renderPath": "scripts/dracut/97bpir-tier3-init/unified-server-run.sh",
       "artifactSetPath": "deploy/payment-v1/bat-v2-source-ready/pir2-public-artifact-set.env.in",

@@ -9,6 +9,7 @@ import {
   validateIssuerUnitV1,
   validatePir1UnitV1,
   validatePir2RenderInputsV1,
+  validatePrivateSecretPathsV1,
   validateRepository,
   validateSourceProfileV1,
 } from "./payment-bat-v2-source-profile-gate.mjs";
@@ -74,7 +75,33 @@ test("class membership covers every policy and is coordinate-fork-free", () => {
 
   const reusedBatPath = profile();
   reusedBatPath.issuer.classes[1].batSigningKeyPath = reusedBatPath.issuer.classes[0].batSigningKeyPath;
-  assert.throws(() => validateSourceProfileV1(reusedBatPath), /duplicate issuer BAT signing-key path/u);
+  assert.throws(() => validateSourceProfileV1(reusedBatPath), /duplicate private signing-key path/u);
+
+  const divergentSigner = profile();
+  divergentSigner.issuer.classes[1].classVerifyingKeyHex = "@OTHER_CLASS_VERIFYING_KEY_HEX@";
+  assert.throws(
+    () => validateSourceProfileV1(divergentSigner),
+    /same class artifact signer/u,
+  );
+});
+
+test("every explicit private signing-key path is unique across issuer and pir1", () => {
+  const settlementReusesBat = profile();
+  settlementReusesBat.issuer.settlementSigningKeyPath =
+    settlementReusesBat.issuer.classes[0].batSigningKeyPath;
+  assert.throws(
+    () => validateSourceProfileV1(settlementReusesBat),
+    /duplicate private signing-key path/u,
+  );
+
+  const clearingReusesIdentity = pir1Source.replace(
+    "/etc/bitcoinpir/payment-v1/bat-v2/pir1/clearing-signing.key",
+    "/etc/bitcoinpir/payment-v1/bat-v2/pir1/provider-identity.key",
+  );
+  assert.throws(
+    () => validatePrivateSecretPathsV1(issuerSource, clearingReusesIdentity, profile()),
+    /duplicate private signing-key path/u,
+  );
 });
 
 test("provider ids, policy roots, and role keys cannot be reused", () => {
@@ -202,5 +229,17 @@ test("pir2 render input is canonical, bounded, and SHA/token bound", () => {
   assert.throws(
     () => validateSourceProfileV1(reusedRuntimePath),
     /immutable by exact class digest|duplicate pir2 runtime artifact path/u,
+  );
+
+  const mutatedProviderId = profile();
+  mutatedProviderId.providers[1].providerIdHex = "a".repeat(64);
+  assert.throws(
+    () => validatePir2RenderInputsV1(
+      artifactSource,
+      startupSource,
+      runSource,
+      validateSourceProfileV1(mutatedProviderId),
+    ),
+    /provider id does not match measured source constant/u,
   );
 });
