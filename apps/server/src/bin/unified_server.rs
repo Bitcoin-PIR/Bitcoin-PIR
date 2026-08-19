@@ -11,6 +11,8 @@
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
+mod unified_server_bat_v2;
+
 use pir_runtime_core::free_admission::{
     FreeAdmissionCommitterV1, FreeIpSubjectKeyV1, FreeRateLimitStateV1,
 };
@@ -36,6 +38,9 @@ use runtime::onionpir::*;
 use runtime::protocol::*;
 use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
+};
+use unified_server_bat_v2::{
+    load_storeless_bat_v2_profile_v2, StorelessBatV2CliV2, StorelessBatV2RuntimeConfigV2,
 };
 
 use ed25519_dalek::VerifyingKey;
@@ -86,6 +91,7 @@ use pir_db_attest::{BuildKind, ProofBundle};
 use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
     SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
+    StorelessBatV2AdmissionCommitterV2,
 };
 use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
 
@@ -285,6 +291,10 @@ struct CliArgs {
     /// launch configuration; it replaces durable policy rollback state only
     /// for this deliberately narrow policy shape.
     service_storeless_free_pow_policy_digest_hex: Option<String>,
+    /// Independent payment-storeless BAT V2 closed profile. Every policy and
+    /// issuer class is explicitly digest-pinned; its clearing configuration
+    /// has no ProviderStore, rollback, idempotency, or V1 shared-issuer input.
+    service_storeless_bat_v2: StorelessBatV2CliV2,
     /// Existing provider spend database. The rollback authority must be exactly
     /// one local development/test SQLite file or one production remote config;
     /// startup never creates or silently substitutes either.
@@ -613,6 +623,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut service_provider_id_hex: Option<String> = None;
     let mut service_policy_key_hex: Option<String> = None;
     let mut service_storeless_free_pow_policy_digest_hex: Option<String> = None;
+    let mut service_storeless_bat_v2 = StorelessBatV2CliV2::default();
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
     let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
@@ -831,6 +842,135 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                             )
                         })
                         .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-policy-digest-hex" => {
+                if service_storeless_bat_v2.current_policy_digest_hex.is_some() {
+                    fatal_cli("--service-storeless-bat-v2-policy-digest-hex must not be repeated");
+                }
+                service_storeless_bat_v2.current_policy_digest_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-bat-v2-policy-digest-hex requires a digest",
+                            )
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-retained-policy" => {
+                service_storeless_bat_v2.retained_policy_specs.push(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-bat-v2-retained-policy requires <expected-digest-hex>=<path>",
+                            )
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-class" => {
+                service_storeless_bat_v2.class_specs.push(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-bat-v2-class requires <expected-class-digest-hex>=<path>",
+                            )
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-accounting-authorization" => {
+                if service_storeless_bat_v2
+                    .accounting_authorization_path
+                    .is_some()
+                {
+                    fatal_cli(
+                        "--service-storeless-bat-v2-accounting-authorization must not be repeated",
+                    );
+                }
+                service_storeless_bat_v2.accounting_authorization_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli(
+                            "--service-storeless-bat-v2-accounting-authorization requires a path",
+                        )
+                    })));
+                i += 1;
+            }
+            "--service-storeless-bat-v2-issuer-approval" => {
+                if service_storeless_bat_v2.issuer_approval_path.is_some() {
+                    fatal_cli("--service-storeless-bat-v2-issuer-approval must not be repeated");
+                }
+                service_storeless_bat_v2.issuer_approval_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--service-storeless-bat-v2-issuer-approval requires a path")
+                    })));
+                i += 1;
+            }
+            "--service-storeless-bat-v2-operator-key-hex" => {
+                if service_storeless_bat_v2.operator_key_hex.is_some() {
+                    fatal_cli("--service-storeless-bat-v2-operator-key-hex must not be repeated");
+                }
+                service_storeless_bat_v2.operator_key_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli("--service-storeless-bat-v2-operator-key-hex requires a key")
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-issuer-settlement-key-hex" => {
+                if service_storeless_bat_v2.issuer_settlement_key_hex.is_some() {
+                    fatal_cli(
+                        "--service-storeless-bat-v2-issuer-settlement-key-hex must not be repeated",
+                    );
+                }
+                service_storeless_bat_v2.issuer_settlement_key_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-bat-v2-issuer-settlement-key-hex requires a key",
+                            )
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--service-storeless-bat-v2-pir1-clearing-key" => {
+                if service_storeless_bat_v2.pir1_clearing_key_path.is_some() {
+                    fatal_cli("--service-storeless-bat-v2-pir1-clearing-key must not be repeated");
+                }
+                service_storeless_bat_v2.pir1_clearing_key_path = Some(PathBuf::from(
+                    args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli(
+                            "--service-storeless-bat-v2-pir1-clearing-key requires a plaintext pir1/local-test key path (not pir2 SNP-sealed input)",
+                        )
+                    }),
+                ));
+                i += 1;
+            }
+            "--service-storeless-bat-v2-minimum-authorization-epoch" => {
+                if service_storeless_bat_v2
+                    .minimum_authorization_epoch
+                    .is_some()
+                {
+                    fatal_cli(
+                        "--service-storeless-bat-v2-minimum-authorization-epoch must not be repeated",
+                    );
+                }
+                service_storeless_bat_v2.minimum_authorization_epoch = Some(
+                    args.get(i + 1)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-storeless-bat-v2-minimum-authorization-epoch requires an integer",
+                            )
+                        }),
                 );
                 i += 1;
             }
@@ -1200,6 +1340,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         service_provider_id_hex,
         service_policy_key_hex,
         service_storeless_free_pow_policy_digest_hex,
+        service_storeless_bat_v2,
         service_store_path,
         service_rollback_authority_path,
         service_remote_rollback_authority_config_path,
@@ -4129,7 +4270,8 @@ struct UnifiedServerData {
 struct StrictServiceAdmissionRuntimeV1 {
     policy: ActivatedServicePolicyV1,
     retained_policies: BTreeMap<[u8; 32], ActivatedRetainedServicePolicyV1>,
-    /// Absent only for the exact-digest-pinned, Free-PoW-only measured mode.
+    /// Absent only for an exact-digest-pinned storeless Free-PoW or closed BAT
+    /// V2 profile.
     /// Every durable quota, credential, payment, Cashu, ARC, retained-policy,
     /// or shared-issuer route requires this store at startup.
     provider_store: Option<ProviderStore>,
@@ -4142,6 +4284,7 @@ struct StrictServiceAdmissionRuntimeV1 {
     cashu_custody_cipher: Option<ChaCha20Poly1305CustodyCipherV1>,
     cashu_exposure_limits: BTreeMap<([u8; 32], String), CashuCustodyExposureLimitsV1>,
     shared_issuer: Option<SharedIssuerRuntimeConfigV1>,
+    storeless_bat_v2: Option<StorelessBatV2RuntimeConfigV2>,
     http_transport: ProviderAdmissionHttpsTransportV1,
     harmony_attach_registry: Arc<HarmonyAttachRegistryV1>,
     monotonic_origin: Instant,
@@ -4355,9 +4498,9 @@ impl StrictServiceAdmissionRuntimeV1 {
             }
             ServicePolicyRequestV1::Retained { policy_digest } => {
                 let retained = self.retained_policies.get(&policy_digest)?;
-                retained
-                    .has_live_redemption(now_unix)
-                    .then(|| (retained.response(), policy_digest))
+                (retained.has_live_redemption(now_unix)
+                    || retained.has_live_bat_v2_redemption(now_unix))
+                .then(|| (retained.response(), policy_digest))
             }
         }
     }
@@ -4388,8 +4531,44 @@ impl StrictServiceAdmissionRuntimeV1 {
         let Some(retained) = self.retained_policies.get(policy_digest) else {
             return Ok(None);
         };
+        let is_bat_v2 = retained.policy().scopes.iter().any(|scope_policy| {
+            scope_policy.scope.scope_id() == *scope_id
+                && scope_policy.offers.iter().any(|offer| {
+                    offer.offer_id == offer_id
+                        && offer.authorization
+                            == pir_service_protocol::AuthScheme::BitcoinPirCashuBatV2
+                })
+        });
+        if is_bat_v2 {
+            retained
+                .verified_bat_v2_offer_for_redemption(scope_id, offer_id, now_unix)
+                .map(Some)
+        } else {
+            retained
+                .verified_offer_for_redemption(scope_id, offer_id, now_unix)
+                .map(Some)
+        }
+    }
+
+    fn verified_bat_v2_member_for_authorization(
+        &self,
+        policy_digest: &[u8; 32],
+        scope_id: &[u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<Option<pir_service_protocol::VerifiedBatAcceptanceMemberV2>, ServiceProtocolError>
+    {
+        if policy_digest == &self.policy.policy_digest() {
+            return self
+                .policy
+                .verified_bat_v2_member_for_admission(scope_id, offer_id, now_unix)
+                .map(Some);
+        }
+        let Some(retained) = self.retained_policies.get(policy_digest) else {
+            return Ok(None);
+        };
         retained
-            .verified_offer_for_redemption(scope_id, offer_id, now_unix)
+            .verified_bat_v2_member_for_redemption(scope_id, offer_id, now_unix)
             .map(Some)
     }
 
@@ -4427,7 +4606,9 @@ impl StrictServiceAdmissionRuntimeV1 {
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
                 self.provider_store.is_some() && self.shared_issuer.is_some()
             }
-            AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => false,
+            AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => {
+                self.provider_store.is_none() && self.storeless_bat_v2.is_some()
+            }
         }
     }
 }
@@ -7820,6 +8001,7 @@ fn load_strict_service_admission_v1(
         || args.service_provider_id_hex.is_some()
         || args.service_policy_key_hex.is_some()
         || args.service_storeless_free_pow_policy_digest_hex.is_some()
+        || args.service_storeless_bat_v2.any_configured()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
         || args.service_remote_rollback_authority_config_path.is_some()
@@ -7899,6 +8081,68 @@ fn load_strict_service_admission_v1(
             decode_fixed_hex_v1::<32>(value, "--service-storeless-free-pow-policy-digest-hex")
         })
         .transpose()?;
+    if args.service_storeless_bat_v2.any_configured() && !args.service_storeless_bat_v2.selected() {
+        return Err(
+            "partial storeless BAT V2 configuration requires --service-storeless-bat-v2-policy-digest-hex; refusing to fall back to V1 admission"
+                .to_owned(),
+        );
+    }
+    if args.service_storeless_bat_v2.selected() {
+        if storeless_bat_v2_has_forbidden_configuration_v2(args) {
+            return Err(
+                "storeless BAT V2 mode forbids ProviderStore, rollback/idempotency state, V1 retained/shared/BAT/Cashu/ARC inputs, the Free-PoW-only profile, legacy paid gates, and test HTTPS roots"
+                    .to_owned(),
+            );
+        }
+        let loaded = load_storeless_bat_v2_profile_v2(
+            &args.service_storeless_bat_v2,
+            &signed_policy,
+            provider_id,
+            verifying_key,
+            now_unix,
+        )?;
+        let runtime = StrictServiceAdmissionRuntimeV1 {
+            policy: loaded.policy,
+            retained_policies: loaded.retained_policies,
+            provider_store: None,
+            free_rate_limits: Arc::new(FreeRateLimitStateV1::new(
+                pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+            )),
+            free_ip_subject_key: None,
+            trust_direct_peer_ip: false,
+            bat_keyring: None,
+            experimental_arc_keyring: None,
+            cashu_recovery_cipher: None,
+            cashu_custody_cipher: None,
+            cashu_exposure_limits: BTreeMap::new(),
+            shared_issuer: None,
+            storeless_bat_v2: Some(loaded.runtime),
+            http_transport: ProviderAdmissionHttpsTransportV1 {
+                connect_timeout: Duration::from_secs(5),
+                io_timeout: Duration::from_secs(15),
+                #[cfg(feature = "standard-cashu-process-e2e")]
+                test_only_webpki_root_pem: None,
+            },
+            harmony_attach_registry: Arc::new(HarmonyAttachRegistryV1::default()),
+            monotonic_origin: Instant::now(),
+        };
+        validate_policy_method_coverage_v1(runtime.policy.policy(), |route| {
+            runtime.supports(route)
+        })
+        .map_err(|error| format!("incomplete storeless BAT V2 admission: {error}"))?;
+        for retained in runtime.retained_policies.values() {
+            validate_retained_policy_method_coverage_v1(retained.policy(), |route| {
+                runtime.supports(route)
+            })
+            .map_err(|error| {
+                format!(
+                    "incomplete retained storeless BAT V2 admission for {}: {error}",
+                    hex::encode(retained.policy_digest())
+                )
+            })?;
+        }
+        return Ok(Some(runtime));
+    }
     if storeless_free_pow_policy_digest.is_some()
         && (!args.service_retained_policy_paths.is_empty()
             || args.arc_key_path.is_some()
@@ -8371,6 +8615,7 @@ fn load_strict_service_admission_v1(
         cashu_custody_cipher,
         cashu_exposure_limits,
         shared_issuer,
+        storeless_bat_v2: None,
         http_transport,
         harmony_attach_registry: Arc::new(HarmonyAttachRegistryV1::default()),
         monotonic_origin: Instant::now(),
@@ -8509,6 +8754,45 @@ fn load_strict_service_admission_v1(
         }
     }
     Ok(Some(runtime))
+}
+
+fn storeless_bat_v2_has_forbidden_configuration_v2(args: &CliArgs) -> bool {
+    let test_only_https = {
+        #[cfg(feature = "standard-cashu-process-e2e")]
+        {
+            args.test_only_service_https_root_pem.is_some()
+        }
+        #[cfg(not(feature = "standard-cashu-process-e2e"))]
+        {
+            false
+        }
+    };
+    args.service_storeless_free_pow_policy_digest_hex.is_some()
+        || !args.service_retained_policy_paths.is_empty()
+        || args.arc_key_path.is_some()
+        || !args.cashu_keysets.is_empty()
+        || args.service_store_path.is_some()
+        || args.service_rollback_authority_path.is_some()
+        || args.service_remote_rollback_authority_config_path.is_some()
+        || args.allow_local_service_rollback_authority_dev
+        || args.service_free_ip_key_path.is_some()
+        || args.service_trust_direct_peer_ip
+        || !args.service_bat_key_paths.is_empty()
+        || !args.service_arc_key_specs.is_empty()
+        || args.allow_experimental_arc
+        || !args.service_cashu_recovery_key_specs.is_empty()
+        || args.service_cashu_recovery_active_epoch.is_some()
+        || !args.service_cashu_custody_key_specs.is_empty()
+        || args.service_cashu_custody_active_epoch.is_some()
+        || !args.service_cashu_exposure_limit_specs.is_empty()
+        || args.service_shared_authorization_path.is_some()
+        || args.service_shared_issuer_approval_path.is_some()
+        || args.service_shared_operator_key_hex.is_some()
+        || args.service_shared_issuer_settlement_key_hex.is_some()
+        || args.service_shared_clearing_key_path.is_some()
+        || args.service_shared_idempotency_key_path.is_some()
+        || args.service_shared_minimum_authorization_epoch.is_some()
+        || test_only_https
 }
 
 fn validate_cashu_runtime_configuration_v1(
@@ -11104,19 +11388,42 @@ async fn main() {
                                             // attempt may reserve scarce capacity,
                                             // while the gate remains the sole path
                                             // to proof verification and commit.
-                                            let v2_full_reservation_db_id =
+                                            let structurally_bound_attempt =
                                                 bind_auth_begin_v1(
                                                     &request,
                                                     verified_offer,
                                                     &trusted_catalog,
                                                     arc_canonicalizer_ref,
                                                 )
-                                                .ok()
+                                                .ok();
+                                            let v2_full_reservation_db_id =
+                                                structurally_bound_attempt
+                                                .as_ref()
                                                 .and_then(|attempt| {
                                                     harmony_v2_full_reservation_db_v1(
                                                         attempt.operation(),
                                                     )
                                                 });
+                                            let bat_v2_class_digest =
+                                                structurally_bound_attempt.as_ref().and_then(
+                                                    |attempt| match attempt.proof() {
+                                                        pir_service_protocol::AuthorizationProofV1::BitcoinPirCashuBatV2(
+                                                            proof,
+                                                        ) => Some(proof.class_digest),
+                                                        _ => None,
+                                                    },
+                                                );
+                                            let bat_v2_member = bat_v2_class_digest.and_then(|_| {
+                                                runtime
+                                                    .verified_bat_v2_member_for_authorization(
+                                                        &request.policy_digest,
+                                                        &request.scope_id,
+                                                        request.offer_id,
+                                                        now_unix,
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                            });
                                             let requires_v2_full_reservation =
                                                 v2_full_reservation_db_id.is_some();
                                             let requires_online_v2full_authority =
@@ -11242,6 +11549,35 @@ async fn main() {
                                                 if let Some(committer) = shared_issuer.as_ref() {
                                                     composite =
                                                         composite.with_shared_issuer(committer);
+                                                }
+                                                let bat_v2_class = runtime
+                                                    .storeless_bat_v2
+                                                    .as_ref()
+                                                    .zip(bat_v2_class_digest.as_ref())
+                                                    .and_then(|(config, digest)| {
+                                                        config.class_for_digest(digest)
+                                                    });
+                                                let bat_v2_client = runtime
+                                                    .storeless_bat_v2
+                                                    .as_ref()
+                                                    .zip(bat_v2_class_digest.as_ref())
+                                                    .and_then(|(config, _)| config.client().ok());
+                                                let bat_v2_committer = match (
+                                                    bat_v2_member.as_ref(),
+                                                    bat_v2_class,
+                                                    bat_v2_client.as_ref(),
+                                                ) {
+                                                    (Some(member), Some(class), Some(client)) => {
+                                                        StorelessBatV2AdmissionCommitterV2::new(
+                                                            member, class, client,
+                                                        )
+                                                        .ok()
+                                                    }
+                                                    _ => None,
+                                                };
+                                                if let Some(committer) = bat_v2_committer.as_ref() {
+                                                    composite = composite
+                                                        .with_bat_v2_shared_issuer_online(committer);
                                                 }
                                                 let monotonic_now_ms = || {
                                                     u64::try_from(
@@ -14163,6 +14499,98 @@ mod service_admission_dispatch_tests {
             args.service_storeless_free_pow_policy_digest_hex.as_deref(),
             Some(digest.as_str())
         );
+    }
+
+    #[test]
+    fn cli_parser_keeps_storeless_bat_v2_inputs_in_an_independent_group() {
+        let current_digest = "42".repeat(32);
+        let retained_digest = "43".repeat(32);
+        let class_digest = "44".repeat(32);
+        let operator_key = "45".repeat(32);
+        let settlement_key = "46".repeat(32);
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--service-storeless-bat-v2-policy-digest-hex".to_owned(),
+            current_digest.clone(),
+            "--service-storeless-bat-v2-retained-policy".to_owned(),
+            format!("{retained_digest}=/private/retained-policy.bin"),
+            "--service-storeless-bat-v2-class".to_owned(),
+            format!("{class_digest}=/private/class.bin"),
+            "--service-storeless-bat-v2-accounting-authorization".to_owned(),
+            "/private/accounting.bin".to_owned(),
+            "--service-storeless-bat-v2-issuer-approval".to_owned(),
+            "/private/approval.bin".to_owned(),
+            "--service-storeless-bat-v2-operator-key-hex".to_owned(),
+            operator_key.clone(),
+            "--service-storeless-bat-v2-issuer-settlement-key-hex".to_owned(),
+            settlement_key.clone(),
+            "--service-storeless-bat-v2-pir1-clearing-key".to_owned(),
+            "/private/pir1-clearing.key".to_owned(),
+            "--service-storeless-bat-v2-minimum-authorization-epoch".to_owned(),
+            "17".to_owned(),
+        ]);
+        let v2 = args.service_storeless_bat_v2;
+        assert!(v2.selected());
+        assert_eq!(
+            v2.current_policy_digest_hex.as_deref(),
+            Some(current_digest.as_str())
+        );
+        assert_eq!(
+            v2.retained_policy_specs,
+            vec![format!("{retained_digest}=/private/retained-policy.bin")]
+        );
+        assert_eq!(
+            v2.class_specs,
+            vec![format!("{class_digest}=/private/class.bin")]
+        );
+        assert_eq!(
+            v2.accounting_authorization_path.as_deref(),
+            Some(std::path::Path::new("/private/accounting.bin"))
+        );
+        assert_eq!(
+            v2.issuer_approval_path.as_deref(),
+            Some(std::path::Path::new("/private/approval.bin"))
+        );
+        assert_eq!(v2.operator_key_hex.as_deref(), Some(operator_key.as_str()));
+        assert_eq!(
+            v2.issuer_settlement_key_hex.as_deref(),
+            Some(settlement_key.as_str())
+        );
+        assert_eq!(
+            v2.pir1_clearing_key_path.as_deref(),
+            Some(std::path::Path::new("/private/pir1-clearing.key"))
+        );
+        assert_eq!(v2.minimum_authorization_epoch, Some(17));
+    }
+
+    #[test]
+    fn storeless_bat_v2_rejects_v1_store_rollback_and_idempotency_inputs() {
+        let v2_digest = "47".repeat(32);
+        let base = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--service-storeless-bat-v2-policy-digest-hex".to_owned(),
+            v2_digest.clone(),
+        ]);
+        assert!(!storeless_bat_v2_has_forbidden_configuration_v2(&base));
+
+        for forbidden in [
+            vec!["--service-store", "/private/provider.sqlite"],
+            vec!["--service-rollback-authority", "/private/rollback.sqlite"],
+            vec![
+                "--service-shared-idempotency-key",
+                "/private/idempotency.key",
+            ],
+            vec!["--service-bat-key", "/private/v1-bat.key"],
+        ] {
+            let mut argv = vec![
+                "unified_server".to_owned(),
+                "--service-storeless-bat-v2-policy-digest-hex".to_owned(),
+                v2_digest.clone(),
+            ];
+            argv.extend(forbidden.into_iter().map(str::to_owned));
+            let args = parse_args_from(argv);
+            assert!(storeless_bat_v2_has_forbidden_configuration_v2(&args));
+        }
     }
 
     #[cfg(feature = "test-only-unsafe-query-logging")]
