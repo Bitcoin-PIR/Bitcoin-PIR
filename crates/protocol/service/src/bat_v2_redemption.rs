@@ -1834,6 +1834,13 @@ impl VerifiedBatV2RedeemCommitV2 {
 pub trait BatV2RedeemCommitStoreV2 {
     type Error;
 
+    /// Returns whether this provider-local public attempt identifier was
+    /// already committed. Services must perform this durable lookup before
+    /// authorization/class prechecks so a committed attempt remains terminal
+    /// after expiry or rotation. Store errors are outcome-unknown and must not
+    /// produce a wire response.
+    fn attempt_is_committed(&self, request: &ProviderRedeemRequestV2) -> Result<bool, Self::Error>;
+
     /// Atomically claim both the issuer-global spend key and the issuer-local
     /// `(provider_id, attempt_id)` pair, then persist the derived ledger
     /// transaction ID, credit, and exact signed initial success. Any uniqueness
@@ -1880,6 +1887,29 @@ impl<E> From<ServiceProtocolError> for BatV2RedeemCommitErrorV2<E> {
     fn from(value: ServiceProtocolError) -> Self {
         Self::Protocol(value)
     }
+}
+
+/// Produces a fresh signed terminal response only after a durable store lookup
+/// confirms that the exact provider/attempt pair was already committed. A
+/// negative lookup returns `None`; a store error is outcome-unknown and signs
+/// nothing. This is the only pre-precheck entry point for committed attempts.
+pub fn sign_terminal_if_attempt_committed_v2<S: BatV2RedeemCommitStoreV2>(
+    request: &ProviderRedeemRequestV2,
+    issuer_settlement_signing_key: &SigningKey,
+    store: &S,
+) -> Result<Option<ProviderRedeemResponseV2>, BatV2RedeemCommitErrorV2<S::Error>> {
+    if !store
+        .attempt_is_committed(request)
+        .map_err(BatV2RedeemCommitErrorV2::Store)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(
+        ProviderRedeemResponseV2::sign_terminal_invalid_or_spent(
+            request,
+            issuer_settlement_signing_key,
+        )?,
+    ))
 }
 
 /// Signs a candidate success, then gives the store one atomic opportunity to
@@ -2159,12 +2189,20 @@ mod tests {
     }
 
     struct CommitStore {
+        lookup_result: Result<bool, &'static str>,
         result: Result<bool, &'static str>,
         saw_success: bool,
     }
 
     impl BatV2RedeemCommitStoreV2 for CommitStore {
         type Error = &'static str;
+
+        fn attempt_is_committed(
+            &self,
+            _request: &ProviderRedeemRequestV2,
+        ) -> Result<bool, Self::Error> {
+            self.lookup_result
+        }
 
         fn commit_fresh(
             &mut self,
@@ -2177,6 +2215,49 @@ mod tests {
             );
             self.result
         }
+    }
+
+    #[test]
+    fn bat_v2_redemption_committed_lookup_is_the_only_precheck_terminal_gate() {
+        let settlement_key = SigningKey::from_bytes(&[24; 32]);
+        let request = request(proof().presentation_digest().unwrap());
+        let committed_store = CommitStore {
+            lookup_result: Ok(true),
+            result: Ok(false),
+            saw_success: false,
+        };
+        let terminal =
+            sign_terminal_if_attempt_committed_v2(&request, &settlement_key, &committed_store)
+                .unwrap()
+                .expect("a durable committed attempt must return a terminal response");
+        assert_eq!(
+            terminal.outcome,
+            ProviderRedeemOutcomeV2::TerminalInvalidOrSpent
+        );
+        terminal
+            .verify_for_exact_request(&request, &settlement_key.verifying_key())
+            .unwrap();
+
+        let fresh_store = CommitStore {
+            lookup_result: Ok(false),
+            result: Ok(false),
+            saw_success: false,
+        };
+        assert!(
+            sign_terminal_if_attempt_committed_v2(&request, &settlement_key, &fresh_store,)
+                .unwrap()
+                .is_none()
+        );
+
+        let failed_store = CommitStore {
+            lookup_result: Err("database unavailable"),
+            result: Ok(false),
+            saw_success: false,
+        };
+        assert!(matches!(
+            sign_terminal_if_attempt_committed_v2(&request, &settlement_key, &failed_store,),
+            Err(BatV2RedeemCommitErrorV2::Store("database unavailable"))
+        ));
     }
 
     fn verified_commit(request: ProviderRedeemRequestV2) -> VerifiedBatV2RedeemCommitV2 {
@@ -2193,6 +2274,7 @@ mod tests {
         let settlement_key = SigningKey::from_bytes(&[24; 32]);
         let request = request(proof().presentation_digest().unwrap());
         let mut fresh_store = CommitStore {
+            lookup_result: Ok(false),
             result: Ok(true),
             saw_success: false,
         };
@@ -2212,6 +2294,7 @@ mod tests {
         ));
 
         let mut spent_store = CommitStore {
+            lookup_result: Ok(false),
             result: Ok(false),
             saw_success: false,
         };
@@ -2230,6 +2313,7 @@ mod tests {
         );
 
         let mut failed_store = CommitStore {
+            lookup_result: Ok(false),
             result: Err("database unavailable"),
             saw_success: false,
         };
