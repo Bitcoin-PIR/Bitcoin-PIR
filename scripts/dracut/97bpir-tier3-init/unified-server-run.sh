@@ -52,8 +52,10 @@ PIR2_SEALED_ATTEMPT_DIR=${BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT:-/run/bitcoinpir-pir
 PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
 PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH="$PIR2_SEALED_ROOT/provider-accounting-authorization.bin"
 PIR2_SEALED_ISSUER_APPROVAL_PATH="$PIR2_SEALED_ROOT/issuer-accounting-approval.bin"
-PIR2_SEALED_CLASS_PATH="$PIR2_SEALED_ROOT/bat-acceptance-class.bin"
 SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin
+PIR2_SEALED_ARTIFACT_SET_MAX_BYTES=8192
+PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_POLICIES=8
+PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_CLASSES=8
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
 PIR2_SEALED_OPERATOR_KEY_HEX=7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb
 PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX=248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7
@@ -276,6 +278,8 @@ load_pir2_sealed_startup_config() {
         "${BPIR_PIR2_SNP_SEALED_VERIFIER_NONCE_HEX:-}" \
         "${BPIR_PIR2_SNP_SEALED_POLICY_DIGEST_HEX:-}" \
         "${BPIR_PIR2_SNP_SEALED_CLASS_DIGEST_HEX:-}" \
+        "${BPIR_PIR2_SNP_SEALED_ARTIFACT_SET_PATH:-}" \
+        "${BPIR_PIR2_SNP_SEALED_ARTIFACT_SET_SHA256:-}" \
         "${BPIR_PIR2_SNP_SEALED_MINIMUM_AUTHORIZATION_EPOCH:-}"; do
         [ -z "$env_value" ] || env_configured=true
     done
@@ -287,11 +291,14 @@ load_pir2_sealed_startup_config() {
         PIR2_SEALED_VERIFIER_NONCE_HEX=${BPIR_PIR2_SNP_SEALED_VERIFIER_NONCE_HEX:-}
         PIR2_SEALED_POLICY_DIGEST_HEX=${BPIR_PIR2_SNP_SEALED_POLICY_DIGEST_HEX:-}
         PIR2_SEALED_CLASS_DIGEST_HEX=${BPIR_PIR2_SNP_SEALED_CLASS_DIGEST_HEX:-}
+        PIR2_SEALED_ARTIFACT_SET_PATH=${BPIR_PIR2_SNP_SEALED_ARTIFACT_SET_PATH:-}
+        PIR2_SEALED_ARTIFACT_SET_SHA256=${BPIR_PIR2_SNP_SEALED_ARTIFACT_SET_SHA256:-}
         PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH=${BPIR_PIR2_SNP_SEALED_MINIMUM_AUTHORIZATION_EPOCH:-}
         for env_value in \
             "$PIR2_SEALED_PROFILE" "$PIR2_SEALED_PHASE" "$PIR2_SEALED_ORDINAL" \
             "$PIR2_SEALED_VERIFIER_NONCE_HEX" "$PIR2_SEALED_POLICY_DIGEST_HEX" \
-            "$PIR2_SEALED_CLASS_DIGEST_HEX" "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"; do
+            "$PIR2_SEALED_CLASS_DIGEST_HEX" "$PIR2_SEALED_ARTIFACT_SET_PATH" \
+            "$PIR2_SEALED_ARTIFACT_SET_SHA256" "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"; do
             [ -n "$env_value" ] || fatal "partial pir2 sealed environment configuration"
         done
     else
@@ -299,14 +306,15 @@ load_pir2_sealed_startup_config() {
         unknown_config_key=$(awk -F= '
             $1 != "schema" && $1 != "profile" && $1 != "phase" && $1 != "ordinal" &&
             $1 != "verifier_nonce_hex" && $1 != "current_policy_digest_hex" &&
-            $1 != "class_digest_hex" && $1 != "minimum_authorization_epoch" {
+            $1 != "class_digest_hex" && $1 != "artifact_set_path" &&
+            $1 != "artifact_set_sha256" && $1 != "minimum_authorization_epoch" {
                 print $1; exit
             }
         ' "$PIR2_SEALED_STARTUP_CONFIG")
         [ -z "$unknown_config_key" ] \
             || fatal "sealed startup config contains unsupported key: $unknown_config_key"
         config_schema=$(read_exact_public_config_value schema)
-        [ "$config_schema" = bitcoinpir-pir2-sealed-startup-v1 ] \
+        [ "$config_schema" = bitcoinpir-pir2-sealed-startup-v2 ] \
             || fatal "sealed startup config has unsupported schema"
         PIR2_SEALED_PROFILE=$(read_exact_public_config_value profile)
         PIR2_SEALED_PHASE=$(read_exact_public_config_value phase)
@@ -314,6 +322,8 @@ load_pir2_sealed_startup_config() {
         PIR2_SEALED_VERIFIER_NONCE_HEX=$(read_exact_public_config_value verifier_nonce_hex)
         PIR2_SEALED_POLICY_DIGEST_HEX=$(read_exact_public_config_value current_policy_digest_hex)
         PIR2_SEALED_CLASS_DIGEST_HEX=$(read_exact_public_config_value class_digest_hex)
+        PIR2_SEALED_ARTIFACT_SET_PATH=$(read_exact_public_config_value artifact_set_path)
+        PIR2_SEALED_ARTIFACT_SET_SHA256=$(read_exact_public_config_value artifact_set_sha256)
         PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH=$(read_exact_public_config_value minimum_authorization_epoch)
     fi
 
@@ -332,6 +342,191 @@ load_pir2_sealed_startup_config() {
     validate_lower_hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" 64 "sealed verifier nonce"
     validate_lower_hex "$PIR2_SEALED_POLICY_DIGEST_HEX" 64 "sealed current policy digest"
     validate_lower_hex "$PIR2_SEALED_CLASS_DIGEST_HEX" 64 "sealed class digest"
+    validate_lower_hex "$PIR2_SEALED_ARTIFACT_SET_SHA256" 64 "sealed public artifact-set sha256"
+    [ "$PIR2_SEALED_ARTIFACT_SET_PATH" = "$PIR2_SEALED_ROOT/public-artifact-set.env" ] \
+        || fatal "sealed public artifact-set path is outside the fixed pir2 root"
+}
+
+validate_pir2_public_artifact_set() {
+    if [ ! -e "$PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH" ]; then
+        [ -f "$PIR2_SEALED_ARTIFACT_SET_PATH" ] && [ ! -L "$PIR2_SEALED_ARTIFACT_SET_PATH" ] \
+            || fatal "pir2 public artifact set must be a non-symlink regular file"
+        artifact_set_tmp="$PIR2_SEALED_ATTEMPT_DIR/.public-artifact-set-$PIR2_BOOT_ID_HEX.$$.tmp"
+        [ ! -e "$artifact_set_tmp" ] || fatal "pir2 trusted artifact-set temporary path exists"
+        umask 077
+        dd if="$PIR2_SEALED_ARTIFACT_SET_PATH" of="$artifact_set_tmp" bs=8192 count=2 2>/dev/null \
+            || fatal "failed to snapshot pir2 public artifact set"
+        chmod 600 "$artifact_set_tmp" || {
+            rm -f "$artifact_set_tmp"
+            fatal "failed to protect pir2 public artifact-set snapshot"
+        }
+        artifact_snapshot_size=$(wc -c <"$artifact_set_tmp" | tr -d '[:space:]') \
+            || fatal "failed to measure pir2 public artifact-set snapshot"
+        case "$artifact_snapshot_size" in
+            ''|*[!0-9]*) rm -f "$artifact_set_tmp"; fatal "pir2 public artifact-set snapshot size is invalid" ;;
+        esac
+        [ "$artifact_snapshot_size" -le "$PIR2_SEALED_ARTIFACT_SET_MAX_BYTES" ] || {
+            rm -f "$artifact_set_tmp"
+            fatal "pir2 public artifact set exceeds its byte bound"
+        }
+        artifact_snapshot_sha256=$(sha256sum "$artifact_set_tmp" | awk '{ print $1 }') \
+            || fatal "failed to hash pir2 public artifact-set snapshot"
+        [ "$artifact_snapshot_sha256" = "$PIR2_SEALED_ARTIFACT_SET_SHA256" ] || {
+            rm -f "$artifact_set_tmp"
+            fatal "pir2 public artifact set does not match startup sha256"
+        }
+        if ! ln "$artifact_set_tmp" "$PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH"; then
+            rm -f "$artifact_set_tmp"
+            fatal "failed to publish trusted pir2 public artifact-set snapshot"
+        fi
+        rm -f "$artifact_set_tmp" \
+            || fatal "failed to remove pir2 public artifact-set temporary path"
+    fi
+    [ -f "$PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH" ] \
+        && [ ! -L "$PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH" ] \
+        || fatal "trusted pir2 public artifact set is not a non-symlink regular file"
+    PIR2_ACTIVE_ARTIFACT_SET_PATH=$PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH
+    artifact_set_size=$(wc -c <"$PIR2_ACTIVE_ARTIFACT_SET_PATH" | tr -d '[:space:]') \
+        || fatal "failed to measure pir2 public artifact set"
+    case "$artifact_set_size" in
+        ''|*[!0-9]*) fatal "pir2 public artifact set size is invalid" ;;
+    esac
+    [ "$artifact_set_size" -le "$PIR2_SEALED_ARTIFACT_SET_MAX_BYTES" ] \
+        || fatal "pir2 public artifact set exceeds its byte bound"
+    artifact_set_sha256=$(sha256sum "$PIR2_ACTIVE_ARTIFACT_SET_PATH" | awk '{ print $1 }') \
+        || fatal "failed to hash pir2 public artifact set"
+    [ "$artifact_set_sha256" = "$PIR2_SEALED_ARTIFACT_SET_SHA256" ] \
+        || fatal "pir2 public artifact set does not match startup sha256"
+    awk -F= \
+        -v max_policies="$PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_POLICIES" \
+        -v max_classes="$PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_CLASSES" '
+        NR == 1 {
+            if ($0 != "schema=bitcoinpir-pir2-bat-v2-public-artifact-set-v1") exit 1
+            next
+        }
+        NF != 4 { exit 1 }
+        NR == 2 {
+            if ($1 != "current_policy") exit 1
+            stage = 1
+            next
+        }
+        $1 == "retained_policy" {
+            if (stage != 1 || (previous_policy != "" && $0 <= previous_policy)) exit 1
+            previous_policy = $0
+            retained_policies++
+            if (retained_policies > max_policies) exit 1
+            next
+        }
+        $1 == "current_class" {
+            if (stage != 1 || retained_policies < 1) exit 1
+            stage = 2
+            current_classes++
+            next
+        }
+        $1 == "retained_class" {
+            if (stage < 2 || current_classes != 1 || (previous_class != "" && $0 <= previous_class)) exit 1
+            stage = 3
+            previous_class = $0
+            retained_classes++
+            if (retained_classes > max_classes) exit 1
+            next
+        }
+        $1 == "accounting_authorization" {
+            if (stage != 3 || retained_classes < 1 || accounting_authorizations != 0) exit 1
+            stage = 4
+            accounting_authorizations++
+            next
+        }
+        $1 == "accounting_approval" {
+            if (stage != 4 || accounting_authorizations != 1 || accounting_approvals != 0) exit 1
+            stage = 5
+            accounting_approvals++
+            next
+        }
+        { exit 1 }
+        END {
+            if (NR < 7 || stage != 5 || retained_policies < 1 || current_classes != 1 || retained_classes < 1 || accounting_authorizations != 1 || accounting_approvals != 1) exit 1
+        }
+    ' "$PIR2_ACTIVE_ARTIFACT_SET_PATH" \
+        || fatal "pir2 public artifact set is not canonical or bounded"
+
+    artifact_seen_digests=" "
+    while IFS= read -r artifact_line; do
+        artifact_kind=${artifact_line%%=*}
+        [ "$artifact_kind" != schema ] || continue
+        artifact_spec=${artifact_line#*=}
+        artifact_digest=${artifact_spec%%=*}
+        artifact_remainder=${artifact_spec#*=}
+        artifact_file_sha256=${artifact_remainder%%=*}
+        artifact_path=${artifact_remainder#*=}
+        validate_lower_hex "$artifact_digest" 64 "pir2 public artifact protocol digest"
+        validate_lower_hex "$artifact_file_sha256" 64 "pir2 public artifact file sha256"
+        case "$artifact_seen_digests" in
+            *" $artifact_digest "*) fatal "pir2 public artifact set repeats a protocol digest" ;;
+        esac
+        artifact_seen_digests="$artifact_seen_digests$artifact_digest "
+        case "$artifact_path" in
+            *" "*|*"="*|*".."*) fatal "pir2 public artifact path is not canonical" ;;
+        esac
+        case "$artifact_kind:$artifact_path" in
+            current_policy:$SERVICE_POLICY_PATH) ;;
+            retained_policy:$PIR2_SEALED_ROOT/public/policies/$artifact_digest.bin) ;;
+            current_class:$PIR2_SEALED_ROOT/public/classes/$artifact_digest.bin) ;;
+            retained_class:$PIR2_SEALED_ROOT/public/classes/$artifact_digest.bin) ;;
+            accounting_authorization:$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH) ;;
+            accounting_approval:$PIR2_SEALED_ISSUER_APPROVAL_PATH) ;;
+            *) fatal "pir2 public artifact path is outside its role-specific root" ;;
+        esac
+        [ -f "$artifact_path" ] && [ ! -L "$artifact_path" ] \
+            || fatal "pir2 public artifact must be a non-symlink regular file: $artifact_path"
+        artifact_actual_sha256=$(sha256sum "$artifact_path" | awk '{ print $1 }') \
+            || fatal "failed to hash pir2 public artifact: $artifact_path"
+        [ "$artifact_actual_sha256" = "$artifact_file_sha256" ] \
+            || fatal "pir2 public artifact file sha256 mismatch: $artifact_path"
+        if [ "$artifact_kind" = current_policy ]; then
+            [ "$artifact_digest" = "$PIR2_SEALED_POLICY_DIGEST_HEX" ] \
+                || fatal "pir2 artifact set current policy does not match startup"
+        elif [ "$artifact_kind" = current_class ]; then
+            [ "$artifact_digest" = "$PIR2_SEALED_CLASS_DIGEST_HEX" ] \
+                || fatal "pir2 artifact set current class does not match startup"
+        fi
+    done <"$PIR2_ACTIVE_ARTIFACT_SET_PATH"
+}
+
+run_pir2_with_public_artifacts() {
+    artifact_execution_mode=$1
+    shift
+    [ -f "$PIR2_ACTIVE_ARTIFACT_SET_PATH" ] && [ ! -L "$PIR2_ACTIVE_ARTIFACT_SET_PATH" ] \
+        || fatal "trusted pir2 public artifact-set snapshot is unavailable"
+    while IFS= read -r artifact_line; do
+        artifact_kind=${artifact_line%%=*}
+        [ "$artifact_kind" != schema ] || continue
+        artifact_spec=${artifact_line#*=}
+        artifact_digest=${artifact_spec%%=*}
+        artifact_remainder=${artifact_spec#*=}
+        artifact_path=${artifact_remainder#*=}
+        case "$artifact_kind" in
+            current_policy)
+                set -- "$@" --service-storeless-bat-v2-policy-digest-hex "$artifact_digest"
+                ;;
+            retained_policy)
+                set -- "$@" --service-storeless-bat-v2-retained-policy "$artifact_digest=$artifact_path"
+                ;;
+            current_class|retained_class)
+                set -- "$@" --service-storeless-bat-v2-class "$artifact_digest=$artifact_path"
+                ;;
+            accounting_authorization|accounting_approval)
+                :
+                ;;
+            *) fatal "pir2 public artifact set changed after validation" ;;
+        esac
+    done <"$PIR2_ACTIVE_ARTIFACT_SET_PATH"
+    if [ "$artifact_execution_mode" = exec ]; then
+        exec "$@"
+    fi
+    [ "$artifact_execution_mode" = child ] \
+        || fatal "unsupported pir2 public artifact execution mode"
+    "$@"
 }
 
 read_pir2_current_boot() {
@@ -352,6 +547,7 @@ read_pir2_current_boot() {
     PIR2_SEALED_READY_RUNTIME_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/ready-runtime-$PIR2_BOOT_ID_HEX.env"
     PIR2_SEALED_TERMINAL_TOKEN_PATH="$PIR2_SEALED_ATTEMPT_DIR/terminal-$PIR2_BOOT_ID_HEX.env"
     PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH="$PIR2_SEALED_ATTEMPT_DIR/ready-preflight-$PIR2_BOOT_ID_HEX.env"
+    PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH="$PIR2_SEALED_ATTEMPT_DIR/public-artifact-set-$PIR2_BOOT_ID_HEX.env"
 }
 
 prepare_pir2_sealed_attempt_dir() {
@@ -381,7 +577,7 @@ authoritative_attempt_token_matches_current_attempt() {
     [ -f "$attempt_token_path" ] && [ ! -L "$attempt_token_path" ] \
         || fatal "pir2 sealed authoritative attempt token is not a non-symlink regular file"
     attempt_token_lines=$(wc -l <"$attempt_token_path" | tr -d '[:space:]')
-    [ "$attempt_token_lines" = 11 ] \
+    [ "$attempt_token_lines" = 12 ] \
         || fatal "pir2 sealed authoritative attempt token has unexpected fields"
     attempt_token_schema=$(read_exact_attempt_token_value "$attempt_token_path" schema) \
         || fatal "pir2 sealed authoritative attempt token is malformed"
@@ -399,13 +595,15 @@ authoritative_attempt_token_matches_current_attempt() {
         || fatal "pir2 sealed authoritative attempt token is malformed"
     attempt_token_class=$(read_exact_attempt_token_value "$attempt_token_path" class_digest_hex) \
         || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_artifact_set=$(read_exact_attempt_token_value "$attempt_token_path" artifact_set_sha256) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
     attempt_token_minimum_epoch=$(read_exact_attempt_token_value "$attempt_token_path" minimum_authorization_epoch) \
         || fatal "pir2 sealed authoritative attempt token is malformed"
     attempt_token_receipt_digest=$(read_exact_attempt_token_value "$attempt_token_path" receipt_protocol_digest) \
         || fatal "pir2 sealed authoritative attempt token is malformed"
     attempt_token_receipt_sha256=$(read_exact_attempt_token_value "$attempt_token_path" receipt_file_sha256) \
         || fatal "pir2 sealed authoritative attempt token is malformed"
-    [ "$attempt_token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v1 ] \
+    [ "$attempt_token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v2 ] \
         && [ "$attempt_token_kind" = "$expected_token_kind" ] \
         && [ "$attempt_token_phase" = "$expected_token_phase" ] \
         && [ "$attempt_token_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
@@ -413,6 +611,7 @@ authoritative_attempt_token_matches_current_attempt() {
         && [ "$attempt_token_nonce" = "$PIR2_SEALED_VERIFIER_NONCE_HEX" ] \
         && [ "$attempt_token_policy" = "$PIR2_SEALED_POLICY_DIGEST_HEX" ] \
         && [ "$attempt_token_class" = "$PIR2_SEALED_CLASS_DIGEST_HEX" ] \
+        && [ "$attempt_token_artifact_set" = "$PIR2_SEALED_ARTIFACT_SET_SHA256" ] \
         && [ "$attempt_token_minimum_epoch" = "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" ] \
         || fatal "pir2 sealed authoritative attempt token does not match the current attempt"
     validate_lower_hex "$attempt_token_receipt_digest" 64 "authoritative receipt protocol digest"
@@ -461,7 +660,7 @@ write_authoritative_attempt_token() {
         || fatal "pir2 sealed authoritative attempt temporary path already exists"
     umask 077
     if ! {
-        printf 'schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\n'
+        printf 'schema=bitcoinpir-pir2-sealed-authoritative-attempt-v2\n'
         printf 'kind=%s\n' "$authoritative_token_kind"
         printf 'phase=%s\n' "$authoritative_token_phase"
         printf 'boot_id=%s\n' "$PIR2_BOOT_ID_HEX"
@@ -469,6 +668,7 @@ write_authoritative_attempt_token() {
         printf 'verifier_nonce_hex=%s\n' "$PIR2_SEALED_VERIFIER_NONCE_HEX"
         printf 'current_policy_digest_hex=%s\n' "$PIR2_SEALED_POLICY_DIGEST_HEX"
         printf 'class_digest_hex=%s\n' "$PIR2_SEALED_CLASS_DIGEST_HEX"
+        printf 'artifact_set_sha256=%s\n' "$PIR2_SEALED_ARTIFACT_SET_SHA256"
         printf 'minimum_authorization_epoch=%s\n' "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"
         printf 'receipt_protocol_digest=%s\n' "$PIR2_CHILD_RECEIPT_PROTOCOL_DIGEST"
         printf 'receipt_file_sha256=%s\n' "$PIR2_CHILD_RECEIPT_FILE_SHA256"
@@ -533,7 +733,7 @@ run_pir2_sealed_ready_preflight() {
         echo "[unified-server-run] reusing authoritative current-attempt pir2 sealed Ready-preflight success" >&2
         return 0
     fi
-    "$UNIFIED_SERVER" \
+    run_pir2_with_public_artifacts child "$UNIFIED_SERVER" \
         --port 8091 \
         --role secondary \
         --serve-queries \
@@ -549,8 +749,6 @@ run_pir2_sealed_ready_preflight() {
         --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
         --pir2-snp-sealed-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
         --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
-        --service-storeless-bat-v2-policy-digest-hex "$PIR2_SEALED_POLICY_DIGEST_HEX" \
-        --service-storeless-bat-v2-class "$PIR2_SEALED_CLASS_DIGEST_HEX=$PIR2_SEALED_CLASS_PATH" \
         --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
         --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
         --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \
@@ -985,6 +1183,10 @@ observe|enroll|probe)
 ready)
     [ ! -e "$PIR2_SEALED_TERMINAL_TOKEN_PATH" ] \
         || fatal "terminal token already exists for this boot; refusing a phase change"
+    # Hash/canonicality validation happens immediately before the Ready child.
+    # The resulting exact set digest is part of the current-boot authoritative
+    # token; inert phases still avoid opening any policy/class artifact.
+    validate_pir2_public_artifact_set
     # The child process strictly opens the envelope, verifies all three public
     # authorizations, writes a separate current-boot receipt, drops both keys
     # on exit 42, and returns control here before any database/ORAM access.
@@ -1068,7 +1270,11 @@ start_unified_server_runtime_log
 
 # VPSBG is query-only and has no Harmony V2 hint pool, so the measured
 # invocation keeps online V2Full authorization disabled (limit 0).
-exec "$UNIFIED_SERVER" \
+# Revalidate the mutable-mount public bytes after the bounded ORAM build. The
+# Rust loader then repeats canonical/signature/digest/member/role-key checks in
+# the final Ready process; the audit receipt is evidence, not runtime authority.
+validate_pir2_public_artifact_set
+run_pir2_with_public_artifacts exec "$UNIFIED_SERVER" \
     --port 8091 \
     --role secondary \
     --serve-queries \
@@ -1101,8 +1307,6 @@ exec "$UNIFIED_SERVER" \
     --service-policy "$SERVICE_POLICY_PATH" \
     --service-provider-id-hex "$PIR2_SEALED_PROVIDER_ID_HEX" \
     --service-policy-key-hex "$PIR2_SEALED_POLICY_KEY_HEX" \
-    --service-storeless-bat-v2-policy-digest-hex "$PIR2_SEALED_POLICY_DIGEST_HEX" \
-    --service-storeless-bat-v2-class "$PIR2_SEALED_CLASS_DIGEST_HEX=$PIR2_SEALED_CLASS_PATH" \
     --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
     --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
     --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \

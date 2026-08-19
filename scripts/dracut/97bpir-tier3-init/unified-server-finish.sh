@@ -64,7 +64,7 @@ sealed_terminal_token_matches_current_boot() {
     token="$PIR2_SEALED_ATTEMPT_DIR/terminal-$boot_id_hex.env"
     [ -f "$token" ] && [ ! -L "$token" ] && [ -r "$token" ] || return 1
     token_lines=$(wc -l <"$token" | tr -d '[:space:]')
-    [ "$token_lines" = 11 ] || return 1
+    [ "$token_lines" = 12 ] || return 1
     token_schema=$(read_exact_attempt_token_value "$token" schema) || return 1
     token_kind=$(read_exact_attempt_token_value "$token" kind) || return 1
     token_phase=$(read_exact_attempt_token_value "$token" phase) || return 1
@@ -73,10 +73,11 @@ sealed_terminal_token_matches_current_boot() {
     token_nonce=$(read_exact_attempt_token_value "$token" verifier_nonce_hex) || return 1
     token_policy=$(read_exact_attempt_token_value "$token" current_policy_digest_hex) || return 1
     token_class=$(read_exact_attempt_token_value "$token" class_digest_hex) || return 1
+    token_artifact_set=$(read_exact_attempt_token_value "$token" artifact_set_sha256) || return 1
     token_minimum_epoch=$(read_exact_attempt_token_value "$token" minimum_authorization_epoch) || return 1
     token_receipt_digest=$(read_exact_attempt_token_value "$token" receipt_protocol_digest) || return 1
     token_receipt_sha256=$(read_exact_attempt_token_value "$token" receipt_file_sha256) || return 1
-    [ "$token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v1 ] || return 1
+    [ "$token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v2 ] || return 1
     [ "$token_kind" = terminal ] || return 1
     case "$token_phase" in observe|enroll|probe) ;; *) return 1 ;; esac
     [ "$token_boot_id" = "$boot_id_hex" ] || return 1
@@ -86,6 +87,7 @@ sealed_terminal_token_matches_current_boot() {
     canonical_nonzero_lower_hex "$token_nonce" 64 || return 1
     canonical_nonzero_lower_hex "$token_policy" 64 || return 1
     canonical_nonzero_lower_hex "$token_class" 64 || return 1
+    canonical_nonzero_lower_hex "$token_artifact_set" 64 || return 1
     canonical_nonzero_lower_hex "$token_receipt_digest" 64 || return 1
     canonical_nonzero_lower_hex "$token_receipt_sha256" 64 || return 1
 }
