@@ -13,6 +13,8 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use zeroize::{Zeroize, Zeroizing};
 
@@ -602,20 +604,36 @@ fn create_new_at_target_v1(
         rustix::fs::Mode::from_bits_truncate(0o600),
     )
     .map_err(|error| format!("create {label} without replacement failed: {error}"))?;
-    rustix::fs::fchmod(&fd, rustix::fs::Mode::from_bits_truncate(0o600))
-        .map_err(|error| format!("secure new {label} failed: {error}"))?;
-    // Must precede the first secret/state byte written by this process.
-    clear_extended_acl_v1(&fd, &format!("new {label}"))?;
-    let stat = rustix::fs::fstat(&fd).map_err(|error| format!("inspect new {label}: {error}"))?;
-    if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file()
-        || stat.st_uid != rustix::process::geteuid().as_raw()
-        || stat.st_nlink != 1
-        || stat.st_mode & 0o7777 != 0o600
-        || stat.st_size != 0
-    {
-        return Err(format!("new {label} failed private-file validation"));
+    let validation = (|| {
+        rustix::fs::fchmod(&fd, rustix::fs::Mode::from_bits_truncate(0o600))
+            .map_err(|error| format!("secure new {label} failed: {error}"))?;
+        // Must precede the first secret/state byte written by this process.
+        clear_extended_acl_v1(&fd, &format!("new {label}"))?;
+        let stat =
+            rustix::fs::fstat(&fd).map_err(|error| format!("inspect new {label}: {error}"))?;
+        if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file()
+            || stat.st_uid != rustix::process::geteuid().as_raw()
+            || stat.st_nlink != 1
+            || stat.st_mode & 0o7777 != 0o600
+            || stat.st_size != 0
+        {
+            return Err(format!("new {label} failed private-file validation"));
+        }
+        Ok(stat)
+    })();
+    match validation {
+        Ok(stat) => Ok((File::from(fd), stat)),
+        Err(error) => {
+            drop(fd);
+            let _ = rustix::fs::unlinkat(
+                &target.parent,
+                &target.file_name,
+                rustix::fs::AtFlags::empty(),
+            );
+            let _ = target.parent.sync_all();
+            Err(error)
+        }
     }
-    Ok((File::from(fd), stat))
 }
 
 pub fn create_new_private_file_v1(path: &Path, label: &str) -> Result<File, String> {
@@ -654,6 +672,143 @@ pub fn write_new_private_file_v1(path: &Path, bytes: &[u8], label: &str) -> Resu
         .parent
         .sync_all()
         .map_err(|error| format!("sync {label} parent failed: {error}"))
+}
+
+/// Atomically persist a new private file without replacing an existing name.
+///
+/// The bytes are first written to an effective-user-owned, mode-0600 temporary
+/// file in the same validated mode-0700 directory. The temporary file is
+/// synced and revalidated before a kernel-enforced no-replace rename publishes
+/// it, then the parent directory is synced. An existing destination always
+/// fails and is never overwritten. Failed writes remove their temporary name,
+/// so a partial file never becomes the configured current path.
+pub fn write_atomic_noreplace_private_file_v1(
+    path: &Path,
+    bytes: &[u8],
+    create_missing_parent: bool,
+    label: &str,
+) -> Result<(), String> {
+    write_atomic_noreplace_private_file_inner_v1(path, bytes, create_missing_parent, label, || {
+        Ok(())
+    })
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn write_atomic_noreplace_private_file_inner_v1<F>(
+    path: &Path,
+    bytes: &[u8],
+    create_missing_parent: bool,
+    label: &str,
+    before_publish: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    let target = target_v1(path, create_missing_parent, label)?;
+    match rustix::fs::statat(
+        &target.parent,
+        &target.file_name,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Err(rustix::io::Errno::NOENT) => {}
+        Ok(_) => return Err(format!("{label} already exists; refusing overwrite")),
+        Err(error) => return Err(format!("inspect {label} failed: {error}")),
+    }
+
+    let mut created_temp = None;
+    for _ in 0..32 {
+        let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temp_name = OsString::from(format!(
+            ".bpir-private-{}-{sequence:016x}.tmp",
+            std::process::id()
+        ));
+        let temp_target = PrivateTargetV1 {
+            parent: target
+                .parent
+                .try_clone()
+                .map_err(|error| format!("clone {label} parent handle: {error}"))?,
+            file_name: temp_name.clone(),
+            path: target.path.with_file_name(&temp_name),
+        };
+        match rustix::fs::statat(
+            &target.parent,
+            &temp_name,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => {}
+            Ok(_) => continue,
+            Err(error) => return Err(format!("inspect {label} temporary name failed: {error}")),
+        }
+        match create_new_at_target_v1(&temp_target, &format!("{label} temporary file")) {
+            Ok((file, stat)) => {
+                created_temp = Some((temp_name, file, stat));
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let (temp_name, mut file, created) =
+        created_temp.ok_or_else(|| format!("create unique {label} temporary file failed"))?;
+
+    let operation = (|| {
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| format!("write and sync {label} temporary file failed: {error}"))?;
+        let written = rustix::fs::fstat(&file)
+            .map_err(|error| format!("inspect written {label} temporary file: {error}"))?;
+        if !rustix::fs::FileType::from_raw_mode(written.st_mode).is_file()
+            || written.st_dev != created.st_dev
+            || written.st_ino != created.st_ino
+            || written.st_uid != created.st_uid
+            || written.st_uid != rustix::process::geteuid().as_raw()
+            || written.st_nlink != 1
+            || written.st_mode & 0o7777 != 0o600
+            || written.st_size as i128 != bytes.len() as i128
+        {
+            return Err(format!(
+                "written {label} temporary file failed private-file revalidation"
+            ));
+        }
+
+        before_publish()?;
+        rustix::fs::renameat_with(
+            &target.parent,
+            &temp_name,
+            &target.parent,
+            &target.file_name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|error| format!("publish {label} without replacement failed: {error}"))?;
+        target
+            .parent
+            .sync_all()
+            .map_err(|error| format!("sync published {label} parent failed: {error}"))?;
+        Ok(())
+    })();
+
+    if operation.is_err() {
+        let _ = rustix::fs::unlinkat(&target.parent, &temp_name, rustix::fs::AtFlags::empty());
+        let _ = target.parent.sync_all();
+    }
+    operation
+}
+
+#[cfg(not(all(unix, any(target_os = "linux", target_os = "macos"))))]
+fn write_atomic_noreplace_private_file_inner_v1<F>(
+    _path: &Path,
+    _bytes: &[u8],
+    _create_missing_parent: bool,
+    label: &str,
+    _before_publish: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    Err(format!(
+        "{label} atomic private-file operations require Linux or macOS"
+    ))
 }
 
 pub fn sync_private_file_and_parent_v1(path: &Path, label: &str) -> Result<(), String> {
@@ -916,6 +1071,44 @@ mod tests {
             read_exact_private_file_v1::<32>(&path, "test secret").unwrap(),
             [7_u8; 32]
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn atomic_noreplace_publish_is_private_and_never_overwrites() {
+        let directory = private_tempdir();
+        let path = directory.path().join("sealed-envelope");
+        write_atomic_noreplace_private_file_v1(&path, b"ciphertext-v1", false, "sealed envelope")
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"ciphertext-v1");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+
+        let error =
+            write_atomic_noreplace_private_file_v1(&path, b"replacement", false, "sealed envelope")
+                .unwrap_err();
+        assert!(error.contains("already exists"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"ciphertext-v1");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_atomic_write_never_publishes_a_partial_temp_as_current() {
+        let directory = private_tempdir();
+        let path = directory.path().join("sealed-envelope");
+        let error = write_atomic_noreplace_private_file_inner_v1(
+            &path,
+            b"partial-ciphertext",
+            false,
+            "sealed envelope",
+            || Err("injected failure before publish".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("injected failure"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[test]

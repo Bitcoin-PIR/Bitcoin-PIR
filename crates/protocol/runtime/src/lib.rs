@@ -17,4 +17,5 @@ pub mod manifest;
 pub mod protocol;
 pub mod service_admission;
 pub mod service_policy_runtime;
+pub mod snp_sealed_secrets;
 pub mod table;
