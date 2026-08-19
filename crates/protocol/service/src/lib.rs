@@ -9,6 +9,7 @@ mod auth;
 mod auth_verify;
 mod bat_v2;
 mod bat_v2_acquisition;
+mod bat_v2_redemption;
 mod binding;
 mod cashu_manifest;
 mod challenge;
@@ -62,6 +63,37 @@ pub use bat_v2_acquisition::{
     BAT_V2_QUOTE_INTENT_CODEC_MAGIC, BAT_V2_QUOTE_INTENT_DIGEST_DOMAIN,
     BAT_V2_QUOTE_INTENT_WIRE_VERSION, MAX_BAT_V2_CLAIM_ENVELOPE_LEN,
     MAX_BAT_V2_ISSUANCE_REQUEST_LEN, MAX_BAT_V2_ISSUANCE_RESPONSE_LEN, MAX_BAT_V2_QUOTE_INTENT_LEN,
+};
+pub use bat_v2_redemption::{
+    bat_v2_redeem_ledger_transaction_id_v2, precheck_bat_v2_redeem_v2,
+    sign_and_commit_grantable_success_v2, sign_retry_safe_non_consuming_v2,
+    sign_terminal_invalid_or_spent_v2, verify_bat_v2_credential_for_commit_v2,
+    verify_grantable_success_for_inflight_attempt_v2, BatV2CredentialCheckV2,
+    BatV2CredentialVerificationErrorV2, BatV2ProofVerificationInputV2, BatV2ProofVerifierV2,
+    BatV2RedeemCommitErrorV2, BatV2RedeemCommitResultV2, BatV2RedeemCommitStoreV2,
+    BatV2RedeemPrecheckV2, BitcoinPirCashuBatProofV2, FreshCommittedProviderRedeemV2,
+    IssuerAccountingApprovalV2, PreparedProviderRedeemRequestV2,
+    ProviderAccountingAuthorizationClaimsV2, ProviderAccountingAuthorizationV2,
+    ProviderAccountingExpectationV2, ProviderAccountingRuleV2, ProviderInFlightRedeemAttemptV2,
+    ProviderRedeemEnvelopeV2, ProviderRedeemOutcomeV2, ProviderRedeemRequestAuthV2,
+    ProviderRedeemRequestV2, ProviderRedeemResponseV2, RetrySafeNonConsumingReasonV2,
+    VerifiedBatV2RedeemCommitV2, VerifiedGrantableProviderRedeemSuccessV2,
+    VerifiedProviderRedeemAuthorizationV2, VerifiedRetrySafeNonConsumingV2,
+    VerifiedTerminalInvalidOrSpentV2, BAT_V2_CREDENTIAL_PRESENTATION_DIGEST_DOMAIN_V2,
+    BAT_V2_ISSUER_ACCOUNTING_APPROVAL_CODEC_MAGIC_V2, BAT_V2_ISSUER_ACCOUNTING_APPROVAL_LEN_V2,
+    BAT_V2_ISSUER_ACCOUNTING_APPROVAL_SIGNATURE_DOMAIN_V2, BAT_V2_PROOF_CODEC_MAGIC_V2,
+    BAT_V2_PROOF_LEN_V2, BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_CODEC_MAGIC_V2,
+    BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_DIGEST_DOMAIN_V2,
+    BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_SIGNATURE_DOMAIN_V2,
+    BAT_V2_PROVIDER_REDEEM_ENVELOPE_CODEC_MAGIC_V2, BAT_V2_PROVIDER_REDEEM_ENVELOPE_LEN_V2,
+    BAT_V2_PROVIDER_REDEEM_REQUEST_AUTH_CODEC_MAGIC_V2, BAT_V2_PROVIDER_REDEEM_REQUEST_AUTH_LEN_V2,
+    BAT_V2_PROVIDER_REDEEM_REQUEST_AUTH_SIGNATURE_DOMAIN_V2,
+    BAT_V2_PROVIDER_REDEEM_REQUEST_CODEC_MAGIC_V2, BAT_V2_PROVIDER_REDEEM_REQUEST_DIGEST_DOMAIN_V2,
+    BAT_V2_PROVIDER_REDEEM_REQUEST_LEN_V2, BAT_V2_PROVIDER_REDEEM_RESPONSE_CODEC_MAGIC_V2,
+    BAT_V2_PROVIDER_REDEEM_RESPONSE_SIGNATURE_DOMAIN_V2,
+    BAT_V2_REDEEM_LEDGER_TRANSACTION_ID_DOMAIN_V2, BAT_V2_REDEMPTION_WIRE_VERSION_V2,
+    MAX_BAT_V2_ACCOUNTING_RULES_V2, MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2,
+    MAX_BAT_V2_PROVIDER_REDEEM_RESPONSE_LEN_V2,
 };
 pub use binding::{
     derive_bat_key_id_v1, derive_issuer_id, CredentialKeyBindingClaimsV1,
