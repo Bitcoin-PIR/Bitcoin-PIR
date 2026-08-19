@@ -1592,7 +1592,6 @@ pub fn precheck_bat_v2_redeem_v2(
     class.verify_for(&expectation.issuer_id, &member.class_id)?;
 
     if member.issuer_id != expectation.issuer_id
-        || member.member.provider_id != expectation.provider_id
         || member.class_id != class.class_id
         || member.common_terms != class.common_terms
         || !class.members.contains(&member.member)
@@ -1634,6 +1633,23 @@ pub fn precheck_bat_v2_redeem_v2(
         ));
     }
 
+    if member.member.provider_id != expectation.provider_id
+        || request.policy_digest != member.member.policy_digest
+        || request.scope_id != member.member.scope_id
+        || request.offer_id != member.member.offer_id
+        || request.class_id != class.class_id
+        || request.class_digest != class.class_digest()?
+        || request.class_key_epoch != class.key_epoch
+        || request.bat_key_id != class.bat_key_id()
+    {
+        return Ok(BatV2RedeemPrecheckV2::RetrySafeNonConsuming(
+            VerifiedRetrySafeNonConsumingV2 {
+                request: request.clone(),
+                reason: RetrySafeNonConsumingReasonV2::ClassCompatibility,
+            },
+        ));
+    }
+
     let Some(rule) = authorization.rule_for_member(&member.member, &class.class_id) else {
         return Ok(BatV2RedeemPrecheckV2::RetrySafeNonConsuming(
             VerifiedRetrySafeNonConsumingV2 {
@@ -1650,22 +1666,6 @@ pub fn precheck_bat_v2_redeem_v2(
             VerifiedRetrySafeNonConsumingV2 {
                 request: request.clone(),
                 reason: RetrySafeNonConsumingReasonV2::AccountingTarget,
-            },
-        ));
-    }
-
-    if request.policy_digest != member.member.policy_digest
-        || request.scope_id != member.member.scope_id
-        || request.offer_id != member.member.offer_id
-        || request.class_id != class.class_id
-        || request.class_digest != class.class_digest()?
-        || request.class_key_epoch != class.key_epoch
-        || request.bat_key_id != class.bat_key_id()
-    {
-        return Ok(BatV2RedeemPrecheckV2::RetrySafeNonConsuming(
-            VerifiedRetrySafeNonConsumingV2 {
-                request: request.clone(),
-                reason: RetrySafeNonConsumingReasonV2::ClassCompatibility,
             },
         ));
     }

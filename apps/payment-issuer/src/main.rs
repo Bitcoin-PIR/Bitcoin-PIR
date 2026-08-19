@@ -34,15 +34,16 @@ use pir_issuer_credentials::IssuerCredentialDerivationKeyV1;
 #[cfg(test)]
 use pir_issuer_service::SettlementPayoutPolicyV1;
 use pir_issuer_service::{
-    ensure_shared_clearing_binding_material_v1, IssuerAcquisitionServiceV1,
-    IssuerReconciliationBatchV1, IssuerServiceErrorV1, QuoteSigningMaterialV1,
-    ReceiptSigningMaterialV1, SharedIssuerClearingServiceV1, TrustedClearingProviderV1,
-    LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
+    ensure_shared_clearing_binding_material_v1, BatV2IssuerRedemptionServiceV2,
+    IssuerAcquisitionServiceV1, IssuerReconciliationBatchV1, IssuerServiceErrorV1,
+    QuoteSigningMaterialV1, ReceiptSigningMaterialV1, SharedIssuerClearingServiceV1,
+    TrustedClearingProviderV1, LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
 };
 use pir_issuer_store::{
     BatKeyLineageRegistration, IssuerRollbackFloorAuthorityV1, IssuerStore,
     ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, RemoteIssuerRollbackFloorAuthorityV1,
-    SqliteIssuerRollbackFloorAuthorityV1, StoreOptions, MAX_EXACT_CLEARING_APPROVAL_BYTES,
+    SqliteIssuerRollbackFloorAuthorityV1, StoreOptions, MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
+    MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES, MAX_EXACT_CLEARING_APPROVAL_BYTES,
     MAX_EXACT_CLEARING_AUTHORIZATION_BYTES, MAX_QUOTE_RECONCILIATION_BATCH_V1,
     SCHEMA_VERSION as ISSUER_STORE_SCHEMA_VERSION,
 };
@@ -61,14 +62,15 @@ use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for
 use pir_service_protocol::{
     AuthScheme, BatAcceptanceClassV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2,
     Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
-    IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationV1,
-    ProviderRedeemEnvelopeV1, ServicePolicyV1, SettlementModesV1, SettlementUnitV1,
+    IssuerAccountingApprovalV2, IssuerClearingApprovalV1, LightningNetworkV1,
+    ProviderAccountingAuthorizationV2, ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1,
+    ServicePolicyV1, SettlementModesV1, SettlementUnitV1, BAT_V2_PROVIDER_REDEEM_ENVELOPE_LEN_V2,
     MAX_BAT_ACCEPTANCE_CLASS_LEN_V2, MAX_BAT_V2_CLAIM_ENVELOPE_LEN,
-    MAX_BAT_V2_ISSUANCE_RESPONSE_LEN, MAX_BAT_V2_QUOTE_INTENT_LEN,
-    MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1, MAX_BOLT11_QUOTE_INTENT_LEN,
-    MAX_BOLT11_QUOTE_KEY_DELEGATION_LEN, MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN,
-    MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1, MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
-    MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
+    MAX_BAT_V2_ISSUANCE_RESPONSE_LEN, MAX_BAT_V2_PROVIDER_REDEEM_RESPONSE_LEN_V2,
+    MAX_BAT_V2_QUOTE_INTENT_LEN, MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1,
+    MAX_BOLT11_QUOTE_INTENT_LEN, MAX_BOLT11_QUOTE_KEY_DELEGATION_LEN,
+    MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN, MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1,
+    MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1, MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
 };
 #[cfg(test)]
 use pir_service_protocol::{
@@ -87,6 +89,7 @@ const MAX_HTTP_BODY_BYTES: usize =
         MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1
     };
 const _: () = assert!(MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
+const _: () = assert!(BAT_V2_PROVIDER_REDEEM_ENVELOPE_LEN_V2 <= MAX_HTTP_BODY_BYTES);
 const _: () = assert!(MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
 const MAX_HTTP_RESPONSE_BYTES: usize =
     if MAX_BAT_V2_ISSUANCE_RESPONSE_LEN > MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1 {
@@ -119,6 +122,10 @@ const CT_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.credential-issuan
 const CT_BAT_V2_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.bat-v2-issuance-response-v2";
 const CT_REDEEM: &str = "application/vnd.bitcoinpir.redeem-v1";
 const CT_REDEEM_RESULT: &str = "application/vnd.bitcoinpir.redeem-result-v1";
+const CT_BAT_V2_REDEEM: &str = "application/vnd.bitcoinpir.bat-v2-provider-redeem-envelope-v2";
+const CT_BAT_V2_REDEEM_RESULT: &str =
+    "application/vnd.bitcoinpir.bat-v2-provider-redeem-response-v2";
+const _: () = assert!(MAX_BAT_V2_PROVIDER_REDEEM_RESPONSE_LEN_V2 <= MAX_HTTP_RESPONSE_BYTES);
 #[cfg(any(test, feature = "test-only-fake-lightning"))]
 const CT_FAKE_SETTLEMENT: &str = "application/vnd.bitcoinpir.fake-settlement-v1";
 const CT_BALANCE_ENVELOPE: &str = "application/vnd.bitcoinpir.provider-balance-envelope-v1";
@@ -339,6 +346,19 @@ struct ServeCommonArgs {
     /// production ledger-only mode.
     #[arg(long = "clearing-provider-request-verifying-key")]
     clearing_provider_request_verifying_keys: Vec<PathBuf>,
+    /// Repeat one canonical operator-signed BAT V2 provider accounting
+    /// authorization. V2 redemption is issuer-global and does not use the V1
+    /// provider registration, response-derivation key, or replay contract.
+    #[arg(long = "bat-v2-accounting-authorization")]
+    bat_v2_accounting_authorizations: Vec<PathBuf>,
+    /// Repeat one matching issuer BAT V2 accounting approval, in the same
+    /// order as its authorization.
+    #[arg(long = "bat-v2-accounting-approval")]
+    bat_v2_accounting_approvals: Vec<PathBuf>,
+    /// Repeat one independently pinned raw Ed25519 operator verifying key, in
+    /// the same order as the BAT V2 accounting authorization.
+    #[arg(long = "bat-v2-accounting-operator-verifying-key")]
+    bat_v2_accounting_operator_verifying_keys: Vec<PathBuf>,
     /// Issuer Ed25519 settlement signing key; required when clearing is enabled.
     #[arg(long)]
     issuer_settlement_signing_key: Option<PathBuf>,
@@ -472,6 +492,7 @@ struct ServerState {
     current_quote_delegation: Vec<u8>,
     quote_delegations: BTreeMap<[u8; 16], Vec<u8>>,
     clearing: Option<SharedIssuerClearingServiceV1>,
+    bat_v2_redemption: Option<BatV2IssuerRedemptionServiceV2>,
     store: IssuerStore,
     #[cfg(any(test, feature = "test-only-fake-lightning"))]
     fake_lightning: Option<Arc<FakeLightningNodeV1>>,
@@ -494,6 +515,7 @@ impl core::fmt::Debug for ServerState {
             .field("acquisition", &"[redacted]")
             .field("quote_delegation_count", &self.quote_delegations.len())
             .field("clearing", &self.clearing.is_some())
+            .field("bat_v2_redemption", &self.bat_v2_redemption.is_some())
             .field("store", &"[redacted]");
         #[cfg(any(test, feature = "test-only-fake-lightning"))]
         debug.field("fake_settlement_route", &self.fake_lightning.is_some());
@@ -776,6 +798,21 @@ fn is_exact_redeem_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> boo
     store
         .redeem_by_idempotency(&envelope.request)
         .is_ok_and(|existing| existing.is_some())
+}
+
+fn require_bat_v2_mutation_budget(
+    committed_attempt: bool,
+    limiter: &FixedWindowRateLimiterV1,
+    now: Instant,
+) -> Result<(), IssuerServiceErrorV1> {
+    if committed_attempt || limiter.try_acquire(now) {
+        Ok(())
+    } else {
+        // The issuer received a credential-bearing request. Even though this
+        // process rejected it before commit, V2 never emits a generic retry
+        // instruction for an attempt the caller can no longer prove unsent.
+        Err(IssuerServiceErrorV1::OutcomeUnknownCredentialBurned)
+    }
 }
 
 #[cfg(test)]
@@ -1639,7 +1676,17 @@ fn serve_with_backend(
         now_unix,
     )
     .map_err(|error| format!("build acquisition service failed: {error}"))?;
-    let clearing = load_ledger_clearing(&args, &store, bat_keyring, arc_keyring, now_unix)?;
+    let clearing = load_ledger_clearing(&args, &store, bat_keyring.clone(), arc_keyring, now_unix)?;
+    let bat_v2_redemption = load_bat_v2_redemption(&args, &store, bat_keyring, now_unix)?;
+    if args.issuer_settlement_signing_key.is_some()
+        && clearing.is_none()
+        && bat_v2_redemption.is_none()
+    {
+        return Err(
+            "--issuer-settlement-signing-key requires V1 clearing or BAT V2 accounting configuration"
+                .to_owned(),
+        );
+    }
     drop(policies);
 
     let listener = TcpListener::bind(args.bind)
@@ -1649,6 +1696,7 @@ fn serve_with_backend(
         current_quote_delegation: delegation_bytes,
         quote_delegations,
         clearing,
+        bat_v2_redemption,
         store,
         #[cfg(any(test, feature = "test-only-fake-lightning"))]
         fake_lightning: match lightning.as_ref() {
@@ -1879,6 +1927,136 @@ fn load_arc_keyring(specs: &[String]) -> Result<Option<Arc<ArcSecretKeyringV1>>,
         .map_err(|_| "experimental ARC keyring is invalid".to_owned())
 }
 
+/// Registers issuer-global BAT V2 accounting authority and builds the
+/// storeless redemption service. The provider operator roots are independent
+/// public trust inputs; no provider registration, provider-request key,
+/// response-derivation secret, or provider-local replay state is created.
+fn load_bat_v2_redemption(
+    args: &ServeCommonArgs,
+    store: &IssuerStore,
+    bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
+    now_unix: u64,
+) -> Result<Option<BatV2IssuerRedemptionServiceV2>, String> {
+    let any_configured = !args.bat_v2_accounting_authorizations.is_empty()
+        || !args.bat_v2_accounting_approvals.is_empty()
+        || !args.bat_v2_accounting_operator_verifying_keys.is_empty();
+    if !any_configured {
+        return Ok(None);
+    }
+    if args.bat_v2_accounting_authorizations.is_empty()
+        || args.bat_v2_accounting_authorizations.len() != args.bat_v2_accounting_approvals.len()
+        || args.bat_v2_accounting_authorizations.len()
+            != args.bat_v2_accounting_operator_verifying_keys.len()
+    {
+        return Err(
+            "BAT V2 redemption requires the same non-zero number of --bat-v2-accounting-authorization, --bat-v2-accounting-approval and --bat-v2-accounting-operator-verifying-key files"
+                .to_owned(),
+        );
+    }
+    let bat_keyring = bat_keyring
+        .ok_or_else(|| "BAT V2 redemption requires at least one --bat-key".to_owned())?;
+    let settlement_key_path = args
+        .issuer_settlement_signing_key
+        .as_deref()
+        .ok_or_else(|| "BAT V2 redemption requires --issuer-settlement-signing-key".to_owned())?;
+    let mut settlement_key_bytes =
+        read_secret_exact::<32>(settlement_key_path, "issuer settlement signing key")?;
+    let issuer_settlement_signing_key = SigningKey::from_bytes(&settlement_key_bytes);
+    settlement_key_bytes.zeroize();
+    let settlement_verifying_key = issuer_settlement_signing_key.verifying_key();
+    let identity = store
+        .identity()
+        .map_err(|error| format!("read issuer identity failed: {error}"))?;
+
+    let mut seen_providers = BTreeMap::new();
+    let mut seen_role_keys =
+        BTreeMap::from([(settlement_verifying_key.to_bytes(), "issuer settlement key")]);
+    for ((authorization_path, approval_path), operator_key_path) in args
+        .bat_v2_accounting_authorizations
+        .iter()
+        .zip(&args.bat_v2_accounting_approvals)
+        .zip(&args.bat_v2_accounting_operator_verifying_keys)
+    {
+        let authorization_bytes = read_public_file(
+            authorization_path,
+            MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
+            "BAT V2 accounting authorization",
+        )?;
+        let authorization = ProviderAccountingAuthorizationV2::decode(&authorization_bytes)
+            .map_err(|_| "BAT V2 accounting authorization is not canonical V2".to_owned())?;
+        if authorization
+            .encode()
+            .map_err(|_| "BAT V2 accounting authorization cannot be encoded".to_owned())?
+            != authorization_bytes
+        {
+            return Err("BAT V2 accounting authorization is non-canonical".to_owned());
+        }
+        let approval_bytes = read_public_file(
+            approval_path,
+            MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
+            "BAT V2 accounting approval",
+        )?;
+        let approval = IssuerAccountingApprovalV2::decode(&approval_bytes)
+            .map_err(|_| "BAT V2 accounting approval is not canonical V2".to_owned())?;
+        if approval.encode().as_slice() != approval_bytes.as_slice() {
+            return Err("BAT V2 accounting approval is non-canonical".to_owned());
+        }
+        let operator_key_bytes = read_public_file(
+            operator_key_path,
+            32,
+            "BAT V2 accounting operator verifying key",
+        )?;
+        let operator_key_bytes: [u8; 32] = operator_key_bytes
+            .try_into()
+            .map_err(|_| "BAT V2 accounting operator verifying key must be 32 bytes".to_owned())?;
+        let operator_key = VerifyingKey::from_bytes(&operator_key_bytes)
+            .map_err(|_| "BAT V2 accounting operator verifying key is invalid".to_owned())?;
+        if authorization.claims.issuer_id != identity.issuer_id {
+            return Err("BAT V2 accounting authorization targets a different issuer".to_owned());
+        }
+        if seen_providers
+            .insert(authorization.claims.provider_id, ())
+            .is_some()
+        {
+            return Err(
+                "only one current BAT V2 accounting authorization per provider is allowed"
+                    .to_owned(),
+            );
+        }
+        for (key, role) in [
+            (operator_key_bytes, "provider operator key"),
+            (
+                authorization.claims.clearing_verifying_key,
+                "provider BAT V2 clearing key",
+            ),
+        ] {
+            if let Some(previous_role) = seen_role_keys.insert(key, role) {
+                return Err(format!(
+                    "BAT V2 role keys must be globally distinct: {role} reuses {previous_role}"
+                ));
+            }
+        }
+        let _registration = store
+            .register_bat_v2_accounting_authorization(
+                &authorization,
+                &approval,
+                &operator_key,
+                &settlement_verifying_key,
+                now_unix,
+            )
+            .map_err(|error| format!("register BAT V2 accounting authorization failed: {error}"))?;
+    }
+
+    BatV2IssuerRedemptionServiceV2::new(
+        store.clone(),
+        bat_keyring,
+        issuer_settlement_signing_key,
+        now_unix,
+    )
+    .map(Some)
+    .map_err(|error| format!("build BAT V2 redemption service failed: {error}"))
+}
+
 /// Installs the local trust configuration for the shared issuer routes used by
 /// provider servers. The V1 production HTTP surface deliberately supports only
 /// credential redeem and identified-ledger balance reads. Anonymous blind
@@ -1894,7 +2072,6 @@ fn load_ledger_clearing(
     let any_configured = !args.clearing_authorizations.is_empty()
         || !args.clearing_approvals.is_empty()
         || !args.clearing_provider_request_verifying_keys.is_empty()
-        || args.issuer_settlement_signing_key.is_some()
         || !args.retained_issuer_settlement_verifying_keys.is_empty()
         || args.redeem_response_derivation_key.is_some();
     if !any_configured {
@@ -2382,6 +2559,24 @@ fn route_request(
                 .ok_or(IssuerServiceErrorV1::NotFound)?
                 .redeem(&request.body, now_unix)
                 .map(|body| (CT_REDEEM_RESULT, body))
+        }
+        "/v2/redeems" => {
+            require_content_type(request, CT_BAT_V2_REDEEM)?;
+            if request.body.len() > BAT_V2_PROVIDER_REDEEM_ENVELOPE_LEN_V2 {
+                return Err(IssuerServiceErrorV1::InvalidRequest);
+            }
+            let service = state
+                .bat_v2_redemption
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::NotFound)?;
+            require_bat_v2_mutation_budget(
+                service.committed_attempt_for_canonical_envelope(&request.body)?,
+                &state.mutation_rate,
+                Instant::now(),
+            )?;
+            service
+                .redeem_v2(&request.body, now_unix)
+                .map(|body| (CT_BAT_V2_REDEEM_RESULT, body))
         }
         "/v1/settlement/balance" => {
             require_executable_settlement_request(request, CT_BALANCE_ENVELOPE)?;
@@ -3054,6 +3249,7 @@ mod tests {
         EntitlementLimitsV1, FreeModeV1, IssuerBalanceResponseV1, IssuerPayoutIntentResponseV1,
         IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1, OperationStartV1,
         ParsedBolt11InvoiceV1, PayoutStateV1, PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1,
+        ProviderAccountingAuthorizationClaimsV2, ProviderAccountingRuleV2,
         ProviderBalanceEnvelopeV1, ProviderBalanceRequestV1, ProviderClearingAuthorizationClaimsV1,
         ProviderClearingRequestAuthV1, ProviderPayoutIntentRequestV1, ProviderPayoutRequestV1,
         ProviderPayoutStatusRequestV1, ProviderRedeemRequestV1, ProviderSettlementRequestAuthV1,
@@ -3435,6 +3631,7 @@ mod tests {
                 current_quote_delegation: delegation_bytes.clone(),
                 quote_delegations: BTreeMap::from([(delegation.quote_key_id, delegation_bytes)]),
                 clearing: Some(clearing),
+                bat_v2_redemption: None,
                 store,
                 fake_lightning: None,
                 allow_origin: None,
@@ -3448,6 +3645,256 @@ mod tests {
                 test_only_payout_http,
             })
         }
+    }
+
+    #[test]
+    fn bat_v2_redeem_route_is_exact_and_media_isolated_when_disabled() {
+        let fixture = SettlementHttpFixture::new();
+        let state = fixture.state(fixture.now_unix);
+
+        let disabled = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v2/redeems",
+            Some(CT_BAT_V2_REDEEM),
+            CT_BAT_V2_REDEEM_RESULT,
+            &[],
+        );
+        assert_eq!(disabled.0, 404);
+
+        let wrong_v2_media = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v2/redeems",
+            Some(CT_REDEEM),
+            CT_BAT_V2_REDEEM_RESULT,
+            &[],
+        );
+        assert_eq!(wrong_v2_media.0, 400);
+        let v1_does_not_accept_v2_media = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/redeems",
+            Some(CT_BAT_V2_REDEEM),
+            CT_REDEEM_RESULT,
+            &[],
+        );
+        assert_eq!(v1_does_not_accept_v2_media.0, 400);
+        let near_miss_path = http_exchange(
+            state,
+            "POST",
+            "/v2/redeems/",
+            Some(CT_BAT_V2_REDEEM),
+            CT_BAT_V2_REDEEM_RESULT,
+            &[],
+        );
+        assert_eq!(near_miss_path.0, 404);
+        assert_ne!(CT_BAT_V2_REDEEM, CT_REDEEM);
+        assert_ne!(CT_BAT_V2_REDEEM_RESULT, CT_REDEEM_RESULT);
+    }
+
+    #[test]
+    fn bat_v2_new_attempt_rate_limit_is_burn_no_retry_but_committed_terminal_bypasses() {
+        let limiter = FixedWindowRateLimiterV1::new(1, "BAT V2 mutation test")
+            .expect("BAT V2 mutation limiter");
+        let now = Instant::now();
+        require_bat_v2_mutation_budget(false, &limiter, now)
+            .expect("first BAT V2 mutation receives the only token");
+        let error = require_bat_v2_mutation_budget(false, &limiter, now)
+            .expect_err("a received V2 attempt must not get a generic retry instruction");
+        assert_eq!(error, IssuerServiceErrorV1::OutcomeUnknownCredentialBurned);
+        assert_eq!(error.public_code(), "outcome_unknown_credential_burned");
+        require_bat_v2_mutation_budget(true, &limiter, now)
+            .expect("durably committed attempt may return its non-granting terminal");
+    }
+
+    #[cfg(unix)]
+    fn parse_cln_common_with_pairs(pairs: &[(&str, &str)]) -> ServeCommonArgs {
+        let mut argv = vec![
+            "payment-issuer".to_owned(),
+            "serve-cln".to_owned(),
+            "--store".to_owned(),
+            "/tmp/issuer.sqlite".to_owned(),
+            "--rollback-authority".to_owned(),
+            "/tmp/rollback.sqlite".to_owned(),
+            "--allow-local-rollback-authority-dev".to_owned(),
+            "--quote-delegation".to_owned(),
+            "/tmp/delegation.bin".to_owned(),
+            "--quote-signing-key".to_owned(),
+            "/tmp/quote.key".to_owned(),
+            "--credential-derivation-key".to_owned(),
+            "/tmp/credential.key".to_owned(),
+            "--cln-rpc-socket".to_owned(),
+            "/tmp/lightning-rpc".to_owned(),
+            "--cln-rpc-expected-uid".to_owned(),
+            "501".to_owned(),
+        ];
+        for (flag, value) in pairs {
+            argv.extend([(*flag).to_owned(), (*value).to_owned()]);
+        }
+        let cli = Cli::try_parse_from(argv).expect("parse BAT V2 CLN arguments");
+        let Command::ServeCln(args) = cli.command else {
+            panic!("expected serve-cln command");
+        };
+        args.common
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bat_v2_accounting_cli_preserves_aligned_repeated_groups_and_rejects_mismatch() {
+        let common = parse_cln_common_with_pairs(&[
+            ("--bat-v2-accounting-authorization", "/tmp/auth-1.bin"),
+            ("--bat-v2-accounting-approval", "/tmp/approval-1.bin"),
+            (
+                "--bat-v2-accounting-operator-verifying-key",
+                "/tmp/operator-1.pub",
+            ),
+            ("--bat-v2-accounting-authorization", "/tmp/auth-2.bin"),
+            ("--bat-v2-accounting-approval", "/tmp/approval-2.bin"),
+            (
+                "--bat-v2-accounting-operator-verifying-key",
+                "/tmp/operator-2.pub",
+            ),
+        ]);
+        assert_eq!(
+            common.bat_v2_accounting_authorizations,
+            ["/tmp/auth-1.bin", "/tmp/auth-2.bin"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+        assert_eq!(
+            common.bat_v2_accounting_approvals,
+            ["/tmp/approval-1.bin", "/tmp/approval-2.bin"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+        assert_eq!(
+            common.bat_v2_accounting_operator_verifying_keys,
+            ["/tmp/operator-1.pub", "/tmp/operator-2.pub"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+
+        let mismatch = parse_cln_common_with_pairs(&[(
+            "--bat-v2-accounting-authorization",
+            "/tmp/auth-only.bin",
+        )]);
+        let fixture = SettlementHttpFixture::new();
+        let state = fixture.state(fixture.now_unix);
+        let error = load_bat_v2_redemption(&mismatch, &state.store, None, fixture.now_unix)
+            .expect_err("reject unequal BAT V2 accounting argument groups");
+        assert!(error.contains("same non-zero number"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bat_v2_only_configuration_does_not_enable_v1_clearing_loader() {
+        let common = parse_cln_common_with_pairs(&[
+            ("--bat-v2-accounting-authorization", "/tmp/auth.bin"),
+            ("--bat-v2-accounting-approval", "/tmp/approval.bin"),
+            (
+                "--bat-v2-accounting-operator-verifying-key",
+                "/tmp/operator.pub",
+            ),
+            ("--issuer-settlement-signing-key", "/tmp/settlement.key"),
+            ("--bat-key", "/tmp/bat.key"),
+        ]);
+        let fixture = SettlementHttpFixture::new();
+        let state = fixture.state(fixture.now_unix);
+        let clearing = load_ledger_clearing(&common, &state.store, None, None, fixture.now_unix)
+            .expect("V2-only configuration must not be interpreted as V1 clearing");
+        assert!(clearing.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bat_v2_loader_rejects_operator_and_settlement_role_key_reuse() {
+        let fixture = SettlementHttpFixture::new();
+        let state = fixture.state(fixture.now_unix);
+        let directory = private_tempdir();
+        let authorization_path = directory.path().join("accounting-authorization.bin");
+        let approval_path = directory.path().join("accounting-approval.bin");
+        let operator_key_path = directory.path().join("operator.pub");
+        let settlement_key_path = directory.path().join("settlement.key");
+
+        let shared_role_key_bytes = [0x61; 32];
+        let operator = SigningKey::from_bytes(&shared_role_key_bytes);
+        let settlement = SigningKey::from_bytes(&shared_role_key_bytes);
+        let clearing = SigningKey::from_bytes(&[0x62; 32]);
+        let authorization = ProviderAccountingAuthorizationV2::sign(
+            ProviderAccountingAuthorizationClaimsV2 {
+                authorization_id: [0x63; 16],
+                authorization_epoch: 1,
+                provider_id: [0x64; 32],
+                issuer_id: fixture.issuer_id,
+                redeem_endpoint: "https://issuer.test.invalid".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x65; 32]],
+                settlement_account_id: [0x66; 32],
+                clearing_verifying_key: clearing.verifying_key().to_bytes(),
+                not_before: fixture.now_unix.saturating_sub(60),
+                not_after: fixture.now_unix + 120,
+                rules: vec![ProviderAccountingRuleV2 {
+                    class_id: [0x67; 32],
+                    policy_digest: [0x68; 32],
+                    scope_id: [0x69; 32],
+                    offer_id: 1,
+                    unit: SettlementUnitV1::AuthCredit,
+                    accepted_value: 10,
+                    provider_credit: 9,
+                    issuer_fee: 1,
+                }],
+            },
+            &operator,
+        )
+        .expect("sign BAT V2 accounting authorization");
+        let approval = IssuerAccountingApprovalV2::sign(
+            &authorization,
+            fixture.now_unix,
+            fixture.now_unix + 120,
+            &settlement,
+        )
+        .expect("sign BAT V2 accounting approval");
+        fs::write(
+            &authorization_path,
+            authorization.encode().expect("encode BAT V2 authorization"),
+        )
+        .expect("write BAT V2 accounting authorization");
+        fs::write(&approval_path, approval.encode()).expect("write BAT V2 accounting approval");
+        fs::write(&operator_key_path, operator.verifying_key().to_bytes())
+            .expect("write BAT V2 operator key");
+        write_secret(&settlement_key_path, &shared_role_key_bytes, 0o600);
+
+        let common = parse_cln_common_with_pairs(&[
+            (
+                "--bat-v2-accounting-authorization",
+                authorization_path
+                    .to_str()
+                    .expect("authorization path UTF-8"),
+            ),
+            (
+                "--bat-v2-accounting-approval",
+                approval_path.to_str().expect("approval path UTF-8"),
+            ),
+            (
+                "--bat-v2-accounting-operator-verifying-key",
+                operator_key_path.to_str().expect("operator path UTF-8"),
+            ),
+            (
+                "--issuer-settlement-signing-key",
+                settlement_key_path.to_str().expect("settlement path UTF-8"),
+            ),
+        ]);
+        let error = load_bat_v2_redemption(
+            &common,
+            &state.store,
+            Some(SettlementHttpFixture::bat_keyring()),
+            fixture.now_unix,
+        )
+        .expect_err("reject reused BAT V2 role key");
+        assert!(
+            error.contains("provider operator key reuses issuer settlement key"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -4744,6 +5191,7 @@ mod tests {
             current_quote_delegation: delegation_bytes.clone(),
             quote_delegations: BTreeMap::from([(delegation.quote_key_id, delegation_bytes)]),
             clearing: None,
+            bat_v2_redemption: None,
             store: issuer_store,
             fake_lightning: Some(Arc::clone(&fake_lightning)),
             allow_origin: None,

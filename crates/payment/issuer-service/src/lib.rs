@@ -5,6 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+mod bat_v2_redemption_service;
+
+pub use bat_v2_redemption_service::BatV2IssuerRedemptionServiceV2;
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
@@ -64,6 +68,7 @@ pub enum IssuerServiceErrorV1 {
     Conflict,
     RetryableUnavailable,
     OutcomeUnknown,
+    OutcomeUnknownCredentialBurned,
     Internal,
 }
 
@@ -109,6 +114,7 @@ impl IssuerServiceErrorV1 {
             Self::Conflict => 409,
             Self::RetryableUnavailable => 503,
             Self::OutcomeUnknown => 503,
+            Self::OutcomeUnknownCredentialBurned => 503,
             Self::Internal => 500,
         }
     }
@@ -121,6 +127,7 @@ impl IssuerServiceErrorV1 {
             Self::Conflict => "conflict",
             Self::RetryableUnavailable => "retryable_unavailable",
             Self::OutcomeUnknown => "outcome_unknown_retry_exact_request",
+            Self::OutcomeUnknownCredentialBurned => "outcome_unknown_credential_burned",
             Self::Internal => "internal_error",
         }
     }
