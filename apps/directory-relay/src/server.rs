@@ -878,8 +878,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use pir_directory_nostr::{
-        catalog_req_json_v1, DirectoryEntryV1, DirectoryHealthClassV1, DirectoryHealthV1,
-        DirectoryPublisherKeyV1, NostrEventV1,
+        catalog_req_json_v1, verify_directory_entry_event_v1, DirectoryEntryV1,
+        DirectoryHealthClassV1, DirectoryHealthV1, DirectoryPublisherKeyV1, NostrEventV1,
     };
     use serde::Serialize;
     use serde_json::Value;
@@ -941,7 +941,7 @@ mod tests {
             now + 3_600,
             DirectoryHealthV1 {
                 class: DirectoryHealthClassV1::Unknown,
-                observed_bucket: now - (now % 300),
+                observed_bucket: created_at - (created_at % 300),
             },
             now,
         )
@@ -949,6 +949,20 @@ mod tests {
         publisher
             .sign_entry_event(&entry, created_at, &[randomness; 32])
             .unwrap()
+    }
+
+    #[test]
+    fn signed_entry_health_bucket_does_not_postdate_event() {
+        let publisher = DirectoryPublisherKeyV1::from_secret_bytes([62; 32]).unwrap();
+        let created_at = 599;
+        let event = signed_entry(&publisher, [0x32; 32], 1, created_at, 600, 1);
+
+        verify_directory_entry_event_v1(
+            &event.to_json_bytes().unwrap(),
+            publisher.public_key(),
+            created_at,
+        )
+        .unwrap();
     }
 
     async fn connect_public(handle: &RelayHandle) -> TestClient {
