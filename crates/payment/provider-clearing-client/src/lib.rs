@@ -18,9 +18,10 @@ mod sqlite_store;
 
 pub use bat_v2::{
     BatV2ProviderRedeemTrustV2, BatV2RedeemHttpRequestV2, BatV2RedeemTransportErrorV2,
-    BatV2RedeemTransportV2, FreshBatV2ConnectionGrantV2, StorelessBatV2ProviderRedeemClientV2,
-    StorelessBatV2RedeemDecisionV2, StorelessBatV2RedeemErrorV2, BAT_V2_REDEEM_ENDPOINT_V2,
-    BAT_V2_REDEEM_REQUEST_CONTENT_TYPE_V2, BAT_V2_REDEEM_RESPONSE_CONTENT_TYPE_V2,
+    BatV2RedeemTransportV2, FreshBatV2ConnectionGrantV2, StorelessBatV2AdmissionCommitterV2,
+    StorelessBatV2ProviderRedeemClientV2, StorelessBatV2RedeemDecisionV2,
+    StorelessBatV2RedeemErrorV2, BAT_V2_REDEEM_ENDPOINT_V2, BAT_V2_REDEEM_REQUEST_CONTENT_TYPE_V2,
+    BAT_V2_REDEEM_RESPONSE_CONTENT_TYPE_V2,
 };
 pub use bat_v2_https_transport::StrictHttpsBatV2RedeemTransportV2;
 pub use https_transport::StrictHttpsProviderSettlementTransportV1;

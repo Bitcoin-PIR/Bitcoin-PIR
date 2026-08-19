@@ -169,6 +169,7 @@ pub enum AdmissionMethodRouteV1 {
     StandardCashuMintOnline,
     BitcoinPirCashuBatProviderLocal,
     BitcoinPirCashuBatSharedIssuerOnline,
+    BitcoinPirCashuBatV2SharedIssuerOnline,
     ArcProviderLocalExperimental,
     ArcSharedIssuerOnlineExperimental,
 }
@@ -222,6 +223,7 @@ pub struct CompositeAdmissionMethodCommitterV1<'a> {
     provider_local: Option<&'a dyn AdmissionMethodCommitterV1>,
     standard_cashu: Option<&'a dyn AdmissionMethodCommitterV1>,
     shared_issuer: Option<&'a dyn AdmissionMethodCommitterV1>,
+    bat_v2_shared_issuer_online: Option<&'a dyn AdmissionMethodCommitterV1>,
 }
 
 impl fmt::Debug for CompositeAdmissionMethodCommitterV1<'_> {
@@ -232,6 +234,10 @@ impl fmt::Debug for CompositeAdmissionMethodCommitterV1<'_> {
             .field("provider_local", &self.provider_local.is_some())
             .field("standard_cashu", &self.standard_cashu.is_some())
             .field("shared_issuer", &self.shared_issuer.is_some())
+            .field(
+                "bat_v2_shared_issuer_online",
+                &self.bat_v2_shared_issuer_online.is_some(),
+            )
             .finish()
     }
 }
@@ -243,6 +249,7 @@ impl<'a> CompositeAdmissionMethodCommitterV1<'a> {
             provider_local: None,
             standard_cashu: None,
             shared_issuer: None,
+            bat_v2_shared_issuer_online: None,
         }
     }
 
@@ -275,6 +282,17 @@ impl<'a> CompositeAdmissionMethodCommitterV1<'a> {
         self
     }
 
+    /// Install only the issuer-wide, payment-storeless BAT V2 adapter. This
+    /// slot is deliberately separate from every replayable V1 shared-issuer
+    /// method so enabling scheme 6 cannot widen legacy routing.
+    pub const fn with_bat_v2_shared_issuer_online(
+        mut self,
+        committer: &'a dyn AdmissionMethodCommitterV1,
+    ) -> Self {
+        self.bat_v2_shared_issuer_online = Some(committer);
+        self
+    }
+
     fn committer_for(
         &self,
         route: AdmissionMethodRouteV1,
@@ -291,6 +309,9 @@ impl<'a> CompositeAdmissionMethodCommitterV1<'a> {
             AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
             | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => self.shared_issuer,
+            AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => {
+                self.bat_v2_shared_issuer_online
+            }
         }
     }
 }
@@ -392,7 +413,8 @@ impl AdmissionMethodCommitterV1 for ProviderStoreBearerCommitterV1<'_> {
             | AdmissionMethodRouteV1::FreeProofOfWork
             | AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
             | AdmissionMethodRouteV1::StandardCashuMintOnline
-            | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline => {
+            | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
+            | AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => {
                 Err(AdmissionCommitErrorV1::UnsupportedScheme)
             }
         }
@@ -485,6 +507,7 @@ impl AdmissionMethodCommitterV1 for RejectAllAdmissionMethodsV1 {
             | AdmissionMethodRouteV1::StandardCashuMintOnline
             | AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal
             | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
+            | AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline
             | AdmissionMethodRouteV1::ArcProviderLocalExperimental
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
                 Err(AdmissionCommitErrorV1::UnsupportedScheme)
@@ -1436,6 +1459,12 @@ fn admission_route_v1(
             AuthorizationProofV1::BitcoinPirCashuBat(_),
         ) => AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline,
         (
+            AuthScheme::BitcoinPirCashuBatV2,
+            FreeModeV1::NotFree,
+            VerificationMode::SharedIssuerOnline,
+            AuthorizationProofV1::BitcoinPirCashuBatV2(_),
+        ) => AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline,
+        (
             AuthScheme::ArcV1Experimental,
             FreeModeV1::NotFree,
             VerificationMode::ProviderLocal,
@@ -2044,11 +2073,15 @@ mod tests {
         let shared = AcceptingTestCommitter {
             routes: Mutex::new(Vec::new()),
         };
+        let bat_v2 = AcceptingTestCommitter {
+            routes: Mutex::new(Vec::new()),
+        };
         let composite = CompositeAdmissionMethodCommitterV1::new()
             .with_free(&free)
             .with_provider_local(&local)
             .with_standard_cashu(&cashu)
-            .with_shared_issuer(&shared);
+            .with_shared_issuer(&shared)
+            .with_bat_v2_shared_issuer_online(&bat_v2);
 
         for route in [
             AdmissionMethodRouteV1::FreeOpenBestEffort,
@@ -2087,6 +2120,12 @@ mod tests {
                 &shared as &dyn AdmissionMethodCommitterV1,
             ));
         }
+        assert!(core::ptr::eq(
+            composite
+                .committer_for(AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline)
+                .unwrap(),
+            &bat_v2 as &dyn AdmissionMethodCommitterV1,
+        ));
 
         let only_free = CompositeAdmissionMethodCommitterV1::new().with_free(&free);
         assert!(only_free
@@ -2097,6 +2136,11 @@ mod tests {
             .is_none());
         assert!(only_free
             .committer_for(AdmissionMethodRouteV1::StandardCashuMintOnline)
+            .is_none());
+        let only_legacy_shared =
+            CompositeAdmissionMethodCommitterV1::new().with_shared_issuer(&shared);
+        assert!(only_legacy_shared
+            .committer_for(AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline)
             .is_none());
     }
 

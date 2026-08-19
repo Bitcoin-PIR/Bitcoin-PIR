@@ -10,8 +10,8 @@ use crate::{
     IssuerStore, StoreError, StoreResult, WriteDisposition, MAX_EXACT_BAT_V2_CLASS_BYTES,
 };
 use pir_service_protocol::{
-    bat_verification_key_fingerprint_v1, BatAcceptanceClassV2, BatAcceptanceMemberV2,
-    VerifiedBatAcceptanceMemberV2,
+    bat_verification_key_fingerprint_v1, verify_bat_acceptance_class_member_projection_v2,
+    BatAcceptanceClassV2, BatAcceptanceMemberV2, VerifiedBatAcceptanceMemberV2,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
@@ -354,27 +354,8 @@ fn projection_matches_artifact(
     member: &BatAcceptanceMemberV2,
     projection: &VerifiedBatAcceptanceMemberV2,
 ) -> bool {
-    if projection.issuer_id != artifact.issuer_id
-        || projection.class_id != artifact.class_id
-        || projection.member != *member
-        || projection.common_terms != artifact.common_terms
-        || artifact.key_not_before > projection.policy_issued_at
-        || artifact.key_not_after > projection.redemption_deadline
-    {
-        return false;
-    }
-    projection
-        .policy_expires_at
-        .checked_add(u64::from(projection.common_terms.invoice_expiry_seconds))
-        .and_then(|value| {
-            value.checked_add(u64::from(projection.common_terms.claim_window_seconds))
-        })
-        .and_then(|value| {
-            value.checked_add(u64::from(
-                projection.common_terms.minimum_credential_validity_seconds,
-            ))
-        })
-        .is_some_and(|minimum_not_after| artifact.key_not_after >= minimum_not_after)
+    projection.member == *member
+        && verify_bat_acceptance_class_member_projection_v2(artifact, projection).is_ok()
 }
 
 fn encode_member_commitment_material(members: &[VerifiedBatAcceptanceMemberV2]) -> Vec<u8> {

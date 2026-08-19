@@ -91,6 +91,62 @@ pub struct BatAcceptanceClassV2 {
     pub signature: [u8; 64],
 }
 
+/// Verifies that one signed BAT V2 class safely covers the exact provider
+/// policy projection from policy issuance through its retained redemption
+/// horizon. Issuer registration and storeless provider admission share this
+/// predicate so their class-validity contracts cannot drift apart.
+pub fn verify_bat_acceptance_class_member_projection_v2(
+    class: &BatAcceptanceClassV2,
+    projection: &VerifiedBatAcceptanceMemberV2,
+) -> Result<(), ServiceProtocolError> {
+    class.verify_for(&projection.issuer_id, &projection.class_id)?;
+    if projection.common_terms != class.common_terms
+        || !class.members.contains(&projection.member)
+        || projection.policy_issued_at > projection.policy_expires_at
+    {
+        return Err(ServiceProtocolError::InvalidValue {
+            field: "VerifiedBatAcceptanceMemberV2.class_projection",
+            reason: "projection is not an exact member of the signed BAT V2 class",
+        });
+    }
+
+    let minimum_not_after = projection
+        .policy_expires_at
+        .checked_add(u64::from(projection.common_terms.invoice_expiry_seconds))
+        .and_then(|value| {
+            value.checked_add(u64::from(projection.common_terms.claim_window_seconds))
+        })
+        .and_then(|value| {
+            value.checked_add(u64::from(
+                projection.common_terms.minimum_credential_validity_seconds,
+            ))
+        })
+        .ok_or(ServiceProtocolError::InvalidValue {
+            field: "VerifiedBatAcceptanceMemberV2.class_projection",
+            reason: "minimum class validity horizon overflows",
+        })?;
+    let expected_deadline = projection
+        .policy_expires_at
+        .checked_add(u64::from(
+            projection.common_terms.retired_policy_grace_seconds,
+        ))
+        .ok_or(ServiceProtocolError::InvalidValue {
+            field: "VerifiedBatAcceptanceMemberV2.class_projection",
+            reason: "retained policy redemption deadline overflows",
+        })?;
+    if expected_deadline != projection.redemption_deadline
+        || class.key_not_before > projection.policy_issued_at
+        || class.key_not_after > projection.redemption_deadline
+        || class.key_not_after < minimum_not_after
+    {
+        return Err(ServiceProtocolError::InvalidValue {
+            field: "VerifiedBatAcceptanceMemberV2.class_projection",
+            reason: "signed class key validity does not cover the exact policy horizons",
+        });
+    }
+    Ok(())
+}
+
 pub fn validate_bat_acceptance_class_id_v2(
     class_id: &BatAcceptanceClassIdV2,
 ) -> Result<(), ServiceProtocolError> {

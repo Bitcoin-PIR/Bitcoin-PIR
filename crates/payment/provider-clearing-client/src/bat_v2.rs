@@ -1,7 +1,11 @@
 use core::fmt;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use pir_runtime_core::service_admission::{
+    AdmissionCommitErrorV1, AdmissionMethodCommitterV1, AdmissionMethodRouteV1,
+};
 use pir_service_protocol::{
+    verify_bat_acceptance_class_member_projection_v2,
     verify_grantable_success_for_inflight_attempt_v2, BatAcceptanceClassV2,
     BitcoinPirCashuBatProofV2, IssuerAccountingApprovalV2, ProviderAccountingAuthorizationV2,
     ProviderId, ProviderRedeemEnvelopeV2, ProviderRedeemOutcomeV2, ProviderRedeemRequestAuthV2,
@@ -369,4 +373,161 @@ fn fresh_nonzero_attempt_id_v2() -> Result<[u8; 32], StorelessBatV2RedeemErrorV2
         }
     }
     Err(StorelessBatV2RedeemErrorV2::EntropyUnavailable)
+}
+
+/// Admission adapter bound to one exact verified policy member, its signed
+/// acceptance class, and the storeless issuer client. It owns no ProviderStore
+/// and cannot be used for a V1 shared-issuer route.
+pub struct StorelessBatV2AdmissionCommitterV2<'a> {
+    member: &'a VerifiedBatAcceptanceMemberV2,
+    class: &'a BatAcceptanceClassV2,
+    client: &'a StorelessBatV2ProviderRedeemClientV2<'a>,
+}
+
+impl fmt::Debug for StorelessBatV2AdmissionCommitterV2<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StorelessBatV2AdmissionCommitterV2")
+            .field("member", &self.member.member)
+            .field("class_id", &self.class.class_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> StorelessBatV2AdmissionCommitterV2<'a> {
+    pub fn new(
+        member: &'a VerifiedBatAcceptanceMemberV2,
+        class: &'a BatAcceptanceClassV2,
+        client: &'a StorelessBatV2ProviderRedeemClientV2<'a>,
+    ) -> Result<Self, ServiceProtocolError> {
+        verify_bat_acceptance_class_member_projection_v2(class, member)?;
+        Ok(Self {
+            member,
+            class,
+            client,
+        })
+    }
+
+    fn attempt_matches_exact_member(
+        &self,
+        attempt: &pir_service_protocol::BoundAuthAttemptV1<'_>,
+    ) -> bool {
+        let offer = attempt.offer();
+        let scope = attempt.scope();
+        attempt.verified_offer().policy_digest() == self.member.member.policy_digest
+            && attempt.verified_offer().redemption_deadline() == self.member.redemption_deadline
+            && scope.provider_id == self.member.member.provider_id
+            && scope.scope_id() == self.member.member.scope_id
+            && offer.offer_id == self.member.member.offer_id
+            && offer.issuer_id == self.member.issuer_id
+            && offer.key_id.as_slice() == self.member.class_id
+    }
+}
+
+impl AdmissionMethodCommitterV1 for StorelessBatV2AdmissionCommitterV2<'_> {
+    fn verify_and_commit_v1(
+        &self,
+        route: AdmissionMethodRouteV1,
+        attempt: &pir_service_protocol::BoundAuthAttemptV1<'_>,
+        now_unix_seconds: u64,
+    ) -> Result<(), AdmissionCommitErrorV1> {
+        if route != AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline {
+            return Err(AdmissionCommitErrorV1::UnsupportedScheme);
+        }
+        let pir_service_protocol::AuthorizationProofV1::BitcoinPirCashuBatV2(proof) =
+            attempt.proof()
+        else {
+            return Err(AdmissionCommitErrorV1::ScopeUnavailable);
+        };
+        if !self.attempt_matches_exact_member(attempt) {
+            return Err(AdmissionCommitErrorV1::ScopeUnavailable);
+        }
+
+        map_storeless_bat_v2_admission_result(self.client.redeem_once(
+            self.member,
+            self.class,
+            proof,
+            now_unix_seconds,
+        ))
+    }
+}
+
+fn map_storeless_bat_v2_admission_result(
+    result: Result<StorelessBatV2RedeemDecisionV2, StorelessBatV2RedeemErrorV2>,
+) -> Result<(), AdmissionCommitErrorV1> {
+    match result {
+        Ok(StorelessBatV2RedeemDecisionV2::FreshGrant(_)) => Ok(()),
+        Ok(StorelessBatV2RedeemDecisionV2::DefinitelyNotSent { retry_after_ms }) => {
+            Err(AdmissionCommitErrorV1::ServerBusy { retry_after_ms })
+        }
+        Ok(StorelessBatV2RedeemDecisionV2::RetrySafeNonConsuming(_)) => {
+            Err(AdmissionCommitErrorV1::ScopeUnavailable)
+        }
+        Ok(StorelessBatV2RedeemDecisionV2::TerminalInvalidOrSpent) => {
+            Err(AdmissionCommitErrorV1::InvalidOrSpent)
+        }
+        Err(StorelessBatV2RedeemErrorV2::PreSend(_)) => {
+            Err(AdmissionCommitErrorV1::ScopeUnavailable)
+        }
+        Err(StorelessBatV2RedeemErrorV2::EntropyUnavailable) => {
+            Err(AdmissionCommitErrorV1::ServerBusy {
+                retry_after_ms: 1_000,
+            })
+        }
+        Err(StorelessBatV2RedeemErrorV2::OutcomeUnknownCredentialBurned) => {
+            Err(AdmissionCommitErrorV1::InternalAfterSpend)
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn admission_mapping_preserves_safe_vs_burned_outcomes() {
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Ok(
+                StorelessBatV2RedeemDecisionV2::DefinitelyNotSent { retry_after_ms: 17 }
+            )),
+            Err(AdmissionCommitErrorV1::ServerBusy { retry_after_ms: 17 })
+        );
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Ok(
+                StorelessBatV2RedeemDecisionV2::RetrySafeNonConsuming(
+                    RetrySafeNonConsumingReasonV2::ClassCompatibility,
+                )
+            )),
+            Err(AdmissionCommitErrorV1::ScopeUnavailable)
+        );
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Ok(
+                StorelessBatV2RedeemDecisionV2::TerminalInvalidOrSpent,
+            )),
+            Err(AdmissionCommitErrorV1::InvalidOrSpent)
+        );
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Err(
+                StorelessBatV2RedeemErrorV2::EntropyUnavailable,
+            )),
+            Err(AdmissionCommitErrorV1::ServerBusy {
+                retry_after_ms: 1_000,
+            })
+        );
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Err(StorelessBatV2RedeemErrorV2::PreSend(
+                ServiceProtocolError::InvalidValue {
+                    field: "test",
+                    reason: "not sent",
+                }
+            ),)),
+            Err(AdmissionCommitErrorV1::ScopeUnavailable)
+        );
+        assert_eq!(
+            map_storeless_bat_v2_admission_result(Err(
+                StorelessBatV2RedeemErrorV2::OutcomeUnknownCredentialBurned,
+            )),
+            Err(AdmissionCommitErrorV1::InternalAfterSpend)
+        );
+    }
 }

@@ -15,9 +15,10 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::cashu_manifest::is_valid_compressed_point;
 use crate::codec::{expect_v1, put_bytes_u16, put_bytes_u32, Decoder};
 use crate::{
-    is_canonical_cashu_keyset_id_v2, AcquisitionMethod, AuthScheme, FreeModeV1, PaidReceiptV1,
-    PriceV1, ProviderId, ScopeId, ServiceProtocolError, VerificationMode, VerifiedServiceOfferV1,
-    CASHU_KEYSET_ID_V2_LEN, MAX_AUTH_PROOF_LEN, MAX_SERVICE_VALUE_V1, SERVICE_PROTOCOL_VERSION,
+    is_canonical_cashu_keyset_id_v2, AcquisitionMethod, AuthScheme, BitcoinPirCashuBatProofV2,
+    FreeModeV1, PaidReceiptV1, PriceV1, ProviderId, ScopeId, ServiceProtocolError,
+    VerificationMode, VerifiedServiceOfferV1, BAT_V2_PROOF_LEN_V2, CASHU_KEYSET_ID_V2_LEN,
+    MAX_AUTH_PROOF_LEN, MAX_SERVICE_VALUE_V1, SERVICE_PROTOCOL_VERSION,
 };
 
 pub const FREE_POW_PROOF_LEN_V1: usize = 1 + 32 + 8;
@@ -1077,6 +1078,7 @@ pub enum AuthorizationProofV1 {
     Bolt11DirectReceipt(Box<PaidReceiptV1>),
     StandardCashu(StandardCashuSpendV1),
     BitcoinPirCashuBat(BitcoinPirCashuBatProofV1),
+    BitcoinPirCashuBatV2(BitcoinPirCashuBatProofV2),
     ArcExperimental(ArcPresentationV1),
 }
 
@@ -1107,6 +1109,10 @@ impl fmt::Debug for AuthorizationProofV1 {
                 .finish(),
             Self::BitcoinPirCashuBat(_) => formatter
                 .debug_tuple("AuthorizationProofV1::BitcoinPirCashuBat")
+                .field(&"[REDACTED]")
+                .finish(),
+            Self::BitcoinPirCashuBatV2(_) => formatter
+                .debug_tuple("AuthorizationProofV1::BitcoinPirCashuBatV2")
                 .field(&"[REDACTED]")
                 .finish(),
             Self::ArcExperimental(_) => formatter
@@ -1159,6 +1165,11 @@ impl AuthorizationProofV1 {
                 FreeModeV1::NotFree,
                 Self::BitcoinPirCashuBat(proof),
             ) => Ok(proof.encode_zeroizing()?.to_vec()),
+            (
+                AuthScheme::BitcoinPirCashuBatV2,
+                FreeModeV1::NotFree,
+                Self::BitcoinPirCashuBatV2(proof),
+            ) => Ok(proof.encode()?.to_vec()),
             (
                 AuthScheme::ArcV1Experimental,
                 FreeModeV1::NotFree,
@@ -1230,6 +1241,17 @@ pub(crate) fn decode_authorization_proof_v1(
         (AuthScheme::BitcoinPirCashuBatV1, FreeModeV1::NotFree) => Ok(
             AuthorizationProofV1::BitcoinPirCashuBat(BitcoinPirCashuBatProofV1::decode(bytes)?),
         ),
+        (AuthScheme::BitcoinPirCashuBatV2, FreeModeV1::NotFree) => {
+            if bytes.len() != BAT_V2_PROOF_LEN_V2 {
+                return Err(ServiceProtocolError::InvalidValue {
+                    field: "BitcoinPirCashuBatProofV2",
+                    reason: "scheme 6 proof must use the fixed 210-byte V2 codec",
+                });
+            }
+            Ok(AuthorizationProofV1::BitcoinPirCashuBatV2(
+                BitcoinPirCashuBatProofV2::decode(bytes)?,
+            ))
+        }
         (AuthScheme::ArcV1Experimental, FreeModeV1::NotFree) => {
             let canonicalizer = arc_canonicalizer.ok_or(ServiceProtocolError::InvalidValue {
                 field: "ArcPresentationV1.presentation",
@@ -2177,5 +2199,46 @@ mod tests {
             None,
         )
         .is_err());
+
+        let bat_v2 = AuthorizationProofV1::BitcoinPirCashuBatV2(BitcoinPirCashuBatProofV2 {
+            issuer_id: [2; 32],
+            class_id: [3; 32],
+            class_digest: [4; 32],
+            class_key_epoch: 5,
+            bat_key_id: [6; 32],
+            secret_raw: [7; 32],
+            c: point(2),
+        });
+        let encoded_v2 = bat_v2
+            .encode_for(AuthScheme::BitcoinPirCashuBatV2, FreeModeV1::NotFree)
+            .unwrap();
+        assert_eq!(encoded_v2.len(), BAT_V2_PROOF_LEN_V2);
+        assert!(matches!(
+            decode_authorization_proof_v1(
+                AuthScheme::BitcoinPirCashuBatV2,
+                FreeModeV1::NotFree,
+                &encoded_v2,
+                None,
+            )
+            .unwrap(),
+            AuthorizationProofV1::BitcoinPirCashuBatV2(_)
+        ));
+        assert!(decode_authorization_proof_v1(
+            AuthScheme::BitcoinPirCashuBatV1,
+            FreeModeV1::NotFree,
+            &encoded_v2,
+            None,
+        )
+        .is_err());
+        assert!(decode_authorization_proof_v1(
+            AuthScheme::BitcoinPirCashuBatV2,
+            FreeModeV1::NotFree,
+            &encoded,
+            None,
+        )
+        .is_err());
+        assert!(bat_v2
+            .encode_for(AuthScheme::BitcoinPirCashuBatV1, FreeModeV1::NotFree)
+            .is_err());
     }
 }
