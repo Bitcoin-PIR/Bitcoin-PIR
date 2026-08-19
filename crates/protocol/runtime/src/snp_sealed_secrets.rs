@@ -14,7 +14,7 @@ use std::path::Path;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use pir_private_files::{
     prepare_new_private_file_v1, read_private_file_bounded_v1,
@@ -38,7 +38,8 @@ pub const SNP_DERIVED_KEY_TCB_VERSION_V1: u64 = 0;
 /// V1 requests do not carry the message-version-2 mitigation vector.
 pub const SNP_DERIVED_KEY_LAUNCH_MIT_VECTOR_V1: u64 = 0;
 
-const DERIVED_KEY_EVIDENCE_LEN_V1: usize = 44;
+pub const SNP_DERIVED_KEY_EVIDENCE_LEN_V1: usize = 44;
+const DERIVED_KEY_EVIDENCE_LEN_V1: usize = SNP_DERIVED_KEY_EVIDENCE_LEN_V1;
 const ENVELOPE_MAGIC_V1: &[u8; 8] = b"BPIRSLD1";
 const ENVELOPE_CODEC_VERSION_V1: u16 = 1;
 const ENVELOPE_HEADER_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-header/v1";
@@ -54,6 +55,13 @@ const MAX_ENVELOPE_FILE_LEN_V1: usize = 4096;
 const NONCE_LEN_V1: usize = 24;
 const SEED_LEN_V1: usize = 32;
 const AEAD_TAG_LEN_V1: usize = 16;
+const SEALED_RELEASE_MAGIC_V1: &[u8; 8] = b"BPIRSRL1";
+const SEALED_RELEASE_SIGNATURE_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-release-signature/v1";
+const SEALED_RELEASE_DIGEST_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-release-artifact-digest/v1";
+const MAX_SEALED_RELEASE_LEN_V1: usize = 2048;
+const SEALED_RECEIPT_MAGIC_V1: &[u8; 8] = b"BPIRSRC1";
+const SEALED_RECEIPT_DIGEST_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-receipt-digest/v1";
+const MAX_FRESH_SNP_REPORT_LEN_V1: usize = 4096;
 
 /// Immutable semantic request used for every pir2 envelope V1 derivation.
 ///
@@ -214,6 +222,234 @@ impl SnpTcbVersionV1 {
     }
 }
 
+/// Canonical public claims signed by the offline pir2 operator.
+///
+/// The operator public key is deliberately not carried by these claims.  The
+/// measured caller must supply the key pinned in its source when it constructs
+/// [`VerifiedPir2SealedReleaseV1`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2SealedReleaseClaimsV1 {
+    pub provider_id: [u8; 32],
+    pub stable_server_id: String,
+    pub uki_sha256: [u8; 32],
+    pub expected_measurement: [u8; 48],
+    pub expected_guest_policy: u64,
+    pub minimum_tcb: SnpTcbVersionV1,
+    pub derived_key_request: [u8; DERIVED_KEY_EVIDENCE_LEN_V1],
+    pub identity_generation: u64,
+    pub clearing_authorization_epoch: u64,
+}
+
+impl Pir2SealedReleaseClaimsV1 {
+    fn validate(&self) -> Result<(), SnpSealedSecretsErrorV1> {
+        if self.uki_sha256 == [0_u8; 32] {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "UKI SHA-256 must not be all zero",
+            ));
+        }
+        if self.derived_key_request != SnpDerivedKeyRequestV1::production().canonical_evidence() {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "derived-key request differs from the source-pinned V1 request",
+            ));
+        }
+        self.as_release_with_digest([1_u8; 32]).validate()
+    }
+
+    fn as_release_with_digest(&self, release_artifact_digest: [u8; 32]) -> Pir2SealedReleaseV1 {
+        Pir2SealedReleaseV1 {
+            provider_id: self.provider_id,
+            stable_server_id: self.stable_server_id.clone(),
+            release_artifact_digest,
+            expected_measurement: self.expected_measurement,
+            expected_guest_policy: self.expected_guest_policy,
+            minimum_tcb: self.minimum_tcb,
+            identity_generation: self.identity_generation,
+            clearing_authorization_epoch: self.clearing_authorization_epoch,
+        }
+    }
+
+    fn encode_unsigned(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+        self.validate()?;
+        let server_id = self.stable_server_id.as_bytes();
+        let mut out = Vec::with_capacity(256 + server_id.len());
+        out.extend_from_slice(SEALED_RELEASE_MAGIC_V1);
+        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&self.provider_id);
+        out.extend_from_slice(&(server_id.len() as u16).to_le_bytes());
+        out.extend_from_slice(server_id);
+        out.extend_from_slice(&self.uki_sha256);
+        out.extend_from_slice(&self.expected_measurement);
+        out.extend_from_slice(&self.expected_guest_policy.to_le_bytes());
+        self.minimum_tcb.encode_into(&mut out);
+        out.extend_from_slice(&self.derived_key_request);
+        out.extend_from_slice(&self.identity_generation.to_le_bytes());
+        out.extend_from_slice(&self.clearing_authorization_epoch.to_le_bytes());
+        Ok(out)
+    }
+}
+
+/// Produce the canonical operator-signed release bytes.  Production runtime
+/// code only decodes these bytes; this narrow encoder is shared with the later
+/// offline release command and deterministic tests.
+pub fn encode_signed_pir2_sealed_release_v1(
+    claims: &Pir2SealedReleaseClaimsV1,
+    operator_signing_key: &SigningKey,
+) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+    let mut out = claims.encode_unsigned()?;
+    let message = sealed_release_signature_message_v1(&out);
+    out.extend_from_slice(&operator_signing_key.sign(&message).to_bytes());
+    Ok(out)
+}
+
+/// A canonical release whose signature was checked against the operator key
+/// pinned by the measured caller.  It cannot be constructed from public
+/// fields, preventing unverified claims from reaching envelope operations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedPir2SealedReleaseV1 {
+    claims: Pir2SealedReleaseClaimsV1,
+    release: Pir2SealedReleaseV1,
+    exact_bytes: Vec<u8>,
+}
+
+impl VerifiedPir2SealedReleaseV1 {
+    pub fn decode_and_verify(
+        exact_bytes: &[u8],
+        source_pinned_operator_key: &VerifyingKey,
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        if exact_bytes.len() > MAX_SEALED_RELEASE_LEN_V1 {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "sealed release exceeds its source bound",
+            ));
+        }
+        let mut decoder = DecoderV1::new(exact_bytes);
+        decoder
+            .exact(SEALED_RELEASE_MAGIC_V1, "sealed release magic")
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("invalid release magic"))?;
+        if decoder
+            .u16("sealed release codec")
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated release codec"))?
+            != ENVELOPE_CODEC_VERSION_V1
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "unsupported sealed release codec",
+            ));
+        }
+        let provider_id = decoder
+            .array("provider_id")
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated provider_id"))?;
+        let server_len = usize::from(
+            decoder
+                .u16("stable_server_id length")
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated server id"))?,
+        );
+        if server_len == 0 || server_len > MAX_STABLE_SERVER_ID_LEN_V1 {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "stable_server_id length is invalid",
+            ));
+        }
+        let stable_server_id = std::str::from_utf8(
+            decoder
+                .bytes(server_len, "stable_server_id")
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated server id"))?,
+        )
+        .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("server id is not UTF-8"))?
+        .to_owned();
+        let claims = Pir2SealedReleaseClaimsV1 {
+            provider_id,
+            stable_server_id,
+            uki_sha256: decoder
+                .array("uki_sha256")
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated UKI digest"))?,
+            expected_measurement: decoder.array("expected_measurement").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidRelease("truncated expected measurement")
+            })?,
+            expected_guest_policy: decoder
+                .u64("expected_guest_policy")
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated guest policy"))?,
+            minimum_tcb: SnpTcbVersionV1::decode(&mut decoder)
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("invalid TCB floor"))?,
+            derived_key_request: decoder.array("derived_key_request").map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidRelease("truncated derived-key request")
+            })?,
+            identity_generation: decoder
+                .array::<8>("identity_generation")
+                .map(u64::from_le_bytes)
+                .map_err(|_| {
+                    SnpSealedSecretsErrorV1::InvalidRelease("truncated identity generation")
+                })?,
+            clearing_authorization_epoch: decoder
+                .array::<8>("clearing_authorization_epoch")
+                .map(u64::from_le_bytes)
+                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated clearing epoch"))?,
+        };
+        claims.validate()?;
+        let signature_bytes: [u8; 64] = decoder
+            .array("operator signature")
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated operator signature"))?;
+        decoder
+            .finish()
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("release has trailing bytes"))?;
+
+        let unsigned = claims.encode_unsigned()?;
+        if exact_bytes.get(..unsigned.len()) != Some(unsigned.as_slice()) {
+            return Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "sealed release is not canonical",
+            ));
+        }
+        source_pinned_operator_key
+            .verify(
+                &sealed_release_signature_message_v1(&unsigned),
+                &Signature::from_bytes(&signature_bytes),
+            )
+            .map_err(|_| {
+                SnpSealedSecretsErrorV1::InvalidRelease(
+                    "operator signature does not match the source-pinned key",
+                )
+            })?;
+        let digest = sealed_release_artifact_digest_v1(exact_bytes);
+        let release = claims.as_release_with_digest(digest);
+        Ok(Self {
+            claims,
+            release,
+            exact_bytes: exact_bytes.to_vec(),
+        })
+    }
+
+    pub const fn release(&self) -> &Pir2SealedReleaseV1 {
+        &self.release
+    }
+
+    pub const fn claims(&self) -> &Pir2SealedReleaseClaimsV1 {
+        &self.claims
+    }
+
+    pub fn exact_bytes(&self) -> &[u8] {
+        &self.exact_bytes
+    }
+
+    pub const fn artifact_digest(&self) -> [u8; 32] {
+        self.release.release_artifact_digest
+    }
+}
+
+fn sealed_release_signature_message_v1(unsigned: &[u8]) -> Vec<u8> {
+    let mut message =
+        Vec::with_capacity(4 + SEALED_RELEASE_SIGNATURE_DOMAIN_V1.len() + unsigned.len());
+    message.extend_from_slice(&(SEALED_RELEASE_SIGNATURE_DOMAIN_V1.len() as u32).to_le_bytes());
+    message.extend_from_slice(SEALED_RELEASE_SIGNATURE_DOMAIN_V1);
+    message.extend_from_slice(unsigned);
+    message
+}
+
+fn sealed_release_artifact_digest_v1(exact_bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update((SEALED_RELEASE_DIGEST_DOMAIN_V1.len() as u32).to_le_bytes());
+    hasher.update(SEALED_RELEASE_DIGEST_DOMAIN_V1);
+    hasher.update((exact_bytes.len() as u32).to_le_bytes());
+    hasher.update(exact_bytes);
+    hasher.finalize().into()
+}
+
 /// Trusted public values taken from a caller-pinned, signature-verified
 /// release artifact. None of these values are learned from the ciphertext.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,6 +534,10 @@ pub struct FreshSnpReportV1 {
     pub report_data: [u8; 64],
     pub reported_tcb: SnpTcbVersionV1,
     pub committed_tcb: SnpTcbVersionV1,
+    /// Exact firmware report bytes delivered on this fresh ioctl channel.
+    /// Receipts persist these bytes for the external AMD-chain verifier; the
+    /// runtime never reconstructs them from parsed fields.
+    pub raw_report: Vec<u8>,
 }
 
 /// Opaque zeroizing derived-key result. There is deliberately no raw-key
@@ -395,6 +635,7 @@ impl SnpDerivedKeyProvider for LinuxSevSnpDerivedKeyProviderV1 {
                 report_data: report.report_data,
                 reported_tcb: snp_tcb_from_sev_v1(report.reported_tcb),
                 committed_tcb: snp_tcb_from_sev_v1(report.committed_tcb),
+                raw_report: bytes,
             })
         }
         #[cfg(not(target_os = "linux"))]
@@ -462,6 +703,22 @@ pub struct Pir2SealedPublicFingerprintsV1 {
     pub clearing: [u8; 32],
 }
 
+/// Raw non-secret Ed25519 public keys authorized after the enrollment
+/// ceremony. Fingerprints alone are insufficient to construct the identity
+/// certificate or issuer clearing authorization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pir2SealedPublicKeysV1 {
+    pub service_identity: [u8; 32],
+    pub clearing: [u8; 32],
+}
+
+/// Owned role-separated signing keys transferred exactly once into the ready
+/// server profile. This type intentionally has no `Clone` or `Debug`.
+pub struct Pir2SealedSigningKeysV1 {
+    pub service_identity: SigningKey,
+    pub clearing: SigningKey,
+}
+
 /// Controlled in-memory signing material. The private keys are non-cloneable,
 /// have no raw-secret getter or `Debug`, and zeroize on drop in ed25519-dalek.
 pub struct Pir2SealedSigningMaterialV1 {
@@ -504,6 +761,244 @@ impl Pir2SealedSigningMaterialV1 {
     pub const fn public_fingerprints(&self) -> Pir2SealedPublicFingerprintsV1 {
         self.fingerprints
     }
+
+    /// Raw public keys for certificate/authorization binding and receipts.
+    pub fn public_keys(&self) -> Pir2SealedPublicKeysV1 {
+        Pir2SealedPublicKeysV1 {
+            service_identity: self.service_identity.verifying_key().to_bytes(),
+            clearing: self.clearing.verifying_key().to_bytes(),
+        }
+    }
+
+    /// Consume the sealed handle and hand each non-cloneable signing key to
+    /// its one runtime role without exposing either seed.
+    pub fn into_signing_keys(self) -> Pir2SealedSigningKeysV1 {
+        Pir2SealedSigningKeysV1 {
+            service_identity: self.service_identity,
+            clearing: self.clearing,
+        }
+    }
+}
+
+/// Ceremony phase committed into a current-boot attested receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Pir2SealedReceiptPhaseV1 {
+    Observe = 1,
+    Enroll = 2,
+    Probe = 3,
+    Ready = 4,
+}
+
+/// Canonical non-secret receipt claims. The verifier nonce, channel key and
+/// boot ID jointly prevent a successful receipt from an earlier boot from
+/// authorizing this process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2SealedReceiptClaimsV1 {
+    pub phase: Pir2SealedReceiptPhaseV1,
+    pub ordinal: u64,
+    pub verifier_nonce: [u8; 32],
+    pub current_channel_pubkey: [u8; 32],
+    pub boot_id: [u8; 16],
+    pub release_artifact_digest: [u8; 32],
+    pub public_keys: Pir2SealedPublicKeysV1,
+    pub public_fingerprints: Pir2SealedPublicFingerprintsV1,
+    pub identity_generation: u64,
+    pub clearing_authorization_epoch: u64,
+}
+
+impl Pir2SealedReceiptClaimsV1 {
+    pub fn for_release(
+        release: &VerifiedPir2SealedReleaseV1,
+        phase: Pir2SealedReceiptPhaseV1,
+        ordinal: u64,
+        verifier_nonce: [u8; 32],
+        current_channel_pubkey: [u8; 32],
+        boot_id: [u8; 16],
+        signing_material: Option<&Pir2SealedSigningMaterialV1>,
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        let (public_keys, public_fingerprints) = match signing_material {
+            Some(material) => (material.public_keys(), material.public_fingerprints()),
+            None => (
+                Pir2SealedPublicKeysV1 {
+                    service_identity: [0_u8; 32],
+                    clearing: [0_u8; 32],
+                },
+                Pir2SealedPublicFingerprintsV1 {
+                    service_identity: [0_u8; 32],
+                    clearing: [0_u8; 32],
+                },
+            ),
+        };
+        let claims = Self {
+            phase,
+            ordinal,
+            verifier_nonce,
+            current_channel_pubkey,
+            boot_id,
+            release_artifact_digest: release.artifact_digest(),
+            public_keys,
+            public_fingerprints,
+            identity_generation: release.release.identity_generation,
+            clearing_authorization_epoch: release.release.clearing_authorization_epoch,
+        };
+        claims.validate()?;
+        Ok(claims)
+    }
+
+    fn validate(&self) -> Result<(), SnpSealedSecretsErrorV1> {
+        if self.ordinal == 0
+            || self.verifier_nonce == [0_u8; 32]
+            || self.current_channel_pubkey == [0_u8; 32]
+            || self.boot_id == [0_u8; 16]
+            || self.release_artifact_digest == [0_u8; 32]
+            || self.identity_generation == 0
+            || self.clearing_authorization_epoch == 0
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "receipt contains an empty freshness or release binding",
+            ));
+        }
+        let keys_absent = self.public_keys.service_identity == [0_u8; 32]
+            && self.public_keys.clearing == [0_u8; 32]
+            && self.public_fingerprints.service_identity == [0_u8; 32]
+            && self.public_fingerprints.clearing == [0_u8; 32];
+        if self.phase == Pir2SealedReceiptPhaseV1::Observe {
+            if !keys_absent {
+                return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                    "observation receipt must not claim credential keys",
+                ));
+            }
+            return Ok(());
+        }
+        if keys_absent
+            || self.public_keys.service_identity == self.public_keys.clearing
+            || public_key_fingerprint_v1(
+                SERVICE_IDENTITY_FINGERPRINT_DOMAIN_V1,
+                &self.public_keys.service_identity,
+            ) != self.public_fingerprints.service_identity
+            || public_key_fingerprint_v1(CLEARING_FINGERPRINT_DOMAIN_V1, &self.public_keys.clearing)
+                != self.public_fingerprints.clearing
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "receipt credential public keys or fingerprints are invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    fn encode_claims(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+        self.validate()?;
+        let mut out = Vec::with_capacity(280);
+        out.push(self.phase as u8);
+        out.extend_from_slice(&self.ordinal.to_le_bytes());
+        out.extend_from_slice(&self.verifier_nonce);
+        out.extend_from_slice(&self.current_channel_pubkey);
+        out.extend_from_slice(&self.boot_id);
+        out.extend_from_slice(&self.release_artifact_digest);
+        out.extend_from_slice(&self.public_keys.service_identity);
+        out.extend_from_slice(&self.public_keys.clearing);
+        out.extend_from_slice(&self.public_fingerprints.service_identity);
+        out.extend_from_slice(&self.public_fingerprints.clearing);
+        out.extend_from_slice(&self.identity_generation.to_le_bytes());
+        out.extend_from_slice(&self.clearing_authorization_epoch.to_le_bytes());
+        Ok(out)
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], SnpSealedSecretsErrorV1> {
+        let encoded = self.encode_claims()?;
+        let mut hasher = Sha256::new();
+        hasher.update((SEALED_RECEIPT_DIGEST_DOMAIN_V1.len() as u32).to_le_bytes());
+        hasher.update(SEALED_RECEIPT_DIGEST_DOMAIN_V1);
+        hasher.update((encoded.len() as u32).to_le_bytes());
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn report_data(&self) -> Result<[u8; 64], SnpSealedSecretsErrorV1> {
+        let digest = self.digest()?;
+        let mut report_data = [0_u8; 64];
+        report_data[..32].copy_from_slice(&digest);
+        report_data[32..].copy_from_slice(&digest);
+        Ok(report_data)
+    }
+}
+
+/// Canonical receipt plus the exact fresh SNP report bytes that carried its
+/// digest in `REPORT_DATA`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2SealedReceiptV1 {
+    pub claims: Pir2SealedReceiptClaimsV1,
+    pub fresh_report: FreshSnpReportV1,
+}
+
+impl Pir2SealedReceiptV1 {
+    pub fn request<P: SnpDerivedKeyProvider + ?Sized>(
+        release: &VerifiedPir2SealedReleaseV1,
+        claims: Pir2SealedReceiptClaimsV1,
+        provider: &P,
+    ) -> Result<Self, SnpSealedSecretsErrorV1> {
+        if claims.release_artifact_digest != release.artifact_digest()
+            || claims.identity_generation != release.release.identity_generation
+            || claims.clearing_authorization_epoch != release.release.clearing_authorization_epoch
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "receipt does not match the verified release",
+            ));
+        }
+        let report_data = claims.report_data()?;
+        let fresh_report =
+            request_and_validate_fresh_report_v1(release.release(), provider, report_data)?;
+        let receipt = Self {
+            claims,
+            fresh_report,
+        };
+        receipt.verify_binding(&receipt.claims)?;
+        Ok(receipt)
+    }
+
+    pub fn verify_binding(
+        &self,
+        expected_claims: &Pir2SealedReceiptClaimsV1,
+    ) -> Result<(), SnpSealedSecretsErrorV1> {
+        if &self.claims != expected_claims {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "receipt claims differ from the expected current-boot claims",
+            ));
+        }
+        if self.fresh_report.raw_report.is_empty()
+            || self.fresh_report.raw_report.len() > MAX_FRESH_SNP_REPORT_LEN_V1
+        {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "fresh SNP report bytes are absent or oversized",
+            ));
+        }
+        if self.fresh_report.report_data != self.claims.report_data()? {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "fresh SNP REPORT_DATA does not bind the receipt digest",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], SnpSealedSecretsErrorV1> {
+        self.claims.digest()
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
+        self.verify_binding(&self.claims)?;
+        let claims = self.claims.encode_claims()?;
+        let report_len = u32::try_from(self.fresh_report.raw_report.len())
+            .map_err(|_| SnpSealedSecretsErrorV1::InvalidReceipt("fresh report length overflow"))?;
+        let mut out = Vec::with_capacity(18 + claims.len() + self.fresh_report.raw_report.len());
+        out.extend_from_slice(SEALED_RECEIPT_MAGIC_V1);
+        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&(claims.len() as u32).to_le_bytes());
+        out.extend_from_slice(&claims);
+        out.extend_from_slice(&report_len.to_le_bytes());
+        out.extend_from_slice(&self.fresh_report.raw_report);
+        Ok(out)
+    }
 }
 
 /// Fail-closed sealed-envelope errors. No variant includes a secret or key
@@ -511,6 +1006,7 @@ impl Pir2SealedSigningMaterialV1 {
 #[derive(Debug)]
 pub enum SnpSealedSecretsErrorV1 {
     InvalidRelease(&'static str),
+    InvalidReceipt(&'static str),
     ReportPolicy(&'static str),
     Provider(SnpDerivedKeyProviderErrorV1),
     Randomness,
@@ -524,6 +1020,7 @@ impl fmt::Display for SnpSealedSecretsErrorV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidRelease(reason) => write!(formatter, "invalid sealed release: {reason}"),
+            Self::InvalidReceipt(reason) => write!(formatter, "invalid sealed receipt: {reason}"),
             Self::ReportPolicy(reason) => write!(formatter, "fresh SNP report rejected: {reason}"),
             Self::Provider(error) => write!(formatter, "{error}"),
             Self::Randomness => formatter.write_str("secure randomness unavailable"),
@@ -636,8 +1133,16 @@ fn validate_fresh_report_v1<P: SnpDerivedKeyProvider + ?Sized>(
 ) -> Result<(), SnpSealedSecretsErrorV1> {
     let mut challenge = [0_u8; 64];
     getrandom::getrandom(&mut challenge).map_err(|_| SnpSealedSecretsErrorV1::Randomness)?;
-    let report = provider.fresh_report(challenge)?;
-    if report.report_data != challenge {
+    request_and_validate_fresh_report_v1(release, provider, challenge).map(|_| ())
+}
+
+fn request_and_validate_fresh_report_v1<P: SnpDerivedKeyProvider + ?Sized>(
+    release: &Pir2SealedReleaseV1,
+    provider: &P,
+    expected_report_data: [u8; 64],
+) -> Result<FreshSnpReportV1, SnpSealedSecretsErrorV1> {
+    let report = provider.fresh_report(expected_report_data)?;
+    if report.report_data != expected_report_data {
         return Err(SnpSealedSecretsErrorV1::ReportPolicy(
             "REPORT_DATA does not match the fresh challenge",
         ));
@@ -683,7 +1188,12 @@ fn validate_fresh_report_v1<P: SnpDerivedKeyProvider + ?Sized>(
             "reported TCB is below the production floor",
         ));
     }
-    Ok(())
+    if report.raw_report.is_empty() || report.raw_report.len() > MAX_FRESH_SNP_REPORT_LEN_V1 {
+        return Err(SnpSealedSecretsErrorV1::ReportPolicy(
+            "raw fresh report bytes are absent or oversized",
+        ));
+    }
+    Ok(report)
 }
 
 fn fingerprints_for_keys_v1(
@@ -1226,6 +1736,27 @@ mod tests {
         }
     }
 
+    fn verified_release() -> (VerifiedPir2SealedReleaseV1, SigningKey) {
+        let operator = SigningKey::from_bytes(&[0x61; 32]);
+        let baseline = release();
+        let claims = Pir2SealedReleaseClaimsV1 {
+            provider_id: baseline.provider_id,
+            stable_server_id: baseline.stable_server_id,
+            uki_sha256: [0x44; 32],
+            expected_measurement: baseline.expected_measurement,
+            expected_guest_policy: baseline.expected_guest_policy,
+            minimum_tcb: baseline.minimum_tcb,
+            derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
+            identity_generation: baseline.identity_generation,
+            clearing_authorization_epoch: baseline.clearing_authorization_epoch,
+        };
+        let bytes = encode_signed_pir2_sealed_release_v1(&claims, &operator).unwrap();
+        let verified =
+            VerifiedPir2SealedReleaseV1::decode_and_verify(&bytes, &operator.verifying_key())
+                .unwrap();
+        (verified, operator)
+    }
+
     fn good_report(release: &Pir2SealedReleaseV1) -> FreshSnpReportV1 {
         FreshSnpReportV1 {
             report_version: 2,
@@ -1241,6 +1772,7 @@ mod tests {
                 snp: 4,
                 microcode: 5,
             },
+            raw_report: vec![0xA5; 1184],
         }
     }
 
@@ -1574,5 +2106,110 @@ mod tests {
             Pir2SealedSigningMaterialV1::from_seed_pair(&[7_u8; 32], &[7_u8; 32]),
             Err(SnpSealedSecretsErrorV1::CorruptEnvelope(_))
         ));
+    }
+
+    #[test]
+    fn signed_release_is_canonical_source_pinned_and_request_exact() {
+        let (verified, operator) = verified_release();
+        assert_eq!(verified.claims().uki_sha256, [0x44; 32]);
+        assert_eq!(
+            verified.claims().derived_key_request,
+            SnpDerivedKeyRequestV1::production().canonical_evidence()
+        );
+        assert_eq!(
+            verified.artifact_digest(),
+            sealed_release_artifact_digest_v1(verified.exact_bytes())
+        );
+
+        let wrong = SigningKey::from_bytes(&[0x62; 32]);
+        assert!(VerifiedPir2SealedReleaseV1::decode_and_verify(
+            verified.exact_bytes(),
+            &wrong.verifying_key()
+        )
+        .is_err());
+
+        let mut tampered = verified.exact_bytes().to_vec();
+        tampered[20] ^= 1;
+        assert!(VerifiedPir2SealedReleaseV1::decode_and_verify(
+            &tampered,
+            &operator.verifying_key()
+        )
+        .is_err());
+
+        let mut trailing = verified.exact_bytes().to_vec();
+        trailing.push(0);
+        assert!(VerifiedPir2SealedReleaseV1::decode_and_verify(
+            &trailing,
+            &operator.verifying_key()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn signing_key_handoff_exposes_only_distinct_roles() {
+        let material =
+            Pir2SealedSigningMaterialV1::from_seed_pair(&[0x71; 32], &[0x72; 32]).unwrap();
+        let public = material.public_keys();
+        let keys = material.into_signing_keys();
+        assert_eq!(
+            public.service_identity,
+            keys.service_identity.verifying_key().to_bytes()
+        );
+        assert_eq!(public.clearing, keys.clearing.verifying_key().to_bytes());
+        assert_ne!(public.service_identity, public.clearing);
+    }
+
+    #[test]
+    fn receipt_binds_current_boot_channel_nonce_release_and_raw_keys() {
+        let (verified, _) = verified_release();
+        let material =
+            Pir2SealedSigningMaterialV1::from_seed_pair(&[0x71; 32], &[0x72; 32]).unwrap();
+        let claims = Pir2SealedReceiptClaimsV1::for_release(
+            &verified,
+            Pir2SealedReceiptPhaseV1::Probe,
+            2,
+            [0x81; 32],
+            [0x82; 32],
+            [0x83; 16],
+            Some(&material),
+        )
+        .unwrap();
+        let provider = MockProviderV1::good(verified.release(), [0x42; 32]);
+        let receipt = Pir2SealedReceiptV1::request(&verified, claims.clone(), &provider).unwrap();
+        assert_eq!(provider.report_calls.get(), 1);
+        assert_eq!(provider.derive_calls.get(), 0);
+        assert_eq!(
+            receipt.fresh_report.report_data,
+            claims.report_data().unwrap()
+        );
+        assert_eq!(
+            &receipt.fresh_report.report_data[..32],
+            &receipt.fresh_report.report_data[32..]
+        );
+        assert!(receipt.encode().unwrap().ends_with(&vec![0xA5; 1184]));
+
+        let mut old_channel = claims;
+        old_channel.current_channel_pubkey[0] ^= 1;
+        assert!(receipt.verify_binding(&old_channel).is_err());
+    }
+
+    #[test]
+    fn observation_receipt_never_claims_or_derives_credential_keys() {
+        let (verified, _) = verified_release();
+        let claims = Pir2SealedReceiptClaimsV1::for_release(
+            &verified,
+            Pir2SealedReceiptPhaseV1::Observe,
+            1,
+            [0x91; 32],
+            [0x92; 32],
+            [0x93; 16],
+            None,
+        )
+        .unwrap();
+        assert_eq!(claims.public_keys.service_identity, [0_u8; 32]);
+        let provider = MockProviderV1::good(verified.release(), [0x42; 32]);
+        Pir2SealedReceiptV1::request(&verified, claims, &provider).unwrap();
+        assert_eq!(provider.report_calls.get(), 1);
+        assert_eq!(provider.derive_calls.get(), 0);
     }
 }
