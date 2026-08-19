@@ -4427,6 +4427,7 @@ impl StrictServiceAdmissionRuntimeV1 {
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
                 self.provider_store.is_some() && self.shared_issuer.is_some()
             }
+            AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => false,
         }
     }
 }
