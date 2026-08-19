@@ -86,30 +86,84 @@ function run(command, args, options = {}) {
   return result;
 }
 
-const tempRoot = mkdtempSync(path.join(os.tmpdir(), "bpir-tier3-generation-"));
-try {
-  const compatBin = path.join(tempRoot, "compat-bin");
-  const compatStat = path.join(compatBin, "stat");
+function writeSealedStartup(root, phase, ordinal = 1) {
   write(
-    compatStat,
-    `#!/bin/sh
-if /usr/bin/stat "$@" 2>/dev/null; then exit 0; fi
-[ "$1" = -c ] && [ "$#" = 3 ] || exit 2
-case "$2" in
-  %u) exec /usr/bin/stat -f %u "$3" ;;
-  %a) exec /usr/bin/stat -f %Lp "$3" ;;
-  %u:%a:%h) exec /usr/bin/stat -f %u:%Lp:%l "$3" ;;
-  *) exit 2 ;;
-esac
+    path.join(root, "startup.env"),
+    `schema=bitcoinpir-pir2-sealed-startup-v1
+profile=pir2-snp-sealed-v1
+phase=${phase}
+ordinal=${ordinal}
+verifier_nonce_hex=${"41".repeat(32)}
+current_policy_digest_hex=${"42".repeat(32)}
+class_digest_hex=${"43".repeat(32)}
+minimum_authorization_epoch=7
 `,
   );
-  chmodSync(compatStat, 0o755);
+}
+
+function authoritativeAttemptToken({
+  kind,
+  phase,
+  bootIdHex,
+  ordinal = 1,
+  nonce = "41".repeat(32),
+  policy = "42".repeat(32),
+  classDigest = "43".repeat(32),
+  minimumAuthorizationEpoch = 7,
+  receiptProtocolDigest = "44".repeat(32),
+  receiptFileSha256 = "45".repeat(32),
+}) {
+  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1
+kind=${kind}
+phase=${phase}
+boot_id=${bootIdHex}
+ordinal=${ordinal}
+verifier_nonce_hex=${nonce}
+current_policy_digest_hex=${policy}
+class_digest_hex=${classDigest}
+minimum_authorization_epoch=${minimumAuthorizationEpoch}
+receipt_protocol_digest=${receiptProtocolDigest}
+receipt_file_sha256=${receiptFileSha256}
+`;
+}
+
+const tempRoot = mkdtempSync(path.join(os.tmpdir(), "bpir-tier3-generation-"));
+try {
   const tier3RunText = readFileSync(tier3RunScript, "utf8");
   const tier3ModuleSetupText = readFileSync(tier3ModuleSetup, "utf8");
+  assert.doesNotMatch(
+    tier3RunText,
+    /target\/release\/(?:unified_server|oramctl)/,
+    "measured startup must not fall back to mutable-rootfs binaries",
+  );
+  assert.doesNotMatch(
+    tier3RunText,
+    /(?:server\.key|--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/,
+    "sealed pir2 startup must not accept a plaintext signing-key path",
+  );
+  assert.match(tier3RunText, /ulimit -c 0/);
+  assert.match(tier3RunText, /active swap is forbidden for pir2 sealed startup/);
   assert.match(
+    tier3RunText,
+    /case "\$PIR2_SEALED_PHASE" in[\s\S]*observe\|enroll\|probe\)[\s\S]*run_pir2_sealed_inert_phase[\s\S]*wait_for_databases_config/,
+    "inert sealed dispatch must precede the database wait",
+  );
+  assert.match(
+    tier3RunText,
+    /ready\)[\s\S]*run_pir2_sealed_ready_preflight[\s\S]*esac[\s\S]*wait_for_databases_config[\s\S]*build_direct_oram mainnet[\s\S]*exec "\$UNIFIED_SERVER"[\s\S]*--pir2-snp-sealed-require-ready/,
+    "Ready must preflight before databases/ORAM and reopen only in the final exec",
+  );
+  assert.match(tier3RunText, /ready-preflight-\$PIR2_BOOT_ID_HEX\.bin/);
+  assert.match(tier3RunText, /ready-runtime-\$PIR2_BOOT_ID_HEX\.bin/);
+  assert.match(
+    tier3RunText,
+    /--pir2-snp-sealed-require-ready[\s\S]*--service-storeless-bat-v2-policy-digest-hex/,
+    "final serving must use sealed Ready plus the payment-storeless BAT V2 profile",
+  );
+  assert.doesNotMatch(
     tier3ModuleSetupText,
-    /inst_multiple[^\n]*\bstat\b/,
-    "Tier3 initramfs must install stat for the identity preflight",
+    /(?:BPIR_TIER3_IDENTITY_KEY|server\.key)/,
+    "Tier3 module must never embed the old identity seed",
   );
   assert.match(
     tier3ModuleSetupText,
@@ -210,6 +264,163 @@ esac
     "v1 fixture\n",
   );
 
+  const inertRoot = path.join(tempRoot, "sealed-inert");
+  const inertBinary = path.join(inertRoot, "unified_server");
+  const inertBootId = path.join(inertRoot, "boot_id");
+  const inertSwaps = path.join(inertRoot, "swaps");
+  const inertCalls = path.join(inertRoot, "unified-server.calls");
+  write(inertSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
+  write(
+    inertBinary,
+    `#!/bin/sh
+phase=
+receipt=
+marker=
+boot_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-phase) phase=$2; shift 2 ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$phase" >> "${inertCalls}"
+[ ! -e "$receipt" ] || exit 2
+[ ! -e "$marker" ] || exit 2
+printf 'fixture receipt\n' > "$receipt"
+if [ "\${BPIR_TEST_PARTIAL_MARKER:-false}" = true ]; then
+  printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\nphase=%s\n' "$phase" > "$marker"
+  exit 42
+fi
+{
+  printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+  printf 'phase=%s\n' "$phase"
+  printf 'boot_id=%s\n' "$boot_id"
+  printf 'receipt_digest=%s\n' '${"44".repeat(32)}'
+  printf 'exit_code=42\n'
+} > "$marker"
+exit 42
+`,
+  );
+  chmodSync(inertBinary, 0o755);
+  const inertRunScript = path.join(inertRoot, "unified-server-run.sh");
+  writeFileSync(
+    inertRunScript,
+    tier3RunText
+      .replace("UNIFIED_SERVER=/usr/local/bin/unified_server", `UNIFIED_SERVER=${inertBinary}`)
+      .replaceAll("sleep 5", ":"),
+  );
+  chmodSync(inertRunScript, 0o755);
+  for (const [index, phase] of ["observe", "enroll", "probe"].entries()) {
+    const phaseRoot = path.join(inertRoot, phase);
+    writeSealedStartup(phaseRoot, phase, index + 1);
+    const bootId = `${index + 1}`.repeat(8);
+    writeFileSync(
+      inertBootId,
+      `${bootId}-${bootId.slice(0, 4)}-${bootId.slice(0, 4)}-${bootId.slice(0, 4)}-${bootId}${bootId.slice(0, 4)}\n`,
+    );
+    const inertEnv = {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: phaseRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(phaseRoot, "trusted-attempt"),
+    };
+    const inert = run("sh", [inertRunScript], { env: inertEnv });
+    assert.equal(inert.status, 42, inert.stdout + inert.stderr);
+    assert.equal(readFileSync(inertCalls, "utf8").trim().split("\n").at(-1), phase);
+    assert.equal(existsSync(path.join(phaseRoot, "databases.toml")), false);
+    const callsBeforeRetry = readFileSync(inertCalls, "utf8");
+    const retry = run("sh", [inertRunScript], { env: inertEnv });
+    assert.equal(retry.status, 42, retry.stdout + retry.stderr);
+    assert.equal(readFileSync(inertCalls, "utf8"), callsBeforeRetry);
+    assert.match(retry.stderr, /terminal attempt already completed/);
+
+    const startupPath = path.join(phaseRoot, "startup.env");
+    const originalStartup = readFileSync(startupPath, "utf8");
+    writeSealedStartup(phaseRoot, phase, index + 101);
+    const crossAttempt = run("sh", [inertRunScript], { env: inertEnv });
+    assert.notEqual(crossAttempt.status, 42, crossAttempt.stdout + crossAttempt.stderr);
+    assert.match(crossAttempt.stderr, /token does not match the current attempt/);
+    assert.equal(readFileSync(inertCalls, "utf8"), callsBeforeRetry);
+    writeFileSync(startupPath, originalStartup);
+  }
+
+  const forgedRoot = path.join(inertRoot, "forged-persistent");
+  const forgedAttemptRoot = path.join(forgedRoot, "trusted-attempt");
+  writeSealedStartup(forgedRoot, "observe", 9);
+  writeFileSync(inertBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
+  write(path.join(forgedRoot, "receipts/inert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin"), "not a canonical receipt\n");
+  write(
+    path.join(forgedRoot, "markers/inert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env"),
+    `schema=bitcoinpir-pir2-sealed-inert-success-v1
+phase=observe
+boot_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+receipt_digest=${"aa".repeat(32)}
+exit_code=42
+`,
+  );
+  const callsBeforeForgedPair = readFileSync(inertCalls, "utf8");
+  const forgedPair = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: forgedRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: forgedAttemptRoot,
+    },
+  });
+  assert.notEqual(forgedPair.status, 42, forgedPair.stdout + forgedPair.stderr);
+  assert.match(forgedPair.stderr, /dispatcher failed with exit 2/);
+  assert.equal(existsSync(path.join(forgedAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env")), false);
+  assert.notEqual(readFileSync(inertCalls, "utf8"), callsBeforeForgedPair, "persistent audit files must not skip the measured child");
+
+  const partialRoot = path.join(inertRoot, "partial-marker");
+  const partialAttemptRoot = path.join(partialRoot, "trusted-attempt");
+  writeSealedStartup(partialRoot, "probe", 10);
+  const callsBeforePartialMarker = readFileSync(inertCalls, "utf8");
+  const partialMarker = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: partialRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: partialAttemptRoot,
+      BPIR_TEST_PARTIAL_MARKER: "true",
+    },
+  });
+  assert.notEqual(partialMarker.status, 42, partialMarker.stdout + partialMarker.stderr);
+  assert.match(partialMarker.stderr, /audit marker has unexpected fields/);
+  assert.notEqual(
+    readFileSync(inertCalls, "utf8"),
+    callsBeforePartialMarker,
+    "the measured child must actually run before the truncated marker is rejected",
+  );
+  assert.equal(existsSync(path.join(partialAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env")), false);
+
+  const partialTokenRoot = path.join(inertRoot, "partial-token");
+  const partialTokenAttemptRoot = path.join(partialTokenRoot, "trusted-attempt");
+  writeSealedStartup(partialTokenRoot, "enroll", 11);
+  write(
+    path.join(partialTokenAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env"),
+    "schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\nkind=terminal\n",
+  );
+  const callsBeforePartialToken = readFileSync(inertCalls, "utf8");
+  const partialToken = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: partialTokenRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: partialTokenAttemptRoot,
+    },
+  });
+  assert.notEqual(partialToken.status, 42, partialToken.stdout + partialToken.stderr);
+  assert.match(partialToken.stderr, /token has unexpected fields/);
+  assert.equal(readFileSync(inertCalls, "utf8"), callsBeforePartialToken);
+
   const mismatchRoot = path.join(tempRoot, "mismatch");
   const mismatchData = path.join(mismatchRoot, "data");
   const marker = path.join(mismatchRoot, "oramctl-invoked");
@@ -217,25 +428,50 @@ esac
   const unifiedServer = path.join(mismatchRoot, "unified_server");
   const bhtmProof = path.join(mismatchRoot, "height-940611.leaf-proof.json");
   const mismatchBootId = path.join(mismatchRoot, "boot_id");
+  const mismatchSwaps = path.join(mismatchRoot, "swaps");
+  const mismatchServicePolicy = path.join(mismatchRoot, "service-policy.bin");
   write(oramctl, `#!/bin/sh\nprintf invoked > "${marker}"\n`);
-  write(unifiedServer, "#!/bin/sh\nexit 0\n");
+  write(
+    unifiedServer,
+    `#!/bin/sh
+preflight=false
+receipt=
+marker=
+boot_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  printf 'fixture receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"46".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
+exit 0
+`,
+  );
   chmodSync(oramctl, 0o755);
   chmodSync(unifiedServer, 0o755);
   write(bhtmProof, "{}\n");
+  write(mismatchSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
+  write(mismatchServicePolicy, "fixture policy\n");
   writeFileSync(mismatchBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
   write(path.join(mismatchData, "runtime-db0/MANIFEST.toml"), "runtime manifest\n");
   createProofV1(mismatchData, "proof-v1-db0");
   createProofV1(mismatchData, "proof-v1-db1");
   write(path.join(mismatchData, "proof-v2-db0/server-db/MANIFEST.toml"), "proof manifest\n");
-  const mismatchIdentityRoot = path.join(mismatchRoot, "identity");
-  write(path.join(mismatchIdentityRoot, "server.key"), "k".repeat(32));
-  write(path.join(mismatchIdentityRoot, "server.cert"), "fixture certificate\n");
-  chmodSync(mismatchIdentityRoot, 0o700);
-  chmodSync(path.join(mismatchIdentityRoot, "server.key"), 0o600);
-  write(
-    path.join(mismatchData, "payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin"),
-    "fixture policy\n",
-  );
+  writeSealedStartup(path.join(mismatchData, "pir2-sealed"), "ready");
   write(
     path.join(mismatchData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-v1-db0"\nproof_v2_dir = "proof-v2-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-v1-db1"\nproof_v2_dir = "proof-v2-db1"\nbase_height = 940611\nheight = 948454\n`,
@@ -244,6 +480,7 @@ esac
   const fixtureRunScript = path.join(mismatchRoot, "unified-server-run.sh");
   const transformed = readFileSync(tier3RunScript, "utf8")
     .replaceAll("/home/pir/data", mismatchData)
+    .replace("SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin", `SERVICE_POLICY_PATH=${mismatchServicePolicy}`)
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", bhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${oramctl}`)
     .replace(
@@ -261,9 +498,9 @@ esac
     env: {
       ...process.env,
       BPIR_ORAM_BOOT_ID_FILE: mismatchBootId,
-      BPIR_TIER3_IDENTITY_ROOT: mismatchIdentityRoot,
-      BPIR_TIER3_IDENTITY_UID: String(process.getuid()),
-      PATH: `${compatBin}:${process.env.PATH}`,
+      BPIR_PIR2_PROC_SWAPS: mismatchSwaps,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(mismatchRoot, "trusted-attempt"),
+      PATH: process.env.PATH,
     },
   });
   assert.notEqual(mismatch.status, 0, mismatch.stdout + mismatch.stderr);
@@ -273,6 +510,7 @@ esac
   const directRoot = path.join(tempRoot, "direct-success");
   const directData = path.join(directRoot, "data");
   const directMarker = path.join(directRoot, "oramctl.calls");
+  const directEvents = path.join(directRoot, "startup.events");
   const unifiedArgs = path.join(directRoot, "unified-server.args");
   const unifiedStarts = path.join(directRoot, "unified-server.starts");
   const readySignal = path.join(directRoot, "unified-server.ready");
@@ -312,15 +550,21 @@ esac
   writeDirectDb("db1", "db1 runtime manifest\n", db1Index, db1Chunks);
   createProofV1(directData, "db0-proof-v1");
   createProofV1(directData, "db1-proof-v1");
-  const directIdentityRoot = path.join(directRoot, "identity");
-  write(path.join(directIdentityRoot, "server.key"), "k".repeat(32));
-  write(path.join(directIdentityRoot, "server.cert"), "fixture certificate\n");
-  chmodSync(directIdentityRoot, 0o700);
-  chmodSync(path.join(directIdentityRoot, "server.key"), 0o600);
-  write(
-    path.join(directData, "payment-v1/vpsbg-premium-free-pow-beta/service-policy.bin"),
-    "fixture policy\n",
-  );
+  const directServicePolicy = path.join(directRoot, "service-policy.bin");
+  const directSwaps = path.join(directRoot, "swaps");
+  const directSealedRoot = path.join(directData, "pir2-sealed");
+  write(directServicePolicy, "fixture policy\n");
+  write(directSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
+  writeSealedStartup(directSealedRoot, "ready");
+  for (const relative of [
+    "release.bin",
+    "credentials.envelope.bin",
+    "provider-accounting-authorization.bin",
+    "issuer-accounting-approval.bin",
+    "bat-acceptance-class.bin",
+  ]) {
+    write(path.join(directSealedRoot, relative), `${relative} fixture\n`);
+  }
   write(
     path.join(directData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "db0-runtime"\nproof_dir = "db0-proof-v1"\nproof_v2_dir = "db0-proof"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "db1-runtime"\nproof_dir = "db1-proof-v1"\nproof_v2_dir = "db1-proof"\nbase_height = 940611\nheight = 948454\n`,
@@ -349,12 +593,45 @@ for level in direct-index direct-chunk; do
   done
 done
 printf '%s|%s\n' "$out" "$state" >> "${directMarker}"
+printf 'oram:%s\n' "$out" >> "${directEvents}"
 `,
   );
   write(
     directUnifiedServer,
     `#!/bin/sh
-printf '%s\n' "$@" > "${unifiedArgs}"
+printf '%s\n' "$@" > "${unifiedArgs}.latest"
+preflight=false
+receipt=
+marker=
+boot_id=
+identity_cert=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    --pir2-snp-sealed-identity-cert) identity_cert=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  [ -s "$identity_cert" ] || exit 2
+  [ ! -e "$receipt" ] || exit 2
+  [ ! -e "$marker" ] || exit 2
+  printf 'ready-preflight\n' >> "${directEvents}"
+  printf 'fixture ready receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"45".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
+mv "${unifiedArgs}.latest" "${unifiedArgs}"
+printf 'final-ready\n' >> "${directEvents}"
 printf started >> "${unifiedStarts}"
 printf ready > "${readySignal}"
 printf 'fixture server stdout\n'
@@ -378,6 +655,7 @@ exit 1
   const directRunScript = path.join(directRoot, "unified-server-run.sh");
   const directTransformed = readFileSync(tier3RunScript, "utf8")
     .replaceAll("/home/pir/data", directData)
+    .replace("SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin", `SERVICE_POLICY_PATH=${directServicePolicy}`)
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", directBhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${directOramctl}`)
     .replaceAll("/run/bitcoinpir-oram-status-api", directStatusApiRoot)
@@ -431,23 +709,27 @@ exit 1
   const directEnv = {
     ...process.env,
     BPIR_ORAM_BOOT_ID_FILE: bootIdFile,
-    BPIR_TIER3_IDENTITY_ROOT: directIdentityRoot,
-    BPIR_TIER3_IDENTITY_UID: String(process.getuid()),
-    PATH: `${compatBin}:${fixtureBin}:${process.env.PATH}`,
+    BPIR_PIR2_PROC_SWAPS: directSwaps,
+    BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(directRoot, "trusted-attempt"),
+    PATH: `${fixtureBin}:${process.env.PATH}`,
   };
-  chmodSync(directIdentityRoot, 0o755);
-  const unsafeIdentityParent = run("sh", [directRunScript], { env: directEnv });
-  assert.notEqual(unsafeIdentityParent.status, 0, unsafeIdentityParent.stdout + unsafeIdentityParent.stderr);
-  assert.match(unsafeIdentityParent.stderr, /identity directory must be owner-matched mode 0700/);
-  assert.equal(existsSync(directMarker), false, "oramctl must not run with an unsafe identity parent");
-  chmodSync(directIdentityRoot, 0o700);
-  rmSync(path.join(directIdentityRoot, "server.cert"));
-  const missingIdentity = run("sh", [directRunScript], { env: directEnv });
-  assert.notEqual(missingIdentity.status, 0, missingIdentity.stdout + missingIdentity.stderr);
-  assert.match(missingIdentity.stderr, /required file missing or unreadable: .*server\.cert/);
-  assert.equal(existsSync(directMarker), false, "oramctl must not run without the identity pair");
-  assert.equal(existsSync(unifiedStarts), false, "unified_server must not start without the identity pair");
-  write(path.join(directIdentityRoot, "server.cert"), "fixture certificate\n");
+  const completeStartup = readFileSync(path.join(directSealedRoot, "startup.env"), "utf8");
+  writeFileSync(
+    path.join(directSealedRoot, "startup.env"),
+    completeStartup.replace(/^class_digest_hex=.*\n/m, ""),
+  );
+  const partialSealedConfig = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(partialSealedConfig.status, 0, partialSealedConfig.stdout + partialSealedConfig.stderr);
+  assert.match(partialSealedConfig.stderr, /exactly one non-empty class_digest_hex/);
+  assert.equal(existsSync(directMarker), false, "ORAM must not run with partial sealed config");
+  assert.equal(existsSync(unifiedStarts), false, "server must not run with partial sealed config");
+  writeFileSync(path.join(directSealedRoot, "startup.env"), completeStartup);
+  const missingReadyArtifact = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(missingReadyArtifact.status, 0, missingReadyArtifact.stdout + missingReadyArtifact.stderr);
+  assert.match(missingReadyArtifact.stderr, /Ready preflight failed with exit 2/);
+  assert.equal(existsSync(directMarker), false, "ORAM must not run before Ready public artifacts pass");
+  assert.equal(existsSync(unifiedStarts), false, "final server must not run before Ready preflight");
+  write(path.join(directSealedRoot, "identity.cert"), "identity certificate fixture\n");
   const directSuccess = run("sh", [directRunScript], { env: directEnv });
   assert.equal(directSuccess.status, 0, directSuccess.stdout + directSuccess.stderr);
   const directCalls = readFileSync(directMarker, "utf8");
@@ -456,6 +738,17 @@ exit 1
   const finalArgs = readFileSync(unifiedArgs, "utf8");
   assert.match(finalArgs, /--direct-oram-db\n0=.*db0-mainnet-948454/);
   assert.match(finalArgs, /--direct-oram-db\n1=.*db1-delta-940611-948454/);
+  assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
+  assert.match(finalArgs, /--service-storeless-bat-v2-policy-digest-hex/);
+  assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
+  assert.deepEqual(
+    readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>
+      event
+        .replace(/^oram:.*db0-mainnet-948454$/, "oram-db0")
+        .replace(/^oram:.*db1-delta-940611-948454$/, "oram-db1")
+    ),
+    ["ready-preflight", "oram-db0", "oram-db1", "final-ready"],
+  );
   for (const label of ["mainnet-948454", "delta-940611-948454"]) {
     assert.match(
       readFileSync(path.join(directData, "oram-boot-logs", `${label}.status.env`), "utf8"),
@@ -473,6 +766,21 @@ exit 1
   assert.doesNotMatch(runtimeLogText, /test-page-key/);
   assert.equal(statSync(runtimeLog).mode & 0o777, 0o600);
   assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
+  const firstBootHex = "11111111111111111111111111111111";
+  const readyPreflightReceipt = path.join(
+    directSealedRoot,
+    `receipts/ready-preflight-${firstBootHex}.bin`,
+  );
+  const readyPreflightToken = path.join(
+    directEnv.BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT,
+    `ready-preflight-${firstBootHex}.env`,
+  );
+  const readyPreflightTokenText = readFileSync(readyPreflightToken, "utf8");
+  assert.match(readyPreflightTokenText, /kind=ready-preflight\nphase=ready\n/);
+  assert.match(
+    readyPreflightTokenText,
+    new RegExp(`receipt_file_sha256=${sha256(readFileSync(readyPreflightReceipt))}`),
+  );
 
   const callsBeforeSameBootRetry = readFileSync(directMarker, "utf8");
   const sameBootRetry = run("sh", [directRunScript], { env: directEnv });
@@ -480,6 +788,27 @@ exit 1
   assert.equal(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
   assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
   assert.match(sameBootRetry.stderr, /already published.*refusing destructive retry/);
+
+  const directStartupPath = path.join(directSealedRoot, "startup.env");
+  const directStartup = readFileSync(directStartupPath, "utf8");
+  writeFileSync(directStartupPath, directStartup.replace("ordinal=1\n", "ordinal=2\n"));
+  const crossAttemptReady = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(crossAttemptReady.status, 0, crossAttemptReady.stdout + crossAttemptReady.stderr);
+  assert.match(crossAttemptReady.stderr, /token does not match the current attempt/);
+  assert.equal(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
+  writeFileSync(directStartupPath, directStartup);
+
+  rmSync(readyPreflightToken);
+  const eventsBeforeAuditOnlyReady = readFileSync(directEvents, "utf8");
+  const auditOnlyReady = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(auditOnlyReady.status, 0, auditOnlyReady.stdout + auditOnlyReady.stderr);
+  assert.match(auditOnlyReady.stderr, /Ready preflight failed with exit 2/);
+  assert.equal(
+    readFileSync(directEvents, "utf8"),
+    eventsBeforeAuditOnlyReady,
+    "persistent Ready audit files must not skip or replace the measured child",
+  );
+  assert.equal(existsSync(readyPreflightToken), false);
 
   writeFileSync(bootIdFile, "22222222-2222-2222-2222-222222222222\n");
   rmSync(readySignal);
@@ -493,6 +822,30 @@ exit 1
   write(
     timeoutUnifiedServer,
     `#!/bin/sh
+preflight=false
+receipt=
+marker=
+boot_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pir2-snp-sealed-preflight-only) preflight=true; shift ;;
+    --pir2-snp-sealed-receipt) receipt=$2; shift 2 ;;
+    --pir2-snp-sealed-marker) marker=$2; shift 2 ;;
+    --pir2-snp-sealed-current-boot-id-hex) boot_id=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$preflight" = true ]; then
+  printf 'fixture timeout preflight receipt\n' > "$receipt"
+  {
+    printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
+    printf 'phase=ready\n'
+    printf 'boot_id=%s\n' "$boot_id"
+    printf 'receipt_digest=%s\n' '${"47".repeat(32)}'
+    printf 'exit_code=42\n'
+  } > "$marker"
+  exit 42
+fi
 printf 'timeout server stdout\\n'
 printf 'timeout server stderr\\n' >&2
 exec sleep 5
@@ -521,6 +874,7 @@ exec sleep 5
   const guardState = path.join(guardRoot, "state");
   const guardStatus = path.join(guardRoot, "status");
   const guardService = path.join(guardRoot, "service");
+  const guardAttemptRoot = path.join(guardRoot, "trusted-attempt");
   const svLog = path.join(guardRoot, "sv.log");
   const fakeSv = path.join(guardRoot, "sv");
   write(fakeSv, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${svLog}"\n`);
@@ -532,7 +886,118 @@ exec sleep 5
     BPIR_RUNIT_GUARD_STATUS_DIR: guardStatus,
     BPIR_RUNIT_GUARD_SV_BIN: fakeSv,
     BPIR_RUNIT_GUARD_SERVICE_DIR: guardService,
+    BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: guardAttemptRoot,
   };
+  const sealedGuardRoot = path.join(guardRoot, "pir2-sealed");
+  const sealedGuardBootId = path.join(guardRoot, "sealed-boot-id");
+  const sealedGuardBootHex = "55555555555555555555555555555555";
+  writeFileSync(sealedGuardBootId, "55555555-5555-5555-5555-555555555555\n");
+  write(
+    path.join(sealedGuardRoot, `receipts/inert-${sealedGuardBootHex}.bin`),
+    "fixture receipt\n",
+  );
+  write(
+    path.join(sealedGuardRoot, `markers/inert-${sealedGuardBootHex}.env`),
+    `schema=bitcoinpir-pir2-sealed-inert-success-v1
+phase=enroll
+boot_id=${sealedGuardBootHex}
+receipt_digest=${"55".repeat(32)}
+exit_code=42
+`,
+  );
+  const forgedPersistentFinish = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
+      BPIR_PIR2_SNP_SEALED_ROOT: sealedGuardRoot,
+    },
+  });
+  assert.equal(forgedPersistentFinish.status, 0, forgedPersistentFinish.stdout + forgedPersistentFinish.stderr);
+  assert.equal(existsSync(svLog), false, "persistent marker/receipt must never authorize finish down");
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+
+  rmSync(guardState, { recursive: true, force: true });
+  write(
+    path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`),
+    authoritativeAttemptToken({
+      kind: "terminal",
+      phase: "enroll",
+      bootIdHex: sealedGuardBootHex,
+      ordinal: 2,
+      receiptProtocolDigest: "55".repeat(32),
+      receiptFileSha256: "56".repeat(32),
+    }),
+  );
+  const inertFinish = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
+    },
+  });
+  assert.equal(inertFinish.status, 0, inertFinish.stdout + inertFinish.stderr);
+  assert.equal(readFileSync(svLog, "utf8"), `-w 1 down ${guardService}\n`);
+  assert.equal(existsSync(path.join(guardState, "failure_count")), false);
+  assert.match(
+    readFileSync(path.join(guardStatus, "unified-server-runit.status"), "utf8"),
+    /status=restart_suppressed[\s\S]*failure_count=0[\s\S]*exit_code=42[\s\S]*reason=pir2-sealed-inert-success/,
+  );
+
+  rmSync(svLog);
+  rmSync(path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`));
+  write(
+    path.join(guardAttemptRoot, `ready-preflight-${sealedGuardBootHex}.env`),
+    authoritativeAttemptToken({
+      kind: "ready-preflight",
+      phase: "ready",
+      bootIdHex: sealedGuardBootHex,
+      receiptProtocolDigest: "57".repeat(32),
+      receiptFileSha256: "58".repeat(32),
+    }),
+  );
+  rmSync(path.join(sealedGuardRoot, `markers/inert-${sealedGuardBootHex}.env`));
+  write(
+    path.join(sealedGuardRoot, `receipts/ready-preflight-${sealedGuardBootHex}.bin`),
+    "fixture ready preflight receipt\n",
+  );
+  write(
+    path.join(sealedGuardRoot, `markers/ready-preflight-${sealedGuardBootHex}.env`),
+    `schema=bitcoinpir-pir2-sealed-inert-success-v1
+phase=ready
+boot_id=${sealedGuardBootHex}
+receipt_digest=${"56".repeat(32)}
+exit_code=42
+`,
+  );
+  const unbound42 = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
+    },
+  });
+  assert.equal(unbound42.status, 0, unbound42.stdout + unbound42.stderr);
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+  assert.equal(
+    existsSync(svLog),
+    false,
+    "Ready-preflight token must not make finish treat exit 42 as terminal success",
+  );
+  rmSync(path.join(guardAttemptRoot, `ready-preflight-${sealedGuardBootHex}.env`));
+  rmSync(guardState, { recursive: true, force: true });
+  write(
+    path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`),
+    "schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\nkind=terminal\n",
+  );
+  const partialTerminalToken = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
+    },
+  });
+  assert.equal(partialTerminalToken.status, 0, partialTerminalToken.stdout + partialTerminalToken.stderr);
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+  assert.equal(existsSync(svLog), false, "partial terminal token must stay on bounded retry");
+  rmSync(path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`));
+  rmSync(guardState, { recursive: true, force: true });
   for (let failure = 1; failure <= 3; failure += 1) {
     const result = run("sh", [tier3FinishScript, "134", "6"], { env: guardEnv });
     assert.equal(result.status, 0, result.stdout + result.stderr);

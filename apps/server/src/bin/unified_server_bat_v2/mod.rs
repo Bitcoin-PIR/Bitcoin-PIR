@@ -71,6 +71,15 @@ pub(super) struct LoadedStorelessBatV2ProfileV2 {
     pub runtime: StorelessBatV2RuntimeConfigV2,
 }
 
+/// Public artifacts plus the clearing key transferred from the measured pir2
+/// sealed dispatcher. The loader accepts this only when the plaintext pir1
+/// key path is absent.
+pub(super) struct SealedStorelessBatV2InputsV2 {
+    pub clearing_signing_key: SigningKey,
+    pub authorization: ProviderAccountingAuthorizationV2,
+    pub issuer_approval: IssuerAccountingApprovalV2,
+}
+
 pub(super) struct StorelessBatV2RuntimeConfigV2 {
     classes_by_digest: BTreeMap<[u8; 32], BatAcceptanceClassV2>,
     authorization: ProviderAccountingAuthorizationV2,
@@ -126,8 +135,9 @@ pub(super) fn load_storeless_bat_v2_profile_v2(
     expected_provider_id: ProviderId,
     policy_verifying_key: VerifyingKey,
     now_unix: u64,
+    sealed_inputs: Option<SealedStorelessBatV2InputsV2>,
 ) -> Result<LoadedStorelessBatV2ProfileV2, String> {
-    validate_complete_cli_group_v2(cli)?;
+    validate_complete_cli_group_v2(cli, sealed_inputs.is_some())?;
 
     let current_digest = decode_nonzero_digest_v2(
         cli.current_policy_digest_hex
@@ -176,39 +186,50 @@ pub(super) fn load_storeless_bat_v2_profile_v2(
         }
     }
 
-    let authorization_path = cli
-        .accounting_authorization_path
-        .as_deref()
-        .expect("complete group checked");
-    let authorization_bytes = read_regular_file_bounded_v1(
-        authorization_path,
-        SERVICE_CONFIG_FILE_LIMIT_V1,
-        "BAT V2 provider accounting authorization",
-    )?;
-    let authorization = ProviderAccountingAuthorizationV2::decode(&authorization_bytes)
-        .map_err(|error| format!("invalid BAT V2 provider accounting authorization: {error}"))?;
-    if authorization
-        .encode()
-        .map_err(|error| format!("invalid BAT V2 provider accounting authorization: {error}"))?
-        != authorization_bytes
-    {
-        return Err("BAT V2 provider accounting authorization is not canonical".to_owned());
-    }
+    let (authorization, issuer_approval, sealed_clearing_signing_key) = match sealed_inputs {
+        Some(inputs) => (
+            inputs.authorization,
+            inputs.issuer_approval,
+            Some(inputs.clearing_signing_key),
+        ),
+        None => {
+            let authorization_path = cli
+                .accounting_authorization_path
+                .as_deref()
+                .expect("complete group checked");
+            let authorization_bytes = read_regular_file_bounded_v1(
+                authorization_path,
+                SERVICE_CONFIG_FILE_LIMIT_V1,
+                "BAT V2 provider accounting authorization",
+            )?;
+            let authorization = ProviderAccountingAuthorizationV2::decode(&authorization_bytes)
+                .map_err(|error| {
+                    format!("invalid BAT V2 provider accounting authorization: {error}")
+                })?;
+            if authorization.encode().map_err(|error| {
+                format!("invalid BAT V2 provider accounting authorization: {error}")
+            })? != authorization_bytes
+            {
+                return Err("BAT V2 provider accounting authorization is not canonical".to_owned());
+            }
 
-    let approval_path = cli
-        .issuer_approval_path
-        .as_deref()
-        .expect("complete group checked");
-    let approval_bytes = read_regular_file_bounded_v1(
-        approval_path,
-        SERVICE_CONFIG_FILE_LIMIT_V1,
-        "BAT V2 issuer accounting approval",
-    )?;
-    let issuer_approval = IssuerAccountingApprovalV2::decode(&approval_bytes)
-        .map_err(|error| format!("invalid BAT V2 issuer accounting approval: {error}"))?;
-    if issuer_approval.encode().as_slice() != approval_bytes.as_slice() {
-        return Err("BAT V2 issuer accounting approval is not canonical".to_owned());
-    }
+            let approval_path = cli
+                .issuer_approval_path
+                .as_deref()
+                .expect("complete group checked");
+            let approval_bytes = read_regular_file_bounded_v1(
+                approval_path,
+                SERVICE_CONFIG_FILE_LIMIT_V1,
+                "BAT V2 issuer accounting approval",
+            )?;
+            let issuer_approval = IssuerAccountingApprovalV2::decode(&approval_bytes)
+                .map_err(|error| format!("invalid BAT V2 issuer accounting approval: {error}"))?;
+            if issuer_approval.encode().as_slice() != approval_bytes.as_slice() {
+                return Err("BAT V2 issuer accounting approval is not canonical".to_owned());
+            }
+            (authorization, issuer_approval, None)
+        }
+    };
 
     let operator_verifying_key = decode_verifying_key_v2(
         cli.operator_key_hex
@@ -231,14 +252,20 @@ pub(super) fn load_storeless_bat_v2_profile_v2(
         );
     }
 
-    let mut clearing_seed = read_exact_secret_v1::<32>(
-        cli.pir1_clearing_key_path
-            .as_deref()
-            .expect("complete group checked"),
-        "pir1/local-test plaintext BAT V2 clearing signing key (not pir2 SNP-sealed input)",
-    )?;
-    let clearing_signing_key = SigningKey::from_bytes(&clearing_seed);
-    clearing_seed.zeroize();
+    let clearing_signing_key = match sealed_clearing_signing_key {
+        Some(key) => key,
+        None => {
+            let mut clearing_seed = read_exact_secret_v1::<32>(
+                cli.pir1_clearing_key_path
+                    .as_deref()
+                    .expect("complete group checked"),
+                "pir1/local-test plaintext BAT V2 clearing signing key (not pir2 SNP-sealed input)",
+            )?;
+            let key = SigningKey::from_bytes(&clearing_seed);
+            clearing_seed.zeroize();
+            key
+        }
+    };
 
     authorization
         .verify_for(
@@ -284,9 +311,11 @@ pub(super) fn load_storeless_bat_v2_profile_v2(
     let members = collect_live_policy_members_v2(&policy, &retained_policies, now_unix)?;
     validate_class_registry_coverage_v2(&runtime, &members, now_unix)?;
 
-    eprintln!(
-        "!!! BAT V2 CLEARING KEY SOURCE IS PLAINTEXT PIR1/LOCAL-TEST INPUT; THIS IS NOT THE PIR2 SNP-SEALED KEY PATH !!!"
-    );
+    if cli.pir1_clearing_key_path.is_some() {
+        eprintln!(
+            "!!! BAT V2 CLEARING KEY SOURCE IS PLAINTEXT PIR1/LOCAL-TEST INPUT; THIS IS NOT THE PIR2 SNP-SEALED KEY PATH !!!"
+        );
+    }
     Ok(LoadedStorelessBatV2ProfileV2 {
         policy,
         retained_policies,
@@ -294,7 +323,10 @@ pub(super) fn load_storeless_bat_v2_profile_v2(
     })
 }
 
-fn validate_complete_cli_group_v2(cli: &StorelessBatV2CliV2) -> Result<(), String> {
+fn validate_complete_cli_group_v2(
+    cli: &StorelessBatV2CliV2,
+    sealed_clearing_key: bool,
+) -> Result<(), String> {
     if !cli.selected() {
         return Err(
             "storeless BAT V2 configuration requires --service-storeless-bat-v2-policy-digest-hex"
@@ -306,11 +338,16 @@ fn validate_complete_cli_group_v2(cli: &StorelessBatV2CliV2) -> Result<(), Strin
         || cli.issuer_approval_path.is_none()
         || cli.operator_key_hex.is_none()
         || cli.issuer_settlement_key_hex.is_none()
-        || cli.pir1_clearing_key_path.is_none()
         || cli.minimum_authorization_epoch.is_none()
     {
         return Err(
             "storeless BAT V2 clearing requires current policy digest, at least one digest-pinned class, accounting authorization, issuer approval, operator key, issuer settlement key, pir1/local-test plaintext clearing key, and minimum authorization epoch"
+                .to_owned(),
+        );
+    }
+    if sealed_clearing_key == cli.pir1_clearing_key_path.is_some() {
+        return Err(
+            "storeless BAT V2 requires exactly one clearing-key source: pir1 plaintext path or pir2 sealed injection"
                 .to_owned(),
         );
     }
@@ -566,7 +603,7 @@ mod tests {
             .push(format!("{}=/tmp/class.bin", hex::encode([1; 32])));
         assert!(cli.any_configured());
         assert!(!cli.selected());
-        assert!(validate_complete_cli_group_v2(&cli).is_err());
+        assert!(validate_complete_cli_group_v2(&cli, false).is_err());
     }
 
     #[test]
@@ -911,6 +948,7 @@ mod tests {
             provider_id,
             policy_key.verifying_key(),
             150,
+            None,
         )
         .unwrap();
         assert_eq!(loaded.policy.policy_digest(), policy_digest);
@@ -924,6 +962,37 @@ mod tests {
             13
         );
         assert!(loaded.runtime.client().is_ok());
+
+        assert!(load_storeless_bat_v2_profile_v2(
+            &cli,
+            &policy.encode().unwrap(),
+            provider_id,
+            policy_key.verifying_key(),
+            150,
+            Some(SealedStorelessBatV2InputsV2 {
+                clearing_signing_key: clearing_key.clone(),
+                authorization: authorization.clone(),
+                issuer_approval: approval.clone(),
+            }),
+        )
+        .is_err());
+
+        let mut sealed_cli = cli;
+        sealed_cli.pir1_clearing_key_path = None;
+        let sealed_loaded = load_storeless_bat_v2_profile_v2(
+            &sealed_cli,
+            &policy.encode().unwrap(),
+            provider_id,
+            policy_key.verifying_key(),
+            150,
+            Some(SealedStorelessBatV2InputsV2 {
+                clearing_signing_key: clearing_key,
+                authorization,
+                issuer_approval: approval,
+            }),
+        )
+        .unwrap();
+        assert!(sealed_loaded.runtime.client().is_ok());
     }
 
     fn test_terms_v2() -> BatAcceptanceTermsV2 {
