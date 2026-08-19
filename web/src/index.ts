@@ -328,6 +328,36 @@ export type {
   ResumeBolt11AcquisitionV1,
 } from './service-acquisition.js';
 
+// Issuer-wide BAT V2 acquisition and its independent encrypted wallet. These
+// exports deliberately do not adapt BAT V2 into the provider-scoped V1 vault.
+export {
+  BatV2CredentialVaultV2,
+  validateBatV2ClassBindingV2,
+  validateBatV2WalletRecordV2,
+} from './bat-v2-vault.js';
+export type {
+  BatV2ClassBindingV2,
+  BatV2DistinctPairReservationV2,
+  BatV2RecoveryRecordV2,
+  BatV2ReservedProofV2,
+  BatV2ReservationDispositionV2,
+  BatV2WalletInventoryV2,
+  BatV2WalletRecordV2,
+  LightningNetworkNameV2,
+  LockedBatV2RecoveryV2,
+} from './bat-v2-vault.js';
+export {
+  BatV2AcquisitionControllerV2,
+  BatV2RecoveryRequiredErrorV2,
+  resumeBatV2AcquisitionV2,
+} from './service-acquisition-v2.js';
+export type {
+  BatV2AcquisitionHandleV2,
+  BatV2QuoteStatusNameV2,
+  ResumeBatV2AcquisitionV2,
+  StartBatV2AcquisitionV2,
+} from './service-acquisition-v2.js';
+
 // Explicit strict-multi or centralized/degraded Nostr directory refresh and
 // durable rollback storage. Centralized mode never activates implicitly.
 export {
