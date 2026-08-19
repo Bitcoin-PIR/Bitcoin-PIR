@@ -1,0 +1,25 @@
+# Strict input to
+# `bpir-admin payment-artifact bat-v2-accounting-authorization`.
+# Materialize one independent copy per provider. Repeat [[rules]] for every
+# exact class member accepted by that provider authorization.
+
+authorization_id_hex = "@BAT_V2_ACCOUNTING_AUTHORIZATION_ID_HEX@"
+authorization_epoch = @BAT_V2_ACCOUNTING_AUTHORIZATION_EPOCH@
+provider_id_hex = "@PROVIDER_ID_HEX@"
+issuer_id_hex = "@BAT_V2_ISSUER_ID_HEX@"
+redeem_endpoint = "@BAT_V2_ISSUER_HTTPS_ORIGIN@"
+redeem_leaf_spki_sha256_pins_hex = ["@BAT_V2_ISSUER_LEAF_SPKI_SHA256_HEX@"]
+settlement_account_id_hex = "@SETTLEMENT_ACCOUNT_ID_HEX@"
+clearing_verifying_key_hex = "@PROVIDER_CLEARING_VERIFYING_KEY_HEX@"
+not_before = @BAT_V2_ACCOUNTING_NOT_BEFORE_UNIX@
+not_after = @BAT_V2_ACCOUNTING_NOT_AFTER_UNIX@
+
+[[rules]]
+class_path = "@BAT_V2_CLASS_RELATIVE_PATH@"
+expected_class_digest_hex = "@BAT_V2_CLASS_DIGEST_HEX@"
+policy_digest_hex = "@PROVIDER_POLICY_DIGEST_HEX@"
+scope_id_hex = "@PROVIDER_SCOPE_ID_HEX@"
+offer_id = @PROVIDER_OFFER_ID@
+accepted_value = @ACCEPTED_AUTH_CREDIT_VALUE@
+provider_credit = @PROVIDER_AUTH_CREDIT@
+issuer_fee = @ISSUER_AUTH_CREDIT_FEE@
