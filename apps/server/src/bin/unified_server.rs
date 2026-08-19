@@ -12,6 +12,7 @@
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
 mod unified_server_bat_v2;
+mod unified_server_pir2_sealed;
 
 use pir_runtime_core::free_admission::{
     FreeAdmissionCommitterV1, FreeIpSubjectKeyV1, FreeRateLimitStateV1,
@@ -40,7 +41,13 @@ use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
 };
 use unified_server_bat_v2::{
-    load_storeless_bat_v2_profile_v2, StorelessBatV2CliV2, StorelessBatV2RuntimeConfigV2,
+    load_storeless_bat_v2_profile_v2, SealedStorelessBatV2InputsV2, StorelessBatV2CliV2,
+    StorelessBatV2RuntimeConfigV2,
+};
+use unified_server_pir2_sealed::{
+    dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
+    validate_pir2_sealed_cli_v1, Pir2SealedCliV1, Pir2SealedStartupPhaseV1, Pir2SealedStartupV1,
+    PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1,
 };
 
 use ed25519_dalek::VerifyingKey;
@@ -295,6 +302,9 @@ struct CliArgs {
     /// issuer class is explicitly digest-pinned; its clearing configuration
     /// has no ProviderStore, rollback, idempotency, or V1 shared-issuer input.
     service_storeless_bat_v2: StorelessBatV2CliV2,
+    /// Measurement-bound pir2 identity/clearing dispatcher. This group is
+    /// evaluated before any database, ORAM image, or listener is opened.
+    pir2_sealed: Pir2SealedCliV1,
     /// Existing provider spend database. The rollback authority must be exactly
     /// one local development/test SQLite file or one production remote config;
     /// startup never creates or silently substitutes either.
@@ -624,6 +634,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut service_policy_key_hex: Option<String> = None;
     let mut service_storeless_free_pow_policy_digest_hex: Option<String> = None;
     let mut service_storeless_bat_v2 = StorelessBatV2CliV2::default();
+    let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
     let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
@@ -1156,6 +1167,111 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
             "--serve-queries" => {
                 serve_queries = true;
             }
+            "--pir2-snp-sealed-preflight-only" => {
+                pir2_sealed.preflight_only = true;
+            }
+            "--pir2-snp-sealed-require-ready" => {
+                pir2_sealed.require_ready = true;
+            }
+            "--pir2-snp-sealed-release" => {
+                pir2_sealed.release_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-release requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-envelope" => {
+                pir2_sealed.envelope_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-envelope requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-receipt" => {
+                pir2_sealed.receipt_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-receipt requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-marker" => {
+                pir2_sealed.marker_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-marker requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-phase" => {
+                pir2_sealed.phase =
+                    Some(
+                        Pir2SealedStartupPhaseV1::parse(args.get(i + 1).unwrap_or_else(|| {
+                            fatal_cli("--pir2-snp-sealed-phase requires a value")
+                        }))
+                        .unwrap_or_else(|error| fatal_cli(error)),
+                    );
+                i += 1;
+            }
+            "--pir2-snp-sealed-ordinal" => {
+                pir2_sealed.ordinal = Some(
+                    args.get(i + 1)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| {
+                            fatal_cli("--pir2-snp-sealed-ordinal requires an integer")
+                        }),
+                );
+                i += 1;
+            }
+            "--pir2-snp-sealed-verifier-nonce-hex" => {
+                pir2_sealed.verifier_nonce_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli("--pir2-snp-sealed-verifier-nonce-hex requires hex")
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--pir2-snp-sealed-current-boot-id-hex" => {
+                pir2_sealed.current_boot_id_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli("--pir2-snp-sealed-current-boot-id-hex requires hex")
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--pir2-snp-sealed-current-channel-pubkey-hex" => {
+                pir2_sealed.current_channel_pubkey_hex = Some(
+                    args.get(i + 1)
+                        .unwrap_or_else(|| {
+                            fatal_cli("--pir2-snp-sealed-current-channel-pubkey-hex requires hex")
+                        })
+                        .clone(),
+                );
+                i += 1;
+            }
+            "--pir2-snp-sealed-identity-cert" => {
+                pir2_sealed.identity_cert_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-identity-cert requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-accounting-authorization" => {
+                pir2_sealed.accounting_authorization_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-accounting-authorization requires a path")
+                    })));
+                i += 1;
+            }
+            "--pir2-snp-sealed-issuer-approval" => {
+                pir2_sealed.issuer_approval_path =
+                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
+                        fatal_cli("--pir2-snp-sealed-issuer-approval requires a path")
+                    })));
+                i += 1;
+            }
             "--identity-key-path" => {
                 if let Some(p) = args.get(i + 1) {
                     identity_key_path = Some(PathBuf::from(p));
@@ -1341,6 +1457,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         service_policy_key_hex,
         service_storeless_free_pow_policy_digest_hex,
         service_storeless_bat_v2,
+        pir2_sealed,
         service_store_path,
         service_rollback_authority_path,
         service_remote_rollback_authority_config_path,
@@ -7993,6 +8110,7 @@ mod service_rollback_authority_source_tests_v1 {
 fn load_strict_service_admission_v1(
     args: &CliArgs,
     now_unix: u64,
+    sealed_bat_v2_inputs: Option<SealedStorelessBatV2InputsV2>,
 ) -> Result<Option<StrictServiceAdmissionRuntimeV1>, String> {
     #[cfg(feature = "standard-cashu-process-e2e")]
     let test_only_service_https_configured = args.test_only_service_https_root_pem.is_some();
@@ -8100,6 +8218,7 @@ fn load_strict_service_admission_v1(
             provider_id,
             verifying_key,
             now_unix,
+            sealed_bat_v2_inputs,
         )?;
         let runtime = StrictServiceAdmissionRuntimeV1 {
             policy: loaded.policy,
@@ -8968,6 +9087,113 @@ async fn main() {
         );
         std::process::exit(2);
     }
+
+    validate_pir2_sealed_cli_v1(
+        &args.pir2_sealed,
+        args.identity_key_path.is_some()
+            || args.identity_cert_path.is_some()
+            || args.identity_server_id.is_some(),
+        args.service_storeless_bat_v2
+            .pir1_clearing_key_path
+            .is_some()
+            || args.service_shared_clearing_key_path.is_some(),
+    )
+    .unwrap_or_else(|error| fatal_cli(error));
+    if args.pir2_sealed.require_ready && !args.service_storeless_bat_v2.selected() {
+        fatal_cli("--pir2-snp-sealed-require-ready requires the storeless BAT V2 profile");
+    }
+    if args.pir2_sealed.require_ready
+        && (args.pir2_sealed.accounting_authorization_path
+            != args.service_storeless_bat_v2.accounting_authorization_path
+            || args.pir2_sealed.issuer_approval_path
+                != args.service_storeless_bat_v2.issuer_approval_path)
+    {
+        fatal_cli(
+            "sealed pir2 and storeless BAT V2 must name the same accounting authorization and issuer approval paths",
+        );
+    }
+
+    // Generate the boot-fresh channel before sealed preflight so the same raw
+    // public key is committed into the fresh receipt and later announcement.
+    // No database, ORAM image, or listener has been touched at this point.
+    let channel_keypair = pir_runtime_core::channel::ChannelKeypair::generate();
+    let channel_pubkey = channel_keypair.public_bytes();
+    let pinned_operator =
+        source_pinned_pir2_operator_key_v1().unwrap_or_else(|error| fatal_cli(error));
+    let sealed_issuer_settlement_key = if args.pir2_sealed.require_ready {
+        let configured_operator = decode_fixed_hex_v1::<32>(
+            args.service_storeless_bat_v2
+                .operator_key_hex
+                .as_deref()
+                .unwrap_or_else(|| {
+                    fatal_cli("sealed pir2 ready mode requires the storeless BAT V2 operator key")
+                }),
+            "--service-storeless-bat-v2-operator-key-hex",
+        )
+        .unwrap_or_else(|error| fatal_cli(error));
+        if configured_operator != pinned_operator.to_bytes() {
+            fatal_cli("storeless BAT V2 operator key differs from the pir2 source-pinned operator");
+        }
+        let issuer_key = decode_fixed_hex_v1::<32>(
+            args.service_storeless_bat_v2
+                .issuer_settlement_key_hex
+                .as_deref()
+                .unwrap_or_else(|| {
+                    fatal_cli(
+                        "sealed pir2 ready mode requires the issuer settlement verification key",
+                    )
+                }),
+            "--service-storeless-bat-v2-issuer-settlement-key-hex",
+        )
+        .and_then(|bytes| {
+            VerifyingKey::from_bytes(&bytes).map_err(|_| {
+                "--service-storeless-bat-v2-issuer-settlement-key-hex is not a valid Ed25519 key"
+                    .to_owned()
+            })
+        })
+        .unwrap_or_else(|error| fatal_cli(error));
+        Some(issuer_key)
+    } else {
+        None
+    };
+    let sealed_now_unix = current_unix_seconds_v1().unwrap_or_else(|error| fatal_cli(error));
+    let sealed_startup = dispatch_pir2_sealed_startup_v1(
+        &args.pir2_sealed,
+        &pinned_operator,
+        sealed_issuer_settlement_key.as_ref(),
+        sealed_now_unix,
+        channel_pubkey,
+        &pir_runtime_core::snp_sealed_secrets::LinuxSevSnpDerivedKeyProviderV1,
+    )
+    .unwrap_or_else(|error| fatal_cli(format!("pir2 sealed startup: {error}")));
+    let (sealed_identity, sealed_bat_v2_inputs) = match sealed_startup {
+        Pir2SealedStartupV1::Disabled => (None, None),
+        Pir2SealedStartupV1::InertSuccess {
+            phase,
+            receipt_digest,
+        } => {
+            eprintln!(
+                "pir2 sealed {:?} completed inertly; receipt_digest={}",
+                phase,
+                hex::encode(receipt_digest)
+            );
+            std::process::exit(PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1);
+        }
+        Pir2SealedStartupV1::Ready {
+            identity_key,
+            clearing_key,
+            identity_cert,
+            accounting_auth,
+            issuer_approval,
+        } => (
+            Some((identity_key, identity_cert)),
+            Some(SealedStorelessBatV2InputsV2 {
+                clearing_signing_key: clearing_key,
+                authorization: accounting_auth,
+                issuer_approval,
+            }),
+        ),
+    };
 
     println!("=== Unified PIR Server ({}) ===", role_name);
     println!("  Bind:     {}:{}", args.bind_address, args.port);
@@ -10076,21 +10302,15 @@ async fn main() {
     println!("Data loaded in {:.2?}", total_start.elapsed());
     println!();
 
-    // ── Generate the long-lived channel keypair ─────────────────────────
-    // This is the X25519 key the future encrypted channel handshakes
-    // ECDH against. We generate it inside the SEV-SNP guest at startup
-    // (before any client traffic), commit the pubkey to REPORT_DATA via
-    // build_report_data's V2 layout, and stash both halves on the
-    // server. The secret never touches disk; on reboot a new key is
-    // generated, which automatically bumps MEASUREMENT (because the
-    // pubkey-in-cmdline path doesn't apply yet — see Slice B).
+    // ── Report the boot-fresh channel keypair ───────────────────────────
+    // It was generated before sealed preflight, so receipts and the server
+    // announcement commit to this exact same public key. The secret never
+    // touches disk and remains owned by this process.
     //
     // Why on a non-SEV host (Hetzner) too? The channel layer is hosted
     // identically; only the attestation backing differs. Clients still
     // get an encrypted channel against pir1; they just don't get the
     // chip-signed binding.
-    let channel_keypair = pir_runtime_core::channel::ChannelKeypair::generate();
-    let channel_pubkey = channel_keypair.public_bytes();
     println!(
         "  Channel pubkey: {}",
         channel_pubkey
@@ -10137,87 +10357,121 @@ async fn main() {
     // cert / key disagree, log a warning and serve without announce
     // (REQ_ANNOUNCE returns RESP_ERROR). Existing attest / handshake
     // / query paths are unaffected.
-    let announcement_bundle: Option<Vec<u8>> = match (
-        args.identity_key_path.as_ref(),
-        args.identity_cert_path.as_ref(),
-        args.identity_server_id.as_deref(),
-    ) {
-        (Some(key_path), Some(cert_path), Some(server_id)) => {
-            let identity_key =
-                read_exact_secret_v1::<32>(key_path, "identity signing key").map(|mut seed| {
-                    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-                    seed.zeroize();
-                    key
-                });
-            match identity_key.and_then(|sk| {
-                pir_runtime_core::identity::load_identity_cert(cert_path)
-                    .map(|cert| (sk, cert))
-                    .map_err(|error| error.to_string())
-            }) {
-                Ok((sk, cert)) => {
-                    // Manifest roots in db_id order — same as the V2
-                    // attest layout, so the bundle and the SEV report
-                    // commit to the same set.
-                    let manifest_roots: Vec<[u8; 32]> = all_databases
-                        .iter()
-                        .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
-                        .collect();
-                    let binary_sha256 = pir_runtime_core::attest::self_exe_sha256();
-                    let git_rev = pir_runtime_core::attest::GIT_REV;
-                    let issued_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    match pir_runtime_core::identity::build_announcement_bundle(
-                        &sk,
-                        cert,
-                        server_id,
-                        channel_pubkey,
-                        binary_sha256,
-                        git_rev,
-                        manifest_roots,
-                        issued_at,
-                    ) {
-                        Ok(id) => {
-                            let id_short: String = id.cert.identity_pubkey[..8]
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect();
-                            println!(
+    let announcement_bundle: Option<Vec<u8>> = if let Some((identity_key, identity_cert)) =
+        sealed_identity
+    {
+        let server_id = identity_cert.server_id.clone();
+        let manifest_roots: Vec<[u8; 32]> = all_databases
+            .iter()
+            .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
+            .collect();
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        let identity = pir_runtime_core::identity::build_announcement_bundle(
+            &identity_key,
+            identity_cert,
+            &server_id,
+            channel_pubkey,
+            pir_runtime_core::attest::self_exe_sha256(),
+            pir_runtime_core::attest::GIT_REV,
+            manifest_roots,
+            issued_at,
+        )
+        .unwrap_or_else(|error| {
+            fatal_cli(format!(
+                "sealed pir2 identity cannot build the required announcement: {error}"
+            ))
+        });
+        println!(
+            "  Identity announce: enabled from SNP-sealed key (server_id={}, issued_at={})",
+            server_id, issued_at
+        );
+        Some(identity.encoded_bundle)
+    } else {
+        match (
+            args.identity_key_path.as_ref(),
+            args.identity_cert_path.as_ref(),
+            args.identity_server_id.as_deref(),
+        ) {
+            (Some(key_path), Some(cert_path), Some(server_id)) => {
+                let identity_key = read_exact_secret_v1::<32>(key_path, "identity signing key")
+                    .map(|mut seed| {
+                        let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+                        seed.zeroize();
+                        key
+                    });
+                match identity_key.and_then(|sk| {
+                    pir_runtime_core::identity::load_identity_cert(cert_path)
+                        .map(|cert| (sk, cert))
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok((sk, cert)) => {
+                        // Manifest roots in db_id order — same as the V2
+                        // attest layout, so the bundle and the SEV report
+                        // commit to the same set.
+                        let manifest_roots: Vec<[u8; 32]> = all_databases
+                            .iter()
+                            .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
+                            .collect();
+                        let binary_sha256 = pir_runtime_core::attest::self_exe_sha256();
+                        let git_rev = pir_runtime_core::attest::GIT_REV;
+                        let issued_at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        match pir_runtime_core::identity::build_announcement_bundle(
+                            &sk,
+                            cert,
+                            server_id,
+                            channel_pubkey,
+                            binary_sha256,
+                            git_rev,
+                            manifest_roots,
+                            issued_at,
+                        ) {
+                            Ok(id) => {
+                                let id_short: String = id.cert.identity_pubkey[..8]
+                                    .iter()
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect();
+                                println!(
                                 "  Identity announce: enabled (server_id={}, identity_pub={}…, issued_at={})",
                                 server_id, id_short, issued_at
                             );
-                            Some(id.encoded_bundle)
-                        }
-                        Err(e) => {
-                            eprintln!(
+                                Some(id.encoded_bundle)
+                            }
+                            Err(e) => {
+                                eprintln!(
                                 "  Identity announce: DISABLED — failed to build bundle: {}. REQ_ANNOUNCE will return RESP_ERROR; attest/handshake/queries still serve normally.",
                                 e
                             );
-                            None
+                                None
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!(
+                    Err(e) => {
+                        eprintln!(
                         "  Identity announce: DISABLED — {}. REQ_ANNOUNCE will return RESP_ERROR; attest/handshake/queries still serve normally.",
                         e
                     );
-                    None
+                        None
+                    }
                 }
             }
-        }
-        (None, None, None) => {
-            println!(
+            (None, None, None) => {
+                println!(
                 "  Identity announce: not configured (--identity-key-path / --identity-cert-path / --identity-server-id unset)"
             );
-            None
-        }
-        _ => {
-            eprintln!(
+                None
+            }
+            _ => {
+                eprintln!(
                 "  Identity announce: DISABLED — all three of --identity-key-path, --identity-cert-path, --identity-server-id must be set together (or none of them)."
             );
-            None
+                None
+            }
         }
     };
 
@@ -10256,6 +10510,7 @@ async fn main() {
     let service_admission = load_strict_service_admission_v1(
         &args,
         current_unix_seconds_v1().unwrap_or_else(|error| fatal_cli(error)),
+        sealed_bat_v2_inputs,
     )
     .unwrap_or_else(|error| fatal_cli(format!("service admission V1: {error}")));
     let service_admission_enforcement = if let Some(runtime) = service_admission.as_ref() {
@@ -13696,7 +13951,10 @@ mod service_admission_dispatch_tests {
                 );
                 let seq = u16::from_le_bytes([bin[5], bin[6]]) as usize;
                 let declared_total = u16::from_le_bytes([bin[7], bin[8]]) as usize;
-                assert_eq!(seq, expected_seq, "out-of-order chunk {seq} (expected {expected_seq})");
+                assert_eq!(
+                    seq, expected_seq,
+                    "out-of-order chunk {seq} (expected {expected_seq})"
+                );
                 if let Some(t) = total {
                     assert_eq!(t, declared_total, "chunk total changed mid-stream");
                 } else {
@@ -13710,7 +13968,10 @@ mod service_admission_dispatch_tests {
             }
             send.await.unwrap();
             assert_eq!(acc.len(), payload.len());
-            assert_eq!(acc, payload, "leaved response body mismatch (fill=0x{fill:02x})");
+            assert_eq!(
+                acc, payload,
+                "leaved response body mismatch (fill=0x{fill:02x})"
+            );
         }
     }
 
@@ -13841,9 +14102,14 @@ mod service_admission_dispatch_tests {
         send_resp_chunked(&mut sink, None, vec![0; LIVE_MAIN_TREE_TOP_BYTES + 5], true)
             .await
             .expect("chunked main tree-tops must fit with db1 still ahead");
-        send_resp_chunked(&mut sink, None, vec![0; LIVE_DELTA_TREE_TOP_BYTES + 5], true)
-            .await
-            .expect("chunked delta tree-tops must fit after the main preflight");
+        send_resp_chunked(
+            &mut sink,
+            None,
+            vec![0; LIVE_DELTA_TREE_TOP_BYTES + 5],
+            true,
+        )
+        .await
+        .expect("chunked delta tree-tops must fit after the main preflight");
 
         assert!(sink.pre_auth_egress_budget.messages_used <= MAX_PRE_AUTH_EGRESS_MESSAGES_V1);
         assert!(sink.pre_auth_egress_budget.bytes_used <= MAX_PRE_AUTH_EGRESS_BYTES_V1);
@@ -14335,6 +14601,43 @@ mod service_admission_dispatch_tests {
             "--unsafe-debug-query-logging".to_owned(),
         ]);
         assert!(args.unsafe_debug_query_logging);
+    }
+
+    #[test]
+    fn pir2_sealed_cli_parser_preserves_exact_preflight_inputs() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--pir2-snp-sealed-preflight-only".to_owned(),
+            "--pir2-snp-sealed-release".to_owned(),
+            "/private/release.bin".to_owned(),
+            "--pir2-snp-sealed-envelope".to_owned(),
+            "/private/envelope.bin".to_owned(),
+            "--pir2-snp-sealed-receipt".to_owned(),
+            "/private/receipt.bin".to_owned(),
+            "--pir2-snp-sealed-marker".to_owned(),
+            "/run/pir2-sealed.marker".to_owned(),
+            "--pir2-snp-sealed-phase".to_owned(),
+            "probe".to_owned(),
+            "--pir2-snp-sealed-ordinal".to_owned(),
+            "2".to_owned(),
+            "--pir2-snp-sealed-verifier-nonce-hex".to_owned(),
+            "11".repeat(32),
+            "--pir2-snp-sealed-current-boot-id-hex".to_owned(),
+            "22".repeat(16),
+            "--pir2-snp-sealed-current-channel-pubkey-hex".to_owned(),
+            "33".repeat(32),
+        ]);
+        assert!(args.pir2_sealed.preflight_only);
+        assert_eq!(
+            args.pir2_sealed.phase,
+            Some(Pir2SealedStartupPhaseV1::Probe)
+        );
+        assert_eq!(args.pir2_sealed.ordinal, Some(2));
+        assert_eq!(
+            args.pir2_sealed.release_path.as_deref(),
+            Some(Path::new("/private/release.bin"))
+        );
+        validate_pir2_sealed_cli_v1(&args.pir2_sealed, false, false).unwrap();
     }
 
     #[test]
