@@ -60,14 +60,29 @@ be symlinks. No plaintext identity key, clearing key, ProviderStore,
 idempotency key, or payment rollback state is accepted. The signed current
 service policy remains a public measured UKI input.
 
+Persistent receipts and markers are audit evidence only. They never authorize a
+same-boot skip or make the runit finish hook take the service down. The only
+authoritative same-boot state is under the guest-owned boot-local directory
+`/run/bitcoinpir-pir2-sealed`.
+
+An authoritative attempt token is created atomically by the measured run script
+only after the measured child actually exits 42 and its no-replace receipt and
+marker both exist with the expected phase and boot ID. It binds the token kind,
+phase, boot ID, ordinal, verifier nonce, current policy digest, class digest,
+minimum authorization epoch, child receipt protocol digest, and the SHA-256 of
+the receipt file. Missing, partial, malformed, wrong-boot, or old-attempt tokens
+fail closed. Terminal and Ready-preflight tokens have separate paths and kinds.
+
 ## Phase ordering
 
 Observe, Enroll, and Probe invoke the measured binary before waiting for
-`databases.toml`. A valid result writes a current-boot receipt and exact marker,
-exits with status 42, and never reaches database loading, ORAM mutation, or a
-listener. The runit finish hook takes the service down on the first such result
-only when status 42, boot ID, phase, receipt digest, receipt file, and marker
-schema all match. An unbound status 42 follows the existing bounded retry path.
+`databases.toml`. A valid child result writes a current-boot audit receipt and
+marker and exits with status 42. The run script then publishes the distinct
+terminal token in `/run` and returns 42 without reaching database loading, ORAM
+mutation, or a listener. The runit finish hook takes the service down only when
+it receives status 42 with an exact current-boot terminal token. Persistent
+audit files, a Ready-preflight token, or an unbound status 42 follow the existing
+bounded retry path.
 
 Ready has two measured invocations:
 
@@ -80,9 +95,10 @@ Ready has two measured invocations:
    while serving the closed storeless BAT V2 profile.
 
 Ready-preflight and final-runtime receipts use different paths. A same-boot
-restart may reuse an exact Ready-preflight marker, avoiding a conflicting
-no-replace write, but the Ready-preflight marker is never a terminal marker for
-the runit finish hook.
+restart may reuse only the exact Ready-preflight token from `/run`, and only
+after the startup file has been parsed and every bound attempt field matches.
+Persistent markers remain audit-only. A Ready-preflight token is never a
+terminal token for the runit finish hook.
 
 Focused source checks are:
 

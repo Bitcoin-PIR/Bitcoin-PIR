@@ -76,8 +76,9 @@ install() {
     # awk/cmp/dd/od/tr/tail/rm/mv are used by unified-server-run.sh to derive
     # fresh ORAM seeds, parse the active catalog, bind its runtime/proof
     # manifests byte-for-byte, and publish boot images. date and du are used by
-    # the bounded Direct ORAM supervisor and runit failure guard.
-    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk cmp dd od tr tail rm mv date du
+    # the bounded Direct ORAM supervisor and runit failure guard; sha256sum,
+    # wc, and chmod protect and validate the boot-local sealed attempt token.
+    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid awk cmp dd od tr tail rm mv date du sha256sum wc chmod
 
     # udhcpc is a busybox applet, NOT a standalone binary on Ubuntu.
     # Bake busybox itself in (statically linked, ~1.5 MB) and create

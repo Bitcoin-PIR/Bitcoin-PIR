@@ -17,9 +17,7 @@ SV_BIN=${BPIR_RUNIT_GUARD_SV_BIN:-/usr/bin/sv}
 SERVICE_DIR=${BPIR_RUNIT_GUARD_SERVICE_DIR:-/etc/service/unified_server}
 ORAM_BOOT_ID_FILE=${BPIR_ORAM_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 ORAM_PUBLISHED_MARKER=${BPIR_ORAM_PUBLISHED_MARKER:-/home/pir/data/oram-boot-logs/oram-published.boot-id.env}
-PIR2_SEALED_ROOT=${BPIR_PIR2_SNP_SEALED_ROOT:-/home/pir/data/pir2-sealed}
-PIR2_SEALED_RECEIPT_DIR="$PIR2_SEALED_ROOT/receipts"
-PIR2_SEALED_MARKER_DIR="$PIR2_SEALED_ROOT/markers"
+PIR2_SEALED_ATTEMPT_DIR=${BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT:-/run/bitcoinpir-pir2-sealed}
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
 
 published_marker_matches_current_boot() {
@@ -36,7 +34,24 @@ published_marker_matches_current_boot() {
     [ "$marker_status" = published ] && [ "$marker_boot_id" = "$boot_id" ]
 }
 
-sealed_inert_marker_matches_current_boot() {
+read_exact_attempt_token_value() {
+    token_path=$1
+    token_key=$2
+    awk -F= -v key="$token_key" '
+        $1 == key { if (++seen == 1) value = substr($0, length(key) + 2); else exit 2 }
+        END { if (seen != 1 || value == "") exit 1; print value }
+    ' "$token_path"
+}
+
+canonical_nonzero_lower_hex() {
+    token_hex=$1
+    token_hex_length=$2
+    case "$token_hex" in *[!0-9a-f]*|'') return 1 ;; esac
+    [ "${#token_hex}" -eq "$token_hex_length" ] || return 1
+    case "$token_hex" in *[1-9a-f]*) ;; *) return 1 ;; esac
+}
+
+sealed_terminal_token_matches_current_boot() {
     [ "${1:-}" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] || return 1
     boot_id=$(cat "$ORAM_BOOT_ID_FILE" 2>/dev/null || true)
     case "$boot_id" in
@@ -45,39 +60,43 @@ sealed_inert_marker_matches_current_boot() {
     esac
     case "$boot_id" in *[!0-9a-f-]*) return 1 ;; esac
     boot_id_hex=$(printf '%s' "$boot_id" | tr -d -)
-    marker="$PIR2_SEALED_MARKER_DIR/inert-$boot_id_hex.env"
-    receipt="$PIR2_SEALED_RECEIPT_DIR/inert-$boot_id_hex.bin"
-    [ -r "$marker" ] && [ -s "$receipt" ] || return 1
-    marker_schema=$(awk -F= '$1 == "schema" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$marker") \
-        || return 1
-    marker_phase=$(awk -F= '$1 == "phase" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$marker") \
-        || return 1
-    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$marker") \
-        || return 1
-    marker_receipt_digest=$(awk -F= '$1 == "receipt_digest" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$marker") \
-        || return 1
-    marker_exit_code=$(awk -F= '$1 == "exit_code" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$marker") \
-        || return 1
-    marker_lines=$(wc -l <"$marker" | tr -d '[:space:]')
-    [ "$marker_lines" = 5 ] || return 1
-    [ "$marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] || return 1
-    case "$marker_phase" in observe|enroll|probe) ;; *) return 1 ;; esac
-    [ "$marker_boot_id" = "$boot_id_hex" ] || return 1
-    [ "$marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] || return 1
-    case "$marker_receipt_digest" in
-        *[!0-9a-f]*|'') return 1 ;;
+    [ -d "$PIR2_SEALED_ATTEMPT_DIR" ] && [ ! -L "$PIR2_SEALED_ATTEMPT_DIR" ] || return 1
+    token="$PIR2_SEALED_ATTEMPT_DIR/terminal-$boot_id_hex.env"
+    [ -f "$token" ] && [ ! -L "$token" ] && [ -r "$token" ] || return 1
+    token_lines=$(wc -l <"$token" | tr -d '[:space:]')
+    [ "$token_lines" = 11 ] || return 1
+    token_schema=$(read_exact_attempt_token_value "$token" schema) || return 1
+    token_kind=$(read_exact_attempt_token_value "$token" kind) || return 1
+    token_phase=$(read_exact_attempt_token_value "$token" phase) || return 1
+    token_boot_id=$(read_exact_attempt_token_value "$token" boot_id) || return 1
+    token_ordinal=$(read_exact_attempt_token_value "$token" ordinal) || return 1
+    token_nonce=$(read_exact_attempt_token_value "$token" verifier_nonce_hex) || return 1
+    token_policy=$(read_exact_attempt_token_value "$token" current_policy_digest_hex) || return 1
+    token_class=$(read_exact_attempt_token_value "$token" class_digest_hex) || return 1
+    token_minimum_epoch=$(read_exact_attempt_token_value "$token" minimum_authorization_epoch) || return 1
+    token_receipt_digest=$(read_exact_attempt_token_value "$token" receipt_protocol_digest) || return 1
+    token_receipt_sha256=$(read_exact_attempt_token_value "$token" receipt_file_sha256) || return 1
+    [ "$token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v1 ] || return 1
+    [ "$token_kind" = terminal ] || return 1
+    case "$token_phase" in observe|enroll|probe) ;; *) return 1 ;; esac
+    [ "$token_boot_id" = "$boot_id_hex" ] || return 1
+    case "$token_ordinal:$token_minimum_epoch" in
+        *[!0-9:]*|0:*|*:0) return 1 ;;
     esac
-    [ "${#marker_receipt_digest}" -eq 64 ] || return 1
-    case "$marker_receipt_digest" in *[1-9a-f]*) ;; *) return 1 ;; esac
+    canonical_nonzero_lower_hex "$token_nonce" 64 || return 1
+    canonical_nonzero_lower_hex "$token_policy" 64 || return 1
+    canonical_nonzero_lower_hex "$token_class" 64 || return 1
+    canonical_nonzero_lower_hex "$token_receipt_digest" 64 || return 1
+    canonical_nonzero_lower_hex "$token_receipt_sha256" 64 || return 1
 }
 
 mkdir -p "$STATE_DIR" || exit 0
 
-# Observe/enroll/probe exit 42 only after the measured binary atomically wrote
-# its exact current-boot marker and receipt.  Treat that authenticated terminal
-# outcome as single-shot success immediately; an unbound/spoofed exit 42 falls
-# through to the ordinary bounded failure counter.
-if sealed_inert_marker_matches_current_boot "${1:-}"; then
+# Observe/enroll/probe exit 42 is terminal only when the run script published a
+# distinct current-boot authoritative token in trusted /run after the measured
+# child succeeded. Persistent audit markers never authorize this branch; an
+# unbound/spoofed exit 42 follows the ordinary bounded failure counter.
+if sealed_terminal_token_matches_current_boot "${1:-}"; then
     if mkdir -p "$STATUS_DIR" 2>/dev/null; then
         {
             printf 'status=restart_suppressed\n'

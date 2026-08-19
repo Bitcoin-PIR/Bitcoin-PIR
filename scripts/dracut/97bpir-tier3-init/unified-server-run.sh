@@ -48,6 +48,7 @@ PIR2_SEALED_RELEASE_PATH="$PIR2_SEALED_ROOT/release.bin"
 PIR2_SEALED_ENVELOPE_PATH="$PIR2_SEALED_ROOT/credentials.envelope.bin"
 PIR2_SEALED_RECEIPT_DIR="$PIR2_SEALED_ROOT/receipts"
 PIR2_SEALED_MARKER_DIR="$PIR2_SEALED_ROOT/markers"
+PIR2_SEALED_ATTEMPT_DIR=${BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT:-/run/bitcoinpir-pir2-sealed}
 PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
 PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH="$PIR2_SEALED_ROOT/provider-accounting-authorization.bin"
 PIR2_SEALED_ISSUER_APPROVAL_PATH="$PIR2_SEALED_ROOT/issuer-accounting-approval.bin"
@@ -349,52 +350,142 @@ read_pir2_current_boot() {
     PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/ready-preflight-$PIR2_BOOT_ID_HEX.env"
     PIR2_SEALED_READY_RUNTIME_RECEIPT_PATH="$PIR2_SEALED_RECEIPT_DIR/ready-runtime-$PIR2_BOOT_ID_HEX.bin"
     PIR2_SEALED_READY_RUNTIME_MARKER_PATH="$PIR2_SEALED_MARKER_DIR/ready-runtime-$PIR2_BOOT_ID_HEX.env"
+    PIR2_SEALED_TERMINAL_TOKEN_PATH="$PIR2_SEALED_ATTEMPT_DIR/terminal-$PIR2_BOOT_ID_HEX.env"
+    PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH="$PIR2_SEALED_ATTEMPT_DIR/ready-preflight-$PIR2_BOOT_ID_HEX.env"
 }
 
-inert_marker_matches_current_boot() {
-    [ -r "$PIR2_SEALED_MARKER_PATH" ] || return 1
-    marker_schema=$(awk -F= '$1 == "schema" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
-        || fatal "pir2 sealed inert marker is malformed"
-    marker_phase=$(awk -F= '$1 == "phase" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
-        || fatal "pir2 sealed inert marker is malformed"
-    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
-        || fatal "pir2 sealed inert marker is malformed"
-    marker_receipt_digest=$(awk -F= '$1 == "receipt_digest" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
-        || fatal "pir2 sealed inert marker is malformed"
-    marker_exit_code=$(awk -F= '$1 == "exit_code" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_MARKER_PATH") \
-        || fatal "pir2 sealed inert marker is malformed"
-    marker_lines=$(wc -l <"$PIR2_SEALED_MARKER_PATH" | tr -d '[:space:]')
-    [ "$marker_lines" = 5 ] || fatal "pir2 sealed inert marker has unexpected fields"
-    [ "$marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] \
-        || fatal "pir2 sealed inert marker has unsupported schema"
-    case "$marker_phase" in observe|enroll|probe) ;; *) fatal "pir2 sealed inert marker has invalid phase" ;; esac
-    validate_lower_hex "$marker_receipt_digest" 64 "sealed receipt digest"
-    [ "$marker_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
-        && [ "$marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
-        && [ -s "$PIR2_SEALED_RECEIPT_PATH" ]
+prepare_pir2_sealed_attempt_dir() {
+    umask 077
+    mkdir -p "$PIR2_SEALED_ATTEMPT_DIR" \
+        || fatal "failed to create pir2 sealed authoritative attempt directory"
+    [ -d "$PIR2_SEALED_ATTEMPT_DIR" ] && [ ! -L "$PIR2_SEALED_ATTEMPT_DIR" ] \
+        || fatal "pir2 sealed authoritative attempt path is not a non-symlink directory"
+    chmod 700 "$PIR2_SEALED_ATTEMPT_DIR" \
+        || fatal "failed to protect pir2 sealed authoritative attempt directory"
 }
 
-ready_preflight_marker_matches_current_boot() {
-    [ -r "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" ] || return 1
-    marker_schema=$(awk -F= '$1 == "schema" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
-        || fatal "pir2 sealed Ready-preflight marker is malformed"
-    marker_phase=$(awk -F= '$1 == "phase" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
-        || fatal "pir2 sealed Ready-preflight marker is malformed"
-    marker_boot_id=$(awk -F= '$1 == "boot_id" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
-        || fatal "pir2 sealed Ready-preflight marker is malformed"
-    marker_receipt_digest=$(awk -F= '$1 == "receipt_digest" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
-        || fatal "pir2 sealed Ready-preflight marker is malformed"
-    marker_exit_code=$(awk -F= '$1 == "exit_code" { if (++seen == 1) print $2; else exit 2 } END { if (seen != 1) exit 1 }' "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH") \
-        || fatal "pir2 sealed Ready-preflight marker is malformed"
-    marker_lines=$(wc -l <"$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" | tr -d '[:space:]')
-    [ "$marker_lines" = 5 ] || fatal "pir2 sealed Ready-preflight marker has unexpected fields"
-    [ "$marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] \
-        || fatal "pir2 sealed Ready-preflight marker has unsupported schema"
-    [ "$marker_phase" = ready ] || fatal "pir2 sealed Ready-preflight marker has invalid phase"
-    validate_lower_hex "$marker_receipt_digest" 64 "sealed Ready-preflight receipt digest"
-    [ "$marker_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
-        && [ "$marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
-        && [ -s "$PIR2_SEALED_READY_PREFLIGHT_RECEIPT_PATH" ]
+read_exact_attempt_token_value() {
+    attempt_token_path=$1
+    attempt_token_key=$2
+    awk -F= -v key="$attempt_token_key" '
+        $1 == key { if (++seen == 1) value = substr($0, length(key) + 2); else exit 2 }
+        END { if (seen != 1 || value == "") exit 1; print value }
+    ' "$attempt_token_path"
+}
+
+authoritative_attempt_token_matches_current_attempt() {
+    attempt_token_path=$1
+    expected_token_kind=$2
+    expected_token_phase=$3
+    [ -e "$attempt_token_path" ] || return 1
+    [ -f "$attempt_token_path" ] && [ ! -L "$attempt_token_path" ] \
+        || fatal "pir2 sealed authoritative attempt token is not a non-symlink regular file"
+    attempt_token_lines=$(wc -l <"$attempt_token_path" | tr -d '[:space:]')
+    [ "$attempt_token_lines" = 11 ] \
+        || fatal "pir2 sealed authoritative attempt token has unexpected fields"
+    attempt_token_schema=$(read_exact_attempt_token_value "$attempt_token_path" schema) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_kind=$(read_exact_attempt_token_value "$attempt_token_path" kind) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_phase=$(read_exact_attempt_token_value "$attempt_token_path" phase) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_boot_id=$(read_exact_attempt_token_value "$attempt_token_path" boot_id) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_ordinal=$(read_exact_attempt_token_value "$attempt_token_path" ordinal) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_nonce=$(read_exact_attempt_token_value "$attempt_token_path" verifier_nonce_hex) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_policy=$(read_exact_attempt_token_value "$attempt_token_path" current_policy_digest_hex) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_class=$(read_exact_attempt_token_value "$attempt_token_path" class_digest_hex) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_minimum_epoch=$(read_exact_attempt_token_value "$attempt_token_path" minimum_authorization_epoch) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_receipt_digest=$(read_exact_attempt_token_value "$attempt_token_path" receipt_protocol_digest) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    attempt_token_receipt_sha256=$(read_exact_attempt_token_value "$attempt_token_path" receipt_file_sha256) \
+        || fatal "pir2 sealed authoritative attempt token is malformed"
+    [ "$attempt_token_schema" = bitcoinpir-pir2-sealed-authoritative-attempt-v1 ] \
+        && [ "$attempt_token_kind" = "$expected_token_kind" ] \
+        && [ "$attempt_token_phase" = "$expected_token_phase" ] \
+        && [ "$attempt_token_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
+        && [ "$attempt_token_ordinal" = "$PIR2_SEALED_ORDINAL" ] \
+        && [ "$attempt_token_nonce" = "$PIR2_SEALED_VERIFIER_NONCE_HEX" ] \
+        && [ "$attempt_token_policy" = "$PIR2_SEALED_POLICY_DIGEST_HEX" ] \
+        && [ "$attempt_token_class" = "$PIR2_SEALED_CLASS_DIGEST_HEX" ] \
+        && [ "$attempt_token_minimum_epoch" = "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" ] \
+        || fatal "pir2 sealed authoritative attempt token does not match the current attempt"
+    validate_lower_hex "$attempt_token_receipt_digest" 64 "authoritative receipt protocol digest"
+    validate_lower_hex "$attempt_token_receipt_sha256" 64 "authoritative receipt file sha256"
+}
+
+read_child_audit_evidence() {
+    audit_receipt_path=$1
+    audit_marker_path=$2
+    audit_expected_phase=$3
+    [ -f "$audit_receipt_path" ] && [ ! -L "$audit_receipt_path" ] && [ -s "$audit_receipt_path" ] \
+        || fatal "measured child exited 42 without a non-empty regular receipt"
+    [ -f "$audit_marker_path" ] && [ ! -L "$audit_marker_path" ] && [ -r "$audit_marker_path" ] \
+        || fatal "measured child exited 42 without a regular audit marker"
+    audit_marker_lines=$(wc -l <"$audit_marker_path" | tr -d '[:space:]')
+    [ "$audit_marker_lines" = 5 ] || fatal "measured child audit marker has unexpected fields"
+    audit_marker_schema=$(read_exact_attempt_token_value "$audit_marker_path" schema) \
+        || fatal "measured child audit marker is malformed"
+    audit_marker_phase=$(read_exact_attempt_token_value "$audit_marker_path" phase) \
+        || fatal "measured child audit marker is malformed"
+    audit_marker_boot_id=$(read_exact_attempt_token_value "$audit_marker_path" boot_id) \
+        || fatal "measured child audit marker is malformed"
+    PIR2_CHILD_RECEIPT_PROTOCOL_DIGEST=$(read_exact_attempt_token_value "$audit_marker_path" receipt_digest) \
+        || fatal "measured child audit marker is malformed"
+    audit_marker_exit_code=$(read_exact_attempt_token_value "$audit_marker_path" exit_code) \
+        || fatal "measured child audit marker is malformed"
+    [ "$audit_marker_schema" = bitcoinpir-pir2-sealed-inert-success-v1 ] \
+        && [ "$audit_marker_phase" = "$audit_expected_phase" ] \
+        && [ "$audit_marker_boot_id" = "$PIR2_BOOT_ID_HEX" ] \
+        && [ "$audit_marker_exit_code" = "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
+        || fatal "measured child audit marker does not match the current attempt"
+    validate_lower_hex "$PIR2_CHILD_RECEIPT_PROTOCOL_DIGEST" 64 "measured child receipt protocol digest"
+    PIR2_CHILD_RECEIPT_FILE_SHA256=$(sha256sum "$audit_receipt_path" | awk '{ print $1 }') \
+        || fatal "failed to hash measured child receipt"
+    validate_lower_hex "$PIR2_CHILD_RECEIPT_FILE_SHA256" 64 "measured child receipt file sha256"
+}
+
+write_authoritative_attempt_token() {
+    authoritative_token_path=$1
+    authoritative_token_kind=$2
+    authoritative_token_phase=$3
+    [ ! -e "$authoritative_token_path" ] \
+        || fatal "pir2 sealed authoritative attempt token already exists"
+    authoritative_token_tmp="$PIR2_SEALED_ATTEMPT_DIR/.${authoritative_token_kind}-${PIR2_BOOT_ID_HEX}.$$.tmp"
+    [ ! -e "$authoritative_token_tmp" ] \
+        || fatal "pir2 sealed authoritative attempt temporary path already exists"
+    umask 077
+    if ! {
+        printf 'schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\n'
+        printf 'kind=%s\n' "$authoritative_token_kind"
+        printf 'phase=%s\n' "$authoritative_token_phase"
+        printf 'boot_id=%s\n' "$PIR2_BOOT_ID_HEX"
+        printf 'ordinal=%s\n' "$PIR2_SEALED_ORDINAL"
+        printf 'verifier_nonce_hex=%s\n' "$PIR2_SEALED_VERIFIER_NONCE_HEX"
+        printf 'current_policy_digest_hex=%s\n' "$PIR2_SEALED_POLICY_DIGEST_HEX"
+        printf 'class_digest_hex=%s\n' "$PIR2_SEALED_CLASS_DIGEST_HEX"
+        printf 'minimum_authorization_epoch=%s\n' "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"
+        printf 'receipt_protocol_digest=%s\n' "$PIR2_CHILD_RECEIPT_PROTOCOL_DIGEST"
+        printf 'receipt_file_sha256=%s\n' "$PIR2_CHILD_RECEIPT_FILE_SHA256"
+    } >"$authoritative_token_tmp"; then
+        rm -f "$authoritative_token_tmp"
+        fatal "failed to write pir2 sealed authoritative attempt token"
+    fi
+    chmod 600 "$authoritative_token_tmp" || {
+        rm -f "$authoritative_token_tmp"
+        fatal "failed to protect pir2 sealed authoritative attempt token"
+    }
+    if ! ln "$authoritative_token_tmp" "$authoritative_token_path"; then
+        rm -f "$authoritative_token_tmp"
+        fatal "failed to atomically publish pir2 sealed authoritative attempt token"
+    fi
+    rm -f "$authoritative_token_tmp" \
+        || fatal "failed to remove pir2 sealed authoritative attempt temporary path"
 }
 
 prepare_pir2_sealed_output_dirs() {
@@ -426,14 +517,20 @@ run_pir2_sealed_inert_phase() {
     sealed_status=$?
     [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
         || fatal "pir2 sealed $PIR2_SEALED_PHASE dispatcher failed with exit $sealed_status"
-    inert_marker_matches_current_boot \
-        || fatal "pir2 sealed dispatcher exited 42 without an exact current-boot marker and receipt"
+    read_child_audit_evidence \
+        "$PIR2_SEALED_RECEIPT_PATH" "$PIR2_SEALED_MARKER_PATH" "$PIR2_SEALED_PHASE"
+    write_authoritative_attempt_token \
+        "$PIR2_SEALED_TERMINAL_TOKEN_PATH" terminal "$PIR2_SEALED_PHASE"
+    authoritative_attempt_token_matches_current_attempt \
+        "$PIR2_SEALED_TERMINAL_TOKEN_PATH" terminal "$PIR2_SEALED_PHASE" \
+        || fatal "failed to read back pir2 sealed terminal attempt token"
     exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
 }
 
 run_pir2_sealed_ready_preflight() {
-    if ready_preflight_marker_matches_current_boot; then
-        echo "[unified-server-run] reusing exact current-boot pir2 sealed Ready-preflight success" >&2
+    if authoritative_attempt_token_matches_current_attempt \
+        "$PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH" ready-preflight ready; then
+        echo "[unified-server-run] reusing authoritative current-attempt pir2 sealed Ready-preflight success" >&2
         return 0
     fi
     "$UNIFIED_SERVER" \
@@ -462,8 +559,14 @@ run_pir2_sealed_ready_preflight() {
     sealed_status=$?
     [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
         || fatal "pir2 sealed Ready preflight failed with exit $sealed_status"
-    ready_preflight_marker_matches_current_boot \
-        || fatal "pir2 sealed Ready preflight exited 42 without an exact current-boot marker and receipt"
+    read_child_audit_evidence \
+        "$PIR2_SEALED_READY_PREFLIGHT_RECEIPT_PATH" \
+        "$PIR2_SEALED_READY_PREFLIGHT_MARKER_PATH" ready
+    write_authoritative_attempt_token \
+        "$PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH" ready-preflight ready
+    authoritative_attempt_token_matches_current_attempt \
+        "$PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH" ready-preflight ready \
+        || fatal "failed to read back pir2 sealed Ready-preflight attempt token"
     echo "[unified-server-run] pir2 sealed Ready preflight passed; opened keys were dropped before ORAM" >&2
 }
 
@@ -862,20 +965,26 @@ active_swap_rows=$(awk 'NR > 1 { count++ } END { print count + 0 }' "$PIR2_PROC_
     || fatal "failed to inspect active swap before pir2 sealed startup"
 [ "$active_swap_rows" = 0 ] || fatal "active swap is forbidden for pir2 sealed startup"
 read_pir2_current_boot
-if inert_marker_matches_current_boot; then
-    echo "[unified-server-run] pir2 sealed inert phase already completed for boot $PIR2_BOOT_ID; refusing restart" >&2
-    exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
-fi
 load_pir2_sealed_startup_config
 prepare_pir2_sealed_output_dirs
+prepare_pir2_sealed_attempt_dir
 case "$PIR2_SEALED_PHASE" in
 observe|enroll|probe)
+    [ ! -e "$PIR2_SEALED_READY_PREFLIGHT_TOKEN_PATH" ] \
+        || fatal "Ready-preflight token already exists for this boot; refusing a phase change"
+    if authoritative_attempt_token_matches_current_attempt \
+        "$PIR2_SEALED_TERMINAL_TOKEN_PATH" terminal "$PIR2_SEALED_PHASE"; then
+        echo "[unified-server-run] pir2 sealed terminal attempt already completed for boot $PIR2_BOOT_ID" >&2
+        exit "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE"
+    fi
     # These phases are terminal and inert.  This is deliberately before the
     # databases.toml wait, policy/auth loading, ORAM cleanup/build, and every
     # listener-capable final invocation.
     run_pir2_sealed_inert_phase
     ;;
 ready)
+    [ ! -e "$PIR2_SEALED_TERMINAL_TOKEN_PATH" ] \
+        || fatal "terminal token already exists for this boot; refusing a phase change"
     # The child process strictly opens the envelope, verifies all three public
     # authorizations, writes a separate current-boot receipt, drops both keys
     # on exit 42, and returns control here before any database/ORAM access.

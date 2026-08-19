@@ -101,6 +101,32 @@ minimum_authorization_epoch=7
   );
 }
 
+function authoritativeAttemptToken({
+  kind,
+  phase,
+  bootIdHex,
+  ordinal = 1,
+  nonce = "41".repeat(32),
+  policy = "42".repeat(32),
+  classDigest = "43".repeat(32),
+  minimumAuthorizationEpoch = 7,
+  receiptProtocolDigest = "44".repeat(32),
+  receiptFileSha256 = "45".repeat(32),
+}) {
+  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1
+kind=${kind}
+phase=${phase}
+boot_id=${bootIdHex}
+ordinal=${ordinal}
+verifier_nonce_hex=${nonce}
+current_policy_digest_hex=${policy}
+class_digest_hex=${classDigest}
+minimum_authorization_epoch=${minimumAuthorizationEpoch}
+receipt_protocol_digest=${receiptProtocolDigest}
+receipt_file_sha256=${receiptFileSha256}
+`;
+}
+
 const tempRoot = mkdtempSync(path.join(os.tmpdir(), "bpir-tier3-generation-"));
 try {
   const tier3RunText = readFileSync(tier3RunScript, "utf8");
@@ -261,7 +287,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s\n' "$phase" >> "${inertCalls}"
+[ ! -e "$receipt" ] || exit 2
+[ ! -e "$marker" ] || exit 2
 printf 'fixture receipt\n' > "$receipt"
+if [ "\${BPIR_TEST_PARTIAL_MARKER:-false}" = true ]; then
+  printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\nphase=%s\n' "$phase" > "$marker"
+  exit 42
+fi
 {
   printf 'schema=bitcoinpir-pir2-sealed-inert-success-v1\n'
   printf 'phase=%s\n' "$phase"
@@ -294,6 +326,7 @@ exit 42
       BPIR_ORAM_BOOT_ID_FILE: inertBootId,
       BPIR_PIR2_PROC_SWAPS: inertSwaps,
       BPIR_PIR2_SNP_SEALED_ROOT: phaseRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(phaseRoot, "trusted-attempt"),
     };
     const inert = run("sh", [inertRunScript], { env: inertEnv });
     assert.equal(inert.status, 42, inert.stdout + inert.stderr);
@@ -303,8 +336,90 @@ exit 42
     const retry = run("sh", [inertRunScript], { env: inertEnv });
     assert.equal(retry.status, 42, retry.stdout + retry.stderr);
     assert.equal(readFileSync(inertCalls, "utf8"), callsBeforeRetry);
-    assert.match(retry.stderr, /already completed.*refusing restart/);
+    assert.match(retry.stderr, /terminal attempt already completed/);
+
+    const startupPath = path.join(phaseRoot, "startup.env");
+    const originalStartup = readFileSync(startupPath, "utf8");
+    writeSealedStartup(phaseRoot, phase, index + 101);
+    const crossAttempt = run("sh", [inertRunScript], { env: inertEnv });
+    assert.notEqual(crossAttempt.status, 42, crossAttempt.stdout + crossAttempt.stderr);
+    assert.match(crossAttempt.stderr, /token does not match the current attempt/);
+    assert.equal(readFileSync(inertCalls, "utf8"), callsBeforeRetry);
+    writeFileSync(startupPath, originalStartup);
   }
+
+  const forgedRoot = path.join(inertRoot, "forged-persistent");
+  const forgedAttemptRoot = path.join(forgedRoot, "trusted-attempt");
+  writeSealedStartup(forgedRoot, "observe", 9);
+  writeFileSync(inertBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
+  write(path.join(forgedRoot, "receipts/inert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin"), "not a canonical receipt\n");
+  write(
+    path.join(forgedRoot, "markers/inert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env"),
+    `schema=bitcoinpir-pir2-sealed-inert-success-v1
+phase=observe
+boot_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+receipt_digest=${"aa".repeat(32)}
+exit_code=42
+`,
+  );
+  const callsBeforeForgedPair = readFileSync(inertCalls, "utf8");
+  const forgedPair = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: forgedRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: forgedAttemptRoot,
+    },
+  });
+  assert.notEqual(forgedPair.status, 42, forgedPair.stdout + forgedPair.stderr);
+  assert.match(forgedPair.stderr, /dispatcher failed with exit 2/);
+  assert.equal(existsSync(path.join(forgedAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env")), false);
+  assert.notEqual(readFileSync(inertCalls, "utf8"), callsBeforeForgedPair, "persistent audit files must not skip the measured child");
+
+  const partialRoot = path.join(inertRoot, "partial-marker");
+  const partialAttemptRoot = path.join(partialRoot, "trusted-attempt");
+  writeSealedStartup(partialRoot, "probe", 10);
+  const callsBeforePartialMarker = readFileSync(inertCalls, "utf8");
+  const partialMarker = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: partialRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: partialAttemptRoot,
+      BPIR_TEST_PARTIAL_MARKER: "true",
+    },
+  });
+  assert.notEqual(partialMarker.status, 42, partialMarker.stdout + partialMarker.stderr);
+  assert.match(partialMarker.stderr, /audit marker has unexpected fields/);
+  assert.notEqual(
+    readFileSync(inertCalls, "utf8"),
+    callsBeforePartialMarker,
+    "the measured child must actually run before the truncated marker is rejected",
+  );
+  assert.equal(existsSync(path.join(partialAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env")), false);
+
+  const partialTokenRoot = path.join(inertRoot, "partial-token");
+  const partialTokenAttemptRoot = path.join(partialTokenRoot, "trusted-attempt");
+  writeSealedStartup(partialTokenRoot, "enroll", 11);
+  write(
+    path.join(partialTokenAttemptRoot, "terminal-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.env"),
+    "schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\nkind=terminal\n",
+  );
+  const callsBeforePartialToken = readFileSync(inertCalls, "utf8");
+  const partialToken = run("sh", [inertRunScript], {
+    env: {
+      ...process.env,
+      BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+      BPIR_PIR2_PROC_SWAPS: inertSwaps,
+      BPIR_PIR2_SNP_SEALED_ROOT: partialTokenRoot,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: partialTokenAttemptRoot,
+    },
+  });
+  assert.notEqual(partialToken.status, 42, partialToken.stdout + partialToken.stderr);
+  assert.match(partialToken.stderr, /token has unexpected fields/);
+  assert.equal(readFileSync(inertCalls, "utf8"), callsBeforePartialToken);
 
   const mismatchRoot = path.join(tempRoot, "mismatch");
   const mismatchData = path.join(mismatchRoot, "data");
@@ -384,6 +499,7 @@ exit 0
       ...process.env,
       BPIR_ORAM_BOOT_ID_FILE: mismatchBootId,
       BPIR_PIR2_PROC_SWAPS: mismatchSwaps,
+      BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(mismatchRoot, "trusted-attempt"),
       PATH: process.env.PATH,
     },
   });
@@ -501,6 +617,8 @@ while [ "$#" -gt 0 ]; do
 done
 if [ "$preflight" = true ]; then
   [ -s "$identity_cert" ] || exit 2
+  [ ! -e "$receipt" ] || exit 2
+  [ ! -e "$marker" ] || exit 2
   printf 'ready-preflight\n' >> "${directEvents}"
   printf 'fixture ready receipt\n' > "$receipt"
   {
@@ -592,6 +710,7 @@ exit 1
     ...process.env,
     BPIR_ORAM_BOOT_ID_FILE: bootIdFile,
     BPIR_PIR2_PROC_SWAPS: directSwaps,
+    BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(directRoot, "trusted-attempt"),
     PATH: `${fixtureBin}:${process.env.PATH}`,
   };
   const completeStartup = readFileSync(path.join(directSealedRoot, "startup.env"), "utf8");
@@ -647,6 +766,21 @@ exit 1
   assert.doesNotMatch(runtimeLogText, /test-page-key/);
   assert.equal(statSync(runtimeLog).mode & 0o777, 0o600);
   assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
+  const firstBootHex = "11111111111111111111111111111111";
+  const readyPreflightReceipt = path.join(
+    directSealedRoot,
+    `receipts/ready-preflight-${firstBootHex}.bin`,
+  );
+  const readyPreflightToken = path.join(
+    directEnv.BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT,
+    `ready-preflight-${firstBootHex}.env`,
+  );
+  const readyPreflightTokenText = readFileSync(readyPreflightToken, "utf8");
+  assert.match(readyPreflightTokenText, /kind=ready-preflight\nphase=ready\n/);
+  assert.match(
+    readyPreflightTokenText,
+    new RegExp(`receipt_file_sha256=${sha256(readFileSync(readyPreflightReceipt))}`),
+  );
 
   const callsBeforeSameBootRetry = readFileSync(directMarker, "utf8");
   const sameBootRetry = run("sh", [directRunScript], { env: directEnv });
@@ -654,6 +788,27 @@ exit 1
   assert.equal(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
   assert.equal(readFileSync(unifiedStarts, "utf8"), "started");
   assert.match(sameBootRetry.stderr, /already published.*refusing destructive retry/);
+
+  const directStartupPath = path.join(directSealedRoot, "startup.env");
+  const directStartup = readFileSync(directStartupPath, "utf8");
+  writeFileSync(directStartupPath, directStartup.replace("ordinal=1\n", "ordinal=2\n"));
+  const crossAttemptReady = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(crossAttemptReady.status, 0, crossAttemptReady.stdout + crossAttemptReady.stderr);
+  assert.match(crossAttemptReady.stderr, /token does not match the current attempt/);
+  assert.equal(readFileSync(directMarker, "utf8"), callsBeforeSameBootRetry);
+  writeFileSync(directStartupPath, directStartup);
+
+  rmSync(readyPreflightToken);
+  const eventsBeforeAuditOnlyReady = readFileSync(directEvents, "utf8");
+  const auditOnlyReady = run("sh", [directRunScript], { env: directEnv });
+  assert.notEqual(auditOnlyReady.status, 0, auditOnlyReady.stdout + auditOnlyReady.stderr);
+  assert.match(auditOnlyReady.stderr, /Ready preflight failed with exit 2/);
+  assert.equal(
+    readFileSync(directEvents, "utf8"),
+    eventsBeforeAuditOnlyReady,
+    "persistent Ready audit files must not skip or replace the measured child",
+  );
+  assert.equal(existsSync(readyPreflightToken), false);
 
   writeFileSync(bootIdFile, "22222222-2222-2222-2222-222222222222\n");
   rmSync(readySignal);
@@ -719,6 +874,7 @@ exec sleep 5
   const guardState = path.join(guardRoot, "state");
   const guardStatus = path.join(guardRoot, "status");
   const guardService = path.join(guardRoot, "service");
+  const guardAttemptRoot = path.join(guardRoot, "trusted-attempt");
   const svLog = path.join(guardRoot, "sv.log");
   const fakeSv = path.join(guardRoot, "sv");
   write(fakeSv, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${svLog}"\n`);
@@ -730,6 +886,7 @@ exec sleep 5
     BPIR_RUNIT_GUARD_STATUS_DIR: guardStatus,
     BPIR_RUNIT_GUARD_SV_BIN: fakeSv,
     BPIR_RUNIT_GUARD_SERVICE_DIR: guardService,
+    BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: guardAttemptRoot,
   };
   const sealedGuardRoot = path.join(guardRoot, "pir2-sealed");
   const sealedGuardBootId = path.join(guardRoot, "sealed-boot-id");
@@ -748,11 +905,33 @@ receipt_digest=${"55".repeat(32)}
 exit_code=42
 `,
   );
-  const inertFinish = run("sh", [tier3FinishScript, "42", "0"], {
+  const forgedPersistentFinish = run("sh", [tier3FinishScript, "42", "0"], {
     env: {
       ...guardEnv,
       BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
       BPIR_PIR2_SNP_SEALED_ROOT: sealedGuardRoot,
+    },
+  });
+  assert.equal(forgedPersistentFinish.status, 0, forgedPersistentFinish.stdout + forgedPersistentFinish.stderr);
+  assert.equal(existsSync(svLog), false, "persistent marker/receipt must never authorize finish down");
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+
+  rmSync(guardState, { recursive: true, force: true });
+  write(
+    path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`),
+    authoritativeAttemptToken({
+      kind: "terminal",
+      phase: "enroll",
+      bootIdHex: sealedGuardBootHex,
+      ordinal: 2,
+      receiptProtocolDigest: "55".repeat(32),
+      receiptFileSha256: "56".repeat(32),
+    }),
+  );
+  const inertFinish = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
     },
   });
   assert.equal(inertFinish.status, 0, inertFinish.stdout + inertFinish.stderr);
@@ -764,6 +943,17 @@ exit_code=42
   );
 
   rmSync(svLog);
+  rmSync(path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`));
+  write(
+    path.join(guardAttemptRoot, `ready-preflight-${sealedGuardBootHex}.env`),
+    authoritativeAttemptToken({
+      kind: "ready-preflight",
+      phase: "ready",
+      bootIdHex: sealedGuardBootHex,
+      receiptProtocolDigest: "57".repeat(32),
+      receiptFileSha256: "58".repeat(32),
+    }),
+  );
   rmSync(path.join(sealedGuardRoot, `markers/inert-${sealedGuardBootHex}.env`));
   write(
     path.join(sealedGuardRoot, `receipts/ready-preflight-${sealedGuardBootHex}.bin`),
@@ -782,7 +972,6 @@ exit_code=42
     env: {
       ...guardEnv,
       BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
-      BPIR_PIR2_SNP_SEALED_ROOT: sealedGuardRoot,
     },
   });
   assert.equal(unbound42.status, 0, unbound42.stdout + unbound42.stderr);
@@ -790,8 +979,24 @@ exit_code=42
   assert.equal(
     existsSync(svLog),
     false,
-    "Ready-preflight marker must not make finish treat exit 42 as terminal success",
+    "Ready-preflight token must not make finish treat exit 42 as terminal success",
   );
+  rmSync(path.join(guardAttemptRoot, `ready-preflight-${sealedGuardBootHex}.env`));
+  rmSync(guardState, { recursive: true, force: true });
+  write(
+    path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`),
+    "schema=bitcoinpir-pir2-sealed-authoritative-attempt-v1\nkind=terminal\n",
+  );
+  const partialTerminalToken = run("sh", [tier3FinishScript, "42", "0"], {
+    env: {
+      ...guardEnv,
+      BPIR_ORAM_BOOT_ID_FILE: sealedGuardBootId,
+    },
+  });
+  assert.equal(partialTerminalToken.status, 0, partialTerminalToken.stdout + partialTerminalToken.stderr);
+  assert.equal(readFileSync(path.join(guardState, "failure_count"), "utf8"), "1\n");
+  assert.equal(existsSync(svLog), false, "partial terminal token must stay on bounded retry");
+  rmSync(path.join(guardAttemptRoot, `terminal-${sealedGuardBootHex}.env`));
   rmSync(guardState, { recursive: true, force: true });
   for (let failure = 1; failure <= 3; failure += 1) {
     const result = run("sh", [tier3FinishScript, "134", "6"], { env: guardEnv });
