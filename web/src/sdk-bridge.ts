@@ -738,6 +738,8 @@ export interface WasmVerifiedBatV2RedemptionV2 {
   readonly scopeIdHex: string;
   readonly offerId: number;
   readonly classIdHex: string;
+  /** Full binding derived from the canonical class bytes verified by Rust. */
+  classBindingJson(): BatV2ClassBindingViewV2;
   assertRedemptionReady(nowUnix: bigint): void;
 }
 

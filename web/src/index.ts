@@ -299,6 +299,7 @@ export type {
   IndependentProviderBatV2AdmissionSelectionV2,
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
+  RetainedBatV2ExactMemberV2,
   IndependentProviderAdmissionSelectionV1,
   IndependentRetainedProviderAdmissionSelectionV1,
   IndependentProviderPairAdmissionSelectionV1,
@@ -349,6 +350,26 @@ export {
   validateBatV2ClassBindingV2,
   validateBatV2WalletRecordV2,
 } from './bat-v2-vault.js';
+export {
+  BatV2PublicClassCatalogResolverV2,
+  MAX_BAT_V2_PUBLIC_CLASS_BYTES_V2,
+  MAX_BAT_V2_PUBLIC_CLASS_CATALOG_BYTES_V2,
+  MAX_BAT_V2_PUBLIC_CLASS_ENTRIES_V2,
+  MAX_BAT_V2_PUBLIC_CLASS_MEMBERS_V2,
+  MAX_BAT_V2_PUBLIC_CLASS_TOTAL_MEMBERS_V2,
+  parseBatV2PublicClassCatalogV2,
+  parseTrustedBatV2PublicClassCatalogRefV2,
+} from './bat-v2-class-catalog.js';
+export type {
+  BatV2PublicClassArtifactRefV2,
+  BatV2PublicClassCatalogResolverOptionsV2,
+  BatV2PublicClassCatalogV2,
+  BatV2PublicClassEntryV2,
+  BatV2PublicClassMemberV2,
+  RetainedBatV2ClassResolutionInputV2,
+  RetainedBatV2ClassResolutionV2,
+  TrustedBatV2PublicClassCatalogRefV2,
+} from './bat-v2-class-catalog.js';
 export type {
   BatV2ClassBindingV2,
   BatV2DistinctPairReservationV2,
@@ -448,6 +469,7 @@ export {
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,
   parseProductTrustedBootstrapV1,
+  productBatV2ClassCatalogRefV2,
   expectedLightningPayeeForOfferV1,
   providerArkFingerprintV1,
   providerLightningPayeeTrustV1,

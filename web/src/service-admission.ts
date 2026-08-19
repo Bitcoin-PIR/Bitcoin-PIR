@@ -16,6 +16,7 @@ import {
   type LightningNetworkNameV1,
 } from './admission-vault.js';
 import {
+  validateBatV2ClassBindingV2,
   type BatV2ClassBindingV2,
   type BatV2DistinctPairReservationV2,
   type BatV2ReservedProofV2,
@@ -36,6 +37,7 @@ import {
   type WasmServicePowChallengeV1,
 } from './sdk-bridge.js';
 import {
+  assertVerifiedBatV2ClassBindingV2,
   assertIndependentProviderBatV2ProjectionPairV2,
   assertIndependentProviderOfferPairV1,
   type BatV2ClassArtifactV2,
@@ -226,6 +228,14 @@ export interface ProviderAdmissionSelectionV1 {
   offerId: number;
 }
 
+/** Exact historical scheme-6 selector learned from a trusted class catalog. */
+export interface RetainedBatV2ExactMemberV2 {
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+}
+
 /**
  * One provider leg plus the independently trusted network context that must be
  * frozen before a two-provider capability can be acquired or retired.
@@ -320,6 +330,7 @@ export class ProviderAdmissionSessionV1 {
     | 'authorize'
     | 'authorize-bat-v2'
     | 'inspect-retained'
+    | 'inspect-retained-bat-v2'
     | 'authorize-retained'
     | null = null;
 
@@ -715,6 +726,70 @@ export class ProviderAdmissionSessionV1 {
     }
   }
 
+  /**
+   * Close a trusted-catalog member against one exact historical signed policy.
+   * This is metadata verification only: no proof is read, reserved, or sent.
+   * The returned opaque handle is the sole authority accepted by typed scheme-6
+   * adapter authorization and must be freed by its caller.
+   */
+  async verifyRetainedBatV2ClassMember(
+    member: RetainedBatV2ExactMemberV2,
+    classArtifact: BatV2ClassArtifactV2,
+  ): Promise<WasmVerifiedBatV2RedemptionV2> {
+    this.beginTransition('inspect-retained-bat-v2');
+    let retained: WasmAcceptedRetainedBatV2PolicyV2 | null = null;
+    let verified: WasmVerifiedBatV2RedemptionV2 | null = null;
+    try {
+      const canonical = exactRetainedBatV2Member(member, this.trust);
+      const binding = { ...classArtifact.binding };
+      validateBatV2ClassBindingV2(binding);
+      if (!(classArtifact.classBytes instanceof Uint8Array)
+          || classArtifact.classBytes.length === 0
+          || classArtifact.classBytes.length > 512 * 1024) {
+        throw new Error('retained BAT V2 class bytes are empty or exceed the codec limit');
+      }
+      const classBytes = classArtifact.classBytes.slice();
+      const fetchRetained = this.port.fetchRetainedBatV2Policy;
+      if (typeof fetchRetained !== 'function') {
+        throw new Error('this strict adapter does not support retained BAT V2 policy fetch');
+      }
+      const nowUnix = trustedNowUnixV1();
+      this.port.assertTrustAnchor(this.trust);
+      const assertReady = this.port.captureReadinessGuard();
+      assertReady();
+      try {
+        retained = await fetchRetained.call(
+          this.port,
+          this.trust.providerId.slice(),
+          this.trust.policySigningKey.slice(),
+          hexToBytes32('retained BAT V2 policy digest', canonical.policyDigestHex),
+          hexToBytes32('retained BAT V2 scope ID', canonical.scopeIdHex),
+          canonical.offerId,
+          nowUnix,
+        );
+        assertReady();
+        assertRetainedBatV2HandleMatchesMember(retained, canonical);
+        verified = retained.verifyBatV2Redemption(classBytes, nowUnix);
+        assertVerifiedBatV2HandleMatchesMember(
+          verified,
+          canonical,
+          binding,
+        );
+        verified.assertRedemptionReady(nowUnix);
+        assertReady();
+        const result = verified;
+        verified = null;
+        return result;
+      } finally {
+        classBytes.fill(0);
+      }
+    } finally {
+      verified?.free();
+      retained?.free();
+      this.transitionInFlight = null;
+    }
+  }
+
   async [PAIR_ACQUISITION_V1](
     selection: SessionPairSelectionV1,
     scopeIdHex: string,
@@ -944,6 +1019,7 @@ export class ProviderAdmissionSessionV1 {
       | 'authorize'
       | 'authorize-bat-v2'
       | 'inspect-retained'
+      | 'inspect-retained-bat-v2'
       | 'authorize-retained',
   ): void {
     if (this.transitionInFlight !== null) {
@@ -2015,6 +2091,66 @@ function exactRetainedBinding(
     throw new Error('retained capability provider does not match this trusted provider');
   }
   return canonical;
+}
+
+function exactRetainedBatV2Member(
+  member: RetainedBatV2ExactMemberV2,
+  trust: ProviderTrustAnchorV1,
+): RetainedBatV2ExactMemberV2 {
+  if (!member || typeof member !== 'object') {
+    throw new Error('retained BAT V2 member is malformed');
+  }
+  const canonical: RetainedBatV2ExactMemberV2 = {
+    providerIdHex: canonicalHex32('retained BAT V2 provider ID', member.providerIdHex),
+    policyDigestHex: canonicalHex32('retained BAT V2 policy digest', member.policyDigestHex),
+    scopeIdHex: canonicalHex32('retained BAT V2 scope ID', member.scopeIdHex),
+    offerId: member.offerId,
+  };
+  if (!Number.isSafeInteger(canonical.offerId)
+      || canonical.offerId <= 0
+      || canonical.offerId > 0xffff_ffff) {
+    throw new Error('retained BAT V2 offer ID must be a non-zero u32');
+  }
+  if (canonical.providerIdHex !== bytesToLowerHex(trust.providerId)) {
+    throw new Error('retained BAT V2 member does not match this trusted provider');
+  }
+  return canonical;
+}
+
+function assertRetainedBatV2HandleMatchesMember(
+  accepted: WasmAcceptedRetainedBatV2PolicyV2,
+  member: RetainedBatV2ExactMemberV2,
+): void {
+  if (!accepted
+      || typeof accepted.verifyBatV2Redemption !== 'function'
+      || canonicalHex32('retained BAT V2 handle provider ID', accepted.providerIdHex)
+        !== member.providerIdHex
+      || canonicalHex32('retained BAT V2 handle policy digest', accepted.policyDigestHex)
+        !== member.policyDigestHex
+      || canonicalHex32('retained BAT V2 handle scope ID', accepted.scopeIdHex)
+        !== member.scopeIdHex
+      || accepted.offerId !== member.offerId) {
+    throw new Error('retained BAT V2 policy response does not match the exact catalog member');
+  }
+}
+
+function assertVerifiedBatV2HandleMatchesMember(
+  verified: WasmVerifiedBatV2RedemptionV2,
+  member: RetainedBatV2ExactMemberV2,
+  expectedBinding: BatV2ClassBindingV2,
+): void {
+  if (!verified
+      || typeof verified.assertRedemptionReady !== 'function'
+      || canonicalHex32('verified BAT V2 provider ID', verified.providerIdHex)
+        !== member.providerIdHex
+      || canonicalHex32('verified BAT V2 policy digest', verified.policyDigestHex)
+        !== member.policyDigestHex
+      || canonicalHex32('verified BAT V2 scope ID', verified.scopeIdHex)
+        !== member.scopeIdHex
+      || verified.offerId !== member.offerId) {
+    throw new Error('verified BAT V2 redemption does not match the exact class member');
+  }
+  assertVerifiedBatV2ClassBindingV2(verified, expectedBinding);
 }
 
 function requireRetainedServicePort(

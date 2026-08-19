@@ -355,6 +355,13 @@ function accepted(view: ServicePolicyViewV1): WasmAcceptedServicePolicyV1 {
         scopeIdHex,
         offerId,
         classIdHex: offer.keyIdHex,
+        classBindingJson: () => ({
+          issuerIdHex: offer.issuerIdHex,
+          classIdHex: offer.keyIdHex,
+          classDigestHex: '93'.repeat(32),
+          classKeyEpoch: '4',
+          batKeyIdHex: '94'.repeat(32),
+        }),
         assertRedemptionReady: vi.fn(),
       };
     },

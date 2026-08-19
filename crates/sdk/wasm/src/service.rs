@@ -545,6 +545,24 @@ impl WasmVerifiedBatV2RedemptionV2 {
         hex::encode(self.inner.class().class_id)
     }
 
+    /// Full class coordinates derived from the canonical signed class bytes.
+    /// Web compares this projection with its trusted catalog binding before a
+    /// proof can leave durable storage; a class ID alone is not epoch-unique.
+    #[wasm_bindgen(js_name = classBindingJson)]
+    pub fn class_binding_json(&self) -> Result<JsValue, JsError> {
+        let class = self.inner.class();
+        let class_digest = class
+            .class_digest()
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(crate::to_js_object(&serde_json::json!({
+            "issuerIdHex": hex::encode(class.issuer_id),
+            "classIdHex": hex::encode(class.class_id),
+            "classDigestHex": hex::encode(class_digest),
+            "classKeyEpoch": class.key_epoch.to_string(),
+            "batKeyIdHex": hex::encode(class.bat_key_id()),
+        })))
+    }
+
     #[wasm_bindgen(js_name = assertRedemptionReady)]
     pub fn assert_redemption_ready(&self, now_unix: u64) -> Result<(), JsError> {
         self.inner

@@ -84,4 +84,37 @@ describe('same-origin proof artifact fetch', () => {
       fetchImpl: redirectedFetch,
     })).rejects.toThrow(/redirect rejected/);
   });
+
+  it('cancels a streaming body at the byte limit and can require streaming', async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1, 2])); },
+      cancel,
+    });
+    const streamingFetch = vi.fn(async () => new Response(stream)) as unknown as typeof fetch;
+    await expect(fetchProofArtifactBytesV1('/proofs/a.bin', {
+      baseHref: BASE_HREF,
+      fetchImpl: streamingFetch,
+      maxBytes: 1,
+      requireStreaming: true,
+    })).rejects.toThrow(/fetch limit/);
+    expect(cancel).toHaveBeenCalledOnce();
+
+    const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
+    const nonStreamingFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      redirected: false,
+      url: '',
+      headers: new Headers(),
+      body: null,
+      arrayBuffer,
+    } as unknown as Response)) as unknown as typeof fetch;
+    await expect(fetchProofArtifactBytesV1('/proofs/a.bin', {
+      baseHref: BASE_HREF,
+      fetchImpl: nonStreamingFetch,
+      requireStreaming: true,
+    })).rejects.toThrow(/bounded byte stream/);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
 });

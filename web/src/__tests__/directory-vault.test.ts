@@ -160,6 +160,29 @@ describe('encrypted directory rollback vault', () => {
     expect(Object.isFrozen(entry.entry.operator_assertion.endpoints)).toBe(true);
   });
 
+  it('accepts a scheme-6 capability hint without importing any class trust', async () => {
+    const vault = await DirectoryRollbackVaultV1.open();
+    opened.push(vault);
+    const candidate = new Candidate(0, false, [activeProvider]) as any;
+    const original = candidate.selectableCatalogJson.bind(candidate);
+    candidate.selectableCatalogJson = () => {
+      const catalog = withActiveEntry(JSON.parse(original()), activeProvider);
+      catalog.shards[3].entries[0].entry.catalog_hints = [{
+        scope_id: '99'.repeat(32),
+        backend: 'dpf-pir-v1',
+        workload: 'dpf-evaluate-job-v1',
+        acquisition: 'bolt11-v1',
+        authorization: 'bitcoinpir-cashu-bat-v2',
+        deployment: 'stable',
+      }];
+      return JSON.stringify(catalog);
+    };
+    const selected = await vault.acceptCatalog(candidate, 1_500n);
+    expect(selected.shards[3].entries[0].entry.catalog_hints[0].authorization)
+      .toBe('bitcoinpir-cashu-bat-v2');
+    expect(JSON.stringify(selected)).not.toMatch(/classDigest|classPath|issuerUrl/);
+  });
+
   it('rejects unknown selectable fields, non-conservative expiry, and expired output', async () => {
     const vault = await DirectoryRollbackVaultV1.open();
     opened.push(vault);

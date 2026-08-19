@@ -93,7 +93,8 @@ export interface DirectoryDiscoveryEntryJsonV1 {
       | 'harmony-query-job-v1' | 'onion-evaluate-job-v1' | 'tee-oram-query-v1';
     acquisition: 'free-v1' | 'bolt11-v1' | 'cashu-ecash-v1';
     authorization: 'free-v1' | 'bolt11-direct-receipt-v1' | 'cashu-ecash-v1'
-      | 'bitcoinpir-cashu-bat-v1' | 'arc-v1-experimental';
+      | 'bitcoinpir-cashu-bat-v1' | 'bitcoinpir-cashu-bat-v2'
+      | 'arc-v1-experimental';
     deployment: 'stable' | 'experimental';
   }>;
   health: { class: 'unknown' | 'available' | 'degraded' | 'unavailable'; observed_bucket: number };
@@ -568,7 +569,9 @@ function parseDiscoveryEntry(
       ] as const),
       authorization: exactStringMember('catalog hint authorization', hint.authorization, [
         'free-v1', 'bolt11-direct-receipt-v1', 'cashu-ecash-v1',
-        'bitcoinpir-cashu-bat-v1', 'arc-v1-experimental',
+        // This advertises transport capability only. No class path, digest, or
+        // issuer trust is ever accepted from the directory.
+        'bitcoinpir-cashu-bat-v1', 'bitcoinpir-cashu-bat-v2', 'arc-v1-experimental',
       ] as const),
       deployment: exactStringMember('catalog hint deployment', hint.deployment, [
         'stable', 'experimental',

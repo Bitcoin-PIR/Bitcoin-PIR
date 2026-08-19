@@ -61,6 +61,13 @@ fn hint(seed: u8) -> DirectoryCatalogHintV1 {
     }
 }
 
+fn hint_v2(seed: u8) -> DirectoryCatalogHintV1 {
+    DirectoryCatalogHintV1 {
+        authorization: AuthScheme::BitcoinPirCashuBatV2,
+        ..hint(seed)
+    }
+}
+
 fn active_entry(sequence: u64, assertion_epoch: u64) -> DirectoryEntryV1 {
     DirectoryEntryV1::new_active(
         sequence,
@@ -237,6 +244,32 @@ fn publisher_entry_roundtrip_is_pinned_and_nip01_signed() {
         secp.verify_schnorr(&signature, &message, &public_key)
             .unwrap();
     }
+}
+
+#[test]
+fn bat_v2_capability_hint_roundtrips_without_class_trust_fields() {
+    let publisher = DirectoryPublisherKeyV1::from_secret_bytes([21; 32]).unwrap();
+    let entry = DirectoryEntryV1::new_active(
+        1,
+        2_500,
+        operator_assertion(1, 22),
+        vec![hint_v2(9)],
+        health(DirectoryHealthClassV1::Available),
+        NOW,
+    )
+    .unwrap();
+    let json = signed_entry(&publisher, &entry, NOW, 23)
+        .to_json_bytes()
+        .unwrap();
+    let verified = verify_directory_entry_event_v1(&json, publisher.public_key(), NOW).unwrap();
+    assert_eq!(
+        verified.discovery_entry().catalog_hints()[0].authorization,
+        AuthScheme::BitcoinPirCashuBatV2
+    );
+    let text = std::str::from_utf8(&json).unwrap();
+    assert!(text.contains("bitcoinpir-cashu-bat-v2"));
+    assert!(!text.contains("class_digest"));
+    assert!(!text.contains("class_path"));
 }
 
 #[test]

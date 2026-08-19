@@ -93,16 +93,17 @@ export class VerifiedProviderBatV2ProjectionV2 {
     assertBatV2OfferShape(input.offer, input.classArtifact.binding, input.offerId);
     const verified = input.verifiedRedemption;
     if (!verified || typeof verified.assertRedemptionReady !== 'function'
+        || typeof verified.classBindingJson !== 'function'
         || typeof verified.free !== 'function') {
       throw new Error('BAT V2 selection requires an opaque verified redemption handle');
     }
     if (verified.providerIdHex !== providerIdHex
         || verified.policyDigestHex !== policyDigestHex
         || verified.scopeIdHex !== scopeIdHex
-        || verified.offerId !== input.offerId
-        || verified.classIdHex !== input.classArtifact.binding.classIdHex) {
+        || verified.offerId !== input.offerId) {
       throw new Error('BAT V2 verified class/member projection changed coordinates');
     }
+    assertVerifiedBatV2ClassBindingV2(verified, input.classArtifact.binding);
     return new VerifiedProviderBatV2ProjectionV2(
       policyDigestHex,
       scopeIdHex,
@@ -152,10 +153,10 @@ export class VerifiedProviderBatV2ProjectionV2 {
     )
         || this.redemptionValue.policyDigestHex !== this.policyDigestValue
         || this.redemptionValue.scopeIdHex !== this.scopeIdValue
-        || this.redemptionValue.offerId !== this.offerIdValue
-        || this.redemptionValue.classIdHex !== this.bindingValue.classIdHex) {
+        || this.redemptionValue.offerId !== this.offerIdValue) {
       throw new Error('BAT V2 verified redemption handle changed after selection');
     }
+    assertVerifiedBatV2ClassBindingV2(this.redemptionValue, this.bindingValue);
   }
 
   close(): void {
@@ -418,6 +419,41 @@ function classBindingKeyV2(value: BatV2ClassBindingV2): string {
     value.classKeyEpoch,
     value.batKeyIdHex,
   ].join(':');
+}
+
+/**
+ * Compare a trusted TypeScript binding with the full binding independently
+ * derived by Rust from the canonical signed class. This is intentionally
+ * shared by current and retained paths so neither can weaken to classId-only.
+ */
+export function assertVerifiedBatV2ClassBindingV2(
+  verified: WasmVerifiedBatV2RedemptionV2,
+  expected: BatV2ClassBindingV2,
+): void {
+  validateBatV2ClassBindingV2(expected);
+  if (!verified || typeof verified.classBindingJson !== 'function') {
+    throw new Error('BAT V2 verified redemption lacks a full class binding');
+  }
+  const projected = verified.classBindingJson() as unknown;
+  if (projected === null || typeof projected !== 'object' || Array.isArray(projected)) {
+    throw new Error('BAT V2 verified redemption returned an invalid class binding');
+  }
+  const value = projected as Partial<BatV2ClassBindingV2>;
+  const actual: BatV2ClassBindingV2 = {
+    issuerIdHex: value.issuerIdHex as string,
+    classIdHex: value.classIdHex as string,
+    classDigestHex: value.classDigestHex as string,
+    classKeyEpoch: value.classKeyEpoch as string,
+    batKeyIdHex: value.batKeyIdHex as string,
+  };
+  try {
+    validateBatV2ClassBindingV2(actual);
+  } catch {
+    throw new Error('BAT V2 verified redemption returned an invalid class binding');
+  }
+  if (classBindingKeyV2(actual) !== classBindingKeyV2(expected)) {
+    throw new Error('BAT V2 verified redemption does not match the exact signed class binding');
+  }
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {

@@ -113,6 +113,13 @@ function accepted(view: ServicePolicyViewV1) {
         scopeIdHex: view.scopes[0].scopeIdHex,
         offerId,
         classIdHex: selected.keyIdHex,
+        classBindingJson: () => ({
+          issuerIdHex: selected.issuerIdHex,
+          classIdHex: selected.keyIdHex,
+          classDigestHex: '73'.repeat(32),
+          classKeyEpoch: '4',
+          batKeyIdHex: '74'.repeat(32),
+        }),
         assertRedemptionReady: vi.fn(),
       };
     },
