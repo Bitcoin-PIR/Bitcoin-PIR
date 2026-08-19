@@ -5,6 +5,17 @@ settlement workflow persistence. It never accepts or stores a payer identity,
 Lightning invoice, payment hash, preimage, PIR query, result, or peer-provider
 identity.
 
+The issuer-wide BAT V2 path is deliberately payment-storeless. It creates one
+fresh public OS-random attempt ID per connection, sends the canonical request
+exactly once, and can produce an opaque connection grant only by consuming the
+protocol's non-clone in-flight witness for that exact issuer-signed fresh
+success. It has no `ProviderStore`, provider-secret idempotency HMAC, local
+delivery claim, payment rollback client, automatic retry, or saved-response
+grant recovery. Only a transport-proven `DefinitelyNotSent` result or one of
+the three issuer-signed non-consuming rejections leaves the BAT eligible for a
+later caller-initiated presentation; every unsigned HTTP status, malformed or
+misbound response, timeout, and otherwise ambiguous outcome burns it.
+
 `StrictHttpsProviderSettlementTransportV1` accepts HTTP 200 as the only
 transport success status and requires the route-specific success media type.
 Every other status must use the bounded problem media type and remains an
