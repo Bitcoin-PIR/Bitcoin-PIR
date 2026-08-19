@@ -1,5 +1,7 @@
 use crate::{
-    MAX_EXACT_BAT_V2_CLASS_BYTES, MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
+    MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES, MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
+    MAX_EXACT_BAT_V2_CLASS_BYTES, MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES,
+    MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
     MAX_EXACT_CLEARING_APPROVAL_BYTES, MAX_EXACT_CLEARING_AUTHORIZATION_BYTES,
     MAX_EXACT_DELEGATION_BYTES, MAX_EXACT_INTENT_BYTES, MAX_EXACT_PAYOUT_INTENT_REQUEST_BYTES,
     MAX_EXACT_PAYOUT_INTENT_RESPONSE_BYTES, MAX_EXACT_PAYOUT_REQUEST_BYTES,
@@ -382,6 +384,7 @@ pub(crate) fn bat_v2_class_artifacts_sql() -> String {
     commit_seq            INTEGER NOT NULL CHECK (commit_seq > 0),
     PRIMARY KEY (issuer_id, class_id, key_epoch),
     UNIQUE (issuer_id, artifact_digest),
+    UNIQUE (issuer_id, class_id, key_epoch, artifact_digest),
     UNIQUE (issuer_id, raw_public_key),
     UNIQUE (issuer_id, key_fingerprint),
     UNIQUE (issuer_id, bat_key_id)
@@ -556,7 +559,10 @@ pub(crate) const PROVIDER_REGISTRATIONS_SQL: &str = r#"CREATE TABLE provider_reg
     ),
     not_before                    INTEGER NOT NULL CHECK (not_before > 0),
     not_after                     INTEGER NOT NULL CHECK (not_after >= not_before),
-    commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0)
+    commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0),
+    FOREIGN KEY (issuer_id, provider_id, settlement_account_id)
+        REFERENCES provider_account_bindings(issuer_id, provider_id, settlement_account_id)
+        ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID"#;
 
 /// Append-only provider request-key history used only to authenticate an
@@ -589,6 +595,73 @@ pub(crate) const PROVIDER_REGISTRATION_HISTORY_SQL: &str = r#"CREATE TABLE provi
     commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0),
     UNIQUE (issuer_id, provider_id, registration_epoch)
 ) STRICT, WITHOUT ROWID"#;
+
+/// Immutable account ownership shared by V1 and V2 clearing. Neither protocol
+/// is allowed to manufacture a registration row in the other's namespace.
+pub(crate) const PROVIDER_ACCOUNT_BINDINGS_SQL: &str = r#"CREATE TABLE provider_account_bindings (
+    issuer_id            BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    provider_id          BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    settlement_account_id BLOB NOT NULL CHECK (
+        length(settlement_account_id) = 32 AND settlement_account_id != zeroblob(32)
+    ),
+    unit                 INTEGER NOT NULL CHECK (unit BETWEEN 1 AND 3),
+    commit_seq           INTEGER NOT NULL CHECK (commit_seq > 0),
+    PRIMARY KEY (issuer_id, provider_id),
+    UNIQUE (issuer_id, settlement_account_id),
+    UNIQUE (issuer_id, provider_id, settlement_account_id),
+    UNIQUE (provider_id),
+    UNIQUE (settlement_account_id)
+) STRICT, WITHOUT ROWID"#;
+
+pub(crate) fn bat_v2_clearing_authorizations_sql() -> String {
+    format!(
+        r#"CREATE TABLE bat_v2_clearing_authorizations (
+    authorization_digest          BLOB NOT NULL PRIMARY KEY CHECK (
+        length(authorization_digest) = 32 AND authorization_digest != zeroblob(32)
+    ),
+    issuer_id                     BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    authorization_id              BLOB NOT NULL CHECK (
+        length(authorization_id) = 16 AND authorization_id != zeroblob(16)
+    ),
+    authorization_epoch           INTEGER NOT NULL CHECK (authorization_epoch > 0),
+    provider_id                   BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    settlement_account_id         BLOB NOT NULL CHECK (
+        length(settlement_account_id) = 32 AND settlement_account_id != zeroblob(32)
+    ),
+    operator_verifying_key        BLOB NOT NULL CHECK (
+        length(operator_verifying_key) = 32 AND operator_verifying_key != zeroblob(32)
+    ),
+    issuer_settlement_verifying_key BLOB NOT NULL CHECK (
+        length(issuer_settlement_verifying_key) = 32 AND
+        issuer_settlement_verifying_key != zeroblob(32)
+    ),
+    not_before                    INTEGER NOT NULL CHECK (not_before > 0),
+    not_after                     INTEGER NOT NULL CHECK (not_after >= not_before),
+    exact_authorization           BLOB NOT NULL CHECK (
+        length(exact_authorization) BETWEEN 1 AND {max_authorization}
+    ),
+    exact_approval                BLOB NOT NULL CHECK (
+        length(exact_approval) BETWEEN 1 AND {max_approval}
+    ),
+    commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0),
+    UNIQUE (issuer_id, authorization_digest),
+    UNIQUE (issuer_id, provider_id, authorization_epoch),
+    FOREIGN KEY (issuer_id, provider_id, settlement_account_id)
+        REFERENCES provider_account_bindings(issuer_id, provider_id, settlement_account_id)
+        ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID"#,
+        max_authorization = MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
+        max_approval = MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
+    )
+}
 
 pub(crate) fn redemptions_sql() -> String {
     format!(
@@ -645,6 +718,77 @@ pub(crate) fn redemptions_sql() -> String {
     )
 }
 
+pub(crate) fn bat_v2_redemptions_sql() -> String {
+    format!(
+        r#"CREATE TABLE bat_v2_redemptions (
+    issuer_id                    BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    provider_id                  BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    attempt_id                   BLOB NOT NULL CHECK (
+        length(attempt_id) = 32 AND attempt_id != zeroblob(32)
+    ),
+    request_digest               BLOB NOT NULL UNIQUE CHECK (
+        length(request_digest) = 32 AND request_digest != zeroblob(32)
+    ),
+    authorization_digest         BLOB NOT NULL CHECK (
+        length(authorization_digest) = 32 AND authorization_digest != zeroblob(32)
+    ),
+    settlement_account_id        BLOB NOT NULL CHECK (
+        length(settlement_account_id) = 32 AND settlement_account_id != zeroblob(32)
+    ),
+    class_id                     BLOB NOT NULL CHECK (
+        length(class_id) = 32 AND class_id != zeroblob(32)
+    ),
+    class_key_epoch              INTEGER NOT NULL CHECK (class_key_epoch > 0),
+    class_digest                 BLOB NOT NULL CHECK (
+        length(class_digest) = 32 AND class_digest != zeroblob(32)
+    ),
+    member_index                 INTEGER NOT NULL CHECK (
+        member_index BETWEEN 0 AND {max_member_index}
+    ),
+    credential_digest            BLOB NOT NULL CHECK (
+        length(credential_digest) = 32 AND credential_digest != zeroblob(32)
+    ),
+    global_spend_key             BLOB NOT NULL UNIQUE CHECK (
+        length(global_spend_key) = 32 AND global_spend_key != zeroblob(32)
+    ),
+    accepted_value               INTEGER NOT NULL CHECK (accepted_value > 0),
+    provider_credit              INTEGER NOT NULL CHECK (provider_credit > 0),
+    issuer_fee                   INTEGER NOT NULL CHECK (issuer_fee >= 0),
+    unit                         INTEGER NOT NULL CHECK (unit BETWEEN 1 AND 3),
+    ledger_transaction_id        BLOB NOT NULL UNIQUE CHECK (
+        length(ledger_transaction_id) = 32 AND ledger_transaction_id != zeroblob(32)
+    ),
+    exact_initial_success        BLOB NOT NULL CHECK (
+        length(exact_initial_success) BETWEEN 1 AND {max_success}
+    ),
+    redeemed_at                  INTEGER NOT NULL CHECK (redeemed_at > 0),
+    commit_seq                   INTEGER NOT NULL CHECK (commit_seq > 0),
+    PRIMARY KEY (issuer_id, provider_id, attempt_id),
+    FOREIGN KEY (issuer_id, authorization_digest)
+        REFERENCES bat_v2_clearing_authorizations(issuer_id, authorization_digest)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (issuer_id, provider_id, settlement_account_id)
+        REFERENCES provider_account_bindings(issuer_id, provider_id, settlement_account_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (issuer_id, class_id, class_key_epoch, class_digest)
+        REFERENCES bat_v2_class_artifacts(issuer_id, class_id, key_epoch, artifact_digest)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (issuer_id, class_id, class_key_epoch, member_index)
+        REFERENCES bat_v2_class_members(issuer_id, class_id, key_epoch, member_index)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (ledger_transaction_id)
+        REFERENCES ledger_transactions(transaction_id) ON DELETE RESTRICT,
+    CHECK (provider_credit + issuer_fee = accepted_value)
+) STRICT, WITHOUT ROWID"#,
+        max_member_index = MAX_BAT_ACCEPTANCE_CLASS_MEMBERS_V2 - 1,
+        max_success = MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES,
+    )
+}
+
 pub(crate) const LEDGER_ACCOUNTS_SQL: &str = r#"CREATE TABLE ledger_accounts (
     account_id       BLOB NOT NULL PRIMARY KEY CHECK (
         length(account_id) = 32 AND account_id != zeroblob(32)
@@ -660,7 +804,9 @@ pub(crate) const LEDGER_ACCOUNTS_SQL: &str = r#"CREATE TABLE ledger_accounts (
     reserved_value   INTEGER NOT NULL CHECK (reserved_value >= 0),
     ledger_sequence  INTEGER NOT NULL CHECK (ledger_sequence >= 0),
     commit_seq       INTEGER NOT NULL CHECK (commit_seq > 0),
-    FOREIGN KEY (provider_id) REFERENCES provider_registrations(provider_id) ON DELETE RESTRICT
+    FOREIGN KEY (issuer_id, provider_id, account_id)
+        REFERENCES provider_account_bindings(issuer_id, provider_id, settlement_account_id)
+        ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID"#;
 
 pub(crate) const LEDGER_TRANSACTIONS_SQL: &str = r#"CREATE TABLE ledger_transactions (
@@ -673,7 +819,7 @@ pub(crate) const LEDGER_TRANSACTIONS_SQL: &str = r#"CREATE TABLE ledger_transact
     provider_id     BLOB NOT NULL CHECK (
         length(provider_id) = 32 AND provider_id != zeroblob(32)
     ),
-    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 6),
+    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 7),
     reference_digest BLOB NOT NULL UNIQUE CHECK (
         length(reference_digest) = 32 AND reference_digest != zeroblob(32)
     ),
@@ -927,6 +1073,11 @@ pub(crate) fn schema() -> Vec<(&'static str, String)> {
         ("bat_v2_class_artifacts", bat_v2_class_artifacts_sql()),
         ("bat_v2_class_heads", BAT_V2_CLASS_HEADS_SQL.to_owned()),
         ("bat_v2_class_members", bat_v2_class_members_sql()),
+        (
+            "bat_v2_clearing_authorizations",
+            bat_v2_clearing_authorizations_sql(),
+        ),
+        ("bat_v2_redemptions", bat_v2_redemptions_sql()),
         ("claims", claims_sql()),
         ("clearing_authorizations", clearing_authorizations_sql()),
         (
@@ -948,6 +1099,10 @@ pub(crate) fn schema() -> Vec<(&'static str, String)> {
         ("payout_intents", payout_intents_sql()),
         ("payout_outbox", PAYOUT_OUTBOX_SQL.to_owned()),
         ("payouts", payouts_sql()),
+        (
+            "provider_account_bindings",
+            PROVIDER_ACCOUNT_BINDINGS_SQL.to_owned(),
+        ),
         (
             "provider_registration_history",
             PROVIDER_REGISTRATION_HISTORY_SQL.to_owned(),

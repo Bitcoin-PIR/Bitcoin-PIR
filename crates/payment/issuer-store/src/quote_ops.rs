@@ -1515,10 +1515,15 @@ impl IssuerStore {
         self.confirm_anchored_read(&connection, candidates)
     }
 
-    /// Enumerate BAT key epochs needed either for one fresh acquisition from
-    /// a live current class head or for recovery of an unfinished historical
-    /// V2 quote. Terminal and out-of-horizon historical epochs do not pin key
-    /// material.
+    /// Enumerate BAT key epochs needed for one fresh acquisition from a live
+    /// current class head, recovery of an unfinished historical V2 quote, or
+    /// redemption of an already-issued credential while its retained class
+    /// and at least one member remain redeemable.
+    ///
+    /// Each result carries the exact compressed public key that identifies a
+    /// required private mint scalar in the caller's keyring. This store never
+    /// persists or returns the scalar itself. Duplicate requirements from the
+    /// three retention sources are collapsed by `(class_id, key_epoch)`.
     pub fn bat_v2_credential_material_requirements(
         &self,
         now_unix: u64,
@@ -1555,6 +1560,46 @@ impl IssuerStore {
                 )
             })?;
             referenced.insert((intent.class_id, intent.class_key_epoch));
+        }
+
+        let mut issued_statement = connection.prepare(
+            "SELECT q.intent_replay_image
+             FROM claims c
+             JOIN quotes q ON q.quote_id = c.quote_id
+             WHERE q.quote_protocol = 2 AND q.issuer_id = ?1
+             ORDER BY q.quote_id",
+        )?;
+        let issued_replay_images = issued_statement
+            .query_map([self.handle.expected_issuer_id.as_slice()], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(issued_statement);
+        for replay_image in issued_replay_images {
+            let intent = Bolt11BatV2QuoteIntentV2::decode(&replay_image).map_err(|_| {
+                StoreError::SchemaMismatch(
+                    "issued BAT V2 credential has an invalid replay intent".to_owned(),
+                )
+            })?;
+            let class = read_bat_acceptance_class_v2(
+                &connection,
+                self,
+                &intent.class_id,
+                intent.class_key_epoch,
+            )?
+            .ok_or_else(|| {
+                StoreError::SchemaMismatch(
+                    "issued BAT V2 credential references a missing class epoch".to_owned(),
+                )
+            })?;
+            if class.key_not_after >= now_unix
+                && class
+                    .members
+                    .iter()
+                    .any(|member| member.redemption_deadline >= now_unix)
+            {
+                referenced.insert((intent.class_id, intent.class_key_epoch));
+            }
         }
 
         let mut head_statement = connection.prepare(

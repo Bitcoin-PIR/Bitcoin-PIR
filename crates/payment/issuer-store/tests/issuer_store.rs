@@ -11,17 +11,24 @@ use pir_issuer_store::{
 };
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_issuer_id, paid_receipt_key_id,
-    AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, BatAcceptanceClassV2,
-    BatAcceptanceMemberV2, BatAcceptanceTermsV2, BatV2IssuanceRequestV2, BatV2IssuanceResponseV2,
+    precheck_bat_v2_redeem_v2, sign_and_commit_grantable_success_v2,
+    verify_bat_v2_credential_for_commit_v2, AcquisitionMethod, AuthPaddingClassV1, AuthScheme,
+    BackendId, BatAcceptanceClassV2, BatAcceptanceMemberV2, BatAcceptanceTermsV2,
+    BatV2CredentialCheckV2, BatV2IssuanceRequestV2, BatV2IssuanceResponseV2,
+    BatV2ProofVerificationInputV2, BatV2RedeemCommitResultV2, BatV2RedeemPrecheckV2,
     BitcoinPirCashuBatIssuanceRequestItemV1, BitcoinPirCashuBatIssuanceResponseItemV1,
-    Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2, Bolt11QuoteClaimV1, Bolt11QuoteIntentV1,
-    Bolt11QuoteKeyDelegationV1, Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
-    CashuDenominationKeyV1, CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
+    BitcoinPirCashuBatProofV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2,
+    Bolt11QuoteClaimV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
+    Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1, CashuDenominationKeyV1,
+    CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1,
     CredentialIssuanceResponseItemsV1, CredentialIssuanceResponseV1, DatasetBindingV1,
-    DeploymentStatus, EntitlementLimitsV1, FreeModeV1, LightningNetworkV1, PaidReceiptBindingV1,
-    PaidReceiptV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyV1,
-    ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
-    BOLT11_QUOTE_SIGNATURE_DOMAIN,
+    DeploymentStatus, EntitlementLimitsV1, FreeModeV1, IssuerAccountingApprovalV2,
+    LightningNetworkV1, PaidReceiptBindingV1, PaidReceiptV1, PriceV1, PrivacyLeakageV1,
+    ProviderAccountingAuthorizationClaimsV2, ProviderAccountingAuthorizationV2,
+    ProviderAccountingExpectationV2, ProviderAccountingRuleV2, ProviderRedeemEnvelopeV2,
+    ProviderRedeemRequestAuthV2, ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1,
+    ServiceScopeV1, SettlementUnitV1, VerificationMode, VerifiedBatAcceptanceMemberV2,
+    VerifiedBatV2RedeemCommitV2, WorkloadId, BOLT11_QUOTE_SIGNATURE_DOMAIN,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -394,6 +401,188 @@ fn bat_v2_class_with_validity(
         &root_key(),
     )
     .expect("sign BAT V2 class")
+}
+
+#[derive(Clone)]
+struct BatV2RedemptionAuthorityFixture {
+    authorization: ProviderAccountingAuthorizationV2,
+    approval: IssuerAccountingApprovalV2,
+    operator_key: SigningKey,
+    clearing_key: SigningKey,
+    settlement_key: SigningKey,
+}
+
+fn bat_v2_verified_member(
+    class: &BatAcceptanceClassV2,
+    member: &BatAcceptanceMemberV2,
+) -> VerifiedBatAcceptanceMemberV2 {
+    VerifiedBatAcceptanceMemberV2 {
+        issuer_id: class.issuer_id,
+        class_id: class.class_id,
+        member: member.clone(),
+        common_terms: class.common_terms.clone(),
+        policy_issued_at: 100,
+        policy_expires_at: 1_000,
+        redemption_deadline: 1_480,
+    }
+}
+
+fn bat_v2_redemption_authority(
+    store: &IssuerStore,
+    class: &BatAcceptanceClassV2,
+    member: &BatAcceptanceMemberV2,
+    account_byte: u8,
+    key_byte: u8,
+    epoch: u64,
+) -> BatV2RedemptionAuthorityFixture {
+    let operator_key = SigningKey::from_bytes(&[key_byte; 32]);
+    let clearing_key = SigningKey::from_bytes(&[key_byte.wrapping_add(1); 32]);
+    let settlement_key = SigningKey::from_bytes(&[0xd1; 32]);
+    let authorization = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: [key_byte.wrapping_add(2); 16],
+            authorization_epoch: epoch,
+            provider_id: member.provider_id,
+            issuer_id: issuer_id(),
+            redeem_endpoint: "https://issuer.invalid".to_owned(),
+            redeem_leaf_spki_sha256_pins: vec![[key_byte.wrapping_add(3); 32]],
+            settlement_account_id: [account_byte; 32],
+            clearing_verifying_key: clearing_key.verifying_key().to_bytes(),
+            not_before: 100,
+            not_after: 2_000,
+            rules: vec![ProviderAccountingRuleV2 {
+                class_id: class.class_id,
+                policy_digest: member.policy_digest,
+                scope_id: member.scope_id,
+                offer_id: member.offer_id,
+                unit: SettlementUnitV1::AuthCredit,
+                accepted_value: 10,
+                provider_credit: 7,
+                issuer_fee: 3,
+            }],
+        },
+        &operator_key,
+    )
+    .expect("sign BAT V2 accounting authorization");
+    let approval = IssuerAccountingApprovalV2::sign(&authorization, 200, 2_000, &settlement_key)
+        .expect("sign BAT V2 issuer approval");
+    let _ = store
+        .register_bat_v2_accounting_authorization(
+            &authorization,
+            &approval,
+            &operator_key.verifying_key(),
+            &settlement_key.verifying_key(),
+            200,
+        )
+        .expect("register BAT V2 accounting authorization");
+    BatV2RedemptionAuthorityFixture {
+        authorization,
+        approval,
+        operator_key,
+        clearing_key,
+        settlement_key,
+    }
+}
+
+fn bat_v2_redemption_precheck(
+    class: &BatAcceptanceClassV2,
+    member: &VerifiedBatAcceptanceMemberV2,
+    authority: &BatV2RedemptionAuthorityFixture,
+    attempt_byte: u8,
+    secret_byte: u8,
+    now_unix: u64,
+) -> BatV2RedeemPrecheckV2 {
+    let proof = BitcoinPirCashuBatProofV2::from_class(
+        class,
+        [secret_byte; 32],
+        point(u64::from(secret_byte) + 100),
+    )
+    .expect("construct BAT V2 proof");
+    let (request, _) = pir_service_protocol::ProviderRedeemRequestV2::prepare(
+        &authority.authorization,
+        member,
+        class,
+        &proof,
+        [attempt_byte; 32],
+    )
+    .expect("prepare BAT V2 redeem request")
+    .into_parts();
+    let request_auth = ProviderRedeemRequestAuthV2::sign(&request, &authority.clearing_key)
+        .expect("sign BAT V2 request");
+    precheck_bat_v2_redeem_v2(
+        ProviderRedeemEnvelopeV2 {
+            request,
+            request_auth,
+            credential: proof,
+        },
+        &authority.authorization,
+        &authority.approval,
+        class,
+        member,
+        ProviderAccountingExpectationV2 {
+            provider_id: member.member.provider_id,
+            issuer_id: issuer_id(),
+            operator_verifying_key: &authority.operator_key.verifying_key(),
+            issuer_settlement_verifying_key: &authority.settlement_key.verifying_key(),
+            now_unix,
+            minimum_authorization_epoch: authority.authorization.claims.authorization_epoch,
+        },
+    )
+    .expect("precheck BAT V2 redeem")
+}
+
+fn bat_v2_verified_redeem(
+    class: &BatAcceptanceClassV2,
+    member: &VerifiedBatAcceptanceMemberV2,
+    authority: &BatV2RedemptionAuthorityFixture,
+    attempt_byte: u8,
+    secret_byte: u8,
+    now_unix: u64,
+) -> VerifiedBatV2RedeemCommitV2 {
+    let BatV2RedeemPrecheckV2::Authorized(authorized) = bat_v2_redemption_precheck(
+        class,
+        member,
+        authority,
+        attempt_byte,
+        secret_byte,
+        now_unix,
+    ) else {
+        panic!("BAT V2 redeem should be authorized")
+    };
+    fn accept_bat_v2_proof(_input: BatV2ProofVerificationInputV2<'_>) -> Result<bool, ()> {
+        Ok(true)
+    }
+    let verified = verify_bat_v2_credential_for_commit_v2(*authorized, &accept_bat_v2_proof)
+        .expect("verify BAT V2 credential");
+    let BatV2CredentialCheckV2::Verified(verified) = verified else {
+        panic!("BAT V2 credential should be valid")
+    };
+    verified
+}
+
+fn install_bat_v2_redemption_class(
+    store: &IssuerStore,
+    class_id: [u8; 32],
+    key_epoch: u64,
+    raw_key_multiplier: u64,
+    policy_epoch: u64,
+) -> (BatAcceptanceClassV2, Vec<VerifiedBatAcceptanceMemberV2>) {
+    let members = register_bat_v2_members(store, class_id, policy_epoch);
+    let class = bat_v2_class(
+        class_id,
+        key_epoch,
+        raw_key_multiplier,
+        bat_v2_terms(),
+        members.clone(),
+    );
+    let _ = store
+        .register_bat_acceptance_class_v2(&class, 200)
+        .expect("register BAT V2 redemption class");
+    let verified = members
+        .iter()
+        .map(|member| bat_v2_verified_member(&class, member))
+        .collect();
+    (class, verified)
 }
 
 fn xonly(multiplier: u64) -> [u8; 32] {
@@ -2924,12 +3113,24 @@ fn bat_v2_acquisition_claim_status_and_restart_are_protocol_isolated() {
     let _ = reopened
         .register_bat_acceptance_class_v2(&second_class, 400)
         .unwrap();
-    let terminal_old_epoch_does_not_pin = reopened
+    let issued_old_epoch_remains_pinned = reopened
         .bat_v2_credential_material_requirements(400)
         .unwrap();
-    assert_eq!(terminal_old_epoch_does_not_pin.len(), 1);
-    assert_eq!(terminal_old_epoch_does_not_pin[0].class_key_epoch, 2);
-    assert_eq!(terminal_old_epoch_does_not_pin[0].raw_public_key, point(77));
+    assert_eq!(issued_old_epoch_remains_pinned.len(), 2);
+    assert_eq!(issued_old_epoch_remains_pinned[0].class_key_epoch, 1);
+    assert_eq!(issued_old_epoch_remains_pinned[0].raw_public_key, point(76));
+    assert_eq!(issued_old_epoch_remains_pinned[1].class_key_epoch, 2);
+    assert_eq!(issued_old_epoch_remains_pinned[1].raw_public_key, point(77));
+    let at_redemption_deadline = reopened
+        .bat_v2_credential_material_requirements(1_480)
+        .unwrap();
+    assert_eq!(at_redemption_deadline.len(), 1);
+    assert_eq!(at_redemption_deadline[0].class_key_epoch, 1);
+    assert_eq!(at_redemption_deadline[0].raw_public_key, point(76));
+    assert!(reopened
+        .bat_v2_credential_material_requirements(1_481)
+        .unwrap()
+        .is_empty());
 
     let v1 = reserve_finalize_settle(&reopened, 0x7b, 0x7c, 0x7d);
     let v1_claim = claim(0x7b, v1.intent_digest, 0x7e, 0x7d, 0x7f, 0x25, 3);
@@ -3121,12 +3322,12 @@ fn bat_v2_registry_rejects_bidirectional_legacy_raw_key_reuse() {
 }
 
 #[test]
-fn bat_v2_acquisition_schema_v7_rejects_implicit_v6_open() {
+fn bat_v2_redemption_schema_v8_rejects_implicit_v7_open() {
     let test_path = TestPath::new();
     let store = create_store(&test_path);
     drop(store);
     let connection = Connection::open(&test_path.database).unwrap();
-    connection.pragma_update(None, "user_version", 6).unwrap();
+    connection.pragma_update(None, "user_version", 7).unwrap();
     drop(connection);
     assert!(matches!(
         open_store(&test_path),
@@ -3176,4 +3377,410 @@ fn schema_extension_and_semantic_backend_label_corruption_fail_closed() {
         ),
         Err(StoreError::SchemaMismatch(_))
     ));
+}
+
+#[test]
+fn bat_v2_redemption_v1_registration_uses_neutral_binding_and_reopens() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let provider_id = [0x31; 32];
+    let account_id = [0x32; 32];
+    let _ = store
+        .register_provider_settlement(&ProviderSettlementRegistrationWriteV1 {
+            registration_epoch: 1,
+            provider_id,
+            settlement_account_id: account_id,
+            provider_request_verifying_key: SigningKey::from_bytes(&[0x33; 32])
+                .verifying_key()
+                .to_bytes(),
+            payout_target_id: [0x34; 32],
+            not_before: 100,
+            not_after: 2_000,
+        })
+        .expect("register V1 provider through neutral account binding");
+    let inventory = store.operational_inventory().unwrap();
+    assert_eq!(inventory.provider_account_binding_rows, 1);
+    assert_eq!(inventory.bat_v2_accounting_authorization_rows, 0);
+    assert_eq!(inventory.bat_v2_redemption_rows, 0);
+    assert_eq!(
+        store
+            .provider_ledger_balance(&provider_id)
+            .unwrap()
+            .unwrap()
+            .account_id,
+        account_id
+    );
+    drop(store);
+
+    let reopened = open_store(&test_path).expect("reopen v8 store with V1 registration");
+    assert_eq!(
+        reopened
+            .provider_settlement_registration(&provider_id)
+            .unwrap()
+            .unwrap()
+            .settlement_account_id,
+        account_id
+    );
+    assert_eq!(
+        reopened
+            .operational_inventory()
+            .unwrap()
+            .provider_account_binding_rows,
+        1
+    );
+}
+
+#[test]
+fn bat_v2_redemption_authorization_replay_epoch_fork_and_account_mismatch() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let (class, members) = install_bat_v2_redemption_class(&store, [0x81; 32], 1, 81, 1);
+    let first = bat_v2_redemption_authority(&store, &class, &members[0].member, 0x82, 0x83, 1);
+    let replay = store
+        .register_bat_v2_accounting_authorization(
+            &first.authorization,
+            &first.approval,
+            &first.operator_key.verifying_key(),
+            &first.settlement_key.verifying_key(),
+            200,
+        )
+        .unwrap();
+    assert_eq!(replay.disposition, WriteDisposition::ExactReplay);
+
+    let fork = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: [0x84; 16],
+            ..first.authorization.claims.clone()
+        },
+        &first.operator_key,
+    )
+    .unwrap();
+    let fork_approval =
+        IssuerAccountingApprovalV2::sign(&fork, 200, 2_000, &first.settlement_key).unwrap();
+    assert!(matches!(
+        store.register_bat_v2_accounting_authorization(
+            &fork,
+            &fork_approval,
+            &first.operator_key.verifying_key(),
+            &first.settlement_key.verifying_key(),
+            200,
+        ),
+        Err(StoreError::BatV2ClearingAuthorizationFork)
+    ));
+
+    let second = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: [0x85; 16],
+            authorization_epoch: 2,
+            ..first.authorization.claims.clone()
+        },
+        &first.operator_key,
+    )
+    .unwrap();
+    let second_approval =
+        IssuerAccountingApprovalV2::sign(&second, 200, 2_000, &first.settlement_key).unwrap();
+    let _ = store
+        .register_bat_v2_accounting_authorization(
+            &second,
+            &second_approval,
+            &first.operator_key.verifying_key(),
+            &first.settlement_key.verifying_key(),
+            200,
+        )
+        .expect("append BAT V2 authorization epoch");
+    assert_eq!(
+        store
+            .current_bat_v2_accounting_authorization(&members[0].member.provider_id)
+            .unwrap()
+            .unwrap()
+            .authorization_epoch,
+        2
+    );
+
+    let rollback = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: [0x86; 16],
+            ..first.authorization.claims.clone()
+        },
+        &first.operator_key,
+    )
+    .unwrap();
+    let rollback_approval =
+        IssuerAccountingApprovalV2::sign(&rollback, 200, 2_000, &first.settlement_key).unwrap();
+    assert!(matches!(
+        store.register_bat_v2_accounting_authorization(
+            &rollback,
+            &rollback_approval,
+            &first.operator_key.verifying_key(),
+            &first.settlement_key.verifying_key(),
+            200,
+        ),
+        Err(StoreError::BatV2ClearingAuthorizationRollback)
+    ));
+
+    let before_account_fork = store.identity().unwrap().commit_seq;
+    let account_fork = ProviderAccountingAuthorizationV2::sign(
+        ProviderAccountingAuthorizationClaimsV2 {
+            authorization_id: [0x87; 16],
+            authorization_epoch: 3,
+            settlement_account_id: [0x88; 32],
+            ..first.authorization.claims.clone()
+        },
+        &first.operator_key,
+    )
+    .unwrap();
+    let account_fork_approval =
+        IssuerAccountingApprovalV2::sign(&account_fork, 200, 2_000, &first.settlement_key).unwrap();
+    assert!(matches!(
+        store.register_bat_v2_accounting_authorization(
+            &account_fork,
+            &account_fork_approval,
+            &first.operator_key.verifying_key(),
+            &first.settlement_key.verifying_key(),
+            200,
+        ),
+        Err(StoreError::ProviderAccountBindingConflict)
+    ));
+    assert_eq!(store.identity().unwrap().commit_seq, before_account_fork);
+}
+
+#[test]
+fn bat_v2_redemption_same_proof_two_providers_has_one_global_winner_and_no_restart_grant() {
+    let test_path = TestPath::new();
+    let store = Arc::new(create_store(&test_path));
+    let (class, members) = install_bat_v2_redemption_class(store.as_ref(), [0x91; 32], 1, 91, 1);
+    let authorities = [
+        bat_v2_redemption_authority(store.as_ref(), &class, &members[0].member, 0x92, 0x93, 1),
+        bat_v2_redemption_authority(store.as_ref(), &class, &members[1].member, 0x94, 0x95, 1),
+    ];
+    let verified = [
+        bat_v2_verified_redeem(&class, &members[0], &authorities[0], 0x96, 0x97, 400),
+        bat_v2_verified_redeem(&class, &members[1], &authorities[1], 0x98, 0x97, 400),
+    ];
+    let barrier = Arc::new(Barrier::new(2));
+    let workers = verified
+        .into_iter()
+        .zip(authorities.clone())
+        .map(|(verified, authority)| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let mut committer = store.bat_v2_redeem_committer(400).unwrap();
+                sign_and_commit_grantable_success_v2(
+                    verified,
+                    &authority.settlement_key,
+                    &mut committer,
+                )
+                .expect("commit or classify globally spent BAT V2 proof")
+            })
+        })
+        .collect::<Vec<_>>();
+    let outcomes = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, BatV2RedeemCommitResultV2::FreshCommitted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(
+                outcome,
+                BatV2RedeemCommitResultV2::TerminalInvalidOrSpent(_)
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        members
+            .iter()
+            .map(|member| {
+                store
+                    .provider_ledger_balance(&member.member.provider_id)
+                    .unwrap()
+                    .unwrap()
+                    .available_value
+            })
+            .sum::<u64>(),
+        7
+    );
+    assert_eq!(
+        store
+            .operational_inventory()
+            .unwrap()
+            .bat_v2_redemption_rows,
+        1
+    );
+    let ledger_rows: i64 = Connection::open(&test_path.database)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM ledger_transactions WHERE kind = 7",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ledger_rows, 1);
+    let redemption_columns: Vec<String> = Connection::open(&test_path.database)
+        .unwrap()
+        .prepare("SELECT name FROM pragma_table_info('bat_v2_redemptions')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for forbidden in [
+        "raw_proof",
+        "proof",
+        "secret_raw",
+        "quote_id",
+        "request_replay_image",
+        "rejection_reason",
+    ] {
+        assert!(!redemption_columns.iter().any(|column| column == forbidden));
+    }
+    assert!(redemption_columns
+        .iter()
+        .any(|column| column == "exact_initial_success"));
+    drop(store);
+
+    let reopened = open_store(&test_path).expect("reopen committed BAT V2 redemption");
+    let replay = bat_v2_verified_redeem(&class, &members[0], &authorities[0], 0x96, 0x97, 400);
+    let mut committer = reopened.bat_v2_redeem_committer(400).unwrap();
+    assert!(matches!(
+        sign_and_commit_grantable_success_v2(
+            replay,
+            &authorities[0].settlement_key,
+            &mut committer,
+        )
+        .unwrap(),
+        BatV2RedeemCommitResultV2::TerminalInvalidOrSpent(_)
+    ));
+}
+
+#[test]
+fn bat_v2_redemption_bad_auth_account_and_member_are_zero_mutation_then_valid_succeeds() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let (class, members) = install_bat_v2_redemption_class(&store, [0xa1; 32], 1, 101, 1);
+    let authority = bat_v2_redemption_authority(&store, &class, &members[0].member, 0xa2, 0xa3, 1);
+    let baseline = store.identity().unwrap().commit_seq;
+
+    let proof = BitcoinPirCashuBatProofV2::from_class(&class, [0xa4; 32], point(204)).unwrap();
+    let (base_request, _) = pir_service_protocol::ProviderRedeemRequestV2::prepare(
+        &authority.authorization,
+        &members[0],
+        &class,
+        &proof,
+        [0xa5; 32],
+    )
+    .unwrap()
+    .into_parts();
+    let classify = |request: pir_service_protocol::ProviderRedeemRequestV2,
+                    signing_key: &SigningKey| {
+        let request_auth = ProviderRedeemRequestAuthV2::sign(&request, signing_key).unwrap();
+        precheck_bat_v2_redeem_v2(
+            ProviderRedeemEnvelopeV2 {
+                request,
+                request_auth,
+                credential: proof.clone(),
+            },
+            &authority.authorization,
+            &authority.approval,
+            &class,
+            &members[0],
+            ProviderAccountingExpectationV2 {
+                provider_id: members[0].member.provider_id,
+                issuer_id: issuer_id(),
+                operator_verifying_key: &authority.operator_key.verifying_key(),
+                issuer_settlement_verifying_key: &authority.settlement_key.verifying_key(),
+                now_unix: 400,
+                minimum_authorization_epoch: 1,
+            },
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        classify(base_request.clone(), &SigningKey::from_bytes(&[0xa6; 32])),
+        BatV2RedeemPrecheckV2::RetrySafeNonConsuming(_)
+    ));
+    let mut wrong_account = base_request.clone();
+    wrong_account.settlement_account_id = [0xa7; 32];
+    assert!(matches!(
+        classify(wrong_account, &authority.clearing_key),
+        BatV2RedeemPrecheckV2::RetrySafeNonConsuming(_)
+    ));
+    let mut wrong_member = base_request;
+    wrong_member.policy_digest = [0xa8; 32];
+    assert!(matches!(
+        classify(wrong_member, &authority.clearing_key),
+        BatV2RedeemPrecheckV2::RetrySafeNonConsuming(_)
+    ));
+    assert_eq!(store.identity().unwrap().commit_seq, baseline);
+    assert_eq!(
+        store
+            .operational_inventory()
+            .unwrap()
+            .bat_v2_redemption_rows,
+        0
+    );
+
+    let verified = bat_v2_verified_redeem(&class, &members[0], &authority, 0xa9, 0xaa, 400);
+    let mut committer = store.bat_v2_redeem_committer(400).unwrap();
+    assert!(matches!(
+        sign_and_commit_grantable_success_v2(verified, &authority.settlement_key, &mut committer,)
+            .unwrap(),
+        BatV2RedeemCommitResultV2::FreshCommitted(_)
+    ));
+    assert_eq!(store.identity().unwrap().commit_seq, baseline + 1);
+}
+
+#[test]
+fn bat_v2_redemption_retained_member_works_until_exact_deadline_then_is_terminal() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let class_id = [0xb1; 32];
+    let (first_class, first_members) = install_bat_v2_redemption_class(&store, class_id, 1, 111, 1);
+    let authority = bat_v2_redemption_authority(
+        &store,
+        &first_class,
+        &first_members[0].member,
+        0xb2,
+        0xb3,
+        1,
+    );
+    let _ = install_bat_v2_redemption_class(&store, class_id, 2, 112, 2);
+
+    let within = bat_v2_verified_redeem(
+        &first_class,
+        &first_members[0],
+        &authority,
+        0xb4,
+        0xb5,
+        1_480,
+    );
+    let mut committer = store.bat_v2_redeem_committer(1_480).unwrap();
+    assert!(matches!(
+        sign_and_commit_grantable_success_v2(within, &authority.settlement_key, &mut committer,)
+            .unwrap(),
+        BatV2RedeemCommitResultV2::FreshCommitted(_)
+    ));
+    let before_expired = store.identity().unwrap().commit_seq;
+    assert!(matches!(
+        bat_v2_redemption_precheck(
+            &first_class,
+            &first_members[0],
+            &authority,
+            0xb6,
+            0xb7,
+            1_481,
+        ),
+        BatV2RedeemPrecheckV2::TerminalInvalidOrSpent(_)
+    ));
+    assert_eq!(store.identity().unwrap().commit_seq, before_expired);
 }
