@@ -18,16 +18,24 @@ import {
   type LightningNetworkNameV1,
 } from './admission-vault.js';
 import {
+  BatV2CredentialVaultV2,
+  validateBatV2ClassBindingV2,
+  type BatV2ClassBindingV2,
+} from './bat-v2-vault.js';
+import {
   AmbiguousCapabilitySpendErrorV1,
   ProviderAdmissionSessionV1,
   VerifiedIndependentProviderPairV1,
+  VerifiedIndependentProviderBatV2PairV2,
   VerifiedSingleProviderOfferV1,
   VerifiedSingleProviderRetainedOfferV1,
   type IndependentProviderPairAdmissionSelectionV1,
+  type IndependentProviderBatV2AdmissionSelectionV2,
   type ProviderPairBolt11AcquisitionOptionsV1,
   type ProviderPairSideV1,
   type ServiceAuthorizationOptionsV1,
 } from './service-admission.js';
+import type { BatV2ClassArtifactV2 } from './provider-payment-selection.js';
 import {
   Bolt11RecoveryRequiredErrorV1,
   resumeBolt11AcquisitionV1,
@@ -41,6 +49,7 @@ import type {
   ServicePolicyViewV1,
   RetainedServiceRedemptionViewV1,
   ServiceScopeViewV1,
+  BatV2AdmissionOutcomeV2,
 } from './sdk-bridge.js';
 import {
   assertProductQueryShapeFitsScopeV1,
@@ -72,8 +81,12 @@ export type ProductAdmissionLegStatusV1 =
   | 'ambiguous-spend'
   | 'failed';
 
-export interface ProductAdmissionResourceBindingV1
-  extends AdmissionCapabilityBindingV1 {
+export interface ProductAdmissionResourceBindingV1 {
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  scheme: AdmissionSchemeV1 | 'cashu-bat-v2';
   /** Trusted dataset identifier, normally the verified bucket super-root. */
   datasetIdHex: string;
   /** Exact Harmony PRP backend, or another resource-specific variant. */
@@ -129,7 +142,25 @@ export interface ProductAdmissionControllerOptionsV1 {
   vault: AdmissionCredentialVaultV1;
   /** Test seam; production uses the restart-safe encrypted recovery adapter. */
   resumeBolt11?: typeof resumeBolt11AcquisitionV1;
+  /** Required only when both independent paid legs select BAT V2. */
+  batV2Vault?: BatV2CredentialVaultV2;
+  /** Trusted release/class-registry resolver. It receives one exact signed
+   * provider member and must return the canonical issuer-signed artifact. */
+  resolveBatV2Class?: ProductBatV2ClassResolverV2;
 }
+
+export interface ProductBatV2ClassMemberSelectorV2 {
+  role: string;
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  offer: ServiceOfferViewV1;
+}
+
+export type ProductBatV2ClassResolverV2 = (
+  selector: ProductBatV2ClassMemberSelectorV2,
+) => BatV2ClassArtifactV2 | Promise<BatV2ClassArtifactV2>;
 
 export interface ProductOfferChoiceV1 {
   scopeIdHex: string;
@@ -206,6 +237,7 @@ export type ProductAdmissionErrorCodeV1 =
   | 'lightning-payee-untrusted'
   | 'bolt11-recovery-required'
   | 'capability-inventory-empty'
+  | 'bat-v2-retry-safe'
   | 'ambiguous-capability-spend'
   | 'resource-failed-after-authorization'
   | 'operation-failed';
@@ -270,6 +302,7 @@ export class ProductAdmissionControllerV1 {
   private errorCode: ProductAdmissionErrorCodeV1 | null = null;
   private queryAttempted = false;
   private queryShapesFrozen = false;
+  private batV2Pair: VerifiedIndependentProviderBatV2PairV2 | null = null;
   /** Invalidated synchronously when a strict admission attempt starts closing. */
   private lifecycleGeneration = 0;
   private readonly resumeBolt11Impl: typeof resumeBolt11AcquisitionV1;
@@ -395,6 +428,7 @@ export class ProductAdmissionControllerV1 {
     if (this.legs.some((leg) => leg.transitionInFlight)) {
       throw new ProductAdmissionErrorV1('operation-failed', 'an admission transition is in flight');
     }
+    await this.closeBatV2Pair();
     this.closeAcquisitions();
     for (const leg of this.legs) resetLegForPolicy(leg);
     try {
@@ -693,6 +727,10 @@ export class ProductAdmissionControllerV1 {
         );
       }
       this.assertSelectionPrivacyIfComplete();
+      const chosenOffer = selectedOffer(leg);
+      if (chosenOffer.authorization === 'cashu-bat-v2') {
+        return this.authorizeBatV2Leg(role, leg);
+      }
       const frozen = this.freezeSelection();
       const binding = selectedCapabilityBinding(leg);
 
@@ -708,7 +746,6 @@ export class ProductAdmissionControllerV1 {
         leg.status = 'ready';
       }
 
-      const chosenOffer = selectedOffer(leg);
       await this.assertPairAcquisitionBarrier();
       if (leg.retainedSelected || requiresVaultCapability(chosenOffer)) {
         await this.refreshLegInventory(leg);
@@ -758,6 +795,179 @@ export class ProductAdmissionControllerV1 {
     });
   }
 
+  private async authorizeBatV2Leg(
+    role: string,
+    leg: LegStateV1,
+  ): Promise<ProductAdmissionSnapshotV1> {
+    if (this.options.topology !== 'independent-pair'
+        || this.legs.length !== 2
+        || this.legs.some((candidate) => candidate.retainedSelected !== null
+          || candidate.selected?.offer.authorization !== 'cashu-bat-v2')) {
+      throw new ProductAdmissionErrorV1(
+        'offer-selection-invalidated',
+        'BAT V2 consumption requires two current exact class-member offers',
+      );
+    }
+    if (!this.options.batV2Vault || !this.options.resolveBatV2Class) {
+      throw new ProductAdmissionErrorV1(
+        'commercial-admission-unconfigured',
+        'BAT V2 requires the independent class wallet and trusted class resolver',
+      );
+    }
+
+    const resourceBinding = productBatV2ResourceBinding(leg);
+    if (leg.resource) {
+      leg.status = 'checking-cache';
+      if (await leg.resource.restore(selectedResourceBinding(leg, resourceBinding))) {
+        leg.status = 'cached-resource-ready';
+        leg.errorCode = null;
+        this.updateReadyPhase();
+        if (this.phase === 'ready-to-query') await this.closeBatV2Pair();
+        return this.snapshot();
+      }
+      leg.status = 'ready';
+    }
+
+    // Rebuild the ordinary strict-pair guard before resolving public class
+    // artifacts. Neither resolver input nor the vault contains proof bytes.
+    this.freezeSelection();
+    let pair: VerifiedIndependentProviderBatV2PairV2;
+    try {
+      pair = await this.requireBatV2Pair();
+    } catch (cause) {
+      if (/two distinct BAT V2 proofs/i.test(errorMessage(cause))) {
+        leg.errorCode = 'capability-inventory-empty';
+        throw new ProductAdmissionErrorV1(
+          'capability-inventory-empty',
+          'two distinct issuer-wide BAT V2 proofs are required before either provider send',
+          { cause },
+        );
+      }
+      throw cause;
+    }
+
+    leg.status = 'authorizing';
+    leg.credentialFlowStarted = true;
+    let outcome: BatV2AdmissionOutcomeV2;
+    try {
+      outcome = await pair.authorize(this.sideFor(role));
+    } catch (cause) {
+      if (/two distinct BAT V2 proofs/i.test(errorMessage(cause))) {
+        leg.status = 'ready';
+        leg.errorCode = 'capability-inventory-empty';
+        throw new ProductAdmissionErrorV1(
+          'capability-inventory-empty',
+          'two distinct issuer-wide BAT V2 proofs are required before either provider send',
+          { cause },
+        );
+      }
+      if (cause instanceof AmbiguousCapabilitySpendErrorV1) {
+        await this.closeBatV2PairAndRefresh(pair).catch(() => {
+          // The proof remains reserved/burn-intended; preserve the more useful
+          // may-have-been-sent error for the caller.
+        });
+        leg.status = 'ambiguous-spend';
+        leg.errorCode = 'ambiguous-capability-spend';
+        throw new ProductAdmissionErrorV1(
+          'ambiguous-capability-spend',
+          'BAT V2 may be spent after the one-shot admission call; do not retry it',
+          { cause },
+        );
+      }
+      await this.closeBatV2PairAndRefresh(pair).catch(() => {
+        // Preserve the local exact-gate failure. Unfinished reservations stay
+        // fail-closed in the V2 vault if release itself fails.
+      });
+      throw cause;
+    }
+
+    if (outcome.kind === 'recoverable-definitely-not-sent'
+        || outcome.kind === 'recoverable-retry-safe') {
+      leg.status = 'ready';
+      leg.errorCode = null;
+      await this.closeBatV2PairAndRefresh(pair);
+      throw new ProductAdmissionErrorV1(
+        'bat-v2-retry-safe',
+        'BAT V2 proof was recovered safely; retry only by explicit user action',
+      );
+    }
+    if (outcome.kind === 'burn-terminal') {
+      leg.status = 'failed';
+      leg.errorCode = 'operation-failed';
+      await this.closeBatV2PairAndRefresh(pair);
+      throw new ProductAdmissionErrorV1(
+        'operation-failed',
+        'BAT V2 authorization was terminal and the proof was burned',
+      );
+    }
+    if (outcome.kind === 'burn-outcome-unknown') {
+      leg.status = 'ambiguous-spend';
+      leg.errorCode = 'ambiguous-capability-spend';
+      await this.closeBatV2PairAndRefresh(pair);
+      throw new ProductAdmissionErrorV1(
+        'ambiguous-capability-spend',
+        'BAT V2 authorization outcome is unknown and the proof was burned',
+      );
+    }
+
+    leg.grant = { ...outcome.grant };
+    if (leg.resource) {
+      try {
+        await leg.resource.acquireAfterAuthorization(
+          selectedResourceBinding(leg, resourceBinding),
+        );
+      } catch (cause) {
+        await this.closeBatV2PairAndRefresh(pair).catch(() => {
+          // The provider grant is authoritative; keep its resource failure as
+          // the surfaced recovery instruction.
+        });
+        leg.status = 'failed';
+        leg.errorCode = 'resource-failed-after-authorization';
+        throw new ProductResourceFailedAfterAuthorizationErrorV1({ cause });
+      }
+    }
+    leg.status = 'authorized';
+    leg.errorCode = null;
+    await this.refreshBatV2Inventory(pair.classBinding());
+    this.updateReadyPhase();
+    if (this.phase === 'ready-to-query') await this.closeBatV2Pair();
+    return this.snapshot();
+  }
+
+  private async requireBatV2Pair(): Promise<VerifiedIndependentProviderBatV2PairV2> {
+    if (this.batV2Pair) return this.batV2Pair;
+    const vault = this.options.batV2Vault!;
+    const resolver = this.options.resolveBatV2Class!;
+    const artifacts = await Promise.all(this.legs.map(async (leg) =>
+      normalizeProductBatV2ClassArtifactV2(await resolver(batV2ResolverSelector(leg)))));
+    try {
+      const pair = VerifiedIndependentProviderBatV2PairV2.create(
+        productBatV2Selection(this.legs[0], artifacts[0]),
+        productBatV2Selection(this.legs[1], artifacts[1]),
+        vault,
+        {
+          allowSharedIssuerCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+          allowSharedLightningPayeeCorrelation: this.allowSharedInfrastructureCorrelationOnce,
+        },
+      );
+      this.batV2Pair = pair;
+      await this.refreshBatV2Inventory(pair.classBinding());
+      return pair;
+    } finally {
+      for (const artifact of artifacts) artifact.classBytes.fill(0);
+    }
+  }
+
+  private async refreshBatV2Inventory(binding: BatV2ClassBindingV2): Promise<void> {
+    const vault = this.options.batV2Vault;
+    if (!vault) return;
+    const inventory = await vault.listInventory();
+    const count = inventory.find((entry) => sameBatV2ClassBindingV2(entry, binding))?.count ?? 0;
+    for (const leg of this.legs) {
+      if (selectedOffer(leg).authorization === 'cashu-bat-v2') leg.inventory = count;
+    }
+  }
+
   async startBolt11(role: string): Promise<ProductAdmissionSnapshotV1> {
     const leg = this.requireSelectedLeg(role);
     this.assertCredentialFlowTopologyReady();
@@ -766,6 +976,12 @@ export class ProductAdmissionControllerV1 {
       this.freezeQueryShapesForCredentialFlow();
       if (leg.selected!.offer.acquisition !== 'bolt11') {
         throw new ProductAdmissionErrorV1('operation-failed', 'selected offer is not BOLT11');
+      }
+      if (leg.selected!.offer.authorization === 'cashu-bat-v2') {
+        throw new ProductAdmissionErrorV1(
+          'operation-failed',
+          'BAT V2 acquisition uses the independent class-wallet controller',
+        );
       }
       const payee = selectedExpectedLightningPayee(leg);
       const frozen = this.freezeSelection();
@@ -979,8 +1195,11 @@ export class ProductAdmissionControllerV1 {
     for (const leg of this.legs) {
       if (leg.resource?.persistAfterQuery && hasAdmissionSelection(leg)) {
         try {
+          const binding = selectedOffer(leg).authorization === 'cashu-bat-v2'
+            ? productBatV2ResourceBinding(leg)
+            : selectedCapabilityBinding(leg);
           await leg.resource.persistAfterQuery(
-            selectedResourceBinding(leg, selectedCapabilityBinding(leg)),
+            selectedResourceBinding(leg, binding),
           );
         } catch {
           // Query/results remain valid. A missing cache write only forces the
@@ -1034,16 +1253,23 @@ export class ProductAdmissionControllerV1 {
   async close(): Promise<void> {
     this.lifecycleGeneration += 1;
     this.closeAcquisitions();
+    let closeFailure: unknown = null;
+    try {
+      await this.closeBatV2Pair();
+    } catch (error) {
+      closeFailure = error;
+    }
     for (const leg of this.legs) {
       if (!leg.transitionInFlight) {
         try { leg.session.close(); } catch { /* closing transport below is authoritative */ }
       }
     }
-    let closeFailure: unknown = null;
     try {
       await this.closeBootstrapOnly();
     } catch (error) {
-      closeFailure = error;
+      closeFailure = closeFailure
+        ? new AggregateError([closeFailure, error], 'product admission close failed')
+        : error;
     } finally {
       this.legs = [];
       this.phase = 'idle';
@@ -1248,6 +1474,7 @@ export class ProductAdmissionControllerV1 {
         continue;
       }
       const offer = selectedOffer(candidate);
+      if (offer.authorization === 'cashu-bat-v2') continue;
       if (!candidate.retainedSelected && !requiresVaultCapability(offer)) continue;
       await this.refreshLegInventory(candidate);
       if ((candidate.inventory ?? 0) <= 0) {
@@ -1402,6 +1629,8 @@ export class ProductAdmissionControllerV1 {
           && leg.errorCode !== 'capability-inventory-empty'
           && leg.errorCode !== 'lightning-payee-untrusted'
           && !(cause instanceof ProductAdmissionErrorV1
+            && cause.code === 'bat-v2-retry-safe')
+          && !(cause instanceof ProductAdmissionErrorV1
             && cause.code === 'pair-correlation-rejected')) {
         leg.status = 'failed';
         leg.errorCode = cause instanceof ProductAdmissionErrorV1
@@ -1469,6 +1698,14 @@ export class ProductAdmissionControllerV1 {
       leg.inventory = null;
       return;
     }
+    if (leg.selected.offer.authorization === 'cashu-bat-v2') {
+      if (this.batV2Pair) {
+        await this.refreshBatV2Inventory(this.batV2Pair.classBinding());
+      } else {
+        leg.inventory = null;
+      }
+      return;
+    }
     leg.inventory = await this.options.vault.countCapabilities(
       selectedCapabilityBinding(leg),
       currentCapabilityAcquisitionContext(leg),
@@ -1531,6 +1768,20 @@ export class ProductAdmissionControllerV1 {
       leg.acquisition?.close();
       leg.acquisition = null;
     }
+  }
+
+  private async closeBatV2Pair(): Promise<void> {
+    const pair = this.batV2Pair;
+    this.batV2Pair = null;
+    await pair?.close();
+  }
+
+  private async closeBatV2PairAndRefresh(
+    pair: VerifiedIndependentProviderBatV2PairV2,
+  ): Promise<void> {
+    const binding = pair.classBinding();
+    await this.closeBatV2Pair();
+    await this.refreshBatV2Inventory(binding);
   }
 
   private async closeBootstrapOnly(): Promise<void> {
@@ -1795,7 +2046,10 @@ function sameCapabilityBinding(
 
 function selectedResourceBinding(
   leg: LegStateV1,
-  binding: AdmissionCapabilityBindingV1,
+  binding: Pick<
+    ProductAdmissionResourceBindingV1,
+    'providerIdHex' | 'policyDigestHex' | 'scopeIdHex' | 'offerId' | 'scheme'
+  >,
 ): ProductAdmissionResourceBindingV1 {
   if (!leg.resource) throw new Error('provider leg has no bound resource');
   return {
@@ -1803,6 +2057,101 @@ function selectedResourceBinding(
     datasetIdHex: canonicalHex32(leg.resource.datasetIdHex),
     variant: requireVariant(leg.resource.variant),
   };
+}
+
+function productBatV2ResourceBinding(
+  leg: LegStateV1,
+): Omit<ProductAdmissionResourceBindingV1, 'datasetIdHex' | 'variant'> {
+  if (!leg.selected || leg.selected.offer.authorization !== 'cashu-bat-v2') {
+    throw new ProductAdmissionErrorV1(
+      'offer-selection-invalidated',
+      'the selected provider offer is not BAT V2',
+    );
+  }
+  return {
+    providerIdHex: canonicalHex32(leg.policy.providerIdHex),
+    policyDigestHex: canonicalHex32(leg.policy.policyDigestHex),
+    scopeIdHex: canonicalHex32(leg.selected.scopeIdHex),
+    offerId: leg.selected.offerId,
+    scheme: 'cashu-bat-v2',
+  };
+}
+
+function batV2ResolverSelector(leg: LegStateV1): ProductBatV2ClassMemberSelectorV2 {
+  if (!leg.selected || leg.selected.offer.authorization !== 'cashu-bat-v2') {
+    throw new ProductAdmissionErrorV1(
+      'offer-selection-invalidated',
+      'BAT V2 resolver requires one current exact signed offer',
+    );
+  }
+  return {
+    role: leg.role,
+    providerIdHex: canonicalHex32(leg.policy.providerIdHex),
+    policyDigestHex: canonicalHex32(leg.policy.policyDigestHex),
+    scopeIdHex: canonicalHex32(leg.selected.scopeIdHex),
+    offerId: leg.selected.offerId,
+    offer: cloneOffer(leg.selected.offer),
+  };
+}
+
+function productBatV2Selection(
+  leg: LegStateV1,
+  classArtifact: BatV2ClassArtifactV2,
+): IndependentProviderBatV2AdmissionSelectionV2 {
+  if (!leg.selected || leg.selected.offer.authorization !== 'cashu-bat-v2'
+      || !leg.providerEndpoint) {
+    throw new ProductAdmissionErrorV1(
+      'offer-selection-invalidated',
+      'BAT V2 requires a current exact offer on an adapter-bound provider endpoint',
+    );
+  }
+  return {
+    session: leg.session,
+    scopeIdHex: leg.selected.scopeIdHex,
+    offerId: leg.selected.offerId,
+    providerEndpoint: leg.providerEndpoint,
+    lightningNetwork: leg.network ?? 'bitcoin',
+    expectedLightningPayeePubkey: selectedExpectedLightningPayee(leg),
+    classArtifact,
+  };
+}
+
+function normalizeProductBatV2ClassArtifactV2(value: BatV2ClassArtifactV2): BatV2ClassArtifactV2 {
+  if (!value || !(value.classBytes instanceof Uint8Array) || value.classBytes.length === 0
+      || !value.binding || typeof value.binding !== 'object') {
+    throw new ProductAdmissionErrorV1(
+      'operation-failed',
+      'trusted BAT V2 resolver returned a malformed class artifact',
+    );
+  }
+  try {
+    validateBatV2ClassBindingV2(value.binding);
+  } catch (cause) {
+    throw new ProductAdmissionErrorV1(
+      'operation-failed',
+      'trusted BAT V2 resolver returned an invalid class binding',
+      { cause },
+    );
+  }
+  return {
+    classBytes: value.classBytes.slice(),
+    binding: { ...value.binding },
+  };
+}
+
+function sameBatV2ClassBindingV2(
+  left: BatV2ClassBindingV2,
+  right: BatV2ClassBindingV2,
+): boolean {
+  return left.issuerIdHex === right.issuerIdHex
+    && left.classIdHex === right.classIdHex
+    && left.classDigestHex === right.classDigestHex
+    && left.classKeyEpoch === right.classKeyEpoch
+    && left.batKeyIdHex === right.batKeyIdHex;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function schemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {

@@ -1357,12 +1357,21 @@ export class HarmonyPirClientAdapter {
       ) => client().fetchRetainedServiceRedemption(
         0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
+      fetchRetainedBatV2Policy: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedBatV2Policy(
+        0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
       assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(0, policy),
       captureReadinessGuard: () => this.captureServiceReadinessGuard(0, dbId),
       assertRetainedSessionBinding: (policy, nowUnix) =>
         authorizedClient().verifyRetainedServiceSession(0, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeHintService(dbId, policy, scopeId, offerId, proof),
+      authorizeBatV2: (verified, proof, nowUnix) =>
+        authorizedClient().dangerousUnpairedAuthorizeBatV2HintService(
+          dbId, verified, proof, nowUnix,
+        ),
       authorizeRetained: (policy, proof, nowUnix) =>
         authorizedClient().dangerousUnpairedAuthorizeRetainedHintService(
           dbId,
@@ -1394,12 +1403,21 @@ export class HarmonyPirClientAdapter {
       ) => client().fetchRetainedServiceRedemption(
         1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
       ),
+      fetchRetainedBatV2Policy: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedBatV2Policy(
+        1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
       assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(1, policy),
       captureReadinessGuard: () => this.captureServiceReadinessGuard(1, dbId),
       assertRetainedSessionBinding: (policy, nowUnix) =>
         authorizedClient().verifyRetainedServiceSession(1, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>
         authorizedClient().authorizeQueryService(dbId, policy, scopeId, offerId, proof),
+      authorizeBatV2: (verified, proof, nowUnix) =>
+        authorizedClient().dangerousUnpairedAuthorizeBatV2QueryService(
+          dbId, verified, proof, nowUnix,
+        ),
       authorizeRetained: (policy, proof, nowUnix) =>
         authorizedClient().dangerousUnpairedAuthorizeRetainedQueryService(
           dbId,

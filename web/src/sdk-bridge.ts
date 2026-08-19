@@ -427,6 +427,15 @@ export interface WasmStandaloneOnionServiceAdmissionV1 {
     offerId: number,
     nowUnix: bigint,
   ): WasmAcceptedRetainedServiceRedemptionV1;
+  acceptRetainedBatV2PolicyResponse(
+    responseFrame: Uint8Array,
+    expectedProviderId: Uint8Array,
+    policySigningKey: Uint8Array,
+    expectedPolicyDigest: Uint8Array,
+    scopeId: Uint8Array,
+    offerId: number,
+    nowUnix: bigint,
+  ): WasmAcceptedRetainedBatV2PolicyV2;
   powChallengeRequest(
     policy: WasmAcceptedServicePolicyV1,
     scopeId: Uint8Array,
@@ -450,6 +459,11 @@ export interface WasmStandaloneOnionServiceAdmissionV1 {
     proofBytes: Uint8Array,
     nowUnix: bigint,
   ): Uint8Array;
+  batV2AuthorizationRequest(
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Uint8Array;
   acceptAuthorizationResponse(
     responseFrame: Uint8Array,
     policy: WasmAcceptedServicePolicyV1,
@@ -460,6 +474,10 @@ export interface WasmStandaloneOnionServiceAdmissionV1 {
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     nowUnix: bigint,
   ): ServiceGrantViewV1;
+  acceptBatV2AuthorizationResponse(
+    responseFrame: Uint8Array,
+    verified: WasmVerifiedBatV2RedemptionV2,
+  ): BatV2AdmissionOutcomeV2;
 }
 
 /**
@@ -675,6 +693,13 @@ export interface WasmAcceptedServicePolicyV1 {
     quoteKeyCheckpointBytes: Uint8Array,
     nowUnix: bigint,
   ): WasmBolt11BatV2AcquisitionV2;
+  /** Sole current-policy route to an opaque exact BAT V2 redemption member. */
+  verifyBatV2Redemption?(
+    scopeId: Uint8Array,
+    offerId: number,
+    classBytes: Uint8Array,
+    nowUnix: bigint,
+  ): WasmVerifiedBatV2RedemptionV2;
 }
 
 /** Exact historical signed policy typestate, usable only for one retained
@@ -689,6 +714,39 @@ export interface WasmAcceptedRetainedServiceRedemptionV1 {
   validateAuthorizationProof(proofBytes: Uint8Array): void;
   redemptionJson(nowUnix: bigint): RetainedServiceRedemptionViewV1;
 }
+
+/** Exact historical BAT V2 selector. It cannot construct AUTH until the
+ * issuer-signed class is rechecked and an opaque verified handle is returned. */
+export interface WasmAcceptedRetainedBatV2PolicyV2 {
+  free(): void;
+  readonly providerIdHex: string;
+  readonly policyDigestHex: string;
+  readonly scopeIdHex: string;
+  readonly offerId: number;
+  verifyBatV2Redemption(
+    classBytes: Uint8Array,
+    nowUnix: bigint,
+  ): WasmVerifiedBatV2RedemptionV2;
+}
+
+/** Current-or-retained exact scheme-6 authority. JavaScript cannot construct
+ * or retarget it; the backend consumes it directly without string parsing. */
+export interface WasmVerifiedBatV2RedemptionV2 {
+  free(): void;
+  readonly providerIdHex: string;
+  readonly policyDigestHex: string;
+  readonly scopeIdHex: string;
+  readonly offerId: number;
+  readonly classIdHex: string;
+  assertRedemptionReady(nowUnix: bigint): void;
+}
+
+export type BatV2AdmissionOutcomeV2 =
+  | { kind: 'granted'; grant: ServiceGrantViewV1 }
+  | { kind: 'recoverable-definitely-not-sent'; retryAfterMs: number | null }
+  | { kind: 'recoverable-retry-safe'; retryAfterMs: number | null }
+  | { kind: 'burn-terminal' }
+  | { kind: 'burn-outcome-unknown' };
 
 export type WasmLightningNetworkV1 = 'bitcoin' | 'testnet' | 'signet' | 'regtest';
 
@@ -897,6 +955,16 @@ export interface WasmDpfClient {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmAcceptedRetainedServiceRedemptionV1>;
+  fetchRetainedBatV2Policy(
+    serverIndex: number,
+    dbId: number,
+    expectedProviderId: Uint8Array,
+    policySigningKey: Uint8Array,
+    expectedPolicyDigest: Uint8Array,
+    scopeId: Uint8Array,
+    offerId: number,
+    nowUnix: bigint,
+  ): Promise<WasmAcceptedRetainedBatV2PolicyV2>;
   verifyServicePolicySession(
     serverIndex: number,
     policy: WasmAcceptedServicePolicyV1,
@@ -914,6 +982,14 @@ export interface WasmDpfClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
+  /** One-sided primitive; the Web strict-pair typestate is the caller. */
+  dangerousUnpairedAuthorizeBatV2Service(
+    serverIndex: number,
+    dbId: number,
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Promise<BatV2AdmissionOutcomeV2>;
   /** Low-level one-sided retained redemption. The strict DPF adapter calls
    * this only after its two-provider readiness and product-pair checks. */
   dangerousUnpairedAuthorizeRetainedService(
@@ -1040,6 +1116,16 @@ export interface WasmHarmonyClient {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmAcceptedRetainedServiceRedemptionV1>;
+  fetchRetainedBatV2Policy(
+    providerIndex: number,
+    dbId: number,
+    expectedProviderId: Uint8Array,
+    policySigningKey: Uint8Array,
+    expectedPolicyDigest: Uint8Array,
+    scopeId: Uint8Array,
+    offerId: number,
+    nowUnix: bigint,
+  ): Promise<WasmAcceptedRetainedBatV2PolicyV2>;
   verifyServicePolicySession(
     providerIndex: number,
     policy: WasmAcceptedServicePolicyV1,
@@ -1056,6 +1142,13 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
+  /** One-sided primitive; the Web strict hint/query pair is the caller. */
+  dangerousUnpairedAuthorizeBatV2HintService(
+    dbId: number,
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Promise<BatV2AdmissionOutcomeV2>;
   /** Low-level retained hint redemption without a native hint/query pair. */
   dangerousUnpairedAuthorizeRetainedHintService(
     dbId: number,
@@ -1070,6 +1163,13 @@ export interface WasmHarmonyClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
+  /** One-sided primitive; the Web strict hint/query pair is the caller. */
+  dangerousUnpairedAuthorizeBatV2QueryService(
+    dbId: number,
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Promise<BatV2AdmissionOutcomeV2>;
   /** Low-level retained query redemption without a native hint/query pair. */
   dangerousUnpairedAuthorizeRetainedQueryService(
     dbId: number,
@@ -1211,6 +1311,15 @@ export interface WasmOramClient {
     offerId: number,
     nowUnix: bigint,
   ): Promise<WasmAcceptedRetainedServiceRedemptionV1>;
+  fetchRetainedBatV2Policy(
+    dbId: number,
+    expectedProviderId: Uint8Array,
+    policySigningKey: Uint8Array,
+    expectedPolicyDigest: Uint8Array,
+    scopeId: Uint8Array,
+    offerId: number,
+    nowUnix: bigint,
+  ): Promise<WasmAcceptedRetainedBatV2PolicyV2>;
   verifyServicePolicySession(policy: WasmAcceptedServicePolicyV1): void;
   verifyRetainedServiceSession(
     policy: WasmAcceptedRetainedServiceRedemptionV1,
@@ -1223,6 +1332,12 @@ export interface WasmOramClient {
     offerId: number,
     proofBytes: Uint8Array,
   ): Promise<ServiceGrantViewV1>;
+  authorizeBatV2Service(
+    dbId: number,
+    verified: WasmVerifiedBatV2RedemptionV2,
+    proofBytes: Uint8Array,
+    nowUnix: bigint,
+  ): Promise<BatV2AdmissionOutcomeV2>;
   authorizeRetainedService(
     dbId: number,
     policy: WasmAcceptedRetainedServiceRedemptionV1,

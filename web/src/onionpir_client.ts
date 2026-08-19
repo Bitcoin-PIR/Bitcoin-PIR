@@ -1128,6 +1128,20 @@ export class OnionPirWebClient {
           nowUnix,
         );
       }),
+      fetchRetainedBatV2Policy: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => roundtrip(async (state) => {
+        const response = await this.sendRaw(state.retainedPolicyRequest(policyDigest));
+        return state.acceptRetainedBatV2PolicyResponse(
+          response,
+          providerId,
+          policyKey,
+          policyDigest,
+          scopeId,
+          offerId,
+          nowUnix,
+        );
+      }),
       assertSessionBinding: (policy) => {
         const state = admission();
         try {
@@ -1168,6 +1182,18 @@ export class OnionPirWebClient {
           try {
             const response = await this.sendRaw(request);
             return state.acceptAuthorizationResponse(response, policy, scopeId);
+          } finally {
+            request.fill(0);
+          }
+        }),
+      authorizeBatV2: (verified, proof, nowUnix) =>
+        roundtrip(async (state) => {
+          // Rust rechecks current/retained membership and proof/class binding
+          // before returning request bytes. Exactly one socket send follows.
+          const request = state.batV2AuthorizationRequest(verified, proof, nowUnix);
+          try {
+            const response = await this.sendRaw(request);
+            return state.acceptBatV2AuthorizationResponse(response, verified);
           } finally {
             request.fill(0);
           }

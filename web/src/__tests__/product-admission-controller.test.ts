@@ -79,9 +79,14 @@ import {
   AdmissionCredentialVaultV1,
   type Bolt11CapabilityAcquisitionContextV1,
 } from '../admission-vault.js';
+import type {
+  BatV2ClassBindingV2,
+  BatV2CredentialVaultV2,
+} from '../bat-v2-vault.js';
 import {
   ProductAdmissionControllerV1,
   ProductAdmissionErrorV1,
+  type ProductBatV2ClassMemberSelectorV2,
 } from '../product-admission-controller.js';
 import {
   ProviderAdmissionSessionV1,
@@ -208,6 +213,27 @@ function paidOffer(
   };
 }
 
+function batV2Offer(offerId: number): ServiceOfferViewV1 {
+  return {
+    offerId,
+    acquisition: 'bolt11',
+    authorization: 'cashu-bat-v2',
+    freeMode: 'not-free',
+    verification: 'shared-issuer-online',
+    deploymentStatus: 'stable',
+    priorityClass: 1,
+    price: { kind: 'msat', amount: '1000' },
+    issuerIdHex: '91'.repeat(32),
+    keyIdHex: '92'.repeat(32),
+    batVerificationKeyFingerprintHex: '',
+    arcVerificationKeyFingerprintHex: '',
+    endpoint: 'https://bat-v2-issuer.example',
+    credentialCount: 2,
+    credentialPresentationLimit: 1,
+    privacyLeakageBits: 1,
+  };
+}
+
 function lightningTrust(
   offer: ServiceOfferViewV1,
   payee: Uint8Array,
@@ -315,6 +341,23 @@ function accepted(view: ServicePolicyViewV1): WasmAcceptedServicePolicyV1 {
     importStandardCashuToken: () => new Uint8Array([7, 7]),
     offersJson: () => structuredClone(view),
     beginBolt11Acquisition: () => { throw new Error('mocked at controller boundary'); },
+    verifyBatV2Redemption: (scopeId, offerId) => {
+      const offer = view.scopes[0].offers.find((candidate) => candidate.offerId === offerId);
+      const scopeIdHex = Buffer.from(scopeId).toString('hex');
+      if (!offer || offer.authorization !== 'cashu-bat-v2'
+          || scopeIdHex !== view.scopes[0].scopeIdHex) {
+        throw new Error('wrong BAT V2 class member');
+      }
+      return {
+        free: vi.fn(),
+        providerIdHex: view.providerIdHex,
+        policyDigestHex: view.policyDigestHex,
+        scopeIdHex,
+        offerId,
+        classIdHex: offer.keyIdHex,
+        assertRedemptionReady: vi.fn(),
+      };
+    },
   };
 }
 
@@ -414,14 +457,19 @@ function session(
     hasHarmonyAttach: target.workload === 'harmony-hint',
   }),
   retainedView?: RetainedServiceRedemptionViewV1,
+  authorizeBatV2Impl: NonNullable<ServiceAdmissionPortV1['authorizeBatV2']> = async (
+    _verified, _proof, _now,
+  ) => ({ kind: 'burn-terminal' }),
 ): {
   session: ProviderAdmissionSessionV1;
   authorize: ReturnType<typeof vi.fn>;
   assertReady: ReturnType<typeof vi.fn>;
+  authorizeBatV2: ReturnType<typeof vi.fn>;
 } {
   let refresh = 0;
   const authorize = vi.fn(authorizeImpl);
   const assertReady = vi.fn();
+  const authorizeBatV2 = vi.fn(authorizeBatV2Impl);
   const retainedHandle = (): WasmAcceptedRetainedServiceRedemptionV1 => {
     if (!retainedView) throw new Error('unused');
     return {
@@ -446,6 +494,7 @@ function session(
     captureReadinessGuard: () => assertReady,
     assertRetainedSessionBinding: vi.fn(),
     authorize,
+    authorizeBatV2,
     authorizeRetained: async () => {
       if (!retainedView) throw new Error('unused');
       return {
@@ -470,6 +519,7 @@ function session(
     ),
     authorize,
     assertReady,
+    authorizeBatV2,
   };
 }
 
@@ -573,6 +623,178 @@ describe('product admission lifecycle', () => {
     await expect(controller.executeQuery(currentShapes(controller), query)).rejects.toThrow(/must be authorized/);
     expect(query).toHaveBeenCalledOnce();
     expect(state.takes).toBe(1);
+  });
+
+  it('resets a retry-safe BAT V2 pair, then consumes two provider-independent proofs', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const firstOffer = batV2Offer(81);
+    const secondOffer = batV2Offer(82);
+    const classBinding: BatV2ClassBindingV2 = {
+      issuerIdHex: firstOffer.issuerIdHex,
+      classIdHex: firstOffer.keyIdHex,
+      classDigestHex: '93'.repeat(32),
+      classKeyEpoch: '4',
+      batKeyIdHex: '94'.repeat(32),
+    };
+    const events: string[] = [];
+    const reservationId = 'product-bat-v2-reservation';
+    let available = 2;
+    const lease = (recordId: string, marker: number) => ({
+      ...classBinding,
+      proof: new Uint8Array(210).fill(marker),
+      globalSpendKeyHex: marker.toString(16).padStart(2, '0').repeat(32),
+      recordId,
+      reservationId,
+    });
+    const reserveDistinctPair = vi.fn(async (
+      firstBinding: BatV2ClassBindingV2,
+      secondBinding: BatV2ClassBindingV2,
+      validate?: (record: ReturnType<typeof lease>) => void,
+    ) => {
+      events.push('reserve');
+      if (available < 2) return null;
+      expect(firstBinding).toEqual(classBinding);
+      expect(secondBinding).toEqual(classBinding);
+      expect(firstBinding).not.toHaveProperty('providerIdHex');
+      const firstLease = lease('proof-a', 0x31);
+      const secondLease = lease('proof-b', 0x32);
+      validate?.(firstLease);
+      validate?.(secondLease);
+      available = 0;
+      return { reservationId, first: firstLease, second: secondLease };
+    });
+    const finishReservation = vi.fn(async (
+      reserved: ReturnType<typeof lease>,
+      disposition: 'recover-safe' | 'burn',
+    ) => {
+      reserved.proof.fill(0);
+      if (disposition === 'recover-safe') available += 1;
+    });
+    const batV2Vault = {
+      reserveDistinctPair,
+      finishReservation,
+      listInventory: vi.fn(async () => available > 0
+        ? [{ ...classBinding, count: available }]
+        : []),
+    } as unknown as BatV2CredentialVaultV2;
+    const granted = (scopeIdHex: string, label: string) => async (
+      _verified: unknown,
+      proof: Uint8Array,
+    ) => {
+      events.push(label);
+      expect(proof).toHaveLength(210);
+      return {
+        kind: 'granted' as const,
+        grant: {
+          scopeIdHex,
+          enforcedProfile: 2,
+          expiresInMs: 1000,
+          hasHarmonyAttach: false,
+        },
+      };
+    };
+    let firstAttempt = 0;
+    const firstAuthorize = async (_verified: unknown, proof: Uint8Array) => {
+      expect(proof).toHaveLength(210);
+      firstAttempt += 1;
+      if (firstAttempt === 1) {
+        events.push('send-a-retry-safe');
+        return { kind: 'recoverable-retry-safe' as const, retryAfterMs: 5 };
+      }
+      events.push('send-a');
+      return {
+        kind: 'granted' as const,
+        grant: {
+          scopeIdHex: HEX.scope0,
+          enforcedProfile: 2,
+          expiresInMs: 1000,
+          hasHarmonyAttach: false,
+        },
+      };
+    };
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [firstOffer])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+      undefined,
+      undefined,
+      firstAuthorize,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [secondOffer])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+      undefined,
+      undefined,
+      granted(HEX.scope1, 'send-b'),
+    );
+    const resolveBatV2Class = vi.fn(async (_selector: ProductBatV2ClassMemberSelectorV2) => ({
+      classBytes: new Uint8Array([1, 2, 3, 4]),
+      binding: classBinding,
+    }));
+    const sharedPayee = new Uint8Array([2, ...new Uint8Array(32).fill(8)]);
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+      batV2Vault,
+      resolveBatV2Class,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+          lightningPayeeTrust: lightningTrust(firstOffer, sharedPayee),
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          lightningPayeeTrust: lightningTrust(secondOffer, sharedPayee),
+        },
+      ],
+      close: vi.fn(),
+    }));
+    controller.setAllowSharedInfrastructureCorrelationOnce(true);
+    await controller.selectOffer('server0', {
+      scopeIdHex: HEX.scope0,
+      offerId: firstOffer.offerId,
+    });
+    await controller.selectOffer('server1', {
+      scopeIdHex: HEX.scope1,
+      offerId: secondOffer.offerId,
+    });
+
+    await expect(controller.authorize('server0')).rejects.toMatchObject({
+      code: 'bat-v2-retry-safe',
+    });
+    expect(controller.snapshot().legs[0]).toMatchObject({ status: 'ready' });
+    await controller.authorize('server0');
+    await controller.authorize('server1');
+
+    expect(events).toEqual([
+      'reserve', 'send-a-retry-safe',
+      'reserve', 'send-a', 'send-b',
+    ]);
+    expect(resolveBatV2Class).toHaveBeenCalledTimes(4);
+    for (const [selector] of resolveBatV2Class.mock.calls) {
+      expect(selector).not.toHaveProperty('proof');
+      expect(selector.offer.authorization).toBe('cashu-bat-v2');
+      expect(selector.offer.keyIdHex).toBe(classBinding.classIdHex);
+    }
+    expect(reserveDistinctPair).toHaveBeenCalledTimes(2);
+    expect(finishReservation.mock.calls.map(([, disposition]) => disposition))
+      .toEqual(['recover-safe', 'recover-safe', 'burn', 'burn']);
+    expect(first.authorize).not.toHaveBeenCalled();
+    expect(second.authorize).not.toHaveBeenCalled();
+    expect(first.authorizeBatV2).toHaveBeenCalledTimes(2);
+    expect(second.authorizeBatV2).toHaveBeenCalledOnce();
+    expect(controller.canQuery()).toBe(true);
+    await controller.close();
   });
 
   it('automates independent signed Free selections without touching paid offers', async () => {

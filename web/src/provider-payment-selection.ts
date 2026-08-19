@@ -7,7 +7,14 @@
  */
 
 import type { ProviderTrustAnchorV1 } from './service-admission.js';
-import type { ServiceOfferViewV1 } from './sdk-bridge.js';
+import {
+  validateBatV2ClassBindingV2,
+  type BatV2ClassBindingV2,
+} from './bat-v2-vault.js';
+import type {
+  ServiceOfferViewV1,
+  WasmVerifiedBatV2RedemptionV2,
+} from './sdk-bridge.js';
 
 export interface SelectedProviderOfferV1 {
   trust: ProviderTrustAnchorV1;
@@ -25,6 +32,168 @@ export interface IndependentProviderSelectionOptionsV1 {
   allowSharedIssuerCorrelation?: boolean;
   /** Explicitly allow one Lightning payee to observe both purchases. */
   allowSharedLightningPayeeCorrelation?: boolean;
+}
+
+/** Canonical, issuer-signed class bytes plus the independently verified
+ * wallet projection derived from those exact bytes. */
+export interface BatV2ClassArtifactV2 {
+  classBytes: Uint8Array;
+  binding: BatV2ClassBindingV2;
+}
+
+export interface VerifiedProviderBatV2ProjectionInputV2
+  extends SelectedProviderOfferV1 {
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  classArtifact: BatV2ClassArtifactV2;
+  verifiedRedemption: WasmVerifiedBatV2RedemptionV2;
+}
+
+/**
+ * Runtime typestate retaining the exact verified class/member handle. A plain
+ * copied provider selection cannot stand in for this object, and all mutable
+ * byte inputs are copied before they are retained.
+ */
+export class VerifiedProviderBatV2ProjectionV2 {
+  private closed = false;
+  private readonly selectedValue: SelectedProviderOfferV1;
+  private readonly classBytesValue: Uint8Array;
+  private readonly bindingValue: BatV2ClassBindingV2;
+
+  private constructor(
+    private readonly policyDigestValue: string,
+    private readonly scopeIdValue: string,
+    private readonly offerIdValue: number,
+    private readonly redemptionValue: WasmVerifiedBatV2RedemptionV2,
+    input: VerifiedProviderBatV2ProjectionInputV2,
+  ) {
+    this.selectedValue = cloneSelectedProviderOfferV1(input);
+    this.classBytesValue = input.classArtifact.classBytes.slice();
+    this.bindingValue = { ...input.classArtifact.binding };
+  }
+
+  static create(
+    input: VerifiedProviderBatV2ProjectionInputV2,
+  ): VerifiedProviderBatV2ProjectionV2 {
+    const providerIdHex = fixedHex('BAT V2 provider ID', input.trust.providerId);
+    const policyDigestHex = canonicalNonzeroHex32(
+      'BAT V2 policy digest', input.policyDigestHex,
+    );
+    const scopeIdHex = canonicalNonzeroHex32('BAT V2 scope ID', input.scopeIdHex);
+    if (!Number.isSafeInteger(input.offerId)
+        || input.offerId <= 0 || input.offerId > 0xffff_ffff) {
+      throw new Error('BAT V2 offer ID must be a positive u32');
+    }
+    if (!(input.classArtifact.classBytes instanceof Uint8Array)
+        || input.classArtifact.classBytes.length === 0) {
+      throw new Error('BAT V2 selection requires canonical signed class bytes');
+    }
+    validateBatV2ClassBindingV2(input.classArtifact.binding);
+    assertBatV2OfferShape(input.offer, input.classArtifact.binding, input.offerId);
+    const verified = input.verifiedRedemption;
+    if (!verified || typeof verified.assertRedemptionReady !== 'function'
+        || typeof verified.free !== 'function') {
+      throw new Error('BAT V2 selection requires an opaque verified redemption handle');
+    }
+    if (verified.providerIdHex !== providerIdHex
+        || verified.policyDigestHex !== policyDigestHex
+        || verified.scopeIdHex !== scopeIdHex
+        || verified.offerId !== input.offerId
+        || verified.classIdHex !== input.classArtifact.binding.classIdHex) {
+      throw new Error('BAT V2 verified class/member projection changed coordinates');
+    }
+    return new VerifiedProviderBatV2ProjectionV2(
+      policyDigestHex,
+      scopeIdHex,
+      input.offerId,
+      verified,
+      input,
+    );
+  }
+
+  selected(): SelectedProviderOfferV1 {
+    this.assertOpen();
+    return cloneSelectedProviderOfferV1(this.selectedValue);
+  }
+
+  coordinates(): {
+    policyDigestHex: string;
+    scopeIdHex: string;
+    offerId: number;
+  } {
+    this.assertOpen();
+    return {
+      policyDigestHex: this.policyDigestValue,
+      scopeIdHex: this.scopeIdValue,
+      offerId: this.offerIdValue,
+    };
+  }
+
+  classArtifact(): BatV2ClassArtifactV2 {
+    this.assertOpen();
+    return {
+      classBytes: this.classBytesValue.slice(),
+      binding: { ...this.bindingValue },
+    };
+  }
+
+  verifiedRedemption(): WasmVerifiedBatV2RedemptionV2 {
+    this.assertOpen();
+    return this.redemptionValue;
+  }
+
+  assertRedemptionReady(nowUnix: bigint): void {
+    this.assertOpen();
+    this.redemptionValue.assertRedemptionReady(nowUnix);
+    const selected = this.selectedValue;
+    if (this.redemptionValue.providerIdHex !== fixedHex(
+      'BAT V2 provider ID', selected.trust.providerId,
+    )
+        || this.redemptionValue.policyDigestHex !== this.policyDigestValue
+        || this.redemptionValue.scopeIdHex !== this.scopeIdValue
+        || this.redemptionValue.offerId !== this.offerIdValue
+        || this.redemptionValue.classIdHex !== this.bindingValue.classIdHex) {
+      throw new Error('BAT V2 verified redemption handle changed after selection');
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.classBytesValue.fill(0);
+    this.redemptionValue.free();
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('BAT V2 provider projection is closed');
+  }
+}
+
+/** Validate provider independence plus byte-exact common class identity. */
+export function assertIndependentProviderBatV2ProjectionPairV2(
+  first: VerifiedProviderBatV2ProjectionV2,
+  second: VerifiedProviderBatV2ProjectionV2,
+  options: IndependentProviderSelectionOptionsV1 = {},
+): void {
+  if (!(first instanceof VerifiedProviderBatV2ProjectionV2)
+      || !(second instanceof VerifiedProviderBatV2ProjectionV2)) {
+    throw new Error('BAT V2 pair requires exact verified provider projections');
+  }
+  const firstClass = first.classArtifact();
+  const secondClass = second.classArtifact();
+  try {
+    if (!equalBytes(firstClass.classBytes, secondClass.classBytes)
+        || classBindingKeyV2(firstClass.binding) !== classBindingKeyV2(secondClass.binding)) {
+      throw new Error(
+        'strict BAT V2 pair requires the same exact issuer-signed acceptance class',
+      );
+    }
+    assertIndependentProviderOfferPairV1(first.selected(), second.selected(), options);
+  } finally {
+    firstClass.classBytes.fill(0);
+    secondClass.classBytes.fill(0);
+  }
 }
 
 export function assertIndependentProviderOfferPairV1(
@@ -200,4 +369,62 @@ function canonicalNonzeroHex32(field: string, value: string): string {
     throw new Error(`${field} must be non-zero lowercase 32-byte hex`);
   }
   return value;
+}
+
+function assertBatV2OfferShape(
+  offer: ServiceOfferViewV1,
+  binding: BatV2ClassBindingV2,
+  offerId: number,
+): void {
+  if (offer.offerId !== offerId
+      || offer.acquisition !== 'bolt11'
+      || offer.authorization !== 'cashu-bat-v2'
+      || offer.verification !== 'shared-issuer-online'
+      || offer.issuerIdHex !== binding.issuerIdHex
+      || offer.keyIdHex !== binding.classIdHex) {
+    throw new Error('selected offer is not this exact BAT V2 class member');
+  }
+}
+
+function cloneSelectedProviderOfferV1(
+  value: SelectedProviderOfferV1,
+): SelectedProviderOfferV1 {
+  return {
+    trust: {
+      providerId: value.trust.providerId.slice(),
+      policySigningKey: value.trust.policySigningKey.slice(),
+      directoryAssertion: value.trust.directoryAssertion
+        ? {
+          ...value.trust.directoryAssertion,
+          operatorSigningKeyEd25519:
+            value.trust.directoryAssertion.operatorSigningKeyEd25519.slice(),
+          policyDigest: value.trust.directoryAssertion.policyDigest.slice(),
+        }
+        : undefined,
+    },
+    offer: { ...value.offer, price: { ...value.offer.price } },
+    providerEndpoint: value.providerEndpoint,
+    expectedLightningPayeePubkey: value.expectedLightningPayeePubkey?.slice(),
+    trustedOperatorSigningKey: value.trustedOperatorSigningKey?.slice(),
+  };
+}
+
+function classBindingKeyV2(value: BatV2ClassBindingV2): string {
+  validateBatV2ClassBindingV2(value);
+  return [
+    value.issuerIdHex,
+    value.classIdHex,
+    value.classDigestHex,
+    value.classKeyEpoch,
+    value.batKeyIdHex,
+  ].join(':');
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left[index] ^ right[index];
+  }
+  return mismatch === 0;
 }

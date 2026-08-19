@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { assertIndependentProviderOfferPairV1 } from '../provider-payment-selection.js';
+import {
+  assertIndependentProviderBatV2ProjectionPairV2,
+  assertIndependentProviderOfferPairV1,
+  VerifiedProviderBatV2ProjectionV2,
+  type BatV2ClassArtifactV2,
+} from '../provider-payment-selection.js';
 import type { ProviderTrustAnchorV1 } from '../service-admission.js';
 import type { ServiceOfferViewV1 } from '../sdk-bridge.js';
 
@@ -39,7 +44,110 @@ function offer(overrides: Partial<ServiceOfferViewV1> = {}): ServiceOfferViewV1 
   };
 }
 
+const batV2Class: BatV2ClassArtifactV2 = {
+  classBytes: new Uint8Array([7, 8, 9]),
+  binding: {
+    issuerIdHex: '31'.repeat(32),
+    classIdHex: '41'.repeat(32),
+    classDigestHex: '51'.repeat(32),
+    classKeyEpoch: '3',
+    batKeyIdHex: '61'.repeat(32),
+  },
+};
+
+function batV2Projection(providerByte: number, classArtifact = batV2Class) {
+  const policyDigestHex = `${providerByte + 70}`.repeat(32);
+  const scopeIdHex = `${providerByte + 80}`.repeat(32);
+  const selectedTrust = trust(providerByte, providerByte + 10, providerByte + 20);
+  return VerifiedProviderBatV2ProjectionV2.create({
+    trust: selectedTrust,
+    offer: offer({
+      authorization: 'cashu-bat-v2',
+      verification: 'shared-issuer-online',
+      keyIdHex: classArtifact.binding.classIdHex,
+      batVerificationKeyFingerprintHex: '',
+    }),
+    providerEndpoint: `wss://pir-${providerByte}.example`,
+    expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(9)]),
+    trustedOperatorSigningKey:
+      selectedTrust.directoryAssertion!.operatorSigningKeyEd25519.slice(),
+    policyDigestHex,
+    scopeIdHex,
+    offerId: 1,
+    classArtifact,
+    verifiedRedemption: {
+      free: vi.fn(),
+      providerIdHex: Array.from(selectedTrust.providerId, (byte) =>
+        byte.toString(16).padStart(2, '0')).join(''),
+      policyDigestHex,
+      scopeIdHex,
+      offerId: 1,
+      classIdHex: classArtifact.binding.classIdHex,
+      assertRedemptionReady: vi.fn(),
+    },
+  });
+}
+
 describe('local independent-provider payment selection', () => {
+  it('retains two exact verified BAT V2 members of one byte-identical class', () => {
+    const first = batV2Projection(1);
+    const second = batV2Projection(2);
+    try {
+      expect(() => assertIndependentProviderBatV2ProjectionPairV2(
+        first,
+        second,
+        {
+          allowSharedIssuerCorrelation: true,
+          allowSharedLightningPayeeCorrelation: true,
+        },
+      )).not.toThrow();
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it('rejects a copied class ID backed by different signed class bytes', () => {
+    const first = batV2Projection(1);
+    const second = batV2Projection(2, {
+      classBytes: new Uint8Array([7, 8, 10]),
+      binding: { ...batV2Class.binding },
+    });
+    try {
+      expect(() => assertIndependentProviderBatV2ProjectionPairV2(
+        first,
+        second,
+        {
+          allowSharedIssuerCorrelation: true,
+          allowSharedLightningPayeeCorrelation: true,
+        },
+      )).toThrow(/same exact issuer-signed acceptance class/);
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it('rejects byte-copied artifacts carrying a different class projection', () => {
+    const first = batV2Projection(1);
+    const second = batV2Projection(2, {
+      classBytes: batV2Class.classBytes.slice(),
+      binding: { ...batV2Class.binding, classDigestHex: '52'.repeat(32) },
+    });
+    try {
+      expect(() => assertIndependentProviderBatV2ProjectionPairV2(
+        first,
+        second,
+        {
+          allowSharedIssuerCorrelation: true,
+          allowSharedLightningPayeeCorrelation: true,
+        },
+      )).toThrow(/same exact issuer-signed acceptance class/);
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
   it('accepts independent providers, issuers, origins, and BAT raw keys', () => {
     expect(() => assertIndependentProviderOfferPairV1(
       { trust: trust(1, 11, 21), offer: offer() },

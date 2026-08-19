@@ -268,6 +268,7 @@ export type { Bat } from './cashu-bat.js';
 export {
   AmbiguousCapabilitySpendErrorV1,
   ProviderAdmissionSessionV1,
+  VerifiedIndependentProviderBatV2PairV2,
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
   VerifiedSingleProviderRetainedOfferV1,
@@ -282,12 +283,20 @@ export type {
   ProductQueryShapeV1,
   ProductQueryShapesByRoleV1,
 } from './service-entitlement.js';
-export { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
-export type {
-  IndependentProviderSelectionOptionsV1,
-  SelectedProviderOfferV1,
+export {
+  assertIndependentProviderBatV2ProjectionPairV2,
+  assertIndependentProviderOfferPairV1,
+  VerifiedProviderBatV2ProjectionV2,
 } from './provider-payment-selection.js';
 export type {
+  BatV2ClassArtifactV2,
+  IndependentProviderSelectionOptionsV1,
+  SelectedProviderOfferV1,
+  VerifiedProviderBatV2ProjectionInputV2,
+} from './provider-payment-selection.js';
+export type {
+  BatV2AdmissionVaultV2,
+  IndependentProviderBatV2AdmissionSelectionV2,
   ProviderTrustAnchorV1,
   ProviderAdmissionSelectionV1,
   IndependentProviderAdmissionSelectionV1,
@@ -302,6 +311,11 @@ export type {
   ServiceAdmissionVaultV1,
   ServiceAuthorizationOptionsV1,
 } from './service-admission.js';
+export type {
+  BatV2AdmissionOutcomeV2,
+  WasmAcceptedRetainedBatV2PolicyV2,
+  WasmVerifiedBatV2RedemptionV2,
+} from './sdk-bridge.js';
 export {
   AdmissionCredentialVaultV1,
   validateBindingV1,
@@ -406,6 +420,8 @@ export type {
   ProductAdmissionResourceV1,
   ProductAdmissionSnapshotV1,
   ProductAdmissionTopologyV1,
+  ProductBatV2ClassMemberSelectorV2,
+  ProductBatV2ClassResolverV2,
   ProductOfferChoiceV1,
   ProductOfferOptionV1,
   ProductStrictBootstrapV1,
