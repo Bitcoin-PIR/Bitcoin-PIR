@@ -1525,7 +1525,7 @@ pub struct ProviderAccountingExpectationV2<'a> {
 }
 
 pub enum BatV2RedeemPrecheckV2 {
-    Authorized(VerifiedProviderRedeemAuthorizationV2),
+    Authorized(Box<VerifiedProviderRedeemAuthorizationV2>),
     RetrySafeNonConsuming(VerifiedRetrySafeNonConsumingV2),
     TerminalInvalidOrSpent(VerifiedTerminalInvalidOrSpentV2),
 }
@@ -1682,13 +1682,13 @@ pub fn precheck_bat_v2_redeem_v2(
         ));
     }
 
-    Ok(BatV2RedeemPrecheckV2::Authorized(
+    Ok(BatV2RedeemPrecheckV2::Authorized(Box::new(
         VerifiedProviderRedeemAuthorizationV2 {
             envelope,
             class: class.clone(),
             rule: rule.clone(),
         },
-    ))
+    )))
 }
 
 pub fn sign_retry_safe_non_consuming_v2(
