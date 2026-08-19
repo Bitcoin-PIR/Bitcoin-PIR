@@ -173,9 +173,9 @@ fn complete_cli_v1(cli: &Pir2SealedCliV1) -> Result<CompletePir2SealedCliV1<'_>,
                 .to_owned(),
         );
     }
-    if cli.preflight_only == (phase == Pir2SealedStartupPhaseV1::Ready) {
+    if phase != Pir2SealedStartupPhaseV1::Ready && cli.require_ready {
         return Err(
-            "observe/enroll/probe require preflight-only; ready requires require-ready".to_owned(),
+            "observe/enroll/probe require preflight-only; only ready may require-ready".to_owned(),
         );
     }
     let ordinal = cli
@@ -534,10 +534,14 @@ mod tests {
     use std::cell::Cell;
     use std::os::unix::fs::PermissionsExt;
 
+    use pir_identity::sign_identity_cert;
     use pir_runtime_core::snp_sealed_secrets::{
         encode_signed_pir2_sealed_release_v1, FreshSnpReportV1, Pir2SealedReleaseClaimsV1,
         SnpDerivedKeyMaterialV1, SnpDerivedKeyProviderErrorV1, SnpDerivedKeyRequestV1,
         SnpTcbVersionV1,
+    };
+    use pir_service_protocol::{
+        ProviderAccountingAuthorizationClaimsV2, ProviderAccountingRuleV2, SettlementUnitV1,
     };
 
     fn complete(phase: Pir2SealedStartupPhaseV1) -> Pir2SealedCliV1 {
@@ -577,6 +581,16 @@ mod tests {
         assert!(validate_pir2_sealed_cli_v1(&ready, false, false).is_ok());
         assert!(validate_pir2_sealed_cli_v1(&ready, true, false).is_err());
         assert!(validate_pir2_sealed_cli_v1(&ready, false, true).is_err());
+
+        let mut ready_preflight = complete(Pir2SealedStartupPhaseV1::Ready);
+        ready_preflight.preflight_only = true;
+        ready_preflight.require_ready = false;
+        assert!(validate_pir2_sealed_cli_v1(&ready_preflight, false, false).is_ok());
+
+        let mut invalid_probe = complete(Pir2SealedStartupPhaseV1::Probe);
+        invalid_probe.preflight_only = false;
+        invalid_probe.require_ready = true;
+        assert!(validate_pir2_sealed_cli_v1(&invalid_probe, false, false).is_err());
     }
 
     #[test]
@@ -607,6 +621,187 @@ mod tests {
         release: pir_runtime_core::snp_sealed_secrets::Pir2SealedReleaseV1,
         report_calls: Cell<u32>,
         derive_calls: Cell<u32>,
+    }
+
+    struct ReadyProviderV1 {
+        release: pir_runtime_core::snp_sealed_secrets::Pir2SealedReleaseV1,
+        derived_key: [u8; 32],
+        report_calls: Cell<u32>,
+        derive_calls: Cell<u32>,
+    }
+
+    impl ReadyProviderV1 {
+        fn new(release: &pir_runtime_core::snp_sealed_secrets::Pir2SealedReleaseV1) -> Self {
+            Self {
+                release: release.clone(),
+                derived_key: [0x52; 32],
+                report_calls: Cell::new(0),
+                derive_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl SnpDerivedKeyProvider for ReadyProviderV1 {
+        fn fresh_report(
+            &self,
+            report_data: [u8; 64],
+        ) -> Result<FreshSnpReportV1, SnpDerivedKeyProviderErrorV1> {
+            self.report_calls.set(self.report_calls.get() + 1);
+            Ok(FreshSnpReportV1 {
+                report_version: 2,
+                vmpl: 0,
+                guest_policy: self.release.expected_guest_policy,
+                measurement: self.release.expected_measurement,
+                report_data,
+                reported_tcb: self.release.minimum_tcb,
+                committed_tcb: self.release.minimum_tcb,
+                raw_report: vec![0xB7; 1184],
+            })
+        }
+
+        fn derive_key(
+            &self,
+            request: &SnpDerivedKeyRequestV1,
+        ) -> Result<SnpDerivedKeyMaterialV1, SnpDerivedKeyProviderErrorV1> {
+            self.derive_calls.set(self.derive_calls.get() + 1);
+            if request.canonical_evidence()
+                != SnpDerivedKeyRequestV1::production().canonical_evidence()
+            {
+                return Err(SnpDerivedKeyProviderErrorV1::RequestDrift);
+            }
+            Ok(SnpDerivedKeyMaterialV1::from_bytes(self.derived_key))
+        }
+    }
+
+    struct ReadyPreflightFixtureV1 {
+        _directory: tempfile::TempDir,
+        operator: SigningKey,
+        issuer_settlement: SigningKey,
+        provider: ReadyProviderV1,
+        cli: Pir2SealedCliV1,
+        accounting_path: PathBuf,
+        receipt_path: PathBuf,
+        marker_path: PathBuf,
+    }
+
+    fn ready_preflight_fixture_v1() -> ReadyPreflightFixtureV1 {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let operator = SigningKey::from_bytes(&[0x61; 32]);
+        let issuer_settlement = SigningKey::from_bytes(&[0x62; 32]);
+        let claims = Pir2SealedReleaseClaimsV1 {
+            provider_id: [0x11; 32],
+            stable_server_id: "pir2-mainnet".to_owned(),
+            uki_sha256: [0x22; 32],
+            expected_measurement: [0x33; 48],
+            expected_guest_policy: 1 << 17,
+            minimum_tcb: SnpTcbVersionV1 {
+                fmc: None,
+                bootloader: 1,
+                tee: 2,
+                snp: 3,
+                microcode: 4,
+            },
+            derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
+            identity_generation: 7,
+            clearing_authorization_epoch: 11,
+        };
+        let release_bytes = encode_signed_pir2_sealed_release_v1(&claims, &operator).unwrap();
+        let release_path = directory.path().join("release.bin");
+        std::fs::write(&release_path, &release_bytes).unwrap();
+        let verified = VerifiedPir2SealedReleaseV1::decode_and_verify(
+            &release_bytes,
+            &operator.verifying_key(),
+        )
+        .unwrap();
+
+        let envelope_path = directory.path().join("envelope.bin");
+        let enrollment_provider = ReadyProviderV1::new(verified.release());
+        let enrolled = enroll_new_pir2_sealed_credentials_v1(
+            &envelope_path,
+            false,
+            verified.release(),
+            &enrollment_provider,
+        )
+        .unwrap();
+        let public_keys = enrolled.public_keys();
+        drop(enrolled);
+        assert_eq!(enrollment_provider.report_calls.get(), 1);
+        assert_eq!(enrollment_provider.derive_calls.get(), 1);
+
+        let identity_cert = sign_identity_cert(
+            &operator,
+            &claims.stable_server_id,
+            public_keys.service_identity,
+            100,
+            1_000,
+        );
+        let identity_cert_path = directory.path().join("identity.cert");
+        std::fs::write(&identity_cert_path, identity_cert.encode()).unwrap();
+
+        let authorization = ProviderAccountingAuthorizationV2::sign(
+            ProviderAccountingAuthorizationClaimsV2 {
+                authorization_id: [0x71; 16],
+                authorization_epoch: claims.clearing_authorization_epoch,
+                provider_id: claims.provider_id,
+                issuer_id: [0x72; 32],
+                redeem_endpoint: "https://issuer.invalid".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x73; 32]],
+                settlement_account_id: [0x74; 32],
+                clearing_verifying_key: public_keys.clearing,
+                not_before: 100,
+                not_after: 1_000,
+                rules: vec![ProviderAccountingRuleV2 {
+                    class_id: [0x75; 32],
+                    policy_digest: [0x76; 32],
+                    scope_id: [0x77; 32],
+                    offer_id: 1,
+                    unit: SettlementUnitV1::AuthCredit,
+                    accepted_value: 10,
+                    provider_credit: 8,
+                    issuer_fee: 2,
+                }],
+            },
+            &operator,
+        )
+        .unwrap();
+        let accounting_path = directory.path().join("accounting.bin");
+        std::fs::write(&accounting_path, authorization.encode().unwrap()).unwrap();
+        let issuer_approval =
+            IssuerAccountingApprovalV2::sign(&authorization, 100, 900, &issuer_settlement).unwrap();
+        let issuer_approval_path = directory.path().join("approval.bin");
+        std::fs::write(&issuer_approval_path, issuer_approval.encode()).unwrap();
+
+        let receipt_path = directory.path().join("ready-preflight-receipt.bin");
+        let marker_path = directory.path().join("ready-preflight.marker");
+        let cli = Pir2SealedCliV1 {
+            preflight_only: true,
+            require_ready: false,
+            release_path: Some(release_path),
+            envelope_path: Some(envelope_path),
+            receipt_path: Some(receipt_path.clone()),
+            marker_path: Some(marker_path.clone()),
+            phase: Some(Pir2SealedStartupPhaseV1::Ready),
+            ordinal: Some(3),
+            verifier_nonce_hex: Some("41".repeat(32)),
+            current_boot_id_hex: Some("42".repeat(16)),
+            current_channel_pubkey_hex: Some("43".repeat(32)),
+            identity_cert_path: Some(identity_cert_path),
+            accounting_authorization_path: Some(accounting_path.clone()),
+            issuer_approval_path: Some(issuer_approval_path),
+        };
+        let provider = ReadyProviderV1::new(verified.release());
+
+        ReadyPreflightFixtureV1 {
+            _directory: directory,
+            operator,
+            issuer_settlement,
+            provider,
+            cli,
+            accounting_path,
+            receipt_path,
+            marker_path,
+        }
     }
 
     impl SnpDerivedKeyProvider for ObserveOnlyProviderV1 {
@@ -710,5 +905,57 @@ mod tests {
         assert!(!envelope_path.exists());
         assert!(receipt_path.exists());
         assert!(marker_path.exists());
+    }
+
+    #[test]
+    fn ready_preflight_verifies_real_artifacts_then_exits_inert_without_keys() {
+        let fixture = ready_preflight_fixture_v1();
+        let outcome = dispatch_pir2_sealed_startup_with_security_v1(
+            &fixture.cli,
+            &fixture.operator.verifying_key(),
+            Some(&fixture.issuer_settlement.verifying_key()),
+            150,
+            [0x43; 32],
+            &fixture.provider,
+            || Ok(()),
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            Pir2SealedStartupV1::InertSuccess {
+                phase: Pir2SealedStartupPhaseV1::Ready,
+                ..
+            }
+        ));
+        assert_eq!(fixture.provider.report_calls.get(), 2);
+        assert_eq!(fixture.provider.derive_calls.get(), 1);
+        assert!(fixture.receipt_path.exists());
+        assert!(fixture.marker_path.exists());
+    }
+
+    #[test]
+    fn ready_preflight_bad_artifact_writes_neither_receipt_nor_marker() {
+        let fixture = ready_preflight_fixture_v1();
+        let mut accounting_bytes = std::fs::read(&fixture.accounting_path).unwrap();
+        *accounting_bytes.last_mut().unwrap() ^= 0x01;
+        std::fs::write(&fixture.accounting_path, accounting_bytes).unwrap();
+
+        let error = match dispatch_pir2_sealed_startup_with_security_v1(
+            &fixture.cli,
+            &fixture.operator.verifying_key(),
+            Some(&fixture.issuer_settlement.verifying_key()),
+            150,
+            [0x43; 32],
+            &fixture.provider,
+            || Ok(()),
+        ) {
+            Ok(_) => panic!("bad Ready artifact unexpectedly passed preflight"),
+            Err(error) => error,
+        };
+        assert!(error.contains("accounting authorization"));
+        assert_eq!(fixture.provider.report_calls.get(), 1);
+        assert_eq!(fixture.provider.derive_calls.get(), 1);
+        assert!(!fixture.receipt_path.exists());
+        assert!(!fixture.marker_path.exists());
     }
 }
