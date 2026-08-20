@@ -30,7 +30,7 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 
-if [[ ! -f Cargo.toml || ! -f web/package.json || ! -f docs/payment/MAINNET_LIGHTNING_V1_RUNBOOK.md ]]; then
+if [[ ! -f Cargo.toml || ! -f web/package.json || ! -f docs/runbooks/production-enable.md ]]; then
   echo "payment-v1-mainnet-lightning-v1-check: repository root validation failed" >&2
   exit 1
 fi

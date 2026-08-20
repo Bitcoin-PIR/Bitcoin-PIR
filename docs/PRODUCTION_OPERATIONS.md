@@ -1,57 +1,25 @@
 # Production operations
 
-This is the operator/agent entry point. It routes observation and authorized
-release work; it is not deployment authorization.
+Start here for an authorized production change. Check the current handoff first:
+[CURRENT_PRODUCTION_STATE.md](CURRENT_PRODUCTION_STATE.md).
+For the ordered end-to-end path, use the
+[BitcoinPIR production workflow skill](../.agents/skills/bitcoinpir-production-workflow/SKILL.md).
 
-## Status first
+| Operation | Runbook | Command | Successful handoff |
+| --- | --- | --- | --- |
+| Build a UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
+| Upload, switch, or roll back a VPSBG image | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/vpsbg-measured-boot.sh` | `PASS action=...` |
+| Prepare Payment V1 artifacts | [Payment artifacts](runbooks/payment-artifacts.md) | `scripts/payment-v1-artifacts.sh` | `PASS artifact=...` |
+| Initialize issuer state | [Issuer state](runbooks/issuer-state.md) | `scripts/payment-v1-issuer-state.sh` | `PASS issuer_state=...` |
+| Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
+| Start the private publisher network | [Private start](runbooks/payment-private-start.md) | `scripts/payment-v1-activate.sh private` | `PASS private_start` |
+| Prepare final production enablement | [Production enablement](runbooks/production-enable.md) | `scripts/payment-v1-activate.sh production` | `PASS production_source_readiness` |
 
-Run this before a browser, `502`, or log search:
+Before a command changes a remote host, image, service, identity, or funds,
+confirm the authorization for this run. Each script prints its next required
+input and a `NEXT_STEP` line.
 
-```bash
-scripts/vpsbg-production-status.sh
-```
-
-The default path makes read-only GET requests to the VPSBG control plane and
-`https://weikeng2.bitcoinpir.org/status.json`; it never uses SSH. Its current
-facts are control-plane state, boot mode, and attached image.
-
-`/status.json` is temporary: Direct ORAM build/switch exposes it from a
-loopback HTTP origin. Once `unified_server` owns port 8091, it is expected to
-be unavailable; the command still returns control-plane state and marks ORAM
-fields `unavailable`. Runtime profile, measurement, attestation, generation,
-database identity, and any unavailable field must not be inferred. `--root`
-reads an offline evidence directory for fixtures or post-incident review only.
-
-## Release routes
-
-Web publication only uses manual `deploy-web.yml` dispatch from `main` with
-its production confirmation; use the workflow deployment record as release
-evidence.
-
-VPSBG release and rollback use the measured-boot procedure in the
-[VPSBG measured-boot skill](../.agents/skills/vpsbg-measured-boot/SKILL.md).
-Use the reported attached image as the rollback reference; do not substitute a
-historical preflight for current state.
-
-Production Tier 3 builds must set `BPIR_TIER3_SERVICE_POLICY` to the exact
-currently approved signed policy. The build fails when it is missing and
-rejects anything except the reviewed digest locked in `build_uki_tier3.sh`; it
-then verifies that the initramfs contains byte-identical policy data before
-emitting an uploadable UKI. A policy-epoch rotation must update that source lock
-in a reviewed change. Never rely on the mutable-rootfs policy fallback for a
-new release.
-
-Run a manual production canary only after a deliberate web or VPSBG release,
-never as the first diagnostic step.
-
-Mainnet Lightning activation is pending; source and functional-beta evidence
-are not proof of a deployed mainnet Lightning service. See
-[`docs/payment/IMPLEMENTATION_STATUS.md`](payment/IMPLEMENTATION_STATUS.md).
-
-Historical preflights, incidents, and plans are evidence only; use the
-[history index](history/README.md).
-
-Before rebuilding a database or Direct ORAM generation, use the
-[database artifact retention map](DATABASE_ARTIFACT_RETENTION.md). It records
-the two raw snapshots, both Direct input sets, current V2 manifest roots, and
-the external/Hetzner handoff locations.
+For the retained database inputs and artifact locations, see
+[Database artifact retention](DATABASE_ARTIFACT_RETENTION.md). Technical
+payment references remain in [`docs/payment/`](payment/); prior plans and
+evidence are in [`docs/archive/payment/`](archive/payment/README.md).

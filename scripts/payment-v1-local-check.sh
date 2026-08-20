@@ -61,7 +61,7 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 
-if [[ ! -f Cargo.toml || ! -f docs/payment/IMPLEMENTATION_STATUS.md ]]; then
+if [[ ! -f Cargo.toml || ! -f docs/CURRENT_PRODUCTION_STATE.md ]]; then
   echo "payment-v1-local-check: repository root validation failed" >&2
   exit 1
 fi

@@ -41,8 +41,8 @@ current/retained issuer settlement roles. Ledger-only balance requests continue 
 authorized clearing key; the request key is registered separately for future
 payout recovery/status compatibility and is never replaced by a schema filler.
 Generate the signed artifacts with the two independent, self-verifying
-`bpir-admin payment-artifact clearing-*` ceremonies documented in
-`docs/payment/OFFLINE_OPERATOR_TOOLING.md`.
+builders linked from
+[`docs/runbooks/payment-artifacts.md`](../../docs/runbooks/payment-artifacts.md).
 
 `init-store`, `check-store`, and every available serving mode require exactly
 one floor boundary:
