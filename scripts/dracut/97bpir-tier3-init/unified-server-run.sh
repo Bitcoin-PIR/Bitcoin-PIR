@@ -70,6 +70,15 @@ PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_HOST=127.0.0.1
 PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PORT=8091
 PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=
 PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS=600
+# A failed sealed preflight has no receipt, but VPSBG has no console or file
+# extraction API.  Reuse the same short-lived recovery origin for a minimal
+# failure status before runit retries the service.
+PIR2_SEALED_FAILURE_RECOVERY_ENABLED=false
+PIR2_SEALED_FAILURE_RECOVERY_ACTIVE=false
+PIR2_SEALED_FAILURE_RECOVERY_PUBLISHING=false
+PIR2_SEALED_SUCCESS_RECOVERY_LISTENER_STARTED=false
+PIR2_SEALED_FAILURE_STAGE=startup-config
+PIR2_SEALED_FAILURE_STDERR_FILE=/run/bitcoinpir-pir2-sealed-preflight.stderr
 PIR2_SEALED_OPERATOR_KEY_HEX=30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c
 PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX=9ab315056cdabf821c41d2bb57a8ab180481436f439c5ef4131c000b448c2763
 PIR2_SEALED_PROVIDER_ID_HEX=a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d
@@ -139,6 +148,10 @@ DELTA_EXPECTED_INDEX_SHA256=e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aa
 DELTA_EXPECTED_CHUNKS_SHA256=536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a
 
 fatal() {
+    if [ "${PIR2_SEALED_FAILURE_RECOVERY_ENABLED:-false}" = true ] \
+        && [ "${PIR2_SEALED_SUCCESS_RECOVERY_LISTENER_STARTED:-false}" != true ]; then
+        publish_pir2_sealed_failure_recovery_window "$PIR2_SEALED_FAILURE_STAGE" "$1" || true
+    fi
     if [ -n "${ORAM_STATUS_STARTED_AT_EPOCH:-}" ] && [ -d "$ORAM_STATUS_HTTP_ROOT" ]; then
         write_direct_oram_status_json failed "${2:-$ORAM_TOTAL_MAX_SECONDS}" "${3:-bootstrap-failed}" || true
     fi
@@ -728,6 +741,78 @@ pir2_sealed_receipt_recovery_window_seconds() {
     printf '%s\n' "$PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS"
 }
 
+pir2_sealed_failure_detail_hex() {
+    failure_detail=$1
+    printf '%s' "$failure_detail" | tail -c 512 | od -An -tx1 -v | tr -d ' \n'
+}
+
+pir2_sealed_failure_stderr_detail_hex() {
+    [ -f "$PIR2_SEALED_FAILURE_STDERR_FILE" ] || return 1
+    tail -c 512 "$PIR2_SEALED_FAILURE_STDERR_FILE" | od -An -tx1 -v | tr -d ' \n'
+}
+
+publish_pir2_sealed_failure_recovery_window() {
+    failure_stage=$1
+    failure_detail=$2
+    case "$failure_stage" in process-controls|startup-config|attempt|dispatcher) ;; *) return 1 ;; esac
+    failure_phase=unknown
+    failure_ordinal=0
+    case "${PIR2_SEALED_PHASE:-}:${PIR2_SEALED_ORDINAL:-}" in
+        observe:[1-9]*|enroll:[1-9]*|probe:[1-9]*|ready:[1-9]*)
+            case "${PIR2_SEALED_ORDINAL:-}" in *[!0-9]*) ;; *)
+                failure_phase=$PIR2_SEALED_PHASE
+                failure_ordinal=$PIR2_SEALED_ORDINAL
+                ;;
+            esac
+            ;;
+    esac
+    [ "${PIR2_SEALED_FAILURE_RECOVERY_ACTIVE:-false}" != true ] || return 1
+    [ "${PIR2_SEALED_FAILURE_RECOVERY_PUBLISHING:-false}" != true ] || return 1
+    [ -z "${PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID:-}" ] || return 1
+
+    PIR2_SEALED_FAILURE_RECOVERY_PUBLISHING=true
+    recovery_window_seconds=$(pir2_sealed_receipt_recovery_window_seconds) || return 1
+    case "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" in
+        /run/bitcoinpir-pir2-sealed-receipt-api) ;;
+        *) return 1 ;;
+    esac
+    rm -rf "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" || return 1
+    mkdir -p "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" || return 1
+    chmod 700 "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" || return 1
+    failure_detail_hex=$(pir2_sealed_failure_stderr_detail_hex 2>/dev/null || true)
+    [ -n "$failure_detail_hex" ] || failure_detail_hex=$(pir2_sealed_failure_detail_hex "$failure_detail")
+    status_tmp="$PIR2_SEALED_RECEIPT_RECOVERY_STATUS_FILE.tmp.$$"
+    umask 077
+    {
+        printf '{"schema_version":1,"status":"failed","stage":"%s",' "$failure_stage"
+        printf '"phase":"%s","ordinal":%s,"detail_hex":"%s"}\n' \
+            "$failure_phase" "$failure_ordinal" "$failure_detail_hex"
+    } >"$status_tmp" || return 1
+    chmod 600 "$status_tmp" || return 1
+    mv "$status_tmp" "$PIR2_SEALED_RECEIPT_RECOVERY_STATUS_FILE" || return 1
+    [ -x "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD" ] || return 1
+    "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD" httpd -f \
+        -p "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_HOST:$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PORT" \
+        -h "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" </dev/null >/dev/null 2>&1 &
+    PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=$!
+    PIR2_SEALED_FAILURE_RECOVERY_ACTIVE=true
+    sleep "$recovery_window_seconds"
+    stop_pir2_sealed_receipt_recovery_api || return 1
+    remove_pir2_sealed_receipt_recovery_api_root || return 1
+    PIR2_SEALED_FAILURE_RECOVERY_ACTIVE=false
+    PIR2_SEALED_FAILURE_RECOVERY_PUBLISHING=false
+}
+
+capture_pir2_sealed_preflight_stderr() {
+    umask 077
+    : >"$PIR2_SEALED_FAILURE_STDERR_FILE" || return 1
+    chmod 600 "$PIR2_SEALED_FAILURE_STDERR_FILE" || return 1
+    "$@" 2>"$PIR2_SEALED_FAILURE_STDERR_FILE"
+    captured_status=$?
+    cat "$PIR2_SEALED_FAILURE_STDERR_FILE" >&2 || true
+    return "$captured_status"
+}
+
 prepare_pir2_sealed_receipt_recovery_api() {
     case "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" in
         /run/bitcoinpir-pir2-sealed-receipt-api) ;;
@@ -782,6 +867,7 @@ publish_pir2_sealed_receipt_recovery_window() {
         -p "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_HOST:$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PORT" \
         -h "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" </dev/null >/dev/null 2>&1 &
     PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=$!
+    PIR2_SEALED_SUCCESS_RECOVERY_LISTENER_STARTED=true
     printf '%s\n' "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID" >"$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE" \
         || fatal "failed to record pir2 sealed receipt recovery process"
     chmod 600 "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE" \
@@ -794,8 +880,9 @@ publish_pir2_sealed_receipt_recovery_window() {
 }
 
 run_pir2_sealed_inert_phase() {
+    PIR2_SEALED_FAILURE_STAGE=dispatcher
     if [ "$PIR2_SEALED_PHASE" = observe ]; then
-        "$UNIFIED_SERVER" \
+        capture_pir2_sealed_preflight_stderr "$UNIFIED_SERVER" \
             --port 8091 \
             --role secondary \
             --serve-queries \
@@ -809,7 +896,7 @@ run_pir2_sealed_inert_phase() {
             --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX"
     else
         require_file "$PIR2_SEALED_RELEASE_PATH"
-        "$UNIFIED_SERVER" \
+        capture_pir2_sealed_preflight_stderr "$UNIFIED_SERVER" \
             --port 8091 \
             --role secondary \
             --serve-queries \
@@ -843,7 +930,8 @@ run_pir2_sealed_ready_preflight() {
         echo "[unified-server-run] reusing authoritative current-attempt pir2 sealed Ready-preflight success" >&2
         return 0
     fi
-    run_pir2_with_public_artifacts child "$UNIFIED_SERVER" \
+    PIR2_SEALED_FAILURE_STAGE=dispatcher
+    capture_pir2_sealed_preflight_stderr run_pir2_with_public_artifacts child "$UNIFIED_SERVER" \
         --port 8091 \
         --role secondary \
         --serve-queries \
@@ -1263,17 +1351,21 @@ verify_direct_oram_publish() {
     echo "[unified-server-run] verified published $db_label direct ORAM paths" >&2
 }
 
+PIR2_SEALED_FAILURE_RECOVERY_ENABLED=true
+PIR2_SEALED_FAILURE_STAGE=startup-config
+load_pir2_sealed_startup_config
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
 # BusyBox ash provides the required ulimit builtin in the measured initramfs.
 # shellcheck disable=SC3045
+PIR2_SEALED_FAILURE_STAGE=process-controls
 ulimit -c 0 || fatal "failed to disable core dumps before pir2 sealed startup"
 PIR2_PROC_SWAPS=${BPIR_PIR2_PROC_SWAPS:-/proc/swaps}
 require_file "$PIR2_PROC_SWAPS"
 active_swap_rows=$(awk 'NR > 1 { count++ } END { print count + 0 }' "$PIR2_PROC_SWAPS") \
     || fatal "failed to inspect active swap before pir2 sealed startup"
 [ "$active_swap_rows" = 0 ] || fatal "active swap is forbidden for pir2 sealed startup"
+PIR2_SEALED_FAILURE_STAGE=attempt
 read_pir2_current_boot
-load_pir2_sealed_startup_config
 prepare_pir2_sealed_output_dirs
 prepare_pir2_sealed_attempt_dir
 case "$PIR2_SEALED_PHASE" in
