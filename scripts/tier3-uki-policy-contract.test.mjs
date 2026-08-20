@@ -20,6 +20,14 @@ const reviewedPolicySha256 =
   "5e57ed6b5313ebf89f8f00b24d9ad78452be24e9e59bc88c96d56203f4a26092";
 
 function validateBuildContract(source) {
+  assert.match(
+    source,
+    /for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT/,
+  );
+  assert.match(
+    source,
+    /error: \$input_name must be set explicitly for a production Tier 3 UKI/,
+  );
   const policyRequirement = source.indexOf(
     '[ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ] || {',
   );
@@ -46,6 +54,26 @@ function validateBuildContract(source) {
     /\[ "\$EMBEDDED_SERVICE_POLICY_HASH" != "\$SERVICE_POLICY_HASH" \]/,
   );
   assert.match(source, /"service_policy_sha256=\$SERVICE_POLICY_HASH"/);
+  assert.match(source, /TIER3_INITRD_COMPRESSION=zstd/);
+  assert.match(source, /TIER3_INITRD_MAGIC=28b52ffd/);
+  assert.match(source, /TIER3_MAX_UKI_BYTES=\$\(\(256 \* 1024 \* 1024\)\)/);
+  assert.match(source, /--compress "\$TIER3_INITRD_COMPRESSION"/);
+  assert.match(source, /--no-early-microcode/);
+  assert.match(source, /TIER3_OMIT_DRACUT_MODULES="[^"]*drm[^"]*"/);
+  assert.match(source, /TIER3_OMIT_DRACUT_MODULES="[^"]*bpir-verify[^"]*"/);
+  assert.match(source, /usr\/lib\/firmware\/nvidia\//);
+  assert.match(source, /kernel\/x86\/microcode\//);
+  assert.match(source, /forbidden build-host payload leaked into Tier 3 initramfs/);
+  assert.match(source, /\[ "\$INITRD_MAGIC" != "\$TIER3_INITRD_MAGIC" \]/);
+  assert.match(source, /\[ "\$UKI_BYTES" -gt "\$TIER3_MAX_UKI_BYTES" \]/);
+  assert.ok(
+    source.indexOf('[ "$UKI_BYTES" -gt "$TIER3_MAX_UKI_BYTES" ]') <
+      source.indexOf('"$ARCHIVE_SCRIPT" tier3 "$OUT"'),
+    "oversized UKIs must be rejected before archival",
+  );
+  assert.match(source, /"initrd_compression=\$TIER3_INITRD_COMPRESSION"/);
+  assert.match(source, /"dracut_version=\$DRACUT_VERSION"/);
+  assert.match(source, /"ukify_version=\$UKIFY_VERSION"/);
   assert.doesNotMatch(source, /BPIR_TIER3_IDENTITY_KEY/);
   assert.match(
     source,
@@ -98,6 +126,26 @@ test("production Tier3 build rejects policy lock or embedded-byte regressions", 
       source.replace(
         '[ "$EMBEDDED_SERVICE_POLICY_HASH" != "$SERVICE_POLICY_HASH" ]',
         '[ "$EMBEDDED_SERVICE_POLICY_HASH" = "$SERVICE_POLICY_HASH" ]',
+      ),
+    ),
+  );
+});
+
+test("production Tier3 build pins compression and rejects oversized output", () => {
+  const source = readFileSync(buildPath, "utf8");
+  assert.throws(() =>
+    validateBuildContract(
+      source.replace(
+        '--compress "$TIER3_INITRD_COMPRESSION"',
+        '--no-compress',
+      ),
+    ),
+  );
+  assert.throws(() =>
+    validateBuildContract(
+      source.replace(
+        '[ "$UKI_BYTES" -gt "$TIER3_MAX_UKI_BYTES" ]',
+        '[ "$UKI_BYTES" -lt "$TIER3_MAX_UKI_BYTES" ]',
       ),
     ),
   );

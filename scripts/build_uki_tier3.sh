@@ -12,8 +12,10 @@ Builds the Tier 3 UKI on the selected Linux build host.
 Required environment:
   BPIR_TIER3_SERVICE_POLICY  Reviewed signed service-policy file.
 
-Optional environment:
+Production release inputs (set explicitly in the operator command):
   KERNEL, BINARY, ORAMCTL, BHTM_FROM_LEAF_PROOF, OUT
+
+Archive environment:
   UKI_ARCHIVE_DIR, UKI_ARCHIVE_REMOTE, UKI_ARCHIVE_REMOTE_REQUIRED
 
 On success the script writes OUT (default /tmp/bpir-tier3.efi), prints its
@@ -27,8 +29,12 @@ case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --dry-run)
         echo '[stage] Tier 3 UKI build preview'
-        echo 'required_input=BPIR_TIER3_SERVICE_POLICY'
-        echo 'output=OUT (default /tmp/bpir-tier3.efi)'
+        for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT; do
+            input_value=${!input_name:-MISSING}
+            echo "$input_name=$input_value"
+        done
+        echo 'initrd_compression=zstd'
+        echo 'max_uki_bytes=268435456'
         echo 'PASS uki_build dry_run=true'
         echo 'NEXT_STEP=run without --dry-run as root on the approved UKI build host'
         exit 0
@@ -36,19 +42,32 @@ case "${1:-}" in
     *) usage >&2; exit 2 ;;
 esac
 
+for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT; do
+    if [ -z "${!input_name:-}" ]; then
+        echo "error: $input_name must be set explicitly for a production Tier 3 UKI" >&2
+        exit 1
+    fi
+done
+
 if [ "$EUID" != "0" ]; then
     echo "error: build_uki_tier3.sh must run as root on the UKI build host" >&2
     exit 1
 fi
 
 # ─── Defaults (override via env) ───────────────────────────────────────────
-KERNEL=${KERNEL:-}
-OUT=${OUT:-/tmp/bpir-tier3.efi}
 CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
 # The currently deployed image accepts service-policy epoch 8 with this exact
 # digest. A policy rotation is a production behavior change and must update
 # this reviewed lock in source before a new UKI can be emitted.
 TIER3_SERVICE_POLICY_SHA256=5e57ed6b5313ebf89f8f00b24d9ad78452be24e9e59bc88c96d56203f4a26092
+TIER3_INITRD_COMPRESSION=zstd
+TIER3_INITRD_MAGIC=28b52ffd
+TIER3_MAX_UKI_BYTES=$((256 * 1024 * 1024))
+# Only the three modules in --add below belong to the production runtime UKI.
+# Omit dracut modules that may be installed globally by maintenance, builder,
+# or retired release work. The generic drm module pulls host GPU firmware into
+# a non-hostonly image even though the serial-console SEV guest does not use it.
+TIER3_OMIT_DRACUT_MODULES="drm bpir-verify bpir-attested-builder bpir-builder-tier3-init bpir-pir2-sealed-provisioner bhtm-proof-init"
 
 # Resolve dracut module dir relative to this script.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -57,12 +76,16 @@ ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
 
 # ─── Sanity checks ─────────────────────────────────────────────────────────
 
-for tool in ukify dracut sha256sum; do
+for tool in ukify dracut sha256sum zstd od stat; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "error: $tool not installed (apt install systemd-ukify dracut)" >&2
         exit 1
     }
 done
+
+DRACUT_VERSION=$(dracut --version 2>&1 | head -1)
+UKIFY_VERSION=$(ukify --version 2>&1 | head -1)
+ZSTD_VERSION=$(zstd --version 2>&1 | head -1)
 
 # The Tier 3 init process uses runit. Check its executables before invoking
 # dracut so a missing package has a direct error.
@@ -83,19 +106,12 @@ done
 }
 
 # The unified_server and oramctl binaries must be built and present.
-BINARY=${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}
 [ -x "$BINARY" ] || {
     echo "error: $BINARY not executable" >&2
     echo "       run: cargo build --release -p runtime --features cuckoo-oram --bin unified_server" >&2
     exit 1
 }
-if [ -n "${ORAMCTL:-}" ]; then
-    ORAMCTL_BIN="$ORAMCTL"
-elif [ -x /home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl ]; then
-    ORAMCTL_BIN=/home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl
-else
-    ORAMCTL_BIN=/home/pir/bitcoin-pir/oram/target/release/oramctl
-fi
+ORAMCTL_BIN="$ORAMCTL"
 [ -x "$ORAMCTL_BIN" ] || {
     echo "error: $ORAMCTL_BIN not executable" >&2
     echo "       run: cd /home/pir/bitcoin-pir/oram && cargo build --release --bin oramctl" >&2
@@ -104,7 +120,6 @@ fi
 }
 export BPIR_ORAMCTL_BIN="$ORAMCTL_BIN"
 
-BHTM_FROM_LEAF_PROOF=${BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
 [ -r "$BHTM_FROM_LEAF_PROOF" ] || {
     echo "error: BHTM from-leaf proof not readable: $BHTM_FROM_LEAF_PROOF" >&2
     exit 1
@@ -134,18 +149,9 @@ if [ "$SERVICE_POLICY_HASH" != "$TIER3_SERVICE_POLICY_SHA256" ]; then
 fi
 
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
-# Prefer explicit KERNEL=/boot/vmlinuz-<ver> in the environment.
-# Otherwise, auto-detect the latest installed kernel (highest sort order under
-# /boot/vmlinuz-*). This adapts to unattended-upgrades replacing the kernel
-# and apt autoremove cleaning stale modules without manual pin maintenance.
-if [ -z "$KERNEL" ]; then
-    KERNEL=$(ls -1 /boot/vmlinuz-*-generic 2>/dev/null | sort -V | tail -1)
-    if [ -z "$KERNEL" ]; then
-        echo "error: no kernel found under /boot/vmlinuz-*-generic — set KERNEL= explicitly" >&2
-        exit 1
-    fi
-    echo "auto-detected kernel: $KERNEL"
-fi
+# Production builds never auto-select the newest installed kernel: package
+# upgrades would otherwise change the measured artifact without changing the
+# operator command or source commit.
 [ -r "$KERNEL" ] || { echo "error: $KERNEL not readable" >&2; exit 1; }
 
 # Derive kernel version from KERNEL filename.
@@ -243,6 +249,9 @@ echo "oramctl sha256:           $ORAMCTL_HASH"
 echo "BHTM proof sha256:        $BHTM_PROOF_HASH"
 echo "service policy:          $BPIR_TIER3_SERVICE_POLICY"
 echo "service policy sha256:   $SERVICE_POLICY_HASH"
+echo "dracut:                  $DRACUT_VERSION"
+echo "ukify:                   $UKIFY_VERSION"
+echo "initrd compression:      $TIER3_INITRD_COMPRESSION ($ZSTD_VERSION)"
 
 # ─── Generate initramfs ────────────────────────────────────────────────────
 # --add network            : pulls in dracut's network plumbing (mostly
@@ -256,6 +265,10 @@ echo "service policy sha256:   $SERVICE_POLICY_HASH"
 # --reproducible           : strip mtimes / stamps from the cpio so a
 #                            re-run of this script with the same inputs
 #                            produces byte-identical output.
+# --compress zstd          : do not inherit a build-host compression default.
+# --no-early-microcode     : CPU microcode is a host/firmware responsibility;
+#                            the measured guest does not consume a 20+ MB blob.
+# --omit drm ...           : exclude GPU firmware and stale global BPIR modules.
 # SOURCE_DATE_EPOCH=0      : force every fallback timestamp to 1970-01-01.
 echo "generating tier3 initrd…"
 # --no-strip: dracut's default is to `strip` binaries on copy to save
@@ -273,11 +286,23 @@ echo "generating tier3 initrd…"
 # (modprobe pulls it transitively, but listing it makes intent explicit).
 DRIVER_LIST="virtio_net virtio_pci virtio_blk $SEV_DRIVER_LIST"
 SOURCE_DATE_EPOCH=0 dracut --force --no-hostonly --reproducible --nostrip \
+    --compress "$TIER3_INITRD_COMPRESSION" \
+    --no-early-microcode \
+    --omit "$TIER3_OMIT_DRACUT_MODULES" \
     --add "network bpir-cloudflared bpir-unified-server bpir-tier3-init" \
     --add-drivers " $DRIVER_LIST " \
     --kver "$KVER" \
     "$CUSTOM_INITRD"
-echo "initrd:                   $CUSTOM_INITRD ($(du -h "$CUSTOM_INITRD" | cut -f1))"
+INITRD_BYTES=$(stat -c '%s' "$CUSTOM_INITRD")
+INITRD_MAGIC=$(od -An -tx1 -N4 "$CUSTOM_INITRD" | tr -d '[:space:]')
+if [ "$INITRD_MAGIC" != "$TIER3_INITRD_MAGIC" ]; then
+    echo "ERROR: Tier 3 initramfs is not a directly zstd-compressed archive" >&2
+    echo "  expected magic: $TIER3_INITRD_MAGIC" >&2
+    echo "  actual magic:   $INITRD_MAGIC" >&2
+    echo "  refusing UKI assembly; inspect dracut compression/module selection" >&2
+    exit 1
+fi
+echo "initrd:                   $CUSTOM_INITRD ($(du -h "$CUSTOM_INITRD" | cut -f1), $INITRD_BYTES bytes, zstd)"
 
 # Post-build validation: verify SEV-SNP kernel modules actually landed in the
 # initramfs. Dracut silently skips modules it cannot find; the pre-build check
@@ -291,6 +316,22 @@ if [ -z "$INITRD_LISTING" ]; then
     echo "ERROR: lsinitrd failed — cannot inspect initramfs" >&2
     exit 1
 fi
+FORBIDDEN_TIER3_ITEMS=(
+    'usr/lib/firmware/nvidia/'
+    'kernel/x86/microcode/'
+    'usr/lib/dracut/modules.d/[0-9]+bpir-verify/'
+    'usr/lib/dracut/modules.d/[0-9]+bpir-attested-builder/'
+    'usr/lib/dracut/modules.d/[0-9]+bpir-builder-tier3-init/'
+    'usr/lib/dracut/modules.d/[0-9]+bpir-pir2-sealed-provisioner/'
+    'usr/lib/dracut/modules.d/[0-9]+bhtm-proof-init/'
+)
+for unexpected in "${FORBIDDEN_TIER3_ITEMS[@]}"; do
+    if grep -Eq -- "$unexpected" <<< "$INITRD_LISTING"; then
+        echo "ERROR: forbidden build-host payload leaked into Tier 3 initramfs: $unexpected" >&2
+        exit 1
+    fi
+done
+echo "GPU firmware, early microcode, and unrelated global BPIR modules absent"
 MISSING_MODS=""
 for mod in $REQUIRED_SEV_MODS; do
     # Use here-string instead of pipe to avoid SIGPIPE under set -o pipefail:
@@ -382,9 +423,17 @@ ukify build \
 
 # ─── Report ────────────────────────────────────────────────────────────────
 SIZE=$(du -h "$OUT" | cut -f1)
+UKI_BYTES=$(stat -c '%s' "$OUT")
+if [ "$UKI_BYTES" -gt "$TIER3_MAX_UKI_BYTES" ]; then
+    echo "ERROR: Tier 3 UKI exceeds the sealed-release input limit" >&2
+    echo "  limit: $TIER3_MAX_UKI_BYTES bytes" >&2
+    echo "  actual: $UKI_BYTES bytes" >&2
+    echo "  refusing archive; inspect the initramfs inventory" >&2
+    exit 1
+fi
 UKI_SHA=$(sha256sum "$OUT" | awk '{print $1}')
 echo
-echo "wrote tier3 UKI:          $OUT (${SIZE})"
+echo "wrote tier3 UKI:          $OUT (${SIZE}, $UKI_BYTES bytes)"
 echo "tier3 uki sha256:         $UKI_SHA"
 "$ARCHIVE_SCRIPT" tier3 "$OUT" \
     "kernel=$KERNEL" \
@@ -393,6 +442,11 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "binary_sha256=$BIN_HASH" \
     "oramctl_sha256=$ORAMCTL_HASH" \
     "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH" \
-    "service_policy_sha256=$SERVICE_POLICY_HASH"
+    "service_policy_sha256=$SERVICE_POLICY_HASH" \
+    "initrd_compression=$TIER3_INITRD_COMPRESSION" \
+    "initrd_size_bytes=$INITRD_BYTES" \
+    "dracut_version=$DRACUT_VERSION" \
+    "ukify_version=$UKIFY_VERSION" \
+    "zstd_version=$ZSTD_VERSION"
 echo 'PASS uki_build'
 echo 'NEXT_STEP=use scripts/vpsbg-measured-boot.sh to preview or apply the measured-boot image transition'

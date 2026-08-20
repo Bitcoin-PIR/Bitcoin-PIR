@@ -408,7 +408,10 @@ cargo test -p pir-sdk-wasm --lib
   - **pir1** (Hetzner: DPF-0 + OnionPIR + Harmony hint — no ORAM): `cargo build --locked --release -p runtime --bin unified_server` (default features).
   - **pir2** (VPSBG Tier 3: Direct/Circuit ORAM query path): `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server`.
   - Do **not** use `build_unified_server.sh` or `nix build .#unified-server` for a production binary. The flake is a development/reproducibility harness only; the deployed pir1/pir2 binaries were never Nix-built (verified via embedded source paths and cargo feature fingerprints on the build host).
-- **Build UKI** (with VPSBG kernel): `sudo env KERNEL=/boot/vmlinuz-7.0.0-15-generic BINARY=/absolute/path/to/unified_server BPIR_UNIFIED_SERVER_BIN=/absolute/path/to/unified_server ./scripts/build_uki_tier3.sh`
+- **Build UKI**: follow `docs/runbooks/uki-build.md` and set the exact kernel,
+  binary, oramctl, proof, policy, output and archive paths. The canonical script
+  pins Zstandard compression and excludes early microcode, GPU firmware and
+  unrelated globally installed BitcoinPIR dracut modules.
 - **Deploy UKI**: `scp pir-hetzner:/tmp/bpir-tier3.efi deploy/uki/bpir-tier3-vN.efi`, then portal → Upload → Save & Reboot
 - **Cross-build stack**: kernel 7.0.0-15, kmod 34.2, libkmod 2.5.1, dracut 110 (all backported from Ubuntu 25.04 plucky)
 - **Critical**: dracut 060 (Ubuntu 24.04) cannot build a working initramfs for kernel 7.0 — modprobe silently fails. dracut 110 required.
@@ -417,7 +420,8 @@ cargo test -p pir-sdk-wasm --lib
 Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on first match → pipe closes → echo gets SIGPIPE (141) → pipefail propagates → false failure. Use `grep -q ... <<< "$var"` (here-string) instead. See `memory/pattern_shell_sigpipe.md`.
 
 ### UKI/initramfs internals
-- dracut-110 on Ubuntu 24.04 produces **zstd-compressed** initramfs (raw `.img` is Zstandard data)
+- `scripts/build_uki_tier3.sh` explicitly requests and validates a
+  **zstd-compressed** initramfs; never rely on the build host's dracut defaults.
 - Uses **real kmod** (`/usr/bin/kmod` +ZSTD), NOT busybox modprobe — `.ko.zst` support works
 - Kernel modules stored as `.ko.zst` in initramfs: `usr/lib/modules/$KVER/kernel/drivers/...`
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd

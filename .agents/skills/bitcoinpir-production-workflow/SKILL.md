@@ -49,14 +49,19 @@ Success: `PASS issuer_state=init`. Next: build the UKI.
 
 ## 4. UKI
 
-Inputs: root build host, service policy, runtime binaries, and output path.
+Inputs: approved root build host plus explicit kernel, ORAM-enabled runtime,
+oramctl, proof, service policy, output, and archive paths. Read
+`docs/runbooks/uki-build.md`; Nix and attested-builder outputs are different
+reproducibility blocks and are not substitutes for this runtime UKI.
 
 ```bash
-sudo BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin OUT=/absolute/release.efi scripts/build_uki_tier3.sh --dry-run
-sudo BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin OUT=/absolute/release.efi scripts/build_uki_tier3.sh
+sudo env KERNEL=/boot/vmlinuz-EXACT-generic BINARY=/absolute/unified_server BPIR_UNIFIED_SERVER_BIN=/absolute/unified_server ORAMCTL=/absolute/oramctl BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin OUT=/absolute/release.efi UKI_ARCHIVE_REMOTE=archive-host:/home/pir/uki-archive/tier3 UKI_ARCHIVE_REMOTE_REQUIRED=1 scripts/build_uki_tier3.sh --dry-run
+sudo env KERNEL=/boot/vmlinuz-EXACT-generic BINARY=/absolute/unified_server BPIR_UNIFIED_SERVER_BIN=/absolute/unified_server ORAMCTL=/absolute/oramctl BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin OUT=/absolute/release.efi UKI_ARCHIVE_REMOTE=archive-host:/home/pir/uki-archive/tier3 UKI_ARCHIVE_REMOTE_REQUIRED=1 scripts/build_uki_tier3.sh
 ```
 
-Success: `wrote tier3 UKI: ...`, `tier3 uki sha256: ...`, and `PASS uki_build`.
+Success: a directly Zstandard-compressed initramfs, the required measured
+inventory, an EFI no larger than 256 MiB, `wrote tier3 UKI: ...`,
+`tier3 uki sha256: ...`, dual archive evidence, and `PASS uki_build`.
 Next: inspect or change VPSBG measured boot with `$vpsbg-measured-boot`.
 
 ## 5. VPSBG image
