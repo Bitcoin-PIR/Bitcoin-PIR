@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::directory_artifact::read_public_bounded;
 
-const MAX_UKI_LEN: usize = 512 * 1024 * 1024;
+const MAX_UKI_LEN: usize = 256 * 1024 * 1024;
 const MAX_OVMF_LEN: usize = 64 * 1024 * 1024;
 const MAX_CERT_LEN: usize = 128 * 1024;
 const MAX_RELEASE_LEN: usize = 4096;
