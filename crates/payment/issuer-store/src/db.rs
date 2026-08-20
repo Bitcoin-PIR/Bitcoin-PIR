@@ -307,6 +307,7 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             (SELECT COUNT(*) FROM bat_v2_class_heads WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_v2_class_members WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_v2_clearing_authorizations WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM bat_v2_clearing_epoch_reservations WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_v2_redemptions WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM settlement_key_lineages WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_account_bindings WHERE issuer_id != ?1) + \
@@ -375,6 +376,40 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
     if bad_bat_v2_registry != 0 {
         return Err(StoreError::SchemaMismatch(
             "BAT V2 class registry linkage or raw-key ownership failed".to_owned(),
+        ));
+    }
+
+    let bad_bat_v2_clearing_reservations: i64 = connection.query_row(
+        "SELECT \
+            (SELECT COUNT(*) FROM bat_v2_clearing_epoch_reservations r \
+                LEFT JOIN bat_v2_clearing_authorizations a \
+                  ON a.issuer_id = r.issuer_id AND a.authorization_digest = r.authorization_digest \
+                WHERE (r.state = 0 AND EXISTS (SELECT 1 FROM bat_v2_clearing_authorizations current \
+                          WHERE current.issuer_id = r.issuer_id \
+                            AND current.provider_id = r.provider_id \
+                            AND current.authorization_epoch = r.authorization_epoch)) \
+                   OR (r.state = 1 AND (a.authorization_digest IS NULL \
+                        OR a.provider_id != r.provider_id \
+                        OR a.authorization_epoch != r.authorization_epoch \
+                        OR a.commit_seq != r.activation_commit_seq))) + \
+            (SELECT COUNT(*) FROM bat_v2_clearing_authorizations a \
+                LEFT JOIN bat_v2_clearing_epoch_reservations r \
+                  ON r.issuer_id = a.issuer_id AND r.provider_id = a.provider_id \
+                 AND r.authorization_epoch = a.authorization_epoch \
+                WHERE r.state IS NULL OR r.state != 1 \
+                   OR r.authorization_digest != a.authorization_digest) + \
+            (SELECT COUNT(*) FROM bat_v2_clearing_epoch_reservations current \
+                WHERE EXISTS (SELECT 1 FROM bat_v2_clearing_epoch_reservations prior \
+                    WHERE prior.issuer_id = current.issuer_id \
+                      AND prior.provider_id = current.provider_id \
+                      AND prior.authorization_epoch < current.authorization_epoch \
+                      AND prior.reservation_commit_seq >= current.reservation_commit_seq))",
+        [],
+        |row| row.get(0),
+    )?;
+    if bad_bat_v2_clearing_reservations != 0 {
+        return Err(StoreError::SchemaMismatch(
+            "BAT V2 clearing reservation linkage or append order failed".to_owned(),
         ));
     }
 
@@ -533,6 +568,9 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             UNION ALL SELECT commit_seq FROM bat_v2_class_heads \
             UNION ALL SELECT commit_seq FROM bat_v2_class_members \
             UNION ALL SELECT commit_seq FROM bat_v2_clearing_authorizations \
+            UNION ALL SELECT reservation_commit_seq FROM bat_v2_clearing_epoch_reservations \
+            UNION ALL SELECT activation_commit_seq FROM bat_v2_clearing_epoch_reservations \
+                WHERE activation_commit_seq IS NOT NULL \
             UNION ALL SELECT commit_seq FROM bat_v2_redemptions \
             UNION ALL SELECT commit_seq FROM settlement_key_lineages \
             UNION ALL SELECT commit_seq FROM provider_account_bindings \

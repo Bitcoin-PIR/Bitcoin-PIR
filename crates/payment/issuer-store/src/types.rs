@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// On-disk schema version. This crate never performs an implicit migration.
-/// Version 8 is a fresh-schema boundary for issuer-global BAT V2 redemption
-/// and protocol-neutral provider-account bindings. This crate never upgrades
-/// a version-7 store implicitly; deployment must isolate a fresh v8 store or
-/// use an explicit, separately reviewed migration.
-pub const SCHEMA_VERSION: u32 = 8;
+/// Version 9 is a fresh-schema boundary for durable inactive BAT V2 clearing
+/// epoch reservations. This crate never upgrades an older store implicitly;
+/// deployment must isolate a fresh v9 store or use an explicit, separately
+/// reviewed migration.
+pub const SCHEMA_VERSION: u32 = 9;
 
 pub const MAX_EXACT_INTENT_BYTES: usize = 64 * 1024;
 pub const MAX_EXACT_DELEGATION_BYTES: usize = 64 * 1024;
@@ -657,6 +657,32 @@ pub struct ProviderAccountBindingRecordV2 {
     pub settlement_account_id: [u8; 32],
     pub unit: SettlementUnitV1,
     pub commit: CommitMarker,
+}
+
+/// Owner-supplied inactive allocation for one future BAT V2 clearing epoch.
+/// Reserving this value does not authorize redemption; only exact activation
+/// with the signed accounting artifacts can make it active.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatV2ClearingEpochReservationV2 {
+    pub provider_id: [u8; 32],
+    pub authorization_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatV2ClearingEpochReservationStateV2 {
+    Inactive,
+    Active {
+        clearing_verifying_key: [u8; 32],
+        authorization_digest: [u8; 32],
+        activation_commit: CommitMarker,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatV2ClearingEpochReservationRecordV2 {
+    pub reservation: BatV2ClearingEpochReservationV2,
+    pub state: BatV2ClearingEpochReservationStateV2,
+    pub reservation_commit: CommitMarker,
 }
 
 /// Append-only, issuer-verified BAT V2 accounting authority. Exact encoded

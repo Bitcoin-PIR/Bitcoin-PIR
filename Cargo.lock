@@ -1949,6 +1949,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-identity-authority"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "pir-identity",
+ "pir-private-files",
+ "rusqlite",
+ "sha2",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "pir-issuer-clearing"
 version = "0.1.0"
 dependencies = [
