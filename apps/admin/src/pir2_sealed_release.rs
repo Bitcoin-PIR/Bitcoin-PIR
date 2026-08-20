@@ -27,7 +27,7 @@ const MAX_OVMF_LEN: usize = 64 * 1024 * 1024;
 const MAX_CERT_LEN: usize = 128 * 1024;
 const MAX_RELEASE_LEN: usize = 4096;
 
-const REQUIRED_VCPUS: u32 = 2;
+const REQUIRED_VCPUS: u32 = 4;
 const REQUIRED_VCPU_SIGNATURE: u32 = 0x00B1_0F10;
 const REQUIRED_GUEST_FEATURES: u64 = 0x1;
 const REQUIRED_VMM_TYPE: &str = "qemu";
@@ -77,7 +77,7 @@ pub struct Pir2SealedReleaseArgs {
     /// SHA-256 of the DER-encoded ARK certificate.
     #[arg(long)]
     pub expected_ark_sha256_hex: String,
-    /// Launch vCPU count; the source contract accepts exactly 2.
+    /// Launch vCPU count; the source contract accepts exactly 4.
     #[arg(long)]
     pub vcpus: u32,
     /// Exact QEMU CPUID signature; the source contract accepts 0x00B10F10 only.
@@ -681,7 +681,7 @@ mod tests {
 
         assert_eq!(
             hex::encode(measurement),
-            "33c3d39698203e90042949e67f12304bc50a1e2b5184a47533d1db00424857c4bd1ee4be86f46f23c29d37b02dff7932"
+            "d380869e4b3b293c55b438f1d744684d8f9ed687aeb0bd69055ff79976973452a335a7cf9973e843f01865b80221590d"
         );
     }
 
