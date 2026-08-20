@@ -132,7 +132,7 @@ enum Command {
     PaymentV1SignetSmoke(payment_v1_signet_smoke::PaymentV1SignetSmokeArgs),
     /// Verify a fresh SNP observation and emit one canonical pir2 release.
     #[command(name = "pir2-sealed-release")]
-    Pir2SealedRelease(pir2_sealed_release::Pir2SealedReleaseArgs),
+    Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
@@ -257,7 +257,7 @@ async fn main() {
                 1
             }
         },
-        Command::Pir2SealedRelease(args) => match pir2_sealed_release::run(args) {
+        Command::Pir2SealedRelease(args) => match pir2_sealed_release::run(*args) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("pir2-sealed-release: {e}");
