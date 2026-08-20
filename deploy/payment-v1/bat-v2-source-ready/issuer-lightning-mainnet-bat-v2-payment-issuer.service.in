@@ -30,9 +30,9 @@ ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer 
     --quote-signing-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/quote-signing.key \
     --credential-derivation-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/credential-derivation.key \
     --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir1-current.bin=@PIR1_POLICY_VERIFYING_KEY_HEX@ \
-    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-current.bin=73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-current.bin=791d6e18d6ed2147a0925ec23a157e7ef1f9314d7add7d13b179ef14c16e91b2 \
     --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir1-retained.bin=@PIR1_POLICY_VERIFYING_KEY_HEX@ \
-    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-retained.bin=73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5 \
+    --service-policy /etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-retained.bin=791d6e18d6ed2147a0925ec23a157e7ef1f9314d7add7d13b179ef14c16e91b2 \
     --bat-v2-class /etc/bitcoinpir/payment-v1/bat-v2/public/classes/current.bin \
     --bat-v2-class /etc/bitcoinpir/payment-v1/bat-v2/public/classes/retained.bin \
     --bat-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-current.key \
