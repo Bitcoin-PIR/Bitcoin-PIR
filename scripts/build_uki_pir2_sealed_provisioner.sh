@@ -30,6 +30,7 @@ export BPIR_PIR2_SEALED_PROVISIONER_PAYLOAD_DIR="$PAYLOAD_DIR"
 export BPIR_PIR2_SEALED_PROVISIONER_MANIFEST="$MANIFEST"
 
 SOURCE_DATE_EPOCH=0 dracut --force --no-hostonly --reproducible \
+    --omit "bpir-verify bpir-attested-builder bpir-cloudflared bpir-unified-server bpir-builder-tier3-init bpir-tier3-init" \
     --add bpir-pir2-sealed-provisioner --add-drivers " virtio_blk " \
     --kver "$KVER" "$INITRD"
 ukify build --linux="$KERNEL" --initrd="$INITRD" \
