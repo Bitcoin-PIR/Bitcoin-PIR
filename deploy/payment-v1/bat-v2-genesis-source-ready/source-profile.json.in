@@ -1,0 +1,113 @@
+{
+  "schema": "bitcoinpir-bat-v2-public-genesis-source-profile-v1",
+  "profile": "issuer-pir1-pir2-storeless-genesis-v1",
+  "issuer": {
+    "issuerIdHex": "@BAT_V2_ISSUER_ID_HEX@",
+    "settlementVerifyingKeyHex": "248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7",
+    "settlementSigningKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/issuer/issuer-settlement-signing.key",
+    "unitPath": "deploy/payment-v1/bat-v2-genesis-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in",
+    "policies": [
+      {
+        "state": "current",
+        "provider": "pir1",
+        "digestHex": "@PIR1_CURRENT_POLICY_DIGEST_HEX@",
+        "fileSha256Hex": "@PIR1_CURRENT_POLICY_FILE_SHA256_HEX@",
+        "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir1-current.bin",
+        "verifyingKeyHex": "@PIR1_POLICY_VERIFYING_KEY_HEX@",
+        "scopeIdHex": "@PIR1_CURRENT_SCOPE_ID_HEX@",
+        "offerId": "@PIR1_CURRENT_OFFER_ID@"
+      },
+      {
+        "state": "current",
+        "provider": "pir2",
+        "digestHex": "@PIR2_CURRENT_POLICY_DIGEST_HEX@",
+        "fileSha256Hex": "@PIR2_CURRENT_POLICY_FILE_SHA256_HEX@",
+        "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/policies/pir2-current.bin",
+        "pir2RuntimePath": "/etc/bitcoinpir/payment/service-policy.bin",
+        "verifyingKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
+        "scopeIdHex": "@PIR2_CURRENT_SCOPE_ID_HEX@",
+        "offerId": "@PIR2_CURRENT_OFFER_ID@"
+      }
+    ],
+    "classes": [
+      {
+        "state": "current",
+        "classIdHex": "@BAT_V2_CURRENT_CLASS_ID_HEX@",
+        "keyEpoch": "@BAT_V2_CURRENT_CLASS_KEY_EPOCH@",
+        "digestHex": "@BAT_V2_CURRENT_CLASS_DIGEST_HEX@",
+        "fileSha256Hex": "@BAT_V2_CURRENT_CLASS_FILE_SHA256_HEX@",
+        "path": "/etc/bitcoinpir/payment-v1/bat-v2/public/classes/current.bin",
+        "pir2RuntimePath": "/home/pir/data/pir2-sealed/public/classes/@BAT_V2_CURRENT_CLASS_DIGEST_HEX@.bin",
+        "classVerifyingKeyHex": "@BAT_V2_CLASS_VERIFYING_KEY_HEX@",
+        "batKeyIdHex": "@BAT_V2_CURRENT_KEY_ID_HEX@",
+        "batSigningKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/issuer/bat-current.key",
+        "memberPolicyDigestsHex": [
+          "@PIR1_CURRENT_POLICY_DIGEST_HEX@",
+          "@PIR2_CURRENT_POLICY_DIGEST_HEX@"
+        ]
+      }
+    ],
+    "accounting": [
+      {
+        "provider": "pir1",
+        "authorizationDigestHex": "@PIR1_ACCOUNTING_AUTHORIZATION_DIGEST_HEX@",
+        "authorizationFileSha256Hex": "@PIR1_ACCOUNTING_AUTHORIZATION_FILE_SHA256_HEX@",
+        "authorizationPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-authorization.bin",
+        "approvalDigestHex": "@PIR1_ACCOUNTING_APPROVAL_DIGEST_HEX@",
+        "approvalFileSha256Hex": "@PIR1_ACCOUNTING_APPROVAL_FILE_SHA256_HEX@",
+        "approvalPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-approval.bin",
+        "operatorVerifyingKeyHex": "@PIR1_OPERATOR_VERIFYING_KEY_HEX@",
+        "operatorVerifyingKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/keys/pir1-operator-verifying.key",
+        "minimumAuthorizationEpoch": "@PIR1_MINIMUM_AUTHORIZATION_EPOCH@"
+      },
+      {
+        "provider": "pir2",
+        "authorizationDigestHex": "@PIR2_ACCOUNTING_AUTHORIZATION_DIGEST_HEX@",
+        "authorizationFileSha256Hex": "@PIR2_ACCOUNTING_AUTHORIZATION_FILE_SHA256_HEX@",
+        "authorizationPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir2-authorization.bin",
+        "approvalDigestHex": "@PIR2_ACCOUNTING_APPROVAL_DIGEST_HEX@",
+        "approvalFileSha256Hex": "@PIR2_ACCOUNTING_APPROVAL_FILE_SHA256_HEX@",
+        "approvalPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir2-approval.bin",
+        "pir2AuthorizationPath": "/home/pir/data/pir2-sealed/provider-accounting-authorization.bin",
+        "pir2ApprovalPath": "/home/pir/data/pir2-sealed/issuer-accounting-approval.bin",
+        "operatorVerifyingKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
+        "operatorVerifyingKeyPath": "/etc/bitcoinpir/payment-v1/bat-v2/public/keys/pir2-operator-verifying.key",
+        "minimumAuthorizationEpoch": "@PIR2_MINIMUM_AUTHORIZATION_EPOCH@"
+      }
+    ]
+  },
+  "providers": [
+    {
+      "name": "pir1",
+      "providerIdHex": "@PIR1_PROVIDER_ID_HEX@",
+      "policyVerifyingKeyHex": "@PIR1_POLICY_VERIFYING_KEY_HEX@",
+      "clearingKeySource": "plaintext-pir1",
+      "clearingVerifyingKeyHex": "@PIR1_CLEARING_VERIFYING_KEY_HEX@",
+      "currentPolicyDigestHex": "@PIR1_CURRENT_POLICY_DIGEST_HEX@",
+      "retainedPolicyDigestsHex": [],
+      "classDigestsHex": ["@BAT_V2_CURRENT_CLASS_DIGEST_HEX@"],
+      "accountingAuthorizationDigestHex": "@PIR1_ACCOUNTING_AUTHORIZATION_DIGEST_HEX@",
+      "accountingApprovalDigestHex": "@PIR1_ACCOUNTING_APPROVAL_DIGEST_HEX@",
+      "operatorVerifyingKeyHex": "@PIR1_OPERATOR_VERIFYING_KEY_HEX@",
+      "minimumAuthorizationEpoch": "@PIR1_MINIMUM_AUTHORIZATION_EPOCH@",
+      "renderPath": "deploy/payment-v1/bat-v2-genesis-source-ready/pir1-storeless-bat-v2-provider.service.in"
+    },
+    {
+      "name": "pir2",
+      "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+      "policyVerifyingKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
+      "clearingKeySource": "snp-sealed-ready",
+      "clearingVerifyingKeyHex": "@PIR2_CLEARING_VERIFYING_KEY_HEX@",
+      "currentPolicyDigestHex": "@PIR2_CURRENT_POLICY_DIGEST_HEX@",
+      "retainedPolicyDigestsHex": [],
+      "classDigestsHex": ["@BAT_V2_CURRENT_CLASS_DIGEST_HEX@"],
+      "accountingAuthorizationDigestHex": "@PIR2_ACCOUNTING_AUTHORIZATION_DIGEST_HEX@",
+      "accountingApprovalDigestHex": "@PIR2_ACCOUNTING_APPROVAL_DIGEST_HEX@",
+      "operatorVerifyingKeyHex": "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb",
+      "minimumAuthorizationEpoch": "@PIR2_MINIMUM_AUTHORIZATION_EPOCH@",
+      "renderPath": "scripts/dracut/97bpir-tier3-init/unified-server-run.sh",
+      "artifactSetPath": "deploy/payment-v1/bat-v2-genesis-source-ready/pir2-public-artifact-set.env.in",
+      "startupPath": "deploy/payment-v1/bat-v2-genesis-source-ready/pir2-sealed-startup.env.in"
+    }
+  ]
+}
