@@ -48,7 +48,7 @@ CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
 # The currently deployed image accepts service-policy epoch 8 with this exact
 # digest. A policy rotation is a production behavior change and must update
 # this reviewed lock in source before a new UKI can be emitted.
-TIER3_SERVICE_POLICY_SHA256=ef076d5fcb4ccc89c7ad4b883d332005ef59cfa09617e1ea66359d37f962dc14
+TIER3_SERVICE_POLICY_SHA256=5e57ed6b5313ebf89f8f00b24d9ad78452be24e9e59bc88c96d56203f4a26092
 
 # Resolve dracut module dir relative to this script.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
