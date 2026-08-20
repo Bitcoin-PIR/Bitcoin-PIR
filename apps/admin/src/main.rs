@@ -54,6 +54,7 @@ mod mainnet_lightning_v1;
 mod payment_artifact;
 mod payment_fixture;
 mod payment_v1_signet_smoke;
+mod pir2_sealed_release;
 mod rollback_authority_deployment_lint;
 mod service_keygen;
 mod service_policy;
@@ -129,6 +130,9 @@ enum Command {
     /// admission without executing a PIR query.
     #[command(name = "payment-v1-signet-smoke")]
     PaymentV1SignetSmoke(payment_v1_signet_smoke::PaymentV1SignetSmokeArgs),
+    /// Verify a fresh SNP observation and emit one canonical pir2 release.
+    #[command(name = "pir2-sealed-release")]
+    Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
@@ -253,6 +257,13 @@ async fn main() {
                 1
             }
         },
+        Command::Pir2SealedRelease(args) => match pir2_sealed_release::run(*args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("pir2-sealed-release: {e}");
+                1
+            }
+        },
         Command::DirectoryArtifact(args) => match directory_artifact::run(args).await {
             Ok(()) => 0,
             Err(e) => {
@@ -305,6 +316,7 @@ mod cli_tests {
             "cashu-custody",
             "payment-artifact",
             "payment-v1-no-funds-fixture",
+            "pir2-sealed-release",
             "directory-artifact",
             "lightning-staging",
             "mainnet-lightning-v1",

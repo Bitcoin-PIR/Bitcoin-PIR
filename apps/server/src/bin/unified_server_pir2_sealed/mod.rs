@@ -12,6 +12,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use pir_identity::IdentityCert;
 use pir_runtime_core::snp_sealed_secrets::{
     enroll_new_pir2_sealed_credentials_v1, open_pir2_sealed_credentials_v1,
+    Pir2PreReleaseObservationClaimsV1, Pir2PreReleaseObservationReceiptV1,
     Pir2SealedReceiptClaimsV1, Pir2SealedReceiptPhaseV1, Pir2SealedReceiptV1,
     Pir2SealedSigningMaterialV1, SnpDerivedKeyProvider, VerifiedPir2SealedReleaseV1,
 };
@@ -130,7 +131,7 @@ pub(super) enum Pir2SealedStartupV1 {
 struct CompletePir2SealedCliV1<'a> {
     preflight_only: bool,
     require_ready: bool,
-    release_path: &'a Path,
+    release_path: Option<&'a Path>,
     envelope_path: &'a Path,
     receipt_path: &'a Path,
     marker_path: &'a Path,
@@ -197,10 +198,24 @@ fn complete_cli_v1(cli: &Pir2SealedCliV1) -> Result<CompletePir2SealedCliV1<'_>,
                 .to_owned(),
         );
     }
+    let release_path = match phase {
+        Pir2SealedStartupPhaseV1::Observe => {
+            if cli.release_path.is_some() {
+                return Err("pre-release observe forbids --pir2-snp-sealed-release".to_owned());
+            }
+            None
+        }
+        Pir2SealedStartupPhaseV1::Enroll
+        | Pir2SealedStartupPhaseV1::Probe
+        | Pir2SealedStartupPhaseV1::Ready => Some(required_path(
+            cli.release_path.as_deref(),
+            "--pir2-snp-sealed-release",
+        )?),
+    };
     Ok(CompletePir2SealedCliV1 {
         preflight_only: cli.preflight_only,
         require_ready: cli.require_ready,
-        release_path: required_path(cli.release_path.as_deref(), "--pir2-snp-sealed-release")?,
+        release_path,
         envelope_path: required_path(cli.envelope_path.as_deref(), "--pir2-snp-sealed-envelope")?,
         receipt_path: required_path(cli.receipt_path.as_deref(), "--pir2-snp-sealed-receipt")?,
         marker_path: required_path(cli.marker_path.as_deref(), "--pir2-snp-sealed-marker")?,
@@ -297,8 +312,41 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
         );
     }
     enforce_security()?;
+
+    if cli.phase == Pir2SealedStartupPhaseV1::Observe {
+        let claims = Pir2PreReleaseObservationClaimsV1::new(
+            cli.ordinal,
+            cli.verifier_nonce,
+            current_channel_pubkey,
+            cli.current_boot_id,
+        )
+        .map_err(|error| error.to_string())?;
+        let receipt = Pir2PreReleaseObservationReceiptV1::request(claims, provider)
+            .map_err(|error| error.to_string())?;
+        let receipt_digest = receipt.digest().map_err(|error| error.to_string())?;
+        pir_private_files::write_atomic_noreplace_private_file_v1(
+            cli.receipt_path,
+            &receipt.encode().map_err(|error| error.to_string())?,
+            false,
+            "pir2 pre-release observation receipt",
+        )?;
+        debug_assert!(cli.preflight_only);
+        let marker = encode_inert_marker_v1(cli.phase, cli.current_boot_id, receipt_digest);
+        pir_private_files::write_atomic_noreplace_private_file_v1(
+            cli.marker_path,
+            &marker,
+            false,
+            "pir2 sealed current-boot inert-success marker",
+        )?;
+        return Ok(Pir2SealedStartupV1::InertSuccess {
+            phase: cli.phase,
+            receipt_digest,
+        });
+    }
+
     let release_bytes = read_regular_file_bounded_v1(
-        cli.release_path,
+        cli.release_path
+            .expect("non-observe release path validated"),
         MAX_RELEASE_LEN_V1,
         "operator-signed pir2 sealed release",
     )?;
@@ -307,7 +355,7 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
             .map_err(|error| error.to_string())?;
 
     let material = match cli.phase {
-        Pir2SealedStartupPhaseV1::Observe => None,
+        Pir2SealedStartupPhaseV1::Observe => unreachable!("observe returned before release IO"),
         Pir2SealedStartupPhaseV1::Enroll => Some(
             enroll_new_pir2_sealed_credentials_v1(
                 cli.envelope_path,
@@ -549,7 +597,8 @@ mod tests {
         Pir2SealedCliV1 {
             preflight_only: !ready,
             require_ready: ready,
-            release_path: Some("release.bin".into()),
+            release_path: (phase != Pir2SealedStartupPhaseV1::Observe)
+                .then(|| "release.bin".into()),
             envelope_path: Some("envelope.bin".into()),
             receipt_path: Some("receipt.bin".into()),
             marker_path: Some("marker".into()),
@@ -591,6 +640,14 @@ mod tests {
         invalid_probe.preflight_only = false;
         invalid_probe.require_ready = true;
         assert!(validate_pir2_sealed_cli_v1(&invalid_probe, false, false).is_err());
+
+        let mut observe_with_release = complete(Pir2SealedStartupPhaseV1::Observe);
+        observe_with_release.release_path = Some("premature-release.bin".into());
+        assert!(validate_pir2_sealed_cli_v1(&observe_with_release, false, false).is_err());
+
+        let mut enroll_without_release = complete(Pir2SealedStartupPhaseV1::Enroll);
+        enroll_without_release.release_path = None;
+        assert!(validate_pir2_sealed_cli_v1(&enroll_without_release, false, false).is_err());
     }
 
     #[test]
@@ -618,7 +675,6 @@ mod tests {
     }
 
     struct ObserveOnlyProviderV1 {
-        release: pir_runtime_core::snp_sealed_secrets::Pir2SealedReleaseV1,
         report_calls: Cell<u32>,
         derive_calls: Cell<u32>,
     }
@@ -810,15 +866,29 @@ mod tests {
             report_data: [u8; 64],
         ) -> Result<FreshSnpReportV1, SnpDerivedKeyProviderErrorV1> {
             self.report_calls.set(self.report_calls.get() + 1);
+            let mut raw_report = vec![0xA7; 1184];
+            raw_report[0x50..0x90].copy_from_slice(&report_data);
             Ok(FreshSnpReportV1 {
                 report_version: 2,
                 vmpl: 0,
-                guest_policy: self.release.expected_guest_policy,
-                measurement: self.release.expected_measurement,
+                guest_policy: 1 << 17,
+                measurement: [0x33; 48],
                 report_data,
-                reported_tcb: self.release.minimum_tcb,
-                committed_tcb: self.release.minimum_tcb,
-                raw_report: vec![0xA7; 1184],
+                reported_tcb: SnpTcbVersionV1 {
+                    fmc: None,
+                    bootloader: 1,
+                    tee: 2,
+                    snp: 3,
+                    microcode: 4,
+                },
+                committed_tcb: SnpTcbVersionV1 {
+                    fmc: None,
+                    bootloader: 1,
+                    tee: 2,
+                    snp: 3,
+                    microcode: 4,
+                },
+                raw_report,
             })
         }
 
@@ -838,33 +908,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let operator = SigningKey::from_bytes(&[0x61; 32]);
-        let claims = Pir2SealedReleaseClaimsV1 {
-            provider_id: [0x11; 32],
-            stable_server_id: "pir2-mainnet".to_owned(),
-            uki_sha256: [0x22; 32],
-            expected_measurement: [0x33; 48],
-            expected_guest_policy: 1 << 17,
-            minimum_tcb: SnpTcbVersionV1 {
-                fmc: None,
-                bootloader: 1,
-                tee: 2,
-                snp: 3,
-                microcode: 4,
-            },
-            derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
-            identity_generation: 7,
-            clearing_authorization_epoch: 11,
-        };
-        let release_bytes = encode_signed_pir2_sealed_release_v1(&claims, &operator).unwrap();
-        let release_path = directory.path().join("release.bin");
-        std::fs::write(&release_path, &release_bytes).unwrap();
-        let verified = VerifiedPir2SealedReleaseV1::decode_and_verify(
-            &release_bytes,
-            &operator.verifying_key(),
-        )
-        .unwrap();
         let provider = ObserveOnlyProviderV1 {
-            release: verified.release().clone(),
             report_calls: Cell::new(0),
             derive_calls: Cell::new(0),
         };
@@ -873,7 +917,7 @@ mod tests {
         let marker_path = directory.path().join("marker");
         let cli = Pir2SealedCliV1 {
             preflight_only: true,
-            release_path: Some(release_path),
+            release_path: None,
             envelope_path: Some(envelope_path.clone()),
             receipt_path: Some(receipt_path.clone()),
             marker_path: Some(marker_path.clone()),
@@ -905,6 +949,13 @@ mod tests {
         assert!(!envelope_path.exists());
         assert!(receipt_path.exists());
         assert!(marker_path.exists());
+        let expected_claims =
+            Pir2PreReleaseObservationClaimsV1::new(1, [0x41; 32], [0x43; 32], [0x42; 16]).unwrap();
+        Pir2PreReleaseObservationReceiptV1::decode_and_verify(
+            &std::fs::read(receipt_path).unwrap(),
+            &expected_claims,
+        )
+        .unwrap();
     }
 
     #[test]
