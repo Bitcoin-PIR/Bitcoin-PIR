@@ -92,22 +92,16 @@ function writeSealedStartup(
   ordinal = 1,
   servicePolicyPath = path.join(root, "service-policy.bin"),
 ) {
-  const retainedPolicyPath = path.join(root, `public/policies/${"47".repeat(32)}.bin`);
   const currentClassPath = path.join(root, `public/classes/${"43".repeat(32)}.bin`);
-  const retainedClassPath = path.join(root, `public/classes/${"48".repeat(32)}.bin`);
   const accountingAuthorizationPath = path.join(root, "provider-accounting-authorization.bin");
   const accountingApprovalPath = path.join(root, "issuer-accounting-approval.bin");
   if (!existsSync(servicePolicyPath)) write(servicePolicyPath, "fixture current policy\n");
-  write(retainedPolicyPath, "fixture retained policy\n");
   write(currentClassPath, "fixture current class\n");
-  write(retainedClassPath, "fixture retained class\n");
   write(accountingAuthorizationPath, "provider-accounting-authorization.bin fixture\n");
   write(accountingApprovalPath, "issuer-accounting-approval.bin fixture\n");
   const artifactSet = `schema=bitcoinpir-pir2-bat-v2-public-artifact-set-v1
 current_policy=${"42".repeat(32)}=${sha256(readFileSync(servicePolicyPath))}=${servicePolicyPath}
-retained_policy=${"47".repeat(32)}=${sha256(readFileSync(retainedPolicyPath))}=${retainedPolicyPath}
 current_class=${"43".repeat(32)}=${sha256(readFileSync(currentClassPath))}=${currentClassPath}
-retained_class=${"48".repeat(32)}=${sha256(readFileSync(retainedClassPath))}=${retainedClassPath}
 accounting_authorization=${"49".repeat(32)}=${sha256(readFileSync(accountingAuthorizationPath))}=${accountingAuthorizationPath}
 accounting_approval=${"4a".repeat(32)}=${sha256(readFileSync(accountingApprovalPath))}=${accountingApprovalPath}
 `;
@@ -792,9 +786,9 @@ exit 1
   assert.match(finalArgs, /--service-storeless-bat-v2-policy-digest-hex/);
   assert.equal(
     (finalArgs.match(/--service-storeless-bat-v2-retained-policy/g) ?? []).length,
-    1,
+    0,
   );
-  assert.equal((finalArgs.match(/--service-storeless-bat-v2-class/g) ?? []).length, 2);
+  assert.equal((finalArgs.match(/--service-storeless-bat-v2-class/g) ?? []).length, 1);
   assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
   assert.deepEqual(
     readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>

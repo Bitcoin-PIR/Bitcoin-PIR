@@ -418,7 +418,7 @@ validate_pir2_public_artifact_set() {
             next
         }
         $1 == "current_class" {
-            if (stage != 1 || retained_policies < 1) exit 1
+            if (stage != 1) exit 1
             stage = 2
             current_classes++
             next
@@ -432,7 +432,7 @@ validate_pir2_public_artifact_set() {
             next
         }
         $1 == "accounting_authorization" {
-            if (stage != 3 || retained_classes < 1 || accounting_authorizations != 0) exit 1
+            if ((stage != 2 && stage != 3) || current_classes != 1 || accounting_authorizations != 0) exit 1
             stage = 4
             accounting_authorizations++
             next
@@ -445,7 +445,7 @@ validate_pir2_public_artifact_set() {
         }
         { exit 1 }
         END {
-            if (NR < 7 || stage != 5 || retained_policies < 1 || current_classes != 1 || retained_classes < 1 || accounting_authorizations != 1 || accounting_approvals != 1) exit 1
+            if (NR < 5 || stage != 5 || current_classes != 1 || accounting_authorizations != 1 || accounting_approvals != 1) exit 1
         }
     ' "$PIR2_ACTIVE_ARTIFACT_SET_PATH" \
         || fatal "pir2 public artifact set is not canonical or bounded"
