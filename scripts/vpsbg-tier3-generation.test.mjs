@@ -343,6 +343,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s:%s\n' "$phase" "$release_seen" >> "${inertCalls}"
+[ "\${BPIR_TEST_CHILD_EXIT_ONE:-false}" = true ] && {
+  printf 'fixture child exit one\n' >&2
+  exit 1
+}
 [ ! -e "$receipt" ] || exit 2
 [ ! -e "$marker" ] || exit 2
 printf 'fixture receipt\n' > "$receipt"
@@ -367,7 +371,9 @@ exit 42
     tier3RunText
       .replace("UNIFIED_SERVER=/usr/local/bin/unified_server", `UNIFIED_SERVER=${inertBinary}`)
       .replace("PIR2_SEALED_RECEIPT_RECOVERY_HTTPD=/usr/bin/busybox", `PIR2_SEALED_RECEIPT_RECOVERY_HTTPD=${inertBusybox}`)
+      .replace("PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS=600", "PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS=1")
       .replaceAll("/run/bitcoinpir-pir2-sealed-receipt-api", `${inertRoot}/receipt-recovery-api`)
+      .replaceAll("/run/bitcoinpir-pir2-sealed-preflight.stderr", `${inertRoot}/preflight.stderr`)
       .replaceAll("sleep 5", ":"),
   );
   chmodSync(inertRunScript, 0o755);
@@ -472,6 +478,56 @@ exit $?
     /"phase":"observe","ordinal":77,"boot_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","receipt_sha256":"[0-9a-f]{64}"/,
   );
   assert.equal(existsSync(recoveryApiRoot), false, "receipt recovery root must be removed after its bounded window");
+
+  // This is intentionally a real httpd boundary: a shell syntax check or a
+  // unit test of JSON formatting cannot prove that a failed measured child is
+  // observable through the same bounded recovery listener before it closes.
+  const failureRoot = path.join(inertRoot, "failure-window");
+  writeSealedStartup(failureRoot, "observe", 78);
+  writeFileSync(inertBootId, "cccccccc-cccc-cccc-cccc-cccccccccccc\n");
+  const failureStatusOutput = path.join(inertRoot, "failed-status.json");
+  const failureRunner = `
+"$1" >"$2" 2>"$3" &
+pid=$!
+i=0
+until curl -fsS "http://127.0.0.1:8091/status.json" >"$4"; do
+  [ "$i" -lt 100 ] || exit 3
+  sleep 0.02
+  i=$((i + 1))
+done
+wait "$pid"
+exit $?
+`;
+  const failure = run(
+    "sh",
+    [
+      "-c",
+      failureRunner,
+      "fixture",
+      inertRunScript,
+      path.join(inertRoot, "failure.stdout"),
+      path.join(inertRoot, "failure.stderr"),
+      failureStatusOutput,
+    ],
+    {
+      env: {
+        ...process.env,
+        BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+        BPIR_PIR2_PROC_SWAPS: inertSwaps,
+        BPIR_PIR2_SNP_SEALED_ROOT: failureRoot,
+        BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(failureRoot, "trusted-attempt"),
+        BPIR_TEST_CHILD_EXIT_ONE: "true",
+        BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS: "1",
+      },
+    },
+  );
+  assert.notEqual(failure.status, 0, failure.stdout + failure.stderr);
+  assert.match(
+    readFileSync(failureStatusOutput, "utf8"),
+    /{"schema_version":1,"status":"failed","stage":"dispatcher","phase":"observe","ordinal":78,"detail_hex":"[0-9a-f]+"}/,
+  );
+  assert.match(readFileSync(path.join(inertRoot, "failure.stderr"), "utf8"), /fixture child exit one/);
+  assert.equal(existsSync(recoveryApiRoot), false, "failed-status recovery root must close after its bounded window");
 
   const forgedRoot = path.join(inertRoot, "forged-persistent");
   const forgedAttemptRoot = path.join(forgedRoot, "trusted-attempt");
@@ -618,6 +674,7 @@ exit 0
     .replace("TRUSTED_INPUT_ROOT=/run/bitcoinpir-oram-inputs", `TRUSTED_INPUT_ROOT=${mismatchRoot}/trusted-inputs`)
     .replace("TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state", `TRUSTED_STATE_ROOT=${mismatchRoot}/trusted-state`)
     .replaceAll("/run/bitcoinpir-oram-status-api", `${mismatchRoot}/status-api`)
+    .replaceAll("/run/bitcoinpir-pir2-sealed-preflight.stderr", `${mismatchRoot}/preflight.stderr`)
     .replaceAll("sleep 5", ":");
   writeFileSync(fixtureRunScript, transformed);
   chmodSync(fixtureRunScript, 0o755);
@@ -786,6 +843,7 @@ exit 1
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", directBhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${directOramctl}`)
     .replaceAll("/run/bitcoinpir-oram-status-api", directStatusApiRoot)
+    .replaceAll("/run/bitcoinpir-pir2-sealed-preflight.stderr", `${directRoot}/preflight.stderr`)
     .replace("start_direct_oram_status_api\nstart_total_watchdog", ":\nstart_total_watchdog")
     .replace(
       'stop_direct_oram_status_api || fatal "Direct ORAM status API did not release port 8091"\nremove_direct_oram_status_api_root || fatal "failed to remove Direct ORAM status API root"',
