@@ -46,6 +46,12 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
+mod generation_v2;
+pub use generation_v2::{
+    sign_generation_bound_identity_cert_v2, GenerationBoundIdentityCertV2,
+    GENERATION_BOUND_IDENTITY_CERT_DOMAIN_TAG_V2,
+};
+
 /// Length of an Ed25519 public key (RFC 8032).
 pub const ED25519_PUBKEY_LEN: usize = 32;
 /// Length of an Ed25519 signature (RFC 8032).
@@ -66,6 +72,8 @@ pub const CHANNEL_MANIFEST_DOMAIN_TAG: &[u8] = b"BPIR-CHANNEL-MANIFEST-V1";
 /// Wire-format / verification errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityError {
+    /// A structurally bounded field violates the artifact contract.
+    InvalidField(&'static str),
     /// Wire decode found a length-prefixed field whose body would
     /// extend past the end of the input.
     Truncated(&'static str),
@@ -83,7 +91,11 @@ pub enum IdentityError {
     TooManyManifestRoots(usize),
     /// Provided bytes are not the right length for the field they
     /// were assigned to.
-    BadLength { field: &'static str, expected: usize, got: usize },
+    BadLength {
+        field: &'static str,
+        expected: usize,
+        got: usize,
+    },
     /// Ed25519 signature failed verification.
     BadSignature,
     /// The Ed25519 pubkey bytes are not a valid point.
@@ -96,6 +108,7 @@ pub enum IdentityError {
 impl core::fmt::Display for IdentityError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::InvalidField(field) => write!(f, "invalid identity field: {}", field),
             Self::Truncated(s) => write!(f, "truncated: {}", s),
             Self::UnknownVersion { kind, version } => {
                 write!(f, "{}: unknown version {}", kind, version)
@@ -104,7 +117,11 @@ impl core::fmt::Display for IdentityError {
                 write!(f, "field {} too long: {}", field, len)
             }
             Self::TooManyManifestRoots(n) => write!(f, "manifest_roots count {} > 32", n),
-            Self::BadLength { field, expected, got } => write!(
+            Self::BadLength {
+                field,
+                expected,
+                got,
+            } => write!(
                 f,
                 "bad length for {}: expected {}, got {}",
                 field, expected, got
@@ -266,13 +283,9 @@ impl IdentityCert {
                 version: cert_type,
             });
         }
-        let operator_pubkey = read_fixed::<ED25519_PUBKEY_LEN>(
-            bytes,
-            &mut p,
-            "IdentityCert.operator_pubkey",
-        )?;
-        let server_id_len =
-            read_u16_le(bytes, &mut p, "IdentityCert.server_id_len")? as usize;
+        let operator_pubkey =
+            read_fixed::<ED25519_PUBKEY_LEN>(bytes, &mut p, "IdentityCert.operator_pubkey")?;
+        let server_id_len = read_u16_le(bytes, &mut p, "IdentityCert.server_id_len")? as usize;
         if server_id_len > MAX_SERVER_ID_LEN {
             return Err(IdentityError::FieldTooLong {
                 field: "server_id",
@@ -280,20 +293,17 @@ impl IdentityCert {
             });
         }
         let server_id_bytes = read_slice(bytes, &mut p, server_id_len, "IdentityCert.server_id")?;
-        let server_id = String::from_utf8(server_id_bytes.to_vec())
-            .map_err(|_| IdentityError::FieldTooLong {
+        let server_id = String::from_utf8(server_id_bytes.to_vec()).map_err(|_| {
+            IdentityError::FieldTooLong {
                 field: "server_id (utf8)",
                 len: server_id_len,
-            })?;
-        let identity_pubkey = read_fixed::<ED25519_PUBKEY_LEN>(
-            bytes,
-            &mut p,
-            "IdentityCert.identity_pubkey",
-        )?;
+            }
+        })?;
+        let identity_pubkey =
+            read_fixed::<ED25519_PUBKEY_LEN>(bytes, &mut p, "IdentityCert.identity_pubkey")?;
         let valid_from = read_i64_le(bytes, &mut p, "IdentityCert.valid_from")?;
         let valid_until = read_i64_le(bytes, &mut p, "IdentityCert.valid_until")?;
-        let signature =
-            read_fixed::<ED25519_SIG_LEN>(bytes, &mut p, "IdentityCert.signature")?;
+        let signature = read_fixed::<ED25519_SIG_LEN>(bytes, &mut p, "IdentityCert.signature")?;
         if p != bytes.len() {
             return Err(IdentityError::TrailingBytes(bytes.len() - p));
         }
@@ -484,13 +494,9 @@ impl ChannelManifest {
                 version: manifest_type,
             });
         }
-        let identity_pubkey = read_fixed::<ED25519_PUBKEY_LEN>(
-            bytes,
-            &mut p,
-            "ChannelManifest.identity_pubkey",
-        )?;
-        let server_id_len =
-            read_u16_le(bytes, &mut p, "ChannelManifest.server_id_len")? as usize;
+        let identity_pubkey =
+            read_fixed::<ED25519_PUBKEY_LEN>(bytes, &mut p, "ChannelManifest.identity_pubkey")?;
+        let server_id_len = read_u16_le(bytes, &mut p, "ChannelManifest.server_id_len")? as usize;
         if server_id_len > MAX_SERVER_ID_LEN {
             return Err(IdentityError::FieldTooLong {
                 field: "server_id",
@@ -499,20 +505,16 @@ impl ChannelManifest {
         }
         let server_id_bytes =
             read_slice(bytes, &mut p, server_id_len, "ChannelManifest.server_id")?;
-        let server_id = String::from_utf8(server_id_bytes.to_vec())
-            .map_err(|_| IdentityError::FieldTooLong {
+        let server_id = String::from_utf8(server_id_bytes.to_vec()).map_err(|_| {
+            IdentityError::FieldTooLong {
                 field: "server_id (utf8)",
                 len: server_id_len,
-            })?;
-        let channel_pub = read_fixed::<X25519_PUBKEY_LEN>(
-            bytes,
-            &mut p,
-            "ChannelManifest.channel_pub",
-        )?;
-        let binary_sha256 =
-            read_fixed::<HASH_LEN>(bytes, &mut p, "ChannelManifest.binary_sha256")?;
-        let git_rev_len =
-            read_u16_le(bytes, &mut p, "ChannelManifest.git_rev_len")? as usize;
+            }
+        })?;
+        let channel_pub =
+            read_fixed::<X25519_PUBKEY_LEN>(bytes, &mut p, "ChannelManifest.channel_pub")?;
+        let binary_sha256 = read_fixed::<HASH_LEN>(bytes, &mut p, "ChannelManifest.binary_sha256")?;
+        let git_rev_len = read_u16_le(bytes, &mut p, "ChannelManifest.git_rev_len")? as usize;
         if git_rev_len > MAX_GIT_REV_LEN {
             return Err(IdentityError::FieldTooLong {
                 field: "git_rev",
@@ -520,8 +522,8 @@ impl ChannelManifest {
             });
         }
         let git_rev_bytes = read_slice(bytes, &mut p, git_rev_len, "ChannelManifest.git_rev")?;
-        let git_rev = String::from_utf8(git_rev_bytes.to_vec())
-            .map_err(|_| IdentityError::FieldTooLong {
+        let git_rev =
+            String::from_utf8(git_rev_bytes.to_vec()).map_err(|_| IdentityError::FieldTooLong {
                 field: "git_rev (utf8)",
                 len: git_rev_len,
             })?;
@@ -543,8 +545,7 @@ impl ChannelManifest {
             manifest_roots.push(root);
         }
         let issued_at = read_i64_le(bytes, &mut p, "ChannelManifest.issued_at")?;
-        let signature =
-            read_fixed::<ED25519_SIG_LEN>(bytes, &mut p, "ChannelManifest.signature")?;
+        let signature = read_fixed::<ED25519_SIG_LEN>(bytes, &mut p, "ChannelManifest.signature")?;
         if p != bytes.len() {
             return Err(IdentityError::TrailingBytes(bytes.len() - p));
         }
@@ -637,8 +638,7 @@ impl AnnouncementBundle {
     pub fn encode(&self) -> Vec<u8> {
         let cert_bytes = self.cert.encode();
         let manifest_bytes = self.manifest.encode();
-        let mut out =
-            Vec::with_capacity(4 + cert_bytes.len() + 4 + manifest_bytes.len());
+        let mut out = Vec::with_capacity(4 + cert_bytes.len() + 4 + manifest_bytes.len());
         out.extend_from_slice(&(cert_bytes.len() as u32).to_le_bytes());
         out.extend_from_slice(&cert_bytes);
         out.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
@@ -652,8 +652,7 @@ impl AnnouncementBundle {
         let cert_len = read_u32_le(bytes, &mut p, "AnnouncementBundle.cert_len")? as usize;
         let cert_bytes = read_slice(bytes, &mut p, cert_len, "AnnouncementBundle.cert")?;
         let cert = IdentityCert::decode(cert_bytes)?;
-        let manifest_len =
-            read_u32_le(bytes, &mut p, "AnnouncementBundle.manifest_len")? as usize;
+        let manifest_len = read_u32_le(bytes, &mut p, "AnnouncementBundle.manifest_len")? as usize;
         let manifest_bytes =
             read_slice(bytes, &mut p, manifest_len, "AnnouncementBundle.manifest")?;
         let manifest = ChannelManifest::decode(manifest_bytes)?;
@@ -675,11 +674,7 @@ fn read_u8(buf: &[u8], pos: &mut usize, field: &'static str) -> Result<u8, Ident
     Ok(v)
 }
 
-fn read_u16_le(
-    buf: &[u8],
-    pos: &mut usize,
-    field: &'static str,
-) -> Result<u16, IdentityError> {
+fn read_u16_le(buf: &[u8], pos: &mut usize, field: &'static str) -> Result<u16, IdentityError> {
     if *pos + 2 > buf.len() {
         return Err(IdentityError::Truncated(field));
     }
@@ -688,11 +683,7 @@ fn read_u16_le(
     Ok(v)
 }
 
-fn read_u32_le(
-    buf: &[u8],
-    pos: &mut usize,
-    field: &'static str,
-) -> Result<u32, IdentityError> {
+fn read_u32_le(buf: &[u8], pos: &mut usize, field: &'static str) -> Result<u32, IdentityError> {
     if *pos + 4 > buf.len() {
         return Err(IdentityError::Truncated(field));
     }
@@ -701,11 +692,7 @@ fn read_u32_le(
     Ok(v)
 }
 
-fn read_i64_le(
-    buf: &[u8],
-    pos: &mut usize,
-    field: &'static str,
-) -> Result<i64, IdentityError> {
+fn read_i64_le(buf: &[u8], pos: &mut usize, field: &'static str) -> Result<i64, IdentityError> {
     if *pos + 8 > buf.len() {
         return Err(IdentityError::Truncated(field));
     }
@@ -769,13 +756,7 @@ mod tests {
     fn identity_cert_tampered_server_id_fails() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let mut cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let mut cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         cert.server_id = "pir2".into(); // attacker re-targets
         assert!(matches!(cert.verify(), Err(IdentityError::BadSignature)));
     }
@@ -784,13 +765,7 @@ mod tests {
     fn identity_cert_tampered_identity_pub_fails() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let mut cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let mut cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         cert.identity_pubkey = fake_sk(0x33).verifying_key().to_bytes();
         assert!(matches!(cert.verify(), Err(IdentityError::BadSignature)));
     }
@@ -800,13 +775,7 @@ mod tests {
         let op_sk = fake_sk(0x11);
         let attacker_sk = fake_sk(0x99);
         let id_sk = fake_sk(0x22);
-        let mut cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let mut cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         // Attacker swaps the bound operator_pubkey — preimage diverges
         // and the signature (still made by op_sk) no longer matches.
         cert.operator_pubkey = attacker_sk.verifying_key().to_bytes();
@@ -910,15 +879,8 @@ mod tests {
     #[test]
     fn channel_manifest_tampered_channel_pub_fails() {
         let id_sk = fake_sk(0x22);
-        let mut m = sign_channel_manifest(
-            &id_sk,
-            "pir1",
-            [0xCCu8; 32],
-            [0xAAu8; 32],
-            "abc",
-            vec![],
-            0,
-        );
+        let mut m =
+            sign_channel_manifest(&id_sk, "pir1", [0xCCu8; 32], [0xAAu8; 32], "abc", vec![], 0);
         m.channel_pub = [0xDDu8; 32];
         assert!(matches!(m.verify(), Err(IdentityError::BadSignature)));
     }
@@ -926,15 +888,8 @@ mod tests {
     #[test]
     fn channel_manifest_tampered_binary_sha_fails() {
         let id_sk = fake_sk(0x22);
-        let mut m = sign_channel_manifest(
-            &id_sk,
-            "pir1",
-            [0xCCu8; 32],
-            [0xAAu8; 32],
-            "abc",
-            vec![],
-            0,
-        );
+        let mut m =
+            sign_channel_manifest(&id_sk, "pir1", [0xCCu8; 32], [0xAAu8; 32], "abc", vec![], 0);
         m.binary_sha256 = [0xBBu8; 32];
         assert!(matches!(m.verify(), Err(IdentityError::BadSignature)));
     }
@@ -961,15 +916,7 @@ mod tests {
     fn channel_manifest_roundtrip_with_max_roots() {
         let id_sk = fake_sk(0x22);
         let roots = (0..MAX_MANIFEST_ROOTS).map(|i| [i as u8; 32]).collect();
-        let m = sign_channel_manifest(
-            &id_sk,
-            "pir1",
-            [0u8; 32],
-            [0u8; 32],
-            "v1",
-            roots,
-            0,
-        );
+        let m = sign_channel_manifest(&id_sk, "pir1", [0u8; 32], [0u8; 32], "v1", roots, 0);
         let bytes = m.encode();
         let parsed = ChannelManifest::decode(&bytes).unwrap();
         assert_eq!(m, parsed);
@@ -980,20 +927,18 @@ mod tests {
     fn channel_manifest_too_many_roots_rejected_on_decode() {
         // Craft a malicious blob claiming 200 roots — must reject.
         let id_sk = fake_sk(0x22);
-        let m = sign_channel_manifest(
-            &id_sk,
-            "pir1",
-            [0u8; 32],
-            [0u8; 32],
-            "v1",
-            vec![],
-            0,
-        );
+        let m = sign_channel_manifest(&id_sk, "pir1", [0u8; 32], [0u8; 32], "v1", vec![], 0);
         let mut bytes = m.encode();
         // Find the n_roots byte position: header is 2 + 32 + 2 + |server_id|
         // + 32 + 32 + 2 + |git_rev| = 2 + 32 + 2 + 4 + 32 + 32 + 2 + 2 = 108
-        let nroots_offset =
-            2 + ED25519_PUBKEY_LEN + 2 + "pir1".len() + X25519_PUBKEY_LEN + HASH_LEN + 2 + "v1".len();
+        let nroots_offset = 2
+            + ED25519_PUBKEY_LEN
+            + 2
+            + "pir1".len()
+            + X25519_PUBKEY_LEN
+            + HASH_LEN
+            + 2
+            + "v1".len();
         bytes[nroots_offset] = 200;
         assert!(matches!(
             ChannelManifest::decode(&bytes),
@@ -1005,13 +950,7 @@ mod tests {
     fn announcement_bundle_chain_check_ok() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         let manifest = sign_channel_manifest(
             &id_sk,
             "pir1",
@@ -1029,13 +968,7 @@ mod tests {
     fn announcement_bundle_server_id_mismatch_fails() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         // Attacker takes a valid cert for pir1 but pairs it with a
         // manifest claiming server_id = "pir2". Even though both
         // signatures verify in isolation, the chain cross-check
@@ -1062,22 +995,9 @@ mod tests {
         let id_sk_a = fake_sk(0x22);
         let id_sk_b = fake_sk(0x33);
         // cert endorses id_sk_a, but manifest is signed by id_sk_b.
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk_a.verifying_key().to_bytes(),
-            0,
-            0,
-        );
-        let manifest = sign_channel_manifest(
-            &id_sk_b,
-            "pir1",
-            [0u8; 32],
-            [0u8; 32],
-            "v",
-            vec![],
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk_a.verifying_key().to_bytes(), 0, 0);
+        let manifest =
+            sign_channel_manifest(&id_sk_b, "pir1", [0u8; 32], [0u8; 32], "v", vec![], 0);
         let bundle = AnnouncementBundle { cert, manifest };
         assert!(matches!(
             bundle.verify_chain(),

@@ -5,7 +5,10 @@ use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_service::{BatV2IssuerRedemptionServiceV2, IssuerServiceErrorV1};
-use pir_issuer_store::{IssuerStore, SqliteIssuerRollbackFloorAuthorityV1, StoreOptions};
+use pir_issuer_store::{
+    BatV2ClearingEpochReservationV2, IssuerStore, SqliteIssuerRollbackFloorAuthorityV1,
+    StoreOptions,
+};
 use pir_payment_crypto::{
     blind_cashu_message_v1, verify_and_unblind_cashu_promise_v1, K256CashuMintKeyringV1,
 };
@@ -231,6 +234,12 @@ impl Fixture {
         let approval =
             IssuerAccountingApprovalV2::sign(&authorization, 200, 2_000, &settlement_key)
                 .expect("sign BAT V2 issuer accounting approval");
+        let _ = store
+            .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+                provider_id,
+                authorization_epoch: authorization.claims.authorization_epoch,
+            })
+            .expect("reserve BAT V2 clearing epoch");
         let _ = store
             .register_bat_v2_accounting_authorization(
                 &authorization,
@@ -495,6 +504,13 @@ fn signed_retry_safe_is_zero_mutation_then_the_same_proof_can_succeed() {
         &fixture.settlement_key,
     )
     .expect("sign foreign-provider issuer approval");
+    let _ = fixture
+        .store
+        .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+            provider_id: foreign_provider_id,
+            authorization_epoch: foreign_authorization.claims.authorization_epoch,
+        })
+        .expect("reserve foreign-provider BAT V2 clearing epoch");
     let _ = fixture
         .store
         .register_bat_v2_accounting_authorization(

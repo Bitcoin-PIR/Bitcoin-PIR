@@ -40,7 +40,8 @@ use pir_issuer_service::{
     TrustedClearingProviderV1, LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1,
 };
 use pir_issuer_store::{
-    BatKeyLineageRegistration, IssuerRollbackFloorAuthorityV1, IssuerStore,
+    BatKeyLineageRegistration, BatV2ClearingEpochReservationStateV2,
+    BatV2ClearingEpochReservationV2, IssuerRollbackFloorAuthorityV1, IssuerStore,
     ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, RemoteIssuerRollbackFloorAuthorityV1,
     SqliteIssuerRollbackFloorAuthorityV1, StoreOptions, MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
     MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES, MAX_EXACT_CLEARING_APPROVAL_BYTES,
@@ -166,6 +167,12 @@ enum Command {
     /// Run the production issuer-store open/integrity path without a listener.
     /// May reconcile one legitimate unanchored successor, like serving startup.
     CheckStore(StoreCheckArgs),
+    /// Owner-only allocation of one inactive BAT V2 clearing epoch.
+    ReserveBatV2ClearingEpoch(BatV2ClearingReservationArgs),
+    /// Owner-only readback of one inactive or active BAT V2 clearing epoch.
+    ReadBatV2ClearingEpoch(BatV2ClearingReservationArgs),
+    /// Owner-only first activation (or exact replay) of signed BAT V2 accounting authority.
+    ActivateBatV2AccountingAuthorization(BatV2ClearingActivationArgs),
     /// Run the local-only fake-Lightning HTTP integration service. This
     /// subcommand is absent from default and production artifacts.
     #[cfg(any(test, feature = "test-only-fake-lightning"))]
@@ -242,6 +249,30 @@ struct StoreCheckArgs {
     issuer_id_hex: String,
     #[arg(long, value_enum)]
     network: NetworkArg,
+}
+
+#[derive(Args, Debug)]
+struct BatV2ClearingReservationArgs {
+    #[command(flatten)]
+    store: StoreCheckArgs,
+    #[arg(long)]
+    provider_id_hex: String,
+    #[arg(long)]
+    authorization_epoch: u64,
+}
+
+#[derive(Args, Debug)]
+struct BatV2ClearingActivationArgs {
+    #[command(flatten)]
+    store: StoreCheckArgs,
+    #[arg(long)]
+    authorization: PathBuf,
+    #[arg(long)]
+    approval: PathBuf,
+    #[arg(long)]
+    operator_verifying_key: PathBuf,
+    #[arg(long)]
+    issuer_settlement_verifying_key: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -857,6 +888,11 @@ fn main() {
     let result = match Cli::parse().command {
         Command::InitStore(args) => init_store(args),
         Command::CheckStore(args) => check_store(args),
+        Command::ReserveBatV2ClearingEpoch(args) => reserve_bat_v2_clearing_epoch(args),
+        Command::ReadBatV2ClearingEpoch(args) => read_bat_v2_clearing_epoch(args),
+        Command::ActivateBatV2AccountingAuthorization(args) => {
+            activate_bat_v2_accounting_authorization(args)
+        }
         #[cfg(any(test, feature = "test-only-fake-lightning"))]
         Command::ServeFake(args) => serve_fake(args),
         #[cfg(unix)]
@@ -942,6 +978,147 @@ fn open_existing_issuer_rollback_authority_v1(
             load_remote_issuer_rollback_authority_v1(config_path, issuer_id, network)
         }
     }
+}
+
+fn open_owner_issuer_store_v1(args: &StoreCheckArgs) -> Result<IssuerStore, String> {
+    let issuer_id = decode_fixed_hex::<32>(&args.issuer_id_hex, "issuer ID")?;
+    if issuer_id.iter().all(|byte| *byte == 0) {
+        return Err("issuer ID must not be all zero".to_owned());
+    }
+    let store_path = validate_existing_private_database_path(&args.store, "issuer store")?;
+    let options = StoreOptions::default();
+    let authority = open_existing_issuer_rollback_authority_v1(
+        &store_path,
+        args.rollback_authority.as_deref(),
+        args.remote_rollback_authority_config.as_deref(),
+        issuer_id,
+        args.network.into(),
+        options.busy_timeout,
+    )?;
+    IssuerStore::open_existing(
+        store_path,
+        issuer_id,
+        args.network.into(),
+        options,
+        authority,
+    )
+    .map_err(|error| format!("open issuer store: {error}"))
+}
+
+fn reserve_bat_v2_clearing_epoch(args: BatV2ClearingReservationArgs) -> Result<(), String> {
+    let provider_id = decode_fixed_hex::<32>(&args.provider_id_hex, "provider ID")?;
+    let store = open_owner_issuer_store_v1(&args.store)?;
+    let write = store
+        .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+            provider_id,
+            authorization_epoch: args.authorization_epoch,
+        })
+        .map_err(|error| format!("reserve BAT V2 clearing epoch: {error}"))?;
+    println!("reservation_state=inactive");
+    println!("provider_id={}", hex::encode(provider_id));
+    println!("authorization_epoch={}", args.authorization_epoch);
+    println!("commit_seq={}", write.commit.commit_seq);
+    Ok(())
+}
+
+fn read_bat_v2_clearing_epoch(args: BatV2ClearingReservationArgs) -> Result<(), String> {
+    let provider_id = decode_fixed_hex::<32>(&args.provider_id_hex, "provider ID")?;
+    let store = open_owner_issuer_store_v1(&args.store)?;
+    let record = store
+        .bat_v2_clearing_epoch_reservation(&provider_id, args.authorization_epoch)
+        .map_err(|error| format!("read BAT V2 clearing epoch: {error}"))?
+        .ok_or_else(|| "BAT V2 clearing epoch reservation is missing".to_owned())?;
+    println!("provider_id={}", hex::encode(provider_id));
+    println!("authorization_epoch={}", args.authorization_epoch);
+    println!(
+        "reservation_commit_seq={}",
+        record.reservation_commit.commit_seq
+    );
+    match record.state {
+        BatV2ClearingEpochReservationStateV2::Inactive => {
+            println!("reservation_state=inactive");
+        }
+        BatV2ClearingEpochReservationStateV2::Active {
+            clearing_verifying_key,
+            authorization_digest,
+            activation_commit,
+        } => {
+            println!("reservation_state=active");
+            println!(
+                "clearing_verifying_key={}",
+                hex::encode(clearing_verifying_key)
+            );
+            println!("authorization_digest={}", hex::encode(authorization_digest));
+            println!("activation_commit_seq={}", activation_commit.commit_seq);
+        }
+    }
+    Ok(())
+}
+
+fn activate_bat_v2_accounting_authorization(
+    args: BatV2ClearingActivationArgs,
+) -> Result<(), String> {
+    let authorization_bytes = read_public_file(
+        &args.authorization,
+        MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
+        "BAT V2 accounting authorization",
+    )?;
+    let authorization = ProviderAccountingAuthorizationV2::decode(&authorization_bytes)
+        .map_err(|_| "BAT V2 accounting authorization is not canonical V2".to_owned())?;
+    if authorization
+        .encode()
+        .map_err(|_| "BAT V2 accounting authorization cannot be encoded".to_owned())?
+        != authorization_bytes
+    {
+        return Err("BAT V2 accounting authorization is non-canonical".to_owned());
+    }
+    let approval_bytes = read_public_file(
+        &args.approval,
+        MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
+        "BAT V2 accounting approval",
+    )?;
+    let approval = IssuerAccountingApprovalV2::decode(&approval_bytes)
+        .map_err(|_| "BAT V2 accounting approval is not canonical V2".to_owned())?;
+    if approval.encode().as_slice() != approval_bytes.as_slice() {
+        return Err("BAT V2 accounting approval is non-canonical".to_owned());
+    }
+    let operator_bytes = read_public_file(
+        &args.operator_verifying_key,
+        32,
+        "BAT V2 accounting operator verifying key",
+    )?;
+    let operator_bytes: [u8; 32] = operator_bytes
+        .try_into()
+        .map_err(|_| "BAT V2 accounting operator verifying key must be 32 bytes".to_owned())?;
+    let operator_key = VerifyingKey::from_bytes(&operator_bytes)
+        .map_err(|_| "BAT V2 accounting operator verifying key is invalid".to_owned())?;
+    let settlement_bytes = read_public_file(
+        &args.issuer_settlement_verifying_key,
+        32,
+        "issuer settlement verifying key",
+    )?;
+    let settlement_bytes: [u8; 32] = settlement_bytes
+        .try_into()
+        .map_err(|_| "issuer settlement verifying key must be 32 bytes".to_owned())?;
+    let settlement_key = VerifyingKey::from_bytes(&settlement_bytes)
+        .map_err(|_| "issuer settlement verifying key is invalid".to_owned())?;
+    let store = open_owner_issuer_store_v1(&args.store)?;
+    let write = store
+        .register_bat_v2_accounting_authorization(
+            &authorization,
+            &approval,
+            &operator_key,
+            &settlement_key,
+            system_time_unix()?,
+        )
+        .map_err(|error| format!("activate BAT V2 accounting authorization: {error}"))?;
+    println!("activation_disposition={:?}", write.disposition);
+    println!(
+        "authorization_digest={}",
+        hex::encode(write.value.authorization_digest)
+    );
+    println!("commit_seq={}", write.commit.commit_seq);
+    Ok(())
 }
 
 fn check_store(args: StoreCheckArgs) -> Result<(), String> {
@@ -2036,7 +2213,20 @@ fn load_bat_v2_redemption(
                 ));
             }
         }
-        let _registration = store
+        let authorization_digest = authorization
+            .authorization_digest()
+            .map_err(|_| "derive BAT V2 accounting authorization digest failed".to_owned())?;
+        if store
+            .bat_v2_accounting_authorization(&authorization_digest)
+            .map_err(|error| format!("read BAT V2 accounting authorization failed: {error}"))?
+            .is_none()
+        {
+            return Err(
+                "BAT V2 accounting authorization is not active; run the owner-only activate-bat-v2-accounting-authorization command before Serve"
+                    .to_owned(),
+            );
+        }
+        let registration = store
             .register_bat_v2_accounting_authorization(
                 &authorization,
                 &approval,
@@ -2045,6 +2235,9 @@ fn load_bat_v2_redemption(
                 now_unix,
             )
             .map_err(|error| format!("register BAT V2 accounting authorization failed: {error}"))?;
+        if registration.disposition != pir_issuer_store::WriteDisposition::ExactReplay {
+            return Err("Serve must never perform first BAT V2 accounting activation".to_owned());
+        }
     }
 
     BatV2IssuerRedemptionServiceV2::new(
@@ -3784,6 +3977,61 @@ mod tests {
         let error = load_bat_v2_redemption(&mismatch, &state.store, None, fixture.now_unix)
             .expect_err("reject unequal BAT V2 accounting argument groups");
         assert!(error.contains("same non-zero number"), "{error}");
+    }
+
+    #[test]
+    fn bat_v2_owner_cli_exposes_explicit_reserve_read_and_activate_commands() {
+        let common = [
+            "--store",
+            "/tmp/issuer.sqlite",
+            "--rollback-authority",
+            "/tmp/rollback.sqlite",
+            "--issuer-id-hex",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "--network",
+            "regtest",
+        ];
+        for command in [
+            "reserve-bat-v2-clearing-epoch",
+            "read-bat-v2-clearing-epoch",
+        ] {
+            let mut argv = vec!["payment-issuer", command];
+            argv.extend(common);
+            argv.extend([
+                "--provider-id-hex",
+                "2222222222222222222222222222222222222222222222222222222222222222",
+                "--authorization-epoch",
+                "7",
+            ]);
+            let cli = Cli::try_parse_from(argv).expect("parse BAT V2 owner reservation command");
+            assert!(matches!(
+                (command, cli.command),
+                (
+                    "reserve-bat-v2-clearing-epoch",
+                    Command::ReserveBatV2ClearingEpoch(_)
+                ) | (
+                    "read-bat-v2-clearing-epoch",
+                    Command::ReadBatV2ClearingEpoch(_)
+                )
+            ));
+        }
+
+        let mut argv = vec!["payment-issuer", "activate-bat-v2-accounting-authorization"];
+        argv.extend(common);
+        argv.extend([
+            "--authorization",
+            "/tmp/authorization.bin",
+            "--approval",
+            "/tmp/approval.bin",
+            "--operator-verifying-key",
+            "/tmp/operator.pub",
+            "--issuer-settlement-verifying-key",
+            "/tmp/settlement.pub",
+        ]);
+        assert!(matches!(
+            Cli::try_parse_from(argv).unwrap().command,
+            Command::ActivateBatV2AccountingAuthorization(_)
+        ));
     }
 
     #[cfg(unix)]

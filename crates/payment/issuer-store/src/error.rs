@@ -69,6 +69,10 @@ pub enum StoreError {
     ClearingAuthorizationFork,
     BatV2ClearingAuthorizationRollback,
     BatV2ClearingAuthorizationFork,
+    BatV2ClearingReservationRollback,
+    BatV2ClearingReservationExists,
+    BatV2ClearingReservationMissing,
+    BatV2ClearingReservationMismatch,
     BatV2RedeemPreconditionChanged,
     RedeemIdempotencyConflict,
     CredentialAlreadySpent,
@@ -270,6 +274,22 @@ impl fmt::Display for StoreError {
             Self::BatV2ClearingAuthorizationFork => write!(
                 f,
                 "different BAT V2 provider accounting authorization at an accepted epoch rejected"
+            ),
+            Self::BatV2ClearingReservationRollback => write!(
+                f,
+                "BAT V2 clearing authorization epoch reservation rollback rejected"
+            ),
+            Self::BatV2ClearingReservationExists => write!(
+                f,
+                "BAT V2 clearing authorization epoch is already reserved"
+            ),
+            Self::BatV2ClearingReservationMissing => write!(
+                f,
+                "BAT V2 clearing authorization activation has no durable reservation"
+            ),
+            Self::BatV2ClearingReservationMismatch => write!(
+                f,
+                "BAT V2 clearing authorization does not exactly match its durable reservation"
             ),
             Self::BatV2RedeemPreconditionChanged => write!(
                 f,

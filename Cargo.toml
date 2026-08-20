@@ -23,6 +23,7 @@ members = [
     "crates/net/strict-https",
     "crates/directory/nostr",
     "crates/trust/identity",
+    "crates/trust/identity-authority",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
     "crates/sdk/core",

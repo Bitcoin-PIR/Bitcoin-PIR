@@ -5,10 +5,11 @@ use crate::db::{
 };
 use crate::rollback::mutation_digest;
 use crate::{
-    BatV2AccountingAuthorizationRecordV2, CommitMarker, DurableWrite, IssuerStore,
-    ProviderAccountBindingRecordV2, StoreError, StoreResult, WriteDisposition,
-    MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES, MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES,
-    MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES,
+    BatV2AccountingAuthorizationRecordV2, BatV2ClearingEpochReservationRecordV2,
+    BatV2ClearingEpochReservationStateV2, BatV2ClearingEpochReservationV2, CommitMarker,
+    DurableWrite, IssuerStore, ProviderAccountBindingRecordV2, StoreError, StoreResult,
+    WriteDisposition, MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
+    MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES, MAX_EXACT_BAT_V2_REDEEM_SUCCESS_BYTES,
 };
 use ed25519_dalek::VerifyingKey;
 use pir_service_protocol::{
@@ -77,6 +78,120 @@ impl BatV2RedeemCommitStoreV2 for IssuerBatV2RedeemCommitterV2<'_> {
 }
 
 impl IssuerStore {
+    /// Durably allocates only an inactive provider/epoch coordinate. A
+    /// reservation is deliberately not redemption authority and binds no key.
+    pub fn reserve_bat_v2_clearing_epoch(
+        &self,
+        reservation: BatV2ClearingEpochReservationV2,
+    ) -> StoreResult<DurableWrite<BatV2ClearingEpochReservationRecordV2>> {
+        if is_zero(&reservation.provider_id) {
+            return Err(StoreError::InvalidInput("BAT V2 provider id is zero"));
+        }
+        if reservation.authorization_epoch == 0 {
+            return Err(StoreError::InvalidInput(
+                "BAT V2 clearing reservation epoch is zero",
+            ));
+        }
+        let mut connection = self.open_checked(false)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
+        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
+
+        if read_bat_v2_clearing_epoch_reservation(
+            &transaction,
+            self,
+            &reservation.provider_id,
+            reservation.authorization_epoch,
+        )?
+        .is_some()
+        {
+            return Err(StoreError::BatV2ClearingReservationExists);
+        }
+        let highest_epoch: Option<i64> = transaction.query_row(
+            "SELECT MAX(authorization_epoch) FROM bat_v2_clearing_epoch_reservations \
+             WHERE issuer_id = ?1 AND provider_id = ?2",
+            params![
+                self.handle.expected_issuer_id.as_slice(),
+                reservation.provider_id.as_slice(),
+            ],
+            |row| row.get(0),
+        )?;
+        let highest_epoch = highest_epoch
+            .map(|value| db_u64(value, "negative BAT V2 reservation epoch"))
+            .transpose()?
+            .unwrap_or(0);
+        if reservation.authorization_epoch <= highest_epoch {
+            return Err(StoreError::BatV2ClearingReservationRollback);
+        }
+
+        let mutation = mutation_digest(
+            b"reserve-bat-v2-clearing-epoch-v2",
+            &[
+                &reservation.provider_id,
+                &reservation.authorization_epoch.to_le_bytes(),
+            ],
+        );
+        let committed_identity = advance_store_generation(
+            &transaction,
+            &previous_identity,
+            b"reserve-bat-v2-clearing-epoch-v2",
+            &mutation,
+        )?;
+        let sequence = committed_identity.commit_seq;
+        transaction.execute(
+            "INSERT INTO bat_v2_clearing_epoch_reservations \
+             (issuer_id, provider_id, authorization_epoch, clearing_verifying_key, \
+              state, authorization_digest, reservation_commit_seq, activation_commit_seq) \
+             VALUES (?1, ?2, ?3, NULL, 0, NULL, ?4, NULL)",
+            params![
+                self.handle.expected_issuer_id.as_slice(),
+                reservation.provider_id.as_slice(),
+                sql_integer(
+                    reservation.authorization_epoch,
+                    "BAT V2 reservation epoch exceeds SQLite range"
+                )?,
+                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
+            ],
+        )?;
+        commit(transaction)?;
+        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        let value = self
+            .bat_v2_clearing_epoch_reservation(
+                &reservation.provider_id,
+                reservation.authorization_epoch,
+            )?
+            .ok_or_else(|| {
+                StoreError::SchemaMismatch(
+                    "committed BAT V2 clearing reservation missing".to_owned(),
+                )
+            })?;
+        Ok(DurableWrite {
+            disposition: WriteDisposition::Committed,
+            commit: marker(self, sequence),
+            value,
+        })
+    }
+
+    pub fn bat_v2_clearing_epoch_reservation(
+        &self,
+        provider_id: &[u8; 32],
+        authorization_epoch: u64,
+    ) -> StoreResult<Option<BatV2ClearingEpochReservationRecordV2>> {
+        if is_zero(provider_id) || authorization_epoch == 0 {
+            return Err(StoreError::InvalidInput(
+                "BAT V2 clearing reservation lookup is invalid",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let value = read_bat_v2_clearing_epoch_reservation(
+            &connection,
+            self,
+            provider_id,
+            authorization_epoch,
+        )?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
     /// Registers exact BAT V2 operator and issuer accounting artifacts. The
     /// external keys are explicit pinned roots, never learned from the input.
     #[allow(clippy::too_many_arguments)]
@@ -97,6 +212,13 @@ impl IssuerStore {
         let exact_approval = approval.encode().to_vec();
         let operator_root = expected_operator_key.to_bytes();
         let settlement_root = expected_issuer_settlement_key.to_bytes();
+        let clearing_root = authorization.claims.clearing_verifying_key;
+        if operator_root == settlement_root
+            || clearing_root == operator_root
+            || clearing_root == settlement_root
+        {
+            return Err(StoreError::BatV2ClearingAuthorizationFork);
+        }
         if exact_authorization.len() > MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES
             || exact_approval.len() > MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES
         {
@@ -119,6 +241,30 @@ impl IssuerStore {
                 && existing.operator_verifying_key == operator_root
                 && existing.issuer_settlement_verifying_key == settlement_root
             {
+                let reservation = read_bat_v2_clearing_epoch_reservation(
+                    &transaction,
+                    self,
+                    &provider_id,
+                    authorization.claims.authorization_epoch,
+                )?
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch(
+                        "active BAT V2 authorization reservation missing".to_owned(),
+                    )
+                })?;
+                if !matches!(
+                    reservation.state,
+                    BatV2ClearingEpochReservationStateV2::Active {
+                        clearing_verifying_key,
+                        authorization_digest,
+                        ..
+                    } if authorization_digest == digest
+                        && clearing_verifying_key == authorization.claims.clearing_verifying_key
+                ) {
+                    return Err(StoreError::SchemaMismatch(
+                        "active BAT V2 authorization reservation mismatch".to_owned(),
+                    ));
+                }
                 return Ok(DurableWrite {
                     disposition: WriteDisposition::ExactReplay,
                     commit: existing.commit,
@@ -147,6 +293,19 @@ impl IssuerStore {
         if authorization.claims.authorization_epoch == highest_epoch && highest_epoch != 0 {
             return Err(StoreError::BatV2ClearingAuthorizationFork);
         }
+        let reservation = read_bat_v2_clearing_epoch_reservation(
+            &transaction,
+            self,
+            &provider_id,
+            authorization.claims.authorization_epoch,
+        )?
+        .ok_or(StoreError::BatV2ClearingReservationMissing)?;
+        if !matches!(
+            reservation.state,
+            BatV2ClearingEpochReservationStateV2::Inactive
+        ) {
+            return Err(StoreError::BatV2ClearingReservationMismatch);
+        }
         authorization.verify_for(
             &provider_id,
             &self.handle.expected_issuer_id,
@@ -160,6 +319,20 @@ impl IssuerStore {
             now_unix,
             highest_epoch,
         )?;
+        let reused_clearing_key: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM bat_v2_clearing_epoch_reservations \
+                 WHERE issuer_id = ?1 AND clearing_verifying_key = ?2 LIMIT 1",
+                params![
+                    self.handle.expected_issuer_id.as_slice(),
+                    clearing_root.as_slice(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if reused_clearing_key.is_some() {
+            return Err(StoreError::BatV2ClearingAuthorizationFork);
+        }
 
         let mutation = mutation_digest(
             b"register-bat-v2-accounting-authorization-v2",
@@ -228,6 +401,26 @@ impl IssuerStore {
                 sql_integer(sequence, "commit sequence exceeds SQLite range")?,
             ],
         )?;
+        let changed = transaction.execute(
+            "UPDATE bat_v2_clearing_epoch_reservations \
+             SET state = 1, clearing_verifying_key = ?1, authorization_digest = ?2, activation_commit_seq = ?3 \
+             WHERE issuer_id = ?4 AND provider_id = ?5 AND authorization_epoch = ?6 \
+               AND state = 0 AND clearing_verifying_key IS NULL",
+            params![
+                authorization.claims.clearing_verifying_key.as_slice(),
+                digest.as_slice(),
+                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
+                self.handle.expected_issuer_id.as_slice(),
+                provider_id.as_slice(),
+                sql_integer(
+                    authorization.claims.authorization_epoch,
+                    "BAT V2 authorization epoch exceeds SQLite range"
+                )?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::BatV2ClearingReservationMismatch);
+        }
         commit(transaction)?;
         self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
@@ -566,6 +759,81 @@ impl IssuerStore {
         self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         Ok(true)
     }
+}
+
+fn read_bat_v2_clearing_epoch_reservation(
+    connection: &Connection,
+    store: &IssuerStore,
+    provider_id: &[u8; 32],
+    authorization_epoch: u64,
+) -> StoreResult<Option<BatV2ClearingEpochReservationRecordV2>> {
+    type RawReservation = (Option<Vec<u8>>, i64, Option<Vec<u8>>, i64, Option<i64>);
+    let raw: Option<RawReservation> = connection
+        .query_row(
+            "SELECT clearing_verifying_key, state, authorization_digest, \
+                    reservation_commit_seq, activation_commit_seq \
+             FROM bat_v2_clearing_epoch_reservations \
+             WHERE issuer_id = ?1 AND provider_id = ?2 AND authorization_epoch = ?3",
+            params![
+                store.handle.expected_issuer_id.as_slice(),
+                provider_id.as_slice(),
+                sql_integer(
+                    authorization_epoch,
+                    "BAT V2 reservation epoch exceeds SQLite range"
+                )?,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|raw| {
+        let reservation_commit = db_u64(raw.3, "negative BAT V2 reservation commit sequence")?;
+        let state = match (raw.0, raw.1, raw.2, raw.4) {
+            (None, 0, None, None) => BatV2ClearingEpochReservationStateV2::Inactive,
+            (Some(key), 1, Some(digest), Some(activation_commit)) => {
+                let clearing_verifying_key =
+                    fixed_blob(key, "invalid activated BAT V2 clearing key")?;
+                VerifyingKey::from_bytes(&clearing_verifying_key).map_err(|_| {
+                    StoreError::SchemaMismatch("invalid activated BAT V2 clearing key".to_owned())
+                })?;
+                BatV2ClearingEpochReservationStateV2::Active {
+                    clearing_verifying_key,
+                    authorization_digest: fixed_blob(
+                        digest,
+                        "invalid reserved BAT V2 authorization digest",
+                    )?,
+                    activation_commit: marker(
+                        store,
+                        db_u64(
+                            activation_commit,
+                            "negative BAT V2 activation commit sequence",
+                        )?,
+                    ),
+                }
+            }
+            _ => {
+                return Err(StoreError::SchemaMismatch(
+                    "invalid BAT V2 clearing reservation state".to_owned(),
+                ))
+            }
+        };
+        Ok(BatV2ClearingEpochReservationRecordV2 {
+            reservation: BatV2ClearingEpochReservationV2 {
+                provider_id: *provider_id,
+                authorization_epoch,
+            },
+            state,
+            reservation_commit: marker(store, reservation_commit),
+        })
+    })
+    .transpose()
 }
 
 pub(crate) fn ensure_provider_account_binding(
@@ -917,9 +1185,42 @@ pub(crate) fn verify_all_bat_v2_clearing(
         .collect::<Result<Vec<_>, _>>()?;
     for digest in digests {
         let digest = fixed_blob(digest, "invalid BAT V2 authorization digest")?;
-        if read_bat_v2_authorization(connection, store, &digest)?.is_none() {
+        let authorization =
+            read_bat_v2_authorization(connection, store, &digest)?.ok_or_else(|| {
+                StoreError::SchemaMismatch(
+                    "BAT V2 accounting authorization disappeared during integrity read".to_owned(),
+                )
+            })?;
+        let (exact_authorization, _) = authorization.decode_exact()?;
+        if exact_authorization.claims.clearing_verifying_key == authorization.operator_verifying_key
+            || exact_authorization.claims.clearing_verifying_key
+                == authorization.issuer_settlement_verifying_key
+            || authorization.operator_verifying_key == authorization.issuer_settlement_verifying_key
+        {
             return Err(StoreError::SchemaMismatch(
-                "BAT V2 accounting authorization disappeared during integrity read".to_owned(),
+                "BAT V2 accounting role keys are not distinct".to_owned(),
+            ));
+        }
+        let reservation = read_bat_v2_clearing_epoch_reservation(
+            connection,
+            store,
+            &authorization.provider_id,
+            authorization.authorization_epoch,
+        )?
+        .ok_or_else(|| {
+            StoreError::SchemaMismatch("BAT V2 authorization reservation missing".to_owned())
+        })?;
+        if !matches!(
+            reservation.state,
+            BatV2ClearingEpochReservationStateV2::Active {
+                clearing_verifying_key,
+                authorization_digest,
+                ..
+            } if authorization_digest == digest
+                && clearing_verifying_key == exact_authorization.claims.clearing_verifying_key
+        ) {
+            return Err(StoreError::SchemaMismatch(
+                "BAT V2 authorization reservation binding mismatch".to_owned(),
             ));
         }
     }

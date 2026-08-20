@@ -1920,6 +1920,10 @@ fn map_store_error(error: StoreError) -> IssuerCoreErrorV1 {
         | StoreError::ClearingAuthorizationFork
         | StoreError::BatV2ClearingAuthorizationRollback
         | StoreError::BatV2ClearingAuthorizationFork
+        | StoreError::BatV2ClearingReservationRollback
+        | StoreError::BatV2ClearingReservationExists
+        | StoreError::BatV2ClearingReservationMissing
+        | StoreError::BatV2ClearingReservationMismatch
         | StoreError::BatV2RedeemPreconditionChanged
         | StoreError::RedeemIdempotencyConflict
         | StoreError::CredentialAlreadySpent

@@ -3,10 +3,11 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
     BatKeyLineageRegistration, BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimWrite,
-    BatV2QuoteReservation, ClaimCryptographicVerificationInput, ClaimWrite, DelegationAdvance,
-    IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
-    IssuerStore, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry,
-    QuoteFinalization, QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
+    BatV2ClearingEpochReservationV2, BatV2QuoteReservation, ClaimCryptographicVerificationInput,
+    ClaimWrite, DelegationAdvance, IssuerRollbackFloorAuthorityErrorV1,
+    IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1, IssuerStore,
+    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
+    QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
     SettlementKeyLineageRegistration, StoreError, StoreOptions, WriteDisposition, SCHEMA_VERSION,
 };
 use pir_service_protocol::{
@@ -427,8 +428,7 @@ fn bat_v2_verified_member(
     }
 }
 
-fn bat_v2_redemption_authority(
-    store: &IssuerStore,
+fn make_bat_v2_redemption_authority(
     class: &BatAcceptanceClassV2,
     member: &BatAcceptanceMemberV2,
     account_byte: u8,
@@ -466,15 +466,6 @@ fn bat_v2_redemption_authority(
     .expect("sign BAT V2 accounting authorization");
     let approval = IssuerAccountingApprovalV2::sign(&authorization, 200, 2_000, &settlement_key)
         .expect("sign BAT V2 issuer approval");
-    let _ = store
-        .register_bat_v2_accounting_authorization(
-            &authorization,
-            &approval,
-            &operator_key.verifying_key(),
-            &settlement_key.verifying_key(),
-            200,
-        )
-        .expect("register BAT V2 accounting authorization");
     BatV2RedemptionAuthorityFixture {
         authorization,
         approval,
@@ -482,6 +473,33 @@ fn bat_v2_redemption_authority(
         clearing_key,
         settlement_key,
     }
+}
+
+fn bat_v2_redemption_authority(
+    store: &IssuerStore,
+    class: &BatAcceptanceClassV2,
+    member: &BatAcceptanceMemberV2,
+    account_byte: u8,
+    key_byte: u8,
+    epoch: u64,
+) -> BatV2RedemptionAuthorityFixture {
+    let fixture = make_bat_v2_redemption_authority(class, member, account_byte, key_byte, epoch);
+    let _ = store
+        .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+            provider_id: member.provider_id,
+            authorization_epoch: epoch,
+        })
+        .expect("reserve BAT V2 clearing epoch");
+    let _ = store
+        .register_bat_v2_accounting_authorization(
+            &fixture.authorization,
+            &fixture.approval,
+            &fixture.operator_key.verifying_key(),
+            &fixture.settlement_key.verifying_key(),
+            200,
+        )
+        .expect("register BAT V2 accounting authorization");
+    fixture
 }
 
 fn bat_v2_redemption_precheck(
@@ -3322,12 +3340,12 @@ fn bat_v2_registry_rejects_bidirectional_legacy_raw_key_reuse() {
 }
 
 #[test]
-fn bat_v2_redemption_schema_v8_rejects_implicit_v7_open() {
+fn bat_v2_clearing_reservation_schema_v9_rejects_implicit_v8_open() {
     let test_path = TestPath::new();
     let store = create_store(&test_path);
     drop(store);
     let connection = Connection::open(&test_path.database).unwrap();
-    connection.pragma_update(None, "user_version", 7).unwrap();
+    connection.pragma_update(None, "user_version", 8).unwrap();
     drop(connection);
     assert!(matches!(
         open_store(&test_path),
@@ -3412,7 +3430,7 @@ fn bat_v2_redemption_v1_registration_uses_neutral_binding_and_reopens() {
     );
     drop(store);
 
-    let reopened = open_store(&test_path).expect("reopen v8 store with V1 registration");
+    let reopened = open_store(&test_path).expect("reopen v9 store with V1 registration");
     assert_eq!(
         reopened
             .provider_settlement_registration(&provider_id)
@@ -3436,6 +3454,8 @@ fn bat_v2_redemption_authorization_replay_epoch_fork_and_account_mismatch() {
     let store = create_store(&test_path);
     let (class, members) = install_bat_v2_redemption_class(&store, [0x81; 32], 1, 81, 1);
     let first = bat_v2_redemption_authority(&store, &class, &members[0].member, 0x82, 0x83, 1);
+    drop(store);
+    let store = open_store(&test_path).expect("reopen clearing reservation before exact replay");
     let replay = store
         .register_bat_v2_accounting_authorization(
             &first.authorization,
@@ -3468,23 +3488,19 @@ fn bat_v2_redemption_authorization_replay_epoch_fork_and_account_mismatch() {
         Err(StoreError::BatV2ClearingAuthorizationFork)
     ));
 
-    let second = ProviderAccountingAuthorizationV2::sign(
-        ProviderAccountingAuthorizationClaimsV2 {
-            authorization_id: [0x85; 16],
-            authorization_epoch: 2,
-            ..first.authorization.claims.clone()
-        },
-        &first.operator_key,
-    )
-    .unwrap();
-    let second_approval =
-        IssuerAccountingApprovalV2::sign(&second, 200, 2_000, &first.settlement_key).unwrap();
+    let second = make_bat_v2_redemption_authority(&class, &members[0].member, 0x82, 0x89, 2);
+    let _ = store
+        .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+            provider_id: second.authorization.claims.provider_id,
+            authorization_epoch: second.authorization.claims.authorization_epoch,
+        })
+        .unwrap();
     let _ = store
         .register_bat_v2_accounting_authorization(
-            &second,
-            &second_approval,
-            &first.operator_key.verifying_key(),
-            &first.settlement_key.verifying_key(),
+            &second.authorization,
+            &second.approval,
+            &second.operator_key.verifying_key(),
+            &second.settlement_key.verifying_key(),
             200,
         )
         .expect("append BAT V2 authorization epoch");
@@ -3518,25 +3534,20 @@ fn bat_v2_redemption_authorization_replay_epoch_fork_and_account_mismatch() {
         Err(StoreError::BatV2ClearingAuthorizationRollback)
     ));
 
+    let account_fork = make_bat_v2_redemption_authority(&class, &members[0].member, 0x88, 0x8c, 3);
+    let _ = store
+        .reserve_bat_v2_clearing_epoch(BatV2ClearingEpochReservationV2 {
+            provider_id: account_fork.authorization.claims.provider_id,
+            authorization_epoch: account_fork.authorization.claims.authorization_epoch,
+        })
+        .unwrap();
     let before_account_fork = store.identity().unwrap().commit_seq;
-    let account_fork = ProviderAccountingAuthorizationV2::sign(
-        ProviderAccountingAuthorizationClaimsV2 {
-            authorization_id: [0x87; 16],
-            authorization_epoch: 3,
-            settlement_account_id: [0x88; 32],
-            ..first.authorization.claims.clone()
-        },
-        &first.operator_key,
-    )
-    .unwrap();
-    let account_fork_approval =
-        IssuerAccountingApprovalV2::sign(&account_fork, 200, 2_000, &first.settlement_key).unwrap();
     assert!(matches!(
         store.register_bat_v2_accounting_authorization(
-            &account_fork,
-            &account_fork_approval,
-            &first.operator_key.verifying_key(),
-            &first.settlement_key.verifying_key(),
+            &account_fork.authorization,
+            &account_fork.approval,
+            &account_fork.operator_key.verifying_key(),
+            &account_fork.settlement_key.verifying_key(),
             200,
         ),
         Err(StoreError::ProviderAccountBindingConflict)

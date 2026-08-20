@@ -663,6 +663,36 @@ pub(crate) fn bat_v2_clearing_authorizations_sql() -> String {
     )
 }
 
+pub(crate) const BAT_V2_CLEARING_EPOCH_RESERVATIONS_SQL: &str = r#"CREATE TABLE bat_v2_clearing_epoch_reservations (
+    issuer_id                     BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    provider_id                   BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    authorization_epoch           INTEGER NOT NULL CHECK (authorization_epoch > 0),
+    clearing_verifying_key          BLOB CHECK (
+        clearing_verifying_key IS NULL OR
+        (length(clearing_verifying_key) = 32 AND clearing_verifying_key != zeroblob(32))
+    ),
+    state                         INTEGER NOT NULL CHECK (state IN (0, 1)),
+    authorization_digest          BLOB CHECK (
+        authorization_digest IS NULL OR
+        (length(authorization_digest) = 32 AND authorization_digest != zeroblob(32))
+    ),
+    reservation_commit_seq        INTEGER NOT NULL CHECK (reservation_commit_seq > 0),
+    activation_commit_seq         INTEGER CHECK (
+        activation_commit_seq IS NULL OR activation_commit_seq > reservation_commit_seq
+    ),
+    PRIMARY KEY (issuer_id, provider_id, authorization_epoch),
+    UNIQUE (issuer_id, clearing_verifying_key),
+    CHECK ((state = 0 AND clearing_verifying_key IS NULL AND authorization_digest IS NULL AND activation_commit_seq IS NULL) OR
+           (state = 1 AND clearing_verifying_key IS NOT NULL AND authorization_digest IS NOT NULL AND activation_commit_seq IS NOT NULL)),
+    FOREIGN KEY (issuer_id, authorization_digest)
+        REFERENCES bat_v2_clearing_authorizations(issuer_id, authorization_digest)
+        ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID"#;
+
 pub(crate) fn redemptions_sql() -> String {
     format!(
         r#"CREATE TABLE redemptions (
@@ -1076,6 +1106,10 @@ pub(crate) fn schema() -> Vec<(&'static str, String)> {
         (
             "bat_v2_clearing_authorizations",
             bat_v2_clearing_authorizations_sql(),
+        ),
+        (
+            "bat_v2_clearing_epoch_reservations",
+            BAT_V2_CLEARING_EPOCH_RESERVATIONS_SQL.to_owned(),
         ),
         ("bat_v2_redemptions", bat_v2_redemptions_sql()),
         ("claims", claims_sql()),
