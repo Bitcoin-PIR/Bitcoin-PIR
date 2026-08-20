@@ -1,5 +1,13 @@
 # Phase 3 Slice 3 — UKI Reproducible-Build Plan (L4 polish)
 
+> **Historical reproducibility record; not a production build runbook.** This
+> document contains several successive experiments, including a Nix UKI that
+> does not carry the current pir2 `cuckoo-oram`, `oramctl`, proof, policy, and
+> sealed-runtime contract. For the separated current source, binary, UKI,
+> measurement, Nix-harness, and attested-builder blocks, use
+> [`runbooks/uki-build.md`](runbooks/uki-build.md). Production operations start
+> at [`PRODUCTION_OPERATIONS.md`](PRODUCTION_OPERATIONS.md).
+
 **Status (2026-05-04)**: All five sub-tasks shipped. Sub-tasks 1+2+3b+4
 deployed to pir2 as Tier 3 v4 (MEASUREMENT `f6aa2915…` chip-verified).
 Sub-task 5 Phase 1 (Nix dev shell) + Phase 2 (`nix build .#unified-server`
