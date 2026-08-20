@@ -303,6 +303,26 @@ try {
   const inertBootId = path.join(inertRoot, "boot_id");
   const inertSwaps = path.join(inertRoot, "swaps");
   const inertCalls = path.join(inertRoot, "unified-server.calls");
+  const inertBusybox = path.join(inertRoot, "busybox");
+  write(
+    inertBusybox,
+    `#!/bin/sh
+[ "$1" = httpd ] || exit 2
+shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -f) shift ;;
+    -p) address=$2; shift 2 ;;
+    -h) root=$2; shift 2 ;;
+    *) exit 2 ;;
+  esac
+done
+host=\${address%:*}
+port=\${address##*:}
+exec python3 -m http.server "$port" --bind "$host" --directory "$root"
+`,
+  );
+  chmodSync(inertBusybox, 0o755);
   write(inertSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
   write(
     inertBinary,
@@ -346,6 +366,8 @@ exit 42
     inertRunScript,
     tier3RunText
       .replace("UNIFIED_SERVER=/usr/local/bin/unified_server", `UNIFIED_SERVER=${inertBinary}`)
+      .replace("PIR2_SEALED_RECEIPT_RECOVERY_HTTPD=/usr/bin/busybox", `PIR2_SEALED_RECEIPT_RECOVERY_HTTPD=${inertBusybox}`)
+      .replaceAll("/run/bitcoinpir-pir2-sealed-receipt-api", `${inertRoot}/receipt-recovery-api`)
       .replaceAll("sleep 5", ":"),
   );
   chmodSync(inertRunScript, 0o755);
@@ -366,6 +388,7 @@ exit 42
       BPIR_PIR2_PROC_SWAPS: inertSwaps,
       BPIR_PIR2_SNP_SEALED_ROOT: phaseRoot,
       BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(phaseRoot, "trusted-attempt"),
+      BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS: "1",
     };
     const inert = run("sh", [inertRunScript], { env: inertEnv });
     assert.equal(inert.status, 42, inert.stdout + inert.stderr);
@@ -389,6 +412,66 @@ exit 42
     assert.equal(readFileSync(inertCalls, "utf8"), callsBeforeRetry);
     writeFileSync(startupPath, originalStartup);
   }
+
+  // Exercise the bounded endpoint through the same BusyBox-httpd invocation
+  // shape as the UKI: the canonical receipt and minimal status are readable
+  // during the one-second fixture window, then the inert attempt stays 42.
+  const recoveryRoot = path.join(inertRoot, "recovery-window");
+  writeSealedStartup(recoveryRoot, "observe", 77);
+  writeFileSync(inertBootId, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n");
+  const recoveryApiRoot = path.join(inertRoot, "receipt-recovery-api");
+  const recoveryReceiptOutput = path.join(inertRoot, "recovered-receipt.bin");
+  const recoveryStatusOutput = path.join(inertRoot, "recovered-status.json");
+  const recoveryRunner = `
+"$1" >"$2" 2>"$3" &
+pid=$!
+i=0
+while [ ! -f "$4/status.json" ]; do
+  [ "$i" -lt 100 ] || exit 3
+  sleep 0.02
+  i=$((i + 1))
+done
+j=0
+until curl -fsS "http://127.0.0.1:8091/pir2-sealed-receipt.bin" >"$5"; do
+  [ "$j" -lt 50 ] || exit 4
+  sleep 0.02
+  j=$((j + 1))
+done
+curl -fsS "http://127.0.0.1:8091/status.json" >"$6" || exit 5
+wait "$pid"
+exit $?
+`;
+  const recovery = run(
+    "sh",
+    [
+      "-c",
+      recoveryRunner,
+      "fixture",
+      inertRunScript,
+      path.join(inertRoot, "recovery.stdout"),
+      path.join(inertRoot, "recovery.stderr"),
+      recoveryApiRoot,
+      recoveryReceiptOutput,
+      recoveryStatusOutput,
+    ],
+    {
+      env: {
+        ...process.env,
+        BPIR_ORAM_BOOT_ID_FILE: inertBootId,
+        BPIR_PIR2_PROC_SWAPS: inertSwaps,
+        BPIR_PIR2_SNP_SEALED_ROOT: recoveryRoot,
+        BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT: path.join(recoveryRoot, "trusted-attempt"),
+        BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS: "1",
+      },
+    },
+  );
+  assert.equal(recovery.status, 42, recovery.stdout + recovery.stderr);
+  assert.equal(readFileSync(recoveryReceiptOutput, "utf8"), "fixture receipt\n");
+  assert.match(
+    readFileSync(recoveryStatusOutput, "utf8"),
+    /"phase":"observe","ordinal":77,"boot_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","receipt_sha256":"[0-9a-f]{64}"/,
+  );
+  assert.equal(existsSync(recoveryApiRoot), false, "receipt recovery root must be removed after its bounded window");
 
   const forgedRoot = path.join(inertRoot, "forged-persistent");
   const forgedAttemptRoot = path.join(forgedRoot, "trusted-attempt");

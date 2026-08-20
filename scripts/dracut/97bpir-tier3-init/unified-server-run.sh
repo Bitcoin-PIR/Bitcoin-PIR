@@ -57,6 +57,19 @@ PIR2_SEALED_ARTIFACT_SET_MAX_BYTES=8192
 PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_POLICIES=8
 PIR2_SEALED_ARTIFACT_SET_MAX_RETAINED_CLASSES=8
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
+# Inert Observe/Enroll/Probe runs leave no listener behind.  VPSBG currently
+# has no console or file-extraction API, so expose only the canonical receipt
+# briefly through the already configured cloudflared origin.  This is a
+# distinct schema/root from the Direct ORAM progress API below.
+PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT=/run/bitcoinpir-pir2-sealed-receipt-api
+PIR2_SEALED_RECEIPT_RECOVERY_FILE="$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT/pir2-sealed-receipt.bin"
+PIR2_SEALED_RECEIPT_RECOVERY_STATUS_FILE="$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT/status.json"
+PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE=/run/bitcoinpir-pir2-sealed-receipt-api.pid
+PIR2_SEALED_RECEIPT_RECOVERY_HTTPD=/usr/bin/busybox
+PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_HOST=127.0.0.1
+PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PORT=8091
+PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=
+PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS=600
 PIR2_SEALED_OPERATOR_KEY_HEX=30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c
 PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX=9ab315056cdabf821c41d2bb57a8ab180481436f439c5ef4131c000b448c2763
 PIR2_SEALED_PROVIDER_ID_HEX=a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d
@@ -700,6 +713,86 @@ prepare_pir2_sealed_output_dirs() {
         || fatal "failed to protect pir2 sealed output directories"
 }
 
+pir2_sealed_receipt_recovery_window_seconds() {
+    # This override exists only for the repository fixture.  Production always
+    # uses the measured, finite 600-second window above.
+    if [ -n "${BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS:-}" ]; then
+        case "$BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS" in
+            ''|*[!0-9]*|0) fatal "fixture receipt recovery window must be a positive integer" ;;
+        esac
+        [ "$BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS" -le 60 ] \
+            || fatal "fixture receipt recovery window exceeds 60 seconds"
+        printf '%s\n' "$BPIR_TEST_PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS"
+        return 0
+    fi
+    printf '%s\n' "$PIR2_SEALED_RECEIPT_RECOVERY_WINDOW_SECONDS"
+}
+
+prepare_pir2_sealed_receipt_recovery_api() {
+    case "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" in
+        /run/bitcoinpir-pir2-sealed-receipt-api) ;;
+        *) fatal "unsupported pir2 sealed receipt recovery root" ;;
+    esac
+    rm -rf "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" \
+        || fatal "failed to clear pir2 sealed receipt recovery root"
+    mkdir -p "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" \
+        || fatal "failed to create pir2 sealed receipt recovery root"
+    chmod 700 "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" \
+        || fatal "failed to protect pir2 sealed receipt recovery root"
+}
+
+stop_pir2_sealed_receipt_recovery_api() {
+    [ -n "${PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID:-}" ] || return 0
+    kill "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID" 2>/dev/null || true
+    wait "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID" 2>/dev/null || true
+    PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=
+    rm -f "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE"
+}
+
+remove_pir2_sealed_receipt_recovery_api_root() {
+    case "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" in
+        /run/bitcoinpir-pir2-sealed-receipt-api) rm -rf "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" || return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
+publish_pir2_sealed_receipt_recovery_window() {
+    recovery_window_seconds=$(pir2_sealed_receipt_recovery_window_seconds)
+    prepare_pir2_sealed_receipt_recovery_api
+    receipt_tmp="$PIR2_SEALED_RECEIPT_RECOVERY_FILE.tmp.$$"
+    status_tmp="$PIR2_SEALED_RECEIPT_RECOVERY_STATUS_FILE.tmp.$$"
+    umask 077
+    cp "$PIR2_SEALED_RECEIPT_PATH" "$receipt_tmp" \
+        || fatal "failed to stage canonical pir2 sealed receipt for recovery"
+    chmod 600 "$receipt_tmp" || fatal "failed to protect staged pir2 sealed receipt"
+    mv "$receipt_tmp" "$PIR2_SEALED_RECEIPT_RECOVERY_FILE" \
+        || fatal "failed to publish canonical pir2 sealed receipt"
+    {
+        printf '{"schema_version":1,"phase":"%s","ordinal":%s,' \
+            "$PIR2_SEALED_PHASE" "$PIR2_SEALED_ORDINAL"
+        printf '"boot_id":"%s","receipt_sha256":"%s"}\n' \
+            "$PIR2_BOOT_ID_HEX" "$PIR2_CHILD_RECEIPT_FILE_SHA256"
+    } >"$status_tmp" || fatal "failed to stage pir2 sealed receipt recovery status"
+    chmod 600 "$status_tmp" || fatal "failed to protect pir2 sealed receipt recovery status"
+    mv "$status_tmp" "$PIR2_SEALED_RECEIPT_RECOVERY_STATUS_FILE" \
+        || fatal "failed to publish pir2 sealed receipt recovery status"
+    [ -x "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD" ] \
+        || fatal "BusyBox httpd missing from UKI"
+    "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD" httpd -f \
+        -p "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_HOST:$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PORT" \
+        -h "$PIR2_SEALED_RECEIPT_RECOVERY_HTTP_ROOT" </dev/null >/dev/null 2>&1 &
+    PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID=$!
+    printf '%s\n' "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID" >"$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE" \
+        || fatal "failed to record pir2 sealed receipt recovery process"
+    chmod 600 "$PIR2_SEALED_RECEIPT_RECOVERY_HTTPD_PID_FILE" \
+        || fatal "failed to protect pir2 sealed receipt recovery process"
+    sleep "$recovery_window_seconds"
+    stop_pir2_sealed_receipt_recovery_api \
+        || fatal "failed to stop pir2 sealed receipt recovery API"
+    remove_pir2_sealed_receipt_recovery_api_root \
+        || fatal "failed to remove pir2 sealed receipt recovery root"
+}
+
 run_pir2_sealed_inert_phase() {
     if [ "$PIR2_SEALED_PHASE" = observe ]; then
         "$UNIFIED_SERVER" \
@@ -735,6 +828,7 @@ run_pir2_sealed_inert_phase() {
         || fatal "pir2 sealed $PIR2_SEALED_PHASE dispatcher failed with exit $sealed_status"
     read_child_audit_evidence \
         "$PIR2_SEALED_RECEIPT_PATH" "$PIR2_SEALED_MARKER_PATH" "$PIR2_SEALED_PHASE"
+    publish_pir2_sealed_receipt_recovery_window
     write_authoritative_attempt_token \
         "$PIR2_SEALED_TERMINAL_TOKEN_PATH" terminal "$PIR2_SEALED_PHASE"
     authoritative_attempt_token_matches_current_attempt \
