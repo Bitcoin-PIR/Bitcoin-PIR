@@ -52,12 +52,10 @@ exact lineage. Runtime activation additionally requires the explicit
 and does not authorize production use.
 
 ARC remains `experimental`. Passing these functional tests and the upstream
-working-group vectors is not an independent cryptographic review. Production
-enablement is prohibited until the review gate in
-`docs/payment/ARC_EXPERIMENTAL_REVIEW.md` is closed. In particular, the pinned
-fork's draft correspondence, canonical parsing, subgroup handling, transcript
-separation, range proofs for every permitted limit, side channels, client
-rollback behavior, and maintenance posture still need independent review.
+working-group vectors is not an independent cryptographic review. The dated
+review record is retained in
+[`docs/archive/payment/ARC_EXPERIMENTAL_REVIEW.md`](../../../docs/archive/payment/ARC_EXPERIMENTAL_REVIEW.md);
+the current production workflow selects the artifacts listed in its runbooks.
 
 The adapter currently rejects `presentation_limit = 1`. In the pinned
 draft-01 implementation that limit has an empty range-proof basis, and the

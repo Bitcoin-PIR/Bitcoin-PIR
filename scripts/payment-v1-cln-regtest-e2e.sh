@@ -46,7 +46,7 @@ readonly REPOSITORY_ROOT
 require_command() {
   local name="$1"
   command -v "$name" >/dev/null 2>&1 \
-    || die "missing required command '$name' (see docs/payment/CLN_REGTEST.md)"
+    || die "missing required command '$name' (see docs/TESTING.md)"
 }
 
 for command_name in bitcoind bitcoin-cli lightningd lightning-cli jq npm node python3 ps wasm-pack; do

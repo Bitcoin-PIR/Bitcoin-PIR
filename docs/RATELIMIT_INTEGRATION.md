@@ -1,10 +1,9 @@
 # Anonymous admission and payment integration
 
-Status: superseding integration index for Payment V1. The old May 2026 plan
-described `apps/dev-issuer`, legacy `0x08`/`0x09` presentation frames, and an
-untracked `~/bitcoin-pir/payment` prototype as the prospective production
-path. That description is retained only in Git history; it is not the current
-architecture or an operating instruction.
+This page indexes the Payment V1 admission architecture. Start operating work
+at [Production operations](PRODUCTION_OPERATIONS.md) and read
+[Current production state](CURRENT_PRODUCTION_STATE.md) for the latest
+repo-recorded handoff.
 
 ## Current boundaries
 
@@ -18,7 +17,7 @@ architecture or an operating instruction.
   acknowledgement and remains prohibited in production.
 - The untracked lowercase-tree prototype is non-reproducible evidence only.
   It is not a migration source. See
-  [`payment/LEGACY_PROTOTYPE_AUDIT.md`](payment/LEGACY_PROTOTYPE_AUDIT.md).
+  [`archive/payment/LEGACY_PROTOTYPE_AUDIT.md`](archive/payment/LEGACY_PROTOTYPE_AUDIT.md).
 - Payment V1 is implemented in this repository under
   [`crates/protocol/service/`](../crates/protocol/service/),
   [`crates/protocol/service-store/`](../crates/protocol/service-store/),
@@ -72,33 +71,19 @@ Multi-database Harmony synchronization remains fail closed until the product
 defines and implements a separate per-step or multi-database entitlement
 contract; cached hints do not widen the purchased query scope.
 
-## Authoritative documentation
+## Documentation
 
-- architecture and trust boundaries:
+- Operations: [Production operations](PRODUCTION_OPERATIONS.md), its short
+  [runbooks](runbooks/), and [Current production state](CURRENT_PRODUCTION_STATE.md).
+- Architecture and trust boundaries:
   [`payment/ARCHITECTURE.md`](payment/ARCHITECTURE.md)
-- canonical wire protocol:
+- Canonical wire protocol:
   [`payment/PROTOCOL.md`](payment/PROTOCOL.md)
-- persistence and crash semantics:
+- Persistence and crash semantics:
   [`payment/PERSISTENCE.md`](payment/PERSISTENCE.md)
-- security and privacy invariants:
-  [`payment/SECURITY.md`](payment/SECURITY.md). The retained
-  [`payment/SECURITY_REVIEW_2026-07-26.md`](payment/SECURITY_REVIEW_2026-07-26.md)
-  is a historical snapshot and contains a dated delta for the later schema-v7,
-  CLN/CDK, custody, strict-HTTPS and Nostr work;
-- current implementation state:
-  [`payment/IMPLEMENTATION_STATUS.md`](payment/IMPLEMENTATION_STATUS.md)
-- operator and local acceptance procedures:
-  [`payment/OPERATOR_RUNBOOK.md`](payment/OPERATOR_RUNBOOK.md) and
-  [`payment/LOCAL_ACCEPTANCE.md`](payment/LOCAL_ACCEPTANCE.md)
-- Lightning staging and disposable local CLN:
-  [`payment/LIGHTNING_STAGING.md`](payment/LIGHTNING_STAGING.md) and
-  [`payment/CLN_REGTEST.md`](payment/CLN_REGTEST.md)
-- current ProviderStore replacement ceremony:
-  [`payment/PROVIDER_STORE_V7_MIGRATION.md`](payment/PROVIDER_STORE_V7_MIGRATION.md)
+- Security and privacy invariants:
+  [`payment/SECURITY.md`](payment/SECURITY.md)
 - Nostr directory protocol and publication boundary:
   [`payment/DIRECTORY_PROTOCOL.md`](payment/DIRECTORY_PROTOCOL.md)
-- ARC review gate:
-  [`payment/ARC_EXPERIMENTAL_REVIEW.md`](payment/ARC_EXPERIMENTAL_REVIEW.md)
-
-Do not recover production instructions from an older version of this file.
-The Payment V1 status and runbook documents above are the maintained sources.
+- Retired plans, reviews, acceptance records, and migrations:
+  [Payment archive](archive/payment/README.md).

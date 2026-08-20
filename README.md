@@ -115,8 +115,11 @@ For a quick taste:
 ## Documentation
 
 - [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) — current
-  operator/agent entry point for read-only control-plane status, release,
-  rollback, and canary routing
+  operator entry point and workflow routing
+- [`docs/CURRENT_PRODUCTION_STATE.md`](docs/CURRENT_PRODUCTION_STATE.md) —
+  current repo-recorded production handoff
+- [`docs/runbooks/`](docs/runbooks/) — short production runbooks linked to
+  their repository scripts and skill
 - [`docs/history/README.md`](docs/history/README.md) — historical preflights,
   incidents, and plans; evidence only, not operating instructions
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
@@ -124,8 +127,8 @@ For a quick taste:
 - [`docs/RATELIMIT_INTEGRATION.md`](docs/RATELIMIT_INTEGRATION.md) — Payment V1
   and anonymous admission integration index (implemented/pre-production; not
   deployed)
-- [`docs/payment/IMPLEMENTATION_STATUS.md`](docs/payment/IMPLEMENTATION_STATUS.md)
-  — exact Payment method, test and production-activation status
+- [`docs/archive/payment/README.md`](docs/archive/payment/README.md) — retired
+  Payment plans, dated status, drills, reviews, and migration notes
 - [`doc/WALLET_INTEGRATION_ANALYSIS.md`](doc/WALLET_INTEGRATION_ANALYSIS.md) — How Bitcoin PIR integrates with existing wallets
 - [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material (the exact consumed revision is recorded in [`verification/locks/whitepaper.json`](verification/locks/whitepaper.json))
 

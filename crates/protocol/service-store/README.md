@@ -82,7 +82,7 @@ fingerprints, transient Y set and a domain-separated exact per-export NUT-07
 observation digest. The wider HTTP batch digest is deliberately not stored,
 so batching does not create a durable cross-export identifier. The store keeps
 no raw Y or per-note NUT-07 state. See
-[`PROVIDER_STORE_V7_MIGRATION.md`](../../../docs/payment/PROVIDER_STORE_V7_MIGRATION.md).
+[`PROVIDER_STORE_V7_MIGRATION.md`](../../../docs/archive/payment/PROVIDER_STORE_V7_MIGRATION.md).
 
 Schema v5 adds rollback-anchored `IpRateLimited` buckets keyed only by a
 provider-local 32-byte HMAC subject plus scope/offer, highest window, and

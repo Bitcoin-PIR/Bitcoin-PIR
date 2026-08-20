@@ -1,43 +1,43 @@
 #!/usr/bin/env bash
-# Build a Tier 3 UKI for BitcoinPIR Phase 3 Slice 3.
-#
-# Phase 3.1 scope (this script): bake an initramfs that brings up the
-# network and runs cloudflared, with no rootfs pivot. Acceptance:
-# Cloudflare dashboard shows the tunnel connecting from the new boot.
-#
-# Phase 3.2 will extend this script to also bake `unified_server` +
-# its .so deps + a runit service for it + a /sysroot bind-mount for
-# /home/pir/data (so DBs are reachable). Phase 3.1 deliberately stays
-# minimal so we can validate the runit-takeover-init shape on its own
-# before piling more in.
-#
-# Differences vs scripts/build_uki.sh (Slice 2):
-# - Adds `--add network --add-drivers " virtio_net virtio_pci "` so
-#   the initramfs has the virt NIC driver + DHCP tooling.
-# - Adds `--add bpir-cloudflared` and `--add bpir-tier3-init` (the
-#   modules at scripts/dracut/{96bpir-cloudflared,97bpir-tier3-init}/).
-# - Drops `--add bpir-verify` — no on-disk binary to pin in Phase 3.1.
-# - Cmdline drops `root=...` (no rootfs pivot) and replaces with
-#   `rdinit=/sbin/bpir-tier3-init`. The kernel exec's our takeover
-#   script as PID 1 directly, completely bypassing dracut's /init.
-# - Output goes to /tmp/bpir-tier3.efi (not /tmp/bpir.efi) so this
-#   doesn't clobber the live Slice 2 UKI build artifact.
-#
-# Operator usage (must run as root — /boot/vmlinuz-* is mode 0600):
-#   ssh vpsbg-pir 'apt install -y runit'   # one-time build dep
-#   ssh vpsbg-pir 'BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin \
-#       /home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
-#   scp vpsbg-pir:/tmp/bpir-tier3.efi ./bpir-tier3.efi
-#
-# Recovery if Tier 3 boot fails: VPSBG portal → Measured Boot → UKI
-# → set to "None" → reboot → stock Ubuntu rootfs comes up with sshd.
+# Build and archive the production Tier 3 UKI.
 
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: scripts/build_uki_tier3.sh [--dry-run]
+
+Builds the Tier 3 UKI on the selected Linux build host.
+
+Required environment:
+  BPIR_TIER3_SERVICE_POLICY  Reviewed signed service-policy file.
+
+Optional environment:
+  KERNEL, BINARY, ORAMCTL, BHTM_FROM_LEAF_PROOF, OUT
+  UKI_ARCHIVE_DIR, UKI_ARCHIVE_REMOTE, UKI_ARCHIVE_REMOTE_REQUIRED
+
+On success the script writes OUT (default /tmp/bpir-tier3.efi), prints its
+SHA-256, archives it through archive_uki_artifact.sh, then prints PASS and
+NEXT_STEP. --dry-run lists inputs without inspecting the host or reading files.
+EOF
+}
+
+case "${1:-}" in
+    '') ;;
+    -h|--help) usage; exit 0 ;;
+    --dry-run)
+        echo '[stage] Tier 3 UKI build preview'
+        echo 'required_input=BPIR_TIER3_SERVICE_POLICY'
+        echo 'output=OUT (default /tmp/bpir-tier3.efi)'
+        echo 'PASS uki_build dry_run=true'
+        echo 'NEXT_STEP=run without --dry-run as root on the approved UKI build host'
+        exit 0
+        ;;
+    *) usage >&2; exit 2 ;;
+esac
+
 if [ "$EUID" != "0" ]; then
-    echo "error: build_uki_tier3.sh must run as root — /boot/vmlinuz-* is" >&2
-    echo "       not readable by the pir user. Re-run as:" >&2
-    echo "         ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'" >&2
+    echo "error: build_uki_tier3.sh must run as root on the UKI build host" >&2
     exit 1
 fi
 
@@ -64,9 +64,8 @@ for tool in ukify dracut sha256sum; do
     }
 done
 
-# Phase 3.1 build dep: runit. The 97bpir-tier3-init module's check()
-# fails the build if these aren't present, but check up-front for a
-# clearer error than dracut's.
+# The Tier 3 init process uses runit. Check its executables before invoking
+# dracut so a missing package has a direct error.
 for b in runit runsvdir runsv sv chpst; do
     command -v "$b" >/dev/null 2>&1 || {
         echo "error: $b not in \$PATH" >&2
@@ -76,18 +75,14 @@ for b in runit runsvdir runsv sv chpst; do
 done
 
 # Cloudflared static binary must be on the build host. The tunnel
-# token does NOT need to be on the build host — it is loaded at
-# runtime from /home/pir/data/cloudflared/tunnel.env on the target's
-# rootfs partition (see PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 / option b).
-# Operator one-time setup before deploying Tier 3:
-#   ssh <slice2-host> 'mkdir -p /home/pir/data/cloudflared && \
-#       cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'
+# token is runtime state at /home/pir/data/cloudflared/tunnel.env and is not
+# embedded in the UKI.
 [ -x /usr/local/bin/cloudflared ] || {
     echo "error: /usr/local/bin/cloudflared not executable" >&2
     exit 1
 }
 
-# Phase 3.2: unified_server and oramctl binaries must be built and present.
+# The unified_server and oramctl binaries must be built and present.
 BINARY=${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}
 [ -x "$BINARY" ] || {
     echo "error: $BINARY not executable" >&2
@@ -273,8 +268,7 @@ echo "generating tier3 initrd…"
 # --add-drivers virtio_net,virtio_pci,virtio_blk: KVM virt NIC + bus
 # + block drivers (NIC + bus may be built-in on this kernel; safe).
 # --add-drivers ccp,sev-guest,tsm_report: SEV-SNP attestation stack.
-# udev auto-loads these on Slice 2 via PCI matching; in Tier 3 we
-# have no udev so we both bake them in here AND explicitly modprobe
+# This initramfs has no udev, so it both bakes these drivers in and modprobes
 # in bpir-tier3-init.sh. tsm_report is a dep of sev-guest on kernel ≥6.10
 # (modprobe pulls it transitively, but listing it makes intent explicit).
 DRIVER_LIST="virtio_net virtio_pci virtio_blk $SEV_DRIVER_LIST"
@@ -367,12 +361,10 @@ echo "measured service policy confirmed in initramfs: $SERVICE_POLICY_HASH"
 #                                 from the initramfs, bypassing dracut /init.
 #                                 Bash equivalent of "init=" but for
 #                                 initramfs (vs post-pivot rootfs).
-# console=ttyS0,115200          : serial console — VPSBG portal may
-#                                 expose this even though VNC doesn't work.
+# console=ttyS0,115200          : serial console.
 # console=tty1                  : framebuffer console (probably blank
 #                                 under SEV-SNP but cheap to keep).
-# loglevel=7                    : Phase 3.1 verbose dmesg for
-#                                 first-boot diagnosis. Drop in 3.3.
+# quiet loglevel=3              : reduced console verbosity.
 #
 # NOTE: no `root=` parameter — we don't pivot to a rootfs. dracut /init
 # would refuse to proceed without it, but rdinit= bypasses /init entirely.
@@ -402,39 +394,5 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "oramctl_sha256=$ORAMCTL_HASH" \
     "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH" \
     "service_policy_sha256=$SERVICE_POLICY_HASH"
-echo
-echo "Next steps (Phase 3.2 acceptance):"
-echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"
-echo "     the tunnel token on the target's rootfs partition. The token is"
-echo "     no longer baked into the initramfs (sub-task 3 / option b of"
-echo "     PHASE3_SLICE3_REPRO_PLAN.md), so cloudflared-run.sh sources it"
-echo "     from /home/pir/data/cloudflared/tunnel.env at boot. Provision via"
-echo "     Slice 2 SSH access:"
-echo "       ssh <slice2-host> 'mkdir -p /home/pir/data/cloudflared && \\"
-echo "           cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'"
-echo "     Without this, the Tier 3 boot will FATAL-loop cloudflared and"
-echo "     the tunnel will never come up."
-echo
-echo "  1. Confirm the UKI archive copy exists. If this build host is not the"
-echo "     durable Hetzner host, set UKI_ARCHIVE_REMOTE before building, e.g.:"
-echo "       UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/tier3"
-echo "     Download $OUT only as an operator convenience:"
-echo "       scp vpsbg-pir:$OUT ./bpir-tier3.efi"
-echo
-echo "  2. Upload and attach the UKI through the reviewed VPSBG measured-boot"
-echo "     API procedure in .agents/skills/vpsbg-measured-boot/SKILL.md."
-echo
-echo "  3. Verify the binary and AMD signature on the same attestation response:"
-echo "       bpir-admin attest wss://weikeng2.bitcoinpir.org \\"
-echo "           --expect-binary $BIN_HASH \\"
-echo "           --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a"
-echo "     The verified MEASUREMENT will be NEW (Tier 3 UKI ≠ Slice 2 UKI)."
-echo "     Capture it, rerun this command with --expect-measurement, then publish it."
-echo
-echo "  4. Exercise a fresh attested encrypted session end-to-end:"
-echo "       bpir-admin channel-test wss://weikeng2.bitcoinpir.org \\"
-echo "           --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a"
-echo
-echo "  Recovery if Tier 3 bricks the box: VPSBG portal → Measured Boot →"
-echo "  UKI → \"None\" → Save & Reboot. Stock Ubuntu rootfs boots; sshd is"
-echo "  still installed there. Then re-build Slice 2 UKI via build_uki.sh."
+echo 'PASS uki_build'
+echo 'NEXT_STEP=use scripts/vpsbg-measured-boot.sh to preview or apply the measured-boot image transition'

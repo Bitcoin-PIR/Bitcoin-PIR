@@ -20,7 +20,7 @@ and passing it says nothing about non-Payment changes.
 | `crates/sdk/server` | `cargo test --locked --offline -p pir-sdk-server`; `cargo build -p pir-sdk-server` | **None** — no workflow watches this path | Crate has ~0 lib tests; CI stays green if you break it |
 | `apps/server` / `crates/protocol/runtime` | `cargo test --locked --offline -p runtime --lib hint_pool`; `cargo test --locked --offline -p runtime --bin unified_server`; for admission/process behavior run `scripts/payment-v1-local-check.sh --pr` or the matching `scripts/payment-v1-ci-lane.sh --lane runtime-*` | `payment-platform.yml` (via `apps/server/**`); `pir-sdk-integration.yml` only if you touched `hint_pool.rs`, `unified_server.rs`, or the crate manifest | A deployed binary/UKI is a separate authorized release, never implied by green CI |
 | `web/` (TypeScript, pins, tests) | `cd web && npm run build && npm test && npm run build-web` | `web-build.yml`; `deploy-web.yml` adds Playwright gates only at the manual release dispatch | Pin edits: keep `web/src/attest-pin.ts`, the `verification/locks` files, and the duplicate pins in `crates/sdk/client/tests/integration_test.rs` consistent (rotation runbook §3) |
-| Payment V1 (crates/payment, issuer apps, deploy templates) | Profiles below (`--quick` / `--pr`; `--deploy-template-audit` only for template work) | `payment-platform.yml`, sometimes `directory-relay-artifact.yml` | Source-ready ≠ deployed; see `payment/IMPLEMENTATION_STATUS.md` |
+| Payment V1 (crates/payment, issuer apps, deploy templates) | Profiles below (`--quick` / `--pr`; `--deploy-template-audit` only for template work) | `payment-platform.yml`, sometimes `directory-relay-artifact.yml` | Source-ready and production handoff are recorded in [Current production state](CURRENT_PRODUCTION_STATE.md) |
 | `verification/locks`, contracts, verifier scripts | `cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract`; `python3 -m unittest verification/scripts/test_verify_formal_lock.py`; `cd web && npm test` (lock↔pin tests) | `formal-proof.yml` (every PR, unfiltered); `generated-proof-lock.yml` (lock paths) | Protocol framing / round-shape / padding changes must update the contract and proof lock (`REPOSITORY_BOUNDARIES.md`) |
 | `tools/db-builder`, `scripts/build_*.sh` | `cargo build -p build`; there is no test suite | **None** | Production databases come from the locked attested-builder, not these scripts; see `DATABASE_ARTIFACT_RETENTION.md` before any rebuild |
 | UKI scripts, `.github/workflows/**` | `node --test scripts/github-workflow-supply-chain-gate.test.mjs scripts/tier3-uki-policy-contract.test.mjs` | `workflow-supply-chain.yml` (every PR, unfiltered) | UKI builds themselves are operator actions on the build host, not CI |
@@ -68,7 +68,7 @@ AI manual browser inspection also requires an explicit user request. Automatic
 headless browser checks belong only to an explicit browser profile, nightly, or
 release validation.
 
-Historical acceptance records in `docs/payment/LOCAL_ACCEPTANCE.md` and related
+Historical acceptance records in `docs/archive/payment/LOCAL_ACCEPTANCE.md` and related
 rollout documents record prior evidence; they are not current operating entry
 points. Production deployment, public-server canaries, and real-fund flows are
 separate approved operations.
@@ -84,6 +84,5 @@ scripts/payment-v1-mainnet-lightning-v1-check.sh
 It runs the focused offline Rust profile/CLI contract, deployment source and
 rendered-artifact contracts, and the Web independent Direct BOLT11/DPF pair
 contract. It does not run the broader Payment V1 suite, a browser, a render,
-remote Core/CLN, or any funds flow. See
-[`docs/payment/MAINNET_LIGHTNING_V1_RUNBOOK.md`](payment/MAINNET_LIGHTNING_V1_RUNBOOK.md)
-for the source-ready versus live-approval boundary.
+remote Core/CLN, or any funds flow. Continue with the
+[production enablement runbook](runbooks/production-enable.md).

@@ -39,17 +39,6 @@ continuity contract, not permission to fabricate history: retained entries
 must be real, previously issued canonical artifacts. A deployment with no real
 retained epoch stays blocked until a new profile version explicitly permits it.
 
-## First production epoch
-
-`../bat-v2-genesis-source-ready/` is the only versioned first-epoch profile.
-Its distinct `bitcoinpir-bat-v2-public-genesis-source-profile-v1` schema permits
-exactly two current policies, one current class covering both providers, and
-empty `retainedPolicyDigestsHex` arrays. It retains the same issuer, role/path,
-accounting, pir1 plaintext-clearing, and pir2 sealed-Ready constraints as the
-rotation profile. It is only for a first real production epoch: after an epoch
-exists, every subsequent render must use this directory's retained-material
-rotation profile. Neither profile permits invented retained artifacts.
-
 The schema accepts at most eight retained policies per provider and eight
 retained classes. Every pir2 retained artifact has its own digest-derived
 immutable runtime path and file SHA-256; the canonical artifact-set file is
