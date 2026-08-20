@@ -5,18 +5,22 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  GENESIS_PROFILE_SCHEMA,
   PROFILE_SCHEMA,
   validateIssuerUnitV1,
   validatePir1UnitV1,
   validatePir2RenderInputsV1,
   validatePrivateSecretPathsV1,
   validateRepository,
+  validateSourceProfileGenesisV1,
   validateSourceProfileV1,
 } from "./payment-bat-v2-source-profile-gate.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = join(repository, "deploy/payment-v1/bat-v2-source-ready");
 const profileSource = readFileSync(join(sourceRoot, "source-profile.json.in"), "utf8");
+const genesisSourceRoot = join(repository, "deploy/payment-v1/bat-v2-genesis-source-ready");
+const genesisProfileSource = readFileSync(join(genesisSourceRoot, "source-profile.json.in"), "utf8");
 const issuerSource = readFileSync(
   join(sourceRoot, "issuer-lightning-mainnet-bat-v2-payment-issuer.service.in"),
   "utf8",
@@ -34,6 +38,10 @@ const runSource = readFileSync(
 
 function profile() {
   return JSON.parse(profileSource);
+}
+
+function genesisProfile() {
+  return JSON.parse(genesisProfileSource);
 }
 
 test("checked-in BAT V2 source profile and all three render roles pass", () => {
@@ -61,6 +69,34 @@ test("profile schema is closed and retained material is mandatory", () => {
     () => validateSourceProfileV1(tooManyRetainedClasses),
     /issuer\.classes must contain 2\.\.9 entries/u,
   );
+});
+
+test("genesis profile is current-only and cannot be confused with rotation", () => {
+  const checked = validateSourceProfileGenesisV1(genesisProfile());
+  assert.equal(checked.schema, GENESIS_PROFILE_SCHEMA);
+  assert.deepEqual(
+    checked.providers.map((provider) => provider.retainedPolicyDigestsHex),
+    [[], []],
+  );
+
+  const retainedPolicy = genesisProfile();
+  retainedPolicy.issuer.policies[0].state = "retained";
+  assert.throws(
+    () => validateSourceProfileGenesisV1(retainedPolicy),
+    /genesis issuer must not contain retained policy material/u,
+  );
+
+  const retainedClass = genesisProfile();
+  retainedClass.issuer.classes[0].state = "retained";
+  assert.throws(
+    () => validateSourceProfileGenesisV1(retainedClass),
+    /genesis issuer must not contain retained class material/u,
+  );
+
+  const wrongProfile = genesisProfile();
+  wrongProfile.profile = "issuer-pir1-pir2-storeless-v1";
+  assert.throws(() => validateSourceProfileGenesisV1(wrongProfile), /profile\.profile is unsupported/u);
+  assert.throws(() => validateSourceProfileV1(genesisProfile()), /profile\.schema must equal/u);
 });
 
 test("class membership covers every policy and is coordinate-fork-free", () => {

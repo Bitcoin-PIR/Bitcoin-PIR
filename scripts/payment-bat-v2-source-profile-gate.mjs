@@ -5,7 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const PROFILE_SCHEMA = "bitcoinpir-bat-v2-public-source-profile-v1";
+export const GENESIS_PROFILE_SCHEMA = "bitcoinpir-bat-v2-public-genesis-source-profile-v1";
 const SOURCE_ROOT = "deploy/payment-v1/bat-v2-source-ready";
+const GENESIS_SOURCE_ROOT = "deploy/payment-v1/bat-v2-genesis-source-ready";
 const MAX_RETAINED_PER_PROVIDER = 8;
 const MAX_POLICIES = 2 + (2 * MAX_RETAINED_PER_PROVIDER);
 const MAX_RETAINED_CLASSES = 8;
@@ -212,10 +214,10 @@ function validateAccounting(value, index, seenPaths) {
   }
 }
 
-export function validateSourceProfileV1(profile) {
+function validateSourceProfile(profile, definition) {
   exactKeys(profile, ["schema", "profile", "issuer", "providers"], "profile");
-  if (profile.schema !== PROFILE_SCHEMA) fail(`profile.schema must equal ${PROFILE_SCHEMA}`);
-  if (profile.profile !== "issuer-pir1-pir2-storeless-v1") fail("profile.profile is unsupported");
+  if (profile.schema !== definition.schema) fail(`profile.schema must equal ${definition.schema}`);
+  if (profile.profile !== definition.profile) fail("profile.profile is unsupported");
   exactKeys(profile.issuer, [
     "issuerIdHex", "settlementVerifyingKeyHex", "settlementSigningKeyPath", "unitPath",
     "policies", "classes", "accounting",
@@ -223,7 +225,7 @@ export function validateSourceProfileV1(profile) {
   requireHexOrPlaceholder(profile.issuer.issuerIdHex, "issuer.issuerIdHex");
   requireHexOrPlaceholder(profile.issuer.settlementVerifyingKeyHex, "issuer.settlementVerifyingKeyHex");
   requireAbsolutePath(profile.issuer.settlementSigningKeyPath, "/etc/bitcoinpir/payment-v1/bat-v2/issuer", "issuer.settlementSigningKeyPath");
-  if (profile.issuer.unitPath !== `${SOURCE_ROOT}/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in`) {
+  if (profile.issuer.unitPath !== `${definition.sourceRoot}/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in`) {
     fail("issuer.unitPath is outside the versioned source profile");
   }
 
@@ -231,14 +233,20 @@ export function validateSourceProfileV1(profile) {
   const seenPaths = new Set();
   const seenSecretPaths = new Set();
   addUnique(seenSecretPaths, profile.issuer.settlementSigningKeyPath, "private signing-key path");
-  const policies = arrayBounded(profile.issuer.policies, 4, MAX_POLICIES, "issuer.policies");
+  const policies = arrayBounded(profile.issuer.policies, definition.minimumPolicies, MAX_POLICIES, "issuer.policies");
   policies.forEach((value, index) => validatePolicy(value, index, seenDigests, seenPaths));
+  if (!definition.requiresRetained && policies.some((value) => value.state === "retained")) {
+    fail("genesis issuer must not contain retained policy material");
+  }
   const policyDigests = new Set(policies.map((policy) => policy.digestHex));
   const coverage = new Map();
-  const classes = arrayBounded(profile.issuer.classes, 2, MAX_CLASSES, "issuer.classes");
+  const classes = arrayBounded(profile.issuer.classes, definition.minimumClasses, MAX_CLASSES, "issuer.classes");
   classes.forEach((value, index) => validateClass(
     value, index, policyDigests, seenDigests, seenPaths, seenSecretPaths, coverage,
   ));
+  if (!definition.requiresRetained && classes.some((value) => value.state === "retained")) {
+    fail("genesis issuer must not contain retained class material");
+  }
   const classCoordinates = new Set();
   for (const entry of classes) {
     addUnique(classCoordinates, `${entry.classIdHex}:${entry.keyEpoch}`, "class coordinate");
@@ -247,11 +255,11 @@ export function validateSourceProfileV1(profile) {
     if (!coverage.has(digest)) fail(`policy ${digest} must be covered by at least one configured class`);
   }
   if (classes.filter((value) => value.state === "current").length !== 1) fail("issuer must have exactly one current class");
-  if (!classes.some((value) => value.state === "retained")) fail("issuer must have retained class material");
-  requireStrictOrder(
-    classes.filter((value) => value.state === "retained").map((value) => value.digestHex),
-    "issuer retained classes",
-  );
+  const retainedClasses = classes.filter((value) => value.state === "retained");
+  if (definition.requiresRetained) {
+    if (retainedClasses.length === 0) fail("issuer must have retained class material");
+    requireStrictOrder(retainedClasses.map((value) => value.digestHex), "issuer retained classes");
+  }
 
   const accounting = arrayBounded(profile.issuer.accounting, 2, 2, "issuer.accounting");
   accounting.forEach((value, index) => validateAccounting(value, index, seenPaths));
@@ -299,8 +307,6 @@ export function validateSourceProfileV1(profile) {
     const current = providerPolicies.filter((policy) => policy.state === "current");
     const retained = providerPolicies.filter((policy) => policy.state === "retained");
     if (current.length !== 1) fail(`${label} must have exactly one current signed policy`);
-    arrayBounded(retained, 1, MAX_RETAINED_PER_PROVIDER, `${label} retained policies`);
-    requireStrictOrder(retained.map((policy) => policy.digestHex), `${label} retained policies`);
     if (providerPolicies.some((policy) => policy.verifyingKeyHex !== provider.policyVerifyingKeyHex)) {
       fail(`${label} policy verifying key is inconsistent with its signed-policy set`);
     }
@@ -325,18 +331,46 @@ export function validateSourceProfileV1(profile) {
       if (roleKeys.has(key)) fail(`raw/public role-key reuse between ${roleKeys.get(key)} and ${role}`);
       roleKeys.set(key, role);
     }
+    if (definition.requiresRetained) {
+      arrayBounded(retained, 1, MAX_RETAINED_PER_PROVIDER, `${label} retained policies`);
+      requireStrictOrder(retained.map((policy) => policy.digestHex), `${label} retained policies`);
+    } else if (retained.length !== 0) {
+      fail(`${label} genesis profile must not contain retained policies`);
+    }
     const expectedRender = provider.name === "pir1"
-      ? `${SOURCE_ROOT}/pir1-storeless-bat-v2-provider.service.in`
+      ? `${definition.sourceRoot}/pir1-storeless-bat-v2-provider.service.in`
       : "scripts/dracut/97bpir-tier3-init/unified-server-run.sh";
     if (provider.renderPath !== expectedRender) fail(`${label}.renderPath is unsupported`);
     if (provider.name === "pir2") {
-      if (provider.artifactSetPath !== `${SOURCE_ROOT}/pir2-public-artifact-set.env.in`
-        || provider.startupPath !== `${SOURCE_ROOT}/pir2-sealed-startup.env.in`) {
+      if (provider.artifactSetPath !== `${definition.sourceRoot}/pir2-public-artifact-set.env.in`
+        || provider.startupPath !== `${definition.sourceRoot}/pir2-sealed-startup.env.in`) {
         fail("pir2 render inputs must use the reviewed versioned artifact/startup templates");
       }
     }
   }
   return profile;
+}
+
+export function validateSourceProfileV1(profile) {
+  return validateSourceProfile(profile, {
+    schema: PROFILE_SCHEMA,
+    profile: "issuer-pir1-pir2-storeless-v1",
+    sourceRoot: SOURCE_ROOT,
+    minimumPolicies: 4,
+    minimumClasses: 2,
+    requiresRetained: true,
+  });
+}
+
+export function validateSourceProfileGenesisV1(profile) {
+  return validateSourceProfile(profile, {
+    schema: GENESIS_PROFILE_SCHEMA,
+    profile: "issuer-pir1-pir2-storeless-genesis-v1",
+    sourceRoot: GENESIS_SOURCE_ROOT,
+    minimumPolicies: 2,
+    minimumClasses: 1,
+    requiresRetained: false,
+  });
 }
 
 function forbid(command, patterns, label) {
@@ -489,7 +523,7 @@ export function validatePir2RenderInputsV1(artifactSource, startupSource, runSou
     }
   }
   const artifact = parseEnv(artifactSource, "pir2 artifact set");
-  if (artifact.length < 7 || artifact.length > 4 + MAX_RETAINED_PER_PROVIDER + MAX_CLASSES) {
+  if (artifact.length < 5 || artifact.length > 4 + MAX_RETAINED_PER_PROVIDER + MAX_CLASSES) {
     fail("pir2 artifact set is outside its bounded entry count");
   }
   if (artifact[0][0] !== "schema" || artifact[0][1] !== "bitcoinpir-pir2-bat-v2-public-artifact-set-v1") {
@@ -551,6 +585,27 @@ export function validateRepository(root) {
     readFileSync(join(sourceRoot, "pir2-sealed-startup.env.in"), "utf8"),
     readFileSync(join(root, "scripts/dracut/97bpir-tier3-init/unified-server-run.sh"), "utf8"),
     profile,
+  );
+  const genesisRoot = join(root, GENESIS_SOURCE_ROOT);
+  const genesisProfile = validateSourceProfileGenesisV1(
+    JSON.parse(readFileSync(join(genesisRoot, "source-profile.json.in"), "utf8")),
+  );
+  const genesisIssuerSource = readFileSync(
+    join(genesisRoot, "issuer-lightning-mainnet-bat-v2-payment-issuer.service.in"),
+    "utf8",
+  );
+  const genesisPir1Source = readFileSync(
+    join(genesisRoot, "pir1-storeless-bat-v2-provider.service.in"),
+    "utf8",
+  );
+  validateIssuerUnitV1(genesisIssuerSource, genesisProfile);
+  validatePir1UnitV1(genesisPir1Source, genesisProfile);
+  validatePrivateSecretPathsV1(genesisIssuerSource, genesisPir1Source, genesisProfile);
+  validatePir2RenderInputsV1(
+    readFileSync(join(genesisRoot, "pir2-public-artifact-set.env.in"), "utf8"),
+    readFileSync(join(genesisRoot, "pir2-sealed-startup.env.in"), "utf8"),
+    readFileSync(join(root, "scripts/dracut/97bpir-tier3-init/unified-server-run.sh"), "utf8"),
+    genesisProfile,
   );
   return { schema: PROFILE_SCHEMA, result: "PASS" };
 }
