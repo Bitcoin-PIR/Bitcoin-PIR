@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-08-19. This document describes repository code, focused
+Status snapshot: 2026-08-20. This document describes repository code, focused
 tests, and the current functional-beta evidence; it is not a mainnet-production
 readiness claim. “Implemented” means that a code path exists; “tested” names
 the boundary actually exercised. It does not mean that an operator has
@@ -87,19 +87,47 @@ activated the path with real money.
       configuration. The plaintext clearing-key input is explicitly limited to
       pir1/local tests and is not the pir2 SNP-sealed path. No old replayable V1
       success is reinterpreted.
-- [ ] **SDK/Web and render integration pending.** No SDK/Web class wallet,
-      two-paid-leg selection or production render gate exists. Current `main`
-      also retains the old Direct Mainnet issuer unit and stateful V1 provider
-      profiles. An old draft's fixed
-      2-policy/12-key/2-clearing shape remains superseded and is not V2
-      readiness evidence.
+- [x] **SDK/WASM and Web BAT V2 core implemented.** The native SDK and generated
+      WASM implement class-bound acquisition, exact current/retained scheme-6
+      member verification and typed admission outcomes. The Web client keeps a
+      V1-isolated encrypted issuer/class/key-epoch wallet, installs an exact
+      lost-response recovery only once, atomically reserves two distinct
+      provider-independent proofs and consumes them through typed DPF, Harmony,
+      Onion and ORAM adapters. Only transport-proven definitely-not-sent and
+      issuer-signed retry-safe outcomes recover; terminal or outcome-unknown
+      results burn. This is source wiring, not a deployed browser flow.
+- [x] **Offline BAT V2 class/accounting builders implemented.**
+      `bpir-admin payment-artifact` has bounded `bat-v2-class`,
+      `bat-v2-accounting-authorization` and `bat-v2-accounting-approval`
+      subcommands. They verify canonical signed policy/class inputs, exact
+      digests and member coordinates, enforce role-key separation, sort and
+      self-verify canonical outputs and print review digests. The checked-in
+      TOML files are inert templates and contain no private material.
+- [x] **Trusted public class catalog implemented.** A static render pin selects
+      one content-addressed, canonical and bounded same-origin catalog. The
+      catalog explicitly marks one current acquisition head per class while
+      retaining overlapping historical epochs, maps wallet binding plus
+      provider to one exact signed member, and fetches class bytes with a true
+      streaming limit. Rust/WASM re-verifies the class signature, member and
+      complete issuer/class/digest/epoch/key binding. Directory scheme-6 hints
+      remain discovery-only and cannot supply catalog trust.
+- [x] **Versioned issuer/pir1/pir2 source profiles implemented.** The inert
+      profile and default deployment gate bind finite current/retained policy
+      and class sets, aligned current accounting relationships, role-key and
+      private-path separation and measured pir2 identity/key constants. pir1 is
+      the only plaintext clearing-key profile. pir2 validates one canonical
+      public artifact set, binds its SHA-256 to the current-boot Ready token and
+      supplies retained policy/class inputs only after sealed Ready preflight.
+      The superseded fixed 2-policy/12-key/2-clearing draft remains
+      non-evidence.
 - [x] **Payment-storeless provider library mode implemented.** The independent
       BAT V2 path has no ProviderStore, local delivery claim, HMAC/idempotency
       secret or payment rollback client. The issuer remains the only durable
       spend/replay authority; only a freshly committed issuer response can
       grant, while terminal/replay and ambiguous outcomes cannot grant. This
-      checkbox covers library/runtime behavior only, not the pending
-      `unified_server`, SDK/Web, render or production activation work above.
+      checkbox covers the storeless library/runtime boundary; `unified_server`,
+      SDK/WASM, Web, catalog and inert source profiles are recorded above.
+      Private materialization and production activation remain pending.
 - [ ] **Old Direct transition pending.** Before replacing the old Mainnet
       source profile, an owner must inventory every private plan, installed
       bundle, store/floor, identity/key lineage, backup and outstanding quote/
@@ -107,25 +135,36 @@ activated the path with real money.
       admission must stop and the exact recovery state must drain or remain
       isolated and retained through its final horizon. The empty checked-in
       skeleton is not evidence that no private state exists.
-- [ ] **pir2 sealed-credential P1 open.** V2 removes pir2's payment
-      ProviderStore, shared idempotency secret and payment rollback client. The
-      selected replacement keeps distinct long-lived service-identity and
-      clearing seeds in one measurement-bound AEAD envelope on the untrusted
-      persistent rootfs. A measured-initramfs helper must use the fixed
-      VCEK-root `SNP_GET_DERIVED_KEY` request, enforce the strict report policy,
-      verify the signed exact-release artifact, run before Direct ORAM
-      construction, decrypt only into zeroizing process memory and reject every
-      plaintext/UKI fallback. Neither implementation nor the separately
-      authorized observation/reproduction boot, fresh-nonce Boot-0 and
-      exact-final-UKI two-clean-reboot enrollment canary exists yet. The seeds
-      are not BAT spend state and must not be reused across roles.
+- [x] **pir2 sealed-credential runtime and Tier 3 startup source implemented.**
+      The typed SNP module fixes the VCEK-root `SNP_GET_DERIVED_KEY` request,
+      strict report-policy verification, signed release/envelope codecs,
+      distinct service-identity and clearing seeds, AEAD sealing and zeroizing
+      process-memory handoff. `unified_server` dispatches
+      observe/enroll/probe/ready and rejects mixed or plaintext key inputs. The
+      measured Tier 3 scripts run sealed preflight before database/Direct-ORAM
+      work, reject active swap/core dumps and mutable-rootfs fallback, and bind
+      inert or Ready results to exact current-boot attempt tokens.
+- [x] **Exact release and authority source changes implemented.** Merged PR
+      #231 adds the offline exact-measurement/release CLI and a canonical,
+      release-free Observe receipt path. Merged PR #232 adds issuer-store schema
+      v9 inactive clearing-epoch reservations plus owner reserve/read/activate
+      paths, and identity-authority inactive generation reservations with the
+      corresponding owner paths. These are source implementation only; they do
+      not materialize a release/envelope, initialize a real store or enable a
+      production service.
+- [ ] **pir2 sealed ceremony and capability evidence pending.** No exact final
+      candidate UKI has been independently measurement-reproduced, no real
+      signed release or envelope has been materialized, and no fresh-nonce
+      Boot-0/two-clean-reboot canary, VPSBG upload/switch/reboot or activation
+      has occurred. Source tests use mock/no-host boundaries and are not
+      production capability evidence.
 - [ ] **Materialization/live approval pending.** The current Mainnet issuer
-      skeleton is an empty legacy V1 placeholder, and the current provider
-      skeletons are stateful V1 profiles; none is a V2 render input.
-      No private complete plan, target-host preflight, Mainnet CLN liquidity/
-      funds, remote installation, VPSBG image change, activation sentinel,
-      invoice, payment or production service evidence is recorded. See
-      `MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`.
+      and provider V2 source profiles are inert placeholders. They have not
+      been rendered or supplied with private keys, signed artifacts, a target
+      inventory or an approved transition/drain plan. No target-host preflight,
+      Mainnet CLN liquidity/funds, remote installation, VPSBG image change,
+      activation sentinel, invoice, payment or production service evidence is
+      recorded. See `MAINNET_SHARED_BAT_PRODUCTION_PLAN.md`.
 
 ## db0 + db1 Free-PoW and BAT source boundary
 
@@ -135,9 +174,11 @@ activated the path with real money.
       BAT placeholder. DPF/Harmony use their DB-proof-v1 sidecar root, Onion
       uses its DB-proof-v2 sidecar root, and TEE ORAM uses the loaded
       server-database manifest root.
-- [ ] Their checked-in BAT bindings remain provider-specific V1 draft input.
-      They must not be rendered for production and do not become complete
-      until V2 acceptance-class membership replaces those bindings.
+- [x] **Legacy V1 template isolation preserved.** The older checked-in db0/db1
+      BAT bindings remain provider-specific V1 draft input and must not be
+      rendered for production. The versioned V2 source-ready profile above is
+      a separate acceptance-class input set; it does not relabel, migrate or
+      silently complete those legacy templates.
 - [x] The templates exclude direct BOLT11 receipts, Standard Cashu eCash and
       ARC. BOLT11 remains an issuer-side BAT acquisition route; no invoice,
       payment hash, preimage or payer data is added to a provider query offer.
@@ -1527,12 +1568,14 @@ findings and must not be collapsed into that count.
    The original Free-PoW-only storeless contract remains unchanged. A separate
    exact-policy, issuer-online BAT V2 library/runtime and `unified_server`
    closed profile now exist without a payment ProviderStore,
-   shared-idempotency material or provider payment rollback client. The current
-   server slice accepts a plainly stored clearing seed only for pir1/local
-   tests; it is not a fallback for pir2. pir2's selected sealed
-   identity/clearing implementation, rendered provider plan and capability
-   canary are tracked separately above. Until those integration and
-   sealed-state artifacts exist, no pir2 V2 plan or UKI is source-ready.
+   shared-idempotency material or provider payment rollback client. The trusted
+   catalog and versioned issuer/pir1/pir2 source profiles now carry finite exact
+   current/retained public inputs. pir1 alone may read its explicitly rendered
+   plaintext clearing seed. pir2 requires the measurement-bound sealed envelope
+   and validates the exact artifact-set digest before both Ready preflight and
+   the final process. These are source boundaries only: private materialization,
+   exact-UKI measurement reproduction and the real VPSBG capability canary
+   remain separately authorized work.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent

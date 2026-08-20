@@ -1,13 +1,16 @@
 # Mainnet issuer-wide BAT production plan
 
 Status: **issuer-wide product contract revised on 2026-08-18; pir2 sealed-key
-contract selected on 2026-08-19; protocol and production profiles not yet
-source-ready; no production activation is authorized**. The
-earlier unmerged draft implemented a shared issuer with provider-specific BATs,
-twelve raw BAT key lineages and provider-side payment stores. That shape is
-superseded by this plan and must not be rendered or activated. The independent
-pir1 Harmony db0/db1 multi-pool slice has been reviewed and re-landed without
-the superseded payment profile.
+contract selected on 2026-08-19; the BAT V2 wire/issuer/provider core, sealed
+runtime and Tier 3 startup, SDK/WASM/Web path, trusted public class catalog,
+offline class/accounting builders, versioned source profiles, exact release CLI,
+release-free Observe path and authority schema-v9 inactive-reservation/owner
+paths are implemented in source and merged to `main`; no production activation
+is authorized**. The earlier unmerged draft
+implemented a shared issuer with provider-specific BATs, twelve raw BAT key
+lineages and provider-side payment stores. That shape is superseded by this
+plan and must not be rendered or activated. The independent pir1 Harmony
+db0/db1 multi-pool slice remains separately landed.
 
 This is the ordered source-to-production plan. It does not authorize rendering
 private inputs, installing files on a host, building or switching a VPSBG UKI,
@@ -300,11 +303,11 @@ The superseded source draft contained two different kinds of work:
 
 Two provider policies are still required because pir1 and pir2 advertise
 different workloads, roots and limits. They no longer imply twelve independent
-raw BAT lineages. Until the replacement work below is complete, the source PR
-remains a draft and is not a production source candidate even when its old CI
-is green.
+raw BAT lineages. The versioned replacement source inputs now exist, while the
+checked-in legacy V1 profiles remain non-candidates. Passing source CI never
+authorizes rendering, private materialization, installation or activation.
 
-## P0/P1 source blockers
+## Source requirements and current checkpoints
 
 ### 1. define the acceptance class and a new BAT wire version
 
@@ -426,6 +429,15 @@ Minimum source map:
   key; and
 - add only the focused runtime, CLI and Tier 3 script tests listed in Phase D.
 
+Current source status: merged PR #231 provides the offline
+exact-measurement/release CLI and canonical release-free Observe receipt path.
+Merged PR #232 provides issuer-store schema-v9 inactive clearing-epoch
+reservations and owner reserve/read/activate paths, together with
+identity-authority inactive generation reservations and owner paths. These
+source changes do not materialize private inputs, initialize a real store,
+build/upload/switch a UKI or VPSBG image, perform Boot 0/reboots, deploy,
+publicly activate a service or move funds. Legacy V1 remains unchanged.
+
 ### 5. update policy, SDK, Web and deployment profiles
 
 Keep the complete db0/db1 provider scopes, but replace provider-specific BAT
@@ -462,8 +474,9 @@ Acceptance:
 - Harmony multi-pool routing is separated from and re-landed without the
   superseded payment work;
 - pir2's distinct long-lived authentication roles and the measurement-bound
-  sealed-envelope decision are explicit, while implementation and the VPSBG
-  capability canary remain P1 work; and
+  sealed-envelope decision are explicit; their runtime/Tier 3 source
+  implementation is recorded below, while exact-UKI reproduction, enrollment
+  and the VPSBG capability canary remain separately authorized work; and
 - no runtime, database, browser, UKI or production state changes.
 
 ### Phase B — implement the issuer and V2 wire core
@@ -491,10 +504,10 @@ epoch and common terms. Issuer-store schema v7 discriminates V1/V2 quotes,
 allows new V2 quotes only at the current class head, retains exact historical
 epochs for paid-claim recovery, and rejects implicit v5/v6 migration. Separate
 `/v2/quotes/...` routes perform class-key selection, BIP340 claim verification,
-NUT-12 DLEQ issuance and byte-identical lost-response recovery. This completes
-issuer-side acquisition only; no V2 presentation, global first-spend,
-provider grant, SDK/Web class wallet or production activation follows from
-this checkpoint.
+NUT-12 DLEQ issuance and byte-identical lost-response recovery. At that
+checkpoint, issuer-side acquisition only was complete; no V2 presentation,
+global first-spend, provider grant, SDK/Web class wallet or production
+activation followed from that slice alone.
 
 Acceptance:
 
@@ -539,6 +552,15 @@ Replace the provider-specific templates, issuer unit, render gates and wallet
 selection model. Preserve the already-correct db0/db1 roots and the
 independently re-landed Harmony multi-pool routing.
 
+Source checkpoint (2026-08-19): the exact-policy storeless runtime and
+`unified_server`, pir2 sealed dispatcher/Tier 3 startup, SDK/WASM acquisition
+and typed current/retained admission handles, Web class wallet/two-leg typed
+admission, trusted immutable class catalog/discovery resolver, offline BAT V2
+class/accounting builders and versioned issuer/pir1/pir2 source profiles are
+implemented and focused-tested. The source profiles remain inert. They do not
+materialize private inputs, reproduce or sign an exact final UKI, install a
+unit, publish a catalog or authorize production activation.
+
 The meaningful minimum checks are:
 
 1. canonical codec and acceptance-class equivalence tests;
@@ -582,7 +604,8 @@ boundary not covered by these focused checks.
 
 ### Phase E — materialize a private release
 
-After the source PR is merged, a separately authorized ceremony freezes:
+After the source-profile PRs are merged, a separately authorized ceremony
+freezes:
 
 - the exact commit, binaries and db0/db1 backend roots;
 - the two final signed provider policies;
