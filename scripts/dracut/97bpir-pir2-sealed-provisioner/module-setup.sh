@@ -24,7 +24,7 @@ depends() {
 
 install() {
     local payload=$BPIR_PIR2_SEALED_PROVISIONER_PAYLOAD_DIR
-    local manifest=$BPIR_PIR2_SEALED_PROVISIONER_MANIFEST
+    local manifest_path=$BPIR_PIR2_SEALED_PROVISIONER_MANIFEST
 
     inst_multiple awk basename cat chmod cmp dirname find ln mkdir mount modprobe mv \
         rm sha256sum sleep sync
@@ -50,8 +50,8 @@ install() {
         destination="/usr/share/bitcoinpir/pir2-sealed-provisioner/payload/$rel"
         inst_dir "$(dirname "$destination")"
         inst_simple "$source" "$destination"
-    done < "$manifest"
-    inst_simple "$manifest" \
+    done < "$manifest_path"
+    inst_simple "$manifest_path" \
         /usr/share/bitcoinpir/pir2-sealed-provisioner/manifest.tsv
     chmod 0755 "$initdir/sbin/bpir-pir2-sealed-provisioner-init"
     chmod 0444 "$initdir/usr/share/bitcoinpir/pir2-sealed-provisioner/manifest.tsv"
