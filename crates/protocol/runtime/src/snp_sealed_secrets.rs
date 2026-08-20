@@ -2455,7 +2455,9 @@ mod tests {
             &receipt.fresh_report.report_data[..32],
             &receipt.fresh_report.report_data[32..]
         );
-        assert!(receipt.encode().unwrap().ends_with(&vec![0xA5; 1184]));
+        let mut expected_raw_report = vec![0xA5; 1184];
+        expected_raw_report[0x50..0x90].copy_from_slice(&claims.report_data().unwrap());
+        assert!(receipt.encode().unwrap().ends_with(&expected_raw_report));
 
         let mut old_channel = claims;
         old_channel.current_channel_pubkey[0] ^= 1;
