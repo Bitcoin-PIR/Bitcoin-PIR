@@ -13,12 +13,19 @@ not listed below is local-only by construction.
 | `installimage.conf` | Hetzner installimage config for the pir1 host (partitioning/RAID; no credentials) |
 | `known_hosts` | Pinned SSH public host keys for the Hetzner host (65.21.91.217) — the host-key-swap defense used by the ops runbooks |
 | `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (87.120.8.198, Slice 2 only) |
-| `systemd/*.service` | The five host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`, `dev-issuer`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
+| `systemd/*.service` | Reviewed host-unit snapshots. `pir-primary`, `pir-vpsbg`, `cloudflared`, and `dev-issuer` describe active roles; `pir-secondary` is a retained retired snapshot and must not be installed or enabled as a fallback. The units contain no secrets (the admin key in `pir-vpsbg.service` is the public half). |
 
 These files are *facts about the deployment*, not activation levers: editing
 them here changes nothing on a host. Applying a unit change to a host is a
 production operation requiring explicit authorization
 (`docs/PRODUCTION_OPERATIONS.md`).
+
+The retired `pir-secondary.service` snapshot preserves the former single-host
+8092 configuration verbatim for historical diagnosis only; comments inside
+that snapshot describing it as warm or running are superseded by the current
+operations document. The supported pir2 recovery route is VPSBG measured boot.
+A future Hetzner replacement requires a new reviewed unit and explicit ingress
+authorization; copying or starting the old snapshot is not recovery.
 
 ## Local-only (never commit)
 
