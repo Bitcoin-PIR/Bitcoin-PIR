@@ -31,7 +31,7 @@ pub(super) const PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1: i32 = 42;
 /// requires a reviewed source change and a new measured image; there is no CLI
 /// escape hatch for substituting this trust root.
 const SOURCE_PINNED_PIR2_OPERATOR_KEY_HEX_V1: &str =
-    "7ecb7900928f30efbf548a13c8d0b4fff5a580c7a145b003866580e42d9dc9cb";
+    "30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c";
 
 pub(super) fn source_pinned_pir2_operator_key_v1() -> Result<VerifyingKey, String> {
     let bytes = hex::decode(SOURCE_PINNED_PIR2_OPERATOR_KEY_HEX_V1)

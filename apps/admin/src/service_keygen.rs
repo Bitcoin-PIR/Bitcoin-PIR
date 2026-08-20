@@ -16,6 +16,9 @@ pub enum ServiceKeyRole {
     PolicyEd25519,
     /// Issuer root/delegation Ed25519 key.
     IssuerRootEd25519,
+    /// Issuer settlement/approval Ed25519 key; never a receipt, clearing,
+    /// operator, or policy key.
+    IssuerSettlementEd25519,
     /// Short-lived online BOLT11 quote Ed25519 signing key.
     QuoteEd25519,
     /// Issuer-held direct-receipt Ed25519 signing key; providers pin its public key.
@@ -75,6 +78,7 @@ pub fn run(args: ServiceKeygenArgs) -> Result<crate::keygen::SecretWriteCompleti
         let parsed = match args.role {
             ServiceKeyRole::PolicyEd25519
             | ServiceKeyRole::IssuerRootEd25519
+            | ServiceKeyRole::IssuerSettlementEd25519
             | ServiceKeyRole::QuoteEd25519
             | ServiceKeyRole::ReceiptEd25519
             | ServiceKeyRole::AnonymousTicketEd25519
@@ -183,6 +187,7 @@ mod tests {
         for role in [
             ServiceKeyRole::PolicyEd25519,
             ServiceKeyRole::IssuerRootEd25519,
+            ServiceKeyRole::IssuerSettlementEd25519,
             ServiceKeyRole::QuoteEd25519,
             ServiceKeyRole::ReceiptEd25519,
             ServiceKeyRole::AnonymousTicketEd25519,
@@ -236,6 +241,7 @@ mod tests {
                 }
                 ServiceKeyRole::PolicyEd25519
                 | ServiceKeyRole::IssuerRootEd25519
+                | ServiceKeyRole::IssuerSettlementEd25519
                 | ServiceKeyRole::QuoteEd25519
                 | ServiceKeyRole::ReceiptEd25519
                 | ServiceKeyRole::AnonymousTicketEd25519

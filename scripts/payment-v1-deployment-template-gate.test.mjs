@@ -114,7 +114,7 @@ test("default deployment gate executes the BAT V2 source-profile validator", () 
       root,
       "deploy/payment-v1/bat-v2-source-ready/source-profile.json.in",
       (text) => text.replace(
-        "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+        "a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       ),
     );
@@ -728,7 +728,7 @@ test("VPSBG measured final exec fixes the sealed BAT V2 suffix while accepting r
 
   const alternatePublicValue = "a".repeat(64);
   const alternateRun = measuredRun.replace(
-    "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+    "a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d",
     alternatePublicValue,
   );
   assert.notEqual(alternateRun, measuredRun);
@@ -753,7 +753,7 @@ test("VPSBG measured final exec rejects placeholders and forbidden payment mater
   const measuredRun = readFileSync(join(REPOSITORY, measuredRunPath), "utf8");
 
   const placeholder = measuredRun.replace(
-    "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+    "a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d",
     "@VPSBG_PREMIUM_PROVIDER_ID_HEX@",
   );
   assert.throws(

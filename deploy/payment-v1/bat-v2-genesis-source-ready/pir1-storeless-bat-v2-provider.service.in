@@ -37,7 +37,7 @@ ExecStart=/opt/bitcoinpir/unified-server/@UNIFIED_SERVER_SHA256@/unified_server 
     --service-storeless-bat-v2-accounting-authorization /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-authorization.bin \
     --service-storeless-bat-v2-issuer-approval /etc/bitcoinpir/payment-v1/bat-v2/public/accounting/pir1-approval.bin \
     --service-storeless-bat-v2-operator-key-hex @PIR1_OPERATOR_VERIFYING_KEY_HEX@ \
-    --service-storeless-bat-v2-issuer-settlement-key-hex 248df8866b89b05dbb5d1a2ebec398e4281d9f0e152073570965cd2fbdc422b7 \
+    --service-storeless-bat-v2-issuer-settlement-key-hex 9ab315056cdabf821c41d2bb57a8ab180481436f439c5ef4131c000b448c2763 \
     --service-storeless-bat-v2-pir1-clearing-key /etc/bitcoinpir/payment-v1/bat-v2/pir1/clearing-signing.key \
     --service-storeless-bat-v2-minimum-authorization-epoch @PIR1_MINIMUM_AUTHORIZATION_EPOCH@ \
     --max-connections 128 \
