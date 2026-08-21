@@ -1,8 +1,0 @@
-[Unit]
-Description=BitcoinPIR disposable publisher post-READY failed-recovery systemd probe
-
-[Service]
-Type=notify
-NotifyAccess=all
-ExecStart=/bin/sh -c '/usr/bin/systemd-notify --ready; /bin/sleep 0.2; exit 42'
-Restart=no

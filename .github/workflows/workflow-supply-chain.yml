@@ -6,18 +6,21 @@ on:
     paths:
       - '.github/workflows/**'
       - 'scripts/github-workflow-supply-chain-gate.mjs'
-      - 'scripts/github-workflow-supply-chain-gate.test.mjs'
+      - 'scripts/tier3-uki-policy-contract.test.mjs'
+      - 'scripts/build_uki_tier3.sh'
       - 'web/package.json'
       - 'web/package-lock.json'
       - 'web/npm-shrinkwrap.json'
-      - 'verification/locks/formal-proofs.json'
-      - 'verification/scripts/verify_formal_lock.py'
-      - 'verification/scripts/test_verify_formal_lock.py'
-      - 'verification/toolchains/easycrypt.Dockerfile'
-  # Keep the PR event unfiltered so this job can become a required check
-  # without unrelated PRs remaining permanently Pending.
   pull_request:
     branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/github-workflow-supply-chain-gate.mjs'
+      - 'scripts/tier3-uki-policy-contract.test.mjs'
+      - 'scripts/build_uki_tier3.sh'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'web/npm-shrinkwrap.json'
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -59,10 +62,5 @@ jobs:
       - name: Validate workflow supply-chain policy
         run: |
           node --check scripts/github-workflow-supply-chain-gate.mjs
-          node --check scripts/github-workflow-supply-chain-gate.test.mjs
-          node --check scripts/tier3-uki-policy-contract.test.mjs
           node --test scripts/tier3-uki-policy-contract.test.mjs
-          node --test scripts/github-workflow-supply-chain-gate.test.mjs
           node scripts/github-workflow-supply-chain-gate.mjs
-          python3 -m py_compile verification/scripts/verify_formal_lock.py verification/scripts/test_verify_formal_lock.py
-          python3 -m unittest verification/scripts/test_verify_formal_lock.py

@@ -1,46 +1,8 @@
 name: Directory relay selection artifact
 
+# This 90-minute Docker rebuild verifies a release artifact, not everyday
+# code. Run it manually when preparing or reviewing a relay selection.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'vendor/**'
-      - 'apps/directory-relay/**'
-      - 'crates/directory/nostr/**'
-      - 'crates/protocol/service/**'
-      - 'crates/security/private-files/**'
-      - 'deploy/payment-v1/relay-selection.toml.example'
-      - 'deploy/payment-v1/directory-relay.toml.example'
-      - 'scripts/build-payment-v1-directory-relay.sh'
-      - 'scripts/payment-v1-renameat2-noreplace.rs'
-      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
-      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
-      - 'scripts/payment-v1-deployment-template-gate.mjs'
-      - '.github/workflows/directory-relay-artifact.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'vendor/**'
-      - 'apps/directory-relay/**'
-      - 'crates/directory/nostr/**'
-      - 'crates/protocol/service/**'
-      - 'crates/security/private-files/**'
-      - 'deploy/payment-v1/relay-selection.toml.example'
-      - 'deploy/payment-v1/directory-relay.toml.example'
-      - 'scripts/build-payment-v1-directory-relay.sh'
-      - 'scripts/payment-v1-renameat2-noreplace.rs'
-      - 'scripts/payment-v1-directory-relay-artifact-gate.mjs'
-      - 'scripts/payment-v1-directory-relay-artifact-gate.test.mjs'
-      - 'scripts/payment-v1-deployment-template-gate.mjs'
-      - '.github/workflows/directory-relay-artifact.yml'
   workflow_dispatch:
 
 permissions:

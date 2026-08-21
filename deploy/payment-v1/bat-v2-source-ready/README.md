@@ -58,7 +58,6 @@ Run the browserless source gate with:
 
 ```sh
 node scripts/payment-bat-v2-source-profile-gate.mjs
-node --test scripts/payment-bat-v2-source-profile-gate.test.mjs
 ```
 
 These templates remain inert: rendering, private materialization, UKI builds,

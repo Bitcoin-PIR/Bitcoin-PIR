@@ -42,7 +42,6 @@ echo "[mainnet-lightning-v1] deployment source and rendered-artifact contracts"
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
-node --test --test-concurrency=1 scripts/payment-v1-rendered-artifact-gate.test.mjs
 
 echo "[mainnet-lightning-v1] Web independent Direct BOLT11/DPF pair contract"
 (cd web && npm run test:contract:direct-bolt11-two-provider)

@@ -3,9 +3,27 @@ name: Formal wire-shape proof
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'crates/**'
+      - 'apps/server/**'
+      - 'verification/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'vendor/**'
+      - '.github/workflows/formal-proof.yml'
   merge_group:
   push:
     branches: [main]
+    paths:
+      - 'crates/**'
+      - 'apps/server/**'
+      - 'verification/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'vendor/**'
+      - '.github/workflows/formal-proof.yml'
   schedule:
     - cron: '41 5 * * 1'
   workflow_dispatch:
