@@ -37,12 +37,12 @@ sealed release, as reported by `NEXT_STEP`.
 
 ## 3. Issuer state
 
-Inputs: issuer store path, issuer ID, network, remote rollback-authority
-configuration, and a fresh store-instance ID.
+Inputs: issuer store path, issuer ID, network, and a local rollback-floor
+SQLite path.
 
 ```bash
-scripts/payment-v1-issuer-state.sh init --store /secure/issuer.sqlite3 --issuer-id-hex HEX --network bitcoin --remote-rollback-authority-config /secure/authority.toml --store-instance-id-hex HEX --dry-run
-scripts/payment-v1-issuer-state.sh init --store /secure/issuer.sqlite3 --issuer-id-hex HEX --network bitcoin --remote-rollback-authority-config /secure/authority.toml --store-instance-id-hex HEX
+scripts/payment-v1-issuer-state.sh init --store /secure/issuer.sqlite3 --issuer-id-hex HEX --network bitcoin --rollback-authority /secure/rollback.sqlite3 --dry-run
+scripts/payment-v1-issuer-state.sh init --store /secure/issuer.sqlite3 --issuer-id-hex HEX --network bitcoin --rollback-authority /secure/rollback.sqlite3
 ```
 
 Success: `PASS issuer_state=init`. Next: build the UKI.

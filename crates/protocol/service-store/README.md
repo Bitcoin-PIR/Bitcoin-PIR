@@ -7,60 +7,37 @@ Lightning data.
 The normative contract is [`docs/payment/PERSISTENCE.md`](../../../docs/payment/PERSISTENCE.md).
 Creating a store and serving an existing store are separate APIs. Serve mode
 never creates a missing database. Both public APIs require an
-`Arc<dyn RollbackFloorAuthorityV1>` backed by independently durable,
-linearizable infrastructure. There is deliberately no public SQLite-only
-open/create path: metadata in the database being protected is not an external
-rollback authority.
-
-Production callers can use `RemoteProviderRollbackFloorAuthorityV1`. It
-requires a pinned-HTTPS rollback-authority client plus a client-only,
-authority/namespace/client-key-bound value codec. The authority sees only a
-fixed-size opaque AEAD record and its revision; every operation performs a
-fresh signed read and an exact compare-and-swap, with no local fallback on a
-remote, signature, binding, authentication, decoding, or timeout failure.
-`SqliteRollbackFloorAuthorityV1` remains an explicit development/test adapter
-and must not share a backup boundary with the provider store.
-
-An outcome-unknown CAS is reconciled in-process with the same operation ID and
-exact expected/desired opaque records. After process loss, this V1 adapter
-converges from a fresh authenticated read by comparing the decoded logical
-floor with the expected and desired floors. It does not claim to replay the
-same remote operation-log entry across restart; deployments requiring that
-stronger guarantee must durably persist the operation ID and both opaque
-records before the first CAS attempt.
+`Arc<dyn RollbackFloorAuthorityV1>`: a rollback floor stored outside the
+database it protects. `SqliteRollbackFloorAuthorityV1` is the supported
+adapter — a separate local SQLite file that must not share a backup boundary
+with the provider store.
 
 Floor-only restart convergence is safe for this trait because the protected
 store exposes at most one unanchored SQLite generation, every successor must
 keep the same provider/store/schema identity, advance `store_generation` by
 exactly one, advance `spend_commit_seq` by at most one, and change the rolling
-commitment. Therefore a fresh remote floor equal to the SQLite successor means
+commitment. Therefore a floor equal to the SQLite successor means
 the lost CAS completed; equality with its predecessor permits exactly that one
 successor CAS; every other observation is returned as a conflict for the store
 to reject.
 
-The external record binds the provider ID, one immutable store-instance ID,
+The floor record binds the provider ID, one immutable store-instance ID,
 schema version, store generation, spend-commit sequence, and a rolling commit
 lineage. Every namespace install/close, spend, signed-policy/floor advance,
 standard-Cashu intent mutation, and durable IP-quota consumption increments
 `store_generation`; a bearer spend
 or final Cashu grant claim also increments `spend_commit_seq`. SQLite commits
-first, the external compare-and-swap anchor commits second, and the public
+first, the compare-and-swap floor anchor commits second, and the public
 operation reports success only after both are confirmed. A lost CAS response
 is recoverable: exactly one locally committed successor with the anchored
 parent can be submitted idempotently on checked reopen. A database below the
-external generation, more than one generation ahead, or at the same generation
+floor generation, more than one generation ahead, or at the same generation
 with a different commitment fails closed.
 
 The authority must not live in this SQLite file, its WAL, a sidecar restored
 with it, or the same atomic backup set. Losing the authority is not repaired by
 trusting the database: startup fails until an operator performs the documented
 credential-revocation/new-store ceremony.
-
-A remote authority observes provider identity and mutation timing even though
-it receives no token, spend key, invoice, client or PIR data. Independent PIR
-providers should use separately administered authorities (or provider-local
-hardware); sharing one observable authority adds a cross-provider correlation
-point. Replicas of one logical provider share one floor by design.
 
 Creation durably checkpoints the initial WAL, syncs the database file, and on
 Unix syncs its parent directory. Existing stores are opened with SQLite

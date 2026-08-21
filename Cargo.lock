@@ -360,7 +360,6 @@ dependencies = [
  "pir-identity",
  "pir-payment-crypto",
  "pir-private-files",
- "pir-rollback-authority-client",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
@@ -1792,10 +1791,8 @@ dependencies = [
  "pir-lightning-backend",
  "pir-payment-crypto",
  "pir-private-files",
- "pir-rollback-authority-client",
  "pir-service-protocol",
  "pir-service-store",
- "rollback-authority",
  "rustix",
  "rustls",
  "tempfile",
@@ -2038,8 +2035,6 @@ dependencies = [
  "k256",
  "pir-arc-adapter",
  "pir-private-files",
- "pir-rollback-authority-client",
- "pir-rollback-authority-protocol",
  "pir-service-protocol",
  "rusqlite",
  "sha2",
@@ -2095,8 +2090,6 @@ dependencies = [
  "pir-issuer-service",
  "pir-issuer-store",
  "pir-private-files",
- "pir-rollback-authority-client",
- "pir-rollback-authority-protocol",
  "pir-runtime-core",
  "pir-service-protocol",
  "pir-service-store",
@@ -2104,50 +2097,6 @@ dependencies = [
  "rusqlite",
  "rustix",
  "sha2",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-rollback-authority-client"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "pir-private-files",
- "pir-rollback-authority-protocol",
- "pir-strict-https",
- "rustix",
- "serde",
- "static_assertions",
- "tempfile",
- "toml",
- "zeroize",
-]
-
-[[package]]
-name = "pir-rollback-authority-protocol"
-version = "0.1.0"
-dependencies = [
- "chacha20poly1305",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hkdf",
- "hmac",
- "sha2",
- "static_assertions",
- "zeroize",
-]
-
-[[package]]
-name = "pir-rollback-authority-store"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "pir-private-files",
- "pir-rollback-authority-protocol",
- "rusqlite",
- "rustix",
  "tempfile",
  "zeroize",
 ]
@@ -2319,8 +2268,6 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "pir-private-files",
- "pir-rollback-authority-client",
- "pir-rollback-authority-protocol",
  "pir-service-protocol",
  "rusqlite",
  "sha2",
@@ -2669,23 +2616,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rollback-authority"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hex",
- "httparse",
- "pir-private-files",
- "pir-rollback-authority-protocol",
- "pir-rollback-authority-store",
- "rustix",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
 name = "rootbundle"
 version = "0.1.0"
 dependencies = [
@@ -2751,7 +2681,6 @@ dependencies = [
  "pir-payment-crypto",
  "pir-private-files",
  "pir-provider-clearing-client",
- "pir-rollback-authority-client",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
@@ -2761,7 +2690,6 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
- "rollback-authority",
  "rustix",
  "rustls",
  "serde",

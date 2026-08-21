@@ -184,7 +184,6 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     } else {
       if (!clnSocket) throw new Error('checked CLN socket metadata is unavailable');
       args.push(
-        '--allow-local-rollback-authority-dev',
         '--cln-rpc-socket',
         clnSocket.path,
         '--cln-rpc-expected-uid',

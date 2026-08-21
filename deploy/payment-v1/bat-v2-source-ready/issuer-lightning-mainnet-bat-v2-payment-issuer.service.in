@@ -25,7 +25,7 @@ ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer 
     --max-connections 128 \
     --allow-origin @BITCOINPIR_WEB_ORIGIN@ \
     --store /var/lib/bitcoinpir-mainnet-bat-v2-issuer/issuer.sqlite3 \
-    --remote-rollback-authority-config /etc/bitcoinpir/payment-v1/bat-v2/issuer/remote-rollback-authority.toml \
+    --rollback-authority /var/lib/bitcoinpir-mainnet-bat-v2-issuer/rollback.sqlite3 \
     --quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin \
     --quote-signing-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/quote-signing.key \
     --credential-derivation-key /etc/bitcoinpir/payment-v1/bat-v2/issuer/credential-derivation.key \

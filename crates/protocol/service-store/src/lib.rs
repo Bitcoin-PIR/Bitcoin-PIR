@@ -12,7 +12,6 @@ mod admission;
 mod cashu_swap;
 mod error;
 mod offer_namespace;
-mod remote_rollback;
 mod rollback;
 mod schema;
 mod sqlite_rollback;
@@ -32,7 +31,6 @@ pub use offer_namespace::{
     OFFER_NAMESPACE_BINDING_DIGEST_DOMAIN_V1, OFFER_NAMESPACE_ID_DOMAIN_V1,
     OFFER_NAMESPACE_LINEAGE_DIGEST_DOMAIN_V1,
 };
-pub use remote_rollback::RemoteProviderRollbackFloorAuthorityV1;
 pub use rollback::{
     RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1,
     ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1, ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1,

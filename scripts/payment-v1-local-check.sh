@@ -36,7 +36,7 @@ direct TEE-ORAM), WASM checks, and Web typecheck/tests/bundle; it contains no
 browser E2E.
 
 The `--pr` profile starts only temporary directory-relay, unified-server,
-rollback-authority, test-only TLS/NUT-03 mint and fake issuer listeners explicitly
+test-only TLS/NUT-03 mint and fake issuer listeners explicitly
 bound to 127.0.0.1. Browser profiles additionally start Vite and Playwright;
 the tests kill and wait for every child. No profile contacts an external Lightning
 node or Cashu mint, publishes to a public Nostr relay, deploys a server, uses real
@@ -77,9 +77,6 @@ cargo test --locked --offline \
   -p pir-channel \
   -p pir-strict-https \
   -p pir-private-files \
-  -p pir-rollback-authority-protocol \
-  -p pir-rollback-authority-client \
-  -p pir-rollback-authority-store \
   -p pir-service-protocol \
   -p pir-service-store \
   -p pir-payment-crypto \
@@ -100,7 +97,6 @@ cargo test --locked --offline \
   -p pir-sdk-client \
   -p pir-sdk-wasm \
   -p payment-issuer \
-  -p rollback-authority \
   -p bpir-admin
 # These feature-only boundaries are not covered by the default package run above.
 cargo test --locked --offline -p pir-payment-crypto --features provider-store \
@@ -128,9 +124,6 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
   --test payment_v1_two_relay_process_e2e \
   two_relay_real_process_catalog_e2e \
   -- --exact --ignored
-cargo test --locked --offline -p pir-rollback-authority-client \
-  --features test-only-webpki-root \
-  test_only_webpki_root_requires_owner_only_regular_file
 test_root_release_log="$(mktemp "${TMPDIR:-/tmp}/bpir-test-root-release.XXXXXX")"
 if cargo check --locked --offline --release -p pir-strict-https \
   --features test-only-webpki-root >"$test_root_release_log" 2>&1; then
@@ -143,20 +136,6 @@ if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release 
   -p pir-strict-https --features test-only-webpki-root \
   >"$test_root_release_log" 2>&1; then
   echo "payment-v1-local-check: test-only WebPKI root compiled in assertions-enabled release mode" >&2
-  exit 1
-fi
-grep -F 'test-only-webpki-root must never be compiled into a production release' \
-  "$test_root_release_log" >/dev/null
-if cargo check --locked --offline --release -p payment-issuer \
-  --features remote-authority-process-e2e >"$test_root_release_log" 2>&1; then
-  echo "payment-v1-local-check: payment-issuer test-only remote-authority feature compiled in release mode" >&2
-  exit 1
-fi
-grep -F 'test-only-webpki-root must never be compiled into a production release' \
-  "$test_root_release_log" >/dev/null
-if cargo check --locked --offline --release -p runtime \
-  --features remote-authority-process-e2e >"$test_root_release_log" 2>&1; then
-  echo "payment-v1-local-check: runtime test-only remote-authority feature compiled in release mode" >&2
   exit 1
 fi
 grep -F 'test-only-webpki-root must never be compiled into a production release' \
@@ -203,32 +182,6 @@ fi
 grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' \
   "$test_root_release_log" >/dev/null
 rm -f -- "$test_root_release_log"
-cargo test --locked --offline -p runtime \
-  --features remote-authority-process-e2e \
-  --test payment_v1_process_e2e \
-  remote_authority_process::remote_authority_real_process_tls_provider_e2e \
-  -- --exact
-cargo test --locked --offline -p runtime \
-  --features remote-authority-process-e2e \
-  --test payment_v1_process_e2e \
-  three_authority_process::three_authority_real_process_topology_e2e \
-  -- --exact
-cargo clippy --locked --offline -p runtime \
-  --features remote-authority-process-e2e \
-  --bin unified_server \
-  --test payment_v1_process_e2e \
-  --no-deps \
-  -- -D warnings
-cargo test --locked --offline -p payment-issuer \
-  --features remote-authority-process-e2e \
-  --test remote_authority_process_e2e \
-  payment_issuer_remote_authority_real_process_tls_e2e \
-  -- --exact
-cargo clippy --locked --offline -p payment-issuer \
-  --features remote-authority-process-e2e \
-  --all-targets \
-  --no-deps \
-  -- -D warnings
 cargo clippy --locked --offline -p payment-issuer \
   --features test-only-fake-lightning \
   --all-targets \
@@ -345,9 +298,6 @@ echo "[pr] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
   -p pir-strict-https \
   -p pir-private-files \
-  -p pir-rollback-authority-protocol \
-  -p pir-rollback-authority-client \
-  -p pir-rollback-authority-store \
   -p pir-service-protocol \
   -p pir-service-store \
   -p pir-payment-crypto \
@@ -365,7 +315,6 @@ cargo clippy --locked --offline --all-targets --no-deps \
   -p bitcoinpir-directory-relay \
   -p bitcoinpir-cln-rpc-guard \
   -p payment-issuer \
-  -p rollback-authority \
   -p bpir-admin \
   -- -D warnings
 cargo clippy --locked --offline -p runtime \

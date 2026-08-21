@@ -631,7 +631,6 @@ export function validatePaymentV1CiLaneInventory(source, label = "payment CI lan
   for (const requiredCommand of [
     "BPIR_REQUIRE_ROOT_CREDENTIAL_TEST=1",
     "test-only-unsafe-query-logging",
-    "remote-authority-process-e2e",
     "cuckoo-oram,shared-issuer-process-e2e",
     "payment_v1_shared_issuer_process_e2e",
     "test-only-fake-lightning",

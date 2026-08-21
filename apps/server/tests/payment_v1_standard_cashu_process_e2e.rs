@@ -1207,7 +1207,6 @@ fn spawn_server(
         fixture.store_path.to_str().unwrap().to_owned(),
         "--service-rollback-authority".to_owned(),
         fixture.rollback_path.to_str().unwrap().to_owned(),
-        "--allow-local-service-rollback-authority-dev".to_owned(),
         "--max-connections".to_owned(),
         "24".to_owned(),
         "--service-max-concurrent-auth".to_owned(),

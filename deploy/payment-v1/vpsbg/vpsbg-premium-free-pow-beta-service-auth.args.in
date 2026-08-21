@@ -15,7 +15,6 @@
 --service-policy-key-hex @VPSBG_PREMIUM_POLICY_PUBKEY_HEX@
 --service-store /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3
 --service-rollback-authority /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3
---allow-local-service-rollback-authority-dev
 --service-shared-authorization /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin
 --service-shared-issuer-approval /home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin
 # This is the VPSBG provider operator key bound into the clearing authorization,
