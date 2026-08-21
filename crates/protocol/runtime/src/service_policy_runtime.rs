@@ -848,7 +848,6 @@ fn policy_epoch_floors_for_candidate(
 mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use ed25519_dalek::SigningKey;

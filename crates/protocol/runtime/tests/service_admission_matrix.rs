@@ -11,8 +11,7 @@
 use std::collections::HashSet;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
 
 use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;

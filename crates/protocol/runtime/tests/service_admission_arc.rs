@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 

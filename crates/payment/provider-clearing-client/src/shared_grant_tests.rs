@@ -2,7 +2,6 @@ use super::*;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use pir_issuer_clearing::RedeemResponseDerivationKeyV1;
