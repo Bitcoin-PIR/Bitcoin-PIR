@@ -179,11 +179,9 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     event-value comparison. URL
     normalization, symlinks, devices, FIFOs or a changing file never relax the
     boundary.
-51. Production rollback authorities are independent failure, administrative,
-    observation, logging and backup/restore domains for provider 0, provider 1
-    and their independently selected issuers. Separate namespace rows in one
-    commonly observable service do not satisfy the strict default: that service
-    can correlate mutation timing and becomes a shared availability boundary.
+51. Each rollback-floor file lives in an independent backup/restore domain
+    from the database it anchors, so no single snapshot restore can revert a
+    store and its floor together.
 52. A payout worker commits signed `Accepted -> InFlight` before the first
     external submission and performs only reconciliation for an `InFlight`
     command after restart or ambiguity. A real-funds executor MUST provide a
@@ -206,14 +204,9 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     query or inclusion/result verification only when it explicitly executes and
     verifies those exact operations; such a result remains confined to its
     synthetic trust and data boundary.
-55. A rollback authority binds every authenticated call nonce to the full
-    request digest and the opaque response snapshot observed at that call's
-    first linearization. Exact signed Read/CAS replay MUST return only that
-    durable snapshot and MUST NOT re-read later live state. A fresh nonce remains
-    a distinct bounded call for startup freshness or stable-operation recovery.
-    Operation and call logs have independent immutable finite capacities;
-    exhaustion fails before observing or mutating current state, while an exact
-    already-recorded call remains replayable.
+55. Rollback-floor updates are atomic compare-and-swap operations on the local
+    SQLite floor file; a store generation may only move forward, and any
+    mismatch between store and floor fails closed.
 56. A standard-Cashu policy signs one canonical mint endpoint and one or two
     nonzero, strictly sorted leaf-SPKI SHA-256 pins. Every provider NUT-03,
     NUT-09 and NUT-07 call uses that exact tuple with ordinary WebPKI; there is

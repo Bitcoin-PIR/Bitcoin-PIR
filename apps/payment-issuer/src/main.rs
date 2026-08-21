@@ -42,7 +42,7 @@ use pir_issuer_service::{
 use pir_issuer_store::{
     BatKeyLineageRegistration, BatV2ClearingEpochReservationStateV2,
     BatV2ClearingEpochReservationV2, IssuerRollbackFloorAuthorityV1, IssuerStore,
-    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, RemoteIssuerRollbackFloorAuthorityV1,
+    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1,
     SqliteIssuerRollbackFloorAuthorityV1, StoreOptions, MAX_EXACT_BAT_V2_ACCOUNTING_APPROVAL_BYTES,
     MAX_EXACT_BAT_V2_ACCOUNTING_AUTHORIZATION_BYTES, MAX_EXACT_CLEARING_APPROVAL_BYTES,
     MAX_EXACT_CLEARING_AUTHORIZATION_BYTES, MAX_QUOTE_RECONCILIATION_BATCH_V1,
@@ -59,7 +59,6 @@ use pir_lightning_backend::{
     LightningInvoiceBackendV1,
 };
 use pir_payment_crypto::K256CashuMintKeyringV1;
-use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_protocol::{
     AuthScheme, BatAcceptanceClassV2, Bolt11BatV2ClaimEnvelopeV2, Bolt11BatV2QuoteIntentV2,
     Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
@@ -205,24 +204,9 @@ impl From<NetworkArg> for LightningNetworkV1 {
 struct InitStoreArgs {
     #[arg(long)]
     store: PathBuf,
-    /// Local SQLite floor for development/test only. Production must use the
-    /// independently hosted remote authority config instead.
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    rollback_authority: Option<PathBuf>,
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    remote_rollback_authority_config: Option<PathBuf>,
-    /// Required only with a remote authority so an interrupted ceremony can
-    /// be resumed/audited with the exact same durable identity.
+    /// Separate local SQLite rollback floor file.
     #[arg(long)]
-    store_instance_id_hex: Option<String>,
+    rollback_authority: PathBuf,
     #[arg(long)]
     issuer_id_hex: String,
     #[arg(long, value_enum)]
@@ -233,18 +217,9 @@ struct InitStoreArgs {
 struct StoreCheckArgs {
     #[arg(long)]
     store: PathBuf,
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    rollback_authority: Option<PathBuf>,
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    remote_rollback_authority_config: Option<PathBuf>,
+    /// Separate local SQLite rollback floor file.
+    #[arg(long)]
+    rollback_authority: PathBuf,
     #[arg(long)]
     issuer_id_hex: String,
     #[arg(long, value_enum)]
@@ -315,25 +290,9 @@ struct ServeCommonArgs {
     allow_origin: Option<String>,
     #[arg(long)]
     store: PathBuf,
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    rollback_authority: Option<PathBuf>,
-    /// Owner-only production config for a separately hosted authority using
-    /// mandatory WebPKI plus leaf-SPKI pins and independent client/value keys.
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    remote_rollback_authority_config: Option<PathBuf>,
-    /// Explicitly acknowledge that a local SQLite floor is not a production
-    /// rollback boundary. The feature-gated deterministic local test harness
-    /// does not require this extra acknowledgement.
+    /// Separate local SQLite rollback floor file.
     #[arg(long)]
-    allow_local_rollback_authority_dev: bool,
+    rollback_authority: PathBuf,
     #[arg(long)]
     quote_delegation: PathBuf,
     #[arg(long)]
@@ -904,80 +863,19 @@ fn main() {
     }
 }
 
-fn validate_rollback_authority_selection_v1<'a>(
-    local: Option<&'a Path>,
-    remote: Option<&'a Path>,
-) -> Result<IssuerRollbackAuthoritySelectionV1<'a>, String> {
-    match (local, remote) {
-        (Some(path), None) => Ok(IssuerRollbackAuthoritySelectionV1::Local(path)),
-        (None, Some(path)) => Ok(IssuerRollbackAuthoritySelectionV1::Remote(path)),
-        (Some(_), Some(_)) => Err(
-            "--rollback-authority and --remote-rollback-authority-config are mutually exclusive"
-                .to_owned(),
-        ),
-        (None, None) => Err(
-            "exactly one of --rollback-authority or --remote-rollback-authority-config is required"
-                .to_owned(),
-        ),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum IssuerRollbackAuthoritySelectionV1<'a> {
-    Local(&'a Path),
-    Remote(&'a Path),
-}
-
-fn load_remote_issuer_rollback_authority_v1(
-    config_path: &Path,
-    issuer_id: [u8; 32],
-    network: LightningNetworkV1,
-) -> Result<Arc<dyn IssuerRollbackFloorAuthorityV1>, String> {
-    let configured =
-        load_remote_rollback_authority_deployment_for_business_domain_v1(config_path, issuer_id)
-            .map_err(|error| {
-                format!("load remote issuer rollback-authority configuration: {error}")
-            })?;
-    let (client, codec, operation_timeout) = configured.into_parts();
-    let authority = RemoteIssuerRollbackFloorAuthorityV1::new(
-        issuer_id,
-        network,
-        client,
-        codec,
-        operation_timeout,
-    )
-    .map_err(|error| format!("configure remote issuer rollback authority: {error}"))?;
-    Ok(Arc::new(authority))
-}
-
 fn open_existing_issuer_rollback_authority_v1(
     store_path: &Path,
-    local: Option<&Path>,
-    remote: Option<&Path>,
-    issuer_id: [u8; 32],
-    network: LightningNetworkV1,
+    local: &Path,
     busy_timeout: Duration,
 ) -> Result<Arc<dyn IssuerRollbackFloorAuthorityV1>, String> {
-    match validate_rollback_authority_selection_v1(local, remote)? {
-        IssuerRollbackAuthoritySelectionV1::Local(path) => {
-            let authority_path =
-                validate_existing_private_database_path(path, "issuer rollback authority")?;
-            if private_database_paths_alias_v1(store_path, &authority_path)? {
-                return Err(
-                    "store and rollback authority resolve to the same file/inode".to_owned(),
-                );
-            }
-            eprintln!(
-                "warning: local SQLite issuer rollback authority is development/test-only; production requires --remote-rollback-authority-config"
-            );
-            SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, busy_timeout)
-                .map(|authority| Arc::new(authority) as Arc<dyn IssuerRollbackFloorAuthorityV1>)
-                .map_err(|error| format!("open issuer rollback authority: {error}"))
-        }
-        IssuerRollbackAuthoritySelectionV1::Remote(config_path) => {
-            load_remote_issuer_rollback_authority_v1(config_path, issuer_id, network)
-        }
+    let authority_path =
+        validate_existing_private_database_path(local, "issuer rollback authority")?;
+    if private_database_paths_alias_v1(store_path, &authority_path)? {
+        return Err("store and rollback authority resolve to the same file/inode".to_owned());
     }
+    SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, busy_timeout)
+        .map(|authority| Arc::new(authority) as Arc<dyn IssuerRollbackFloorAuthorityV1>)
+        .map_err(|error| format!("open issuer rollback authority: {error}"))
 }
 
 fn open_owner_issuer_store_v1(args: &StoreCheckArgs) -> Result<IssuerStore, String> {
@@ -989,10 +887,7 @@ fn open_owner_issuer_store_v1(args: &StoreCheckArgs) -> Result<IssuerStore, Stri
     let options = StoreOptions::default();
     let authority = open_existing_issuer_rollback_authority_v1(
         &store_path,
-        args.rollback_authority.as_deref(),
-        args.remote_rollback_authority_config.as_deref(),
-        issuer_id,
-        args.network.into(),
+        &args.rollback_authority,
         options.busy_timeout,
     )?;
     IssuerStore::open_existing(
@@ -1131,10 +1026,7 @@ fn check_store(args: StoreCheckArgs) -> Result<(), String> {
     let started = Instant::now();
     let authority = open_existing_issuer_rollback_authority_v1(
         &store_path,
-        args.rollback_authority.as_deref(),
-        args.remote_rollback_authority_config.as_deref(),
-        issuer_id,
-        args.network.into(),
+        &args.rollback_authority,
         options.busy_timeout,
     )?;
     let store = IssuerStore::open_existing(
@@ -1183,100 +1075,60 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
         return Err("issuer ID must not be all zero".to_owned());
     }
     let network: LightningNetworkV1 = args.network.into();
-    let selection = validate_rollback_authority_selection_v1(
-        args.rollback_authority.as_deref(),
-        args.remote_rollback_authority_config.as_deref(),
-    )?;
-    let store_instance_id = match (selection, args.store_instance_id_hex.as_deref()) {
-        (IssuerRollbackAuthoritySelectionV1::Remote(_), Some(encoded)) => {
-            let value = decode_fixed_hex::<16>(encoded, "store instance ID")?;
-            if value.iter().all(|byte| *byte == 0) {
-                return Err("--store-instance-id-hex must not be all zero".to_owned());
-            }
-            value
+    let store_instance_id = {
+        let mut value = [0u8; 16];
+        getrandom::getrandom(&mut value)
+            .map_err(|_| "operating-system randomness is unavailable".to_owned())?;
+        if value.iter().all(|byte| *byte == 0) {
+            return Err("operating-system randomness returned an invalid store ID".to_owned());
         }
-        (IssuerRollbackAuthoritySelectionV1::Remote(_), None) => {
-            return Err(
-                "remote rollback-authority initialization requires --store-instance-id-hex so an interrupted ceremony can reuse the exact identity"
-                    .to_owned(),
-            );
-        }
-        (IssuerRollbackAuthoritySelectionV1::Local(_), Some(_)) => {
-            return Err(
-                "--store-instance-id-hex is reserved for remote rollback-authority initialization"
-                    .to_owned(),
-            );
-        }
-        (IssuerRollbackAuthoritySelectionV1::Local(_), None) => {
-            let mut value = [0u8; 16];
-            getrandom::getrandom(&mut value)
-                .map_err(|_| "operating-system randomness is unavailable".to_owned())?;
-            if value.iter().all(|byte| *byte == 0) {
-                return Err("operating-system randomness returned an invalid store ID".to_owned());
-            }
-            value
-        }
+        value
     };
     let store_path = prepare_new_private_database_path(&args.store, "issuer store")?;
     let options = StoreOptions::default();
-    let (authority, authority_reference, remote_authority): (
-        Arc<dyn IssuerRollbackFloorAuthorityV1>,
-        PathBuf,
-        bool,
-    ) = match selection {
-        IssuerRollbackAuthoritySelectionV1::Local(configured_path) => {
-            let authority_path =
-                prepare_new_private_database_path(configured_path, "issuer rollback authority")?;
-            if store_path == authority_path {
-                return Err(
-                    "store and rollback authority resolve to the same canonical target".to_owned(),
-                );
-            }
-            if store_path.parent() == authority_path.parent() {
-                eprintln!(
-                    "warning: issuer store and rollback authority share one private directory; use independent backup/restore domains in production"
-                );
-            }
-            eprintln!(
-                "warning: local SQLite issuer rollback authority is development/test-only; production requires --remote-rollback-authority-config"
+    let (authority, authority_reference): (Arc<dyn IssuerRollbackFloorAuthorityV1>, PathBuf) = {
+        let authority_path = prepare_new_private_database_path(
+            &args.rollback_authority,
+            "issuer rollback authority",
+        )?;
+        if store_path == authority_path {
+            return Err(
+                "store and rollback authority resolve to the same canonical target".to_owned(),
             );
-            let authority =
-                SqliteIssuerRollbackFloorAuthorityV1::create(&authority_path, options.busy_timeout)
-                    .map_err(|error| {
-                        incomplete_init_error_for_authority_v1(
-                            "create rollback authority",
-                            &store_path,
-                            &authority_path,
-                            false,
-                            &error.to_string(),
-                        )
-                    })?;
-            set_owner_only_database_file_v1(&authority_path).map_err(|error| {
-                incomplete_init_error_for_authority_v1(
-                    "secure rollback authority permissions",
-                    &store_path,
-                    &authority_path,
-                    false,
-                    &error,
-                )
-            })?;
-            validate_existing_private_database_path(&authority_path, "issuer rollback authority")
+        }
+        if store_path.parent() == authority_path.parent() {
+            eprintln!(
+                "warning: issuer store and rollback authority share one private directory; use independent backup/restore domains in production"
+            );
+        }
+        let authority =
+            SqliteIssuerRollbackFloorAuthorityV1::create(&authority_path, options.busy_timeout)
                 .map_err(|error| {
-                incomplete_init_error_for_authority_v1(
+                    incomplete_init_error_v1(
+                        "create rollback authority",
+                        &store_path,
+                        &authority_path,
+                        &error.to_string(),
+                    )
+                })?;
+        set_owner_only_database_file_v1(&authority_path).map_err(|error| {
+            incomplete_init_error_v1(
+                "secure rollback authority permissions",
+                &store_path,
+                &authority_path,
+                &error,
+            )
+        })?;
+        validate_existing_private_database_path(&authority_path, "issuer rollback authority")
+            .map_err(|error| {
+                incomplete_init_error_v1(
                     "self-check rollback authority ownership/path",
                     &store_path,
                     &authority_path,
-                    false,
                     &error,
                 )
             })?;
-            (Arc::new(authority), authority_path, false)
-        }
-        IssuerRollbackAuthoritySelectionV1::Remote(config_path) => (
-            load_remote_issuer_rollback_authority_v1(config_path, issuer_id, network)?,
-            config_path.to_path_buf(),
-            true,
-        ),
+        (Arc::new(authority), authority_path)
     };
     let store = IssuerStore::create(
         &store_path,
@@ -1287,58 +1139,50 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
         authority.clone(),
     )
     .map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "create issuer store",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error.to_string(),
         )
     })?;
     set_owner_only_database_file_v1(&store_path).map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "secure issuer store permissions",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error,
         )
     })?;
     validate_existing_private_database_path(&store_path, "issuer store").map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "self-check issuer store ownership/path",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error,
         )
     })?;
-    if !remote_authority
-        && private_database_paths_alias_v1(&store_path, &authority_reference).map_err(|error| {
-            incomplete_init_error_for_authority_v1(
-                "self-check store/authority aliases",
-                &store_path,
-                &authority_reference,
-                false,
-                &error,
-            )
-        })?
-    {
-        return Err(incomplete_init_error_for_authority_v1(
+    if private_database_paths_alias_v1(&store_path, &authority_reference).map_err(|error| {
+        incomplete_init_error_v1(
             "self-check store/authority aliases",
             &store_path,
             &authority_reference,
-            false,
+            &error,
+        )
+    })? {
+        return Err(incomplete_init_error_v1(
+            "self-check store/authority aliases",
+            &store_path,
+            &authority_reference,
             "store and rollback authority resolve to the same file/inode",
         ));
     }
 
     let identity = store.identity().map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "read back issuer store identity",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error.to_string(),
         )
     })?;
@@ -1350,11 +1194,10 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
         || identity.status_time_floor != 0
         || identity.schema_version != ISSUER_STORE_SCHEMA_VERSION
     {
-        return Err(incomplete_init_error_for_authority_v1(
+        return Err(incomplete_init_error_v1(
             "exact new-store identity self-check",
             &store_path,
             &authority_reference,
-            remote_authority,
             "new issuer store identity is not the expected generation-zero state",
         ));
     }
@@ -1365,47 +1208,40 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
     // path accepts both exact files after every creation handle is dropped.
     let reopened_authority = open_existing_issuer_rollback_authority_v1(
         &store_path,
-        (!remote_authority).then_some(authority_reference.as_path()),
-        remote_authority.then_some(authority_reference.as_path()),
-        issuer_id,
-        network,
+        authority_reference.as_path(),
         options.busy_timeout,
     )
     .map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "reopen rollback authority",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error,
         )
     })?;
     let reopened =
         IssuerStore::open_existing(&store_path, issuer_id, network, options, reopened_authority)
             .map_err(|error| {
-                incomplete_init_error_for_authority_v1(
+                incomplete_init_error_v1(
                     "reopen issuer store",
                     &store_path,
                     &authority_reference,
-                    remote_authority,
                     &error.to_string(),
                 )
             })?;
     if reopened.identity().map_err(|error| {
-        incomplete_init_error_for_authority_v1(
+        incomplete_init_error_v1(
             "read reopened issuer store identity",
             &store_path,
             &authority_reference,
-            remote_authority,
             &error.to_string(),
         )
     })? != identity
     {
-        return Err(incomplete_init_error_for_authority_v1(
+        return Err(incomplete_init_error_v1(
             "reopened identity self-check",
             &store_path,
             &authority_reference,
-            remote_authority,
             "issuer store identity changed across reopen",
         ));
     }
@@ -1414,22 +1250,11 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
     println!("store_instance_id={}", hex::encode(store_instance_id));
     println!("schema_version={ISSUER_STORE_SCHEMA_VERSION}");
     println!("store={}", store_path.display());
+    println!("rollback_authority_mode=local");
     println!(
-        "rollback_authority_mode={}",
-        if remote_authority {
-            "remote"
-        } else {
-            "local-test"
-        }
+        "rollback_authority_reference={}",
+        authority_reference.display()
     );
-    if remote_authority {
-        println!("rollback_authority_reference=[remote-config-redacted]");
-    } else {
-        println!(
-            "rollback_authority_reference={}",
-            authority_reference.display()
-        );
-    }
     Ok(())
 }
 
@@ -1484,52 +1309,11 @@ fn serve_cln(args: ServeClnArgs) -> Result<(), String> {
     )
 }
 
-fn validate_serving_rollback_authority_mode_v1(
-    local: bool,
-    remote: bool,
-    allow_local_dev: bool,
-    fake_mode: bool,
-) -> Result<(), String> {
-    match (local, remote, allow_local_dev, fake_mode) {
-        (false, false, _, _) | (true, true, _, _) => {
-            return Err(
-                "exactly one local or remote rollback authority must be configured".to_owned(),
-            );
-        }
-        (true, false, false, false) => {
-            return Err(
-                "serve-cln with local SQLite rollback state requires --allow-local-rollback-authority-dev; production must use --remote-rollback-authority-config"
-                    .to_owned(),
-            );
-        }
-        (false, true, true, _) => {
-            return Err(
-                "--allow-local-rollback-authority-dev cannot accompany a remote rollback authority"
-                    .to_owned(),
-            );
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 fn serve_with_backend(
     args: ServeCommonArgs,
     backend_config: BackendConfigV1,
 ) -> Result<(), String> {
     validate_loopback_bind(args.bind)?;
-    let fake_mode = match &backend_config {
-        #[cfg(any(test, feature = "test-only-fake-lightning"))]
-        BackendConfigV1::Fake { .. } => true,
-        #[cfg(unix)]
-        BackendConfigV1::CoreLightning { .. } => false,
-    };
-    validate_serving_rollback_authority_mode_v1(
-        args.rollback_authority.is_some(),
-        args.remote_rollback_authority_config.is_some(),
-        args.allow_local_rollback_authority_dev,
-        fake_mode,
-    )?;
     if !args.allow_experimental_arc && !args.arc_keys.is_empty() {
         return Err(
             "experimental ARC key configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
@@ -1700,10 +1484,7 @@ fn serve_with_backend(
     let store_startup_check_started = Instant::now();
     let authority = open_existing_issuer_rollback_authority_v1(
         &canonical_store,
-        args.rollback_authority.as_deref(),
-        args.remote_rollback_authority_config.as_deref(),
-        delegation.issuer_id,
-        delegation.network,
+        &args.rollback_authority,
         options.busy_timeout,
     )?;
     let store = IssuerStore::open_existing(
@@ -3319,22 +3100,6 @@ fn incomplete_init_error_v1(
     )
 }
 
-fn incomplete_init_error_for_authority_v1(
-    stage: &str,
-    store_path: &Path,
-    authority_reference: &Path,
-    remote: bool,
-    error: &str,
-) -> String {
-    if !remote {
-        return incomplete_init_error_v1(stage, store_path, authority_reference, error);
-    }
-    format!(
-        "{stage} failed: {error}; remote issuer-store initialization is incomplete and the configured authority namespace may already be bound to store {}; never reset/delete the authority or retry with a different --store-instance-id-hex; inspect the local store and remote namespace, then recover/check using the exact same config and store instance ID or retire the namespace through an explicit offline rotation ceremony",
-        store_path.display(),
-    )
-}
-
 /// Resolve a not-yet-created SQLite path through a pinned, symlink-free parent
 /// walk. The final private parent protects the main DB and SQLite's
 /// `-wal`/`-shm` sidecars from path replacement or disclosure.
@@ -3910,7 +3675,6 @@ mod tests {
             "/tmp/issuer.sqlite".to_owned(),
             "--rollback-authority".to_owned(),
             "/tmp/rollback.sqlite".to_owned(),
-            "--allow-local-rollback-authority-dev".to_owned(),
             "--quote-delegation".to_owned(),
             "/tmp/delegation.bin".to_owned(),
             "--quote-signing-key".to_owned(),
@@ -4817,108 +4581,17 @@ mod tests {
         .unwrap();
         assert!(matches!(cli.command, Command::CheckStore(_)));
 
-        let remote = Cli::try_parse_from([
+        let missing_rollback_authority = [
             "payment-issuer",
             "check-store",
             "--store",
             "/private/issuer.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote-authority.toml",
             "--issuer-id-hex",
-            &hex::encode([0x11_u8; 32]),
+            "11",
             "--network",
             "regtest",
-        ])
-        .unwrap();
-        assert!(matches!(remote.command, Command::CheckStore(_)));
-
-        for invalid in [
-            vec![
-                "payment-issuer",
-                "check-store",
-                "--store",
-                "/private/issuer.sqlite3",
-                "--issuer-id-hex",
-                "11",
-                "--network",
-                "regtest",
-            ],
-            vec![
-                "payment-issuer",
-                "check-store",
-                "--store",
-                "/private/issuer.sqlite3",
-                "--rollback-authority",
-                "/private/local.sqlite3",
-                "--remote-rollback-authority-config",
-                "/private/remote.toml",
-                "--issuer-id-hex",
-                "11",
-                "--network",
-                "regtest",
-            ],
-        ] {
-            assert!(Cli::try_parse_from(invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn serving_local_floor_requires_explicit_dev_boundary_except_fake_mode() {
-        assert!(validate_serving_rollback_authority_mode_v1(true, false, false, true).is_ok());
-        assert!(validate_serving_rollback_authority_mode_v1(true, false, true, false).is_ok());
-        assert!(validate_serving_rollback_authority_mode_v1(false, true, false, false).is_ok());
-        assert!(
-            validate_serving_rollback_authority_mode_v1(true, false, false, false)
-                .unwrap_err()
-                .contains("allow-local")
-        );
-        assert!(
-            validate_serving_rollback_authority_mode_v1(false, true, true, false)
-                .unwrap_err()
-                .contains("cannot accompany")
-        );
-        assert!(validate_serving_rollback_authority_mode_v1(false, false, false, true).is_err());
-        assert!(validate_serving_rollback_authority_mode_v1(true, true, false, true).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_store_init_requires_explicit_recoverable_instance_id() {
-        let root = tempfile::tempdir().unwrap();
-        let store_parent = root.path().join("issuer-domain");
-        private_directory(&store_parent);
-        let base = InitStoreArgs {
-            store: store_parent.join("issuer.sqlite3"),
-            rollback_authority: None,
-            remote_rollback_authority_config: Some(root.path().join("remote.toml")),
-            store_instance_id_hex: None,
-            issuer_id_hex: hex::encode([0x55; 32]),
-            network: NetworkArg::Regtest,
-        };
-        assert!(init_store(base)
-            .unwrap_err()
-            .contains("requires --store-instance-id-hex"));
-
-        let mut local = init_args(root.path());
-        local.store_instance_id_hex = Some(hex::encode([0x22; 16]));
-        assert!(init_store(local)
-            .unwrap_err()
-            .contains("reserved for remote"));
-    }
-
-    #[test]
-    fn remote_incomplete_init_error_redacts_authority_config_path() {
-        let config = Path::new("/private/issuer-remote-authority.toml");
-        let error = incomplete_init_error_for_authority_v1(
-            "reopen issuer store",
-            Path::new("/private/issuer.sqlite3"),
-            config,
-            true,
-            "outcome unknown",
-        );
-        assert!(!error.contains(config.to_str().unwrap()));
-        assert!(error.contains("configured authority namespace"));
-        assert!(error.contains("exact same config"));
+        ];
+        assert!(Cli::try_parse_from(missing_rollback_authority).is_err());
     }
 
     #[cfg(unix)]
@@ -4936,7 +4609,6 @@ mod tests {
                 "/tmp/issuer.sqlite",
                 "--rollback-authority",
                 "/tmp/rollback.sqlite",
-                "--allow-local-rollback-authority-dev",
                 "--quote-delegation",
                 "/tmp/delegation.bin",
                 "--quote-signing-key",
@@ -4966,7 +4638,6 @@ mod tests {
             "/tmp/issuer.sqlite",
             "--rollback-authority",
             "/tmp/rollback.sqlite",
-            "--allow-local-rollback-authority-dev",
             "--quote-delegation",
             "/tmp/delegation.bin",
             "--quote-signing-key",
@@ -5123,9 +4794,7 @@ mod tests {
         private_directory(&authority_parent);
         InitStoreArgs {
             store: store_parent.join("issuer.sqlite3"),
-            rollback_authority: Some(authority_parent.join("floor.sqlite3")),
-            remote_rollback_authority_config: None,
-            store_instance_id_hex: None,
+            rollback_authority: authority_parent.join("floor.sqlite3"),
             issuer_id_hex: hex::encode([0x55; 32]),
             network: NetworkArg::Regtest,
         }
@@ -5139,7 +4808,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let args = init_args(directory.path());
         let store = args.store.clone();
-        let authority = args.rollback_authority.clone().unwrap();
+        let authority = args.rollback_authority.clone();
         init_store(args).unwrap();
 
         for path in [&store, &authority] {
@@ -5171,16 +4840,14 @@ mod tests {
 
         check_store(StoreCheckArgs {
             store: store.clone(),
-            rollback_authority: Some(authority.clone()),
-            remote_rollback_authority_config: None,
+            rollback_authority: authority.clone(),
             issuer_id_hex: hex::encode([0x55; 32]),
             network: NetworkArg::Regtest,
         })
         .unwrap();
         assert!(check_store(StoreCheckArgs {
             store,
-            rollback_authority: Some(authority),
-            remote_rollback_authority_config: None,
+            rollback_authority: authority,
             issuer_id_hex: hex::encode([0x56; 32]),
             network: NetworkArg::Regtest,
         })
@@ -5213,9 +4880,7 @@ mod tests {
         symlink(&real_parent, &alias_parent).unwrap();
         let alias = InitStoreArgs {
             store: real_parent.join("same.sqlite3"),
-            rollback_authority: Some(alias_parent.join("same.sqlite3")),
-            remote_rollback_authority_config: None,
-            store_instance_id_hex: None,
+            rollback_authority: alias_parent.join("same.sqlite3"),
             issuer_id_hex: hex::encode([0x66; 32]),
             network: NetworkArg::Regtest,
         };

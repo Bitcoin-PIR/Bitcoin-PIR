@@ -32,8 +32,6 @@
 //! - `mainnet-lightning-v1` — offline lint plus a read-only live Core/CLN
 //!   preflight for the versioned Direct-BOLT11/DPF mainnet profile. It cannot
 //!   create an invoice, authorize a payment, or mutate wallet state.
-//! - `rollback-authority-deployment-lint` — offline bounded deployment-set
-//!   public-config independence validation without reading client secrets.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -55,7 +53,6 @@ mod payment_artifact;
 mod payment_fixture;
 mod payment_v1_signet_smoke;
 mod pir2_sealed_release;
-mod rollback_authority_deployment_lint;
 mod service_keygen;
 mod service_policy;
 mod service_store_check;
@@ -142,12 +139,6 @@ enum Command {
     /// Lint or run the read-only live Mainnet Lightning V1 preflight.
     #[command(name = "mainnet-lightning-v1")]
     MainnetLightningV1(mainnet_lightning_v1::MainnetLightningV1Args),
-    /// Validate 2..=16 authority configs pairwise offline without reading
-    /// referenced secrets or printing paths, roles, or identifiers.
-    #[command(name = "rollback-authority-deployment-lint")]
-    RollbackAuthorityDeploymentLint(
-        rollback_authority_deployment_lint::RollbackAuthorityDeploymentLintArgs,
-    ),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -285,15 +276,6 @@ async fn main() {
                 1
             }
         },
-        Command::RollbackAuthorityDeploymentLint(args) => {
-            match rollback_authority_deployment_lint::run(args) {
-                Ok(()) => 0,
-                Err(e) => {
-                    eprintln!("rollback-authority-deployment-lint: {e}");
-                    1
-                }
-            }
-        }
     };
     std::process::exit(exit_code);
 }
@@ -320,7 +302,6 @@ mod cli_tests {
             "directory-artifact",
             "lightning-staging",
             "mainnet-lightning-v1",
-            "rollback-authority-deployment-lint",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
@@ -337,31 +318,6 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServicePolicy(_)));
-    }
-
-    #[test]
-    fn rollback_authority_deployment_lint_accepts_repeated_anonymous_config_paths() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "rollback-authority-deployment-lint",
-            "--config",
-            "/private/deployment-a.toml",
-            "--config",
-            "/private/deployment-b.toml",
-        ])
-        .unwrap();
-        assert!(matches!(
-            &parsed.command,
-            Command::RollbackAuthorityDeploymentLint(_)
-        ));
-        let rendered = format!("{parsed:?}");
-        assert!(rendered.contains("REDACTED"));
-        assert!(!rendered.contains("deployment-a.toml"));
-        assert!(!rendered.contains("deployment-b.toml"));
-
-        assert!(
-            Cli::try_parse_from(["bpir-admin", "rollback-authority-deployment-lint",]).is_err()
-        );
     }
 
     #[test]
@@ -389,33 +345,6 @@ mod cli_tests {
             "/private/provider.sqlite3",
         ])
         .is_err());
-        assert!(Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-init",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-        ])
-        .is_err());
-        let remote = Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-init",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-            "--store-instance-id-hex",
-            &hex::encode([2u8; 16]),
-        ])
-        .unwrap();
-        assert!(matches!(remote.command, Command::ServiceStoreInit(_)));
     }
 
     #[test]
@@ -443,31 +372,6 @@ mod cli_tests {
             "/private/provider.sqlite3",
         ])
         .is_err());
-        assert!(Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-check",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-        ])
-        .is_err());
-        let remote = Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-check",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-        ])
-        .unwrap();
-        assert!(matches!(remote.command, Command::ServiceStoreCheck(_)));
     }
 
     #[test]

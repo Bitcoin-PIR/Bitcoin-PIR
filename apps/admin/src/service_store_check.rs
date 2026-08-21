@@ -17,20 +17,9 @@ pub struct ServiceStoreCheckArgs {
     /// Existing provider-local admission/spent-set SQLite file.
     #[arg(long)]
     pub store: PathBuf,
-    /// Existing local SQLite rollback floor (development/test only).
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    pub rollback_authority: Option<PathBuf>,
-    /// Existing owner-only production remote-authority deployment config.
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    pub remote_rollback_authority_config: Option<PathBuf>,
+    /// Existing separate local SQLite rollback floor file.
+    #[arg(long)]
+    pub rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     pub busy_timeout_ms: u64,
@@ -51,41 +40,19 @@ pub fn run(args: ServiceStoreCheckArgs) -> Result<(), String> {
     )?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
     let started = Instant::now();
-    let authority: Arc<dyn RollbackFloorAuthorityV1> =
-        match crate::service_store_init::provider_rollback_authority_source_v1(
-            args.rollback_authority.as_deref(),
-            args.remote_rollback_authority_config.as_deref(),
-        )? {
-            crate::service_store_init::ProviderRollbackAuthoritySourceV1::LocalSqlite(path) => {
-                eprintln!(
-                    "warning: local SQLite provider rollback authority is development/test-only; use --remote-rollback-authority-config for production"
-                );
-                let authority_path =
-                    crate::service_store_init::validate_existing_private_file_path(
-                        path,
-                        "provider rollback authority",
-                    )?;
-                if crate::service_store_init::private_database_paths_alias(
-                    &store_path,
-                    &authority_path,
-                )? {
-                    return Err(
-                        "provider store and rollback authority resolve to the same file/inode"
-                            .to_owned(),
-                    );
-                }
-                Arc::new(
-                    SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-                        .map_err(|error| format!("open provider rollback authority: {error}"))?,
-                )
-            }
-            crate::service_store_init::ProviderRollbackAuthoritySourceV1::RemoteConfig(path) => {
-                crate::service_store_init::open_remote_provider_rollback_authority_v1(
-                    provider_id,
-                    path,
-                )?
-            }
-        };
+    let authority_path = crate::service_store_init::validate_existing_private_file_path(
+        &args.rollback_authority,
+        "provider rollback authority",
+    )?;
+    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
+        return Err(
+            "provider store and rollback authority resolve to the same file/inode".to_owned(),
+        );
+    }
+    let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
+        SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
+            .map_err(|error| format!("open provider rollback authority: {error}"))?,
+    );
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
@@ -163,9 +130,7 @@ mod tests {
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store: store.clone(),
-            rollback_authority: Some(authority.clone()),
-            remote_rollback_authority_config: None,
-            store_instance_id_hex: None,
+            rollback_authority: authority.clone(),
             busy_timeout_ms: 1_000,
         })
         .unwrap();
@@ -176,8 +141,7 @@ mod tests {
         ServiceStoreCheckArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store,
-            rollback_authority: Some(authority),
-            remote_rollback_authority_config: None,
+            rollback_authority: authority,
             busy_timeout_ms: 1_000,
         }
     }

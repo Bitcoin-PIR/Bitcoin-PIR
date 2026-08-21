@@ -204,7 +204,6 @@ impl ServerProcess {
             fixture.store_path.display().to_string(),
             "--service-rollback-authority".to_owned(),
             fixture.rollback_path.display().to_string(),
-            "--allow-local-service-rollback-authority-dev".to_owned(),
             "--max-connections".to_owned(),
             "32".to_owned(),
             "--service-max-concurrent-auth".to_owned(),

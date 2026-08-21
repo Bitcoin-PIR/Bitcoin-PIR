@@ -73,7 +73,6 @@ use pir_arc_adapter::{
     ArcSecretKeyringV1,
 };
 use pir_payment_crypto::K256CashuMintKeyringV1;
-use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_protocol::{
     bind_auth_begin_v1, BackendId as ServiceBackendIdV1, DatasetBindingV1,
     HarmonyAttachRejectCodeV1, HarmonyAttachResultV1, HarmonyAttachTransitionErrorV1,
@@ -83,8 +82,8 @@ use pir_service_protocol::{
     WorkloadId as ServiceWorkloadIdV1,
 };
 use pir_service_store::{
-    CashuCustodyInventoryV1, ProviderStore, RemoteProviderRollbackFloorAuthorityV1,
-    RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    CashuCustodyInventoryV1, ProviderStore, RollbackFloorAuthorityV1,
+    SqliteRollbackFloorAuthorityV1, StoreOptions,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -305,15 +304,10 @@ struct CliArgs {
     /// Measurement-bound pir2 identity/clearing dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pir2_sealed: Pir2SealedCliV1,
-    /// Existing provider spend database. The rollback authority must be exactly
-    /// one local development/test SQLite file or one production remote config;
-    /// startup never creates or silently substitutes either.
+    /// Existing provider spend database. The rollback authority is exactly one
+    /// local SQLite floor file; startup never creates or silently substitutes it.
     service_store_path: Option<PathBuf>,
     service_rollback_authority_path: Option<PathBuf>,
-    service_remote_rollback_authority_config_path: Option<PathBuf>,
-    /// Explicit acknowledgement that the selected local SQLite rollback floor
-    /// is development/test-only and not an independent production authority.
-    allow_local_service_rollback_authority_dev: bool,
     /// Secret HMAC key for provider-local durable IP quota cohorts.
     service_free_ip_key_path: Option<PathBuf>,
     /// Assert that the TCP peer address is the real client address. This is
@@ -637,8 +631,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
-    let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
-    let mut allow_local_service_rollback_authority_dev = false;
     let mut service_free_ip_key_path: Option<PathBuf> = None;
     let mut service_trust_direct_peer_ip = false;
     let mut service_bat_key_paths: Vec<PathBuf> = Vec::new();
@@ -998,19 +990,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                 });
                 service_rollback_authority_path = Some(PathBuf::from(path));
                 i += 1;
-            }
-            "--service-remote-rollback-authority-config" => {
-                if service_remote_rollback_authority_config_path.is_some() {
-                    fatal_cli("--service-remote-rollback-authority-config must not be repeated");
-                }
-                let path = args.get(i + 1).unwrap_or_else(|| {
-                    fatal_cli("--service-remote-rollback-authority-config requires a path");
-                });
-                service_remote_rollback_authority_config_path = Some(PathBuf::from(path));
-                i += 1;
-            }
-            "--allow-local-service-rollback-authority-dev" => {
-                allow_local_service_rollback_authority_dev = true;
             }
             "--service-free-ip-key" => {
                 service_free_ip_key_path = args.get(i + 1).map(PathBuf::from);
@@ -1460,8 +1439,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         pir2_sealed,
         service_store_path,
         service_rollback_authority_path,
-        service_remote_rollback_authority_config_path,
-        allow_local_service_rollback_authority_dev,
         service_free_ip_key_path,
         service_trust_direct_peer_ip,
         service_bat_key_paths,
@@ -8002,57 +7979,10 @@ mod experimental_arc_opt_in_tests_v1 {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ServiceRollbackAuthoritySourceV1<'a> {
-    LocalSqlite(&'a Path),
-    RemoteConfig(&'a Path),
-}
-
-fn service_rollback_authority_source_v1<'a>(
-    local_sqlite: Option<&'a Path>,
-    remote_config: Option<&'a Path>,
-    allow_local_dev: bool,
-) -> Result<ServiceRollbackAuthoritySourceV1<'a>, String> {
-    match (local_sqlite, remote_config, allow_local_dev) {
-        (Some(path), None, true) => Ok(ServiceRollbackAuthoritySourceV1::LocalSqlite(path)),
-        (Some(_), None, false) => Err(
-            "--service-rollback-authority is development/test-only and requires --allow-local-service-rollback-authority-dev"
-                .to_owned(),
-        ),
-        (None, Some(path), false) => Ok(ServiceRollbackAuthoritySourceV1::RemoteConfig(path)),
-        (None, Some(_), true) => Err(
-            "--allow-local-service-rollback-authority-dev is valid only with --service-rollback-authority"
-                .to_owned(),
-        ),
-        (None, None, true) => Err(
-            "--allow-local-service-rollback-authority-dev requires --service-rollback-authority"
-                .to_owned(),
-        ),
-        (None, None, false) => Err(
-            "exactly one of --service-rollback-authority or --service-remote-rollback-authority-config is required"
-                .to_owned(),
-        ),
-        (Some(_), Some(_), _) => Err(
-            "--service-rollback-authority and --service-remote-rollback-authority-config are mutually exclusive"
-                .to_owned(),
-        ),
-    }
-}
-
-fn open_remote_service_rollback_authority_v1(
-    provider_id: [u8; 32],
-    config_path: &Path,
-) -> Result<Arc<dyn RollbackFloorAuthorityV1>, String> {
-    let configured =
-        load_remote_rollback_authority_deployment_for_business_domain_v1(config_path, provider_id)
-            .map_err(|error| {
-                format!("failed to load remote rollback-authority configuration: {error}")
-            })?;
-    let (client, codec, operation_timeout) = configured.into_parts();
-    let authority =
-        RemoteProviderRollbackFloorAuthorityV1::new(provider_id, client, codec, operation_timeout)
-            .map_err(|error| format!("failed to construct remote rollback authority: {error}"))?;
-    Ok(Arc::new(authority))
+fn service_rollback_authority_source_v1(
+    local_sqlite: Option<&Path>,
+) -> Result<&Path, String> {
+    local_sqlite.ok_or_else(|| "--service-rollback-authority is required".to_owned())
 }
 
 fn provider_store_startup_log_line_v1(elapsed_ms: u128) -> String {
@@ -8061,30 +7991,17 @@ fn provider_store_startup_log_line_v1(elapsed_ms: u128) -> String {
 
 #[cfg(test)]
 mod service_rollback_authority_source_tests_v1 {
-    use super::{
-        provider_store_startup_log_line_v1, service_rollback_authority_source_v1,
-        ServiceRollbackAuthoritySourceV1,
-    };
+    use super::{provider_store_startup_log_line_v1, service_rollback_authority_source_v1};
     use std::path::Path;
 
     #[test]
-    fn local_and_remote_sources_are_strictly_exclusive() {
+    fn local_sqlite_source_is_required() {
         let local = Path::new("/local.sqlite3");
-        let remote = Path::new("/remote.toml");
-        assert!(matches!(
-            service_rollback_authority_source_v1(Some(local), None, true).unwrap(),
-            ServiceRollbackAuthoritySourceV1::LocalSqlite(path) if path == local
-        ));
-        assert!(matches!(
-            service_rollback_authority_source_v1(None, Some(remote), false).unwrap(),
-            ServiceRollbackAuthoritySourceV1::RemoteConfig(path) if path == remote
-        ));
-        assert!(service_rollback_authority_source_v1(Some(local), None, false).is_err());
-        assert!(service_rollback_authority_source_v1(None, Some(remote), true).is_err());
-        assert!(service_rollback_authority_source_v1(None, None, false).is_err());
-        assert!(service_rollback_authority_source_v1(None, None, true).is_err());
-        assert!(service_rollback_authority_source_v1(Some(local), Some(remote), false).is_err());
-        assert!(service_rollback_authority_source_v1(Some(local), Some(remote), true).is_err());
+        assert_eq!(
+            service_rollback_authority_source_v1(Some(local)).unwrap(),
+            local
+        );
+        assert!(service_rollback_authority_source_v1(None).is_err());
     }
 
     #[test]
@@ -8122,8 +8039,6 @@ fn load_strict_service_admission_v1(
         || args.service_storeless_bat_v2.any_configured()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
-        || args.service_remote_rollback_authority_config_path.is_some()
-        || args.allow_local_service_rollback_authority_dev
         || args.service_free_ip_key_path.is_some()
         || args.service_trust_direct_peer_ip
         || !args.service_bat_key_paths.is_empty()
@@ -8268,8 +8183,6 @@ fn load_strict_service_admission_v1(
             || !args.cashu_keysets.is_empty()
             || args.service_store_path.is_some()
             || args.service_rollback_authority_path.is_some()
-            || args.service_remote_rollback_authority_config_path.is_some()
-            || args.allow_local_service_rollback_authority_dev
             || args.service_free_ip_key_path.is_some()
             || args.service_trust_direct_peer_ip
             || !args.service_bat_key_paths.is_empty()
@@ -8335,42 +8248,26 @@ fn load_strict_service_admission_v1(
             .service_store_path
             .as_deref()
             .ok_or_else(|| "--service-store is required".to_owned())?;
-        let rollback_source = service_rollback_authority_source_v1(
-            args.service_rollback_authority_path.as_deref(),
-            args.service_remote_rollback_authority_config_path
-                .as_deref(),
-            args.allow_local_service_rollback_authority_dev,
-        )?;
+        let rollback_path =
+            service_rollback_authority_source_v1(args.service_rollback_authority_path.as_deref())?;
         let canonical_store =
             validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
 
         let options = StoreOptions::default();
         let store_startup_check_started = Instant::now();
-        let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
-            ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
-                let canonical_rollback =
-                    validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
-                if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
-                    return Err(
-                        "provider store and rollback authority must be different files/inodes"
-                            .to_owned(),
-                    );
-                }
-                eprintln!(
-                    "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
-                );
-                Arc::new(
-                    SqliteRollbackFloorAuthorityV1::open_existing(
-                        &canonical_rollback,
-                        options.busy_timeout,
-                    )
-                    .map_err(|error| format!("failed to open rollback authority: {error}"))?,
-                )
-            }
-            ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
-                open_remote_service_rollback_authority_v1(provider_id, path)?
-            }
-        };
+        let canonical_rollback = validate_existing_private_sqlite_path_v1(
+            rollback_path,
+            "provider rollback authority",
+        )?;
+        if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
+            return Err(
+                "provider store and rollback authority must be different files/inodes".to_owned(),
+            );
+        }
+        let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
+            SqliteRollbackFloorAuthorityV1::open_existing(&canonical_rollback, options.busy_timeout)
+                .map_err(|error| format!("failed to open rollback authority: {error}"))?,
+        );
         let store = ProviderStore::open_existing(
             &canonical_store,
             provider_id,
@@ -8892,8 +8789,6 @@ fn storeless_bat_v2_has_forbidden_configuration_v2(args: &CliArgs) -> bool {
         || !args.cashu_keysets.is_empty()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
-        || args.service_remote_rollback_authority_config_path.is_some()
-        || args.allow_local_service_rollback_authority_dev
         || args.service_free_ip_key_path.is_some()
         || args.service_trust_direct_peer_ip
         || !args.service_bat_key_paths.is_empty()

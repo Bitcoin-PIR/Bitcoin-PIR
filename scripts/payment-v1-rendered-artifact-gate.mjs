@@ -193,12 +193,6 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
     ]),
   }),
-  "edge-rollback-authority-v1": Object.freeze({
-    templates: Object.freeze([
-      "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
-      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
-    ]),
-  }),
   "issuer-lightning-signet-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
@@ -245,11 +239,6 @@ const PROFILE_CATALOG = Object.freeze({
   "provider-direct-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
-    ]),
-  }),
-  "rollback-authority-v1": Object.freeze({
-    templates: Object.freeze([
-      "deploy/payment-v1/systemd/rollback-authority.service.in",
     ]),
   }),
 });
@@ -661,12 +650,6 @@ const TEMPLATE_CATALOG = Object.freeze({
     modes: ["0644"],
     rootOwned: true,
   },
-  "deploy/payment-v1/systemd/rollback-authority.service.in": {
-    artifactClass: "systemd-unit",
-    targetPath: "/etc/systemd/system/bitcoinpir-rollback-authority.service",
-    modes: ["0644"],
-    rootOwned: true,
-  },
   "deploy/payment-v1/systemd/hetzner-directory-relay.service.in": {
     artifactClass: "systemd-unit",
     targetPath: "/etc/systemd/system/bitcoinpir-directory-relay.service",
@@ -676,12 +659,6 @@ const TEMPLATE_CATALOG = Object.freeze({
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in": {
     artifactClass: "config",
     targetPath: "/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile",
-    modes: ["0400", "0440", "0600", "0640"],
-    rootOwned: false,
-  },
-  "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": {
-    artifactClass: "config",
-    targetPath: "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
     modes: ["0400", "0440", "0600", "0640"],
     rootOwned: false,
   },
@@ -756,7 +733,6 @@ const HEX64_PLACEHOLDERS = new Set([
   "MAINNET_QUOTE_DELEGATION_SHA256",
   "PAYMENT_ISSUER_SHA256",
   "PUBLISHER_NETNS_HELPER_SHA256",
-  "ROLLBACK_AUTHORITY_SHA256",
   "UNIFIED_SERVER_SHA256",
 ]);
 
@@ -765,15 +741,12 @@ const DNS_HOST_PLACEHOLDERS = new Set([
   "DIRECTORY_RELAY_WSS_HOST",
   "PAYMENT_ISSUER_HTTPS_HOST",
   "PROVIDER_WSS_HOST",
-  "ROLLBACK_AUTHORITY_HTTPS_HOST",
 ]);
 
 const IP_ADDRESS_PLACEHOLDERS = new Set([
   "DIRECTORY_PUBLISHER_CLIENT_IP",
   "DIRECTORY_PUBLISHER_PRIVATE_BIND",
   "PUBLIC_HTTPS_BIND",
-  "ROLLBACK_AUTHORITY_CLIENT_IP",
-  "ROLLBACK_AUTHORITY_PRIVATE_BIND",
 ]);
 
 const UID_GID_PLACEHOLDERS = new Set([
@@ -1291,8 +1264,6 @@ function validatePlaceholderValue(name, value) {
       new Set([
         "DIRECTORY_PUBLISHER_CLIENT_IP",
         "DIRECTORY_PUBLISHER_PRIVATE_BIND",
-        "ROLLBACK_AUTHORITY_CLIENT_IP",
-        "ROLLBACK_AUTHORITY_PRIVATE_BIND",
       ]).has(name) &&
       !isPrivateNumericAddress(value)
     ) {
@@ -1388,11 +1359,6 @@ function expectedPayloadClass(targetPath) {
     return "binary";
   }
   const name = basename(targetPath).toLowerCase();
-  // The Rust remote-rollback loader treats the TOML itself as private
-  // deployment material: it must be owned by the service effective UID at
-  // 0400/0600.
-  // Keep that stronger contract even though the filename has a .toml suffix.
-  if (name === "remote-rollback-authority.toml") return "secret";
   if (name.endsWith(".sha256")) return "hash-manifest";
   if (
     name.endsWith(".key") ||
@@ -1485,7 +1451,6 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
       "bitcoinpir-directory-relay.service",
     ]],
     "edge-hetzner-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-public-edge.service"]],
-    "edge-rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/edge/", "bitcoinpir-payment-v1-edge.service"]],
     "issuer-lightning-signet-v1": [
       ["/etc/bitcoinpir/payment-v1/issuer/", "bitcoinpir-payment-issuer.service"],
       ["/etc/bitcoinpir/payment-v1/lightning/", "bitcoinpir-core-lightning.service"],
@@ -1504,7 +1469,6 @@ function secretConsumerUnit(deploymentProfile, targetPath) {
       "/etc/bitcoinpir/payment-v1/provider-direct/",
       "bitcoinpir-provider-direct.service",
     ]],
-    "rollback-authority-v1": [["/etc/bitcoinpir/payment-v1/rollback-authority/", "bitcoinpir-rollback-authority.service"]],
   };
   return mappings[deploymentProfile]?.find(([prefix]) => targetPath.startsWith(prefix))?.[1];
 }
@@ -1542,42 +1506,7 @@ function validateSecretOwnerBindings(plan) {
   }
 }
 
-function remoteRollbackPathsForProfile(profile) {
-  const roots = {
-    "issuer-lightning-signet-v1": "/etc/bitcoinpir/payment-v1/issuer",
-    "issuer-lightning-mainnet-v1": "/etc/bitcoinpir/payment-v1/issuer",
-    "provider-v1": "/etc/bitcoinpir/payment-v1/provider",
-    "provider-no-standard-cashu-v1":
-      "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu",
-    "provider-direct-v1": "/etc/bitcoinpir/payment-v1/provider-direct",
-  };
-  const root = roots[profile];
-  if (!root) return null;
-  return Object.freeze({
-    config: `${root}/remote-rollback-authority.toml`,
-    signingSeed: `${root}/remote-rollback-client-signing.seed`,
-    valueRoot: `${root}/remote-rollback-value-root.key`,
-  });
-}
 
-function validateRemoteRollbackPayloadMetadata(plan) {
-  const paths = remoteRollbackPathsForProfile(plan.deployment_profile);
-  if (!paths) return;
-  const artifacts = new Map(
-    plan.payload_artifacts.map((artifact) => [artifact.target_path, artifact]),
-  );
-  for (const [role, targetPath] of Object.entries(paths)) {
-    const artifact = artifacts.get(targetPath);
-    if (!artifact) {
-      fail(`${plan.deployment_profile} remote rollback ${role} payload is missing`);
-    }
-    if (artifact.class !== "secret") {
-      fail(
-        `${plan.deployment_profile} remote rollback ${role} must use the owner-only secret artifact class`,
-      );
-    }
-  }
-}
 
 function validateProviderPayloadClosure(plan) {
   const profile = plan.deployment_profile;
@@ -1596,7 +1525,6 @@ function validateProviderPayloadClosure(plan) {
     /(?:^|[-_.])retained(?:[-_.]|$)/u.test(basename(artifact.target_path)))) {
     fail(`${profile} is a zero-retained closed profile and must not include retained-policy payload material`);
   }
-  const remote = remoteRollbackPathsForProfile(profile);
   const expected = new Set([
     ...(!direct ? [
       `${root}/cashu-bat.key`,
@@ -1612,9 +1540,6 @@ function validateProviderPayloadClosure(plan) {
     `${root}/databases.toml`,
     `${root}/provider-identity.cert`,
     `${root}/provider-identity.key`,
-    remote.config,
-    remote.signingSeed,
-    remote.valueRoot,
     `${root}/service-policy.bin`,
     `${root}/unified-server.sha256`,
     `/opt/bitcoinpir/unified-server/${plan.placeholders.UNIFIED_SERVER_SHA256}/unified_server`,
@@ -2027,35 +1952,10 @@ function validatePlan(plan) {
   assertSameStringSet(renderedSources, expectedTemplates, "deployment profile templates");
   validateProviderPayloadClosure(plan);
   validateIssuerLightningPreflightPayloadContract(plan);
-  validateRemoteRollbackPayloadMetadata(plan);
   validateDirectoryRelayConfigOwnerBinding(plan);
   validateSecretOwnerBindings(plan);
 }
 
-function remoteRollbackConfigManagedReferences(profile, targetPath, bytes) {
-  const paths = remoteRollbackPathsForProfile(profile);
-  if (!paths || targetPath !== paths.config) return [];
-  let text;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    fail(`${profile} remote rollback config is not valid UTF-8`);
-  }
-  if (/\r|\0/u.test(text)) {
-    fail(`${profile} remote rollback config must use canonical LF text`);
-  }
-  for (const [key, expected] of [
-    ["client_signing_seed_path", paths.signingSeed],
-    ["value_root_key_path", paths.valueRoot],
-  ]) {
-    const exactLine = `${key} = "${expected}"`;
-    const occurrences = text.split("\n").filter((line) => line.includes(key));
-    if (canonicalize(occurrences) !== canonicalize([exactLine])) {
-      fail(`${profile} remote rollback config must bind exact ${key}=${expected}`);
-    }
-  }
-  return [paths.signingSeed, paths.valueRoot];
-}
 
 function extractPlaceholders(text) {
   return new Set(text.match(/@[A-Z][A-Z0-9_]{0,63}@/gu)?.map((token) => token.slice(1, -1)) ?? []);
@@ -2328,14 +2228,6 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
     ]),
   }),
-  "edge-rollback-authority-v1": Object.freeze({
-    "/etc/systemd/system/bitcoinpir-payment-v1-edge.service": Object.freeze([
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED",
-    ]),
-  }),
   "issuer-lightning-signet-v1": Object.freeze({
     "/etc/systemd/system/bitcoinpir-cln-rpc-guard.service": Object.freeze([
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
@@ -2424,12 +2316,6 @@ const PROFILE_UNIT_CONDITIONS = Object.freeze({
       "ConditionPathExists=!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
       "ConditionPathExists=/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
-    ]),
-  }),
-  "rollback-authority-v1": Object.freeze({
-    "/etc/systemd/system/bitcoinpir-rollback-authority.service": Object.freeze([
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-      "ConditionPathExists=/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
     ]),
   }),
 });
@@ -2660,8 +2546,6 @@ function validateProfileUnitPolicy(
         "/etc/systemd/system/bitcoinpir-payment-v1-public-edge.service",
         "/etc/systemd/system/bitcoinpir-payment-v1-source-fair-edge.service",
       ]).has(fragmentPath)) ||
-    (deploymentProfile === "edge-rollback-authority-v1" &&
-      fragmentPath === "/etc/systemd/system/bitcoinpir-payment-v1-edge.service") ||
     (deploymentProfile ===
       "integrated-existing-bhtm-caddy-directory-public-v1" &&
       fragmentPath ===
@@ -3299,10 +3183,6 @@ function configManagedReferences(sourcePath, text, plan) {
       "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt",
       "/etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key",
     ],
-    "deploy/payment-v1/edge/rollback-authority.Caddyfile.in": [
-      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt",
-      "/etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
-    ],
   };
   if (edgeReferences[sourcePath]) {
     const expected = new Set(edgeReferences[sourcePath]);
@@ -3502,11 +3382,7 @@ function validateHashManifestScope(manifestPath, entries, plan) {
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
     case "/etc/bitcoinpir/payment-v1/edge/edge-config.sha256":
-      oneExact(
-        plan.deployment_profile === "edge-hetzner-v1"
-          ? "/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile"
-          : "/etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile",
-      );
+      oneExact("/etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile");
       return;
     case "/etc/bitcoinpir/payment-v1/source-fair-edge/haproxy.sha256":
       oneExact(`/opt/bitcoinpir/haproxy/${plan.placeholders.HAPROXY_SHA256}/haproxy`);
@@ -3613,9 +3489,6 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     case "/etc/bitcoinpir/payment-v1/directory-relay/config.sha256":
       oneExact("/etc/bitcoinpir/payment-v1/directory-relay/config.toml");
       return;
-    case "/etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256":
-      oneExact(`/opt/bitcoinpir/rollback-authority/${plan.placeholders.ROLLBACK_AUTHORITY_SHA256}/rollback-authority`);
-      return;
     default:
       fail(`hash manifest target is not in the closed deployment schema: ${manifestPath}`);
   }
@@ -3679,7 +3552,6 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
     ],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
     ["UNIFIED_SERVER_SHA256", "/opt/bitcoinpir/unified-server/", "/unified_server", true],
-    ["ROLLBACK_AUTHORITY_SHA256", "/opt/bitcoinpir/rollback-authority/", "/rollback-authority", true],
   ];
   for (const [placeholder, prefix, suffix, digestIsBinary] of pathChecks) {
     const digest = plan.placeholders[placeholder];
@@ -3784,13 +3656,6 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       isIP(plan.placeholders.DIRECTORY_PUBLISHER_CLIENT_IP)
   ) {
     fail("edge-hetzner-v1 publisher private bind and client addresses must use the same IP family");
-  }
-  if (
-    plan.deployment_profile === "edge-rollback-authority-v1" &&
-    plan.placeholders.ROLLBACK_AUTHORITY_PRIVATE_BIND ===
-      plan.placeholders.ROLLBACK_AUTHORITY_CLIENT_IP
-  ) {
-    fail("rollback-authority private bind and sole-client addresses must differ");
   }
   if (["issuer-lightning-signet-v1", "issuer-lightning-mainnet-v1"].includes(plan.deployment_profile)) {
     const uidValues = [
@@ -3922,13 +3787,6 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       sourceBytes,
       plan,
     );
-    for (const reference of remoteRollbackConfigManagedReferences(
-      plan.deployment_profile,
-      specification.target_path,
-      sourceBytes,
-    )) {
-      initialReferences.add(reference);
-    }
     const bundlePath = artifactBundlePath(specification.target_path);
     fileBytes.set(bundlePath, sourceBytes);
     artifacts.push({
@@ -4418,21 +4276,6 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       target_path:
         "/run/bitcoinpir-directory-public-edge/directory-public.sock",
       uid: identity.uid,
-    });
-  }
-  if (manifest.deployment_profile === "edge-rollback-authority-v1") {
-    const edgeIdentity = manifest.service_identities.find(
-      (identity) => identity.unit_name === "bitcoinpir-payment-v1-edge.service",
-    );
-    if (!edgeIdentity) {
-      fail("rollback-authority edge runtime request is missing its service identity");
-    }
-    runtimePaths.push({
-      file_type: "directory",
-      gid: edgeIdentity.gid,
-      mode: "0700",
-      target_path: "/run/bitcoinpir-rollback-authority-edge",
-      uid: edgeIdentity.uid,
     });
   }
   let publisherNetwork;

@@ -30,7 +30,6 @@ pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-cashu-custody = { path = "../../crates/payment/cashu-custody" }
 pir-payment-crypto = { path = "../../crates/payment/crypto" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
-pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
 pir-strict-https = { path = "../../crates/net/strict-https" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }

@@ -17,8 +17,6 @@ categories = ["database", "cryptography"]
 getrandom = "0.2"
 pir-private-files = { path = "../../security/private-files" }
 pir-service-protocol = { path = "../service" }
-pir-rollback-authority-client = { path = "../../security/rollback-authority-client" }
-pir-rollback-authority-protocol = { path = "../../security/rollback-authority-protocol" }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled", "backup"] }
 sha2 = "0.10"
 zeroize = "1"

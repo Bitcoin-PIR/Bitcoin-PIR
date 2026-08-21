@@ -2,7 +2,7 @@
 # Thin offline wrapper around payment-issuer state initialization and checks.
 set -euo pipefail
 usage() { cat <<'EOF'
-usage: scripts/payment-v1-issuer-state.sh <init|check> --store PATH --issuer-id-hex HEX --network NETWORK (--rollback-authority PATH | --remote-rollback-authority-config PATH) [--store-instance-id-hex HEX] [--dry-run]
+usage: scripts/payment-v1-issuer-state.sh <init|check> --store PATH --issuer-id-hex HEX --network NETWORK --rollback-authority PATH [--dry-run]
 
 NETWORK is bitcoin, testnet, signet, or regtest.  `init` creates fresh issuer
 state; `check` runs the startup-equivalent check.  --dry-run validates only the
@@ -36,21 +36,7 @@ require_one_value() {
     fi
   done
 }
-for required in --store --issuer-id-hex --network; do require_one_value "$required"; done
-local_authority=$(option_count --rollback-authority)
-remote_authority=$(option_count --remote-rollback-authority-config)
-store_instance=$(option_count --store-instance-id-hex)
-(( local_authority + remote_authority == 1 )) || { echo "$action requires exactly one rollback authority option" >&2; exit 2; }
-((local_authority == 0)) || require_one_value --rollback-authority
-((remote_authority == 0)) || require_one_value --remote-rollback-authority-config
-((store_instance <= 1)) || { echo '--store-instance-id-hex may be provided once' >&2; exit 2; }
-((store_instance == 0)) || require_one_value --store-instance-id-hex
-if [[ "$action" == init ]] && ((remote_authority == 1)); then
-  ((store_instance == 1)) || { echo 'remote init requires --store-instance-id-hex' >&2; exit 2; }
-elif ((store_instance == 1)); then
-  echo '--store-instance-id-hex is used only by init with a remote rollback authority' >&2
-  exit 2
-fi
+for required in --store --issuer-id-hex --network --rollback-authority; do require_one_value "$required"; done
 cmd_name=$([[ "$action" == init ]] && echo init-store || echo check-store)
 cmd=(cargo run --locked --offline -p payment-issuer -- "$cmd_name" "${args[@]}")
 if ((dry_run)); then

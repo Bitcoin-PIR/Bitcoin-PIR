@@ -1,11 +1,10 @@
 //! Explicit, one-shot initialization of a provider admission store and its
-//! independently configured rollback-floor authority.
+//! separate local rollback-floor authority file.
 
 use clap::Args;
-use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_store::{
-    ProviderStore, RemoteProviderRollbackFloorAuthorityV1, RollbackFloorAuthorityV1,
-    SqliteRollbackFloorAuthorityV1, StoreOptions, SCHEMA_VERSION,
+    ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    SCHEMA_VERSION,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,24 +18,9 @@ pub struct ServiceStoreInitArgs {
     /// New provider-local admission/spent-set SQLite file.
     #[arg(long)]
     pub store: PathBuf,
-    /// New local SQLite rollback floor (development/test only).
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    pub rollback_authority: Option<PathBuf>,
-    /// Existing owner-only production remote-authority deployment config.
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    pub remote_rollback_authority_config: Option<PathBuf>,
-    /// Exact nonzero 16-byte ID required for remote initialization. Local
-    /// development/test initialization rejects it and generates a random ID.
+    /// New separate local SQLite rollback floor file.
     #[arg(long)]
-    pub store_instance_id_hex: Option<String>,
+    pub rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     pub busy_timeout_ms: u64,
@@ -61,83 +45,40 @@ where
     if !(1..=60_000).contains(&args.busy_timeout_ms) {
         return Err("--busy-timeout-ms must be in 1..=60000".to_owned());
     }
-    let authority_source = provider_rollback_authority_source_v1(
-        args.rollback_authority.as_deref(),
-        args.remote_rollback_authority_config.as_deref(),
-    )?;
-    let store_instance_id = match (authority_source, args.store_instance_id_hex.as_deref()) {
-        (ProviderRollbackAuthoritySourceV1::RemoteConfig(_), Some(value)) => {
-            crate::payment_artifact::parse_hex_exact::<16>("--store-instance-id-hex", value)?
-        }
-        (ProviderRollbackAuthoritySourceV1::RemoteConfig(_), None) => {
-            return Err(
-                "--store-instance-id-hex is required with --remote-rollback-authority-config so an interrupted initialization can resume the exact remote binding"
-                    .to_owned(),
-            );
-        }
-        (ProviderRollbackAuthoritySourceV1::LocalSqlite(_), Some(_)) => {
-            return Err(
-                "--store-instance-id-hex is reserved for remote-authority initialization; local development/test initialization always generates a fresh random ID"
-                    .to_owned(),
-            );
-        }
-        (ProviderRollbackAuthoritySourceV1::LocalSqlite(_), None) => {
-            random_nonzero_store_instance_id()?
-        }
-    };
-    if store_instance_id.iter().all(|byte| *byte == 0) {
-        return Err("--store-instance-id-hex must not be all zero".to_owned());
-    }
+    let store_instance_id = random_nonzero_store_instance_id()?;
     let store_path = prepare_new_private_file_path(&args.store)?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
-    let (authority, local_authority_path): (Arc<dyn RollbackFloorAuthorityV1>, Option<PathBuf>) =
-        match authority_source {
-            ProviderRollbackAuthoritySourceV1::LocalSqlite(configured_path) => {
-                eprintln!(
-                    "warning: local SQLite provider rollback authority is development/test-only; use --remote-rollback-authority-config for production"
+    let authority_path = prepare_new_private_file_path(&args.rollback_authority)?;
+    if store_path == authority_path {
+        return Err("--store and --rollback-authority must be different paths".to_owned());
+    }
+    if store_path.parent() == authority_path.parent() {
+        eprintln!(
+            "warning: provider store and rollback authority share one directory; prefer independent backup/restore domains"
+        );
+    }
+    let authority: Arc<dyn RollbackFloorAuthorityV1> =
+        match SqliteRollbackFloorAuthorityV1::create(&authority_path, timeout) {
+            Ok(authority) => Arc::new(authority),
+            Err(error) => {
+                let detail = format!(
+                    "create rollback authority {}: {error}",
+                    authority_path.display()
                 );
-                let authority_path = prepare_new_private_file_path(configured_path)?;
-                if store_path == authority_path {
-                    return Err(
-                        "--store and --rollback-authority must be different paths".to_owned()
-                    );
-                }
-                if store_path.parent() == authority_path.parent() {
-                    eprintln!(
-                        "warning: local provider store and rollback authority share one directory; this mode is development/test only"
-                    );
-                }
-                let authority =
-                    match SqliteRollbackFloorAuthorityV1::create(&authority_path, timeout) {
-                        Ok(authority) => authority,
-                        Err(error) => {
-                            let detail = format!(
-                                "create rollback authority {}: {error}",
-                                authority_path.display()
-                            );
-                            return if std::fs::symlink_metadata(&authority_path).is_ok() {
-                                Err(incomplete_local_ceremony_error(
-                                    detail,
-                                    &store_path,
-                                    &authority_path,
-                                ))
-                            } else {
-                                Err(detail)
-                            };
-                        }
-                    };
-                (Arc::new(authority), Some(authority_path))
+                return if std::fs::symlink_metadata(&authority_path).is_ok() {
+                    Err(incomplete_local_ceremony_error(
+                        detail,
+                        &store_path,
+                        &authority_path,
+                    ))
+                } else {
+                    Err(detail)
+                };
             }
-            ProviderRollbackAuthoritySourceV1::RemoteConfig(config_path) => (
-                open_remote_provider_rollback_authority_v1(provider_id, config_path)?,
-                None,
-            ),
         };
     pre_store_create(&store_path);
     let finish = || -> Result<(), String> {
-        if let Some(authority_path) = local_authority_path.as_deref() {
-            set_owner_only(authority_path)?;
-        }
+        set_owner_only(&authority_path)?;
         let store = ProviderStore::create(
             &store_path,
             store_instance_id,
@@ -160,23 +101,11 @@ where
         {
             return Err("new provider store failed exact identity self-check".to_owned());
         }
-        // Reopen the authority through the same selected production boundary;
-        // remote mode deliberately creates a fresh pinned HTTPS client and
-        // performs a fresh authenticated Read during ProviderStore open.
-        let reopened_authority: Arc<dyn RollbackFloorAuthorityV1> = match authority_source {
-            ProviderRollbackAuthoritySourceV1::LocalSqlite(_) => {
-                let authority_path = local_authority_path
-                    .as_deref()
-                    .ok_or_else(|| "local rollback authority path was lost".to_owned())?;
-                Arc::new(
-                    SqliteRollbackFloorAuthorityV1::open_existing(authority_path, timeout)
-                        .map_err(|error| format!("reopen rollback authority: {error}"))?,
-                )
-            }
-            ProviderRollbackAuthoritySourceV1::RemoteConfig(config_path) => {
-                open_remote_provider_rollback_authority_v1(provider_id, config_path)?
-            }
-        };
+        // Reopen both files through the same production open-existing path.
+        let reopened_authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
+            SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
+                .map_err(|error| format!("reopen rollback authority: {error}"))?,
+        );
         let reopened = ProviderStore::open_existing(
             &store_path,
             provider_id,
@@ -195,31 +124,13 @@ where
         }
         Ok(())
     };
-    if let Some(authority_path) = local_authority_path.as_deref() {
-        finish()
-            .map_err(|error| incomplete_local_ceremony_error(error, &store_path, authority_path))?;
-    } else {
-        finish().map_err(|error| {
-            incomplete_remote_ceremony_error(error, &store_path, store_instance_id)
-        })?;
-    };
+    finish().map_err(|error| incomplete_local_ceremony_error(error, &store_path, &authority_path))?;
 
     println!("provider_id={}", hex::encode(provider_id));
     println!("store_instance_id={}", hex::encode(store_instance_id));
     println!("schema_version={SCHEMA_VERSION}");
     println!("store={}", store_path.display());
-    match authority_source {
-        ProviderRollbackAuthoritySourceV1::LocalSqlite(_) => println!(
-            "rollback_authority={}",
-            local_authority_path
-                .as_deref()
-                .ok_or_else(|| "local rollback authority path was lost".to_owned())?
-                .display()
-        ),
-        ProviderRollbackAuthoritySourceV1::RemoteConfig(config_path) => {
-            println!("remote_rollback_authority_config={}", config_path.display())
-        }
-    }
+    println!("rollback_authority={}", authority_path.display());
     Ok(())
 }
 
@@ -229,58 +140,6 @@ fn incomplete_local_ceremony_error(error: String, store: &Path, authority: &Path
         store.display(),
         authority.display()
     )
-}
-
-fn incomplete_remote_ceremony_error(
-    error: String,
-    store: &Path,
-    store_instance_id: [u8; 16],
-) -> String {
-    format!(
-        "{error}; remote initialization may already have committed the floor for store_instance_id={}; preserve the exact remote config and ID, inspect {}, and resume only this same ceremony (never create a replacement identity or lower/reset the remote floor)",
-        hex::encode(store_instance_id),
-        store.display()
-    )
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum ProviderRollbackAuthoritySourceV1<'a> {
-    LocalSqlite(&'a Path),
-    RemoteConfig(&'a Path),
-}
-
-pub(crate) fn provider_rollback_authority_source_v1<'a>(
-    local_sqlite: Option<&'a Path>,
-    remote_config: Option<&'a Path>,
-) -> Result<ProviderRollbackAuthoritySourceV1<'a>, String> {
-    match (local_sqlite, remote_config) {
-        (Some(path), None) => Ok(ProviderRollbackAuthoritySourceV1::LocalSqlite(path)),
-        (None, Some(path)) => Ok(ProviderRollbackAuthoritySourceV1::RemoteConfig(path)),
-        (None, None) => Err(
-            "exactly one of --rollback-authority or --remote-rollback-authority-config is required"
-                .to_owned(),
-        ),
-        (Some(_), Some(_)) => Err(
-            "--rollback-authority and --remote-rollback-authority-config are mutually exclusive"
-                .to_owned(),
-        ),
-    }
-}
-
-pub(crate) fn open_remote_provider_rollback_authority_v1(
-    provider_id: [u8; 32],
-    config_path: &Path,
-) -> Result<Arc<dyn RollbackFloorAuthorityV1>, String> {
-    let configured =
-        load_remote_rollback_authority_deployment_for_business_domain_v1(config_path, provider_id)
-            .map_err(|error| {
-                format!("load remote provider rollback-authority configuration: {error}")
-            })?;
-    let (client, codec, operation_timeout) = configured.into_parts();
-    let authority =
-        RemoteProviderRollbackFloorAuthorityV1::new(provider_id, client, codec, operation_timeout)
-            .map_err(|error| format!("construct remote provider rollback authority: {error}"))?;
-    Ok(Arc::new(authority))
 }
 
 fn prepare_new_private_file_path(path: &Path) -> Result<PathBuf, String> {
@@ -365,9 +224,7 @@ mod tests {
         ServiceStoreInitArgs {
             provider_id_hex: hex::encode([7u8; 32]),
             store: store_dir.join("provider.sqlite3"),
-            rollback_authority: Some(authority_dir.join("floor.sqlite3")),
-            remote_rollback_authority_config: None,
-            store_instance_id_hex: None,
+            rollback_authority: authority_dir.join("floor.sqlite3"),
             busy_timeout_ms: 1_000,
         }
     }
@@ -377,7 +234,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
         let store_path = args.store.clone();
-        let authority_path = args.rollback_authority.clone().unwrap();
+        let authority_path = args.rollback_authority.clone();
         run(args).unwrap();
         assert!(store_path.is_file());
         assert!(authority_path.is_file());
@@ -410,7 +267,7 @@ mod tests {
 
         let other = tempfile::tempdir().unwrap();
         let mut same = args(other.path());
-        same.rollback_authority = Some(same.store.clone());
+        same.rollback_authority = same.store.clone();
         assert!(run(same).unwrap_err().contains("different paths"));
     }
 
@@ -421,7 +278,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
         let store_path = args.store.clone();
-        let authority_path = args.rollback_authority.clone().unwrap();
+        let authority_path = args.rollback_authority.clone();
         run(args).unwrap();
         for path in [store_path, authority_path] {
             assert_eq!(
@@ -465,7 +322,7 @@ mod tests {
     fn provider_creation_failure_preserves_authority_and_reports_incomplete_ceremony() {
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
-        let authority_path = args.rollback_authority.clone().unwrap();
+        let authority_path = args.rollback_authority.clone();
         let result = run_with_pre_store_create_v1(args, |store_path| {
             std::fs::write(store_path, b"deterministic provider-create blocker").unwrap();
         });
@@ -483,48 +340,5 @@ mod tests {
             authority_path.is_file(),
             "authority must be preserved for operator inspection"
         );
-    }
-
-    #[test]
-    fn authority_source_is_exactly_one_and_local_rejects_explicit_identity() {
-        let local = Path::new("/local.sqlite3");
-        let remote = Path::new("/remote.toml");
-        assert!(matches!(
-            provider_rollback_authority_source_v1(Some(local), None).unwrap(),
-            ProviderRollbackAuthoritySourceV1::LocalSqlite(path) if path == local
-        ));
-        assert!(matches!(
-            provider_rollback_authority_source_v1(None, Some(remote)).unwrap(),
-            ProviderRollbackAuthoritySourceV1::RemoteConfig(path) if path == remote
-        ));
-        assert!(provider_rollback_authority_source_v1(None, None).is_err());
-        assert!(provider_rollback_authority_source_v1(Some(local), Some(remote)).is_err());
-
-        let directory = tempfile::tempdir().unwrap();
-        let mut local_args = args(directory.path());
-        local_args.store_instance_id_hex = Some(hex::encode([9u8; 16]));
-        assert!(run(local_args)
-            .unwrap_err()
-            .contains("reserved for remote-authority initialization"));
-
-        let other = tempfile::tempdir().unwrap();
-        let mut remote_args = args(other.path());
-        let store_path = remote_args.store.clone();
-        remote_args.rollback_authority = None;
-        remote_args.remote_rollback_authority_config =
-            Some(other.path().join("missing-remote.toml"));
-        assert!(run(remote_args)
-            .unwrap_err()
-            .contains("required with --remote-rollback-authority-config"));
-        assert!(!store_path.exists());
-
-        let remote_error = incomplete_remote_ceremony_error(
-            "response lost".to_owned(),
-            Path::new("/provider.sqlite3"),
-            [0x42; 16],
-        );
-        assert!(remote_error.contains("preserve the exact remote config and ID"));
-        assert!(remote_error.contains("never create a replacement identity"));
-        assert!(remote_error.contains(&hex::encode([0x42; 16])));
     }
 }

@@ -20,18 +20,15 @@ streams; no database split can restore the two-server non-collusion assumption.
 SQLite WAL files MUST remain on a local filesystem. A WAL on NFS or multiple
 active issuer hosts is not a consensus system. Two independent ProviderStore
 database files MUST NOT be used as active/active replicas, even when both point
-at the same external rollback-floor CAS. The fresh grant nonce makes an exact
+at the same rollback-floor file. The fresh grant nonce makes an exact
 mutation from two clones produce different successor commitments, so one CAS
 wins and the other clone fails closed; that is clone fencing, not replication.
 Multi-host active/active requires one reviewed linearizable detailed-state
 store with linearizable unique constraints plus an explicit failover protocol.
 
-The rollback-floor authority MUST also live in a separate administrative and
-backup/restore domain, not merely a different SQLite filename. A VM,
-filesystem, volume or backup job that snapshots the main database and its
-authority together can restore a stale but mutually consistent pair and
-therefore defeats the rollback boundary. Production readiness requires an
-independent restore drill and generation/commitment comparison.
+Back up the rollback-floor file separately from the main database. A backup
+job that snapshots the main database and its floor together can restore a
+stale but mutually consistent pair and defeat the rollback boundary.
 
 ## Provider store
 

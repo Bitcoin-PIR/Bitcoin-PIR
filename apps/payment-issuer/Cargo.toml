@@ -18,7 +18,6 @@ default = []
 test-only-fake-lightning = []
 # Non-default real-process E2E only. This forwards the private test-CA hook;
 # release builds remain rejected by pir-strict-https at compile time.
-remote-authority-process-e2e = ["pir-rollback-authority-client/test-only-webpki-root"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -35,7 +34,6 @@ pir-issuer-store = { path = "../../crates/payment/issuer-store" }
 pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
 pir-payment-crypto = { path = "../../crates/payment/crypto" }
 pir-private-files = { path = "../../crates/security/private-files" }
-pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
 pir-service-protocol = { path = "../../crates/protocol/service" }
 zeroize = "1"
 
@@ -44,7 +42,6 @@ rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
 pir-service-store = { path = "../../crates/protocol/service-store" }
-rollback-authority = { path = "../rollback-authority" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tempfile = "3"
 

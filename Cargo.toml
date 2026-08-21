@@ -16,9 +16,6 @@ members = [
     "crates/payment/provider-clearing-client",
     "crates/payment/issuer-core",
     "crates/payment/issuer-service",
-    "crates/security/rollback-authority-client",
-    "crates/security/rollback-authority-protocol",
-    "crates/security/rollback-authority-store",
     "crates/security/private-files",
     "crates/net/strict-https",
     "crates/directory/nostr",
@@ -38,7 +35,6 @@ members = [
     "apps/dev-issuer",
     "apps/payment-issuer",
     "apps/cln-rpc-guard",
-    "apps/rollback-authority",
     "apps/directory-relay",
 ]
 exclude = ["vendor/bitcoinpir-oram"]

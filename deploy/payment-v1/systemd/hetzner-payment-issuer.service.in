@@ -37,7 +37,7 @@ ExecStart=/opt/bitcoinpir/payment-issuer/@PAYMENT_ISSUER_SHA256@/payment-issuer 
     --max-total-quotes 16384 \
     --allow-origin @BITCOINPIR_WEB_ORIGIN@ \
     --store /var/lib/bitcoinpir-payment-issuer/issuer.sqlite3 \
-    --remote-rollback-authority-config /etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml \
+    --rollback-authority /var/lib/bitcoinpir-payment-issuer/rollback.sqlite3 \
     --quote-delegation /etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin \
     --quote-signing-key /etc/bitcoinpir/payment-v1/issuer/quote-signing.key \
     --credential-derivation-key /etc/bitcoinpir/payment-v1/issuer/credential-derivation.key \

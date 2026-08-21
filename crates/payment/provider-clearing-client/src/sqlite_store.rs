@@ -198,13 +198,6 @@ impl AuthenticatedProviderSettlementFloorTransitionV1 {
         &self.next
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_remote_test(
-        expected: Option<ProviderSettlementFloorV1>,
-        next: ProviderSettlementFloorV1,
-    ) -> Self {
-        Self { expected, next }
-    }
 }
 
 impl core::fmt::Debug for AuthenticatedProviderSettlementFloorTransitionV1 {

@@ -3,10 +3,7 @@
 //! Provider-owned notes move only through owner-only files, and the provider
 //! store records an exact sealed artifact before that artifact may be released.
 //! The explicit `spent-confirm` command makes one bounded strict-HTTPS NUT-07
-//! request with no polling or automatic retry. In production, any subcommand
-//! that opens the provider store also performs the fresh signed Read/CAS calls
-//! required by its pinned-HTTPS remote rollback authority; local SQLite
-//! development/test mode remains offline. An acknowledgement means only that
+//! request with no polling or automatic retry. An acknowledgement means only that
 //! an external wallet took custody and does not release exposure. A later
 //! explicit NUT-07 confirmation proves only that those old notes are spent;
 //! neither operation proves NUT-05, Lightning
@@ -112,20 +109,9 @@ struct ProviderStoreArgs {
     /// Existing owner-only provider admission/custody SQLite file.
     #[arg(long)]
     store: PathBuf,
-    /// Existing local SQLite rollback floor (development/test only).
-    #[arg(
-        long,
-        required_unless_present = "remote_rollback_authority_config",
-        conflicts_with = "remote_rollback_authority_config"
-    )]
-    rollback_authority: Option<PathBuf>,
-    /// Existing owner-only production remote-authority deployment config.
-    #[arg(
-        long,
-        required_unless_present = "rollback_authority",
-        conflicts_with = "rollback_authority"
-    )]
-    remote_rollback_authority_config: Option<PathBuf>,
+    /// Existing separate local SQLite rollback floor file.
+    #[arg(long)]
+    rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     busy_timeout_ms: u64,
@@ -1379,41 +1365,19 @@ fn open_provider_store(args: &ProviderStoreArgs) -> Result<(ProviderStore, [u8; 
         "provider store",
     )?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
-    let authority: Arc<dyn RollbackFloorAuthorityV1> =
-        match crate::service_store_init::provider_rollback_authority_source_v1(
-            args.rollback_authority.as_deref(),
-            args.remote_rollback_authority_config.as_deref(),
-        )? {
-            crate::service_store_init::ProviderRollbackAuthoritySourceV1::LocalSqlite(path) => {
-                eprintln!(
-                    "warning: local SQLite provider rollback authority is development/test-only; use --remote-rollback-authority-config for production"
-                );
-                let authority_path =
-                    crate::service_store_init::validate_existing_private_file_path(
-                        path,
-                        "provider rollback authority",
-                    )?;
-                if crate::service_store_init::private_database_paths_alias(
-                    &store_path,
-                    &authority_path,
-                )? {
-                    return Err(
-                        "provider store and rollback authority resolve to the same file/inode"
-                            .to_owned(),
-                    );
-                }
-                Arc::new(
-                    SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-                        .map_err(|error| format!("open provider rollback authority: {error}"))?,
-                )
-            }
-            crate::service_store_init::ProviderRollbackAuthoritySourceV1::RemoteConfig(path) => {
-                crate::service_store_init::open_remote_provider_rollback_authority_v1(
-                    provider_id,
-                    path,
-                )?
-            }
-        };
+    let authority_path = crate::service_store_init::validate_existing_private_file_path(
+        &args.rollback_authority,
+        "provider rollback authority",
+    )?;
+    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
+        return Err(
+            "provider store and rollback authority resolve to the same file/inode".to_owned(),
+        );
+    }
+    let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
+        SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
+            .map_err(|error| format!("open provider rollback authority: {error}"))?,
+    );
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
@@ -2257,43 +2221,6 @@ mod tests {
             &artifact_digest,
         ])
         .is_err());
-        assert!(TestCli::try_parse_from([
-            "cashu-custody",
-            "acknowledge",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-            "--export-id-hex",
-            &export_id,
-            "--artifact-digest-hex",
-            &artifact_digest,
-        ])
-        .is_err());
-        let remote = TestCli::try_parse_from([
-            "cashu-custody",
-            "acknowledge",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--remote-rollback-authority-config",
-            "/private/remote.toml",
-            "--export-id-hex",
-            &export_id,
-            "--artifact-digest-hex",
-            &artifact_digest,
-        ])
-        .unwrap();
-        assert!(matches!(
-            remote.args.command,
-            CashuCustodyCommand::Acknowledge(_)
-        ));
-
         let parsed = TestCli::try_parse_from([
             "cashu-custody",
             "spent-confirm",
@@ -2680,17 +2607,14 @@ mod tests {
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode(provider_id),
             store: store.clone(),
-            rollback_authority: Some(rollback_authority.clone()),
-            remote_rollback_authority_config: None,
-            store_instance_id_hex: None,
+            rollback_authority: rollback_authority.clone(),
             busy_timeout_ms: 1_000,
         })
         .unwrap();
         let args = ProviderStoreArgs {
             provider_id_hex: hex::encode(provider_id),
             store,
-            rollback_authority: Some(rollback_authority),
-            remote_rollback_authority_config: None,
+            rollback_authority,
             busy_timeout_ms: 1_000,
         };
         let opened = open_provider_store(&args).unwrap().0;

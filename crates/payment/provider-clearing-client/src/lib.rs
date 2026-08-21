@@ -13,7 +13,6 @@ mod bat_v2_https_transport;
 #[cfg(test)]
 mod bat_v2_tests;
 mod https_transport;
-mod remote_floor;
 mod sqlite_store;
 
 pub use bat_v2::{
@@ -25,7 +24,6 @@ pub use bat_v2::{
 };
 pub use bat_v2_https_transport::StrictHttpsBatV2RedeemTransportV2;
 pub use https_transport::StrictHttpsProviderSettlementTransportV1;
-pub use remote_floor::RemoteProviderSettlementFloorAuthorityV1;
 pub use sqlite_store::{
     AuthenticatedProviderSettlementFloorTransitionV1, LocalTestSqliteProviderSettlementFloorV1,
     ProviderSettlementFloorAuthorityErrorV1, ProviderSettlementFloorAuthorityV1,

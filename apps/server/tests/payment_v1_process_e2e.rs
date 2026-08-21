@@ -168,7 +168,6 @@ impl ServerProcess {
             fixture.store_path.display().to_string(),
             "--service-rollback-authority".to_owned(),
             fixture.rollback_path.display().to_string(),
-            "--allow-local-service-rollback-authority-dev".to_owned(),
             "--max-connections".to_owned(),
             "16".to_owned(),
             "--service-max-concurrent-auth".to_owned(),
@@ -1790,10 +1789,3 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-#[cfg(feature = "remote-authority-process-e2e")]
-#[path = "support/payment_v1_remote_authority_process.rs"]
-mod remote_authority_process;
-
-#[cfg(feature = "remote-authority-process-e2e")]
-#[path = "support/payment_v1_three_authority_process.rs"]
-mod three_authority_process;

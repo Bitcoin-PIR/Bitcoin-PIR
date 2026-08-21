@@ -1,7 +1,7 @@
 # Payment process E2E TLS fixtures
 
-These files are public, test-only material for the non-default
-`remote-authority-process-e2e` feature. The leaf is valid for `localhost` from
+These files are public, test-only TLS material for the non-default
+process-E2E test features. The leaf is valid for `localhost` from
 2026-07-27 through 2126-07-03 and is signed by the included private test CA.
 Its complete DER SubjectPublicKeyInfo SHA-256 is:
 

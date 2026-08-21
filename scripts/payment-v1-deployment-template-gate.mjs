@@ -50,8 +50,6 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
     "afa1bb9e225f1ca2c998942aa33f4e5e4f2c3437d22d5ec2ecb6f565b135a675",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in":
     "6a52ff0034390ffda572bd785e766653dc749736bd942f497a4b897778113983",
-  "deploy/payment-v1/edge/rollback-authority.Caddyfile.in":
-    "237162cb5d57333adf789e612fcdb4be602bf6e0c9cd99a03ecd079ab8aa257f",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in":
     "d1770c45641a37dd7de083a4d6510b6aa14a34a30121420cdc160d345597ddcd",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example":
@@ -79,15 +77,13 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in":
     "1421b2615ed4e5bdfd773bf4c6cd9100c25426d393504135ad1e5c9b22218130",
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in":
-    "69d1cb2b3e5cc380c97cceecd7d29a7612b130243672c5de836f14ac44cd1d9b",
+    "dad1ac7230151e81af3d58ac3672a7d6e10f4fd7e67e5379b4a2c0780a131518",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "2f3392c6326c0c458b925effb23707d40c43eed7c78af7c3e89aa66f36342e08",
+    "b541a5338eb9041a4e03c516ac927f32f8a91b195dfa9cefd4d698af83a6885b",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
     "5a5927d344c5750da8882af981b67916bd2801551e3de2a62d03f6a99955e6d1",
   "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in":
     "ab75460760ef79721bf430f9ae80d5b613cde0d58bc5cb88ee80d1f0b4693876",
-  "deploy/payment-v1/systemd/payment-v1-edge.service.in":
-    "163c213bbac472755b6def303b06bed1ec41c8001aa96e1f8df6a5edc5c3b53c",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in":
     "8e416e9010f11722cfdf21433c86b9a1bb3dab380988bb62af7af565666f9453",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in":
@@ -129,7 +125,6 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in",
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
-  "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
   "deploy/payment-v1/edge/source-fair-haproxy.cfg.in",
   "deploy/payment-v1/lightning/README.md",
   "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
@@ -147,14 +142,12 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in",
   "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in",
-  "deploy/payment-v1/systemd/payment-v1-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
   "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
   "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
   "deploy/payment-v1/systemd/hetzner-provider.service.in",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
-  "deploy/payment-v1/systemd/rollback-authority.service.in",
   "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
   "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
   "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
@@ -594,10 +587,6 @@ function validatePinnedServiceSandbox(unit, label, type, capabilities) {
 
 function validateProductionForbiddenFlags(text, label) {
   const forbidden = [
-    [/--allow-local-service-rollback-authority-dev(?:\s|$)/, "local provider rollback acknowledgement"],
-    [/--allow-local-rollback-authority-dev(?:\s|$)/, "local issuer rollback acknowledgement"],
-    [/(?:^|\s)--service-rollback-authority(?:\s|=)/m, "local provider rollback authority"],
-    [/(?:^|\s)--rollback-authority(?:\s|=)/m, "local issuer rollback authority"],
     [/--allow-experimental-arc(?:\s|$)/, "experimental ARC acknowledgement"],
     [/--service-arc-key(?:\s|$)/, "provider ARC key"],
     [/(?:^|\s)--arc-key(?:\s|$)/m, "issuer ARC key"],
@@ -746,7 +735,7 @@ function validateHetznerProvider(
       ["--service-provider-id-hex", "@HETZNER_PROVIDER_ID_HEX@"],
       ["--service-policy-key-hex", "@HETZNER_POLICY_PUBKEY_HEX@"],
       ["--service-store", `/var/lib/${stateDirectory}/provider.sqlite3`],
-      ["--service-remote-rollback-authority-config", `${configRoot}/remote-rollback-authority.toml`],
+      ["--service-rollback-authority", `/var/lib/${stateDirectory}/rollback.sqlite3`],
       ...(!direct ? [["--service-bat-key", `${configRoot}/cashu-bat.key`]] : []),
       ...(!noStandardCashu ? [
         ["--service-cashu-recovery-key", `1=${configRoot}/cashu-recovery-epoch-1.key`],
@@ -872,7 +861,7 @@ function validateHetznerIssuer(text) {
       ["--max-total-quotes", "16384"],
       ["--allow-origin", "@BITCOINPIR_WEB_ORIGIN@"],
       ["--store", "/var/lib/bitcoinpir-payment-issuer/issuer.sqlite3"],
-      ["--remote-rollback-authority-config", "/etc/bitcoinpir/payment-v1/issuer/remote-rollback-authority.toml"],
+      ["--rollback-authority", "/var/lib/bitcoinpir-payment-issuer/rollback.sqlite3"],
       ["--quote-delegation", "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin"],
       ["--quote-signing-key", "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key"],
       ["--credential-derivation-key", "/etc/bitcoinpir/payment-v1/issuer/credential-derivation.key"],
@@ -891,74 +880,6 @@ function validateHetznerIssuer(text) {
     ],
     label,
   );
-}
-
-function validateRollbackAuthority(text) {
-  const label = "rollback-authority template";
-  const unit = validateInactiveSystemdTemplate(text, label, [
-    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-    "/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-ACTIVATION-APPROVED",
-  ]);
-  exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
-  exactDirectiveKeys(
-    unit,
-    "Service",
-    [
-      "Type", "User", "Group", "UMask", "StateDirectory", "StateDirectoryMode",
-      "WorkingDirectory", "ExecStartPre", "ExecStart", "Restart", "RestartSec",
-      "TimeoutStopSec", "NoNewPrivileges", "PrivateTmp", "ProtectSystem", "ProtectHome",
-      "PrivateDevices", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
-      "ProtectControlGroups", "LockPersonality", "MemoryDenyWriteExecute",
-      "RestrictSUIDSGID", "RestrictNamespaces", "RestrictRealtime",
-      "SystemCallArchitectures", "CapabilityBoundingSet", "AmbientCapabilities",
-      "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths",
-      "ReadWritePaths",
-    ],
-    label,
-  );
-  validateCommonServiceHardening(unit, label, true);
-  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR independent rollback authority (template only)"], label);
-  exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-rollback-authority"], label);
-  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-rollback-authority"], label);
-  exactDirectiveValues(unit, "Service", "StateDirectory", ["bitcoinpir-rollback-authority"], label);
-  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-rollback-authority"], label);
-  exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
-  exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
-  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/rollback-authority"], label);
-  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-rollback-authority"], label);
-  exactDirectiveValues(
-    unit,
-    "Service",
-    "ExecStartPre",
-    [
-      "/usr/bin/test -x /opt/bitcoinpir/rollback-authority/@ROLLBACK_AUTHORITY_SHA256@/rollback-authority",
-      "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/rollback-authority/rollback-authority.sha256",
-    ],
-    label,
-  );
-  const command = onlyDirectiveValue(unit, "Service", "ExecStart", label);
-  validateExactCommand(
-    command,
-    [
-      "/opt/bitcoinpir/rollback-authority/@ROLLBACK_AUTHORITY_SHA256@/rollback-authority",
-      "serve",
-    ],
-    [
-      ["--bind", "127.0.0.1:8099"],
-      ["--store", "/var/lib/bitcoinpir-rollback-authority/authority.sqlite3"],
-      ["--authority-secret", "/etc/bitcoinpir/payment-v1/rollback-authority/authority.seed"],
-      ["--authority-metadata", "/etc/bitcoinpir/payment-v1/rollback-authority/authority-public.txt"],
-      ["--expected-authority-pubkey-hex", "@AUTHORITY_PUBKEY_HEX@"],
-      ["--busy-timeout-ms", "5000"],
-      ["--io-timeout-ms", "10000"],
-      ["--max-connections", "32"],
-    ],
-    label,
-  );
-  exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
-  exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost"], label);
 }
 
 function validateCoreLightningUnit(text) {
@@ -1359,81 +1280,6 @@ function validateMainnetLightningV1RuntimeUnit(text, kind) {
   requireText(command, "serve-cln", label);
   requireText(command, "--quote-delegation /etc/bitcoinpir/payment-v1/mainnet-lightning-v1/quote-delegation.bin", label);
   rejectPattern(command, /(?:cashu|arc|payout)/iu, label, "Cashu, ARC, or payout argument");
-}
-
-function validatePaymentEdgeUnit(text) {
-  const label = "Payment V1 rollback-authority Caddy edge template";
-  const unit = validateInactiveSystemdTemplate(text, label, [
-    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-    "/etc/bitcoinpir/payment-v1/ROLLBACK-EDGE-ACTIVATION-APPROVED",
-    "/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED",
-    "/etc/bitcoinpir/payment-v1/ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED",
-  ], { requireStateDirectoryMode: false });
-  exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
-  exactDirectiveKeys(
-    unit,
-    "Service",
-    [
-      "Type", "User", "Group", "UMask", "RuntimeDirectory", "RuntimeDirectoryMode",
-      "WorkingDirectory", "Environment", "ExecStartPre", "ExecStart", "Restart",
-      "RestartSec", "TimeoutStartSec", "TimeoutStopSec", "LimitNOFILE",
-      "LimitCORE", "MemoryMax", "MemorySwapMax", "TasksMax", "StandardError",
-      "StandardOutput",
-      "AmbientCapabilities", "CapabilityBoundingSet", "NoNewPrivileges",
-      "PrivateDevices", "PrivateTmp", "ProtectSystem", "ProtectHome",
-      "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
-      "ProtectControlGroups", "ProtectClock", "ProtectHostname", "LockPersonality",
-      "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RestrictRealtime",
-      "RestrictNamespaces", "SystemCallArchitectures", "RestrictAddressFamilies",
-      "IPAddressDeny", "IPAddressAllow", "ReadOnlyPaths", "ReadWritePaths",
-    ],
-    label,
-  );
-  validatePinnedServiceSandbox(unit, label, "notify", "CAP_NET_BIND_SERVICE");
-  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Payment V1 pinned private rollback-authority TLS edge (template only)"], label);
-  exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-payment-edge"], label);
-  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-payment-edge"], label);
-  exactDirectiveValues(unit, "Service", "RuntimeDirectory", ["bitcoinpir-rollback-authority-edge"], label);
-  exactDirectiveValues(unit, "Service", "RuntimeDirectoryMode", ["0700"], label);
-  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/run/bitcoinpir-rollback-authority-edge"], label);
-  exactDirectiveValues(unit, "Service", "Environment", ["XDG_DATA_HOME=/run/bitcoinpir-rollback-authority-edge/data XDG_CONFIG_HOME=/run/bitcoinpir-rollback-authority-edge/config"], label);
-  exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
-  exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
-  exactDirectiveValues(unit, "Service", "TimeoutStartSec", ["60"], label);
-  exactDirectiveValues(unit, "Service", "TimeoutStopSec", ["30"], label);
-  exactDirectiveValues(unit, "Service", "LimitNOFILE", ["1024"], label);
-  exactDirectiveValues(unit, "Service", "LimitCORE", ["0"], label);
-  exactDirectiveValues(unit, "Service", "MemoryMax", ["268435456"], label);
-  exactDirectiveValues(unit, "Service", "MemorySwapMax", ["0"], label);
-  exactDirectiveValues(unit, "Service", "TasksMax", ["128"], label);
-  exactDirectiveValues(unit, "Service", "StandardError", ["null"], label);
-  exactDirectiveValues(unit, "Service", "StandardOutput", ["null"], label);
-  exactDirectiveValues(unit, "Service", "IPAddressDeny", ["any"], label);
-  exactDirectiveValues(unit, "Service", "IPAddressAllow", ["localhost @ROLLBACK_AUTHORITY_CLIENT_IP@"], label);
-  exactDirectiveValues(
-    unit,
-    "Service",
-    "ExecStartPre",
-    [
-      "/usr/bin/test -x /opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy",
-      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/caddy.sha256",
-      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/edge-config.sha256",
-      "/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy validate --config /etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile --adapter caddyfile",
-    ],
-    label,
-  );
-  exactDirectiveValues(
-    unit,
-    "Service",
-    "ExecStart",
-    ["/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy run --config /etc/bitcoinpir/payment-v1/edge/rollback-authority.Caddyfile --adapter caddyfile"],
-    label,
-  );
-  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/edge"], label);
-  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/run/bitcoinpir-rollback-authority-edge"], label);
-  rejectPattern(text, /(?:^|\n)\s*StateDirectory/um, label, "persistent state directory");
 }
 
 function validatePublicPaymentEdgeUnit(text) {
@@ -2344,7 +2190,6 @@ function validateSourceFairHaproxy(text) {
     label,
     "persistent/replicated state, identity forwarding, capture, or extension hook",
   );
-  rejectPattern(activeText, /127\.0\.0\.1:8099/u, label, "rollback-authority routing");
   rejectPattern(activeText, /http-request\s+(?:add|set)-header/iu, label, "header identity injection");
   for (const header of [
     "Baggage", "CF-Connecting-IP", "Client-IP", "Fastly-Client-IP",
@@ -2468,7 +2313,6 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     rejectPattern(text, /@[A-Z][A-Z0-9_]*@/u, label, "placeholder value");
     for (const [pattern, description] of [
       [/--service-storeless-free-pow-policy-digest-hex/u, "storeless policy digest"],
-      [/--service-remote-rollback-authority-config/u, "remote rollback authority"],
       [/--service-bat-key/u, "provider-local BAT key"],
       [/--service-arc-key/u, "provider-local ARC key"],
       [/--service-store(?:\s|=)/u, "ProviderStore"],
@@ -2571,7 +2415,6 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ["--service-policy-key-hex", "public-hex"],
     ["--service-store", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/provider.sqlite3`],
     ["--service-rollback-authority", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/rollback.sqlite3`],
-    ["--allow-local-service-rollback-authority-dev", null],
     ["--service-shared-authorization", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-authorization.bin`],
     ["--service-shared-issuer-approval", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-approval.bin`],
     ["--service-shared-operator-key-hex", "public-hex"],
@@ -2619,7 +2462,6 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     rejectPattern(command, /@[A-Z][A-Z0-9_]*@/u, profileLabel, "placeholder value");
     for (const [pattern, description] of [
       [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy digest"],
-      [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
       [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
       [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
       [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "provider-local Cashu material"],
@@ -2662,7 +2504,6 @@ function validateVpsbgPremiumFreePowBeta(text, mode) {
   for (const [pattern, description] of [
     [/(?:^|\s)--service-storeless-free-pow-policy-digest-hex(?:\s|=)/u, "storeless policy pin"],
     [/(?:^|\s)--service-retained-policy(?:\s|=)/u, "retained policy"],
-    [/(?:^|\s)--service-remote-rollback-authority-config(?:\s|=)/u, "remote rollback authority"],
     [/(?:^|\s)--service-bat-key(?:\s|=)/u, "provider-local BAT key"],
     [/(?:^|\s)--service-arc-key(?:\s|=)/u, "provider-local ARC key"],
     [/(?:^|\s)--service-cashu-(?:recovery|custody|exposure-limit)(?:\s|=)/u, "standard Cashu material"],
@@ -2683,8 +2524,7 @@ function validateVpsbgPremiumFreePowBeta(text, mode) {
       ["--service-policy-key-hex", "@VPSBG_PREMIUM_POLICY_PUBKEY_HEX@"],
       ["--service-store", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3"],
       ["--service-rollback-authority", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3"],
-      ["--allow-local-service-rollback-authority-dev", null],
-      ["--service-shared-authorization", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin"],
+        ["--service-shared-authorization", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin"],
       ["--service-shared-issuer-approval", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin"],
       ["--service-shared-operator-key-hex", "@VPSBG_OPERATOR_PUBKEY_HEX@"],
       ["--service-shared-issuer-settlement-key-hex", "@HETZNER_ISSUER_SETTLEMENT_PUBKEY_HEX@"],
@@ -3352,12 +3192,6 @@ export function validateDeploymentTree(rootInput) {
     validateMainnetLightningV1RuntimeUnit(readRequired(root, path).text, kind);
   }
 
-  const paymentEdge = readRequired(
-    root,
-    "deploy/payment-v1/systemd/payment-v1-edge.service.in",
-  );
-  validatePaymentEdgeUnit(paymentEdge.text);
-
   const publicPaymentEdge = readRequired(
     root,
     "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
@@ -3562,27 +3396,6 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in",
   );
   validateIntegratedExistingCaddyManagedBlock(integratedExistingCaddyBlock.text);
-
-  const authorityEdge = readRequired(
-    root,
-    "deploy/payment-v1/edge/rollback-authority.Caddyfile.in",
-  );
-  validateCaddyTemplate(
-    authorityEdge.text,
-    "rollback-authority Caddy template",
-    ["127.0.0.1:8099"],
-    ["{", "@ROLLBACK_AUTHORITY_HTTPS_HOST@ {"],
-  );
-  for (const required of [
-    "bind @ROLLBACK_AUTHORITY_PRIVATE_BIND@",
-    "tls /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.crt /etc/bitcoinpir/payment-v1/edge/rollback-authority-server.key",
-  ]) requireText(authorityEdge.text, required, "rollback-authority Caddy template");
-
-  const authority = readRequired(
-    root,
-    "deploy/payment-v1/systemd/rollback-authority.service.in",
-  );
-  validateRollbackAuthority(authority.text);
 
   const vpsbg = readRequired(
     root,

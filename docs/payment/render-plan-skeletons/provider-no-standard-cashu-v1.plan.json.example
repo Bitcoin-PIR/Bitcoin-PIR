@@ -66,33 +66,6 @@
       "uid": 52933
     },
     {
-      "class": "secret",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 52934,
-      "mode": "0400",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-authority.toml",
-      "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-authority.toml",
-      "uid": 52933
-    },
-    {
-      "class": "secret",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 52934,
-      "mode": "0400",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-client-signing.seed",
-      "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-client-signing.seed",
-      "uid": 52933
-    },
-    {
-      "class": "secret",
-      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
-      "gid": 52934,
-      "mode": "0400",
-      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider-no-standard-cashu/remote-rollback-value-root.key",
-      "target_path": "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu/remote-rollback-value-root.key",
-      "uid": 52933
-    },
-    {
       "class": "policy",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 52934,

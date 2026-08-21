@@ -86,27 +86,11 @@ or more generations ahead, a same-generation fork, or an authority ahead of
 SQLite fails closed. This one-successor rule prevents a process from stacking
 unanchored mutations.
 
-All issuer replicas must use the same strongly ordered external authority. A
-process-local mutex, a copy stored beside SQLite, or a caller-managed integer
-floor is not sufficient. Deployments without such an authority must not expose
-paid issuance.
-
-`RemoteIssuerRollbackFloorAuthorityV1` is the production remote adapter. It
-requires a pinned-HTTPS rollback-authority client and a client-only value codec
-bound to the same authority instance, namespace, and Ed25519 client key. The
-authority receives only a fixed-size opaque AEAD record and its revision. Each
-operation performs a fresh signed read and an exact compare-and-swap; remote,
-signature, binding, authentication, decoding, timeout, and ambiguous-outcome
-failures have no local fallback. `SqliteIssuerRollbackFloorAuthorityV1`
-remains an explicit development/test adapter and is not an independent
-production authority.
-
-An outcome-unknown CAS is reconciled in-process with the same operation ID and
-exact expected/desired opaque records. Following process loss, V1 performs a
-fresh authenticated read and converges only when the decoded logical floor is
-the expected or desired floor; it does not claim to replay the same remote
-operation-log entry across restart. That stronger property requires durable
-storage of the operation ID and both opaque records before the first CAS.
+All issuer replicas must share the same authority file; there is exactly one
+active issuer per store. `SqliteIssuerRollbackFloorAuthorityV1` is the
+supported adapter: a separate local SQLite file holding the monotonic floor.
+Keep it in an independent backup/restore domain from the main database so a
+combined snapshot restore cannot silently revert both files together.
 
 Floor-only restart convergence is safe for this trait because issuer SQLite
 commits before anchoring, permits at most one unanchored generation, and binds
