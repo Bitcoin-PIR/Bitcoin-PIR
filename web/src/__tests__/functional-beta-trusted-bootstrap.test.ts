@@ -21,13 +21,13 @@ describe('bundled functional-beta trusted bootstrap', () => {
     ]);
     expect(parsed.providers[1].hardwareAttestation).toBe('required');
     expect(parsed.providers[1].operatorSigningKeyHex).toBe(
-      '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a',
+      '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      'e3f6b4df452512b871dd00aa53fa1e887e8c52e8c4e258e233d6b656b1afaa69a71ead21e836c9717c0af0c012684c18',
+      '92b357c051c308f4dd073d36fb7a09e809abf7e77742e9364f4014e55addac4b696dcbfe41ed29cef7aa8f62b4a74888',
     );
     expect(parsed.providers[1].serverPin.binarySha256Hex).toBe(
-      '4b05fc9030b63fe75ae59a9f80c9a449d620d16f56f969c0b43ff15bd98df6e2',
+      '3cfe3c1a40eb509bd8882d15b04cf8564ad4d551be9b53be7f8bd70c53cec858',
     );
     expect(parsed.providers[0].supportedWorkloads).toEqual([
       'dpf-query', 'harmony-hint', 'onion-session',

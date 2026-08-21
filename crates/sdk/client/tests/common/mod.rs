@@ -64,10 +64,10 @@ pub fn hetzner_pins() -> LiveProviderPins {
 pub fn vpsbg_pins() -> LiveProviderPins {
     LiveProviderPins {
         provider_id: decode_hex_array(
-            "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
+            "a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d",
         ),
         policy_signing_key: verifying_key(
-            "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
+            "791d6e18d6ed2147a0925ec23a157e7ef1f9314d7add7d13b179ef14c16e91b2",
         ),
     }
 }
