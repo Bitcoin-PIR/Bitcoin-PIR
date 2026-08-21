@@ -1,441 +1,71 @@
-# BitcoinPIR Project Memory
+# BitcoinPIR project memory
 
-> **Current agent policy (2026-08-13).** Read [`AGENTS.md`](AGENTS.md) first.
-> Prioritize the smallest working user path; do not turn P2/P3 security,
-> reproducibility, or audit ideas into release blockers. Long builds require an
-> expected duration, observable progress, and a hard stop. Production operations
-> start at [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md), and
-> retained database/Direct ORAM inputs are indexed in
-> [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md).
-> Older sections below preserve protocol history; they do not authorize a
-> deployment or override current runbooks.
+Bitcoin Private Information Retrieval system. Three backends — DPF-PIR
+(2-server), OnionPIR (1-server FHE), HarmonyPIR (stateful hint) — serving
+private UTXO lookups from a snapshot of the Bitcoin UTXO set. Working rules
+for agents are in [`AGENTS.md`](AGENTS.md); read that first.
 
-## Project Overview
-Bitcoin Private Information Retrieval (PIR) system with three backends:
-DPF-PIR, OnionPIR, HarmonyPIR. Supports full snapshots and delta
-synchronization for incremental updates.
+## Where things are decided
 
-> **Verification status (2026-04-29).** The multi-session leakage
-> verification effort wrapped: all four privacy invariants below are
-> closed end-to-end across DPF / HarmonyPIR / OnionPIR (Rust) plus the
-> WASM bindings and standalone TS `OnionPirWebClient`. The EasyCrypt spec in
-> [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs)
-> mechanizes the simulator-property argument
-> (39 lemmas, zero admits). Cross-language equivalence (Rust ↔ TS)
-> verified live against Hetzner. See
-> [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for
-> the consolidated final-state summary, including the honest scope
-> split (mechanized wire-shape vs cited primitive-layer reductions).
-> Production binds the exact proof commit, manifest, and verification record
-> through [`verification/locks/formal-proofs.json`](verification/locks/formal-proofs.json);
-> the repository's mutable default branch is for browsing only.
+| Question | Authority |
+| --- | --- |
+| Which docs are current | [`docs/README.md`](docs/README.md) |
+| Which tests to run | [`docs/TESTING.md`](docs/TESTING.md) |
+| Any production operation | [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) |
+| Client trust pins (binary hashes, SEV measurement, DB proofs) | [`web/src/attest-pin.ts`](web/src/attest-pin.ts) — never copy values into prose |
+| Live production state | Query it (`scripts/vpsbg-production-status.sh`); never infer from documents |
+| Privacy invariants and proofs | [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) + [`verification/locks/`](verification/locks/) |
 
----
+## Privacy invariants (NEVER weaken; details in VERIFICATION_OVERVIEW.md)
 
-## CRITICAL SECURITY REQUIREMENTS
+1. **Fixed query padding.** Every PIR round sends exactly K=75 INDEX groups,
+   K_CHUNK=80 CHUNK groups, 25 Merkle sibling queries. Padding is the privacy
+   mechanism — never "optimize" it away.
+2. **Merkle INDEX item-count symmetry.** Every INDEX query emits exactly 2
+   Merkle items (both cuckoo positions probed, no early exit), in all four
+   clients: `crates/sdk/client/src/{dpf,harmony,onion}.rs` and
+   `web/src/onionpir_client.ts`.
+3. **CHUNK round-presence symmetry.** Every query — found, not-found, whale —
+   triggers at least one K_CHUNK-padded CHUNK round, so found/not-found is
+   invisible on the wire.
+4. **HarmonyPIR request-count symmetry.** Every per-group slot sends exactly
+   T−1 sorted distinct indices; never filter empty cells.
+5. **INDEX Merkle group-symmetry.** INDEX Merkle items are distributed via
+   `pbc_plan_rounds`, never hard-coupled to `derive_groups_3[0]`.
 
-### Query Padding (MANDATORY for Privacy)
+One admitted trade-off: per-query CHUNK Merkle item count reveals approximate
+UTXO count (M=16 pad deliberately removed 2026-05-17; do not re-add without
+reopening that decision).
 
-**NEVER OPTIMIZE AWAY PADDING. The padding is INTENTIONAL and REQUIRED for privacy.**
+## Layout
 
-Within each PIR round, queries are padded to FIXED counts:
-- **INDEX queries**: Always K=75 groups (regardless of how many real queries)
-- **CHUNK queries**: Always K_CHUNK=80 groups (regardless of how many real chunks)
-- **MERKLE queries**: Always 25 sibling queries (regardless of proof depth)
+`crates/protocol` (core primitives, server runtime), `crates/sdk`
+(core/client/server/wasm), `crates/payment`, `crates/trust`, `apps/server`
+(unified_server), `apps/admin`, `tools/db-builder`, `web/` (browser client),
+`deploy/`, `verification/`. Full map in [`README.md`](README.md);
+terminology in [`GLOSSARY.md`](GLOSSARY.md).
 
-**Why:** If the server sees varying numbers of queries, it can infer information about which groups contain real queries vs padding. By always sending exactly K queries, the server cannot distinguish real queries from dummy queries.
+## Common commands
 
-**How padding works:**
-1. Real queries are placed in their computed cuckoo positions
-2. Remaining empty groups get random DPF keys (dummy queries)
-3. Server processes ALL groups identically, cannot tell which are real
-
-### Cuckoo Hashing and "Not Found" Verification
-
-Each scripthash maps to INDEX_CUCKOO_NUM_HASHES=2 possible cuckoo positions. To prove a scripthash is "not found", ALL positions must be checked and verified:
-- Client checks position h=0, then h=1
-- If neither contains the scripthash, it's definitively not in the database
-- Merkle verification must cover ALL checked bins to prove "not found"
-
-### Merkle INDEX Item-Count Symmetry (MANDATORY for Privacy)
-
-**All four implementations MUST emit exactly `INDEX_CUCKOO_NUM_HASHES = 2`
-Merkle items per INDEX query, regardless of query outcome (found at h=0,
-found at h=1, not-found, or whale):**
-
-- `crates/sdk/client/src/dpf.rs` (Rust DPF — also drives `web/src/dpf-adapter.ts` via WASM)
-- `crates/sdk/client/src/harmony.rs` (Rust HarmonyPIR — also drives `web/src/harmonypir-adapter.ts` via WASM)
-- `crates/sdk/client/src/onion.rs` (Rust OnionPIR, feature-gated)
-- `web/src/onionpir_client.ts` (standalone TS — SEAL doesn't compile to wasm32)
-
-The per-level sibling **pass count** (`max_items_per_group`) is directly
-observable on the wire. If a found query emits 1 INDEX Merkle item and a
-not-found query emits 2, the server can infer found-vs-not-found from
-the batched sibling request size for every INDEX Merkle level. That
-defeats the "chunk rounds reveal found/not-found" trade-off at the INDEX
-level and leaks cuckoo-position (h=0 vs h=1) as well.
-
-**Invariants clients must preserve:**
-1. Both cuckoo positions are probed for every INDEX query — no early exit
-   on match. (In DPF and Onion the extra probe is tracking-only since
-   both bins are XOR'd from the same batch response; in Harmony it costs
-   one extra wire round per found@h=0 query.)
-2. The Merkle item builder iterates the full `all_index_bins` list
-   unconditionally, emitting one `BucketMerkleItem` per probed bin.
-3. Whales emit INDEX Merkle items from their probed bins too — the
-   whale's INDEX entry (`num_chunks=0`) is committed to the INDEX Merkle
-   root, so whale-exclusion is a verifiable property.
-4. Chunk-level Merkle items attach only to the matched INDEX bin.
-   CHUNK Merkle item counts still vary with UTXO count — that is a
-   separate, documented trade-off (see "What the Server Learns" below).
-
-### CHUNK Round-Presence Symmetry (MANDATORY for Privacy)
-
-**Every INDEX query — found, not-found, or whale — MUST trigger at least
-one K_CHUNK-padded CHUNK PIR round.** Skipping CHUNK rounds when the
-INDEX returned no match leaks found-vs-not-found per query at the wire
-level (the server simply observes whether any CHUNK traffic followed
-the INDEX phase).
-
-This invariant is enforced in:
-- `crates/sdk/client/src/dpf.rs::query_single` — calls `query_chunk_level(&[], …)`
-  for the not-found and whale paths; `query_chunk_level` upgrades an empty
-  `chunk_ids` list to a single empty-round plan so the existing per-group
-  random-alpha padding code emits a fully synthetic K_CHUNK-padded batch.
-- `crates/sdk/client/src/harmony.rs::query_single` — same shape; the dummy
-  round is dispatched via `run_chunk_round(db_id, &[], …)` which already
-  takes the `build_synthetic_dummy` branch for every group when
-  `real_queries` is empty.
-- `crates/sdk/client/src/onion.rs::query_chunk_level` — queries each
-  scripthash's *real* chunk-id list (no M-padding since Phase 4 / WS-A).
-  A batch whose scripthashes are all not-found / whale (`unique` empty)
-  substitutes a single empty round (`rounds = vec![Vec::new()]`) so one
-  all-dummy K_CHUNK CHUNK PIR round still goes out; only a genuinely
-  empty batch (no scripthashes) skips.
-- `web/src/onionpir_client.ts::queryBatch` — same shape: the CHUNK
-  phase runs over the real chunk-id list, with a `chunkRounds = [[]]`
-  empty-round fallback when `uniqueEntryIds` is empty so a non-empty
-  all-not-found batch still issues one all-dummy K_CHUNK round.
-
-**Invariants implementations must preserve:**
-1. The padded round is byte-identical in shape to a real round on the
-   wire (K_CHUNK groups, real or `build_synthetic_dummy` per group;
-   indistinguishable to the server).
-2. Dummy responses are decrypted but their bin contents are never
-   surfaced to the caller — there is no `IndexResult` pointing at a
-   dummy entry_id, so result-assembly skips it naturally.
-3. **No CHUNK Merkle items are synthesised for the dummy round.**
-   CHUNK-Merkle round-presence is supplied separately by the Merkle
-   verifier (`verify_bucket_merkle_batch_generic` for DPF / Harmony;
-   `verify_sub_tree` / `verifySubTree` for OnionPIR), which always
-   issues ≥1 all-dummy CHUNK-Merkle pass. The per-query CHUNK Merkle
-   item *count* varies with UTXO count — a documented, admitted leak
-   since Phase 4; see "CHUNK Merkle Item-Count — Documented
-   Trade-off" and "What the Server Learns" below.
-4. The dummy entry_id / chunk_id is generated from a fresh CSPRNG for
-   each query so the same not-found scripthash queried twice picks
-   different dummies (no correlation oracle).
-
-### HarmonyPIR Per-Group Request-Count Symmetry (MANDATORY for Privacy)
-
-**Every HarmonyPIR per-group query slot (INDEX, CHUNK, or sibling) MUST
-send exactly `T − 1` sorted distinct u32 indices drawn from
-`[0, real_n)`, regardless of segment state, query count, or round.**
-
-Filtering `EMPTY` cells and sending only the surviving non-empty
-indices leaks the per-group count. The count drifts upward as hints
-get consumed and as cells fill via relocation — a server can fit the
-trajectory, distinguish the real-query slot from padding dummies
-every round, estimate queries-since-last-rehint, and predict when a
-fresh offline phase is imminent.
-
-Do NOT add any code path that emits fewer than `T − 1` indices, and
-do NOT add a "skip if empty" early-exit.
-
-The fix is implemented in `HarmonyGroup::build_request` /
-`build_synthetic_dummy` (see `docs/plans/README.md`) by
-padding the shortfall with random distinct indices drawn from
-`[0, real_n) \ R` and XOR-cancelling those dummy response entries in
-`process_response` / `process_response_xor_only`. No wire-format or
-server-side change is required.
-
-### INDEX Merkle Group-Symmetry (MANDATORY for Privacy)
-
-**INDEX Merkle items in a multi-query batch MUST be distributed
-across PBC groups via `pbc_plan_rounds(derive_groups_3, K, 3, 500)`,
-not hard-coupled to `derive_groups_3(scripthash, K)[0]`.**
-
-Two scripthashes whose `derive_groups_3[0]` collide would, under the
-old fixed-`[0]` placement, accumulate all four INDEX Merkle items in
-one PBC group → the per-Merkle-level pass count would jump from 2 to
-4. The wire-observable pass count is therefore a function of the
-batch's collision pattern at the assigned-group level — a side
-channel the server can fit to candidate scripthash sets.
-
-**Why:** The PBC plan distributes scripthashes across distinct PBC
-slots within a round. Each scripthash's INDEX query (and its two
-INDEX Merkle items) inherits the planner-assigned group, so
-`max_items_per_group_per_level = 2` independently of input collision
-pattern. Wire round count per level becomes `2 × n_servers × n_levels
-× n_pbc_rounds`; for typical batches with `N ≤ K`, `n_pbc_rounds = 1`.
-
-**How implementations preserve this:**
-
-1. **DPF** ([crates/sdk/client/src/dpf.rs](crates/sdk/client/src/dpf.rs)):
-   `query_index_phase_batched` runs one or more K-padded DPF INDEX
-   wire rounds per PBC round. Real placements use the planner-assigned
-   group's cuckoo positions; remaining groups send random dummies.
-2. **HarmonyPIR** ([crates/sdk/client/src/harmony.rs](crates/sdk/client/src/harmony.rs)):
-   `query_index_phase_batched` runs `INDEX_CUCKOO_NUM_HASHES = 2`
-   wire rounds per PBC round (one per cuckoo position). Each placed
-   group sends `build_request(target_bin)`; remaining groups send
-   `build_synthetic_dummy()`.
-3. **OnionPIR** ([crates/sdk/client/src/onion.rs](crates/sdk/client/src/onion.rs)):
-   already uses `pbc_plan_rounds` over INDEX queries, plus a separate
-   gid-level PBC plan at the Merkle layer with ARITY=120 — at batch=2
-   the axis is structurally trivial regardless of placement (`pbc_plan_rounds`
-   over ≤4 unique gids always packs into 1 round).
-
-**Server-side compatibility:** the build script replicates each
-scripthash's INDEX entry to all 3 candidate groups
-([tools/db-builder/src/build_cuckoo_generic.rs:87-90](tools/db-builder/src/build_cuckoo_generic.rs:87)
-and [tools/db-builder/src/gen_4_build_merkle.rs:236-239](tools/db-builder/src/gen_4_build_merkle.rs:236)),
-so any candidate group can serve the query. No server changes were
-required.
-
-**Empirical witnesses (against `wss://weikeng1.bitcoinpir.org`):**
-- `dpf_simulator_property_multi_query_collision`: A=B=C=19 rounds,
-  IndexMerkleSiblings A=B=C=12. Pre-closure: A=33 / C=21.
-- `harmony_simulator_property_multi_query_collision`: A=B=C=20 rounds,
-  IndexMerkleSiblings A=B=C=6. Pre-closure: A=28 / C=22.
-- `onion_simulator_property_multi_query_collision`: A=B=C=10 rounds,
-  IndexMerkleSiblings A=B=C=2 (per-group Merkle since Phase 3: each
-  query's 2 INDEX cuckoo positions are 2 leaves in its per-group tree
-  → 2 passes; content-independent).
-
-### CHUNK Merkle Item-Count — Documented Trade-off (NOT an invariant)
-
-> **Status:** the M=16 chunk-Merkle item-count pad was **removed** in
-> retired `PLAN_MERKLE_CODING.md` Phase 4 / WS-A `[HUMAN decision,
-> 2026-05-17]`; see `docs/plans/README.md`.
-> Earlier revisions of this file described a "CHUNK Merkle Item-Count
-> Symmetry" MANDATORY invariant — that invariant **no longer holds**
-> and its removal was deliberate. This section documents the resulting
-> admitted leak. Do **not** re-introduce M-padding without re-opening
-> the decision.
-
-**A query contributes its *real* chunk count of CHUNK Merkle items**
-(found-with-N → N items; not-found / whale → 0). The server therefore
-learns the approximate per-query UTXO count — more precisely, the
-per-Merkle-level pass count = the maximum real chunk count across a
-chunk-PBC group. This is the `chunk_max_items_per_group_per_level`
-axis in [`protocol-proofs/Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) —
-an **admitted** (open) axis again.
-
-**Why the pad was removed:** the M=16 pad (`pad_chunk_ids_to_m`,
-commit `565ea47c`) forced every query — including a 1-UTXO address —
-to fetch and verify 16 chunk entries, inflating chunk-layer work ~16×
-and pinning the leak-free batch ceiling at ~`K_CHUNK/16 ≈ 5` instead
-of ~`K_CHUNK ≈ 80`. ~99 % of mainnet addresses have exactly 1 chunk,
-so the pad hid a count that is `1` for almost everyone — its privacy
-benefit did not justify the cost.
-
-**Found-vs-not-found is STILL closed** — by a *separate* mechanism,
-CHUNK Round-Presence Symmetry (above), which does not depend on
-M-padding:
-- DPF / HarmonyPIR — `verify_bucket_merkle_batch_generic`
-  (`merkle_verify.rs`) issues ≥1 all-dummy CHUNK-Merkle pass even for
-  an all-not-found batch.
-- OnionPIR — `onion_merkle::verify_sub_tree` (Rust) and the standalone
-  `verifySubTree` (TS) always verify the DATA sub-tree, issuing ≥1
-  all-dummy K_CHUNK sibling pass for a 0-leaf DATA tree.
-
-So a not-found query (0 CHUNK Merkle items) still emits the same
-ChunkMerkleSiblings + DATA tree-top traffic as a found query; only the
-per-query *item count* (hence approximate UTXO count) is observable.
-Witnessed by the `{dpf,harmony,onion}_found_vs_not_found_have_byte_identical_profiles`
-leakage integration tests.
-
-**Dead code removed in Phase 4:** `pad_chunk_ids_to_m`,
-`derive_chunk_pad_seed`, `derive_synthetic_chunk_ids` + their Kani
-harnesses (`dpf.rs`); `CHUNK_MERKLE_ITEMS_PER_QUERY` (`params.rs`);
-`padChunkIdsToM` + `deriveChunkPadSeed` + `deriveSyntheticChunkIds` +
-`CHUNK_MERKLE_ITEMS_PER_QUERY` (`web/src/onionpir_client.ts`) and the
-`onion_pad_chunk_ids.test.ts` suite.
-
-### What the Server Learns (Documented Trade-offs)
-
-The server **cannot** learn:
-- Which specific groups contain real queries (due to padding)
-- Which specific scripthash was queried
-- Whether a query was found or not-found at the INDEX Merkle level
-  (closed by the Merkle INDEX Item-Count Symmetry invariant above)
-- Whether a query was found or not-found from CHUNK round presence
-  (closed by the CHUNK Round-Presence Symmetry invariant above)
-- Which cuckoo position (h=0 vs h=1) a found query matched at
-- The collision pattern of `derive_groups_3[0]` across a multi-query
-  batch (closed by the INDEX Merkle Group-Symmetry invariant above)
-- Whether a query is found or not-found from CHUNK-Merkle round
-  presence (closed by CHUNK Round-Presence Symmetry — every query,
-  incl. not-found / whale, still emits ≥1 all-dummy ChunkMerkleSiblings
-  pass + DATA tree-tops via the per-bucket / per-group Merkle verifier)
-
-The server **can** observe (known trade-offs):
-- Timing patterns across rounds.
-- The approximate per-query UTXO count — i.e. how many CHUNK Merkle
-  items each query contributes (the `chunk_max_items_per_group_per_level`
-  axis). Admitted since Phase 4 removed the M=16 pad — see "CHUNK
-  Merkle Item-Count — Documented Trade-off" above. Mild: ~99 % of
-  addresses have exactly 1 chunk.
-
-Hiding the approximate UTXO count again would require re-padding CHUNK
-Merkle item counts to a fixed `M` per query (the removed M=16
-mechanism — forcing not-found and small-found queries to emit the same
-item count as a near-whale found query). That is a ~16× chunk-layer
-cost the project deliberately decided against.
-
----
-
-## SDK Layout
-
-### Crates
-- `pir-core` — shared primitives (Merkle N-ary, cuckoo, DPF, PBC, hashes).
-- `pir-sdk` — high-level types, sync planning (`SyncPlanner`),
-  `PirMetrics` observer trait + `AtomicMetrics` recorder, error taxonomy
-  (`PirError` + `ErrorKind`).
-- `pir-sdk-client` — native + wasm32 Rust client. Backends: `DpfClient`,
-  `HarmonyClient`, `OnionClient` (feature-gated `onion`). Transport
-  abstraction (`PirTransport` + `WsConnection` native /
-  `WasmWebSocketTransport` wasm32 / `MockTransport` tests). Per-bucket
-  Merkle verification + OnionPIR per-bin Merkle verification.
-- `pir-sdk-server` — thin server wrapper over `pir-runtime-core`
-  (`PirServerBuilder`, `PirServer`, `ServerConfig`, `DatabaseLoader`,
-  `simple_server` binary). ~680 LOC, 0 lib tests.
-- `pir-sdk-wasm` — WASM bindings (`WasmDpfClient`, `WasmHarmonyClient`,
-  `WasmBucketMerkleTreeTops` verifier, `WasmAtomicMetrics`,
-  `initTracingSubscriber()`). No `WasmOnionClient` — SEAL doesn't compile
-  to wasm32.
-- `pir-runtime-core` — shared server primitives (admin, attest, channel,
-  eval, handler, manifest, protocol, table). Extracted from `apps/server/` as a
-  publishable lib crate.
-- `apps/server/`, `tools/db-builder/`, `tools/block-reader/` — internal
-  binary crates (`publish = false`).
-
-### Web integration
-- `web/src/sdk-bridge.ts` — JS/TS bridge to the wasm-pack output.
-- `web/src/dpf-adapter.ts` — legacy-shape adapter over `WasmDpfClient`.
-- `web/src/harmonypir_client.ts` — adapter over `WasmHarmonyClient`.
-- `web/src/onionpir_client.ts` — hand-rolled TS (stays indefinitely;
-  SEAL doesn't compile to wasm32).
-- `web/src/sync-controller.ts` — drives sync via SDK.
-- `web/src/types.ts` — neutral types shared across clients.
-
-### Observability
-- Phase 1 (`#[tracing::instrument]` spans with consistent `backend=` field).
-- Phase 2 (`PirMetrics` trait, `AtomicMetrics` recorder, per-transport
-  byte / connect / disconnect callbacks, per-client query start/end).
-- Phase 2+ (per-client latency histograms, per-frame roundtrip latency,
-  `WasmAtomicMetrics` JS bridge, `tracing-wasm` browser subscriber).
-
----
-
-## Remaining open work
-
-- **Publishing Blocker 1** ([PUBLISHING.md](PUBLISHING.md)): `libdpf` +
-  `harmonypir` are git deps. They need to land on crates.io (with
-  pinned revs) or be vendored into `pir-core` before the five
-  publishable crates (`pir-core`, `pir-sdk`, `pir-runtime-core`,
-  `pir-sdk-client`, `pir-sdk-server`) + the `pir-sdk-wasm` npm package
-  can ship.
-- **`pir-sdk-server` polish**: 0 lib tests today, no observability
-  wiring (server-side `PirMetrics` parity), no rate limiting, no auth.
-
-SDK_ROADMAP.md + PLAN_MERKLE_ARITY.md + PLAN_INDEX_BUCKET_SIZE_4.md +
-YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
-
----
-
-## Key Files
-
-- `crates/sdk/client/tests/common/mod.rs` — live-server Payment-V1 admission
-  helpers for the integration/leakage suites (`admit_dpf_live`,
-  `admit_harmony_live`, `admit_onion_live`, free-offer selection + Free-PoW
-  solver). Harmony/onion granted-query paths are production-blocked as of
-  2026-08-06; their live tests are `PIR_STRICT_PRODUCTION_CANARY`-gated
-  (see `docs/PR_CLEANUP_TRACKER.md` P0-1).
-- `crates/sdk/core/src/lib.rs`, `crates/sdk/core/src/error.rs`, `crates/sdk/core/src/metrics.rs`,
-  `crates/sdk/core/src/sync.rs`.
-- `crates/sdk/client/src/`: `admin.rs`, `attest.rs`, `channel.rs`,
-  `dpf.rs`, `harmony.rs`, `onion.rs`, `transport.rs`, `connection.rs`,
-  `wasm_transport.rs`, `merkle_verify.rs`, `onion_merkle.rs`,
-  `hint_cache.rs`, `protocol.rs`.
-- `crates/sdk/wasm/src/`: `lib.rs`, `client.rs`, `merkle_verify.rs`,
-  `metrics.rs`, `tracing_bridge.rs`.
-- `crates/sdk/server/src/`: `server.rs`, `loader.rs`, `config.rs`.
-- `crates/protocol/runtime/src/`: `protocol.rs`, `table.rs`, `eval.rs`,
-  `handler.rs`.
-- `web/src/`: `sdk-bridge.ts`, `dpf-adapter.ts`, `types.ts`,
-  `sync-controller.ts`.
-
-## Build Commands
 ```bash
-# Build SDK WASM
+cargo test -p pir-sdk-client --lib          # client SDK tests
+cargo test -p pir-core                      # protocol primitives
 cd crates/sdk/wasm && wasm-pack build --target web --out-dir pkg
-
-# Run web dev server
-cd web && npm run dev
-
-# Test SDK
-cargo test -p pir-sdk --lib
-cargo test -p pir-sdk-client --lib
-cargo test -p pir-sdk-client --features onion --lib
-cargo test -p pir-sdk-wasm --lib
+cd web && npm run build && npm test
 ```
 
-## Operations
+## Production notes
 
-### VPSBG (pir2)
-- **SSH**: `ssh vpsbg-pir` (root@87.120.8.198, key `~/.ssh/id_ed25519_vpsbg`). Only works in Slice 2.
-- **Boot modes**: Slice 2 (rootfs, sshd, udev) ↔ Tier 3 (UKI, no sshd). Toggle in VPSBG portal → Measured Boot → UKI.
-- **Restart service (Slice 2)**: `ssh vpsbg-pir 'sudo systemctl restart pir-vpsbg'`
-- **Capture pins**: `./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org`
-- **Update web pins**: `web/src/attest-pin.ts` → `PIR2_TIER3_PIN.measurementHex` / `binarySha256Hex`
-- **Recovery**: Portal → UKI → "None" → Save & Reboot → boots rootfs with sshd
-
-### Hetzner (pir-hetzner) — UKI build host
-- **SSH**: `ssh pir-hetzner` (root@65.21.91.217, key `~/.ssh/id_ed25519`)
-- **Build production binaries** (bare Cargo on a clean checkout at the exact deploy commit, then `strip --strip-debug`; decided 2026-08-15 after provenance verification of the deployed binaries — see `docs/PROCESS_AUDIT_2026-08.md` Q2):
-  - **pir1** (Hetzner: DPF-0 + OnionPIR + Harmony hint — no ORAM): `cargo build --locked --release -p runtime --bin unified_server` (default features).
-  - **pir2** (VPSBG Tier 3: Direct/Circuit ORAM query path): `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server`.
-  - Do **not** use `build_unified_server.sh` or `nix build .#unified-server` for a production binary. The flake is a development/reproducibility harness only; the deployed pir1/pir2 binaries were never Nix-built (verified via embedded source paths and cargo feature fingerprints on the build host).
-- **Build UKI**: follow `docs/runbooks/uki-build.md` and set the exact kernel,
-  binary, oramctl, proof, policy, output and archive paths. The canonical script
-  pins Zstandard compression and excludes early microcode, GPU firmware and
-  unrelated globally installed BitcoinPIR dracut modules.
-- **Deploy UKI**: `scp pir-hetzner:/tmp/bpir-tier3.efi deploy/uki/bpir-tier3-vN.efi`, then portal → Upload → Save & Reboot
-- **Cross-build stack**: kernel 7.0.0-15, kmod 34.2, libkmod 2.5.1, dracut 110 (all backported from Ubuntu 25.04 plucky)
-- **Critical**: dracut 060 (Ubuntu 24.04) cannot build a working initramfs for kernel 7.0 — modprobe silently fails. dracut 110 required.
-
-### Shell gotcha — `set -o pipefail` + SIGPIPE
-Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on first match → pipe closes → echo gets SIGPIPE (141) → pipefail propagates → false failure. Use `grep -q ... <<< "$var"` (here-string) instead. See `memory/pattern_shell_sigpipe.md`.
-
-### UKI/initramfs internals
-- `scripts/build_uki_tier3.sh` explicitly requests and validates a
-  **zstd-compressed** initramfs; never rely on the build host's dracut defaults.
-- Uses **real kmod** (`/usr/bin/kmod` +ZSTD), NOT busybox modprobe — `.ko.zst` support works
-- Kernel modules stored as `.ko.zst` in initramfs: `usr/lib/modules/$KVER/kernel/drivers/...`
-- Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
-- SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
-
-### Attestation pins
-Do not copy pin values into this file or any prose document — copied values
-go stale and have caused operators to act on superseded release identities.
-- **Authority (client pins)**: `web/src/attest-pin.ts` — operator key, pir1/pir2
-  binary hashes, pir2 SEV measurement, and all database proof pins.
-- **Point-in-time release evidence**: `docs/data-retention/` (e.g.
-  `production-release-image-265.env`) — evidence of a past release, never a
-  statement about current live state.
-- **Current live state**: query it with `scripts/vpsbg-production-status.sh`;
-  never infer it from this file, an old preflight, or a historical record.
-- **Rotation procedure** (pins + proofs + catalog as one unit):
-  `docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`.
+- Two hosts: pir1 (Hetzner, DPF-0 + OnionPIR + Harmony hint) and pir2
+  (VPSBG AMD SEV Tier 3, Direct ORAM). All operations route through
+  `docs/PRODUCTION_OPERATIONS.md` and its runbooks — never improvise from
+  memory or old documents.
+- Production binaries are bare-Cargo builds (`--locked --release -p runtime`,
+  pir2 adds `--features cuckoo-oram`) + `strip --strip-debug`. The Nix flake
+  is a development harness only.
+- Production databases come from the locked external attested-builder;
+  `scripts/build_full.sh` and `tools/db-builder` are development-only.
+  Read `docs/DATABASE_ARTIFACT_RETENTION.md` before deleting or rebuilding
+  any database artifact — two raw Core snapshots are irreplaceable.
+- Shell gotcha: never `echo "$var" | grep -q` under `set -o pipefail`
+  (SIGPIPE 141); use `grep -q ... <<< "$var"`.

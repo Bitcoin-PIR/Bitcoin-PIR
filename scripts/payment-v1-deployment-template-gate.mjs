@@ -17,9 +17,9 @@ import { validateRepository as validateBatV2SourceProfileRepository } from "./pa
 
 export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/pir-primary.service":
-    "bec78a3771c3e4cb56445ba21842bdbb4198b4ccba2af3740ec39ffc8f929e7f",
+    "3b28505e00eb26b9f1d286af0c74da2e0944bb083c97e2f2243c3f588964d61b",
   "deploy/systemd/pir-secondary.service":
-    "177c238658dd00edb59e4d8c48776a3117c8fccf903317f8c1843d837a3848aa",
+    "6fc3dcb443ec96edc02430d534c720978b75cd9d1b7223f9e8097564cb0a15bb",
   "deploy/systemd/pir-vpsbg.service":
     "4b329ed00d182a09f1832218fd6683bc1e98087ee4ab3ece1ecf264bc422dba9",
   "deploy/systemd/dev-issuer.service":
@@ -27,7 +27,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "4ac1a58416dbf82266852fce7b7e244b2b8e58b22f7f693c0071229206c73745",
+    "9376bdfeb2d469c3bcec055d361bfff84c018740f769131f7849c9c16f417700",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "361d6a52a2e61482d8e766823a17c3b12187f96805c7e1f9d0f785e27ae64ef9",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
@@ -116,6 +116,11 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/bat-v2-source-ready/pir1-storeless-bat-v2-provider.service.in",
   "deploy/payment-v1/bat-v2-source-ready/pir2-public-artifact-set.env.in",
   "deploy/payment-v1/bat-v2-source-ready/pir2-sealed-startup.env.in",
+  "deploy/payment-v1/bat-v2-genesis-source-ready/source-profile.json.in",
+  "deploy/payment-v1/bat-v2-genesis-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in",
+  "deploy/payment-v1/bat-v2-genesis-source-ready/pir1-storeless-bat-v2-provider.service.in",
+  "deploy/payment-v1/bat-v2-genesis-source-ready/pir2-public-artifact-set.env.in",
+  "deploy/payment-v1/bat-v2-genesis-source-ready/pir2-sealed-startup.env.in",
   "deploy/payment-v1/directory-relay.toml.example",
   "deploy/payment-v1/relay-selection.toml.example",
   "deploy/payment-v1/edge/README.md",

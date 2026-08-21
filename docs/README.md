@@ -1,9 +1,9 @@
 # Documentation index
 
 Start production work at [Production operations](PRODUCTION_OPERATIONS.md).
-Read [Current production state](CURRENT_PRODUCTION_STATE.md) for the latest
-repo-recorded handoff; use the linked status command when a live refresh is
-needed.
+Live production state is queried, never inferred from documents:
+`scripts/vpsbg-production-status.sh` for pir2, and each operation script's
+status subcommand for the rest.
 
 ## Runbooks
 

@@ -15,6 +15,5 @@ reports missing live source-fair evidence as a P1 activation blocker.
 ## VPSBG Premium + Free-PoW functional beta
 
 This remains a separate stateful source profile; it is not an extension of the
-storeless profile. Use [Current production state](../CURRENT_PRODUCTION_STATE.md)
-for the current handoff and [Production enablement](../runbooks/production-enable.md)
+storeless profile. Use [Production enablement](../runbooks/production-enable.md)
 for the executable preflight entry.

@@ -2384,7 +2384,7 @@ fn assemble_entry_bytes(
 ///
 /// The entry bytes are server-controlled and decoded *before* Merkle
 /// verification, so a malformed varint is a `PirError::Decode`, never a
-/// panic (C2, docs/CODE_REVIEW_2026-06.md).
+/// panic (C2, docs/history/CODE_REVIEW_2026-06.md).
 #[cfg(feature = "onion")]
 fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
@@ -3969,7 +3969,7 @@ mod tests {
         }
     }
 
-    /// C2 (docs/CODE_REVIEW_2026-06.md): malformed varints in
+    /// C2 (docs/history/CODE_REVIEW_2026-06.md): malformed varints in
     /// server-controlled entry bytes must surface as `PirError::Decode`,
     /// never a panic — mirrors the equivalent tests in `dpf.rs` /
     /// `harmony.rs`.

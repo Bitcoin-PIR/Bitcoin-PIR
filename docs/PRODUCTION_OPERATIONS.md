@@ -1,7 +1,8 @@
 # Production operations
 
-Start here for an authorized production change. Check the current handoff first:
-[CURRENT_PRODUCTION_STATE.md](CURRENT_PRODUCTION_STATE.md).
+Start here for an authorized production change. Query live state first
+(`scripts/vpsbg-production-status.sh` for pir2; each operation script below
+has a status/help subcommand) — never infer it from documents.
 For the ordered end-to-end path, use the
 [BitcoinPIR production workflow skill](../.agents/skills/bitcoinpir-production-workflow/SKILL.md).
 

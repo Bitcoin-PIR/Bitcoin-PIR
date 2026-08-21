@@ -1001,7 +1001,7 @@ impl HarmonyClient {
     /// [`HarmonyClient::set_master_key`] to pin a specific key
     /// (useful for tests and for reusing cached hint state).
     pub fn new(hint_server_url: &str, query_server_url: &str) -> Self {
-        // 🔒 C4 (docs/CODE_REVIEW_2026-06.md): this key determines the
+        // 🔒 C4 (docs/history/CODE_REVIEW_2026-06.md): this key determines the
         // real-vs-dummy slot pattern inside every T−1 request (V1
         // protocol + cache fingerprints), so it must be unpredictable to
         // the query server. The previous splitmix64(wall-clock)
@@ -7886,7 +7886,7 @@ fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 ///
 /// The chunk bytes are server-controlled and decoded *before* Merkle
 /// verification, so a malformed varint is a `PirError::Decode`, never a
-/// panic (C2, docs/CODE_REVIEW_2026-06.md).
+/// panic (C2, docs/history/CODE_REVIEW_2026-06.md).
 fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
     if data.is_empty() {
@@ -10276,7 +10276,7 @@ mod tests {
         assert_eq!(secondary_sends.load(Ordering::SeqCst), 1);
     }
 
-    /// C4 (docs/CODE_REVIEW_2026-06.md): the master PRP key comes from
+    /// C4 (docs/history/CODE_REVIEW_2026-06.md): the master PRP key comes from
     /// the OS CSPRNG. Two fresh clients must hold distinct non-zero keys
     /// — the old splitmix64(wall-clock) derivation could collide for
     /// clients created in the same clock tick and was brute-forceable
@@ -10337,7 +10337,7 @@ mod tests {
         assert!(bytes_to_u32_vec(&[1, 2, 3]).is_err());
     }
 
-    /// C2 (docs/CODE_REVIEW_2026-06.md): malformed varints in
+    /// C2 (docs/history/CODE_REVIEW_2026-06.md): malformed varints in
     /// server-controlled chunk data must surface as `PirError::Decode`,
     /// never a panic — mirrors the equivalent test in `dpf.rs`.
     #[test]

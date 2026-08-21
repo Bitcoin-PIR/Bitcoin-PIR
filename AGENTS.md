@@ -1,46 +1,48 @@
 # BitcoinPIR agent instructions
 
+Project background and invariants: [`CLAUDE.md`](CLAUDE.md).
+Documentation index: [`docs/README.md`](docs/README.md).
+
 ## Delivery
 
-- Deliver the smallest useful implementation and its user-facing path first.
-- Treat P0/P1 correctness and user-safety issues as release blockers; record
-  lower-priority follow-up work without expanding the current task.
-- Add a security property, proof obligation, or CI gate only when a production
-  contract or the user requires it.
-
-## Long operations
-
-- Before a long build, upload, database transform, or production test, state
-  the expected duration, hard stop, and observable progress signal.
-- If Direct ORAM has no stage progress for three minutes, reassess; target ten
-  minutes and stop at fifteen unless its runbook sets a narrower limit.
-- Report when the stated success or stop condition is reached. Confirm the
-  authorization for each subsequent deployment or rebuild action.
+- Finish the smallest useful implementation and its user-facing path first.
+  Only P0/P1 correctness or user-safety defects block delivery.
+- Do not invent new security properties, proof obligations, CI gates, audit
+  scripts, or status documents. If you believe one is needed, propose it and
+  stop.
+- Documentation rule: prose documents describe *how things work now*. Dated
+  evidence goes to `docs/history/` or git history. Never copy identity values
+  (hashes, image IDs, measurements) into prose — link
+  `web/src/attest-pin.ts` or query live state.
 
 ## Testing
 
-- Use the browserless quick/PR profiles in `docs/TESTING.md` by default.
-- Run production browser checks when the user requests a browser test.
-- Prefer a short automated entry point that keeps backend results independent.
+- Pick checks by change class from [`docs/TESTING.md`](docs/TESTING.md).
+  Run the narrowest matching check, not the whole world.
+- No production/browser tests unless the user explicitly asks.
+
+## Bounded work
+
+- Before any long build, upload, or data transform: state expected duration,
+  a hard stop, and the observable progress signal. Missing progress means the
+  hypothesis is probably wrong — stop and report rather than push on.
+- When a stated success/stop condition is reached, stop. Do not roll into the
+  next phase without authorization.
 
 ## Production and data
 
-- Start at `docs/PRODUCTION_OPERATIONS.md` and update
-  `docs/CURRENT_PRODUCTION_STATE.md` after an authorized operation.
-- Run the ordered Payment/UKI/VPSBG path through the
-  [production workflow skill](.agents/skills/bitcoinpir-production-workflow/SKILL.md).
-- Use [the VPSBG measured-boot skill](.agents/skills/vpsbg-measured-boot/SKILL.md)
-  and the VPSBG runbook for image inspection and changes.
-- Before rebuilding database or ORAM artifacts, read
-  `docs/DATABASE_ARTIFACT_RETENTION.md` and retain the locked raw snapshots,
-  Direct ORAM inputs, server manifests, and V2 evidence at its listed
-  locations.
-- Treat mutable ORAM pages as derived runtime state; retain their source inputs
-  and manifests as the release evidence.
+- Every production operation starts at
+  [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md).
+  Upload, switch, reboot, rollback, deployment, and funds all require
+  explicit authorization per run.
+- VPSBG measured-boot operations use `scripts/vpsbg-measured-boot.sh` (API),
+  not SSH.
+- Read [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md)
+  before touching database or ORAM artifacts.
 
-## Git hygiene
+## Git
 
-- Preserve dirty and untracked work.
-- Remove a branch or worktree after confirming it is clean, merged into
-  `origin/main`, and not the head of an open pull request.
-- Use `codex/` for new branches. Keep commits and pull requests narrow.
+- New branches use the `codex/` prefix. Keep commits and PRs narrow; do not
+  mix production mutations with documentation cleanup.
+- Preserve dirty or untracked work; delete a branch/worktree only after
+  proving it is merged and clean.

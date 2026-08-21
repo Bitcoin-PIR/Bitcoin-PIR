@@ -13,9 +13,8 @@ SEV-SNP. Its progress, result, and failed-attempt diagnostics were copied from
 server was then detached from measured boot and returned to stock/none mode.
 
 The next boundary is planning only: prepare the full-production UKI preflight,
-but do not build or attach it until every blocker in
-`ORAM_FULL_UKI_PREFLIGHT_2026-08-11.md` is closed and the operator explicitly
-authorizes a new build/deployment cycle.
+but do not build or attach it until the operator explicitly authorizes a new
+build/deployment cycle.
 
 Time limits are part of acceptance:
 

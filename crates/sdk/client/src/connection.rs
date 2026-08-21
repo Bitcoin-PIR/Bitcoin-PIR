@@ -52,7 +52,7 @@ const MAX_WS_FRAME_SIZE: usize = 256 * 1024 * 1024;
 //
 // Cloudflare's WebSocket proxy silently corrupts single messages above
 // ~1 MB — a 3.1 MB OnionPIR `RegisterKeys` upload arrives truncated
-// (see docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Any outbound message
+// (see docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md). Any outbound message
 // larger than `CHUNK_SIZE` is split into `CHUNK_SIZE`-byte pieces, each
 // sent as its own WebSocket Binary message tagged
 // `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]`; the peer

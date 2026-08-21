@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build unified_server with bit-deterministic settings.
 #
-# Sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md. The unified_server binary
+# Sub-task 2 of docs/history/PHASE3_SLICE3_REPRO_PLAN.md. The unified_server binary
 # baked into the Tier 3 UKI must be byte-identical across operators so
 # the resulting MEASUREMENT is independently predictable. This wrapper
 # enforces every input that affects binary bytes:
@@ -35,7 +35,7 @@
 # followed by `strip --strip-debug`. Do not pin this script's (or the
 # flake's) output sha256 for any production release.
 #
-# Provenance verification (2026-08, docs/PROCESS_AUDIT_2026-08.md Q2):
+# Provenance verification (2026-08):
 # the deployed pir1 binary embeds /home/pir/build-<commit>/vendor/...
 # source paths and a default+fastprp cargo feature fingerprint — i.e. a
 # bare Cargo build. It was NOT produced by this script (which remaps

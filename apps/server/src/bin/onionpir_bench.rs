@@ -85,7 +85,7 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
         // OnionPIRv2 port (commit-1 stub): `push_chunk` removed upstream.
         // Production replacement is `push_plaintexts` (different
         // semantics — operates at plaintext-coefficient level, not raw
-        // bytes). See docs/ONIONPIR_PORT_MIGRATION.md §2 Commit 3.
+        // bytes; see the OnionPIRv2 port history in git).
         // For now the populate loop is a no-op; gen_data below fills
         // with random data and runs NTT in one shot.
         let _ = (chunk_size, fst_dim, entries_per_pt, padded, entries.clone());

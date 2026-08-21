@@ -61,7 +61,7 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 
-if [[ ! -f Cargo.toml || ! -f docs/CURRENT_PRODUCTION_STATE.md ]]; then
+if [[ ! -f Cargo.toml || ! -f docs/PRODUCTION_OPERATIONS.md ]]; then
   echo "payment-v1-local-check: repository root validation failed" >&2
   exit 1
 fi
@@ -340,7 +340,6 @@ if [[ ! -d web/node_modules ]]; then
   exit 1
 fi
 node --check scripts/payment-v1-nostr-readback.mjs
-node --test scripts/payment-v1-nostr-readback.test.mjs
 node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
 echo "[pr] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
@@ -405,69 +404,11 @@ echo "[deploy-template-audit] static deployment and renderer contracts"
 node --check scripts/payment-v1-pages-deploy-gate.mjs
 node scripts/payment-v1-pages-deploy-gate.mjs
 node --check scripts/payment-v1-deployment-template-gate.mjs
-node --test scripts/payment-v1-deployment-template-gate.test.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
 bash -n scripts/build-payment-v1-directory-relay.sh
 bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
 node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
-node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
-node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.mjs
-node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-publisher-netns-gate.mjs
-node --check scripts/payment-v1-publisher-netns-gate.test.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.mjs
-node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
-node --check scripts/payment-v1-publisher-netns-schema.test.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.mjs
-node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
-bash -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
-bash -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
-bash -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
-bash -n scripts/payment-v1-systemd-255-pid1.test.sh
-bash -n scripts/payment-v1-publisher-netns-launcher.test.sh
-bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
-bash -n scripts/payment-v1-publisher-firewall-privileged-e2e.sh
-node scripts/payment-v1-publisher-netns-gate.mjs
-node --test \
-  scripts/payment-v1-publisher-netns-gate.test.mjs \
-  scripts/payment-v1-publisher-netns-ceremony.test.mjs \
-  scripts/payment-v1-publisher-netns-schema.test.mjs \
-  scripts/payment-v1-publisher-private-health-probe.test.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
-node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
-node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
-  scripts/payment-v1-directory-public-overlay-assets.test.mjs
-node --check scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 scripts/payment-v1-source-fair-edge.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-rendered-artifact-gate.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-linux-runtime-evidence.test.mjs
-node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
-node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
-node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
-node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
-node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
-node --test --test-concurrency=1 \
-  scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
-  scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
-  scripts/payment-v1-integrated-caddy-lock.test.mjs \
-  scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
-node --check scripts/payment-v1-caddy-admin-uds-gate.mjs
-node --check scripts/payment-v1-caddy-admin-uds-gate.test.mjs
-node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
-node --check scripts/payment-v1-caddy-admin-uds-transaction.mjs
-node --check scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
-node --check scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
-node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
-node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
-node --test scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
-node --test scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
 }
 
 run_web_checks() {

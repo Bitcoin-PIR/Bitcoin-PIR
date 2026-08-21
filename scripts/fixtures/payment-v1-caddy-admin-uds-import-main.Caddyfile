@@ -1,8 +1,0 @@
-{
-	admin unix//run/bitcoinpir-caddy-admin/admin.sock|0200
-	import /etc/caddy/payment-v1-caddy-admin-uds-import-override.Caddyfile
-}
-
-import.example.invalid {
-	respond "import-regression" 200
-}

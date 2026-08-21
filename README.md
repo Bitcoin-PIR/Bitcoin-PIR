@@ -44,7 +44,7 @@ removed in 2026-08 after falling behind the protocol.
 ### Cryptographic result verification
 Each UTXO lookup can be paired with a Merkle proof query that checks the result against the database's Merkle root. Verification is **batched** across all addresses in a wallet sync — one proof round covers the whole batch. The server can refuse to answer, but it cannot return data that contradicts the root it committed to; whether that root itself can be trusted is an attestation question — see the trust-model note below.
 
-> **Trust-model note on Merkle verification (2026-07).** Native SDK clients default to `Advisory`, where a server-supplied root establishes self-consistency only. Applications can verify a database proof, explicitly install the returned `VerifiedDatabaseRoots`, and select `RequireVerified`; this fail-closed mode binds the exact ordered tree-top roots to the attested database super-root before any address query. The production web client enables the strict proof → production pin → typed install → tree-top preflight flow for DPF, HarmonyPIR, and standalone OnionPIR. OnionPIR uses the attested `onion_super_root`; its `server-info.super_root` is diagnostic only. On pir2, runtime integrity is backed by SEV-SNP and a verified AMD VCEK chain. Pir1 (Hetzner) has no SEV hardware, so its strict tier is operator identity plus binary pinning and must not be described as hardware attestation. See [the completed rollout record](docs/STRICT_VERIFICATION_PROGRESS.md) and [the database/root rotation runbook](docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
+> **Trust-model note on Merkle verification (2026-07).** Native SDK clients default to `Advisory`, where a server-supplied root establishes self-consistency only. Applications can verify a database proof, explicitly install the returned `VerifiedDatabaseRoots`, and select `RequireVerified`; this fail-closed mode binds the exact ordered tree-top roots to the attested database super-root before any address query. The production web client enables the strict proof → production pin → typed install → tree-top preflight flow for DPF, HarmonyPIR, and standalone OnionPIR. OnionPIR uses the attested `onion_super_root`; its `server-info.super_root` is diagnostic only. On pir2, runtime integrity is backed by SEV-SNP and a verified AMD VCEK chain. Pir1 (Hetzner) has no SEV hardware, so its strict tier is operator identity plus binary pinning and must not be described as hardware attestation. See [the database/root rotation runbook](docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
 
 > **Privacy note on Merkle verification.** Within each PIR round, queries are padded to a fixed count (75 for index, 80 for chunk) so the server cannot tell which group is real. Every query — found, not-found, or whale — performs at least one CHUNK PIR round and at least one CHUNK-Merkle sibling pass, so a not-found query stays indistinguishable from a found one (the **round-presence** invariant). INDEX Merkle items are distributed across PBC groups so the per-level sibling-pass count does not depend on a batch's collision pattern (**INDEX Merkle Group-Symmetry**). **Trade-off (2026-05-17):** all three backends (DPF, HarmonyPIR, OnionPIR) no longer pad each query's CHUNK Merkle items to a fixed `M = 16`; a query now fetches and verifies its *real* chunk count, so the server learns the approximate UTXO count of a found address. This is an admitted leak — mild for the ~99% of addresses with a single chunk. See [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for the full picture.
 
@@ -100,36 +100,26 @@ ownership rules and migration gates.
 
 ## Getting Started
 
-The full build pipeline requires a Bitcoin Core UTXO snapshot and takes a few hours to produce server-ready database files. Detailed instructions live in [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md).
-
-For a quick taste:
-
 1. **Clone and build**:
    ```bash
    git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git
    cd Bitcoin-PIR && cargo build --release
    ```
 2. **Point clients at the live demo servers** (no database build needed) — see `web/` for the browser client.
-3. **Or host your own**: generate the databases from a UTXO snapshot, then start the PIR servers. See [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md).
+3. **Or host your own**: generate the databases from a Bitcoin Core UTXO
+   snapshot with `scripts/build_full.sh` (takes a few hours), then start the
+   PIR servers with `scripts/start_pir_servers.sh`.
+
+For development, see [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Documentation
 
-- [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) — current
-  operator entry point and workflow routing
-- [`docs/CURRENT_PRODUCTION_STATE.md`](docs/CURRENT_PRODUCTION_STATE.md) —
-  current repo-recorded production handoff
-- [`docs/runbooks/`](docs/runbooks/) — short production runbooks linked to
-  their repository scripts and skill
-- [`docs/history/README.md`](docs/history/README.md) — historical preflights,
-  incidents, and plans; evidence only, not operating instructions
-- [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
-- [`doc/WEB.md`](doc/WEB.md) — Web client details
-- [`docs/RATELIMIT_INTEGRATION.md`](docs/RATELIMIT_INTEGRATION.md) — Payment V1
-  and anonymous admission integration index (implemented/pre-production; not
-  deployed)
-- [`docs/archive/payment/README.md`](docs/archive/payment/README.md) — retired
-  Payment plans, dated status, drills, reviews, and migration notes
-- [`doc/WALLET_INTEGRATION_ANALYSIS.md`](doc/WALLET_INTEGRATION_ANALYSIS.md) — How Bitcoin PIR integrates with existing wallets
+- [`docs/README.md`](docs/README.md) — documentation index; start here
+- [`docs/TESTING.md`](docs/TESTING.md) — which checks to run for which change
+- [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) — operator
+  entry point; every production operation routes through this page
+- [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) — the
+  privacy invariants and formal-verification final state
 - [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material (the exact consumed revision is recorded in [`verification/locks/whitepaper.json`](verification/locks/whitepaper.json))
 
 ## License

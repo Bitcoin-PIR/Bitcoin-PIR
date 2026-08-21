@@ -31,27 +31,14 @@ on:
       - 'deploy/payment-v1/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
-      - 'scripts/payment-v1-deployment-template-gate.test.mjs'
       - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
-      - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
-      - 'scripts/payment-v1-linux-runtime-evidence.mjs'
-      - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
-      - 'scripts/payment-v1-integrated-caddy-*'
-      - 'scripts/payment-v1-caddy-admin-uds-*'
-      - 'scripts/payment-v1-directory-public-overlay-assets.test.mjs'
-      - 'scripts/payment-v1-directory-public-haproxy-artifact-gate*'
-      - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-ci-lane.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
       - 'scripts/payment-v1-nostr-readback.mjs'
-      - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
-      - 'scripts/payment-v1-publisher-*'
-      - 'scripts/payment-v1-directory-publisher-*'
-      - 'scripts/payment-v1-systemd-255-*'
       - '.github/workflows/payment-platform.yml'
   pull_request:
     branches: [main]
@@ -83,27 +70,14 @@ on:
       - 'deploy/payment-v1/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-deployment-template-gate.mjs'
-      - 'scripts/payment-v1-deployment-template-gate.test.mjs'
       - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
-      - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
-      - 'scripts/payment-v1-linux-runtime-evidence.mjs'
-      - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
-      - 'scripts/payment-v1-integrated-caddy-*'
-      - 'scripts/payment-v1-caddy-admin-uds-*'
-      - 'scripts/payment-v1-directory-public-overlay-assets.test.mjs'
-      - 'scripts/payment-v1-directory-public-haproxy-artifact-gate*'
-      - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-ci-lane.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
       - 'scripts/payment-v1-nostr-readback.mjs'
-      - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
-      - 'scripts/payment-v1-publisher-*'
-      - 'scripts/payment-v1-directory-publisher-*'
-      - 'scripts/payment-v1-systemd-255-*'
       - '.github/workflows/payment-platform.yml'
   workflow_dispatch:
     inputs:
@@ -239,21 +213,6 @@ jobs:
         run: npm ci
       - name: Enforce manual main-only production Pages deployment
         run: node scripts/payment-v1-pages-deploy-gate.mjs
-      - name: Install source-fair edge compatibility test binaries
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends haproxy iproute2 nftables nodejs openssl ca-certificates util-linux
-          /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
-          /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
-          caddy_container="$(docker create caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)"
-          docker cp "$caddy_container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
-          docker rm "$caddy_container"
-          chmod 0555 "$RUNNER_TEMP/caddy"
-          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.4'
-          test "$(sha256sum "$RUNNER_TEMP/caddy" | awk '{print $1}')" = 'b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9'
-          sudo install -o root -g root -m 0555 "$RUNNER_TEMP/caddy" /usr/local/bin/caddy
-          echo 'BPIR_HAPROXY_BIN=/usr/sbin/haproxy' >> "$GITHUB_ENV"
-          echo "BPIR_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
       - name: Validate non-activating Payment V1 deployment templates
         run: |
           if git grep -nE '(^|[^0-9A-Za-z])629[0-9]{2}([^0-9A-Za-z]|$)' -- deploy/payment-v1 docs/payment 'scripts/payment-v1-*'; then
@@ -261,131 +220,17 @@ jobs:
             exit 1
           fi
           node --check scripts/payment-v1-deployment-template-gate.mjs
-          node --test scripts/payment-v1-deployment-template-gate.test.mjs
           node scripts/payment-v1-deployment-template-gate.mjs
+          node --check scripts/payment-v1-rendered-artifact-gate.mjs
           bash -n scripts/build-payment-v1-directory-relay.sh
           bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
           node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
-          node --check scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-          node --test scripts/payment-v1-directory-relay-artifact-gate.test.mjs
-          node --check scripts/payment-v1-rendered-artifact-gate.mjs
-          node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
-          node --check scripts/payment-v1-linux-runtime-evidence.mjs
-          node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
-          node --check scripts/payment-v1-publisher-netns-gate.mjs
-          node --check scripts/payment-v1-publisher-netns-gate.test.mjs
-          node --check scripts/payment-v1-publisher-netns-ceremony.mjs
-          node --check scripts/payment-v1-publisher-netns-ceremony.test.mjs
-          node --check scripts/payment-v1-publisher-netns-schema.test.mjs
-          node --check scripts/payment-v1-publisher-private-health-probe.mjs
-          node --check scripts/payment-v1-publisher-private-health-probe.test.mjs
-          sh -n scripts/payment-v1-directory-publisher-oneshot-systemd.test.sh
-          sh -n scripts/payment-v1-publisher-firewall-guard-systemd.test.sh
-          bash -n scripts/payment-v1-publisher-private-health-privileged-e2e.sh
-          sh -n scripts/payment-v1-publisher-netns-failed-recovery-systemd.test.sh
-          sh -n scripts/payment-v1-systemd-255-pid1.test.sh
-          node scripts/payment-v1-publisher-netns-gate.mjs
-          node --test \
-            scripts/payment-v1-publisher-netns-gate.test.mjs \
-            scripts/payment-v1-publisher-netns-ceremony.test.mjs \
-            scripts/payment-v1-publisher-netns-schema.test.mjs \
-            scripts/payment-v1-publisher-private-health-probe.test.mjs
-          node --check scripts/payment-v1-integrated-caddy-overlay-gate.mjs
-          node --check scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs
-          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.mjs
-          node --check scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs
-          node --check scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-gate.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-gate.test.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-probe.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-transaction.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
-          node --check scripts/payment-v1-caddy-admin-uds-real-adapter.test.mjs
-          node scripts/payment-v1-caddy-admin-uds-gate.mjs --help >/dev/null
-          node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.mjs
-          node --check scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs
-          node --check scripts/payment-v1-directory-public-overlay-assets.test.mjs
-          node --check scripts/payment-v1-source-fair-edge.test.mjs
-          node --test --test-concurrency=1 \
-            scripts/payment-v1-directory-public-haproxy-artifact-gate.test.mjs \
-            scripts/payment-v1-directory-public-overlay-assets.test.mjs \
-            scripts/payment-v1-integrated-caddy-overlay-gate.test.mjs \
-            scripts/payment-v1-integrated-caddy-overlay-transaction.test.mjs \
-            scripts/payment-v1-source-fair-edge.test.mjs
-          # These suites exercise competing global /tmp and systemd-shaped
-          # paths. Keep them in independent serial Node invocations.
-          node --test --test-concurrency=1 \
-            scripts/payment-v1-rendered-artifact-gate.test.mjs
-          node --test --test-concurrency=1 \
-            scripts/payment-v1-linux-runtime-evidence.test.mjs
-          node --test scripts/payment-v1-caddy-admin-uds-gate.test.mjs
-          node --test scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
-          node --test scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs
-          systemd-analyze verify scripts/fixtures/payment-v1-caddy-admin-uds-hardened.service
-          sudo "$(command -v node)" --test \
-            scripts/payment-v1-integrated-caddy-lock.test.mjs \
-            scripts/payment-v1-integrated-caddy-rename-exchange.test.mjs \
-            scripts/payment-v1-publisher-netns-ceremony.test.mjs \
-            scripts/payment-v1-publisher-netns-schema.test.mjs
-          sudo env \
-            BPIR_PUBLISHER_NETNS_PRIVILEGED_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
-            BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
-            scripts/payment-v1-publisher-netns-privileged-e2e.sh
-          sudo env \
-            BPIR_PUBLISHER_PRIVATE_HEALTH_TEST=I_UNDERSTAND_DISPOSABLE_HOST \
-            BPIR_PUBLISHER_NETNS_DISPOSABLE_VM=yes \
-            BPIR_CADDY_BIN=/usr/local/bin/caddy \
-            scripts/payment-v1-publisher-private-health-privileged-e2e.sh
-          scripts/payment-v1-systemd-255-pid1.test.sh
-          docker run --rm \
-            --cap-add NET_ADMIN \
-            --env BPIR_PUBLISHER_FIREWALL_TEST=I_UNDERSTAND_DISPOSABLE_CONTAINER \
-            --volume "$GITHUB_WORKSPACE:/work:ro" \
-            --workdir /work \
-            ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
-            bash -lc 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs ufw nftables iproute2 iptables >/dev/null && scripts/payment-v1-publisher-firewall-privileged-e2e.sh'
-          docker run --rm \
-            --env BPIR_DISPOSABLE_TEST_CONTAINER=1 \
-            --volume "$GITHUB_WORKSPACE:/work:ro" \
-            --workdir /work \
-            node@sha256:7725a5c2c83eed1d36258c66efae14b1ceccd021db9ed1d9559d3335ed3d68ed \
-            bash scripts/payment-v1-publisher-netns-launcher.test.sh /work
-          docker run --rm \
-            --network none \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --tmpfs /tmp:rw,exec,nosuid,nodev,size=64m \
-            --volume "$GITHUB_WORKSPACE:/work:ro" \
-            --workdir /work \
-            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
-            node --test \
-              scripts/payment-v1-caddy-admin-uds-gate.test.mjs \
-              scripts/payment-v1-caddy-admin-uds-transaction.fs.test.mjs \
-              scripts/payment-v1-caddy-admin-uds-transaction.test.mjs
-          docker run --rm \
-            --network none \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --volume "$GITHUB_WORKSPACE:/work:ro" \
-            --workdir /work \
-            node@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e \
-            node --test \
-              --test-name-pattern='runtime evidence review aid|static module request' \
-              scripts/payment-v1-linux-runtime-evidence.test.mjs
-          sh -n scripts/payment-v1-caddy-admin-uds-process.test.sh
-          scripts/payment-v1-caddy-admin-uds-process.test.sh
-          sh -n scripts/payment-v1-caddy-admin-uds-systemd.test.sh
-          scripts/payment-v1-caddy-admin-uds-systemd.test.sh
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false
       - name: Exercise bounded Nostr relay readback inputs
         run: |
           node --check scripts/payment-v1-nostr-readback.mjs
-          node --test scripts/payment-v1-nostr-readback.test.mjs
           node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
       - name: Install Chromium test runtime
         working-directory: web

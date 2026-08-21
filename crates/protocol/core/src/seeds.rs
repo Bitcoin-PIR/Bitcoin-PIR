@@ -16,7 +16,7 @@
 //! block hash, so the resulting seeds are unpredictable until the
 //! anchor block is mined.
 //!
-//! See [`docs/BUILD_REPRODUCIBILITY.md`](../../../docs/BUILD_REPRODUCIBILITY.md)
+//! See [`docs/history/BUILD_REPRODUCIBILITY.md`](../../../docs/history/BUILD_REPRODUCIBILITY.md)
 //! for the full design and roadmap.
 
 use sha2::{Digest, Sha256};

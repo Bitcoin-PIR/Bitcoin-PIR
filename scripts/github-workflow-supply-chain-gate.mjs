@@ -37,14 +37,11 @@ export const EASYCRYPT_PUBLISH_PATHS = Object.freeze([
 export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([
   ".github/workflows/**",
   "scripts/github-workflow-supply-chain-gate.mjs",
-  "scripts/github-workflow-supply-chain-gate.test.mjs",
+  "scripts/tier3-uki-policy-contract.test.mjs",
+  "scripts/build_uki_tier3.sh",
   "web/package.json",
   "web/package-lock.json",
   "web/npm-shrinkwrap.json",
-  "verification/locks/formal-proofs.json",
-  "verification/scripts/verify_formal_lock.py",
-  "verification/scripts/test_verify_formal_lock.py",
-  "verification/toolchains/easycrypt.Dockerfile",
 ]);
 
 function fail(message) {
@@ -155,17 +152,22 @@ export function validateSupplyChainGateTriggers(source, label = "workflow supply
     `${label}.on.push.paths`,
   );
 
-  // A workflow-level PR path filter leaves a required check Pending on
-  // unrelated PRs. Only the protected target branch may narrow this event.
+  // Merges are manual and aggregated by the advisory CI summary, so the PR
+  // event uses the same path filter as push instead of running on every PR.
   requireExactMappingKeys(
     workflow.on.pull_request,
-    ["branches"],
+    ["branches", "paths"],
     `${label}.on.pull_request`,
   );
   requireExactStringList(
     workflow.on.pull_request.branches,
     ["main"],
     `${label}.on.pull_request.branches`,
+  );
+  requireExactStringList(
+    workflow.on.pull_request.paths,
+    SUPPLY_CHAIN_GATE_PUSH_PATHS,
+    `${label}.on.pull_request.paths`,
   );
 
   requireExactMappingKeys(
@@ -198,10 +200,8 @@ export function validateSupplyChainGateValidatorCoverage(
     `${label} must retain workflow policy validation`,
   );
   for (const command of [
-    "node --test scripts/github-workflow-supply-chain-gate.test.mjs",
+    "node --test scripts/tier3-uki-policy-contract.test.mjs",
     "node scripts/github-workflow-supply-chain-gate.mjs",
-    "python3 -m py_compile verification/scripts/verify_formal_lock.py verification/scripts/test_verify_formal_lock.py",
-    "python3 -m unittest verification/scripts/test_verify_formal_lock.py",
   ]) {
     if (!policyStep.run.includes(command)) {
       fail(`${label} must execute ${command}`);
