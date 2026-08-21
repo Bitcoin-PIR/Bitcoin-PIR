@@ -125,7 +125,7 @@ fn main() {
         eprintln!();
         eprintln!("With --to-block-hash, also writes delta_anchor_<A>_<B>.bin (72 bytes:");
         eprintln!("from-anchor || to-anchor) used by build_cuckoo_generic to derive chain-anchored");
-        eprintln!("PRG seeds. See docs/BUILD_REPRODUCIBILITY.md.");
+        eprintln!("PRG seeds. See docs/history/BUILD_REPRODUCIBILITY.md.");
         std::process::exit(1);
     }
 

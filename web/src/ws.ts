@@ -38,7 +38,7 @@ const PING_MSG = new Uint8Array([1, 0, 0, 0, 0x00]);
 //
 // Cloudflare's WebSocket proxy silently corrupts single messages above
 // ~1 MB (a 3.1 MB OnionPIR RegisterKeys upload arrives truncated — see
-// docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
+// docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
 // split into `[4B len][CHUNK_MAGIC][seq:u16 LE][total:u16 LE][piece]`
 // frames; the peer reassembles. Must stay in sync with
 // crates/sdk/client/src/connection.rs and apps/server/src/bin/unified_server.rs.

@@ -82,7 +82,7 @@ fn write_utxo_entry(
 /// If `anchor_height` is supplied, also writes a `chain_anchor.bin` file
 /// (36 bytes: 32B block_hash || 4B height LE) into the same directory as
 /// `output_file`. Downstream build stages consume this file to derive
-/// chain-anchored PRG seeds — see `docs/BUILD_REPRODUCIBILITY.md`.
+/// chain-anchored PRG seeds — see `docs/history/BUILD_REPRODUCIBILITY.md`.
 fn process_utxo_snapshot(
     snapshot_path: &Path,
     output_file: &Path,
@@ -285,7 +285,7 @@ fn main() {
                 println!();
                 println!("Writes <dir>/utxo_set.bin (default dir: {}).", DEFAULT_DATA_DIR);
                 println!("With --anchor-height, also writes <dir>/chain_anchor.bin for");
-                println!("chain-derived seeds (see docs/BUILD_REPRODUCIBILITY.md).");
+                println!("chain-derived seeds (see docs/history/BUILD_REPRODUCIBILITY.md).");
                 println!("Create a UTXO snapshot with: bitcoin-cli dumptxoutset <path>");
                 std::process::exit(0);
             }

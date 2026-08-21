@@ -1,5 +1,5 @@
 {
-  description = "BitcoinPIR — hermetic build environment for Tier 3 UKI reproducibility (sub-task 5 of docs/PHASE3_SLICE3_REPRO_PLAN.md)";
+  description = "BitcoinPIR — hermetic build environment for Tier 3 UKI reproducibility (sub-task 5 of docs/history/PHASE3_SLICE3_REPRO_PLAN.md)";
 
   # Pin nixpkgs + rust-overlay to specific revisions so two operators on
   # different machines get bit-identical toolchains. The flake.lock file
@@ -83,7 +83,7 @@
       # This flake is a development/reproducibility harness only.
       # Provenance verification of the deployed binaries showed neither
       # pir1 nor pir2 was ever Nix-built (bare Cargo builds on the
-      # Hetzner build host; see docs/PROCESS_AUDIT_2026-08.md Q2), and
+      # Hetzner build host), and
       # packages.unified-server builds WITHOUT `--features cuckoo-oram`
       # (see cargoBuildFlags below), which the pir2 Direct ORAM path
       # requires — so this UKI is NOT what production pir2 boots.
@@ -590,7 +590,7 @@
         echo "  This is Phase 1 of sub-task 5: pinned toolchain via dev shell."
         echo "  Phase 2 (full nix build derivation, content-addressed source"
         echo "  paths → cross-path determinism) is a follow-up — see"
-        echo "  docs/PHASE3_SLICE3_REPRO_PLAN.md."
+        echo "  docs/history/PHASE3_SLICE3_REPRO_PLAN.md."
       '';
     };
   };

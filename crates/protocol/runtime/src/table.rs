@@ -190,7 +190,7 @@ impl MappedSubTable {
     /// Note: this proves internal consistency only. Defeating a *malicious*
     /// operator (who could fabricate a matching anchor+seed pair) still
     /// requires the client to check the anchor against an independent view
-    /// of the Bitcoin chain — see docs/BUILD_REPRODUCIBILITY.md.
+    /// of the Bitcoin chain — see docs/history/BUILD_REPRODUCIBILITY.md.
     pub fn verify_anchor_consistency(
         &self,
         label: &str,

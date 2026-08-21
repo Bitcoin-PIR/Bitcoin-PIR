@@ -297,8 +297,8 @@ and reconnect so session roots and authenticated tree-top caches are cleared.
 
 Record the proof values, host config hashes, server/UKI pins, frontend commit,
 Pages run URL, `verify-live` output, and browser smoke result in the deployment
-record. Update `STRICT_VERIFICATION_PROGRESS.md` only if the trust policy
-itself changes; routine rotations belong in a dated operations record.
+record. Routine rotations belong in a dated operations record
+(`docs/data-retention/`), not in the runbooks.
 
 ## 7. Rollback
 

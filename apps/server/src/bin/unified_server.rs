@@ -261,7 +261,7 @@ struct CliArgs {
     /// fields and the browser-side verifier falls back to V2-binding-
     /// only mode. Operator's responsibility to refresh after TCB
     /// changes (kernel update, microcode update) — see
-    /// docs/PHASE3_ROADMAP.md.
+    /// docs/history/PHASE3_ROADMAP.md.
     vcek_dir: Option<PathBuf>,
     /// HarmonyPIR V2 hint pool size per configured database (0 = disabled).
     pool_size: usize,
@@ -7244,7 +7244,7 @@ where
 //
 // Cloudflare's WebSocket proxy silently corrupts single messages above
 // ~1 MB (a 3.1 MB OnionPIR RegisterKeys upload arrives truncated — see
-// docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
+// docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
 // split into `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]` frames;
 // the peer reassembles. These constants MUST stay in sync with
 // `crates/sdk/client/src/connection.rs` (CHUNK_MAGIC / CHUNK_SIZE) and
@@ -7294,7 +7294,7 @@ const MAX_CHUNK_FRAMES: usize = MAX_REASSEMBLED.div_ceil(CHUNK_SIZE);
 /// emits ~32).
 ///
 /// Sized below 1 MiB so the message survives the Cloudflare WebSocket
-/// proxy (~1 MB ceiling — see docs/PIR1_REGISTER_KEYS_TRUNCATION.md).
+/// proxy (~1 MB ceiling — see docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md).
 /// Mirrors `HINT_BATCH_BYTES` in
 /// `apps/server/src/bin/harmonypir_hint_server.rs`.
 const HINT_BATCH_BYTES: usize = 768 * 1024;
@@ -10204,7 +10204,7 @@ async fn main() {
                             // answer_query. That turned out NOT to be a 2402b16 bug —
                             // it was a contaminated incremental libonionpir.a build
                             // from flipping the onionpir git rev repeatedly without a
-                            // clean rebuild (see docs/PIR1_REGISTER_KEYS_TRUNCATION.md).
+                            // clean rebuild (see docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md).
                             // With a clean build, 2402b16 registers keys in ~1 ms and
                             // the parallel path is sound.
                             //

@@ -100,7 +100,7 @@ mkdir -p "$DRACUT_MODULE_DST"
 # archive — breaking initrd determinism even with --reproducible below.
 cp -fp "$DRACUT_MODULE_SRC"/*.sh "$DRACUT_MODULE_DST/"
 chmod 0755 "$DRACUT_MODULE_DST"/*.sh
-# Normalize mtimes to epoch 0 — see docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 1.
+# Normalize mtimes to epoch 0 — see docs/history/PHASE3_SLICE3_REPRO_PLAN.md sub-task 1.
 # `cp -fp` propagates the operator's git-clone mtime into the cpio archive,
 # so even with --reproducible two fresh clones at different times produce
 # different bytes. Touching to @0 closes that leak for cross-operator

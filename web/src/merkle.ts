@@ -11,7 +11,7 @@
  * splice the verified child into its parent at `idx % arity` — a property
  * the previously-exported `verifyMerkleProof` did not have, so it was
  * removed (it never bound the leaf into the recomputed root). See
- * docs/CODE_REVIEW_2026-06.md W1.
+ * docs/history/CODE_REVIEW_2026-06.md W1.
  */
 
 import { sha256 } from './hash.js';

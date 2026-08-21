@@ -1,7 +1,7 @@
 //! Cross-build reproducibility fixture test.
 //!
 //! Guards the chain-derived-seed reproducibility guarantee from
-//! [`docs/BUILD_REPRODUCIBILITY.md`](../../docs/BUILD_REPRODUCIBILITY.md):
+//! [`docs/history/BUILD_REPRODUCIBILITY.md`](../../docs/history/BUILD_REPRODUCIBILITY.md):
 //! two independent builds of the *same* UTXO set at the *same*
 //! [`ChainAnchor`] must produce **byte-identical** cuckoo files. Any
 //! source of non-determinism that creeps into the build math —

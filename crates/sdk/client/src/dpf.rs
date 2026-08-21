@@ -4004,7 +4004,7 @@ fn decode_batch_response(
 /// attacker-controlled wire bytes with no tie to the K-padded request.
 /// Without this check, a malicious server answering with fewer groups
 /// (or fewer per-group results) panics the client on the out-of-bounds
-/// index (C3, docs/CODE_REVIEW_2026-06.md). Both under-delivery and
+/// index (C3, docs/history/CODE_REVIEW_2026-06.md). Both under-delivery and
 /// over-delivery are decode errors: the response must be the exact public
 /// padded shape requested by the client.
 fn check_batch_response_shape(
@@ -4145,7 +4145,7 @@ fn plan_chunk_rounds(chunk_ids: &[u32], k: usize) -> Vec<Vec<(u32, usize)>> {
 ///
 /// The chunk bytes are server-controlled and decoded *before* Merkle
 /// verification, so a malformed varint is a `PirError::Decode`, never a
-/// panic (C2, docs/CODE_REVIEW_2026-06.md).
+/// panic (C2, docs/history/CODE_REVIEW_2026-06.md).
 fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
     if data.is_empty() {
@@ -5822,7 +5822,7 @@ mod tests {
         assert!(snap.bytes_received > 0);
     }
 
-    // ─── Malicious-server robustness (C2/C3, docs/CODE_REVIEW_2026-06.md) ──
+    // ─── Malicious-server robustness (C2/C3, docs/history/CODE_REVIEW_2026-06.md) ──
 
     /// Malformed varints in server chunk data must surface as
     /// `PirError::Decode`, never a panic — the bytes are decoded before

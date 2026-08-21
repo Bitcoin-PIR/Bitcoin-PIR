@@ -1504,7 +1504,7 @@ async fn verify_sibling_levels(
         // a self-consistency check against the root the server declared, not
         // soundness against a malicious server; that currently rests on the
         // attestation/pinning path. Anchoring this root to the attested
-        // manifest roots is tracked follow-up (docs/CODE_REVIEW_2026-06.md,
+        // manifest roots is tracked follow-up (docs/history/CODE_REVIEW_2026-06.md,
         // C1 — opt-in strict mode).
         let expected_root = top.root().unwrap_or(ZERO_HASH);
         let ok = !malformed_evidence[i] && hash == expected_root;

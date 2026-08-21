@@ -1,5 +1,5 @@
 # Pinned Rust toolchain — required for UKI MEASUREMENT reproducibility
-# (sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md). Different rustc
+# (sub-task 2 of docs/history/PHASE3_SLICE3_REPRO_PLAN.md). Different rustc
 # versions produce different binary bytes for the same source, so two
 # operators must agree on the toolchain to produce byte-identical
 # unified_server binaries.

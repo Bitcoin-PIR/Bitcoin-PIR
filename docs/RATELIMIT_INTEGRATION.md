@@ -1,9 +1,7 @@
 # Anonymous admission and payment integration
 
 This page indexes the Payment V1 admission architecture. Start operating work
-at [Production operations](PRODUCTION_OPERATIONS.md) and read
-[Current production state](CURRENT_PRODUCTION_STATE.md) for the latest
-repo-recorded handoff.
+at [Production operations](PRODUCTION_OPERATIONS.md).
 
 ## Current boundaries
 
@@ -73,8 +71,8 @@ contract; cached hints do not widen the purchased query scope.
 
 ## Documentation
 
-- Operations: [Production operations](PRODUCTION_OPERATIONS.md), its short
-  [runbooks](runbooks/), and [Current production state](CURRENT_PRODUCTION_STATE.md).
+- Operations: [Production operations](PRODUCTION_OPERATIONS.md) and its short
+  [runbooks](runbooks/).
 - Architecture and trust boundaries:
   [`payment/ARCHITECTURE.md`](payment/ARCHITECTURE.md)
 - Canonical wire protocol:

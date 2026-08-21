@@ -15,7 +15,7 @@
 #
 # Why runtime-sourced: keeping the token out of the cpio means the
 # UKI bytes (and therefore MEASUREMENT) are operator-agnostic — see
-# docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 (option b). Trade-off
+# docs/history/PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 (option b). Trade-off
 # vs the old in-cpio path: if the rootfs mount fails we lose the
 # tunnel entirely (vs the old "tunnel up to dead origin → 502
 # observable" failure mode), but unified_server can't run without

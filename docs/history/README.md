@@ -1,29 +1,25 @@
-# Historical operations evidence
+# Historical records
 
-These records preserve prior observations, plans, and incidents. They are not
-current operating instructions and must not override
-[Production operations](../PRODUCTION_OPERATIONS.md) or its read-only
-control-plane status command. In particular, prior generation, database,
-measurement, attestation, and timing values are historical evidence, not values
-the current status command can infer.
+Files in this directory are kept only because current code, build scripts, or
+deploy configs still cite them for rationale. They are frozen evidence — not
+operating instructions — and any identity values inside them (hashes, image
+IDs, measurements) are stale by construction. Current state is queried, never
+inferred: see [Production operations](../PRODUCTION_OPERATIONS.md).
 
-- [Full Direct ORAM UKI preflight (2026-08-11)](../ORAM_FULL_UKI_PREFLIGHT_2026-08-11.md)
-  — point-in-time preflight; its image slots, generation, capacities, and timing
-  are stale until queried again.
-- [ORAM Tier 3 production handoff](../ORAM_TIER3_PRODUCTION_HANDOFF.md)
-  — historical deployment evidence and superseded activation context.
-- [Production rollout remainder (2026-08-07)](../PROD_ROLLOUT_REMAINDER_2026-08-07.md)
-  — deferred rollout plan and notes, not an active checklist.
-- [Server warmup removal rollout](../SERVER_WARMUP_REMOVAL_ROLLOUT.md)
-  — completed/superseded rollout record.
-- [Phase 3 Slice 3 recovery](../PHASE3_SLICE3_RECOVERY.md)
-  — historical recovery procedure; not the supported measured-boot release path.
-- [ORAM live image binding plan](../ORAM_LIVE_IMAGE_BINDING_PLAN.md)
-  — design plan, not proof of a current live binding.
+| Record | Why it is kept |
+| --- | --- |
+| [CODE_REVIEW_2026-06.md](CODE_REVIEW_2026-06.md) | Security findings C1–C4 cited by client robustness code |
+| [BUILD_REPRODUCIBILITY.md](BUILD_REPRODUCIBILITY.md) | Chain-anchored PRG seed rationale cited by `pir-core` and `db-builder` |
+| [PHASE3_SLICE3_REPRO_PLAN.md](PHASE3_SLICE3_REPRO_PLAN.md) | Reproducible-build rationale cited by build scripts, `Cargo.toml`, `flake.nix` |
+| [PHASE3_ROADMAP.md](PHASE3_ROADMAP.md) | Attestation design cited by `web/src/attest-pin.ts` and `web/reproduce.html` |
+| [DB_BUILD_ATTESTATION_PLAN.md](DB_BUILD_ATTESTATION_PLAN.md) | Database attestation design cited by `web/reproduce.html` |
+| [OPERATOR_IDENTITY.md](OPERATOR_IDENTITY.md) | REQ_ANNOUNCE protocol description cited by `crates/trust/identity` |
+| [PIR1_REGISTER_KEYS_TRUNCATION.md](PIR1_REGISTER_KEYS_TRUNCATION.md) | Transport-chunking RCA cited by server, client, and web code |
+| [PIR1_STARTUP_HINT_POOL_THRASHING.md](PIR1_STARTUP_HINT_POOL_THRASHING.md) | Startup RCA cited by the systemd units |
+| [UPSTREAM_REQUEST_2402b16_REGRESSION.md](UPSTREAM_REQUEST_2402b16_REGRESSION.md) | Upstream regression context cited by the systemd units |
+| [GIT_CLEANUP_2026-08-13.md](GIT_CLEANUP_2026-08-13.md) | Records which branches/worktrees were removed and which were preserved |
 
-Current artifact paths and retention decisions do not live in this historical
-index. Use the maintained
-[database artifact retention map](../DATABASE_ARTIFACT_RETENTION.md).
-
-- [Git cleanup record (2026-08-13)](GIT_CLEANUP_2026-08-13.md)
-  — records what was removed and why dirty/unmerged worktrees were preserved.
+Everything else — completed plans, dated preflights, rollout records, status
+trackers, process audits, probe dumps, and research surveys — was removed from
+the working tree in the 2026-08-21 process cleanup and lives in git history
+(`git log --diff-filter=D -- docs/` shows the deletions).

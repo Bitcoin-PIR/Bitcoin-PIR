@@ -139,10 +139,11 @@ Run `simple_server --help` for the full flag list.
 ## Building the database files
 
 `pir-sdk-server` does not itself build database files — it consumes files
-produced by the workspace-level `build/` pipeline. See
-[`doc/DEPLOYMENT.md`](../../../doc/DEPLOYMENT.md) for the end-to-end pipeline
-(Bitcoin Core UTXO snapshot → chunked UTXO data → cuckoo tables →
-Merkle trees → PIR-ready database).
+produced by the `tools/db-builder` pipeline (driven by `scripts/build_full.sh`:
+Bitcoin Core UTXO snapshot → chunked UTXO data → cuckoo tables →
+Merkle trees → PIR-ready database). Production databases come from the
+locked attested-builder instead; see
+[`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../../../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
 
 ## How it relates to the rest of the workspace
 

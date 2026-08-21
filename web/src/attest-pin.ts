@@ -114,7 +114,7 @@ function bytesToHex(bytes: Uint8Array): string {
  *   against MEASUREMENT (transitively, for Tier 3) and against
  *   the cmdline pin (for Slice 2 with bpir-verify hook).
  *
- * Operator publishes both in `docs/PHASE3_ROADMAP.md::Attested
+ * Operator publishes both in `docs/history/PHASE3_ROADMAP.md::Attested
  * values published`. Update here whenever you re-bake + republish
  * the UKI on pir2 (every binary change).
  */
@@ -326,7 +326,7 @@ export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
  * (operator-pin + cert signature + validity + chain + channel binding).
  * The "verified operator" badge is wired into the DPF + HarmonyPIR cards
  * (web/index.html) and the playground, gated on `state === 'verified'`.
- * See docs/OPERATOR_IDENTITY.md.
+ * See docs/history/OPERATOR_IDENTITY.md.
  */
 export const PIR_OPERATOR_PUBKEY_HEX =
   '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a';

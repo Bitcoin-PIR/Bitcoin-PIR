@@ -27,7 +27,7 @@ impl std::error::Error for VarintError {}
 /// Panic-free counterpart of [`read_varint`] — use this for any bytes an
 /// untrusted peer controls (e.g. server-supplied UTXO chunk data, which
 /// is parsed *before* Merkle verification; see C2 in
-/// `docs/CODE_REVIEW_2026-06.md`).
+/// `docs/history/CODE_REVIEW_2026-06.md`).
 pub fn try_read_varint(data: &[u8]) -> Result<(u64, usize), VarintError> {
     let mut result: u64 = 0;
     let mut shift = 0u32;

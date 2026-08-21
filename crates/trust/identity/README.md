@@ -16,5 +16,5 @@ sign/verify logic; filesystem, network, and operator tooling live elsewhere in
 the BitcoinPIR workspace.
 
 See the module documentation in `src/lib.rs` and
-[`docs/OPERATOR_IDENTITY.md`](../docs/OPERATOR_IDENTITY.md) for the protocol and
+[`docs/history/OPERATOR_IDENTITY.md`](../../../docs/history/OPERATOR_IDENTITY.md) for the protocol and
 deployment model.

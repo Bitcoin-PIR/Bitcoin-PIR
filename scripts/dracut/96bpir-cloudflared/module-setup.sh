@@ -16,7 +16,7 @@
 # before runsvdir takes over. This makes the UKI operator-agnostic —
 # two operators with the same git commit produce byte-identical UKI
 # bytes regardless of their cloudflared tokens. See
-# docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 (option b).
+# docs/history/PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 (option b).
 #
 # Operator one-time setup before deploying Tier 3: copy
 # /etc/cloudflared/tunnel.env → /home/pir/data/cloudflared/tunnel.env
